@@ -1,0 +1,176 @@
+@page "/trading-value-ranking"
+
+@using Invest.Web.Features.TradingValueRanking.Models
+@using Invest.Web.Features.TradingValueRanking.Services
+
+@inject TradingValueRankingQueryService RankingService
+
+<PageTitle>族群成交值排行</PageTitle>
+
+<div class="ranking-page">
+    <header class="page-header">
+        <div>
+            <h1>族群成交值排行</h1>
+            <p>
+                目前使用測試資料，先驗證網頁互動、欄位及目錄架構。
+            </p>
+        </div>
+    </header>
+
+    <section class="filter-panel">
+        <span class="filter-label">觀察期間</span>
+
+        <div class="period-selector">
+            @foreach (var period in PeriodOptions)
+            {
+                <button type="button"
+                        class="@GetPeriodButtonClass(period)"
+                        @onclick="() => ChangePeriod(period)">
+                    @period 日
+                </button>
+            }
+        </div>
+    </section>
+
+    <section class="summary">
+        顯示最近 <strong>@SelectedPeriod</strong> 個交易日的測試排行。
+    </section>
+
+    <div class="table-container">
+        <table class="ranking-table">
+            <thead>
+                <tr>
+                    <th>排名</th>
+                    <th>排名變化</th>
+                    <th>族群</th>
+                    <th>平均每日成交值</th>
+                    <th>較前期增減</th>
+                    <th>市場成交比</th>
+                    <th>上漲家數比</th>
+                    <th>前三大集中度</th>
+                    <th>成分股數</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                @foreach (var row in Rows)
+                {
+                    <tr>
+                        <td class="rank">@row.Rank</td>
+
+                        <td class="@GetRankChangeCssClass(row.RankChange)">
+                            @GetRankChangeText(row.RankChange)
+                        </td>
+
+                        <td class="group-name">@row.GroupName</td>
+
+                        <td>
+                            @row.AverageDailyTradingValue.ToString("N1") 億元
+                        </td>
+
+                        <td class="@GetRateCssClass(row.TradingValueChangeRate)">
+                            @FormatSignedPercentage(row.TradingValueChangeRate)
+                        </td>
+
+                        <td>@row.MarketShare.ToString("P2")</td>
+
+                        <td>@row.AdvancingRatio.ToString("P1")</td>
+
+                        <td>@row.Top3Concentration.ToString("P1")</td>
+
+                        <td>@row.MemberCount</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    private static readonly int[] PeriodOptions =
+    {
+        5,
+        10,
+        20
+    };
+
+    private int SelectedPeriod { get; set; } = 5;
+
+    private IReadOnlyList<TradingValueRankingRow> Rows { get; set; }
+        = Array.Empty<TradingValueRankingRow>();
+
+    protected override void OnInitialized()
+    {
+        LoadRanking();
+    }
+
+    private void ChangePeriod(int periodDays)
+    {
+        SelectedPeriod = periodDays;
+        LoadRanking();
+    }
+
+    private void LoadRanking()
+    {
+        Rows = RankingService.GetRanking(SelectedPeriod);
+    }
+
+    private string GetPeriodButtonClass(int periodDays)
+    {
+        return SelectedPeriod == periodDays
+            ? "period-button selected"
+            : "period-button";
+    }
+
+    private static string GetRankChangeText(int rankChange)
+    {
+        if (rankChange > 0)
+        {
+            return $"▲ {rankChange}";
+        }
+
+        if (rankChange < 0)
+        {
+            return $"▼ {Math.Abs(rankChange)}";
+        }
+
+        return "—";
+    }
+
+    private static string GetRankChangeCssClass(int rankChange)
+    {
+        if (rankChange > 0)
+        {
+            return "positive";
+        }
+
+        if (rankChange < 0)
+        {
+            return "negative";
+        }
+
+        return "unchanged";
+    }
+
+    private static string GetRateCssClass(decimal rate)
+    {
+        if (rate > 0)
+        {
+            return "positive";
+        }
+
+        if (rate < 0)
+        {
+            return "negative";
+        }
+
+        return "unchanged";
+    }
+
+    private static string FormatSignedPercentage(decimal rate)
+    {
+        return rate > 0
+            ? $"+{rate:P1}"
+            : rate.ToString("P1");
+    }
+}

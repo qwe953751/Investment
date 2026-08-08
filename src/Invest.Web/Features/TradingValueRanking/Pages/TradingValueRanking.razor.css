@@ -1,0 +1,122 @@
+.ranking-page {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 32px;
+}
+
+.page-header {
+    margin-bottom: 24px;
+}
+
+.page-header h1 {
+    margin: 0 0 8px;
+    font-size: 32px;
+}
+
+.page-header p {
+    margin: 0;
+    color: #666;
+}
+
+.filter-panel {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px;
+    margin-bottom: 16px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fafafa;
+}
+
+.filter-label {
+    font-weight: 600;
+}
+
+.period-selector {
+    display: flex;
+    gap: 8px;
+}
+
+.period-button {
+    min-width: 64px;
+    padding: 8px 16px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    cursor: pointer;
+}
+
+.period-button:hover {
+    background: #f0f0f0;
+}
+
+.period-button.selected {
+    border-color: #222;
+    background: #222;
+    color: white;
+}
+
+.summary {
+    margin-bottom: 16px;
+}
+
+.table-container {
+    overflow-x: auto;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+}
+
+.ranking-table {
+    width: 100%;
+    min-width: 1050px;
+    border-collapse: collapse;
+}
+
+.ranking-table th,
+.ranking-table td {
+    padding: 14px 12px;
+    border-bottom: 1px solid #e5e5e5;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.ranking-table th {
+    background: #f5f5f5;
+    font-weight: 600;
+}
+
+.ranking-table th:nth-child(3),
+.ranking-table td:nth-child(3) {
+    text-align: left;
+}
+
+.ranking-table tbody tr:hover {
+    background: #fafafa;
+}
+
+.ranking-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.rank {
+    font-weight: 700;
+}
+
+.group-name {
+    font-weight: 600;
+}
+
+.positive {
+    color: #b42318;
+    font-weight: 600;
+}
+
+.negative {
+    color: #067647;
+    font-weight: 600;
+}
+
+.unchanged {
+    color: #666;
+}
