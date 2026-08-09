@@ -491,6 +491,9 @@ $RECYCLE.BIN/
 # Claude Code 本機設定
 .claude/settings.local.json
 
+# 行情快取。可用 backfill 指令重新產生，體積大且每天都在長，不進版控。
+data/imports/
+
 # SQLite 資料庫檔（第四階段才會產生）
 data/database/
 *.db

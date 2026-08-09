@@ -1,3 +1,21 @@
+/* 明確宣告淺色主題。不指定的話，作業系統設為深色模式時瀏覽器會把畫布轉深，
+   但頁面樣式仍是為淺色底設計的，文字會變成灰底灰字。 */
+:root {
+    color-scheme: light;
+}
+
+body {
+    margin: 0;
+    background-color: #ffffff;
+    color: #1a1a1a;
+    font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans TC",
+        "PingFang TC", "Microsoft JhengHei", "Helvetica Neue", sans-serif;
+}
+
+a {
+    color: #1a56db;
+}
+
 h1:focus {
     outline: none;
 }

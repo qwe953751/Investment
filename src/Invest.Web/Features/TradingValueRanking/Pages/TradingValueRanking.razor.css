@@ -1,5 +1,5 @@
 .ranking-page {
-    max-width: 1280px;
+    max-width: 1440px;
     margin: 0 auto;
     padding: 32px;
 }
@@ -20,8 +20,8 @@
 
 .filter-panel {
     display: flex;
-    align-items: center;
-    gap: 16px;
+    flex-wrap: wrap;
+    gap: 24px;
     padding: 16px;
     margin-bottom: 16px;
     border: 1px solid #ddd;
@@ -29,36 +29,82 @@
     background: #fafafa;
 }
 
-.filter-label {
-    font-weight: 600;
+.filter-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
-.period-selector {
+.filter-label {
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.button-row {
     display: flex;
     gap: 8px;
 }
 
-.period-button {
+.toggle-button {
     min-width: 64px;
-    padding: 8px 16px;
+    padding: 8px 14px;
     border: 1px solid #aaa;
     border-radius: 6px;
     background: white;
     cursor: pointer;
+    white-space: nowrap;
 }
 
-.period-button:hover {
+.toggle-button:hover:not(:disabled) {
     background: #f0f0f0;
 }
 
-.period-button.selected {
+.toggle-button.selected {
     border-color: #222;
     background: #222;
     color: white;
 }
 
+.toggle-button:disabled {
+    color: #aaa;
+    border-color: #ddd;
+    cursor: not-allowed;
+}
+
 .summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 24px;
     margin-bottom: 16px;
+    color: #333;
+}
+
+.summary-label {
+    display: inline-block;
+    margin-right: 6px;
+    color: #888;
+    font-size: 13px;
+}
+
+.notice {
+    padding: 24px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fafafa;
+    color: #555;
+}
+
+.notice.warning {
+    border-color: #f0c36d;
+    background: #fdf6e3;
+    color: #7a5b00;
+}
+
+.notice code {
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #00000012;
+    font-size: 13px;
 }
 
 .table-container {
@@ -69,25 +115,44 @@
 
 .ranking-table {
     width: 100%;
-    min-width: 1050px;
+    min-width: 1200px;
     border-collapse: collapse;
 }
 
 .ranking-table th,
 .ranking-table td {
-    padding: 14px 12px;
+    padding: 12px;
     border-bottom: 1px solid #e5e5e5;
     text-align: right;
     white-space: nowrap;
 }
 
 .ranking-table th {
+    position: sticky;
+    top: 0;
     background: #f5f5f5;
     font-weight: 600;
 }
 
+.ranking-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.ranking-table th.sortable:hover {
+    background: #ececec;
+}
+
+.ranking-table th.sorted {
+    color: #1a56db;
+}
+
+.ranking-table td.ticker,
+.ranking-table td.stock-name,
+.ranking-table td.market,
 .ranking-table th:nth-child(3),
-.ranking-table td:nth-child(3) {
+.ranking-table th:nth-child(4),
+.ranking-table th:nth-child(5) {
     text-align: left;
 }
 
@@ -103,8 +168,22 @@
     font-weight: 700;
 }
 
-.group-name {
+.ticker {
+    font-variant-numeric: tabular-nums;
+    color: #666;
+}
+
+.stock-name {
     font-weight: 600;
+}
+
+.market {
+    color: #666;
+    font-size: 13px;
+}
+
+.numeric {
+    font-variant-numeric: tabular-nums;
 }
 
 .positive {
@@ -119,4 +198,14 @@
 
 .unchanged {
     color: #666;
+}
+
+.page-footer {
+    margin-top: 16px;
+    color: #888;
+    font-size: 13px;
+}
+
+.page-footer p {
+    margin: 4px 0;
 }

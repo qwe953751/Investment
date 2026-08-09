@@ -1,176 +1,310 @@
 @page "/trading-value-ranking"
 
-@using Invest.Web.Features.TradingValueRanking.Models
-@using Invest.Web.Features.TradingValueRanking.Services
-
 @inject TradingValueRankingQueryService RankingService
 
-<PageTitle>族群成交值排行</PageTitle>
+<PageTitle>個股成交值排行</PageTitle>
 
 <div class="ranking-page">
     <header class="page-header">
-        <div>
-            <h1>族群成交值排行</h1>
-            <p>
-                目前使用測試資料，先驗證網頁互動、欄位及目錄架構。
-            </p>
-        </div>
+        <h1>個股成交值排行</h1>
+        <p>
+            資料來源為證交所與櫃買中心的每日收盤行情，所有數字都由原始成交值即時計算。
+            族群分類會在串接 Google Sheets 後加入。
+        </p>
     </header>
 
     <section class="filter-panel">
-        <span class="filter-label">觀察期間</span>
-
-        <div class="period-selector">
-            @foreach (var period in PeriodOptions)
-            {
-                <button type="button"
-                        class="@GetPeriodButtonClass(period)"
-                        @onclick="() => ChangePeriod(period)">
-                    @period 日
+        <div class="filter-group">
+            <span class="filter-label">觀察期間</span>
+            <div class="button-row">
+                @foreach (var period in PeriodOptions)
+                {
+                    <button type="button"
+                            class="@ToggleClass(period == _query.PeriodDays)"
+                            @onclick="() => ChangePeriodAsync(period)">
+                        @period 日
+                    </button>
+                }
+                <button type="button" class="toggle-button" disabled
+                        title="需要至少 120 個交易日的歷史資料，目前的回補量還不夠">
+                    60 日
                 </button>
-            }
+            </div>
+        </div>
+
+        <div class="filter-group">
+            <span class="filter-label">排行模式</span>
+            <div class="button-row">
+                <button type="button"
+                        class="@ToggleClass(_query.Mode == RankingMode.TradingHeat)"
+                        @onclick="() => ChangeModeAsync(RankingMode.TradingHeat)">
+                    成交熱度
+                </button>
+                <button type="button"
+                        class="@ToggleClass(_query.Mode == RankingMode.CapitalAcceleration)"
+                        @onclick="() => ChangeModeAsync(RankingMode.CapitalAcceleration)">
+                    資金加速
+                </button>
+            </div>
+        </div>
+
+        <div class="filter-group">
+            <span class="filter-label">市場</span>
+            <div class="button-row">
+                @foreach (var (filter, text) in MarketOptions)
+                {
+                    <button type="button"
+                            class="@ToggleClass(_query.Market == filter)"
+                            @onclick="() => ChangeMarketAsync(filter)">
+                        @text
+                    </button>
+                }
+            </div>
+        </div>
+
+        <div class="filter-group">
+            <span class="filter-label">成交門檻</span>
+            <div class="button-row">
+                @foreach (var (threshold, text) in LiquidityOptions)
+                {
+                    <button type="button"
+                            class="@ToggleClass(_query.MinimumAverageDailyTradingValue == threshold)"
+                            @onclick="() => ChangeLiquidityAsync(threshold)">
+                        @text
+                    </button>
+                }
+            </div>
         </div>
     </section>
 
-    <section class="summary">
-        顯示最近 <strong>@SelectedPeriod</strong> 個交易日的測試排行。
-    </section>
+    @if (_loading)
+    {
+        <section class="notice">行情載入中…</section>
+    }
+    else if (_result is null)
+    {
+        <section class="notice">尚未載入資料。</section>
+    }
+    else if (!_result.HasSufficientData)
+    {
+        <section class="notice warning">
+            @_result.InsufficientDataMessage
+            <br />
+            執行 <code>dotnet run --project src/Invest.Web -- backfill 120</code> 可以再往回補資料。
+        </section>
+    }
+    else
+    {
+        <section class="summary">
+            <div>
+                <span class="summary-label">本期</span>
+                @RankingFormatter.ToPeriodText(_result.CurrentPeriodStart, _result.CurrentPeriodEnd)
+            </div>
+            <div>
+                <span class="summary-label">前期</span>
+                @RankingFormatter.ToPeriodText(_result.PreviousPeriodStart, _result.PreviousPeriodEnd)
+            </div>
+            <div>
+                <span class="summary-label">全市場日均成交值</span>
+                @RankingFormatter.ToBillionText(_result.MarketTotalTradingValue / _result.PeriodDays, 0) 億元
+            </div>
+            <div>
+                <span class="summary-label">符合條件</span>
+                @_result.RankedStockCount 檔，顯示前 @_result.Rows.Count 名
+            </div>
+        </section>
 
-    <div class="table-container">
-        <table class="ranking-table">
-            <thead>
-                <tr>
-                    <th>排名</th>
-                    <th>排名變化</th>
-                    <th>族群</th>
-                    <th>平均每日成交值</th>
-                    <th>較前期增減</th>
-                    <th>市場成交比</th>
-                    <th>上漲家數比</th>
-                    <th>前三大集中度</th>
-                    <th>成分股數</th>
-                </tr>
-            </thead>
-
-            <tbody>
-                @foreach (var row in Rows)
-                {
+        <div class="table-container">
+            <table class="ranking-table">
+                <thead>
                     <tr>
-                        <td class="rank">@row.Rank</td>
-
-                        <td class="@GetRankChangeCssClass(row.RankChange)">
-                            @GetRankChangeText(row.RankChange)
-                        </td>
-
-                        <td class="group-name">@row.GroupName</td>
-
-                        <td>
-                            @row.AverageDailyTradingValue.ToString("N1") 億元
-                        </td>
-
-                        <td class="@GetRateCssClass(row.TradingValueChangeRate)">
-                            @FormatSignedPercentage(row.TradingValueChangeRate)
-                        </td>
-
-                        <td>@row.MarketShare.ToString("P2")</td>
-
-                        <td>@row.AdvancingRatio.ToString("P1")</td>
-
-                        <td>@row.Top3Concentration.ToString("P1")</td>
-
-                        <td>@row.MemberCount</td>
+                        @foreach (var column in Columns)
+                        {
+                            <th class="@HeaderClass(column)" @onclick="() => SortBy(column)">
+                                @column.Title@SortIndicator(column)
+                            </th>
+                        }
                     </tr>
-                }
-            </tbody>
-        </table>
-    </div>
+                </thead>
+
+                <tbody>
+                    @foreach (var row in SortedRows)
+                    {
+                        <tr>
+                            <td class="rank">@row.Rank</td>
+
+                            <td class="@RankingFormatter.ToTrendCssClass(row.RankChange)">
+                                @RankingFormatter.ToRankChangeText(row.RankChange)
+                            </td>
+
+                            <td class="ticker">@row.Ticker</td>
+                            <td class="stock-name">@row.Name</td>
+                            <td class="market">@RankingFormatter.ToMarketText(row.Market)</td>
+
+                            <td class="numeric">@RankingFormatter.ToBillionText(row.AverageDailyTradingValue)</td>
+
+                            <td class="numeric @RankingFormatter.ToTrendCssClass(row.TradingValueChangeRate)">
+                                @RankingFormatter.ToSignedPercentText(row.TradingValueChangeRate)
+                            </td>
+
+                            <td class="numeric">@RankingFormatter.ToPercentText(row.MarketShare)</td>
+
+                            <td class="numeric @RankingFormatter.ToTrendCssClass(row.MarketShareChange)">
+                                @RankingFormatter.ToSignedPercentText(row.MarketShareChange, 2)
+                            </td>
+
+                            <td class="numeric @RankingFormatter.ToTrendCssClass(row.PriceChangeRate)">
+                                @RankingFormatter.ToSignedPercentText(row.PriceChangeRate)
+                            </td>
+
+                            <td class="numeric">@(row.ClosePrice?.ToString("N2") ?? "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <footer class="page-footer">
+            <p>市場成交比的分母一律是上市＋上櫃全體，不隨市場篩選改變，因此切換市場時比例可以直接互相比較。</p>
+            <p>成交門檻是為了資金加速模式：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜沒有參考價值。</p>
+        </footer>
+    }
 </div>
 
 @code {
-    private static readonly int[] PeriodOptions =
+    private static readonly int[] PeriodOptions = [5, 10, 20];
+
+    private static readonly (MarketFilter Filter, string Text)[] MarketOptions =
+    [
+        (MarketFilter.All, "全部"),
+        (MarketFilter.Twse, "上市"),
+        (MarketFilter.Tpex, "上櫃")
+    ];
+
+    private static readonly (decimal Threshold, string Text)[] LiquidityOptions =
+    [
+        (0m, "不限"),
+        (10_000_000m, "1000 萬"),
+        (50_000_000m, "5000 萬"),
+        (100_000_000m, "1 億")
+    ];
+
+    private static readonly SortColumn[] Columns =
+    [
+        new("rank", "排名", row => row.Rank, Ascending: true),
+        new("change", "排名變化", row => row.RankChange),
+        new("ticker", "代號", row => null, Ascending: true),
+        new("name", "名稱", row => null, Ascending: true),
+        new("market", "市場", row => null, Ascending: true),
+        new("value", "平均每日成交值（億）", row => row.AverageDailyTradingValue),
+        new("rate", "較前期增減", row => row.TradingValueChangeRate),
+        new("share", "市場成交比", row => row.MarketShare),
+        new("shareChange", "成交比變化", row => row.MarketShareChange),
+        new("price", "期間漲跌", row => row.PriceChangeRate),
+        new("close", "收盤價", row => row.ClosePrice)
+    ];
+
+    private RankingQuery _query = new();
+    private TradingValueRankingResult? _result;
+    private bool _loading = true;
+    private string _sortKey = "rank";
+    private bool _sortDescending;
+
+    protected override Task OnInitializedAsync() => ReloadAsync();
+
+    private IEnumerable<StockRankingRow> SortedRows
     {
-        5,
-        10,
-        20
-    };
-
-    private int SelectedPeriod { get; set; } = 5;
-
-    private IReadOnlyList<TradingValueRankingRow> Rows { get; set; }
-        = Array.Empty<TradingValueRankingRow>();
-
-    protected override void OnInitialized()
-    {
-        LoadRanking();
-    }
-
-    private void ChangePeriod(int periodDays)
-    {
-        SelectedPeriod = periodDays;
-        LoadRanking();
-    }
-
-    private void LoadRanking()
-    {
-        Rows = RankingService.GetRanking(SelectedPeriod);
-    }
-
-    private string GetPeriodButtonClass(int periodDays)
-    {
-        return SelectedPeriod == periodDays
-            ? "period-button selected"
-            : "period-button";
-    }
-
-    private static string GetRankChangeText(int rankChange)
-    {
-        if (rankChange > 0)
+        get
         {
-            return $"▲ {rankChange}";
+            IReadOnlyList<StockRankingRow> rows = _result?.Rows ?? [];
+            var column = Columns.FirstOrDefault(candidate => candidate.Key == _sortKey);
+
+            if (column is null)
+            {
+                return rows;
+            }
+
+            // 代號、名稱、市場是文字，走另一條排序路徑。
+            if (column.Key is "ticker" or "name" or "market")
+            {
+                var text = column.Key switch
+                {
+                    "ticker" => (Func<StockRankingRow, string>)(row => row.Ticker),
+                    "name" => row => row.Name,
+                    _ => row => RankingFormatter.ToMarketText(row.Market)
+                };
+
+                return _sortDescending
+                    ? rows.OrderByDescending(text, StringComparer.Ordinal)
+                    : rows.OrderBy(text, StringComparer.Ordinal);
+            }
+
+            // 無法計算的欄位（例如前期為 0 的增減率）一律沉到最後，不論升冪降冪。
+            var ordered = rows.OrderBy(row => column.Value(row) is null ? 1 : 0);
+
+            return _sortDescending
+                ? ordered.ThenByDescending(row => column.Value(row) ?? 0m).ThenBy(row => row.Rank)
+                : ordered.ThenBy(row => column.Value(row) ?? 0m).ThenBy(row => row.Rank);
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        _result = await RankingService.GetRankingAsync(_query);
+        _loading = false;
+    }
+
+    private Task ChangePeriodAsync(int periodDays)
+    {
+        _query = _query with { PeriodDays = periodDays };
+        return ReloadAsync();
+    }
+
+    private Task ChangeModeAsync(RankingMode mode)
+    {
+        _query = _query with { Mode = mode };
+        return ReloadAsync();
+    }
+
+    private Task ChangeMarketAsync(MarketFilter market)
+    {
+        _query = _query with { Market = market };
+        return ReloadAsync();
+    }
+
+    private Task ChangeLiquidityAsync(decimal threshold)
+    {
+        _query = _query with { MinimumAverageDailyTradingValue = threshold };
+        return ReloadAsync();
+    }
+
+    private void SortBy(SortColumn column)
+    {
+        if (_sortKey == column.Key)
+        {
+            _sortDescending = !_sortDescending;
+            return;
         }
 
-        if (rankChange < 0)
-        {
-            return $"▼ {Math.Abs(rankChange)}";
-        }
+        _sortKey = column.Key;
 
-        return "—";
+        // 排名與代號預設由小到大，其餘的數值欄位預設由大到小，符合直覺。
+        _sortDescending = !column.Ascending;
     }
 
-    private static string GetRankChangeCssClass(int rankChange)
-    {
-        if (rankChange > 0)
-        {
-            return "positive";
-        }
+    private static string ToggleClass(bool selected)
+        => selected ? "toggle-button selected" : "toggle-button";
 
-        if (rankChange < 0)
-        {
-            return "negative";
-        }
+    private string HeaderClass(SortColumn column)
+        => _sortKey == column.Key ? "sortable sorted" : "sortable";
 
-        return "unchanged";
-    }
+    private string SortIndicator(SortColumn column)
+        => _sortKey == column.Key ? (_sortDescending ? " ▼" : " ▲") : string.Empty;
 
-    private static string GetRateCssClass(decimal rate)
-    {
-        if (rate > 0)
-        {
-            return "positive";
-        }
-
-        if (rate < 0)
-        {
-            return "negative";
-        }
-
-        return "unchanged";
-    }
-
-    private static string FormatSignedPercentage(decimal rate)
-    {
-        return rate > 0
-            ? $"+{rate:P1}"
-            : rate.ToString("P1");
-    }
+    private sealed record SortColumn(
+        string Key,
+        string Title,
+        Func<StockRankingRow, decimal?> Value,
+        bool Ascending = false);
 }

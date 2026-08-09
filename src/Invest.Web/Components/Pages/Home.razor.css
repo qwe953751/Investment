@@ -1,0 +1,39 @@
+.home {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 48px 32px;
+}
+
+.home h1 {
+    margin: 0 0 8px;
+    font-size: 32px;
+}
+
+.home > p {
+    margin: 0 0 32px;
+    color: #666;
+}
+
+.feature-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.feature-list li {
+    padding: 16px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+}
+
+.feature-list a {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.feature-list span {
+    color: #666;
+    font-size: 14px;
+}

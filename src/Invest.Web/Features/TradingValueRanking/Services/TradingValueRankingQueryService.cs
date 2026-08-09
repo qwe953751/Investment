@@ -1,34 +1,127 @@
+using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Models;
-using Invest.Web.Features.TradingValueRanking.SampleData;
+using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Features.TradingValueRanking.Services;
 
 /// <summary>
-/// 提供成交值排行榜查詢。
-/// 第一階段先回傳測試資料，之後再改為讀取資料庫及正式計算結果。
+/// 排行榜的查詢入口：載入行情 → 交給計算器 → 回傳結果。
+///
+/// 「載入」這一段目前讀本機 JSON 快取，日後換成 SQLite 時只要改 <see cref="LoadAsync"/>，
+/// 計算與畫面完全不受影響。
 /// </summary>
-public sealed class TradingValueRankingQueryService
+public sealed class TradingValueRankingQueryService(
+    DailyQuoteStore store,
+    TradingValueRankingCalculator calculator,
+    ILogger<TradingValueRankingQueryService> logger)
 {
-    private static readonly HashSet<int> SupportedPeriods = new()
-    {
-        5,
-        10,
-        20
-    };
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private MarketDataSet? _cache;
 
-    public IReadOnlyList<TradingValueRankingRow> GetRanking(int periodDays)
+    public async Task<TradingValueRankingResult> GetRankingAsync(
+        RankingQuery query,
+        CancellationToken cancellationToken = default)
     {
-        if (!SupportedPeriods.Contains(periodDays))
+        var dataSet = await GetDataSetAsync(cancellationToken);
+        return calculator.Calculate(dataSet, query);
+    }
+
+    /// <summary>
+    /// 取得完整行情。整份資料只有回補時才會變動，因此載入一次後就留在記憶體。
+    /// </summary>
+    public async Task<MarketDataSet> GetDataSetAsync(CancellationToken cancellationToken = default)
+    {
+        if (_cache is not null)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(periodDays),
-                periodDays,
-                "目前只支援 5、10、20 個交易日。");
+            return _cache;
         }
 
-        return TradingValueRankingSampleData
-            .GetByPeriod(periodDays)
-            .OrderBy(row => row.Rank)
-            .ToArray();
+        await _gate.WaitAsync(cancellationToken);
+
+        try
+        {
+            return _cache ??= await LoadAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 丟掉記憶體中的行情，下次查詢時重新從快取讀取。回補完新資料後呼叫。
+    /// </summary>
+    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+
+        try
+        {
+            _cache = null;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task<MarketDataSet> LoadAsync(CancellationToken cancellationToken)
+    {
+        var snapshots = await store.LoadAllAsync(cancellationToken);
+
+        if (snapshots.Count == 0)
+        {
+            logger.LogWarning(
+                "{Directory} 沒有任何行情快取。請先執行 dotnet run --project src/Invest.Web -- backfill 70。",
+                store.Directory);
+
+            return MarketDataSet.Empty;
+        }
+
+        var dataSet = ToDataSet(snapshots);
+
+        logger.LogInformation(
+            "已載入 {DayCount} 個交易日、{StockCount} 檔個股的行情。",
+            snapshots.Count, dataSet.Stocks.Count);
+
+        return dataSet;
+    }
+
+    /// <summary>
+    /// 把逐日快照攤平成計算器要的形狀。
+    /// snapshots 已依日期遞增排序，所以同一檔股票的名稱會被後面的日期覆蓋，最終取到最新名稱。
+    /// </summary>
+    private static MarketDataSet ToDataSet(IReadOnlyList<DailyQuoteSnapshot> snapshots)
+    {
+        var stocks = new Dictionary<string, Stock>();
+        var trading = new List<DailyStockTrading>();
+
+        foreach (var snapshot in snapshots)
+        {
+            foreach (var quote in snapshot.Quotes)
+            {
+                stocks[quote.Ticker] = new Stock
+                {
+                    Market = quote.Market,
+                    Ticker = quote.Ticker,
+                    Name = quote.Name,
+                    IsActive = true
+                };
+
+                trading.Add(new DailyStockTrading
+                {
+                    TradingDate = snapshot.TradingDate,
+                    Ticker = quote.Ticker,
+                    ClosePrice = quote.ClosePrice,
+                    TradingValue = quote.TradingValue
+                });
+            }
+        }
+
+        return new MarketDataSet
+        {
+            Stocks = [.. stocks.Values],
+            DailyTrading = trading
+        };
     }
 }
