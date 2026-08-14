@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>個股成交值排行</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="site.css" />
+</head>
+<body>
+<div class="ranking-page">
+    <header class="page-header">
+        <h1>個股成交值排行</h1>
+        <p>
+            資料來源為證交所與櫃買中心的每日收盤行情，只計一般交易、只收個股（不含 ETF 與權證），
+            所有數字都由原始成交值算出。族群分類會在串接 Google Sheets 後加入。
+        </p>
+        <p class="snapshot-note" id="snapshot-note">載入中…</p>
+    </header>
+
+    <section class="filter-panel">
+        <div class="filter-group">
+            <span class="filter-label">觀察期間</span>
+            <div class="button-row" id="period-options"></div>
+        </div>
+
+        <div class="filter-group">
+            <span class="filter-label">排行模式</span>
+            <div class="button-row" id="mode-options"></div>
+        </div>
+
+        <div class="filter-group">
+            <span class="filter-label">市場</span>
+            <div class="button-row" id="market-options"></div>
+        </div>
+
+        <div class="filter-group">
+            <span class="filter-label">成交門檻</span>
+            <div class="button-row" id="threshold-options"></div>
+        </div>
+    </section>
+
+    <section class="notice" id="notice">行情載入中…</section>
+
+    <div id="ranking" hidden>
+        <section class="summary" id="summary"></section>
+
+        <div class="table-container">
+            <table class="ranking-table">
+                <thead><tr id="table-head"></tr></thead>
+                <tbody id="table-body"></tbody>
+            </table>
+        </div>
+
+        <footer class="page-footer">
+            <p>成交值只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除，與玩股網、籌碼K 的成交值排行一致。</p>
+            <p>市場成交比的分母一律是上市＋上櫃全體，不隨市場篩選改變，因此切換市場時比例可以直接互相比較。</p>
+            <p>成交門檻是為了資金加速模式：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜沒有參考價值。</p>
+            <p>期間漲跌以進入期間前的最後一個收盤價為基準，所以期間內第一天的漲跌也算在內。</p>
+            <p>這是一份靜態快照，數字在本機回補行情後重新發佈才會更新，不會自己變動。</p>
+        </footer>
+    </div>
+</div>
+
+<script src="site.js"></script>
+</body>
+</html>
