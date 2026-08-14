@@ -8,8 +8,8 @@
     <header class="page-header">
         <h1>個股成交值排行</h1>
         <p>
-            資料來源為證交所與櫃買中心的每日收盤行情，所有數字都由原始成交值即時計算。
-            族群分類會在串接 Google Sheets 後加入。
+            資料來源為證交所與櫃買中心的每日收盤行情，只計一般交易、只收個股（不含 ETF 與權證），
+            所有數字都由原始成交值即時計算。族群分類會在串接 Google Sheets 後加入。
         </p>
     </header>
 
@@ -17,12 +17,13 @@
         <div class="filter-group">
             <span class="filter-label">觀察期間</span>
             <div class="button-row">
-                @foreach (var period in PeriodOptions)
+                @foreach (var (period, text, hint) in PeriodOptions)
                 {
                     <button type="button"
                             class="@ToggleClass(period == _query.PeriodDays)"
+                            title="@hint"
                             @onclick="() => ChangePeriodAsync(period)">
-                        @period 日
+                        @text
                     </button>
                 }
                 <button type="button" class="toggle-button" disabled
@@ -165,14 +166,23 @@
         </div>
 
         <footer class="page-footer">
+            <p>成交值只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除，與玩股網、籌碼K 的成交值排行一致。</p>
             <p>市場成交比的分母一律是上市＋上櫃全體，不隨市場篩選改變，因此切換市場時比例可以直接互相比較。</p>
             <p>成交門檻是為了資金加速模式：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜沒有參考價值。</p>
+            <p>期間漲跌以進入期間前的最後一個收盤價為基準，所以期間內第一天的漲跌也算在內。</p>
+            <p>目前只有收盤後的完整交易日資料，當日盤中即時行情列為之後的優化項目。</p>
         </footer>
     }
 </div>
 
 @code {
-    private static readonly int[] PeriodOptions = [5, 10, 20];
+    private static readonly (int Days, string Text, string Hint)[] PeriodOptions =
+    [
+        (1, "前一交易日", "最近一個完整交易日，與再前一個交易日比較。當日盤中資料之後再做。"),
+        (5, "5 日", "最近 5 個交易日 vs 再往前 5 個交易日"),
+        (10, "10 日", "最近 10 個交易日 vs 再往前 10 個交易日"),
+        (20, "20 日", "最近 20 個交易日 vs 再往前 20 個交易日")
+    ];
 
     private static readonly (MarketFilter Filter, string Text)[] MarketOptions =
     [

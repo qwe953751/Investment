@@ -174,13 +174,21 @@ public sealed class TradingValueRankingCalculator
         {
             decimal total = 0m;
             var activeDays = 0;
-            decimal? startClose = null;
+            decimal? baselineClose = null;
             decimal? endClose = null;
 
             foreach (var row in rows)
             {
                 if (row.TradingDate < start)
                 {
+                    // 期間漲跌的基準是「進入這段期間之前」的最後一個收盤價，不是期間內的第一天。
+                    // 用期間內第一天當基準的話，那一天自己的漲跌就被吃掉了，
+                    // 而且期間長度為 1 時起點等於終點，漲跌會永遠是 0%。
+                    if (row.ClosePrice is { } previousClose)
+                    {
+                        baselineClose = previousClose;
+                    }
+
                     continue;
                 }
 
@@ -198,7 +206,6 @@ public sealed class TradingValueRankingCalculator
 
                 if (row.ClosePrice is { } close)
                 {
-                    startClose ??= close;
                     endClose = close;
                 }
             }
@@ -214,7 +221,7 @@ public sealed class TradingValueRankingCalculator
                 // 分母用區間實際的交易日數，而不是使用者選的 N，遇到資料缺漏時才不會失真。
                 AverageDailyTradingValue = total / window.Length,
                 ActiveDayCount = activeDays,
-                StartClose = startClose,
+                BaselineClose = baselineClose,
                 EndClose = endClose
             };
         }
@@ -232,12 +239,16 @@ public sealed class TradingValueRankingCalculator
 
         public int ActiveDayCount { get; init; }
 
-        public decimal? StartClose { get; init; }
+        /// <summary>
+        /// 進入這段期間之前的最後一個收盤價。期間漲跌以此為基準。
+        /// 這檔股票在期間之前完全沒有收盤價（例如期間內才上市）時為 null。
+        /// </summary>
+        public decimal? BaselineClose { get; init; }
 
         public decimal? EndClose { get; init; }
 
-        public decimal? PriceChangeRate => StartClose is > 0m && EndClose is { } end
-            ? (end - StartClose.Value) / StartClose.Value
+        public decimal? PriceChangeRate => BaselineClose is > 0m && EndClose is { } end
+            ? (end - BaselineClose.Value) / BaselineClose.Value
             : null;
     }
 

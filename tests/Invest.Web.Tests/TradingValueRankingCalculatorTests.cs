@@ -221,18 +221,49 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
-    public void 期間漲跌用起點與終點的收盤價計算()
+    public void 期間漲跌以進入期間前的最後一個收盤價為基準()
     {
         var dataSet = new MarketDataSetBuilder()
-            .Day(1, "1101", 100, close: 50).Day(2, "1101", 100, close: 50)
-            .Day(3, "1101", 100, close: 100).Day(4, "1101", 100, close: 125)
+            .Day(1, "1101", 100, close: 50).Day(2, "1101", 100, close: 100)
+            .Day(3, "1101", 100, close: 110).Day(4, "1101", 100, close: 125)
             .Build();
 
         var row = Row(_calculator.Calculate(dataSet, Query()), "1101");
 
-        // 本期起點 100 → 終點 125，漲 25%。前期的 50 不參與。
+        // 本期是第 3、4 天。基準是第 2 天收盤的 100，不是期間內第一天的 110，
+        // 否則第 3 天自己的漲跌就被吃掉了。(125 - 100) / 100 = 25%
         Assert.Equal(0.25m, row.PriceChangeRate);
         Assert.Equal(125m, row.ClosePrice);
+    }
+
+    [Fact]
+    public void 期間長度為一天時漲跌就是當日相對前一個交易日的漲跌()
+    {
+        var dataSet = new MarketDataSetBuilder()
+            .Day(1, "1101", 100, close: 100).Day(2, "1101", 100, close: 110)
+            .Build();
+
+        var row = Row(_calculator.Calculate(dataSet, Query(periodDays: 1)), "1101");
+
+        // 只看一天時，起點與終點是同一天。基準若取期間內第一天，漲跌會永遠是 0%。
+        Assert.Equal(0.1m, row.PriceChangeRate);
+    }
+
+    [Fact]
+    public void 期間之前沒有收盤價時漲跌是無法計算()
+    {
+        var dataSet = new MarketDataSetBuilder()
+            .Days(1, 4, "1101", 100, close: 50)
+            // 2330 期間之前（第 1、2 天）沒有收盤價，等於期間內才開始有價格
+            .Day(1, "2330", 0).Day(2, "2330", 0)
+            .Day(3, "2330", 100, close: 20).Day(4, "2330", 100, close: 25)
+            .Build();
+
+        var row = Row(_calculator.Calculate(dataSet, Query()), "2330");
+
+        // 沒有基準就不該硬算，寧可顯示「—」也不要拿期間內第一天充數。
+        Assert.Null(row.PriceChangeRate);
+        Assert.Equal(25m, row.ClosePrice);
     }
 
     [Fact]

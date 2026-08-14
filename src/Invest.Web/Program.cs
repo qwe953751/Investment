@@ -3,14 +3,17 @@ using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
+using Invest.Web.Infrastructure.StaticSite;
 
-// 回補模式：dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
+// 兩個命令列模式：
+//   dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
+//   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 // 這種位置引數不符合 CommandLineConfigurationProvider 的格式，會讓它丟例外，
 // 所以不能原封不動傳給 CreateBuilder。
-var isBackfill = args is [var command, ..]
-    && command.Equals("backfill", StringComparison.OrdinalIgnoreCase);
+var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
+var isConsoleCommand = command is "backfill" or "export";
 
-string[] hostArgs = isBackfill ? [] : args;
+string[] hostArgs = isConsoleCommand ? [] : args;
 
 var builder = WebApplication.CreateBuilder(hostArgs);
 
@@ -20,20 +23,29 @@ builder.Services.AddRazorComponents()
 builder.Services.Configure<MarketDataOptions>(
     builder.Configuration.GetSection(MarketDataOptions.SectionName));
 
-// 官方網站會擋掉沒有 User-Agent 的請求，這兩個 client 一定要帶。
+// 官方網站會擋掉沒有 User-Agent 的請求，這些 client 一定要帶。
 builder.Services.AddHttpClient<TwseDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexDailyQuoteClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<TwseNonRegularTradingClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<TpexNonRegularTradingClient>(ConfigureQuoteClient);
 
 builder.Services.AddSingleton<DailyQuoteStore>();
 builder.Services.AddTransient<MarketDataDownloader>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
+builder.Services.AddTransient<StaticSiteExporter>();
 
 var app = builder.Build();
 
-if (isBackfill)
+if (command is "backfill")
 {
     await RunBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "export")
+{
+    await RunExportAsync(app.Services, args);
     return;
 }
 
@@ -64,6 +76,26 @@ static void ConfigureQuoteClient(HttpClient client)
     client.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/javascript, */*; q=0.01");
 }
 
+/// <summary>
+/// 把排行榜輸出成靜態網站。排行頁是 Interactive Server，本機不開就看不到，
+/// 所以先在本機把所有篩選組合算好，再把產出丟到免費的靜態空間。
+/// </summary>
+static async Task RunExportAsync(IServiceProvider services, string[] args)
+{
+    var outputDirectory = Path.GetFullPath(args.Length > 1 ? args[1] : "publish/site");
+
+    using var scope = services.CreateScope();
+    var exporter = scope.ServiceProvider.GetRequiredService<StaticSiteExporter>();
+
+    Console.WriteLine($"輸出靜態網站到 {outputDirectory}");
+
+    var progress = new Progress<string>(Console.WriteLine);
+    var report = await exporter.ExportAsync(outputDirectory, progress);
+
+    Console.WriteLine();
+    Console.WriteLine($"完成。{report.TradingDayCount} 個交易日、{report.CombinationCount} 種篩選組合。");
+}
+
 static async Task RunBackfillAsync(IServiceProvider services, string[] args)
 {
     var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 70;
@@ -77,7 +109,8 @@ static async Task RunBackfillAsync(IServiceProvider services, string[] args)
 
     Console.WriteLine($"開始回補 {targetTradingDays} 個交易日，從 {startFrom:yyyy-MM-dd} 往回。");
     Console.WriteLine($"快取位置：{store.Directory}");
-    Console.WriteLine("每個日期要打兩次官方 API（上市＋上櫃），中間有延遲，請耐心等候。");
+    Console.WriteLine("每個日期要打四輪官方 API（上市與上櫃的收盤行情，以及各自的零股與鉅額交易），");
+    Console.WriteLine("中間有延遲避免被擋，請耐心等候。");
     Console.WriteLine();
 
     var progress = new Progress<string>(Console.WriteLine);

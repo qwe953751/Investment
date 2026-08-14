@@ -5,7 +5,10 @@ namespace Invest.Web.Features.TradingValueRanking.Models;
 /// </summary>
 public sealed record RankingQuery
 {
-    public int PeriodDays { get; init; } = 20;
+    /// <summary>
+    /// 觀察期間的交易日數。1 代表只看最近一個完整交易日，與前一個交易日比較。
+    /// </summary>
+    public int PeriodDays { get; init; } = 5;
 
     public RankingMode Mode { get; init; } = RankingMode.TradingHeat;
 

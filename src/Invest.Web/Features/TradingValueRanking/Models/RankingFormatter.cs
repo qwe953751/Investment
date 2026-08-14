@@ -67,8 +67,13 @@ public static class RankingFormatter
         _ => "—"
     };
 
-    public static string ToPeriodText(DateOnly? start, DateOnly? end)
-        => start is null || end is null
-            ? "—"
-            : $"{start:yyyy/MM/dd} ~ {end:yyyy/MM/dd}";
+    /// <summary>
+    /// 期間文字。期間只有一天時不重複印同一個日期。
+    /// </summary>
+    public static string ToPeriodText(DateOnly? start, DateOnly? end) => (start, end) switch
+    {
+        (null, _) or (_, null) => "—",
+        var (from, to) when from == to => $"{from:yyyy/MM/dd}",
+        var (from, to) => $"{from:yyyy/MM/dd} ~ {to:yyyy/MM/dd}"
+    };
 }
