@@ -20,13 +20,8 @@ const MARKETS = [
     { key: 'tpex', text: '上櫃' }
 ];
 
-// 檔名裡的門檻單位是萬元。
-const THRESHOLDS = [
-    { key: 0, text: '不限' },
-    { key: 1000, text: '1000 萬' },
-    { key: 5000, text: '5000 萬' },
-    { key: 10000, text: '1 億' }
-];
+// 門檻的按鈕文字來自 manifest：門檻本身是「平均每日」，
+// 但顯示的是乘上期間天數後的總額，所以每個期間各有一組文字。
 
 // 與 TradingValueRanking.razor 的欄位一致。
 // value 取排序用的數字，null 代表無法計算，一律沉到最後。
@@ -46,6 +41,7 @@ const COLUMNS = [
 
 const state = {
     period: 5,
+    date: '',      // 基準日，start() 從 manifest 取最新的一天。
     mode: 'heat',
     market: 'all',
     threshold: 5000,
@@ -56,6 +52,11 @@ const state = {
 // 同一個組合切回來時不重打一次 fetch。
 const cache = new Map();
 let current = null;
+
+// 這些都由 manifest 決定，start() 先讀好才畫按鈕、抓資料。
+let thresholds = [];
+let dates = [];
+let version = '';
 
 const el = id => document.getElementById(id);
 
@@ -68,12 +69,16 @@ function renderOptions(containerId, options, selected, onSelect) {
         button.type = 'button';
         button.className = option.key === selected ? 'toggle-button selected' : 'toggle-button';
         button.textContent = option.text;
+        button.disabled = option.disabled === true;
 
         if (option.hint) {
             button.title = option.hint;
         }
 
-        button.addEventListener('click', () => onSelect(option.key));
+        if (!button.disabled) {
+            button.addEventListener('click', () => onSelect(option.key));
+        }
+
         container.append(button);
     }
 }
@@ -94,9 +99,27 @@ function renderFilters() {
     disabled.textContent = '60 日';
     el('period-options').append(disabled);
 
+    // 沒有行情的日子（週末、假日）也列出來，畫成停用的按鈕，一眼看得出哪幾天沒資料。
+    renderOptions(
+        'date-options',
+        dates.map(date => ({
+            key: date.key,
+            text: date.text,
+            disabled: !date.available,
+            hint: date.available
+                ? `以 ${date.key} 當作觀察期間的最後一天`
+                : '這一天沒有行情（週末、假日或未回補）'
+        })),
+        state.date,
+        date => update({ date }));
+
     renderOptions('mode-options', MODES, state.mode, mode => update({ mode }));
     renderOptions('market-options', MARKETS, state.market, market => update({ market }));
-    renderOptions('threshold-options', THRESHOLDS, state.threshold, threshold => update({ threshold }));
+    renderOptions(
+        'threshold-options',
+        thresholds.map(threshold => ({ key: threshold.key, text: threshold.textByPeriod[state.period] })),
+        state.threshold,
+        threshold => update({ threshold }));
 }
 
 function sortedRows(rows) {
@@ -215,12 +238,14 @@ function showNotice(message, isWarning) {
 }
 
 async function load() {
-    const key = `${state.mode}-${state.period}-${state.market}-${state.threshold}`;
+    const key = `${state.mode}-${state.period}-${state.market}-${state.threshold}-${state.date}`;
 
     if (!cache.has(key)) {
         showNotice('行情載入中…', false);
 
-        const response = await fetch(`data/${key}.json`);
+        // 帶上快照版本號：同一份快照可以被瀏覽器盡情快取，
+        // 重新發佈後版本號一變，網址跟著變，手機上就不會再看到舊資料。
+        const response = await fetch(`data/${key}.json?v=${version}`);
 
         if (!response.ok) {
             showNotice(`讀不到 ${key} 這個組合的資料，請在本機重新產生一次靜態網站。`, true);
@@ -251,18 +276,20 @@ function update(changes) {
 }
 
 async function start() {
+    // manifest 一定要拿到最新的一份，否則版本號就失去意義，
+    // 所以這支檔案自己不進快取。
+    const manifest = await (await fetch('manifest.json', { cache: 'no-store' })).json();
+
+    thresholds = manifest.thresholds;
+    dates = manifest.dates;
+    version = manifest.version;
+    state.date = dates.filter(date => date.available).at(-1).key;
+
+    el('snapshot-note').textContent =
+        `資料截至 ${manifest.latestTradingDate}，共 ${manifest.tradingDayCount} 個交易日、`
+        + `${manifest.stockCount} 檔個股。本快照產生於 ${manifest.generatedAt}。`;
+
     renderFilters();
-
-    try {
-        const manifest = await (await fetch('manifest.json')).json();
-
-        el('snapshot-note').textContent =
-            `資料截至 ${manifest.latestTradingDate}，共 ${manifest.tradingDayCount} 個交易日、`
-            + `${manifest.stockCount} 檔個股。本快照產生於 ${manifest.generatedAt}。`;
-    } catch {
-        el('snapshot-note').textContent = '';
-    }
-
     await load();
 }
 

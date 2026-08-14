@@ -93,7 +93,9 @@ static async Task RunExportAsync(IServiceProvider services, string[] args)
     var report = await exporter.ExportAsync(outputDirectory, progress);
 
     Console.WriteLine();
-    Console.WriteLine($"完成。{report.TradingDayCount} 個交易日、{report.CombinationCount} 種篩選組合。");
+    Console.WriteLine(
+        $"完成。{report.TradingDayCount} 個交易日、"
+        + $"{report.SelectableDateCount} 個可選基準日、{report.FileCount} 個檔案。");
 }
 
 static async Task RunBackfillAsync(IServiceProvider services, string[] args)

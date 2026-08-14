@@ -34,6 +34,22 @@
         </div>
 
         <div class="filter-group">
+            <span class="filter-label">基準日</span>
+            <div class="button-row">
+                @foreach (var option in _dateOptions)
+                {
+                    <button type="button"
+                            class="@ToggleClass(option.Date == _query.EndDate)"
+                            disabled="@(!option.IsAvailable)"
+                            title="@ToDateHint(option)"
+                            @onclick="() => ChangeEndDateAsync(option.Date)">
+                        @option.Text
+                    </button>
+                }
+            </div>
+        </div>
+
+        <div class="filter-group">
             <span class="filter-label">排行模式</span>
             <div class="button-row">
                 <button type="button"
@@ -66,12 +82,13 @@
         <div class="filter-group">
             <span class="filter-label">成交門檻</span>
             <div class="button-row">
-                @foreach (var (threshold, text) in LiquidityOptions)
+                @foreach (var threshold in LiquidityOptions)
                 {
                     <button type="button"
                             class="@ToggleClass(_query.MinimumAverageDailyTradingValue == threshold)"
+                            title="@ToThresholdHint(threshold)"
                             @onclick="() => ChangeLiquidityAsync(threshold)">
-                        @text
+                        @RankingFormatter.ToThresholdText(threshold * _query.PeriodDays)
                     </button>
                 }
             </div>
@@ -191,13 +208,13 @@
         (MarketFilter.Tpex, "上櫃")
     ];
 
-    private static readonly (decimal Threshold, string Text)[] LiquidityOptions =
-    [
-        (0m, "不限"),
-        (10_000_000m, "1000 萬"),
-        (50_000_000m, "5000 萬"),
-        (100_000_000m, "1 億")
-    ];
+    /// <summary>
+    /// 門檻套用在「平均每日」成交值上，但按鈕顯示的是乘上期間天數後的總額。
+    /// 兩者是同一個條件（平均每日 ≥ X 等同期間總額 ≥ X × 天數），
+    /// 只是總額比較容易跟表格上看到的成交金額對照。
+    /// </summary>
+    private static readonly decimal[] LiquidityOptions =
+        [0m, 50_000_000m, 100_000_000m, 1_000_000_000m];
 
     private static readonly SortColumn[] Columns =
     [
@@ -216,11 +233,20 @@
 
     private RankingQuery _query = new();
     private TradingValueRankingResult? _result;
+    private IReadOnlyList<RankingDateOption> _dateOptions = [];
     private bool _loading = true;
     private string _sortKey = "rank";
     private bool _sortDescending;
 
-    protected override Task OnInitializedAsync() => ReloadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        var dataSet = await RankingService.GetDataSetAsync();
+
+        _dateOptions = RankingDates.ToOptions(dataSet.DailyTrading.Select(trading => trading.TradingDate));
+        _query = _query with { EndDate = _dateOptions.LastOrDefault(option => option.IsAvailable)?.Date };
+
+        await ReloadAsync();
+    }
 
     private IEnumerable<StockRankingRow> SortedRows
     {
@@ -271,6 +297,12 @@
         return ReloadAsync();
     }
 
+    private Task ChangeEndDateAsync(DateOnly date)
+    {
+        _query = _query with { EndDate = date };
+        return ReloadAsync();
+    }
+
     private Task ChangeModeAsync(RankingMode mode)
     {
         _query = _query with { Mode = mode };
@@ -305,6 +337,16 @@
 
     private static string ToggleClass(bool selected)
         => selected ? "toggle-button selected" : "toggle-button";
+
+    private static string ToDateHint(RankingDateOption option)
+        => option.IsAvailable
+            ? $"以 {option.Date:yyyy/MM/dd} 當作觀察期間的最後一天"
+            : "這一天沒有行情（週末、假日或未回補）";
+
+    private static string ToThresholdHint(decimal threshold)
+        => threshold <= 0
+            ? "不過濾"
+            : $"平均每日成交值 {RankingFormatter.ToThresholdText(threshold)} 以上";
 
     private string HeaderClass(SortColumn column)
         => _sortKey == column.Key ? "sortable sorted" : "sortable";

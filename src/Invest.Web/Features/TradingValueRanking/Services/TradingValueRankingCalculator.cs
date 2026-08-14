@@ -17,8 +17,10 @@ public sealed class TradingValueRankingCalculator
         var periodDays = query.PeriodDays;
         ArgumentOutOfRangeException.ThrowIfLessThan(periodDays, 1);
 
+        // 基準日之後的行情一律當作還沒發生，往回選日期才會得到當時看到的排行。
         var dates = dataSet.DailyTrading
             .Select(trading => trading.TradingDate)
+            .Where(date => query.EndDate is not { } endDate || date <= endDate)
             .Distinct()
             .OrderBy(date => date)
             .ToArray();

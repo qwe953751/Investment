@@ -10,6 +10,12 @@ public sealed record RankingQuery
     /// </summary>
     public int PeriodDays { get; init; } = 5;
 
+    /// <summary>
+    /// 基準日：觀察期間的最後一個交易日。null 代表取資料中最新的交易日。
+    /// 這個日期之後的行情在計算時完全視為不存在，因此往回選日期會得到當時的排行結果。
+    /// </summary>
+    public DateOnly? EndDate { get; init; }
+
     public RankingMode Mode { get; init; } = RankingMode.TradingHeat;
 
     public MarketFilter Market { get; init; } = MarketFilter.All;

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -22,7 +23,7 @@ namespace Invest.Web.Infrastructure.StaticSite;
 public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
 {
     /// <summary>
-    /// 與排行頁上的按鈕一致。組合數是 4 × 2 × 3 × 4 = 96，全部先算好。
+    /// 與排行頁上的按鈕一致。組合數是 4 × 2 × 3 × 4 = 96，再乘上可選的基準日，全部先算好。
     /// </summary>
     private static readonly int[] PeriodDayOptions = [1, 5, 10, 20];
 
@@ -40,9 +41,10 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
     ];
 
     /// <summary>
-    /// 門檻在檔名裡用「萬元」表示，避免出現一長串 0。
+    /// 平均每日成交值的門檻，在檔名裡用「萬元」表示，避免出現一長串 0。
+    /// 畫面上顯示的是乘上期間天數後的總額，見 <see cref="ToThresholdExports"/>。
     /// </summary>
-    private static readonly int[] ThresholdOptionsInTenThousand = [0, 1_000, 5_000, 10_000];
+    private static readonly int[] ThresholdOptionsInTenThousand = [0, 5_000, 10_000, 100_000];
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -68,56 +70,68 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
             .Order()
             .ToArray();
 
+        var dateOptions = RankingDates.ToOptions(tradingDates);
+        var selectableDates = dateOptions.Where(option => option.IsAvailable).ToArray();
         var fileCount = 0;
 
-        foreach (var periodDays in PeriodDayOptions)
+        foreach (var date in selectableDates)
         {
-            foreach (var (mode, modeKey) in ModeOptions)
+            foreach (var periodDays in PeriodDayOptions)
             {
-                foreach (var (market, marketKey) in MarketOptions)
+                foreach (var (mode, modeKey) in ModeOptions)
                 {
-                    foreach (var thresholdInTenThousand in ThresholdOptionsInTenThousand)
+                    foreach (var (market, marketKey) in MarketOptions)
                     {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        var query = new RankingQuery
+                        foreach (var thresholdInTenThousand in ThresholdOptionsInTenThousand)
                         {
-                            PeriodDays = periodDays,
-                            Mode = mode,
-                            Market = market,
-                            MinimumAverageDailyTradingValue = thresholdInTenThousand * 10_000m
-                        };
+                            cancellationToken.ThrowIfCancellationRequested();
 
-                        var key = $"{modeKey}-{periodDays}-{marketKey}-{thresholdInTenThousand}";
-                        var result = await ranking.GetRankingAsync(query, cancellationToken);
+                            var query = new RankingQuery
+                            {
+                                PeriodDays = periodDays,
+                                EndDate = date.Date,
+                                Mode = mode,
+                                Market = market,
+                                MinimumAverageDailyTradingValue = thresholdInTenThousand * 10_000m
+                            };
 
-                        await WriteJsonAsync(
-                            Path.Combine(dataDirectory, key + ".json"),
-                            ToExport(key, query, result),
-                            cancellationToken);
+                            var key = $"{modeKey}-{periodDays}-{marketKey}-{thresholdInTenThousand}-{date.Key}";
+                            var result = await ranking.GetRankingAsync(query, cancellationToken);
 
-                        fileCount++;
+                            await WriteJsonAsync(
+                                Path.Combine(dataDirectory, key + ".json"),
+                                ToExport(key, query, result),
+                                cancellationToken);
+
+                            fileCount++;
+                        }
                     }
                 }
             }
-        }
 
-        progress?.Report($"已輸出 {fileCount} 種篩選組合。");
+            progress?.Report($"{date.Key} 完成（累計 {fileCount} 個檔案）");
+        }
 
         await WriteJsonAsync(
             Path.Combine(outputDirectory, "manifest.json"),
             new ManifestExport(
                 // 靜態網站沒有伺服器可以問「這份資料多新」，所以把產生時間寫進檔案裡。
                 DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm"),
+
+                // 前端拿這個當快取版本號。同一份快照的檔案可以放心被瀏覽器快取，
+                // 重新發佈後版本號一變，網址跟著變，舊檔就自動失效。
+                DateTimeOffset.Now.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture),
                 tradingDates.Length,
                 tradingDates.Length > 0 ? tradingDates[^1].ToString("yyyy/MM/dd") : "—",
-                dataSet.Stocks.Count),
+                dataSet.Stocks.Count,
+                ToThresholdExports(),
+                [.. dateOptions.Select(option => new DateExport(option.Key, option.Text, option.IsAvailable))]),
             cancellationToken);
 
         var assetNames = await WriteEmbeddedAssetsAsync(outputDirectory, cancellationToken);
         progress?.Report($"已寫出頁面檔案：{string.Join("、", assetNames)}");
 
-        return new StaticSiteExportReport(outputDirectory, fileCount, tradingDates.Length);
+        return new StaticSiteExportReport(outputDirectory, fileCount, selectableDates.Length, tradingDates.Length);
     }
 
     /// <summary>
@@ -208,11 +222,33 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
 
     private static decimal? Round(decimal? value) => value is { } number ? Round(number) : null;
 
+    /// <summary>
+    /// 門檻按鈕的文字。門檻本身是「平均每日」，但顯示的是乘上期間天數後的總額，
+    /// 所以同一個門檻在不同期間下文字不一樣，得逐期間先算好。
+    /// 這段文字用 <see cref="RankingFormatter"/> 產生，前端不自己換算單位。
+    /// </summary>
+    private static IReadOnlyList<ThresholdExport> ToThresholdExports()
+        => [.. ThresholdOptionsInTenThousand.Select(threshold => new ThresholdExport(
+            threshold,
+            PeriodDayOptions.ToDictionary(
+                periodDays => periodDays.ToString(CultureInfo.InvariantCulture),
+                periodDays => RankingFormatter.ToThresholdText(threshold * 10_000m * periodDays))))];
+
     private sealed record ManifestExport(
         string GeneratedAt,
+        string Version,
         int TradingDayCount,
         string LatestTradingDate,
-        int StockCount);
+        int StockCount,
+        IReadOnlyList<ThresholdExport> Thresholds,
+        IReadOnlyList<DateExport> Dates);
+
+    private sealed record ThresholdExport(int Key, IReadOnlyDictionary<string, string> TextByPeriod);
+
+    /// <summary>
+    /// 基準日按鈕。清單包含沒有行情的日期（週末、假日），前端把它們畫成停用的按鈕。
+    /// </summary>
+    private sealed record DateExport(string Key, string Text, bool Available);
 
     private sealed record RankingExport(
         string Key,
@@ -249,4 +285,8 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
         string CloseText);
 }
 
-public sealed record StaticSiteExportReport(string OutputDirectory, int CombinationCount, int TradingDayCount);
+public sealed record StaticSiteExportReport(
+    string OutputDirectory,
+    int FileCount,
+    int SelectableDateCount,
+    int TradingDayCount);

@@ -60,6 +60,23 @@ public static class RankingFormatter
 
     public static string ToTrendCssClass(int? value) => ToTrendCssClass((decimal?)value);
 
+    /// <summary>
+    /// 成交門檻的按鈕文字。金額不到一億時用萬元，否則用億元，並且去掉沒有意義的小數位。
+    /// </summary>
+    public static string ToThresholdText(decimal amountInDollars)
+    {
+        if (amountInDollars <= 0)
+        {
+            return "不限";
+        }
+
+        return amountInDollars < OneHundredMillion
+            ? Trim(amountInDollars / 10_000m) + " 萬"
+            : Trim(amountInDollars / OneHundredMillion) + " 億";
+
+        static string Trim(decimal value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
     public static string ToMarketText(Market market) => market switch
     {
         Market.Twse => "上市",

@@ -340,6 +340,20 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
+    public void 指定基準日時該日之後的行情完全不列入計算()
+    {
+        var query = Query(periodDays: 1) with { EndDate = MarketDataSetBuilder.DayOf(3) };
+
+        var result = _calculator.Calculate(BasicDataSet(), query);
+
+        Assert.Equal(MarketDataSetBuilder.DayOf(3), result.CurrentPeriodEnd);
+        Assert.Equal(MarketDataSetBuilder.DayOf(2), result.PreviousPeriodEnd);
+
+        // 1101 第 3 天成交值 300；第 4 天的 500 不存在，否則本期會變成 500。
+        Assert.Equal(300m, Row(result, "1101").AverageDailyTradingValue);
+    }
+
+    [Fact]
     public void 只顯示前N名但符合條件的檔數會完整回報()
     {
         var result = _calculator.Calculate(BasicDataSet(), Query(topCount: 2));
