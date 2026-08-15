@@ -16,35 +16,24 @@ namespace Invest.Web.Infrastructure.StaticSite;
 /// WebAssembly（行情要整包塞進瀏覽器），不如在本機把所有篩選組合先算好，
 /// 輸出成靜態 JSON 丟到免費的靜態空間。
 ///
-/// 關鍵是**計算仍然只有一份**：這裡直接呼叫 <see cref="TradingValueRankingQueryService"/>，
-/// 連顯示文字都用 <see cref="RankingFormatter"/> 先格式化好寫進 JSON，
-/// 前端只負責挑檔案、畫表格與排序，不重寫任何一條公式。
+/// 每個「交易日 × 期間」輸出一份完整名單：不篩市場、不設門檻、不截斷筆數，
+/// 每一列同時帶著兩種排行模式的排序數字。市場、門檻與模式由前端就地篩選與排序，
+/// 所以門檻可以是使用者自己輸入的任意金額，不必事先為每個金額各存一份檔案。
+///
+/// 排行的計算仍然只有這一份 C#；前端只做「篩選、排序、編號、套顯示格式」這幾件事。
+/// 這幾件事的結果都可以拿舊版由 C# 事先算好的檔案逐格比對驗證。
 /// </summary>
 public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
 {
     /// <summary>
-    /// 與排行頁上的按鈕一致。組合數是 4 × 2 × 3 × 4 = 96，再乘上可選的基準日，全部先算好。
+    /// 與排行頁上的按鈕一致。
     /// </summary>
-    private static readonly int[] PeriodDayOptions = [1, 5, 10, 20];
-
-    private static readonly (RankingMode Mode, string Key)[] ModeOptions =
-    [
-        (RankingMode.TradingHeat, "heat"),
-        (RankingMode.CapitalAcceleration, "accel")
-    ];
-
-    private static readonly (MarketFilter Market, string Key)[] MarketOptions =
-    [
-        (MarketFilter.All, "all"),
-        (MarketFilter.Twse, "twse"),
-        (MarketFilter.Tpex, "tpex")
-    ];
+    private static readonly int[] PeriodDayOptions = [1, 5, 10, 20, 60];
 
     /// <summary>
-    /// 平均每日成交值的門檻，在檔名裡用「萬元」表示，避免出現一長串 0。
-    /// 畫面上顯示的是乘上期間天數後的總額，見 <see cref="ToThresholdExports"/>。
+    /// 門檻按鈕的金額，單位為萬元（平均每日）。使用者也可以直接輸入任意金額。
     /// </summary>
-    private static readonly int[] ThresholdOptionsInTenThousand = [0, 5_000, 10_000, 100_000];
+    private static readonly int[] ThresholdOptionsInTenThousand = [0, 10_000, 100_000, 1_000_000];
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -70,76 +59,80 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
             .Order()
             .ToArray();
 
-        var dateOptions = RankingDates.ToOptions(tradingDates);
-        var selectableDates = dateOptions.Where(option => option.IsAvailable).ToArray();
+        var selectableDates = RankingDates.Selectable(tradingDates);
         var fileCount = 0;
+
+        var generatedAt = DateTimeOffset.Now;
+
+        // 這份快照的版本號。資料檔、CSS 與 JS 的網址都會帶上它：
+        // 重新發佈後版本號一變，網址跟著變，瀏覽器手上的舊檔就自動失效。
+        var version = generatedAt.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
 
         foreach (var date in selectableDates)
         {
+            // 這個交易日往回總共有幾天可用，決定了哪些期間算得出來。
+            var historyLength = tradingDates.Count(tradingDate => tradingDate <= date);
+
             foreach (var periodDays in PeriodDayOptions)
             {
-                foreach (var (mode, modeKey) in ModeOptions)
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // 完整名單：不篩市場、不設門檻、不截斷。模式固定成成交熱度，
+                // 因為兩種模式的差別只在排序，而排序交給前端做。
+                var query = new RankingQuery
                 {
-                    foreach (var (market, marketKey) in MarketOptions)
-                    {
-                        foreach (var thresholdInTenThousand in ThresholdOptionsInTenThousand)
-                        {
-                            cancellationToken.ThrowIfCancellationRequested();
+                    PeriodDays = periodDays,
+                    EndDate = date,
+                    Mode = RankingMode.TradingHeat,
+                    Market = MarketFilter.All,
+                    MinimumAverageDailyTradingValue = 0m,
+                    TopCount = int.MaxValue
+                };
 
-                            var query = new RankingQuery
-                            {
-                                PeriodDays = periodDays,
-                                EndDate = date.Date,
-                                Mode = mode,
-                                Market = market,
-                                MinimumAverageDailyTradingValue = thresholdInTenThousand * 10_000m
-                            };
+                var key = $"{periodDays}-{date:yyyy-MM-dd}";
+                var result = await ranking.GetRankingAsync(query, cancellationToken);
 
-                            var key = $"{modeKey}-{periodDays}-{marketKey}-{thresholdInTenThousand}-{date.Key}";
-                            var result = await ranking.GetRankingAsync(query, cancellationToken);
+                await WriteJsonAsync(
+                    Path.Combine(dataDirectory, key + ".json"),
+                    ToExport(key, periodDays, historyLength, result),
+                    cancellationToken);
 
-                            await WriteJsonAsync(
-                                Path.Combine(dataDirectory, key + ".json"),
-                                ToExport(key, query, result),
-                                cancellationToken);
-
-                            fileCount++;
-                        }
-                    }
-                }
+                fileCount++;
             }
 
-            progress?.Report($"{date.Key} 完成（累計 {fileCount} 個檔案）");
+            progress?.Report($"{date:yyyy-MM-dd} 完成（累計 {fileCount} 個檔案）");
         }
 
         await WriteJsonAsync(
             Path.Combine(outputDirectory, "manifest.json"),
             new ManifestExport(
                 // 靜態網站沒有伺服器可以問「這份資料多新」，所以把產生時間寫進檔案裡。
-                DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm"),
-
-                // 前端拿這個當快取版本號。同一份快照的檔案可以放心被瀏覽器快取，
-                // 重新發佈後版本號一變，網址跟著變，舊檔就自動失效。
-                DateTimeOffset.Now.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture),
+                generatedAt.ToString("yyyy-MM-dd HH:mm"),
+                version,
                 tradingDates.Length,
                 tradingDates.Length > 0 ? tradingDates[^1].ToString("yyyy/MM/dd") : "—",
                 dataSet.Stocks.Count,
                 ToThresholdExports(),
-                [.. dateOptions.Select(option => new DateExport(option.Key, option.Text, option.IsAvailable))]),
+                [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))]),
             cancellationToken);
 
-        var assetNames = await WriteEmbeddedAssetsAsync(outputDirectory, cancellationToken);
+        var assetNames = await WriteEmbeddedAssetsAsync(outputDirectory, version, cancellationToken);
         progress?.Report($"已寫出頁面檔案：{string.Join("、", assetNames)}");
 
-        return new StaticSiteExportReport(outputDirectory, fileCount, selectableDates.Length, tradingDates.Length);
+        return new StaticSiteExportReport(outputDirectory, fileCount, selectableDates.Count, tradingDates.Length);
     }
 
     /// <summary>
     /// 頁面本身（HTML / CSS / JS）以內嵌資源的方式跟著組件走，
     /// 這樣不論從哪個工作目錄執行 export 都找得到。
+    ///
+    /// index.html 裡的 CSS 與 JS 網址會被補上版本號。少了這一步，
+    /// 瀏覽器可能拿到新的 index.html 卻配上快取裡的舊 site.js，
+    /// 畫面就會是「新版頁面、舊版按鈕、抓不到資料」。
     /// </summary>
     private static async Task<IReadOnlyList<string>> WriteEmbeddedAssetsAsync(
         string outputDirectory,
+        string version,
         CancellationToken cancellationToken)
     {
         const string prefix = "Invest.Web.Infrastructure.StaticSite.Assets.";
@@ -155,10 +148,26 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
             }
 
             var fileName = resourceName[prefix.Length..];
+            var path = Path.Combine(outputDirectory, fileName);
 
             await using var source = assembly.GetManifestResourceStream(resourceName)!;
-            await using var target = File.Create(Path.Combine(outputDirectory, fileName));
-            await source.CopyToAsync(target, cancellationToken);
+
+            if (fileName == "index.html")
+            {
+                using var reader = new StreamReader(source);
+                var html = await reader.ReadToEndAsync(cancellationToken);
+
+                await File.WriteAllTextAsync(
+                    path,
+                    html.Replace("\"site.css\"", $"\"site.css?v={version}\"")
+                        .Replace("\"site.js\"", $"\"site.js?v={version}\""),
+                    cancellationToken);
+            }
+            else
+            {
+                await using var target = File.Create(path);
+                await source.CopyToAsync(target, cancellationToken);
+            }
 
             written.Add(fileName);
         }
@@ -172,47 +181,57 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
         await JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken);
     }
 
-    private static RankingExport ToExport(string key, RankingQuery query, TradingValueRankingResult result)
-        => new(
+    /// <summary>
+    /// 資金加速模式的前期排名本身也是增減率，需要三段期間；
+    /// 成交熱度只需要兩段。同一份檔案要餵兩種模式，所以兩邊的可用狀態都要寫進去。
+    /// </summary>
+    private static RankingExport ToExport(
+        string key,
+        int periodDays,
+        int historyLength,
+        TradingValueRankingResult result)
+    {
+        var accelerationAvailable = historyLength >= periodDays * 3;
+
+        return new RankingExport(
             key,
             result.HasSufficientData,
             result.InsufficientDataMessage,
+            accelerationAvailable,
+            accelerationAvailable
+                ? null
+                : TradingValueRankingResult
+                    .InsufficientData(periodDays, RankingMode.CapitalAcceleration, historyLength, periodDays * 3)
+                    .InsufficientDataMessage,
             RankingFormatter.ToPeriodText(result.CurrentPeriodStart, result.CurrentPeriodEnd),
             RankingFormatter.ToPeriodText(result.PreviousPeriodStart, result.PreviousPeriodEnd),
             result.HasSufficientData
                 ? RankingFormatter.ToBillionText(result.MarketTotalTradingValue / result.PeriodDays, 0)
                 : "—",
-            result.RankedStockCount,
             [.. result.Rows.Select(ToExport)]);
+    }
 
     /// <summary>
-    /// 每個欄位同時給「顯示文字」與「排序用的數字」：
-    /// 文字已經在 C# 這邊格式化完，前端不必知道億元怎麼換算；
-    /// 數字則讓前端點欄位標題時可以就地排序，不必為了排序回頭再要一份檔案。
+    /// 一列只寫數字，顯示文字由前端套用格式。
+    ///
+    /// 這裡本來連文字都先格式化好，但一份檔案要裝下全市場兩千檔，
+    /// 帶著文字的話單檔就將近 1 MB，可選的交易日一多整包網站就撐不住。
+    /// 只留數字後單檔大約四分之一，交易日才放得下三個月。
+    ///
+    /// 名次與名次變化也不在這裡：它們會隨著市場與門檻篩選改變，只能等前端篩完才算得出來。
     /// </summary>
     private static RowExport ToExport(StockRankingRow row) => new(
-        row.Rank,
-        row.RankChange,
-        RankingFormatter.ToRankChangeText(row.RankChange),
-        RankingFormatter.ToTrendCssClass(row.RankChange),
         row.Ticker,
         row.Name,
-        RankingFormatter.ToMarketText(row.Market),
+        row.Market == Domain.Stocks.Market.Twse ? "twse" : "tpex",
         Math.Round(row.AverageDailyTradingValue),
-        RankingFormatter.ToBillionText(row.AverageDailyTradingValue),
+        Math.Round(row.PreviousAverageDailyTradingValue),
         Round(row.TradingValueChangeRate),
-        RankingFormatter.ToSignedPercentText(row.TradingValueChangeRate),
-        RankingFormatter.ToTrendCssClass(row.TradingValueChangeRate),
-        Round(row.MarketShare),
-        RankingFormatter.ToPercentText(row.MarketShare),
-        Round(row.MarketShareChange),
-        RankingFormatter.ToSignedPercentText(row.MarketShareChange, 2),
-        RankingFormatter.ToTrendCssClass(row.MarketShareChange),
+        Round(row.PreviousTradingValueChangeRate),
+        RoundSignificant(row.MarketShare),
+        RoundSignificant(row.MarketShareChange),
         Round(row.PriceChangeRate),
-        RankingFormatter.ToSignedPercentText(row.PriceChangeRate),
-        RankingFormatter.ToTrendCssClass(row.PriceChangeRate),
-        row.ClosePrice,
-        row.ClosePrice?.ToString("N2") ?? "—");
+        row.ClosePrice);
 
     /// <summary>
     /// 比率算出來會帶著 28 位小數，整包 JSON 因此膨脹一倍。
@@ -223,16 +242,30 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
     private static decimal? Round(decimal? value) => value is { } number ? Round(number) : null;
 
     /// <summary>
-    /// 門檻按鈕的文字。門檻本身是「平均每日」，但顯示的是乘上期間天數後的總額，
-    /// 所以同一個門檻在不同期間下文字不一樣，得逐期間先算好。
-    /// 這段文字用 <see cref="RankingFormatter"/> 產生，前端不自己換算單位。
+    /// 市佔率是萬分之一等級的小數，固定八位小數只剩兩三位有效數字，
+    /// 四捨五入後再套顯示格式會和排行頁差一個位數（0.00 % 變成 0.01 %）。
+    /// 改用有效位數，小數字保留精度，大數字也不會變長。
+    /// </summary>
+    private static decimal RoundSignificant(decimal value, int significantDigits = 8)
+    {
+        if (value == 0m)
+        {
+            return 0m;
+        }
+
+        var magnitude = (int)Math.Floor(Math.Log10((double)Math.Abs(value)));
+
+        return Math.Round(value, Math.Clamp(significantDigits - 1 - magnitude, 0, 28));
+    }
+
+    /// <summary>
+    /// 門檻按鈕的文字。單位就是表格上那一欄「平均每日成交值」，
+    /// 用 <see cref="RankingFormatter"/> 產生，前端不自己換算單位。
     /// </summary>
     private static IReadOnlyList<ThresholdExport> ToThresholdExports()
         => [.. ThresholdOptionsInTenThousand.Select(threshold => new ThresholdExport(
             threshold,
-            PeriodDayOptions.ToDictionary(
-                periodDays => periodDays.ToString(CultureInfo.InvariantCulture),
-                periodDays => RankingFormatter.ToThresholdText(threshold * 10_000m * periodDays))))];
+            RankingFormatter.ToThresholdText(threshold * 10_000m)))];
 
     private sealed record ManifestExport(
         string GeneratedAt,
@@ -241,48 +274,35 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
         string LatestTradingDate,
         int StockCount,
         IReadOnlyList<ThresholdExport> Thresholds,
-        IReadOnlyList<DateExport> Dates);
 
-    private sealed record ThresholdExport(int Key, IReadOnlyDictionary<string, string> TextByPeriod);
+        // 可以點的交易日（yyyy-MM-dd），由舊到新。月曆上不在這份清單裡的日子一律反灰。
+        IReadOnlyList<string> Dates);
 
-    /// <summary>
-    /// 基準日按鈕。清單包含沒有行情的日期（週末、假日），前端把它們畫成停用的按鈕。
-    /// </summary>
-    private sealed record DateExport(string Key, string Text, bool Available);
+    private sealed record ThresholdExport(int Key, string Text);
 
     private sealed record RankingExport(
         string Key,
         bool HasSufficientData,
         string? Message,
+        bool HasAccelerationData,
+        string? AccelerationMessage,
         string CurrentPeriod,
         string PreviousPeriod,
         string MarketDailyAverage,
-        int RankedStockCount,
         IReadOnlyList<RowExport> Rows);
 
     private sealed record RowExport(
-        int Rank,
-        int? RankChange,
-        string RankChangeText,
-        string RankChangeClass,
         string Ticker,
         string Name,
-        string MarketText,
+        string Market,
         decimal Value,
-        string ValueText,
+        decimal PreviousValue,
         decimal? Rate,
-        string RateText,
-        string RateClass,
+        decimal? PreviousRate,
         decimal Share,
-        string ShareText,
         decimal ShareChange,
-        string ShareChangeText,
-        string ShareChangeClass,
         decimal? PriceChange,
-        string PriceChangeText,
-        string PriceChangeClass,
-        decimal? Close,
-        string CloseText);
+        decimal? Close);
 }
 
 public sealed record StaticSiteExportReport(

@@ -39,6 +39,12 @@ public sealed class StockRankingRow
     public decimal? TradingValueChangeRate { get; init; }
 
     /// <summary>
+    /// 前期自己的增減率，也就是「前期 vs 再前一期」。
+    /// 資金加速模式的前期排名就是照這個數字排出來的。再前一期的資料不足時為 null。
+    /// </summary>
+    public decimal? PreviousTradingValueChangeRate { get; init; }
+
+    /// <summary>
     /// 本期成交值佔全市場（上市＋上櫃）的比例。
     /// </summary>
     public required decimal MarketShare { get; init; }

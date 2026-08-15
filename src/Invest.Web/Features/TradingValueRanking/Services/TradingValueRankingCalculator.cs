@@ -38,7 +38,9 @@ public sealed class TradingValueRankingCalculator
 
         var current = dates[^periodDays..];
         var previous = dates[^(periodDays * 2)..^periodDays];
-        DateOnly[] prior = query.Mode == RankingMode.CapitalAcceleration
+        // 再前一期只在資金加速模式才影響排序，但成交熱度模式也一併算出來：
+        // 靜態網站的一份檔案要同時餵兩種模式，前期增減率必須跟著每一列走。
+        DateOnly[] prior = dates.Length >= periodDays * 3
             ? dates[^(periodDays * 3)..^(periodDays * 2)]
             : [];
 
@@ -110,6 +112,7 @@ public sealed class TradingValueRankingCalculator
                 AverageDailyTradingValue = candidate.Current.AverageDailyTradingValue,
                 PreviousAverageDailyTradingValue = candidate.Previous.AverageDailyTradingValue,
                 TradingValueChangeRate = candidate.ChangeRate,
+                PreviousTradingValueChangeRate = candidate.PreviousChangeRate,
                 MarketShare = Share(candidate.Current.TotalTradingValue, marketTotal),
                 PreviousMarketShare = Share(candidate.Previous.TotalTradingValue, previousMarketTotal),
                 PriceChangeRate = candidate.Current.PriceChangeRate,
@@ -130,7 +133,10 @@ public sealed class TradingValueRankingCalculator
             PreviousPeriodEnd = previous[^1],
             MarketTotalTradingValue = marketTotal,
             RankedStockCount = candidates.Count,
-            Rows = rows
+            Rows = rows,
+            RankByTicker = ranked
+                .Select((candidate, index) => (candidate.Stock.Ticker, Rank: index + 1))
+                .ToDictionary(entry => entry.Ticker, entry => entry.Rank)
         };
     }
 

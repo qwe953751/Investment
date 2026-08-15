@@ -26,7 +26,7 @@ public sealed record RankingQuery
     /// 這個門檻主要是為了資金加速模式：冷門股從幾十萬跳到幾百萬就是好幾倍成長，
     /// 若不過濾，排行榜會被這類沒有實際意義的標的佔滿。
     /// </summary>
-    public decimal MinimumAverageDailyTradingValue { get; init; } = 50_000_000m;
+    public decimal MinimumAverageDailyTradingValue { get; init; } = 100_000_000m;
 
     /// <summary>
     /// 最多顯示幾筆。全市場約兩千多檔，整張表列出來沒有意義。

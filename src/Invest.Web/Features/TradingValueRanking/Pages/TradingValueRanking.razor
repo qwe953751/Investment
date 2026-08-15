@@ -15,7 +15,7 @@
 
     <section class="filter-panel">
         <div class="filter-group">
-            <span class="filter-label">觀察期間</span>
+            <span class="filter-label" title="本期的長度。前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。">觀察期間</span>
             <div class="button-row">
                 @foreach (var (period, text, hint) in PeriodOptions)
                 {
@@ -26,39 +26,28 @@
                         @text
                     </button>
                 }
-                <button type="button" class="toggle-button" disabled
-                        title="需要至少 120 個交易日的歷史資料，目前的回補量還不夠">
-                    60 日
-                </button>
             </div>
         </div>
 
         <div class="filter-group">
-            <span class="filter-label">基準日</span>
-            <div class="button-row">
-                @foreach (var option in _dateOptions)
-                {
-                    <button type="button"
-                            class="@ToggleClass(option.Date == _query.EndDate)"
-                            disabled="@(!option.IsAvailable)"
-                            title="@ToDateHint(option)"
-                            @onclick="() => ChangeEndDateAsync(option.Date)">
-                        @option.Text
-                    </button>
-                }
-            </div>
+            <span class="filter-label" title="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
+            <TradingDatePicker AvailableDates="_tradingDates"
+                               Value="_query.EndDate"
+                               ValueChanged="ChangeEndDateAsync" />
         </div>
 
         <div class="filter-group">
-            <span class="filter-label">排行模式</span>
+            <span class="filter-label" title="決定排行榜依哪個數字排序。">排行模式</span>
             <div class="button-row">
                 <button type="button"
                         class="@ToggleClass(_query.Mode == RankingMode.TradingHeat)"
+                        title="依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。"
                         @onclick="() => ChangeModeAsync(RankingMode.TradingHeat)">
                     成交熱度
                 </button>
                 <button type="button"
                         class="@ToggleClass(_query.Mode == RankingMode.CapitalAcceleration)"
+                        title="依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。"
                         @onclick="() => ChangeModeAsync(RankingMode.CapitalAcceleration)">
                     資金加速
                 </button>
@@ -66,7 +55,7 @@
         </div>
 
         <div class="filter-group">
-            <span class="filter-label">市場</span>
+            <span class="filter-label" title="只篩選要看的市場。市場成交比的分母不受影響，一律是上市＋上櫃全體。">市場</span>
             <div class="button-row">
                 @foreach (var (filter, text) in MarketOptions)
                 {
@@ -80,7 +69,7 @@
         </div>
 
         <div class="filter-group">
-            <span class="filter-label">成交門檻</span>
+            <span class="filter-label" title="「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。">成交門檻</span>
             <div class="button-row">
                 @foreach (var threshold in LiquidityOptions)
                 {
@@ -88,8 +77,48 @@
                             class="@ToggleClass(_query.MinimumAverageDailyTradingValue == threshold)"
                             title="@ToThresholdHint(threshold)"
                             @onclick="() => ChangeLiquidityAsync(threshold)">
-                        @RankingFormatter.ToThresholdText(threshold * _query.PeriodDays)
+                        @RankingFormatter.ToThresholdText(threshold)
                     </button>
+                }
+
+                @* 按鈕之外的任意金額。單位與按鈕一樣是平均每日成交值。 *@
+                <span class="threshold-custom">
+                    <input type="number" class="threshold-input" min="0" step="0.1"
+                           title="自己輸入金額，單位與按鈕相同：平均每日成交值（億元）"
+                           placeholder="自訂" value="@CustomThresholdText"
+                           @onchange="ChangeCustomLiquidityAsync" />
+                    <span class="threshold-unit">億元</span>
+                </span>
+            </div>
+        </div>
+
+        <div class="filter-group">
+            <span class="filter-label" title="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
+            <div class="lock-row">
+                <input type="text" class="lock-input" placeholder="股號" maxlength="6" inputmode="numeric"
+                       @bind="_lockInput" @bind:event="oninput" @onkeydown="LockKeyDown" />
+                <button type="button" class="icon-button" title="加入鎖定" @onclick="AddLock">＋</button>
+
+                @if (_lockedTickers.Count > 0)
+                {
+                    <button type="button" class="icon-button danger" title="全部清除"
+                            @onclick="ClearLocks">✕</button>
+                }
+
+                @if (_lockError is not null)
+                {
+                    <span class="lock-error">@_lockError</span>
+                }
+
+                @foreach (var ticker in _lockedTickers)
+                {
+                    <span class="lock-chip">
+                        <span class="lock-chip-ticker">@ticker</span>
+                        <span class="lock-chip-name">@_stockNames.GetValueOrDefault(ticker)</span>
+                        <span class="lock-chip-rank">@LockedRankText(ticker)</span>
+                        <button type="button" class="lock-chip-remove" title="取消鎖定"
+                                @onclick="() => _lockedTickers.Remove(ticker)">×</button>
+                    </span>
                 }
             </div>
         </div>
@@ -138,7 +167,8 @@
                     <tr>
                         @foreach (var column in Columns)
                         {
-                            <th class="@HeaderClass(column)" @onclick="() => SortBy(column)">
+                            <th class="@HeaderClass(column)" title="@column.Hint"
+                                @onclick="() => SortBy(column)">
                                 @column.Title@SortIndicator(column)
                             </th>
                         }
@@ -148,7 +178,7 @@
                 <tbody>
                     @foreach (var row in SortedRows)
                     {
-                        <tr>
+                        <tr class="@(_lockedTickers.Contains(row.Ticker) ? "locked" : null)">
                             <td class="rank">@row.Rank</td>
 
                             <td class="@RankingFormatter.ToTrendCssClass(row.RankChange)">
@@ -195,10 +225,11 @@
 @code {
     private static readonly (int Days, string Text, string Hint)[] PeriodOptions =
     [
-        (1, "前一交易日", "最近一個完整交易日，與再前一個交易日比較。當日盤中資料之後再做。"),
+        (1, "前一交易日", "基準日當天，與前一個交易日比較。當日盤中資料之後再做。"),
         (5, "5 日", "最近 5 個交易日 vs 再往前 5 個交易日"),
         (10, "10 日", "最近 10 個交易日 vs 再往前 10 個交易日"),
-        (20, "20 日", "最近 20 個交易日 vs 再往前 20 個交易日")
+        (20, "20 日", "最近 20 個交易日 vs 再往前 20 個交易日"),
+        (60, "60 日", "最近 60 個交易日 vs 再往前 60 個交易日")
     ];
 
     private static readonly (MarketFilter Filter, string Text)[] MarketOptions =
@@ -209,41 +240,83 @@
     ];
 
     /// <summary>
-    /// 門檻套用在「平均每日」成交值上，但按鈕顯示的是乘上期間天數後的總額。
-    /// 兩者是同一個條件（平均每日 ≥ X 等同期間總額 ≥ X × 天數），
-    /// 只是總額比較容易跟表格上看到的成交金額對照。
+    /// 門檻的單位就是表格上那一欄「平均每日成交值」，按鈕上的金額可以直接跟表格對照。
+    /// 期間長度不影響門檻，換期間時排除的標準不會跟著跑掉。
     /// </summary>
     private static readonly decimal[] LiquidityOptions =
-        [0m, 50_000_000m, 100_000_000m, 1_000_000_000m];
+        [0m, 100_000_000m, 1_000_000_000m, 10_000_000_000m];
 
+    /// <summary>
+    /// 每一欄的算法寫在 Hint 裡，滑鼠停在標題上就看得到，
+    /// 不必回頭翻 README 才知道這一格的數字怎麼來的。
+    /// </summary>
     private static readonly SortColumn[] Columns =
     [
-        new("rank", "排名", row => row.Rank, Ascending: true),
-        new("change", "排名變化", row => row.RankChange),
-        new("ticker", "代號", row => null, Ascending: true),
-        new("name", "名稱", row => null, Ascending: true),
-        new("market", "市場", row => null, Ascending: true),
-        new("value", "平均每日成交值（億）", row => row.AverageDailyTradingValue),
-        new("rate", "較前期增減", row => row.TradingValueChangeRate),
-        new("share", "市場成交比", row => row.MarketShare),
-        new("shareChange", "成交比變化", row => row.MarketShareChange),
-        new("price", "期間漲跌", row => row.PriceChangeRate),
-        new("close", "收盤價", row => row.ClosePrice)
+        new("rank", "排名",
+            "依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。",
+            row => row.Rank, Ascending: true),
+
+        new("change", "排名變化",
+            "前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。",
+            row => row.RankChange),
+
+        new("ticker", "代號",
+            "只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。",
+            row => null, Ascending: true),
+
+        new("name", "名稱", "股票名稱，取自證交所與櫃買中心的每日收盤行情。",
+            row => null, Ascending: true),
+
+        new("market", "市場", "上市（證交所）或上櫃（櫃買中心）。",
+            row => null, Ascending: true),
+
+        new("value", "平均每日成交值（億）",
+            "期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。",
+            row => row.AverageDailyTradingValue),
+
+        new("rate", "較前期增減",
+            "（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。",
+            row => row.TradingValueChangeRate),
+
+        new("share", "市場成交比",
+            "個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變，切換市場時比例才能互相比較。",
+            row => row.MarketShare),
+
+        new("shareChange", "成交比變化",
+            "本期市場成交比 − 前期市場成交比，單位是百分點。",
+            row => row.MarketShareChange),
+
+        new("price", "期間漲跌",
+            "（期間終點收盤價 − 基準收盤價）÷ 基準收盤價。基準是進入期間之前的最後一個收盤價，所以期間內第一天的漲跌也算在內。",
+            row => row.PriceChangeRate),
+
+        new("close", "收盤價", "期間最後一個交易日的收盤價。", row => row.ClosePrice)
     ];
 
     private RankingQuery _query = new();
     private TradingValueRankingResult? _result;
-    private IReadOnlyList<RankingDateOption> _dateOptions = [];
+    private IReadOnlyList<DateOnly> _tradingDates = [];
     private bool _loading = true;
     private string _sortKey = "rank";
     private bool _sortDescending;
+
+    /// <summary>
+    /// 鎖定的股號。追蹤中的標的即使掉出前 100 名也要看得到現在排第幾，
+    /// 進榜時整列標色，一眼就能在表格裡找到。
+    /// </summary>
+    private readonly List<string> _lockedTickers = [];
+
+    private IReadOnlyDictionary<string, string> _stockNames = new Dictionary<string, string>();
+    private string _lockInput = string.Empty;
+    private string? _lockError;
 
     protected override async Task OnInitializedAsync()
     {
         var dataSet = await RankingService.GetDataSetAsync();
 
-        _dateOptions = RankingDates.ToOptions(dataSet.DailyTrading.Select(trading => trading.TradingDate));
-        _query = _query with { EndDate = _dateOptions.LastOrDefault(option => option.IsAvailable)?.Date };
+        _stockNames = dataSet.Stocks.ToDictionary(stock => stock.Ticker, stock => stock.Name);
+        _tradingDates = RankingDates.Selectable(dataSet.DailyTrading.Select(trading => trading.TradingDate));
+        _query = _query with { EndDate = _tradingDates.Count > 0 ? _tradingDates[^1] : null };
 
         await ReloadAsync();
     }
@@ -321,6 +394,78 @@
         return ReloadAsync();
     }
 
+    /// <summary>
+    /// 自訂金額輸入框顯示的數字：平均每日成交值（億元）。按下按鈕時輸入框跟著顯示同一個數字。
+    /// </summary>
+    private string CustomThresholdText
+    {
+        get
+        {
+            var daily = _query.MinimumAverageDailyTradingValue / 100_000_000m;
+
+            return daily <= 0m ? string.Empty : decimal.Round(daily, 2).ToString("0.##");
+        }
+    }
+
+    private Task ChangeCustomLiquidityAsync(ChangeEventArgs args)
+    {
+        var text = args.Value?.ToString();
+
+        // 清空輸入框等於不過濾。
+        var daily = decimal.TryParse(text, out var parsed) && parsed > 0m ? parsed : 0m;
+
+        return ChangeLiquidityAsync(daily * 100_000_000m);
+    }
+
+    private void AddLock()
+    {
+        var ticker = _lockInput.Trim();
+        _lockInput = string.Empty;
+        _lockError = null;
+
+        if (ticker.Length == 0 || _lockedTickers.Contains(ticker))
+        {
+            return;
+        }
+
+        // 只收得到行情的代號。打錯字就直接說，不要讓清單裡躺著一個永遠不會出現的股號。
+        if (!_stockNames.ContainsKey(ticker))
+        {
+            _lockError = $"查無 {ticker}";
+            return;
+        }
+
+        _lockedTickers.Add(ticker);
+    }
+
+    private void ClearLocks()
+    {
+        _lockedTickers.Clear();
+        _lockError = null;
+    }
+
+    private void LockKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter")
+        {
+            AddLock();
+        }
+    }
+
+    /// <summary>
+    /// 鎖定標的目前的名次。名次會隨市場與門檻篩選改變，
+    /// 被篩掉的話沒有名次可言，說「未入榜」比給一個假的數字誠實。
+    /// </summary>
+    private string LockedRankText(string ticker)
+    {
+        if (_result is not { HasSufficientData: true })
+        {
+            return "—";
+        }
+
+        return _result.RankByTicker.TryGetValue(ticker, out var rank) ? $"第 {rank} 名" : "未入榜";
+    }
+
     private void SortBy(SortColumn column)
     {
         if (_sortKey == column.Key)
@@ -338,11 +483,6 @@
     private static string ToggleClass(bool selected)
         => selected ? "toggle-button selected" : "toggle-button";
 
-    private static string ToDateHint(RankingDateOption option)
-        => option.IsAvailable
-            ? $"以 {option.Date:yyyy/MM/dd} 當作觀察期間的最後一天"
-            : "這一天沒有行情（週末、假日或未回補）";
-
     private static string ToThresholdHint(decimal threshold)
         => threshold <= 0
             ? "不過濾"
@@ -357,6 +497,7 @@
     private sealed record SortColumn(
         string Key,
         string Title,
+        string Hint,
         Func<StockRankingRow, decimal?> Value,
         bool Ascending = false);
 }

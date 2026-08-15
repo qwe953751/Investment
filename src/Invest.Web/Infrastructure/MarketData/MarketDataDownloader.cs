@@ -139,6 +139,14 @@ public sealed class MarketDataDownloader(
         // 只有單邊沒資料代表那一邊出了問題，不應該把當天記成休市。
         if (twse.Count == 0 && tpex.Count == 0)
         {
+            // 但今天的收盤行情要下午才會公布，公布前抓也是空的。
+            // 非交易日一旦寫進快取就不會再重試，所以還沒過完的日期一律不下這個判斷。
+            if (date >= DateOnly.FromDateTime(DateTime.Today))
+            {
+                progress?.Report($"{date:yyyy-MM-dd} 官方尚未公布收盤行情，這次先不記錄");
+                return null;
+            }
+
             return DailyQuoteSnapshot.NonTradingDay(date);
         }
 

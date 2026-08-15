@@ -23,9 +23,52 @@ body {
     margin-bottom: 24px;
 }
 
+.page-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
 .page-header h1 {
-    margin: 0 0 8px;
+    margin: 0;
     font-size: 32px;
+}
+
+/* 快照不會自己變新，這顆按鈕負責去問有沒有新版本。 */
+.refresh-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border: 1px solid #aaa;
+    border-radius: 999px;
+    background: white;
+    color: inherit;
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.refresh-button:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.refresh-button:disabled {
+    color: #aaa;
+    border-color: #ddd;
+    cursor: progress;
+}
+
+.refresh-icon {
+    font-size: 16px;
+    line-height: 1;
+}
+
+.refresh-status {
+    color: #888;
+    font-size: 13px;
 }
 
 .page-header p {
@@ -61,6 +104,13 @@ body {
     white-space: nowrap;
 }
 
+/* 有說明可看的標籤畫一條虛線底線，否則沒人知道可以停在上面。 */
+.filter-label[title] {
+    cursor: help;
+    text-decoration: underline dotted #bbb;
+    text-underline-offset: 4px;
+}
+
 .button-row {
     display: flex;
     gap: 8px;
@@ -92,6 +142,275 @@ body {
     color: #aaa;
     border-color: #ddd;
     cursor: not-allowed;
+}
+
+.threshold-custom {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.threshold-input {
+    width: 80px;
+    padding: 8px 10px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    text-align: right;
+}
+
+.threshold-unit {
+    color: #666;
+    white-space: nowrap;
+}
+
+/* 交易日選擇器。與 TradingDatePicker.razor.css 同一份樣式。 */
+.date-picker {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.date-step {
+    width: 38px;
+    height: 38px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.date-step:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.date-step:disabled {
+    color: #ccc;
+    cursor: not-allowed;
+}
+
+.date-trigger {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 140px;
+    padding: 8px 14px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    cursor: pointer;
+}
+
+.date-trigger:hover {
+    background: #f0f0f0;
+}
+
+.date-trigger-icon {
+    margin-left: auto;
+    color: #888;
+    font-size: 12px;
+}
+
+/* 透明底板，接住月曆以外的點擊把它收起來。 */
+.calendar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+}
+
+.calendar {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 11;
+    width: 280px;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: white;
+    box-shadow: 0 8px 24px #00000026;
+}
+
+.calendar-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.calendar-title {
+    flex: 1;
+    text-align: center;
+    font-weight: 600;
+}
+
+.calendar-nav {
+    width: 28px;
+    height: 28px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.calendar-nav:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.calendar-nav:disabled {
+    color: #ccc;
+    cursor: not-allowed;
+}
+
+.calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+}
+
+.calendar-weekday {
+    padding: 4px 0;
+    color: #888;
+    font-size: 12px;
+    text-align: center;
+}
+
+.calendar-day {
+    aspect-ratio: 1;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    color: #222;
+    cursor: pointer;
+}
+
+.calendar-day:hover:not(:disabled) {
+    background: #eee;
+}
+
+/* 沒有行情的日子：反灰、不能點。當月與非當月的灰再分深淺，才看得出月份邊界。 */
+.calendar-day:disabled {
+    color: #bbb;
+    cursor: not-allowed;
+}
+
+.calendar-day.other-month {
+    color: #ccc;
+}
+
+.calendar-day.other-month:disabled {
+    color: #e0e0e0;
+}
+
+.calendar-day.selected {
+    background: #222;
+    color: white;
+}
+
+.calendar-hint {
+    margin: 10px 0 0;
+    color: #888;
+    font-size: 12px;
+    text-align: center;
+}
+
+/* 只有圖示的方形按鈕：＋ 加入鎖定、✕ 全部清除。 */
+.icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: #444;
+    font: inherit;
+    font-size: 17px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.icon-button:hover {
+    background: #f0f0f0;
+}
+
+/* 全部清除是唯一一次抹掉整份清單的按鈕，滑過時轉紅提醒一下。 */
+.icon-button.danger:hover {
+    border-color: #f0b4ae;
+    background: #fef3f2;
+    color: #b42318;
+}
+
+.lock-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.lock-input {
+    width: 90px;
+    padding: 8px 10px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+}
+
+.lock-error {
+    color: #b42318;
+    font-size: 13px;
+}
+
+.lock-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px 5px 10px;
+    border: 1px solid #bfdbfe;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #1e40af;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.lock-chip-ticker {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+}
+
+.lock-chip-name {
+    font-weight: 600;
+}
+
+.lock-chip-rank {
+    color: #3b6fd4;
+}
+
+.lock-chip-remove {
+    padding: 0 4px;
+    border: none;
+    background: none;
+    color: #7aa5e8;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.lock-chip-remove:hover {
+    color: #1e40af;
 }
 
 .summary {
@@ -179,6 +498,23 @@ body {
 
 .ranking-table tbody tr:last-child td {
     border-bottom: none;
+}
+
+/* 鎖定的個股。左側色條讓它在滿滿的數字裡一眼就能找到。 */
+.ranking-table tbody tr.locked {
+    background: #eff6ff;
+}
+
+.ranking-table tbody tr.locked:hover {
+    background: #dbeafe;
+}
+
+.ranking-table tbody tr.locked td {
+    border-bottom-color: #bfdbfe;
+}
+
+.ranking-table tbody tr.locked td:first-child {
+    box-shadow: inset 3px 0 0 #2563eb;
 }
 
 .rank {
