@@ -16,6 +16,33 @@ a {
     color: #1a56db;
 }
 
+/* 說明泡泡。hint.js 把它掛在 body 底下，不屬於任何元件，
+   所以樣式必須放在全域，元件的 scoped CSS 選不到它。
+   同一份樣式在靜態網站的 site.css 也有一份。 */
+.hint-bubble {
+    position: fixed;
+    z-index: 100;
+    max-width: 320px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #2b2b2b;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.6;
+    text-align: left;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+}
+
+.hint-bubble.visible {
+    opacity: 1;
+    visibility: visible;
+}
+
 h1:focus {
     outline: none;
 }

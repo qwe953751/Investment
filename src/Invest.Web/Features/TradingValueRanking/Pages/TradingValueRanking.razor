@@ -15,13 +15,13 @@
 
     <section class="filter-panel">
         <div class="filter-group">
-            <span class="filter-label" title="本期的長度。前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。">觀察期間</span>
+            <span class="filter-label" data-hint="本期的長度。前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。">觀察期間</span>
             <div class="button-row">
                 @foreach (var (period, text, hint) in PeriodOptions)
                 {
                     <button type="button"
                             class="@ToggleClass(period == _query.PeriodDays)"
-                            title="@hint"
+                            data-hint="@hint"
                             @onclick="() => ChangePeriodAsync(period)">
                         @text
                     </button>
@@ -30,24 +30,24 @@
         </div>
 
         <div class="filter-group">
-            <span class="filter-label" title="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
+            <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
             <TradingDatePicker AvailableDates="_tradingDates"
                                Value="_query.EndDate"
                                ValueChanged="ChangeEndDateAsync" />
         </div>
 
         <div class="filter-group">
-            <span class="filter-label" title="決定排行榜依哪個數字排序。">排行模式</span>
+            <span class="filter-label" data-hint="決定排行榜依哪個數字排序。">排行模式</span>
             <div class="button-row">
                 <button type="button"
                         class="@ToggleClass(_query.Mode == RankingMode.TradingHeat)"
-                        title="依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。"
+                        data-hint="依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。"
                         @onclick="() => ChangeModeAsync(RankingMode.TradingHeat)">
                     成交熱度
                 </button>
                 <button type="button"
                         class="@ToggleClass(_query.Mode == RankingMode.CapitalAcceleration)"
-                        title="依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。"
+                        data-hint="依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。"
                         @onclick="() => ChangeModeAsync(RankingMode.CapitalAcceleration)">
                     資金加速
                 </button>
@@ -55,7 +55,7 @@
         </div>
 
         <div class="filter-group">
-            <span class="filter-label" title="只篩選要看的市場。市場成交比的分母不受影響，一律是上市＋上櫃全體。">市場</span>
+            <span class="filter-label" data-hint="只篩選要看的市場。市場成交比的分母不受影響，一律是上市＋上櫃全體。">市場</span>
             <div class="button-row">
                 @foreach (var (filter, text) in MarketOptions)
                 {
@@ -69,13 +69,13 @@
         </div>
 
         <div class="filter-group">
-            <span class="filter-label" title="「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。">成交門檻</span>
+            <span class="filter-label" data-hint="「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。">成交門檻</span>
             <div class="button-row">
                 @foreach (var threshold in LiquidityOptions)
                 {
                     <button type="button"
                             class="@ToggleClass(_query.MinimumAverageDailyTradingValue == threshold)"
-                            title="@ToThresholdHint(threshold)"
+                            data-hint="@ToThresholdHint(threshold)"
                             @onclick="() => ChangeLiquidityAsync(threshold)">
                         @RankingFormatter.ToThresholdText(threshold)
                     </button>
@@ -84,7 +84,7 @@
                 @* 按鈕之外的任意金額。單位與按鈕一樣是平均每日成交值。 *@
                 <span class="threshold-custom">
                     <input type="number" class="threshold-input" min="0" step="0.1"
-                           title="自己輸入金額，單位與按鈕相同：平均每日成交值（億元）"
+                           data-hint="自己輸入金額，單位與按鈕相同：平均每日成交值（億元）"
                            placeholder="自訂" value="@CustomThresholdText"
                            @onchange="ChangeCustomLiquidityAsync" />
                     <span class="threshold-unit">億元</span>
@@ -93,15 +93,15 @@
         </div>
 
         <div class="filter-group">
-            <span class="filter-label" title="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
+            <span class="filter-label" data-hint="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
             <div class="lock-row">
                 <input type="text" class="lock-input" placeholder="股號" maxlength="6" inputmode="numeric"
                        @bind="_lockInput" @bind:event="oninput" @onkeydown="LockKeyDown" />
-                <button type="button" class="icon-button" title="加入鎖定" @onclick="AddLock">＋</button>
+                <button type="button" class="icon-button" data-hint="加入鎖定" @onclick="AddLock">＋</button>
 
                 @if (_lockedTickers.Count > 0)
                 {
-                    <button type="button" class="icon-button danger" title="全部清除"
+                    <button type="button" class="icon-button danger" data-hint="全部清除"
                             @onclick="ClearLocks">✕</button>
                 }
 
@@ -116,7 +116,7 @@
                         <span class="lock-chip-ticker">@ticker</span>
                         <span class="lock-chip-name">@_stockNames.GetValueOrDefault(ticker)</span>
                         <span class="lock-chip-rank">@LockedRankText(ticker)</span>
-                        <button type="button" class="lock-chip-remove" title="取消鎖定"
+                        <button type="button" class="lock-chip-remove" data-hint="取消鎖定"
                                 @onclick="() => _lockedTickers.Remove(ticker)">×</button>
                     </span>
                 }
@@ -167,7 +167,7 @@
                     <tr>
                         @foreach (var column in Columns)
                         {
-                            <th class="@HeaderClass(column)" title="@column.Hint"
+                            <th class="@HeaderClass(column)" data-hint="@column.Hint"
                                 @onclick="() => SortBy(column)">
                                 @column.Title@SortIndicator(column)
                             </th>

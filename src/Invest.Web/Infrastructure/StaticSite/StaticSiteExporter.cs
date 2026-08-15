@@ -160,7 +160,8 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
                 await File.WriteAllTextAsync(
                     path,
                     html.Replace("\"site.css\"", $"\"site.css?v={version}\"")
-                        .Replace("\"site.js\"", $"\"site.js?v={version}\""),
+                        .Replace("\"site.js\"", $"\"site.js?v={version}\"")
+                        .Replace("\"hint.js\"", $"\"hint.js?v={version}\""),
                     cancellationToken);
             }
             else

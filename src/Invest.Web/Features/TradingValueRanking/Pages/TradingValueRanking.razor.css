@@ -41,7 +41,7 @@
 }
 
 /* 有說明可看的標籤畫一條虛線底線，否則沒人知道可以停在上面。 */
-.filter-label[title] {
+.filter-label[data-hint] {
     cursor: help;
     text-decoration: underline dotted #bbb;
     text-underline-offset: 4px;

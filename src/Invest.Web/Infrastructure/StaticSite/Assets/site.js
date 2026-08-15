@@ -115,7 +115,7 @@ function renderOptions(containerId, options, selected, onSelect) {
         button.disabled = option.disabled === true;
 
         if (option.hint) {
-            button.title = option.hint;
+            button.dataset.hint = option.hint;
         }
 
         if (!button.disabled) {
@@ -163,7 +163,7 @@ function renderThresholdInput() {
     input.min = '0';
     input.step = '0.1';
     input.placeholder = '自訂';
-    input.title = '自己輸入金額，單位與按鈕相同：平均每日成交值（億元）';
+    input.dataset.hint = '自己輸入金額，單位與按鈕相同：平均每日成交值（億元）';
 
     const daily = state.threshold / 100_000_000;
     input.value = daily > 0 ? String(Math.round(daily * 100) / 100) : '';
@@ -277,7 +277,7 @@ function renderLockRow(focusInput = false) {
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'icon-button';
-    add.title = '加入鎖定';
+    add.dataset.hint = '加入鎖定';
     add.textContent = '＋';
     add.addEventListener('click', submit);
 
@@ -287,7 +287,7 @@ function renderLockRow(focusInput = false) {
         const clear = document.createElement('button');
         clear.type = 'button';
         clear.className = 'icon-button danger';
-        clear.title = '全部清除';
+        clear.dataset.hint = '全部清除';
         clear.textContent = '✕';
         clear.addEventListener('click', () => {
             clearLocks();
@@ -324,7 +324,7 @@ function renderLockRow(focusInput = false) {
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'lock-chip-remove';
-        remove.title = '取消鎖定';
+        remove.dataset.hint = '取消鎖定';
         remove.textContent = '×';
         remove.addEventListener('click', () => {
             removeLock(ticker);
@@ -366,7 +366,7 @@ function renderDatePicker() {
         button.type = 'button';
         button.className = 'date-step';
         button.textContent = text;
-        button.title = title;
+        button.dataset.hint = title;
 
         const target = dates.indexOf(state.date) + direction;
         button.disabled = target < 0 || target >= dates.length;
@@ -595,7 +595,7 @@ function renderTable() {
     for (const column of COLUMNS) {
         const cell = document.createElement('th');
         cell.className = state.sortKey === column.key ? 'sortable sorted' : 'sortable';
-        cell.title = column.hint;
+        cell.dataset.hint = column.hint;
         cell.textContent = column.title
             + (state.sortKey === column.key ? (state.sortDescending ? ' ▼' : ' ▲') : '');
 

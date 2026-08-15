@@ -2,7 +2,7 @@
 
 <div class="date-picker">
     @* 前後交易日各一顆按鈕，看連續幾天的變化不必每次開月曆。 *@
-    <button type="button" class="date-step" title="前一個交易日"
+    <button type="button" class="date-step" data-hint="前一個交易日"
             disabled="@(!CanStep(-1))" @onclick="() => StepAsync(-1)">‹</button>
 
     <button type="button" class="date-trigger" @onclick="() => _open = !_open">
@@ -10,7 +10,7 @@
         <span class="date-trigger-icon">▾</span>
     </button>
 
-    <button type="button" class="date-step" title="後一個交易日"
+    <button type="button" class="date-step" data-hint="後一個交易日"
             disabled="@(!CanStep(1))" @onclick="() => StepAsync(1)">›</button>
 
     @if (_open)
