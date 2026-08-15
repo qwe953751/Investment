@@ -1,0 +1,155 @@
+.date-picker {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.date-step {
+    width: 38px;
+    height: 38px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.date-step:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.date-step:disabled {
+    color: #ccc;
+    cursor: not-allowed;
+}
+
+.date-trigger {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 140px;
+    padding: 8px 14px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    cursor: pointer;
+}
+
+.date-trigger:hover {
+    background: #f0f0f0;
+}
+
+.date-trigger-icon {
+    margin-left: auto;
+    color: #888;
+    font-size: 12px;
+}
+
+/* 透明底板，接住月曆以外的點擊把它收起來。 */
+.calendar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+}
+
+.calendar {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 11;
+    width: 280px;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: white;
+    box-shadow: 0 8px 24px #00000026;
+}
+
+.calendar-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.calendar-title {
+    flex: 1;
+    text-align: center;
+    font-weight: 600;
+}
+
+.calendar-nav {
+    width: 28px;
+    height: 28px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.calendar-nav:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.calendar-nav:disabled {
+    color: #ccc;
+    cursor: not-allowed;
+}
+
+.calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+}
+
+.calendar-weekday {
+    padding: 4px 0;
+    color: #888;
+    font-size: 12px;
+    text-align: center;
+}
+
+.calendar-day {
+    aspect-ratio: 1;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    color: #222;
+    cursor: pointer;
+}
+
+.calendar-day:hover:not(:disabled) {
+    background: #eee;
+}
+
+/* 沒有行情的日子：反灰、不能點。當月與非當月的灰再分深淺，才看得出月份邊界。 */
+.calendar-day:disabled {
+    color: #bbb;
+    cursor: not-allowed;
+}
+
+.calendar-day.other-month {
+    color: #ccc;
+}
+
+.calendar-day.other-month:disabled {
+    color: #e0e0e0;
+}
+
+.calendar-day.selected {
+    background: #222;
+    color: white;
+}
+
+.calendar-hint {
+    margin: 10px 0 0;
+    color: #888;
+    font-size: 12px;
+    text-align: center;
+}

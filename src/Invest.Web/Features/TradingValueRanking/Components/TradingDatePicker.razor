@@ -1,0 +1,146 @@
+@* 交易日選擇器：按鈕按下去跳出月曆，沒有行情的日子反灰。 *@
+
+<div class="date-picker">
+    @* 前後交易日各一顆按鈕，看連續幾天的變化不必每次開月曆。 *@
+    <button type="button" class="date-step" title="前一個交易日"
+            disabled="@(!CanStep(-1))" @onclick="() => StepAsync(-1)">‹</button>
+
+    <button type="button" class="date-trigger" @onclick="() => _open = !_open">
+        <span>@(Value?.ToString("yyyy/MM/dd") ?? "選擇交易日")</span>
+        <span class="date-trigger-icon">▾</span>
+    </button>
+
+    <button type="button" class="date-step" title="後一個交易日"
+            disabled="@(!CanStep(1))" @onclick="() => StepAsync(1)">›</button>
+
+    @if (_open)
+    {
+        @* 點旁邊任何地方就收起來。用一層透明的底板接住點擊，不必動用 JS。 *@
+        <div class="calendar-backdrop" @onclick="() => _open = false"></div>
+
+        <div class="calendar">
+            <div class="calendar-header">
+                <button type="button" class="calendar-nav" disabled="@(!CanMove(-1))"
+                        @onclick="() => Move(-1)">‹</button>
+
+                <span class="calendar-title">@_month.ToString("yyyy 年 M 月")</span>
+
+                <button type="button" class="calendar-nav" disabled="@(!CanMove(1))"
+                        @onclick="() => Move(1)">›</button>
+            </div>
+
+            <div class="calendar-grid">
+                @foreach (var weekday in Weekdays)
+                {
+                    <span class="calendar-weekday">@weekday</span>
+                }
+
+                @foreach (var day in Days())
+                {
+                    <button type="button" class="@DayClass(day)"
+                            disabled="@(!_available.Contains(day))"
+                            @onclick="() => SelectAsync(day)">
+                        @day.Day
+                    </button>
+                }
+            </div>
+
+            <p class="calendar-hint">@Hint</p>
+        </div>
+    }
+</div>
+
+@code {
+    private static readonly string[] Weekdays = ["日", "一", "二", "三", "四", "五", "六"];
+
+    /// <summary>有行情、可以點的交易日，由舊到新。</summary>
+    [Parameter, EditorRequired]
+    public IReadOnlyList<DateOnly> AvailableDates { get; set; } = [];
+
+    [Parameter]
+    public DateOnly? Value { get; set; }
+
+    [Parameter]
+    public EventCallback<DateOnly> ValueChanged { get; set; }
+
+    private HashSet<DateOnly> _available = [];
+    private DateOnly _month;
+    private bool _open;
+
+    protected override void OnParametersSet()
+    {
+        _available = [.. AvailableDates];
+
+        // 打開時要停在選中的那個月，而不是永遠從最新的月份開始。
+        var anchor = Value ?? AvailableDates.LastOrDefault(DateOnly.FromDateTime(DateTime.Today));
+        _month = new DateOnly(anchor.Year, anchor.Month, 1);
+    }
+
+    private string Hint => AvailableDates.Count == 0
+        ? "沒有可選的交易日"
+        : $"可選 {AvailableDates[0]:MM/dd} ~ {AvailableDates[^1]:MM/dd}，共 {AvailableDates.Count} 個交易日";
+
+    /// <summary>
+    /// 月曆固定畫 6 週 42 格，切換月份時高度才不會跳動。
+    /// 從當月 1 號往回退到那一週的星期日開始。
+    /// </summary>
+    private IEnumerable<DateOnly> Days()
+    {
+        var start = _month.AddDays(-(int)_month.DayOfWeek);
+
+        return Enumerable.Range(0, 42).Select(start.AddDays);
+    }
+
+    private string DayClass(DateOnly day)
+    {
+        var classes = "calendar-day";
+
+        if (day.Month != _month.Month)
+        {
+            classes += " other-month";
+        }
+
+        if (day == Value)
+        {
+            classes += " selected";
+        }
+
+        return classes;
+    }
+
+    /// <summary>可選範圍以外的月份沒有東西可點，直接把箭頭停用，不讓人翻進空月份。</summary>
+    private bool CanMove(int months)
+    {
+        if (AvailableDates.Count == 0)
+        {
+            return false;
+        }
+
+        var target = _month.AddMonths(months);
+
+        return months < 0
+            ? target >= new DateOnly(AvailableDates[0].Year, AvailableDates[0].Month, 1)
+            : target <= new DateOnly(AvailableDates[^1].Year, AvailableDates[^1].Month, 1);
+    }
+
+    private void Move(int months) => _month = _month.AddMonths(months);
+
+    private int CurrentIndex => Enumerable
+        .Range(0, AvailableDates.Count)
+        .FirstOrDefault(index => AvailableDates[index] == Value, -1);
+
+    private bool CanStep(int direction)
+    {
+        var target = CurrentIndex + direction;
+
+        return CurrentIndex >= 0 && target >= 0 && target < AvailableDates.Count;
+    }
+
+    private Task StepAsync(int direction) => ValueChanged.InvokeAsync(AvailableDates[CurrentIndex + direction]);
+
+    private async Task SelectAsync(DateOnly day)
+    {
+        _open = false;
+        await ValueChanged.InvokeAsync(day);
+    }
+}

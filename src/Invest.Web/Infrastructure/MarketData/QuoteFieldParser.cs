@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 
 namespace Invest.Web.Infrastructure.MarketData;
 
@@ -34,6 +35,29 @@ internal static class QuoteFieldParser
     public static decimal ParseDecimal(string? raw) => ParseNullableDecimal(raw) ?? 0m;
 
     public static int ParseInt(string? raw) => (int)ParseDecimal(raw);
+
+    /// <summary>
+    /// 取出表格中的一格。同一份報表裡多半是字串，但櫃買有些欄位（例如成交日期）
+    /// 直接給數字，統一在這裡吸收掉型別差異。
+    /// </summary>
+    public static string? ReadCell(JsonElement row, int index)
+    {
+        if (row.ValueKind != JsonValueKind.Array || index >= row.GetArrayLength())
+        {
+            return null;
+        }
+
+        var cell = row[index];
+
+        return cell.ValueKind switch
+        {
+            JsonValueKind.String => cell.GetString(),
+            JsonValueKind.Number => cell.GetRawText(),
+            _ => null
+        };
+    }
+
+    public static decimal ParseCell(JsonElement row, int index) => ParseDecimal(ReadCell(row, index));
 
     /// <summary>
     /// 只保留一般股票：四位數字且不以 0 開頭。

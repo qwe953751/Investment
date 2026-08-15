@@ -7,4 +7,14 @@
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 行情解析的細節（欄位剖析、非一般交易的累加）是 internal，但正是最需要測試的部分。 -->
+    <InternalsVisibleTo Include="Invest.Web.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 靜態網站的頁面檔案。內嵌進組件，export 指令才不必猜工作目錄在哪。 -->
+    <EmbeddedResource Include="Infrastructure/StaticSite/Assets/*" />
+  </ItemGroup>
+
 </Project>

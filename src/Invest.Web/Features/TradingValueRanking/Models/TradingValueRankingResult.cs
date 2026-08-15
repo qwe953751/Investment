@@ -39,6 +39,13 @@ public sealed class TradingValueRankingResult
 
     public IReadOnlyList<StockRankingRow> Rows { get; init; } = [];
 
+    /// <summary>
+    /// 通過篩選的每一檔在這次查詢下的名次，不受 <see cref="Rows"/> 的筆數上限截斷。
+    /// 鎖定的個股就算掉出前 100 名，也要能告訴使用者它現在排第幾。
+    /// </summary>
+    public IReadOnlyDictionary<string, int> RankByTicker { get; init; }
+        = new Dictionary<string, int>();
+
     public static TradingValueRankingResult InsufficientData(
         int periodDays,
         RankingMode mode,

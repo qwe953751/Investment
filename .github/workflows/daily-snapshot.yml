@@ -1,0 +1,92 @@
+# 每天在 GitHub 上自己回補行情、重算排行、發佈靜態網站，本機不用開機。
+#
+# 行情快取放在同一個 repo 的 data 分支（`imports/yyyy-MM-dd.json`），
+# 開跑前取下來、回補完推回去，所以每天只需要下載新增的那一天。
+# 快取不放進 main 是因為它每天都在長，塞進原始碼的歷史裡會讓 clone 越來越重。
+
+name: 每日排行快照
+
+on:
+  schedule:
+    # 台北時間 18:00。收盤行情大約下午三點公布，留三小時緩衝。
+    - cron: '0 10 * * 1-5'
+
+  # 想立刻更新時可以手動觸發，也可以指定要回補幾個交易日。
+  workflow_dispatch:
+    inputs:
+      trading-days:
+        description: 回補幾個交易日（從今天往回）
+        default: '240'
+
+permissions:
+  contents: write
+
+# 兩次執行重疊的話會同時寫 data 分支，一定有一邊 push 失敗。
+concurrency:
+  group: daily-snapshot
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      # 官方行情以台北時間為準，回補的「今天」也必須是台北的今天。
+      TZ: Asia/Taipei
+      TRADING_DAYS: ${{ inputs.trading-days || '240' }}
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 取出行情快取
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+          # 等一下要從這裡 push，淺層 clone 有機會被拒絕。
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 驗證計算公式
+        run: dotnet test -c Release
+
+      - name: 回補行情
+        run: dotnet run -c Release --project src/Invest.Web -- backfill "$TRADING_DAYS"
+
+      - name: 保存行情快取
+        working-directory: data
+        run: |
+          git add -A
+
+          # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
+          # 也不要把「刪掉歷史」這件事推上去。
+          if git diff --cached --name-only --diff-filter=D | grep -q .; then
+              echo "偵測到行情檔案被刪除，中止：" >&2
+              git diff --cached --name-only --diff-filter=D >&2
+              exit 1
+          fi
+
+          if git diff --cached --quiet; then
+              echo "沒有新的交易日，快取不變。"
+              exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -qm "行情快取 $(date +%Y-%m-%d)"
+          git push -q
+
+      - name: 輸出靜態網站
+        run: dotnet run -c Release --project src/Invest.Web -- export "$GITHUB_WORKSPACE/publish/site"
+
+      - name: 發佈到 GitHub Pages
+        env:
+          GH_PAGES_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          scripts/publish-gh-pages.sh publish/site

@@ -1,0 +1,312 @@
+using System.Globalization;
+using System.Reflection;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Invest.Web.Features.TradingValueRanking.Models;
+using Invest.Web.Features.TradingValueRanking.Services;
+
+namespace Invest.Web.Infrastructure.StaticSite;
+
+/// <summary>
+/// 把排行榜輸出成一份純靜態網站。
+///
+/// 網站要在「本機電腦關機時也看得到」，但排行頁是 Blazor Interactive Server，
+/// 每次互動都得回伺服器算，本機不開就沒得看。與其為了這件事把整個專案改成
+/// WebAssembly（行情要整包塞進瀏覽器），不如在本機把所有篩選組合先算好，
+/// 輸出成靜態 JSON 丟到免費的靜態空間。
+///
+/// 每個「交易日 × 期間」輸出一份完整名單：不篩市場、不設門檻、不截斷筆數，
+/// 每一列同時帶著兩種排行模式的排序數字。市場、門檻與模式由前端就地篩選與排序，
+/// 所以門檻可以是使用者自己輸入的任意金額，不必事先為每個金額各存一份檔案。
+///
+/// 排行的計算仍然只有這一份 C#；前端只做「篩選、排序、編號、套顯示格式」這幾件事。
+/// 這幾件事的結果都可以拿舊版由 C# 事先算好的檔案逐格比對驗證。
+/// </summary>
+public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
+{
+    /// <summary>
+    /// 與排行頁上的按鈕一致。
+    /// </summary>
+    private static readonly int[] PeriodDayOptions = [1, 5, 10, 20, 60];
+
+    /// <summary>
+    /// 門檻按鈕的金額，單位為萬元（平均每日）。使用者也可以直接輸入任意金額。
+    /// </summary>
+    private static readonly int[] ThresholdOptionsInTenThousand = [0, 10_000, 100_000, 1_000_000];
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+
+        // 不轉義中文。轉義後檔案會膨脹三倍，而且用編輯器打開完全看不懂。
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    public async Task<StaticSiteExportReport> ExportAsync(
+        string outputDirectory,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var dataDirectory = Path.Combine(outputDirectory, "data");
+        Directory.CreateDirectory(dataDirectory);
+
+        var dataSet = await ranking.GetDataSetAsync(cancellationToken);
+        var tradingDates = dataSet.DailyTrading
+            .Select(trading => trading.TradingDate)
+            .Distinct()
+            .Order()
+            .ToArray();
+
+        var selectableDates = RankingDates.Selectable(tradingDates);
+        var fileCount = 0;
+
+        var generatedAt = DateTimeOffset.Now;
+
+        // 這份快照的版本號。資料檔、CSS 與 JS 的網址都會帶上它：
+        // 重新發佈後版本號一變，網址跟著變，瀏覽器手上的舊檔就自動失效。
+        var version = generatedAt.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
+
+        foreach (var date in selectableDates)
+        {
+            // 這個交易日往回總共有幾天可用，決定了哪些期間算得出來。
+            var historyLength = tradingDates.Count(tradingDate => tradingDate <= date);
+
+            foreach (var periodDays in PeriodDayOptions)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // 完整名單：不篩市場、不設門檻、不截斷。模式固定成成交熱度，
+                // 因為兩種模式的差別只在排序，而排序交給前端做。
+                var query = new RankingQuery
+                {
+                    PeriodDays = periodDays,
+                    EndDate = date,
+                    Mode = RankingMode.TradingHeat,
+                    Market = MarketFilter.All,
+                    MinimumAverageDailyTradingValue = 0m,
+                    TopCount = int.MaxValue
+                };
+
+                var key = $"{periodDays}-{date:yyyy-MM-dd}";
+                var result = await ranking.GetRankingAsync(query, cancellationToken);
+
+                await WriteJsonAsync(
+                    Path.Combine(dataDirectory, key + ".json"),
+                    ToExport(key, periodDays, historyLength, result),
+                    cancellationToken);
+
+                fileCount++;
+            }
+
+            progress?.Report($"{date:yyyy-MM-dd} 完成（累計 {fileCount} 個檔案）");
+        }
+
+        await WriteJsonAsync(
+            Path.Combine(outputDirectory, "manifest.json"),
+            new ManifestExport(
+                // 靜態網站沒有伺服器可以問「這份資料多新」，所以把產生時間寫進檔案裡。
+                generatedAt.ToString("yyyy-MM-dd HH:mm"),
+                version,
+                tradingDates.Length,
+                tradingDates.Length > 0 ? tradingDates[^1].ToString("yyyy/MM/dd") : "—",
+                dataSet.Stocks.Count,
+                ToThresholdExports(),
+                [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))]),
+            cancellationToken);
+
+        var assetNames = await WriteEmbeddedAssetsAsync(outputDirectory, version, cancellationToken);
+        progress?.Report($"已寫出頁面檔案：{string.Join("、", assetNames)}");
+
+        return new StaticSiteExportReport(outputDirectory, fileCount, selectableDates.Count, tradingDates.Length);
+    }
+
+    /// <summary>
+    /// 頁面本身（HTML / CSS / JS）以內嵌資源的方式跟著組件走，
+    /// 這樣不論從哪個工作目錄執行 export 都找得到。
+    ///
+    /// index.html 裡的 CSS 與 JS 網址會被補上版本號。少了這一步，
+    /// 瀏覽器可能拿到新的 index.html 卻配上快取裡的舊 site.js，
+    /// 畫面就會是「新版頁面、舊版按鈕、抓不到資料」。
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> WriteEmbeddedAssetsAsync(
+        string outputDirectory,
+        string version,
+        CancellationToken cancellationToken)
+    {
+        const string prefix = "Invest.Web.Infrastructure.StaticSite.Assets.";
+
+        var assembly = typeof(StaticSiteExporter).GetTypeInfo().Assembly;
+        var written = new List<string>();
+
+        foreach (var resourceName in assembly.GetManifestResourceNames())
+        {
+            if (!resourceName.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var fileName = resourceName[prefix.Length..];
+            var path = Path.Combine(outputDirectory, fileName);
+
+            await using var source = assembly.GetManifestResourceStream(resourceName)!;
+
+            if (fileName == "index.html")
+            {
+                using var reader = new StreamReader(source);
+                var html = await reader.ReadToEndAsync(cancellationToken);
+
+                await File.WriteAllTextAsync(
+                    path,
+                    html.Replace("\"site.css\"", $"\"site.css?v={version}\"")
+                        .Replace("\"site.js\"", $"\"site.js?v={version}\""),
+                    cancellationToken);
+            }
+            else
+            {
+                await using var target = File.Create(path);
+                await source.CopyToAsync(target, cancellationToken);
+            }
+
+            written.Add(fileName);
+        }
+
+        return written;
+    }
+
+    private static async Task WriteJsonAsync<T>(string path, T value, CancellationToken cancellationToken)
+    {
+        await using var stream = File.Create(path);
+        await JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken);
+    }
+
+    /// <summary>
+    /// 資金加速模式的前期排名本身也是增減率，需要三段期間；
+    /// 成交熱度只需要兩段。同一份檔案要餵兩種模式，所以兩邊的可用狀態都要寫進去。
+    /// </summary>
+    private static RankingExport ToExport(
+        string key,
+        int periodDays,
+        int historyLength,
+        TradingValueRankingResult result)
+    {
+        var accelerationAvailable = historyLength >= periodDays * 3;
+
+        return new RankingExport(
+            key,
+            result.HasSufficientData,
+            result.InsufficientDataMessage,
+            accelerationAvailable,
+            accelerationAvailable
+                ? null
+                : TradingValueRankingResult
+                    .InsufficientData(periodDays, RankingMode.CapitalAcceleration, historyLength, periodDays * 3)
+                    .InsufficientDataMessage,
+            RankingFormatter.ToPeriodText(result.CurrentPeriodStart, result.CurrentPeriodEnd),
+            RankingFormatter.ToPeriodText(result.PreviousPeriodStart, result.PreviousPeriodEnd),
+            result.HasSufficientData
+                ? RankingFormatter.ToBillionText(result.MarketTotalTradingValue / result.PeriodDays, 0)
+                : "—",
+            [.. result.Rows.Select(ToExport)]);
+    }
+
+    /// <summary>
+    /// 一列只寫數字，顯示文字由前端套用格式。
+    ///
+    /// 這裡本來連文字都先格式化好，但一份檔案要裝下全市場兩千檔，
+    /// 帶著文字的話單檔就將近 1 MB，可選的交易日一多整包網站就撐不住。
+    /// 只留數字後單檔大約四分之一，交易日才放得下三個月。
+    ///
+    /// 名次與名次變化也不在這裡：它們會隨著市場與門檻篩選改變，只能等前端篩完才算得出來。
+    /// </summary>
+    private static RowExport ToExport(StockRankingRow row) => new(
+        row.Ticker,
+        row.Name,
+        row.Market == Domain.Stocks.Market.Twse ? "twse" : "tpex",
+        Math.Round(row.AverageDailyTradingValue),
+        Math.Round(row.PreviousAverageDailyTradingValue),
+        Round(row.TradingValueChangeRate),
+        Round(row.PreviousTradingValueChangeRate),
+        RoundSignificant(row.MarketShare),
+        RoundSignificant(row.MarketShareChange),
+        Round(row.PriceChangeRate),
+        row.ClosePrice);
+
+    /// <summary>
+    /// 比率算出來會帶著 28 位小數，整包 JSON 因此膨脹一倍。
+    /// 這些數字只拿來排序，不拿來顯示（顯示文字另外給），八位小數綽綽有餘。
+    /// </summary>
+    private static decimal Round(decimal value) => Math.Round(value, 8);
+
+    private static decimal? Round(decimal? value) => value is { } number ? Round(number) : null;
+
+    /// <summary>
+    /// 市佔率是萬分之一等級的小數，固定八位小數只剩兩三位有效數字，
+    /// 四捨五入後再套顯示格式會和排行頁差一個位數（0.00 % 變成 0.01 %）。
+    /// 改用有效位數，小數字保留精度，大數字也不會變長。
+    /// </summary>
+    private static decimal RoundSignificant(decimal value, int significantDigits = 8)
+    {
+        if (value == 0m)
+        {
+            return 0m;
+        }
+
+        var magnitude = (int)Math.Floor(Math.Log10((double)Math.Abs(value)));
+
+        return Math.Round(value, Math.Clamp(significantDigits - 1 - magnitude, 0, 28));
+    }
+
+    /// <summary>
+    /// 門檻按鈕的文字。單位就是表格上那一欄「平均每日成交值」，
+    /// 用 <see cref="RankingFormatter"/> 產生，前端不自己換算單位。
+    /// </summary>
+    private static IReadOnlyList<ThresholdExport> ToThresholdExports()
+        => [.. ThresholdOptionsInTenThousand.Select(threshold => new ThresholdExport(
+            threshold,
+            RankingFormatter.ToThresholdText(threshold * 10_000m)))];
+
+    private sealed record ManifestExport(
+        string GeneratedAt,
+        string Version,
+        int TradingDayCount,
+        string LatestTradingDate,
+        int StockCount,
+        IReadOnlyList<ThresholdExport> Thresholds,
+
+        // 可以點的交易日（yyyy-MM-dd），由舊到新。月曆上不在這份清單裡的日子一律反灰。
+        IReadOnlyList<string> Dates);
+
+    private sealed record ThresholdExport(int Key, string Text);
+
+    private sealed record RankingExport(
+        string Key,
+        bool HasSufficientData,
+        string? Message,
+        bool HasAccelerationData,
+        string? AccelerationMessage,
+        string CurrentPeriod,
+        string PreviousPeriod,
+        string MarketDailyAverage,
+        IReadOnlyList<RowExport> Rows);
+
+    private sealed record RowExport(
+        string Ticker,
+        string Name,
+        string Market,
+        decimal Value,
+        decimal PreviousValue,
+        decimal? Rate,
+        decimal? PreviousRate,
+        decimal Share,
+        decimal ShareChange,
+        decimal? PriceChange,
+        decimal? Close);
+}
+
+public sealed record StaticSiteExportReport(
+    string OutputDirectory,
+    int FileCount,
+    int SelectableDateCount,
+    int TradingDayCount);

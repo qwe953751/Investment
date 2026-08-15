@@ -17,8 +17,10 @@ public sealed class TradingValueRankingCalculator
         var periodDays = query.PeriodDays;
         ArgumentOutOfRangeException.ThrowIfLessThan(periodDays, 1);
 
+        // 基準日之後的行情一律當作還沒發生，往回選日期才會得到當時看到的排行。
         var dates = dataSet.DailyTrading
             .Select(trading => trading.TradingDate)
+            .Where(date => query.EndDate is not { } endDate || date <= endDate)
             .Distinct()
             .OrderBy(date => date)
             .ToArray();
@@ -36,7 +38,9 @@ public sealed class TradingValueRankingCalculator
 
         var current = dates[^periodDays..];
         var previous = dates[^(periodDays * 2)..^periodDays];
-        DateOnly[] prior = query.Mode == RankingMode.CapitalAcceleration
+        // 再前一期只在資金加速模式才影響排序，但成交熱度模式也一併算出來：
+        // 靜態網站的一份檔案要同時餵兩種模式，前期增減率必須跟著每一列走。
+        DateOnly[] prior = dates.Length >= periodDays * 3
             ? dates[^(periodDays * 3)..^(periodDays * 2)]
             : [];
 
@@ -108,6 +112,7 @@ public sealed class TradingValueRankingCalculator
                 AverageDailyTradingValue = candidate.Current.AverageDailyTradingValue,
                 PreviousAverageDailyTradingValue = candidate.Previous.AverageDailyTradingValue,
                 TradingValueChangeRate = candidate.ChangeRate,
+                PreviousTradingValueChangeRate = candidate.PreviousChangeRate,
                 MarketShare = Share(candidate.Current.TotalTradingValue, marketTotal),
                 PreviousMarketShare = Share(candidate.Previous.TotalTradingValue, previousMarketTotal),
                 PriceChangeRate = candidate.Current.PriceChangeRate,
@@ -128,7 +133,10 @@ public sealed class TradingValueRankingCalculator
             PreviousPeriodEnd = previous[^1],
             MarketTotalTradingValue = marketTotal,
             RankedStockCount = candidates.Count,
-            Rows = rows
+            Rows = rows,
+            RankByTicker = ranked
+                .Select((candidate, index) => (candidate.Stock.Ticker, Rank: index + 1))
+                .ToDictionary(entry => entry.Ticker, entry => entry.Rank)
         };
     }
 
@@ -174,13 +182,21 @@ public sealed class TradingValueRankingCalculator
         {
             decimal total = 0m;
             var activeDays = 0;
-            decimal? startClose = null;
+            decimal? baselineClose = null;
             decimal? endClose = null;
 
             foreach (var row in rows)
             {
                 if (row.TradingDate < start)
                 {
+                    // 期間漲跌的基準是「進入這段期間之前」的最後一個收盤價，不是期間內的第一天。
+                    // 用期間內第一天當基準的話，那一天自己的漲跌就被吃掉了，
+                    // 而且期間長度為 1 時起點等於終點，漲跌會永遠是 0%。
+                    if (row.ClosePrice is { } previousClose)
+                    {
+                        baselineClose = previousClose;
+                    }
+
                     continue;
                 }
 
@@ -198,7 +214,6 @@ public sealed class TradingValueRankingCalculator
 
                 if (row.ClosePrice is { } close)
                 {
-                    startClose ??= close;
                     endClose = close;
                 }
             }
@@ -214,7 +229,7 @@ public sealed class TradingValueRankingCalculator
                 // 分母用區間實際的交易日數，而不是使用者選的 N，遇到資料缺漏時才不會失真。
                 AverageDailyTradingValue = total / window.Length,
                 ActiveDayCount = activeDays,
-                StartClose = startClose,
+                BaselineClose = baselineClose,
                 EndClose = endClose
             };
         }
@@ -232,12 +247,16 @@ public sealed class TradingValueRankingCalculator
 
         public int ActiveDayCount { get; init; }
 
-        public decimal? StartClose { get; init; }
+        /// <summary>
+        /// 進入這段期間之前的最後一個收盤價。期間漲跌以此為基準。
+        /// 這檔股票在期間之前完全沒有收盤價（例如期間內才上市）時為 null。
+        /// </summary>
+        public decimal? BaselineClose { get; init; }
 
         public decimal? EndClose { get; init; }
 
-        public decimal? PriceChangeRate => StartClose is > 0m && EndClose is { } end
-            ? (end - StartClose.Value) / StartClose.Value
+        public decimal? PriceChangeRate => BaselineClose is > 0m && EndClose is { } end
+            ? (end - BaselineClose.Value) / BaselineClose.Value
             : null;
     }
 

@@ -60,6 +60,23 @@ public static class RankingFormatter
 
     public static string ToTrendCssClass(int? value) => ToTrendCssClass((decimal?)value);
 
+    /// <summary>
+    /// 成交門檻的按鈕文字。金額不到一億時用萬元，否則用億元，並且去掉沒有意義的小數位。
+    /// </summary>
+    public static string ToThresholdText(decimal amountInDollars)
+    {
+        if (amountInDollars <= 0)
+        {
+            return "不限";
+        }
+
+        return amountInDollars < OneHundredMillion
+            ? Trim(amountInDollars / 10_000m) + " 萬"
+            : Trim(amountInDollars / OneHundredMillion) + " 億";
+
+        static string Trim(decimal value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
     public static string ToMarketText(Market market) => market switch
     {
         Market.Twse => "上市",
@@ -67,8 +84,13 @@ public static class RankingFormatter
         _ => "—"
     };
 
-    public static string ToPeriodText(DateOnly? start, DateOnly? end)
-        => start is null || end is null
-            ? "—"
-            : $"{start:yyyy/MM/dd} ~ {end:yyyy/MM/dd}";
+    /// <summary>
+    /// 期間文字。期間只有一天時不重複印同一個日期。
+    /// </summary>
+    public static string ToPeriodText(DateOnly? start, DateOnly? end) => (start, end) switch
+    {
+        (null, _) or (_, null) => "—",
+        var (from, to) when from == to => $"{from:yyyy/MM/dd}",
+        var (from, to) => $"{from:yyyy/MM/dd} ~ {to:yyyy/MM/dd}"
+    };
 }

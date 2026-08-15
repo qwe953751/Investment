@@ -7,12 +7,15 @@ namespace Invest.Web.Infrastructure.MarketData;
 /// <summary>
 /// 逐日下載上市與上櫃行情並寫入快取。
 ///
-/// 官方 API 一次只給一天，所以回補是「從最近的日期往回走，每天打兩次請求」。
+/// 官方 API 一次只給一天，所以回補是「從最近的日期往回走，每天打一輪請求」。
+/// 一輪包含兩個市場的收盤行情，加上七份用來扣除非一般交易的報表。
 /// 已經下載過的日期會直接略過，因此這個方法可以重複執行，中斷後再跑會從斷點繼續。
 /// </summary>
 public sealed class MarketDataDownloader(
     TwseDailyQuoteClient twseClient,
     TpexDailyQuoteClient tpexClient,
+    TwseNonRegularTradingClient twseNonRegularClient,
+    TpexNonRegularTradingClient tpexNonRegularClient,
     DailyQuoteStore store,
     IOptions<MarketDataOptions> options,
     ILogger<MarketDataDownloader> logger)
@@ -54,14 +57,22 @@ public sealed class MarketDataDownloader(
             {
                 var cached = await store.LoadAsync(date, cancellationToken);
 
-                if (cached?.IsTradingDay == true)
+                // 非交易日的判定與成交值定義無關，不論版本都能沿用。
+                if (cached is { IsTradingDay: false })
+                {
+                    continue;
+                }
+
+                if (cached is { SchemaVersion: >= DailyQuoteSnapshot.CurrentSchemaVersion })
                 {
                     report.TradingDayCount++;
                     report.SkippedCount++;
                     progress?.Report($"{date:yyyy-MM-dd} 已存在，略過（累計 {report.TradingDayCount} 個交易日）");
+                    continue;
                 }
 
-                continue;
+                // 舊版格式或檔案損毀，往下重新下載並覆蓋。
+                progress?.Report($"{date:yyyy-MM-dd} 是舊版格式，重新下載");
             }
 
             var snapshot = await DownloadDayAsync(date, progress, cancellationToken);
@@ -128,23 +139,86 @@ public sealed class MarketDataDownloader(
         // 只有單邊沒資料代表那一邊出了問題，不應該把當天記成休市。
         if (twse.Count == 0 && tpex.Count == 0)
         {
+            // 但今天的收盤行情要下午才會公布，公布前抓也是空的。
+            // 非交易日一旦寫進快取就不會再重試，所以還沒過完的日期一律不下這個判斷。
+            if (date >= DateOnly.FromDateTime(DateTime.Today))
+            {
+                progress?.Report($"{date:yyyy-MM-dd} 官方尚未公布收盤行情，這次先不記錄");
+                return null;
+            }
+
             return DailyQuoteSnapshot.NonTradingDay(date);
         }
 
+        var twseNonRegular = await WithRetryAsync(
+            () => twseNonRegularClient.GetNonRegularTradingAsync(date, cancellationToken),
+            $"TWSE {date:yyyy-MM-dd} 非一般交易",
+            progress,
+            cancellationToken);
+
+        if (twseNonRegular is null)
+        {
+            return null;
+        }
+
+        await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+
+        var tpexNonRegular = await WithRetryAsync(
+            () => tpexNonRegularClient.GetNonRegularTradingAsync(date, cancellationToken),
+            $"TPEx {date:yyyy-MM-dd} 非一般交易",
+            progress,
+            cancellationToken);
+
+        if (tpexNonRegular is null)
+        {
+            return null;
+        }
+
+        await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+
         return new DailyQuoteSnapshot
         {
+            SchemaVersion = DailyQuoteSnapshot.CurrentSchemaVersion,
             TradingDate = date,
             IsTradingDay = true,
             DownloadedAt = DateTimeOffset.Now,
-            Quotes = [.. twse, .. tpex]
+            Quotes =
+            [
+                .. ToRegularTradingOnly(twse, twseNonRegular),
+                .. ToRegularTradingOnly(tpex, tpexNonRegular)
+            ]
         };
     }
 
-    private async Task<IReadOnlyList<DailyQuote>?> WithRetryAsync(
-        Func<Task<IReadOnlyList<DailyQuote>>> action,
+    /// <summary>
+    /// 從收盤行情扣掉零股、盤後定價與鉅額交易，只留下一般交易。
+    /// </summary>
+    private static IEnumerable<DailyQuote> ToRegularTradingOnly(
+        IReadOnlyList<DailyQuote> quotes,
+        IReadOnlyDictionary<string, NonRegularTrading> nonRegular)
+    {
+        return quotes.Select(quote =>
+        {
+            if (!nonRegular.TryGetValue(quote.Ticker, out var excluded))
+            {
+                return quote;
+            }
+
+            // 官方各報表偶爾會有幾塊錢的四捨五入差異，夾到 0 以免出現負的成交值。
+            return quote with
+            {
+                TradingValue = Math.Max(0m, quote.TradingValue - excluded.TradingValue),
+                TradingVolume = Math.Max(0m, quote.TradingVolume - excluded.TradingVolume)
+            };
+        });
+    }
+
+    private async Task<T?> WithRetryAsync<T>(
+        Func<Task<T>> action,
         string description,
         IProgress<string>? progress,
         CancellationToken cancellationToken)
+        where T : class
     {
         for (var attempt = 1; attempt <= _options.MaxRetryCount; attempt++)
         {
