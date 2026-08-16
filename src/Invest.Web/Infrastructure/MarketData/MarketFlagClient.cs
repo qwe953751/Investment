@@ -4,17 +4,21 @@ using System.Text.RegularExpressions;
 namespace Invest.Web.Infrastructure.MarketData;
 
 /// <summary>
-/// 目前處於處置期間的個股。
+/// 會壓低成交機會的交易限制：處置與全額交割。
 ///
-/// 處置股會被改成分盤撮合（現在是每 2 分鐘一次，115/08/10 之前第一次處置是每 5 分鐘），
-/// 成交機會被人為壓低，所以它在成交值排行上的名次不能照字面讀。標記出來是為了提醒這件事。
+/// 處置股會被改成分盤撮合（現在是每 2 分鐘一次，115/08/10 之前第一次處置是每 5 分鐘）；
+/// 全額交割股則是買賣都要先付足款券，願意接手的人本來就少。
+/// 兩者都讓成交值不是自由競價的結果，所以它在排行上的名次不能照字面讀。
 ///
-/// 只標處置，不標注意股：注意股不改變撮合方式，成交值照樣是自由競價的結果。
+/// 不標注意股：注意股不改變撮合方式，也不改變交割條件。
 /// </summary>
-public sealed partial class DispositionClient(HttpClient httpClient, ILogger<DispositionClient> logger)
+public sealed partial class MarketFlagClient(HttpClient httpClient, ILogger<MarketFlagClient> logger)
 {
     private const string TwseUrl = "https://www.twse.com.tw/rwd/zh/announcement/punish?response=json";
     private const string TpexUrl = "https://www.tpex.org.tw/openapi/v1/tpex_disposal_information";
+
+    private const string TwseAlteredUrl = "https://openapi.twse.com.tw/v1/exchangeReport/TWT85U";
+    private const string TpexAlteredUrl = "https://www.tpex.org.tw/openapi/v1/tpex_cmode";
 
     /// <summary>
     /// 撮合頻率只出現在處置內容那段自由文字裡，欄位本身沒有。
@@ -47,6 +51,67 @@ public sealed partial class DispositionClient(HttpClient httpClient, ILogger<Dis
 
         return result;
     }
+
+    /// <summary>
+    /// 目前被列為全額交割（變更交易方法）的個股代號。
+    ///
+    /// 上市那份清單裡的每一列都是變更交易方法的標的，所以整份收下；
+    /// 上櫃那份還混著分盤交易與管理股票，只有 AlteredTrading 是「Ｙ」的才算。
+    /// </summary>
+    public async Task<IReadOnlySet<string>> GetAlteredTradingAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var result = new SortedSet<string>(StringComparer.Ordinal);
+
+        foreach (var ticker in await ReadTwseAlteredAsync(cancellationToken))
+        {
+            result.Add(ticker);
+        }
+
+        foreach (var ticker in await ReadTpexAlteredAsync(cancellationToken))
+        {
+            result.Add(ticker);
+        }
+
+        logger.LogInformation("全額交割的個股：{Count} 檔。", result.Count);
+
+        return result;
+    }
+
+    private async Task<IReadOnlyList<string>> ReadTwseAlteredAsync(CancellationToken cancellationToken)
+    {
+        var document = await ReadJsonAsync(TwseAlteredUrl, cancellationToken);
+
+        if (document is null || document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return [.. document.RootElement.EnumerateArray()
+            .Select(item => Text(item, "Code")?.Trim())
+            .Where(QuoteFieldParser.IsCommonStockTicker)
+            .Select(ticker => ticker!)];
+    }
+
+    private async Task<IReadOnlyList<string>> ReadTpexAlteredAsync(CancellationToken cancellationToken)
+    {
+        var document = await ReadJsonAsync(TpexAlteredUrl, cancellationToken);
+
+        if (document is null || document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        // 全形的Ｙ，不是半形的 Y。
+        return [.. document.RootElement.EnumerateArray()
+            .Where(item => Text(item, "AlteredTrading")?.Trim() == "Ｙ")
+            .Select(item => Text(item, "SecuritiesCompanyCode")?.Trim())
+            .Where(QuoteFieldParser.IsCommonStockTicker)
+            .Select(ticker => ticker!)];
+    }
+
+    private static string? Text(JsonElement item, string property)
+        => item.TryGetProperty(property, out var value) ? value.GetString() : null;
 
     /// <summary>
     /// 同一檔可能同時有第一次與第二次處置的公告。留結束日最晚的那一筆，
@@ -126,9 +191,6 @@ public sealed partial class DispositionClient(HttpClient httpClient, ILogger<Dis
         }
 
         return dispositions;
-
-        static string? Text(JsonElement item, string property)
-            => item.TryGetProperty(property, out var value) ? value.GetString() : null;
     }
 
     private static Disposition? Parse(string? ticker, string? period, string? content)
@@ -236,7 +298,7 @@ public sealed partial class DispositionClient(HttpClient httpClient, ILogger<Dis
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or TaskCanceledException)
         {
-            logger.LogWarning(exception, "{Url} 讀不到處置資訊，這一次就不標記。", url);
+            logger.LogWarning(exception, "{Url} 讀不到交易限制資訊，這一次就不標記。", url);
 
             return null;
         }

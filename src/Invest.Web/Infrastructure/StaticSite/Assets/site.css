@@ -602,17 +602,31 @@ body {
     font-weight: 600;
 }
 
-/* 處置中的標記。要一眼掃得到（這一列的成交值不能照字面讀），但不能搶走股名。 */
+/* 交易限制的標記。自成一行掛在股名底下：放在股名左邊的話，有標記的那幾列會被往右推，
+   整欄的名字就對不齊了。 */
+.badges {
+    display: flex;
+    gap: 3px;
+    margin-top: 2px;
+}
+
 .badge {
-    display: inline-block;
-    margin-right: 4px;
     padding: 0 3px;
     border-radius: 3px;
-    background: #c62828;
     color: #fff;
     font-size: 11px;
     font-weight: 600;
-    vertical-align: 1px;
+    line-height: 15px;
+}
+
+/* 處置：撮合方式被改掉，影響最直接，用最重的顏色。 */
+.badge.disposition {
+    background: #c62828;
+}
+
+/* 全額交割：交割條件變嚴，影響間接一點，用次一級的顏色。 */
+.badge.altered {
+    background: #ef6c00;
 }
 
 .market {

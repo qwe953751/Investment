@@ -26,7 +26,7 @@ namespace Invest.Web.Infrastructure.StaticSite;
 /// </summary>
 public sealed class StaticSiteExporter(
     TradingValueRankingQueryService ranking,
-    DispositionClient disposition,
+    MarketFlagClient marketFlags,
     IConfiguration configuration)
 {
     /// <summary>
@@ -107,12 +107,14 @@ public sealed class StaticSiteExporter(
             progress?.Report($"{date:yyyy-MM-dd} 完成（累計 {fileCount} 個檔案）");
         }
 
-        // 處置清單放在 manifest 而不是每日資料檔裡：兩個交易所都只回「現在誰在處置中」，
+        // 交易限制放在 manifest 而不是每日資料檔裡：兩個交易所都只回「現在誰被限制」，
         // 沒有歷史查詢，所以它是一份當下的狀態，跟哪個基準日無關。盤中與盤後共用同一份。
-        var dispositions = await disposition.GetCurrentAsync(
+        var dispositions = await marketFlags.GetCurrentAsync(
             DateOnly.FromDateTime(generatedAt.Date), cancellationToken);
 
-        progress?.Report($"處置中的個股：{dispositions.Count} 檔");
+        var alteredTrading = await marketFlags.GetAlteredTradingAsync(cancellationToken);
+
+        progress?.Report($"處置中的個股：{dispositions.Count} 檔，全額交割：{alteredTrading.Count} 檔");
 
         await WriteJsonAsync(
             Path.Combine(outputDirectory, "manifest.json"),
@@ -126,7 +128,8 @@ public sealed class StaticSiteExporter(
                 ToThresholdExports(),
                 [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))],
                 ToSupabaseExport(),
-                ToDispositionExports(dispositions)),
+                ToDispositionExports(dispositions),
+                [.. alteredTrading]),
             cancellationToken);
 
         var assetNames = await WriteEmbeddedAssetsAsync(outputDirectory, version, cancellationToken);
@@ -329,7 +332,10 @@ public sealed class StaticSiteExporter(
         SupabaseExport? Supabase,
 
         // 目前處於處置期間的個股。撮合被改成人工分盤，成交值會被壓低，名次不能照字面讀。
-        IReadOnlyList<DispositionExport> Dispositions);
+        IReadOnlyList<DispositionExport> Dispositions,
+
+        // 目前被變更交易方法（全額交割）的個股。買賣都要先付足款券，願意接手的人本來就少。
+        IReadOnlyList<string> AlteredTrading);
 
     private sealed record ThresholdExport(int Key, string Text);
 

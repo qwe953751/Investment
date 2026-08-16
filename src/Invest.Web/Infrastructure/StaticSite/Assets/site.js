@@ -110,26 +110,37 @@ const toTaipeiText = iso => TAIPEI_TIME.format(new Date(iso));
 // 依正負決定顏色。null 與 0 都視為持平。
 const toTrendClass = value => (value > 0 ? 'positive' : value < 0 ? 'negative' : 'unchanged');
 
-// 處置中的個股，manifest 給的是「現在」誰在處置期間內，兩個交易所都沒有歷史查詢。
-// 處置期間的撮合會被改成人工分盤，成交機會被壓低，所以它在成交值排行上的名次不能照字面讀。
-// 只標處置，不標注意股：注意股不改變撮合方式，成交值照樣是自由競價的結果。
+// 會壓低成交機會的交易限制。manifest 給的是「現在」誰被限制，兩個交易所都沒有歷史查詢。
+// 處置是撮合被改成人工分盤，全額交割是買賣都要先付足款券——兩者都讓成交值不是自由競價的結果，
+// 所以這一列的名次不能照字面讀。不標注意股：它既不改撮合方式，也不改交割條件。
 let dispositions = new Map();
+let alteredTrading = new Set();
 
-function toDispositionBadge(ticker) {
+function toBadges(ticker) {
+    const badges = [];
     const entry = dispositions.get(ticker);
 
-    if (!entry) {
-        return null;
+    if (entry) {
+        const interval = missing(entry.matchingMinutes)
+            ? ''
+            : `，改以人工分盤撮合，約每 ${entry.matchingMinutes} 分鐘一次`;
+
+        badges.push({
+            text: '處置',
+            cls: 'disposition',
+            hint: `處置中：${entry.period}${interval}。成交機會被壓低，這一列的成交值與名次不能照字面讀。`
+        });
     }
 
-    const interval = missing(entry.matchingMinutes)
-        ? ''
-        : `，改以人工分盤撮合，約每 ${entry.matchingMinutes} 分鐘一次`;
+    if (alteredTrading.has(ticker)) {
+        badges.push({
+            text: '全額',
+            cls: 'altered',
+            hint: '全額交割（變更交易方法）：買賣都要先付足款券，不能用融資融券，願意接手的人本來就少，成交值天生偏低。'
+        });
+    }
 
-    return {
-        text: '處',
-        hint: `處置中：${entry.period}${interval}。成交機會被壓低，這一列的成交值與名次不能照字面讀。`
-    };
+    return badges;
 }
 
 const toRankChangeText = rankChange => (missing(rankChange)
@@ -143,7 +154,7 @@ const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。名稱前面的「處」代表這一檔目前處於處置期間。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badge: toDispositionBadge(row.ticker) }) },
+    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。名稱下面的「處置」與「全額」是目前的交易限制。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '平均每日成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
@@ -155,17 +166,16 @@ const COLUMNS = [
 
 // 盤中要跟過去期間比，卡在「今天還沒過完」：拿半天的量去比人家一整天的量一定小。
 // 解法是兩邊都改看比例——市場成交比的分子與分母取自同一輪，時段進度會自己約掉，
-// 所以 09:05 就能看，完全不依賴預估值。倍數那一欄才需要預估值，因此只能參考。
+// 所以 09:05 就能看，完全不依賴預估值。
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱前面的「處」代表這一檔目前處於處置期間。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badge: toDispositionBadge(row.ticker) }) },
+    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱下面的「處置」與「全額」是目前的交易限制。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '今日成交額（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '今日盤中的市場成交比 − 過去觀察期間的市場成交比，單位是百分點。正值代表今天這一檔吸走的資金比過去那段期間更多。過去期間沒有這一檔就顯示 —。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'estimate', title: '預估收盤（億）', fixed: true, hint: '把目前累計的成交額按時間比例推到 13:30 收盤：目前累計 ÷ 這一天已經過的時段比例。台股的量是 U 型的，開盤與尾盤爆量、中午乾涸，所以早盤會高估、中午會低估。這一欄只能參考，不能排序，排行榜一律以左邊的實際累計成交額為準。', value: row => row.estimate, cell: row => ({ text: row.estimate === null ? '—' : toBillionText(row.estimate), cls: 'numeric estimate' }) },
-    { key: 'multiple', title: '倍數', fixed: true, hint: '今日預估成交額 ÷ 過去觀察期間的平均每日成交值。分子是預估值，早盤會偏高，所以這一欄跟預估收盤一樣只能參考、不能排序；要看資金流向請看左邊的成交比變化。', value: row => row.multiple, cell: row => ({ text: missing(row.multiple) ? '—' : toFixedText(row.multiple, 2) + ' ×', cls: 'numeric estimate' }) },
     { key: 'price', title: '漲跌幅', hint: '相對昨日收盤價。尚未成交的個股沒有現價，顯示 —。', value: row => row.priceChange, cell: row => ({ text: toSignedPercentText(row.priceChange, 2), cls: 'numeric ' + toTrendClass(row.priceChange) }) },
     { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) }
 ];
@@ -768,19 +778,28 @@ function renderTable() {
         }
 
         for (const column of columns()) {
-            const { text, cls, badge } = column.cell(row);
+            const { text, cls, badges } = column.cell(row);
             const td = document.createElement('td');
             td.className = cls;
 
-            if (badge) {
-                const mark = document.createElement('span');
-                mark.className = 'badge';
-                mark.textContent = badge.text;
-                mark.dataset.hint = badge.hint;
-                td.append(mark);
-            }
-
             td.append(String(text));
+
+            // 標記排在名字底下自成一行，不放在名字左邊：放左邊的話有標記的那幾列會被往右推，
+            // 整欄的文字就對不齊了。
+            if (badges?.length) {
+                const group = document.createElement('span');
+                group.className = 'badges';
+
+                for (const badge of badges) {
+                    const mark = document.createElement('span');
+                    mark.className = 'badge ' + badge.cls;
+                    mark.textContent = badge.text;
+                    mark.dataset.hint = badge.hint;
+                    group.append(mark);
+                }
+
+                td.append(group);
+            }
             tr.append(td);
         }
 
@@ -947,7 +966,6 @@ async function loadIntraday(silent = false) {
 
         row.share = marketTotal > 0 ? row.value / marketTotal : null;
         row.shareChange = past && !missing(row.share) ? row.share - past.share : null;
-        row.multiple = past && past.value > 0 && row.estimate !== null ? row.estimate / past.value : null;
     }
 
     const candidates = rows.filter(row => state.market === 'all' || row.market === state.market);
@@ -1094,6 +1112,7 @@ async function start() {
     latestTradingDate = manifest.latestTradingDate;
     supabase = manifest.supabase ?? null;
     dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));
+    alteredTrading = new Set(manifest.alteredTrading ?? []);
     state.date = dates[dates.length - 1];
 
     snapshotNote =

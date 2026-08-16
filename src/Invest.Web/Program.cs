@@ -36,7 +36,7 @@ builder.Services.AddHttpClient<TwseDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseNonRegularTradingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexNonRegularTradingClient>(ConfigureQuoteClient);
-builder.Services.AddHttpClient<DispositionClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<MarketFlagClient>(ConfigureQuoteClient);
 
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
