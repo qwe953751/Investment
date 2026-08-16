@@ -603,6 +603,14 @@ body {
     line-height: 18px;
 }
 
+/* 右邊補一塊跟標記等寬的空白。左右對稱，股名才會落在欄位正中央、跟表頭對齊；
+   只留左邊的話整欄股名會被推右 11px。 */
+.name-cell::after {
+    content: '';
+    flex: none;
+    width: 17px;
+}
+
 .badges {
     display: flex;
     flex: none;
