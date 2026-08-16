@@ -1,0 +1,120 @@
+# 每週把最新的備份真的還原一次，確認它不只是「看起來像 SQL」，而是真的能重建資料庫。
+#
+# 還原目標是一個當場開、跑完就丟的 postgres 容器，碰不到 Supabase。
+# 真正要還原回 Supabase 的時候永遠是人工的：先出差異報告、經過同意才執行。
+
+name: 備份還原測試
+
+on:
+  schedule:
+    # 台北時間週日早上 8 點。這時候沒有盤後流程在跑。
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 取出備份快照
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+
+      - name: 挑出最新的備份
+        id: pick
+        run: |
+          latest=$(ls -1 data/snapshots/*.sql.gz 2>/dev/null | tail -1 || true)
+          if [ -z "$latest" ]; then
+              echo "snapshots/ 裡沒有備份，先讓每日流程跑過一次。" >&2
+              exit 1
+          fi
+          echo "檔案：$latest（$(du -h "$latest" | cut -f1)）"
+          echo "path=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: 檢查壓縮檔完整性
+        run: gzip -t "${{ steps.pick.outputs.path }}"
+
+      # psql 用容器裡的，版本跟 dump 對得起來。
+      # runner 內建的 client 版本比 Supabase 舊，會看不懂 \restrict 這類新指令。
+      - name: 起一個拋棄式資料庫
+        run: |
+          docker run -d --name restoretest \
+              -e POSTGRES_PASSWORD=restoretest \
+              postgres:17
+
+          for _ in $(seq 30); do
+              docker exec restoretest pg_isready -U postgres -q && break
+              sleep 2
+          done
+          docker exec restoretest pg_isready -U postgres
+
+      - name: 還原
+        run: |
+          gunzip -c "${{ steps.pick.outputs.path }}" > /tmp/restore.sql
+          docker cp /tmp/restore.sql restoretest:/tmp/restore.sql
+
+          # 備份裡有 Supabase 的角色與 CREATE SCHEMA public，
+          # 空容器兩者都沒有／已經有，得先把場地整理成跟來源一樣。
+          # create database 得自己一句：psql 會把同一個 -c 裡的多句包進一個交易，
+          # 而 create database 不能在交易裡跑。
+          docker exec restoretest psql -U postgres -v ON_ERROR_STOP=1 -q -c "
+              create role anon;
+              create role authenticated;
+              create role service_role;
+              create role invest_writer;"
+          docker exec restoretest psql -U postgres -v ON_ERROR_STOP=1 -q \
+              -c "create database restored;"
+          docker exec restoretest psql -U postgres -d restored -v ON_ERROR_STOP=1 -q \
+              -c "drop schema public cascade;"
+
+          docker exec restoretest psql -U postgres -d restored -v ON_ERROR_STOP=1 -q \
+              -f /tmp/restore.sql
+
+      - name: 驗收還原結果
+        run: |
+          check() {
+              actual=$(docker exec restoretest psql -U postgres -d restored -tAc "$2")
+              if [ "$actual" != "$3" ]; then
+                  echo "✗ $1：預期 $3，實際 $actual" >&2
+                  exit 1
+              fi
+              echo "✓ $1：$actual"
+          }
+
+          # 原生資料要真的在。1000 是隨便抓的下限，只是要擋住「還原出一個空殼」。
+          securities=$(docker exec restoretest psql -U postgres -d restored -tAc \
+              "select count(*) from securities;")
+          if [ "$securities" -lt 1000 ]; then
+              echo "✗ securities 只有 $securities 列，備份不完整。" >&2
+              exit 1
+          fi
+          echo "✓ securities：$securities 列"
+
+          # 行情表要在、而且要是空的。有東西代表排除清單漏了，
+          # 那份備份就有機會拿舊行情蓋掉正確資料。
+          check "daily_quotes 是空的" "select count(*) from daily_quotes;" "0"
+          check "intraday_quotes 是空的" "select count(*) from intraday_quotes;" "0"
+          check "intraday_runs 是空的" "select count(*) from intraday_runs;" "0"
+
+          # 用名字點名，不用數量。數量會在每加一張表就紅一次，
+          # 那種紅燈跟「備份壞了」長得一模一樣。
+          for table in securities intraday_runs intraday_quotes daily_quotes heartbeat schema_migrations; do
+              check "$table 在、而且 RLS 是開的" \
+                  "select rowsecurity from pg_tables where schemaname = 'public' and tablename = '$table';" "t"
+          done
+
+          check "檢視表在" \
+              "select count(*) from pg_views where schemaname = 'public' and viewname = 'daily_quotes_view';" "1"
+
+          echo
+          echo "備份可用：$(basename "${{ steps.pick.outputs.path }}")"
+
+      - name: 收掉資料庫
+        if: always()
+        run: docker rm -f restoretest || true

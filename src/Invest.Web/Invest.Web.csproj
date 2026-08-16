@@ -18,8 +18,11 @@
 
     <!-- 說明泡泡兩邊都要用：Blazor 頁面直接從 wwwroot 載，靜態網站則靠這裡內嵌後輸出。
          同一份檔案掛兩個身分，才不會改了一邊忘了另一邊。 -->
-    <EmbeddedResource Include="wwwroot/hint.js"
-                      LogicalName="Invest.Web.Infrastructure.StaticSite.Assets.hint.js" />
+    <EmbeddedResource Include="wwwroot/hint.js" LogicalName="Invest.Web.Infrastructure.StaticSite.Assets.hint.js" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
 </Project>

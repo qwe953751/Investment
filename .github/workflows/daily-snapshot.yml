@@ -16,7 +16,7 @@ on:
     inputs:
       trading-days:
         description: 回補幾個交易日（從今天往回）
-        default: '240'
+        default: '300'
 
 permissions:
   contents: write
@@ -33,7 +33,7 @@ jobs:
     env:
       # 官方行情以台北時間為準，回補的「今天」也必須是台北的今天。
       TZ: Asia/Taipei
-      TRADING_DAYS: ${{ inputs.trading-days || '240' }}
+      TRADING_DAYS: ${{ inputs.trading-days || '300' }}
 
     steps:
       - name: 取出原始碼
@@ -60,7 +60,7 @@ jobs:
       - name: 保存行情快取
         working-directory: data
         run: |
-          git add -A
+          git add -A imports
 
           # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
           # 也不要把「刪掉歷史」這件事推上去。
@@ -80,13 +80,78 @@ jobs:
           git commit -qm "行情快取 $(date +%Y-%m-%d)"
           git push -q
 
+      # 以下每一步都用 !cancelled()，讓它們彼此不互相拖累。
+      # 串成一條的話，回補失敗就等於同步、備份、發佈全部沒跑，
+      # 而且只會看到最前面那個錯誤。任何一步紅了整個 job 還是紅的。
+
+      - name: 同步到 Supabase
+        if: ${{ !cancelled() }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- sync
+
+      - name: 對帳
+        if: ${{ !cancelled() }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- verify
+
+      - name: 備份原生資料
+        if: ${{ !cancelled() }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: scripts/backup-supabase.sh data/snapshots
+
       - name: 輸出靜態網站
+        if: ${{ !cancelled() }}
         run: dotnet run -c Release --project src/Invest.Web -- export "$GITHUB_WORKSPACE/publish/site"
 
       - name: 發佈到 GitHub Pages
+        if: ${{ !cancelled() }}
         env:
           GH_PAGES_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
           scripts/publish-gh-pages.sh publish/site
+
+      # 心跳的用途是回答「到底有沒有跑」，所以前面炸掉了也要記，用 always()。
+      - name: 心跳與狀態
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          dotnet run -c Release --project src/Invest.Web -- status \
+              "github-actions" "$GITHUB_WORKSPACE/data/STATUS.md"
+
+      - name: 保存備份與狀態
+        if: always()
+        working-directory: data
+        run: |
+          git add -A snapshots STATUS.md
+
+          if git diff --cached --quiet; then
+              echo "備份與狀態都沒有變化。"
+              exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -qm "備份與狀態 $(date +%Y-%m-%d)"
+          git push -q
+
+      - name: 失敗時留下線索
+        if: failure()
+        run: |
+          {
+              echo "## 這輪有步驟失敗"
+              echo
+              echo "先看上面哪一步是紅的。常見狀況："
+              echo
+              echo "- **回補行情**：官方網站擋或改格式。重跑通常就好。"
+              echo "- **同步／對帳／心跳**：Supabase 被暫停或密碼變了。"
+              echo "- **對帳不符**：以 \`data/imports\` 為準，先刪掉資料庫那幾天再同步。"
+              echo
+              echo "行情快取與靜態網站是分開推的，前面失敗不代表後面沒更新，"
+              echo "實際狀態看 \`data\` 分支的 STATUS.md。"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -23,7 +23,7 @@ namespace Invest.Web.Infrastructure.StaticSite;
 /// 排行的計算仍然只有這一份 C#；前端只做「篩選、排序、編號、套顯示格式」這幾件事。
 /// 這幾件事的結果都可以拿舊版由 C# 事先算好的檔案逐格比對驗證。
 /// </summary>
-public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
+public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking, IConfiguration configuration)
 {
     /// <summary>
     /// 與排行頁上的按鈕一致。
@@ -113,7 +113,8 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
                 tradingDates.Length > 0 ? tradingDates[^1].ToString("yyyy/MM/dd") : "—",
                 dataSet.Stocks.Count,
                 ToThresholdExports(),
-                [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))]),
+                [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))],
+                ToSupabaseExport()),
             cancellationToken);
 
         var assetNames = await WriteEmbeddedAssetsAsync(outputDirectory, version, cancellationToken);
@@ -268,6 +269,26 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
             threshold,
             RankingFormatter.ToThresholdText(threshold * 10_000m)))];
 
+    /// <summary>
+    /// 盤中頁不經過這支程式：瀏覽器拿著這組公開金鑰直接讀 Supabase。
+    /// 靜態網站沒有伺服器可以代打，而盤中資料每 5 分鐘就變一次，
+    /// 走「重新匯出再發佈」根本追不上。
+    ///
+    /// 設定不存在時 manifest 裡就沒有這一段，前端會把盤中切換鈕停用，
+    /// 盤後的部分完全不受影響。
+    /// </summary>
+    private SupabaseExport? ToSupabaseExport()
+    {
+        var url = configuration["Supabase:Url"];
+        var anonKey = configuration["Supabase:AnonKey"];
+
+        return string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(anonKey)
+            ? null
+            : new SupabaseExport(url.TrimEnd('/'), anonKey);
+    }
+
+    private sealed record SupabaseExport(string Url, string AnonKey);
+
     private sealed record ManifestExport(
         string GeneratedAt,
         string Version,
@@ -277,7 +298,9 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking)
         IReadOnlyList<ThresholdExport> Thresholds,
 
         // 可以點的交易日（yyyy-MM-dd），由舊到新。月曆上不在這份清單裡的日子一律反灰。
-        IReadOnlyList<string> Dates);
+        IReadOnlyList<string> Dates,
+
+        SupabaseExport? Supabase);
 
     private sealed record ThresholdExport(int Key, string Text);
 

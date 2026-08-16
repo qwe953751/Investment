@@ -504,3 +504,6 @@ data/database/
 *credentials*.json
 *service-account*.json
 secrets/
+
+# 行情快取與資料庫備份。內容存在 data 分支，不進主線版控（約 80 MB 起跳）。
+data/

@@ -6,6 +6,12 @@
       "runtimeExecutable": "dotnet",
       "runtimeArgs": ["run", "--project", "src/Invest.Web"],
       "port": 5188
+    },
+    {
+      "name": "static-site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "5199", "--directory", "publish/site"],
+      "port": 5199
     }
   ]
 }

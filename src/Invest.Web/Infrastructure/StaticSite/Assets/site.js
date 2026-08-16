@@ -27,6 +27,42 @@ const MARKETS = [
     { key: 'tpex', text: '上櫃' }
 ];
 
+// 兩種資料來源，也是兩套欄位。盤後看的是「這段期間累積下來的樣子」，
+// 盤中看的是「今天到現在為止」，兩邊沒有共用的期間概念，所以連篩選條件都不一樣。
+// 盤中排在左邊，但預設仍然是盤後（state.view）：開盤時間以外盤中沒有東西可看。
+const VIEWS = [
+    { key: 'intraday', text: '盤中', hint: '證交所的即時行情，每 5 分鐘收集一輪寫進資料庫，這一頁每分鐘自己重讀。' },
+    { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' }
+];
+
+// 盤中頁自己重讀的間隔。收集器是 5 分鐘一輪，這裡抓短一點只是為了讓
+// 新的一輪一寫進去就看得到，多打幾次也只是讀同一列。
+const INTRADAY_REFRESH_MS = 60_000;
+
+// 台股連續交易 09:00–13:30，共 270 分鐘。預估收盤成交額是用「已經過的時段比例」
+// 當分母把目前累計值推到收盤。
+//
+// 這個分母之後要換掉：真正該用的是「量通常跑了幾成」，不是「時間過了幾成」。
+// 那條曲線要靠 intraday_curve 自己累積，累積夠了再換（見 TODO.md 的盤中預估）。
+const SESSION_START_MINUTE = 9 * 60;
+const SESSION_MINUTES = 270;
+
+// 開盤前十幾分鐘不給預估值。09:05 時間只過了 1.85%，分母小到任何誤差都被放大 54 倍，
+// 加上開盤集合競價一次就打掉全日的 3~5%，推出來的數字大到只會誤導人。
+const MIN_PROGRESS_FOR_ESTIMATE = 0.1;
+
+const TAIPEI_CLOCK = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false
+});
+
+/// 這一輪走到整個交易時段的幾成。收盤後固定是 1，此時預估值等於實際值。
+function sessionProgress(capturedAtIso) {
+    const [hour, minute] = TAIPEI_CLOCK.format(new Date(capturedAtIso)).split(':').map(Number);
+    const elapsed = hour * 60 + minute - SESSION_START_MINUTE;
+
+    return Math.min(Math.max(elapsed / SESSION_MINUTES, 0), 1);
+}
+
 // 門檻的按鈕金額與文字都來自 manifest，單位是平均每日成交值（key 為萬元），
 // 這樣按鈕上的金額可以直接跟表格那一欄對照。
 
@@ -54,6 +90,14 @@ const toSignedPercentText = (rate, decimals = 1) => (missing(rate)
 
 const toCloseText = close => (missing(close) ? '—' : toFixedText(close, 2));
 
+// 盤中資料的時間一律用台北時間顯示。手機不見得在台灣，交給瀏覽器的當地時區會看到錯的盤中時間。
+const TAIPEI_TIME = new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
+});
+
+const toTaipeiText = iso => TAIPEI_TIME.format(new Date(iso));
+
 // 依正負決定顏色。null 與 0 都視為持平。
 const toTrendClass = value => (value > 0 ? 'positive' : value < 0 ? 'negative' : 'unchanged');
 
@@ -78,7 +122,23 @@ const COLUMNS = [
     { key: 'close', title: '收盤價', hint: '期間最後一個交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) }
 ];
 
+// 盤中沒有「前期」可比，所以沒有排名變化、增減率、成交比變化這幾欄。
+// 保留下來的每一欄，資料庫裡都真的有對應的數字。
+const INTRADAY_COLUMNS = [
+    { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
+    { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
+    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name' }) },
+    { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
+    { key: 'value', title: '今日成交額（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
+    { key: 'estimate', title: '預估收盤（億）', fixed: true, hint: '把目前累計的成交額按時間比例推到 13:30 收盤：目前累計 ÷ 這一天已經過的時段比例。台股的量是 U 型的，開盤與尾盤爆量、中午乾涸，所以早盤會高估、中午會低估。這一欄只能參考，不能排序，排行榜一律以左邊的實際累計成交額為準。', value: row => row.estimate, cell: row => ({ text: row.estimate === null ? '—' : toBillionText(row.estimate), cls: 'numeric estimate' }) },
+    { key: 'price', title: '漲跌幅', hint: '相對昨日收盤價。尚未成交的個股沒有現價，顯示 —。', value: row => row.priceChange, cell: row => ({ text: toSignedPercentText(row.priceChange, 2), cls: 'numeric ' + toTrendClass(row.priceChange) }) },
+    { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) }
+];
+
+const columns = () => (state.view === 'intraday' ? INTRADAY_COLUMNS : COLUMNS);
+
 const state = {
+    view: 'daily',
     period: 5,
     date: '',      // 交易日，start() 從 manifest 取最新的一天。
     mode: 'heat',
@@ -100,6 +160,10 @@ let thresholds = [];
 let dates = [];
 let version = '';
 let latestTradingDate = '';
+
+// 盤中頁直接讀資料庫的連線資訊（公開金鑰，只有讀取權限）。
+// manifest 裡沒有這一段時盤中切換鈕會停用。
+let supabase = null;
 
 const el = id => document.getElementById(id);
 
@@ -126,7 +190,26 @@ function renderOptions(containerId, options, selected, onSelect) {
     }
 }
 
+// 盤後專用的篩選條件（期間、交易日、模式、門檻）在盤中沒有意義，直接收起來，
+// 留著反而會讓人以為切到盤中還在篩什麼。市場與鎖定兩邊都適用。
+function applyViewVisibility() {
+    for (const element of document.querySelectorAll('[data-view]')) {
+        element.hidden = element.dataset.view !== state.view;
+    }
+}
+
 function renderFilters() {
+    renderOptions(
+        'view-options',
+        VIEWS.map(view => ({
+            ...view,
+            disabled: view.key === 'intraday' && supabase === null
+        })),
+        state.view,
+        view => update({ view }));
+
+    applyViewVisibility();
+
     renderOptions(
         'period-options',
         PERIODS.map(period => ({ key: period.days, text: period.text, hint: period.hint })),
@@ -547,7 +630,7 @@ function rankRows(data) {
 }
 
 function sortedRows(rows) {
-    const column = COLUMNS.find(candidate => candidate.key === state.sortKey);
+    const column = columns().find(candidate => candidate.key === state.sortKey);
 
     if (!column) {
         return rows;
@@ -592,10 +675,19 @@ function renderTable() {
     const head = el('table-head');
     head.replaceChildren();
 
-    for (const column of COLUMNS) {
+    for (const column of columns()) {
         const cell = document.createElement('th');
-        cell.className = state.sortKey === column.key ? 'sortable sorted' : 'sortable';
         cell.dataset.hint = column.hint;
+
+        // 預估值只能參考，開放排序等於變相鼓勵拿它排名次。
+        if (column.fixed) {
+            cell.className = 'fixed';
+            cell.textContent = column.title;
+            head.append(cell);
+            continue;
+        }
+
+        cell.className = state.sortKey === column.key ? 'sortable sorted' : 'sortable';
         cell.textContent = column.title
             + (state.sortKey === column.key ? (state.sortDescending ? ' ▼' : ' ▲') : '');
 
@@ -627,7 +719,7 @@ function renderTable() {
             tr.className = 'locked';
         }
 
-        for (const column of COLUMNS) {
+        for (const column of columns()) {
             const { text, cls } = column.cell(row);
             const td = document.createElement('td');
             td.className = cls;
@@ -640,12 +732,20 @@ function renderTable() {
 }
 
 function renderSummary() {
-    const items = [
-        ['本期', current.currentPeriod],
-        ['前期', current.previousPeriod],
-        ['全市場日均成交值', current.marketDailyAverage + ' 億元'],
-        ['符合條件', `${current.rankedStockCount} 檔，顯示前 ${current.rows.length} 名`]
-    ];
+    const items = state.view === 'intraday'
+        ? [
+            ['交易日', current.tradeDate.replaceAll('-', '/')],
+            ['資料時間', current.capturedAt],
+            ['時段進度', current.progress >= 1 ? '已收盤' : toPercentText(current.progress)],
+            ['全市場累計成交額', toBillionText(current.marketTotal) + ' 億元'],
+            ['符合條件', `${current.rankedStockCount} 檔，顯示前 ${current.rows.length} 名`]
+        ]
+        : [
+            ['本期', current.currentPeriod],
+            ['前期', current.previousPeriod],
+            ['全市場日均成交值', current.marketDailyAverage + ' 億元'],
+            ['符合條件', `${current.rankedStockCount} 檔，顯示前 ${current.rows.length} 名`]
+        ];
 
     const summary = el('summary');
     summary.replaceChildren();
@@ -693,6 +793,14 @@ function wireRefreshButton() {
         status.textContent = '檢查中…';
 
         try {
+            // 盤中頁的「新資料」是資料庫裡的下一輪，不是重新發佈的網站。
+            if (state.view === 'intraday') {
+                await loadIntraday(true);
+                status.textContent = current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料';
+                button.disabled = false;
+                return;
+            }
+
             if (await reloadIfStale()) {
                 status.textContent = '有新資料，重新載入…';
                 return;
@@ -707,7 +815,94 @@ function wireRefreshButton() {
     });
 }
 
+// 盤中排行。資料庫的 intraday_latest 已經是「最新一輪」的全市場報價，
+// 這裡只做市場篩選、依成交額排名、換成表格看得懂的欄位名稱。
+//
+// 這一頁不走靜態 JSON：盤中每 5 分鐘就變一次，重新匯出再發佈追不上。
+// 用的是只有讀取權限的公開金鑰，寫入一律走另一組連線字串。
+async function loadIntraday(silent = false) {
+    if (!silent) {
+        showNotice('盤中行情載入中…', false);
+    }
+
+    const query = 'select=symbol,name,market,price,turnover,change_percent,trade_date,captured_at'
+        + '&order=turnover.desc';
+
+    let raw;
+
+    try {
+        const response = await fetch(`${supabase.url}/rest/v1/intraday_latest?${query}`, {
+            headers: { apikey: supabase.anonKey },
+            cache: 'no-store'
+        });
+
+        if (!response.ok) {
+            throw new Error(String(response.status));
+        }
+
+        raw = await response.json();
+    } catch {
+        // 靜默更新失敗就讓畫面停在上一輪的數字，總比把整張表換成錯誤訊息好。
+        if (!silent) {
+            showNotice('連不上盤中資料，稍後再試。', true);
+        }
+
+        return;
+    }
+
+    if (raw.length === 0) {
+        showNotice('今天還沒有盤中資料。收集器在交易日 08:40 開始，每 5 分鐘寫入一輪。', true);
+        return;
+    }
+
+    // change_percent 存的是百分比（-0.39 就是 -0.39%），
+    // 顯示用的函式吃的是比率，這裡除掉一次，兩種檢視才會是同一套格式。
+    const progress = sessionProgress(raw[0].captured_at);
+    const estimable = progress >= MIN_PROGRESS_FOR_ESTIMATE;
+
+    const rows = raw.map(row => ({
+        ticker: row.symbol,
+        name: row.name,
+        market: row.market.toLowerCase(),
+        value: Number(row.turnover),
+        estimate: estimable ? Number(row.turnover) / progress : null,
+        priceChange: missing(row.change_percent) ? null : Number(row.change_percent) / 100,
+        close: missing(row.price) ? null : Number(row.price)
+    }));
+
+    nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
+
+    const candidates = rows.filter(row => state.market === 'all' || row.market === state.market);
+
+    // 與盤後同一套規則：數值大的在前，平手時以代號遞增決定先後。
+    const ranked = [...candidates].sort((left, right) =>
+        (right.value - left.value)
+        || (left.ticker < right.ticker ? -1 : left.ticker > right.ticker ? 1 : 0));
+
+    current = {
+        tradeDate: raw[0].trade_date,
+        capturedAt: toTaipeiText(raw[0].captured_at),
+        progress,
+        marketTotal: rows.reduce((total, row) => total + row.value, 0),
+        rankedStockCount: candidates.length,
+        rows: ranked.slice(0, TOP_COUNT).map((row, index) => ({ ...row, rank: index + 1 })),
+        rankByTicker: new Map(ranked.map((row, index) => [row.ticker, index + 1]))
+    };
+
+    el('notice').hidden = true;
+    el('ranking').hidden = false;
+
+    renderSummary();
+    renderTable();
+    renderLockRow();
+}
+
 async function load() {
+    if (state.view === 'intraday') {
+        await loadIntraday();
+        return;
+    }
+
     const key = `${state.period}-${state.date}`;
 
     if (!cache.has(key)) {
@@ -761,9 +956,41 @@ async function load() {
 }
 
 function update(changes) {
+    // 兩種檢視的欄位不一樣，沿用上一個檢視的排序欄位會找不到對應的欄，
+    // 表格就會停在一個沒有標示的排序狀態。切換時一律回到名次。
+    if (changes.view !== undefined && changes.view !== state.view) {
+        changes.sortKey = 'rank';
+        changes.sortDescending = false;
+    }
+
     Object.assign(state, changes);
+    renderSnapshotNote();
     renderFilters();
     load();
+}
+
+let snapshotNote = '';
+
+function renderSnapshotNote() {
+    el('snapshot-note').textContent = state.view === 'intraday'
+        ? '盤中資料直接來自資料庫，每分鐘自動重讀一次。收集器在交易日 08:40 開始，每 5 分鐘寫入一輪。'
+        : snapshotNote;
+}
+
+// 盤中頁自己更新。分頁切到背景時不打，回到前景先補一次，
+// 免得手機鎖屏一小時後回來看到的是一小時前的數字。
+function startIntradayTimer() {
+    setInterval(() => {
+        if (state.view === 'intraday' && !document.hidden) {
+            loadIntraday(true);
+        }
+    }, INTRADAY_REFRESH_MS);
+
+    document.addEventListener('visibilitychange', () => {
+        if (state.view === 'intraday' && !document.hidden) {
+            loadIntraday(true);
+        }
+    });
 }
 
 async function start() {
@@ -775,13 +1002,16 @@ async function start() {
     dates = manifest.dates;
     version = manifest.version;
     latestTradingDate = manifest.latestTradingDate;
+    supabase = manifest.supabase ?? null;
     state.date = dates[dates.length - 1];
 
-    el('snapshot-note').textContent =
+    snapshotNote =
         `資料截至 ${manifest.latestTradingDate}，共 ${manifest.tradingDayCount} 個交易日、`
         + `${manifest.stockCount} 檔個股。本快照產生於 ${manifest.generatedAt}。`;
 
+    renderSnapshotNote();
     wireRefreshButton();
+    startIntradayTimer();
     renderFilters();
     await load();
 }

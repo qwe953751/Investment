@@ -27,7 +27,7 @@ dotnet build
 dotnet test                                # 驗證計算公式
 
 # 第一次執行必做：回補行情。逐日下載並快取到 data/imports/
-dotnet run --project src/Invest.Web -- backfill 240
+dotnet run --project src/Invest.Web -- backfill 300
 
 dotnet run --project src/Invest.Web        # 啟動網站
 ```
@@ -49,7 +49,7 @@ dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
   若被記成休市，那一天就永遠補不回來了。
 - 每次請求之間有 3 秒延遲，避免被官方網站擋。70 個交易日大約需要 15 分鐘。
 - 交易日數的下限取決於要看的期間：成交熱度需要 2N 天，資金加速需要 3N 天。
-  最長的 60 日 × 資金加速 = 180 個交易日，再加上 60 個可選基準日，所以 240 天才夠全部組合都算得出來。
+  最長的 60 日 × 資金加速 = 180 個交易日，再加上 120 個可選基準日，所以 300 天才夠全部組合都算得出來。
 - **行情資料只增不減**：回補只會新增缺少的日期，不會刪掉已經下載過的行情。
 
 快取檔放在 `data/imports/yyyy-MM-dd.json`，不進版控。
@@ -142,14 +142,98 @@ scripts/publish-gh-pages.sh publish/site
 這種情況下**不會**把當天記成休市——非交易日一旦寫進快取就不再重試，
 記錯了那一天就永遠補不回來，所以「今天」這個日期還沒過完之前一律不下這個判斷。
 
+## 資料放在哪裡
+
+| 層 | 放什麼 | 保留多久 |
+|---|---|---|
+| `data` 分支 `imports/` | **盤後行情的權威來源**，只增不刪 | 無限 |
+| `data` 分支 `snapshots/` | Supabase 原生資料的備份 | GFS 15 份，約半年 |
+| Supabase | 原生資料的權威；盤後行情只是查詢副本 | 300 個交易日 |
+| `gh-pages` | 靜態網站 | 可選基準日 120 天 |
+
+正確性的順序是**交易所 → `imports` → Supabase**。兩邊對不起來時以 `imports` 為準，
+所以要復原盤後行情一律從 `imports` 重灌，不從備份還原。
+
+## 資料表定義
+
+`db/` 底下的 SQL 依編號套用，`000` 要最先跑。每份都可以重複執行，重跑不會壞。
+
+套用的管道是 Supabase Management API（需要 `SUPABASE_ACCESS_TOKEN`）：
+
+```bash
+curl -X POST "https://api.supabase.com/v1/projects/<專案 ref>/database/query" \
+     -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d "$(jq -Rs '{query: .}' db/004_intraday_curve.sql)"
+```
+
+不用寫入用的那組連線字串，是因為 `invest_writer` 沒有建表權限，也不該有——
+它的密碼放在 GitHub Secrets，給了 DDL 權限等於讓 CI 有能力改結構。
+
+每份的最後一行會把自己記進 `schema_migrations`，`verify` 與 `status`
+開跑前會比對 `db/` 裡的檔名跟這張表，少貼哪一份就直接把檔名印出來。
+沒有這層比對的話，漏貼的症狀是幾天後某個指令突然說 `relation ... does not exist`，
+那時候已經很難想起來少貼了什麼。
+
+## 盤中量能曲線
+
+```bash
+dotnet run --project src/Invest.Web -- curve
+```
+
+印出台股走到每個時刻時，全日成交額平均已經跑掉幾成。這是「當日成交額預估」要用的分母：
+現在網頁上用的是時間比例（線性），已知早盤高估、中午低估。
+
+曲線來自 `intraday_curve`，收集器每輪寫一列。這張表不會被 `sync` 刪掉——
+日內的量能形狀只有盤中看得到，盤後行情裡沒有，刪掉就永遠算不回來。
+累積滿 10 個交易日之後，`status` 會在 STATUS.md 提醒可以換公式了。
+細節與尚未決定的事項在 [TODO.md](TODO.md)。
+
+## 對帳
+
+```bash
+dotnet run --project src/Invest.Web -- verify
+```
+
+逐日比對 `data/imports` 與 Supabase 的檔數、成交值總和、成交股數總和。
+比總和而不是逐列，是因為 58 萬列全部拉回來太慢，而任何一檔被改掉都會讓當天的總和跟著變。
+
+對不起來時**一律以 `imports` 為準**。這個指令只負責找出來，不會自己改資料庫——
+重跑 `sync` 也不會修正既有日期（它只送資料庫還沒有的日期），
+要更正得先刪掉那幾天再同步一次。有不符時回傳非 0，CI 會直接紅燈。
+
+## 備份與還原
+
+```bash
+scripts/backup-supabase.sh [快照目錄]        # 預設 data/snapshots
+```
+
+備份的是**原生資料**——族群、編輯、筆記這類只存在於資料庫、別的地方生不回來的東西。
+`daily_quotes` 與 `intraday_*` 只備份結構、不備份內容：它們的權威在 `imports`，
+備份裡留一份三個月前的行情，還原時就有機會拿舊資料蓋掉正確的，這是正確性問題而不是省空間。
+還原完直接跑 `sync` 就會補滿。
+
+每天跟著盤後流程跑，寫成 `snapshots/yyyy-MM-dd.sql.gz`（約 24 KB），
+保留最近 5 份、每週 4 份、每月 6 份，共 15 份涵蓋約半年。
+輪替掉的檔案只是從目錄消失，git 歷史裡永遠找得回來。
+
+`.github/workflows/restore-test.yml` 每週日把最新的備份**真的還原一次**，
+目標是當場開、跑完就丟的 postgres 容器，碰不到 Supabase。
+除了確認能還原，也會檢查行情表是不是空的——不是空的就代表排除清單失效了。
+
+**真正要還原回 Supabase 永遠是人工的**：先列出差異、經過確認才執行，不做成自動流程。
+
 ## 專案結構
 
 ```
 Invest/
-├── .github/workflows/                   每日自動回補與發佈
+├── .github/workflows/                   每日自動回補發佈、每週還原測試
 ├── Doc/                                原始需求與交接文件
-├── scripts/                             發佈用的指令稿（本機與 CI 共用同一份）
+├── TODO.md                              待辦事項與每一項的討論結論
+├── db/                                  資料表定義（依編號手動貼進 Supabase）
+├── scripts/                             發佈與備份用的指令稿（本機與 CI 共用同一份）
 ├── data/imports/                        行情快取（不進版控，內容存在 data 分支）
+├── data/snapshots/                      資料庫備份（不進版控，內容存在 data 分支）
 ├── publish/site/                        靜態網站產出（不進版控）
 ├── src/Invest.Web/
 │   ├── Components/                      版面、共用頁面

@@ -5,6 +5,12 @@
     color-scheme: light;
 }
 
+/* 切換檢視是靠 hidden 屬性收合的，而 .filter-group 這類有 display 的規則
+   會蓋掉瀏覽器預設的 [hidden] { display: none }，收不起來。 */
+[hidden] {
+    display: none !important;
+}
+
 body {
     margin: 0;
     background-color: #ffffff;
@@ -74,6 +80,36 @@ body {
 .page-header p {
     margin: 0;
     color: #666;
+}
+
+/* 盤後／盤中。整頁最上層的分岔，不放進下面的篩選面板，
+   免得看起來像是又一個篩選條件。 */
+.view-switch {
+    display: inline-flex;
+    gap: 4px;
+    padding: 4px;
+    margin-bottom: 12px;
+    border: 1px solid #ddd;
+    border-radius: 999px;
+    background: #f0f0f0;
+}
+
+.view-switch .toggle-button {
+    min-width: 72px;
+    padding: 6px 18px;
+    border-color: transparent;
+    border-radius: 999px;
+    background: transparent;
+}
+
+.view-switch .toggle-button:hover:not(:disabled):not(.selected) {
+    background: #e4e4e4;
+}
+
+.view-switch .toggle-button.selected {
+    border-color: #222;
+    background: #222;
+    color: white;
 }
 
 .snapshot-note {
@@ -154,7 +190,7 @@ body {
     white-space: nowrap;
 }
 
-.toggle-button:hover:not(:disabled) {
+.toggle-button:hover:not(:disabled):not(.selected) {
     background: #f0f0f0;
 }
 
@@ -507,6 +543,16 @@ body {
 
 .ranking-table th.sorted {
     color: #1a56db;
+}
+
+/* 預估值只能參考，不開放排序，所以也不要有可以點的樣子。 */
+.ranking-table th.fixed {
+    color: #999;
+    font-weight: normal;
+}
+
+.ranking-table td.estimate {
+    color: #999;
 }
 
 .ranking-table td.ticker,
