@@ -8,17 +8,26 @@
 
 const TOP_COUNT = 100;
 
+// 同一組期間按鈕在兩種檢視是兩件事：盤後是「本期多長」，盤中是「今天要跟過去多長的期間對照」。
 const PERIODS = [
-    { days: 1, text: '前一交易日', hint: '基準日當天，與前一個交易日比較' },
-    { days: 5, text: '5 日', hint: '最近 5 個交易日 vs 再往前 5 個交易日' },
-    { days: 10, text: '10 日', hint: '最近 10 個交易日 vs 再往前 10 個交易日' },
-    { days: 20, text: '20 日', hint: '最近 20 個交易日 vs 再往前 20 個交易日' },
-    { days: 60, text: '60 日', hint: '最近 60 個交易日 vs 再往前 60 個交易日' }
+    { days: 1, text: '前一交易日', hint: '基準日當天，與前一個交易日比較', intradayHint: '跟最近 1 個交易日的市場成交比對照' },
+    { days: 5, text: '5 日', hint: '最近 5 個交易日 vs 再往前 5 個交易日', intradayHint: '跟最近 5 個交易日的市場成交比對照' },
+    { days: 10, text: '10 日', hint: '最近 10 個交易日 vs 再往前 10 個交易日', intradayHint: '跟最近 10 個交易日的市場成交比對照' },
+    { days: 20, text: '20 日', hint: '最近 20 個交易日 vs 再往前 20 個交易日', intradayHint: '跟最近 20 個交易日的市場成交比對照' },
+    { days: 60, text: '60 日', hint: '最近 60 個交易日 vs 再往前 60 個交易日', intradayHint: '跟最近 60 個交易日的市場成交比對照' }
 ];
 
 const MODES = [
-    { key: 'heat', text: '成交熱度', hint: '依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。' },
-    { key: 'accel', text: '資金加速', hint: '依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。' }
+    {
+        key: 'heat', text: '成交熱度',
+        hint: '依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。',
+        intradayHint: '依今日累計成交額排序，回答「今天到現在為止哪些標的吸收最多成交值」。'
+    },
+    {
+        key: 'accel', text: '資金加速',
+        hint: '依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。',
+        intradayHint: '依成交比變化排序，回答「今天有哪些標的吸走的資金比過去那段期間更多」。'
+    }
 ];
 
 const MARKETS = [
@@ -122,15 +131,19 @@ const COLUMNS = [
     { key: 'close', title: '收盤價', hint: '期間最後一個交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) }
 ];
 
-// 盤中沒有「前期」可比，所以沒有排名變化、增減率、成交比變化這幾欄。
-// 保留下來的每一欄，資料庫裡都真的有對應的數字。
+// 盤中要跟過去期間比，卡在「今天還沒過完」：拿半天的量去比人家一整天的量一定小。
+// 解法是兩邊都改看比例——市場成交比的分子與分母取自同一輪，時段進度會自己約掉，
+// 所以 09:05 就能看，完全不依賴預估值。倍數那一欄才需要預估值，因此只能參考。
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
     { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name' }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '今日成交額（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
+    { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
+    { key: 'shareChange', title: '成交比變化', hint: '今日盤中的市場成交比 − 過去觀察期間的市場成交比，單位是百分點。正值代表今天這一檔吸走的資金比過去那段期間更多。過去期間沒有這一檔就顯示 —。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'estimate', title: '預估收盤（億）', fixed: true, hint: '把目前累計的成交額按時間比例推到 13:30 收盤：目前累計 ÷ 這一天已經過的時段比例。台股的量是 U 型的，開盤與尾盤爆量、中午乾涸，所以早盤會高估、中午會低估。這一欄只能參考，不能排序，排行榜一律以左邊的實際累計成交額為準。', value: row => row.estimate, cell: row => ({ text: row.estimate === null ? '—' : toBillionText(row.estimate), cls: 'numeric estimate' }) },
+    { key: 'multiple', title: '倍數', fixed: true, hint: '今日預估成交額 ÷ 過去觀察期間的平均每日成交值。分子是預估值，早盤會偏高，所以這一欄跟預估收盤一樣只能參考、不能排序；要看資金流向請看左邊的成交比變化。', value: row => row.multiple, cell: row => ({ text: missing(row.multiple) ? '—' : toFixedText(row.multiple, 2) + ' ×', cls: 'numeric estimate' }) },
     { key: 'price', title: '漲跌幅', hint: '相對昨日收盤價。尚未成交的個股沒有現價，顯示 —。', value: row => row.priceChange, cell: row => ({ text: toSignedPercentText(row.priceChange, 2), cls: 'numeric ' + toTrendClass(row.priceChange) }) },
     { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) }
 ];
@@ -210,14 +223,26 @@ function renderFilters() {
 
     applyViewVisibility();
 
+    const intraday = state.view === 'intraday';
+
     renderOptions(
         'period-options',
-        PERIODS.map(period => ({ key: period.days, text: period.text, hint: period.hint })),
+        PERIODS.map(period => ({
+            key: period.days,
+            text: period.text,
+            hint: intraday ? period.intradayHint : period.hint
+        })),
         state.period,
         days => update({ period: days }));
 
     renderDatePicker();
-    renderOptions('mode-options', MODES, state.mode, mode => update({ mode }));
+
+    renderOptions(
+        'mode-options',
+        MODES.map(mode => ({ ...mode, hint: intraday ? mode.intradayHint : mode.hint })),
+        state.mode,
+        mode => update({ mode }));
+
     renderOptions('market-options', MARKETS, state.market, market => update({ market }));
 
     renderOptions(
@@ -577,8 +602,25 @@ function buildCalendar() {
     return calendar;
 }
 
-// 依市場與門檻篩選，再依模式排名。與 TradingValueRankingCalculator 的排序規則一致：
-// 算不出來的排最後，其次比數值大小，平手時以代號遞增決定先後。
+// 排名用的比較函式。與 TradingValueRankingCalculator 的規則一致：
+// 算不出來的排最後，其次比數值大小，平手時以代號遞增決定先後。盤後與盤中共用。
+const order = selector => (left, right) => {
+    const a = selector(left);
+    const b = selector(right);
+    const unrankable = (missing(a) ? 1 : 0) - (missing(b) ? 1 : 0);
+
+    if (unrankable !== 0) {
+        return unrankable;
+    }
+
+    if ((b ?? 0) !== (a ?? 0)) {
+        return (b ?? 0) - (a ?? 0);
+    }
+
+    return left.ticker < right.ticker ? -1 : left.ticker > right.ticker ? 1 : 0;
+};
+
+// 依市場與門檻篩選，再依模式排名。
 function rankRows(data) {
     const acceleration = state.mode === 'accel';
     const sortKey = row => (acceleration ? row.rate : row.value);
@@ -587,22 +629,6 @@ function rankRows(data) {
     const candidates = data.rows.filter(row =>
         (state.market === 'all' || row.market === state.market)
         && row.value >= state.threshold);
-
-    const order = selector => (left, right) => {
-        const a = selector(left);
-        const b = selector(right);
-        const unrankable = (missing(a) ? 1 : 0) - (missing(b) ? 1 : 0);
-
-        if (unrankable !== 0) {
-            return unrankable;
-        }
-
-        if ((b ?? 0) !== (a ?? 0)) {
-            return (b ?? 0) - (a ?? 0);
-        }
-
-        return left.ticker < right.ticker ? -1 : left.ticker > right.ticker ? 1 : 0;
-    };
 
     const previousRanks = new Map([...candidates]
         .sort(order(previousSortKey))
@@ -738,6 +764,7 @@ function renderSummary() {
             ['資料時間', current.capturedAt],
             ['時段進度', current.progress >= 1 ? '已收盤' : toPercentText(current.progress)],
             ['全市場累計成交額', toBillionText(current.marketTotal) + ' 億元'],
+            ['對照期間', current.referencePeriod],
             ['符合條件', `${current.rankedStockCount} 檔，顯示前 ${current.rows.length} 名`]
         ]
         : [
@@ -872,18 +899,38 @@ async function loadIntraday(silent = false) {
 
     nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
 
+    // 分母是全市場，不隨市場篩選改變——與盤後那一欄同一個定義，兩邊的比例才對得起來。
+    const marketTotal = rows.reduce((total, row) => total + row.value, 0);
+
+    // 對照組固定取最新一個交易日結尾的期間：盤中永遠是今天，沒有往回選日期這回事。
+    const reference = await fetchPeriod(`${state.period}-${dates[dates.length - 1]}`);
+    const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
+
+    if (state.mode === 'accel' && referenceByTicker.size === 0) {
+        showNotice(`讀不到過去 ${state.period} 個交易日的對照資料，資金加速排不出來，請改用成交熱度。`, true);
+        return;
+    }
+
+    for (const row of rows) {
+        const past = referenceByTicker.get(row.ticker);
+
+        row.share = marketTotal > 0 ? row.value / marketTotal : null;
+        row.shareChange = past && !missing(row.share) ? row.share - past.share : null;
+        row.multiple = past && past.value > 0 && row.estimate !== null ? row.estimate / past.value : null;
+    }
+
     const candidates = rows.filter(row => state.market === 'all' || row.market === state.market);
 
-    // 與盤後同一套規則：數值大的在前，平手時以代號遞增決定先後。
-    const ranked = [...candidates].sort((left, right) =>
-        (right.value - left.value)
-        || (left.ticker < right.ticker ? -1 : left.ticker > right.ticker ? 1 : 0));
+    // 資金加速看的是成交比變化，不是預估值：分子分母同一輪，早盤也不會失真。
+    const ranked = [...candidates].sort(
+        order(state.mode === 'accel' ? row => row.shareChange : row => row.value));
 
     current = {
         tradeDate: raw[0].trade_date,
         capturedAt: toTaipeiText(raw[0].captured_at),
         progress,
-        marketTotal: rows.reduce((total, row) => total + row.value, 0),
+        marketTotal,
+        referencePeriod: reference?.currentPeriod ?? '資料不足',
         rankedStockCount: candidates.length,
         rows: ranked.slice(0, TOP_COUNT).map((row, index) => ({ ...row, rank: index + 1 })),
         rankByTicker: new Map(ranked.map((row, index) => [row.ticker, index + 1]))
@@ -897,6 +944,24 @@ async function loadIntraday(silent = false) {
     renderLockRow();
 }
 
+// 一份「期間 × 交易日」的完整名單。盤後檢視直接畫它，盤中檢視拿它當對照組。
+// 讀不到就回 null，兩邊各自決定怎麼處理。
+async function fetchPeriod(key) {
+    if (!cache.has(key)) {
+        // 帶上快照版本號：同一份快照可以被瀏覽器盡情快取，
+        // 重新發佈後版本號一變，網址跟著變，手機上就不會再看到舊資料。
+        const response = await fetch(`data/${key}.json?v=${version}`);
+
+        if (!response.ok) {
+            return null;
+        }
+
+        cache.set(key, await response.json());
+    }
+
+    return cache.get(key);
+}
+
 async function load() {
     if (state.view === 'intraday') {
         await loadIntraday();
@@ -907,25 +972,19 @@ async function load() {
 
     if (!cache.has(key)) {
         showNotice('行情載入中…', false);
+    }
 
-        // 帶上快照版本號：同一份快照可以被瀏覽器盡情快取，
-        // 重新發佈後版本號一變，網址跟著變，手機上就不會再看到舊資料。
-        const response = await fetch(`data/${key}.json?v=${version}`);
+    const data = await fetchPeriod(key);
 
-        if (!response.ok) {
-            // 抓不到資料，通常是因為手上這份頁面是舊的：新版改了檔名的組成方式。
-            if (await reloadIfStale()) {
-                return;
-            }
-
-            showNotice(`讀不到 ${key} 這個組合的資料，請在本機重新產生一次靜態網站。`, true);
+    if (!data) {
+        // 抓不到資料，通常是因為手上這份頁面是舊的：新版改了檔名的組成方式。
+        if (await reloadIfStale()) {
             return;
         }
 
-        cache.set(key, await response.json());
+        showNotice(`讀不到 ${key} 這個組合的資料，請在本機重新產生一次靜態網站。`, true);
+        return;
     }
-
-    const data = cache.get(key);
 
     nameByTicker = new Map(data.rows.map(row => [row.ticker, row.name]));
 

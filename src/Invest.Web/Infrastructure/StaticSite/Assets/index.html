@@ -33,8 +33,8 @@
     </header>
 
     <section class="filter-panel">
-        <div class="filter-group" data-view="daily">
-            <span class="filter-label" data-hint="本期的長度。前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。">觀察期間</span>
+        <div class="filter-group">
+            <span class="filter-label" data-hint="盤後：本期的長度，前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。盤中：今天要拿來對照的過去期間長度。">觀察期間</span>
             <div class="button-row" id="period-options"></div>
         </div>
 
@@ -43,8 +43,8 @@
             <div class="date-picker" id="date-picker"></div>
         </div>
 
-        <div class="filter-group" data-view="daily">
-            <span class="filter-label" data-hint="決定排行榜依哪個數字排序。">排行模式</span>
+        <div class="filter-group">
+            <span class="filter-label" data-hint="決定排行榜依哪個數字排序。盤後的資金加速看成交值增減率，盤中看成交比變化。">排行模式</span>
             <div class="button-row" id="mode-options"></div>
         </div>
 
@@ -89,6 +89,10 @@
             <p data-view="intraday">預估收盤是目前累計成交額 ÷ 時段進度，把現在的速度直線推到 13:30。
                 台股的量是 U 型的，開盤與尾盤爆量、中午乾涸，所以早盤會高估、中午會低估；
                 09:27 以前分母太小，一律顯示 —。這一欄只能參考、不能排序，名次一律以實際累計成交額為準。</p>
+            <p data-view="intraday">成交比變化是拿今天的市場成交比去減觀察期間的市場成交比。半天的量沒辦法直接跟一整天的量比，
+                但比例可以：分子與分母都取自同一輪，時段進度會自己約掉，所以這一欄不必等到收盤、也不依賴預估值。</p>
+            <p data-view="intraday">倍數是預估成交額 ÷ 觀察期間的平均每日成交值。它帶有預估值的誤差，早盤會偏高，
+                所以跟預估收盤一樣只能參考、不能排序；要看資金流向請看成交比變化。</p>
             <p data-view="intraday">這一頁直接讀資料庫，每分鐘自己更新一次，不必按檢查更新。收集器每 5 分鐘寫入一輪，
                 所以資料時間最多會落後五分多鐘。</p>
         </footer>
