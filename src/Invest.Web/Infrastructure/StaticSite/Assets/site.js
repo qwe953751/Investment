@@ -737,15 +737,19 @@ function renderTable() {
         const cell = document.createElement('th');
         cell.dataset.hint = column.hint;
 
+        // 表頭掛上自己的欄位名，對齊與釘選才有辦法用 class 指定。
+        // 盤中比盤後少一個「排名變化」欄，用位置指定的話兩邊會各指到不同欄位。
+        const key = ' col-' + column.key;
+
         // 預估值只能參考，開放排序等於變相鼓勵拿它排名次。
         if (column.fixed) {
-            cell.className = 'fixed';
+            cell.className = 'fixed' + key;
             cell.textContent = column.title;
             head.append(cell);
             continue;
         }
 
-        cell.className = state.sortKey === column.key ? 'sortable sorted' : 'sortable';
+        cell.className = (state.sortKey === column.key ? 'sortable sorted' : 'sortable') + key;
         cell.textContent = column.title
             + (state.sortKey === column.key ? (state.sortDescending ? ' ▼' : ' ▲') : '');
 
