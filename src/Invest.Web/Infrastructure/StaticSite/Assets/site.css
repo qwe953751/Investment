@@ -602,6 +602,19 @@ body {
     font-weight: 600;
 }
 
+/* 處置中的標記。要一眼掃得到（這一列的成交值不能照字面讀），但不能搶走股名。 */
+.badge {
+    display: inline-block;
+    margin-right: 4px;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: #c62828;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    vertical-align: 1px;
+}
+
 .market {
     color: #666;
     font-size: 13px;

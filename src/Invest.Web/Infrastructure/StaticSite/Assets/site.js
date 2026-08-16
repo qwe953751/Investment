@@ -110,6 +110,28 @@ const toTaipeiText = iso => TAIPEI_TIME.format(new Date(iso));
 // 依正負決定顏色。null 與 0 都視為持平。
 const toTrendClass = value => (value > 0 ? 'positive' : value < 0 ? 'negative' : 'unchanged');
 
+// 處置中的個股，manifest 給的是「現在」誰在處置期間內，兩個交易所都沒有歷史查詢。
+// 處置期間的撮合會被改成人工分盤，成交機會被壓低，所以它在成交值排行上的名次不能照字面讀。
+// 只標處置，不標注意股：注意股不改變撮合方式，成交值照樣是自由競價的結果。
+let dispositions = new Map();
+
+function toDispositionBadge(ticker) {
+    const entry = dispositions.get(ticker);
+
+    if (!entry) {
+        return null;
+    }
+
+    const interval = missing(entry.matchingMinutes)
+        ? ''
+        : `，改以人工分盤撮合，約每 ${entry.matchingMinutes} 分鐘一次`;
+
+    return {
+        text: '處',
+        hint: `處置中：${entry.period}${interval}。成交機會被壓低，這一列的成交值與名次不能照字面讀。`
+    };
+}
+
 const toRankChangeText = rankChange => (missing(rankChange)
     ? '—'
     : rankChange > 0 ? `▲ ${rankChange}` : rankChange < 0 ? `▼ ${Math.abs(rankChange)}` : '－');
@@ -121,7 +143,7 @@ const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name' }) },
+    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。名稱前面的「處」代表這一檔目前處於處置期間。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badge: toDispositionBadge(row.ticker) }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '平均每日成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
@@ -137,7 +159,7 @@ const COLUMNS = [
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name' }) },
+    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱前面的「處」代表這一檔目前處於處置期間。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badge: toDispositionBadge(row.ticker) }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '今日成交額（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
@@ -746,10 +768,19 @@ function renderTable() {
         }
 
         for (const column of columns()) {
-            const { text, cls } = column.cell(row);
+            const { text, cls, badge } = column.cell(row);
             const td = document.createElement('td');
             td.className = cls;
-            td.textContent = text;
+
+            if (badge) {
+                const mark = document.createElement('span');
+                mark.className = 'badge';
+                mark.textContent = badge.text;
+                mark.dataset.hint = badge.hint;
+                td.append(mark);
+            }
+
+            td.append(String(text));
             tr.append(td);
         }
 
@@ -1062,6 +1093,7 @@ async function start() {
     version = manifest.version;
     latestTradingDate = manifest.latestTradingDate;
     supabase = manifest.supabase ?? null;
+    dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));
     state.date = dates[dates.length - 1];
 
     snapshotNote =

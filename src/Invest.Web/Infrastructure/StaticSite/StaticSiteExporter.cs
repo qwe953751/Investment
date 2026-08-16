@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
+using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Infrastructure.StaticSite;
 
@@ -23,7 +24,10 @@ namespace Invest.Web.Infrastructure.StaticSite;
 /// 排行的計算仍然只有這一份 C#；前端只做「篩選、排序、編號、套顯示格式」這幾件事。
 /// 這幾件事的結果都可以拿舊版由 C# 事先算好的檔案逐格比對驗證。
 /// </summary>
-public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking, IConfiguration configuration)
+public sealed class StaticSiteExporter(
+    TradingValueRankingQueryService ranking,
+    DispositionClient disposition,
+    IConfiguration configuration)
 {
     /// <summary>
     /// 與排行頁上的按鈕一致。
@@ -103,6 +107,13 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking, 
             progress?.Report($"{date:yyyy-MM-dd} 完成（累計 {fileCount} 個檔案）");
         }
 
+        // 處置清單放在 manifest 而不是每日資料檔裡：兩個交易所都只回「現在誰在處置中」，
+        // 沒有歷史查詢，所以它是一份當下的狀態，跟哪個基準日無關。盤中與盤後共用同一份。
+        var dispositions = await disposition.GetCurrentAsync(
+            DateOnly.FromDateTime(generatedAt.Date), cancellationToken);
+
+        progress?.Report($"處置中的個股：{dispositions.Count} 檔");
+
         await WriteJsonAsync(
             Path.Combine(outputDirectory, "manifest.json"),
             new ManifestExport(
@@ -114,7 +125,8 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking, 
                 dataSet.Stocks.Count,
                 ToThresholdExports(),
                 [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))],
-                ToSupabaseExport()),
+                ToSupabaseExport(),
+                ToDispositionExports(dispositions)),
             cancellationToken);
 
         var assetNames = await WriteEmbeddedAssetsAsync(outputDirectory, version, cancellationToken);
@@ -289,6 +301,20 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking, 
 
     private sealed record SupabaseExport(string Url, string AnonKey);
 
+    /// <summary>
+    /// 前端只需要「哪些股號被處置」加上滑鼠停上去要說什麼，所以日期在這裡就先轉成文字。
+    /// </summary>
+    private static IReadOnlyList<DispositionExport> ToDispositionExports(
+        IReadOnlyDictionary<string, Disposition> dispositions)
+        => [.. dispositions.Values
+            .OrderBy(entry => entry.Ticker, StringComparer.Ordinal)
+            .Select(entry => new DispositionExport(
+                entry.Ticker,
+                $"{entry.Start:yyyy/MM/dd} ~ {entry.End:yyyy/MM/dd}",
+                entry.MatchingMinutes))];
+
+    private sealed record DispositionExport(string Ticker, string Period, int? MatchingMinutes);
+
     private sealed record ManifestExport(
         string GeneratedAt,
         string Version,
@@ -300,7 +326,10 @@ public sealed class StaticSiteExporter(TradingValueRankingQueryService ranking, 
         // 可以點的交易日（yyyy-MM-dd），由舊到新。月曆上不在這份清單裡的日子一律反灰。
         IReadOnlyList<string> Dates,
 
-        SupabaseExport? Supabase);
+        SupabaseExport? Supabase,
+
+        // 目前處於處置期間的個股。撮合被改成人工分盤，成交值會被壓低，名次不能照字面讀。
+        IReadOnlyList<DispositionExport> Dispositions);
 
     private sealed record ThresholdExport(int Key, string Text);
 
