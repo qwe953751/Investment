@@ -126,7 +126,7 @@ function toBadges(ticker) {
             : `，改以人工分盤撮合，約每 ${entry.matchingMinutes} 分鐘一次`;
 
         badges.push({
-            text: '處置',
+            text: '處',
             cls: 'disposition',
             hint: `處置中：${entry.period}${interval}。成交機會被壓低，這一列的成交值與名次不能照字面讀。`
         });
@@ -134,7 +134,7 @@ function toBadges(ticker) {
 
     if (alteredTrading.has(ticker)) {
         badges.push({
-            text: '全額',
+            text: '全',
             cls: 'altered',
             hint: '全額交割（變更交易方法）：買賣都要先付足款券，不能用融資融券，願意接手的人本來就少，成交值天生偏低。'
         });
@@ -154,7 +154,7 @@ const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。名稱下面的「處置」與「全額」是目前的交易限制。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
+    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。名稱左邊的「處」與「全」是目前的交易限制。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '平均每日成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
@@ -170,7 +170,7 @@ const COLUMNS = [
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱下面的「處置」與「全額」是目前的交易限制。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
+    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱左邊的「處」與「全」是目前的交易限制。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '今日成交額（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
@@ -782,23 +782,30 @@ function renderTable() {
             const td = document.createElement('td');
             td.className = cls;
 
-            td.append(String(text));
-
-            // 標記排在名字底下自成一行，不放在名字左邊：放左邊的話有標記的那幾列會被往右推，
-            // 整欄的文字就對不齊了。
-            if (badges?.length) {
-                const group = document.createElement('span');
-                group.className = 'badges';
+            // 標記排在股名左邊，由上往下疊。左邊那一格的寬度固定保留著，沒有標記的列也一樣，
+            // 所以整欄的名字都從同一個位置起算，不會被標記推歪。
+            if (badges) {
+                const gutter = document.createElement('span');
+                gutter.className = 'badges';
 
                 for (const badge of badges) {
                     const mark = document.createElement('span');
                     mark.className = 'badge ' + badge.cls;
                     mark.textContent = badge.text;
                     mark.dataset.hint = badge.hint;
-                    group.append(mark);
+                    gutter.append(mark);
                 }
 
+                const label = document.createElement('span');
+                label.textContent = String(text);
+
+                const group = document.createElement('span');
+                group.className = 'name-cell';
+                group.append(gutter, label);
+
                 td.append(group);
+            } else {
+                td.append(String(text));
             }
             tr.append(td);
         }

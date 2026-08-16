@@ -602,31 +602,44 @@ body {
     font-weight: 600;
 }
 
-/* 交易限制的標記。自成一行掛在股名底下：放在股名左邊的話，有標記的那幾列會被往右推，
-   整欄的名字就對不齊了。 */
+/* 交易限制的標記排在股名左邊，由上往下疊。
+   標記那一格的寬度固定保留著，沒有標記的列也一樣，所以整欄的名字都從同一個位置起算。 */
+.name-cell {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    line-height: 18px;
+}
+
 .badges {
     display: flex;
-    gap: 3px;
-    margin-top: 2px;
+    flex: none;
+    flex-direction: column;
+    gap: 2px;
+    width: 17px;
 }
 
+/* 淡底彩字：標記要看得到，但不能比股名還搶眼。 */
 .badge {
-    padding: 0 3px;
+    border: 1px solid;
     border-radius: 3px;
-    color: #fff;
     font-size: 11px;
     font-weight: 600;
-    line-height: 15px;
+    line-height: 17px;
+    text-align: center;
 }
 
-/* 處置：撮合方式被改掉，影響最直接，用最重的顏色。 */
 .badge.disposition {
-    background: #c62828;
+    background: #fdecea;
+    border-color: #e6a2a2;
+    color: #c62828;
 }
 
-/* 全額交割：交割條件變嚴，影響間接一點，用次一級的顏色。 */
+/* 全額交割用紫色，不用橘色：橘跟處置的紅太近，同一疊裡會分不出來。 */
 .badge.altered {
-    background: #ef6c00;
+    background: #f3e9f7;
+    border-color: #c9a3d6;
+    color: #6a1b9a;
 }
 
 .market {
