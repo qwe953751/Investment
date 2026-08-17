@@ -145,10 +145,19 @@ jobs:
 
       # runner 內建的是 pg_dump 16，Supabase 已經是 PostgreSQL 17，
       # 版本對不上 pg_dump 會直接拒絕匯出（不是警告，是 exit 1）。
+      # runner 內建的套件庫只到 16，所以要自己掛上 PostgreSQL 官方的 pgdg。
       # /usr/bin/pg_dump 是 pg_wrapper，裝了 17 之後它自己會挑最新的那個。
       - name: 裝上對得上 Supabase 的 pg_dump
         if: ${{ !cancelled() }}
         run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+              https://www.postgresql.org/media/keys/ACCC4CF8.asc
+
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc]" \
+              "https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+              | sudo tee /etc/apt/sources.list.d/pgdg.list
+
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client-17
           pg_dump --version
