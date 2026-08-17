@@ -8,8 +8,10 @@ name: 每日排行快照
 
 on:
   schedule:
-    # 台北時間 18:00。收盤行情大約下午三點公布，留三小時緩衝。
-    - cron: '0 10 * * 1-5'
+    # 台北時間 16:07（= UTC 08:07）先把 runner 卡住，下面再自己睡到 18:00 才開抓。
+    # GitHub 的排程是盡力而為，實測誤點過 31 分鐘，直接排 18:00 就會變成 18:31 才動。
+    # 分鐘避開整點與半點，那是所有人排程的尖峰、誤點最嚴重。
+    - cron: '7 8 * * 1-5'
 
   # 想立刻更新時可以手動觸發，也可以指定要回補幾個交易日。
   workflow_dispatch:
@@ -28,7 +30,8 @@ concurrency:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 16:07 進場、睡到 18:00、最晚重試到 21:00，再加上發佈，七小時夠用。
+    timeout-minutes: 420
 
     env:
       # 官方行情以台北時間為準，回補的「今天」也必須是台北的今天。
@@ -54,8 +57,50 @@ jobs:
       - name: 驗證計算公式
         run: dotnet test -c Release
 
+      # 排程提早進場是為了搶 runner，不是為了提早抓。收盤行情下午三點才公布，
+      # 太早抓只會抓到空的，所以睡到 18:00 整再開始。手動觸發時不等。
+      - name: 等到 18:00
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          wait=$(( $(date -d '18:00' +%s) - $(date +%s) ))
+
+          if [ "$wait" -le 0 ]; then
+              echo "現在 $(date +%H:%M)，已經過 18:00，直接開抓。"
+              exit 0
+          fi
+
+          echo "現在 $(date +%H:%M)，睡 $(( wait / 60 )) 分鐘到 18:00。"
+          sleep "$wait"
+
+      # 抓到有為止：官方偶爾晚公布或擋一下，一次失敗不算數，
+      # 每 10 分鐘重跑一次直到今天的行情檔案落地，最晚撐到 21:00。
       - name: 回補行情
-        run: dotnet run -c Release --project src/Invest.Web -- backfill "$TRADING_DAYS"
+        run: |
+          today=$(date +%Y-%m-%d)
+          deadline=$(date -d '21:00' +%s)
+          attempt=0
+
+          while true; do
+              attempt=$(( attempt + 1 ))
+
+              echo "::group::第 $attempt 次回補（$(date +%H:%M:%S)）"
+              dotnet run -c Release --project src/Invest.Web -- backfill "$TRADING_DAYS" || true
+              echo "::endgroup::"
+
+              if [ -f "data/imports/$today.json" ]; then
+                  echo "$today 的行情已經寫進快取，第 $attempt 次成功。"
+                  exit 0
+              fi
+
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "撐到 21:00 還是沒有 $today 的行情，試了 $attempt 次。" >&2
+                  echo "今天若是國定假日，這個紅燈是預期內的；否則就是官方沒公布或被擋。" >&2
+                  exit 1
+              fi
+
+              echo "還沒有 $today 的行情，10 分鐘後再試。"
+              sleep 600
+          done
 
       - name: 保存行情快取
         working-directory: data

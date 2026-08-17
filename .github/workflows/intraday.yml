@@ -1,15 +1,17 @@
 # 盤中每 5 分鐘抓一輪報價寫進 Supabase，整個交易時段跑同一個 job。
 #
-# 公開 repo 的 Actions 不計費，所以一天佔著 runner 四個半小時是可以接受的。
+# 公開 repo 的 Actions 不計費，所以一天佔著 runner 六個多小時是可以接受的。
 # 盤中資料**不做備份也不救**：它每天重來，隔天盤後資料一到齊就會被 sync 刪掉。
 
 name: 盤中報價收集
 
 on:
   schedule:
-    # 台北時間 08:40，開盤前二十分鐘就先卡住 runner。
-    # GitHub 的排程尖峰時段常誤點十幾分鐘，抓 09:00 有機會錯過開盤那一段。
-    - cron: '40 0 * * 1-5'
+    # 台北時間 07:03（= UTC 週日到週四 23:03），開盤前兩小時就先卡住 runner。
+    # GitHub 的排程是盡力而為，實測誤點過 88 分鐘，所以緩衝要抓得比誤點大。
+    # 分鐘避開整點與半點，那是所有人排程的尖峰、誤點最嚴重。
+    # 提早開跑不會寫進盤前髒資料：MIS 在開盤前給的是上一個交易日，收集器認得出來。
+    - cron: '3 23 * * 0-4'
   workflow_dispatch:
 
 # 上一場還沒收工就不要再開一場，否則同一個時間點會寫進兩輪。
@@ -19,8 +21,8 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    # 08:40 開始跑到 13:35 收工是四小時五十五分，留一點餘裕。
-    timeout-minutes: 320
+    # 07:03 開始跑到 13:35 收工是六個半小時，留一點餘裕。
+    timeout-minutes: 420
 
     env:
       TZ: Asia/Taipei
@@ -30,9 +32,11 @@ jobs:
       - name: 取出原始碼
         uses: actions/checkout@v4
 
-      # 先確認 runner 連得到證交所。連不到的話整場都是白跑的，
-      # 與其等四個半小時後才發現，不如在這裡就停。
-      - name: 確認連得到 MIS
+      # 只是先看一眼這台 runner 通不通，方便事後看日誌時對照。
+      # 連不上也照跑：開盤前兩小時的一次連線失敗不能代表整天，
+      # 收集器本來就會每 5 分鐘重試到 13:35，真的整場都沒收到才會紅。
+      - name: 探一下 MIS
+        continue-on-error: true
         run: |
           body=$(curl -sS --max-time 30 \
               -H 'User-Agent: Mozilla/5.0' \
@@ -42,15 +46,18 @@ jobs:
           echo "$body" | head -c 400
           echo
 
-          if ! echo "$body" | grep -q '"rtcode":"0000"'; then
-              echo "MIS 沒有正常回應，這台 runner 可能被擋。" >&2
-              exit 1
+          if echo "$body" | grep -q '"rtcode":"0000"'; then
+              echo "MIS 正常回應。"
+          else
+              echo "::warning::MIS 這一下沒有正常回應，收集器會繼續重試到收盤。"
           fi
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
+      # 收集器自己撐到 13:35。整場一輪都沒寫進去、而且中間出過錯，它會丟例外讓這一步紅掉；
+      # 整場都問得到 MIS、只是日期一直停在上一個交易日，才算休市、正常結束。
       - name: 收集盤中報價
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}

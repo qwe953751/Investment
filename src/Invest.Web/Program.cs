@@ -1,4 +1,5 @@
 using Invest.Web.Components;
+using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.Database;
 using Invest.Web.Infrastructure.MarketData;
@@ -160,9 +161,6 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var sessionEnd = new TimeOnly(13, 35);
     var interval = TimeSpan.FromMinutes(5);
 
-    // 排程是 08:40 開始的，開盤前 MIS 還停在上一個交易日，這段時間對不上是正常的。
-    var sessionStart = new TimeOnly(9, 5);
-
     using var scope = services.CreateScope();
     var universeClient = scope.ServiceProvider.GetRequiredService<StockUniverseClient>();
     var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
@@ -175,20 +173,21 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
         cts.Cancel();
     };
 
+    // 收工時要靠這三個數字判斷這一場到底算成功還是失敗，所以每一輪的結果都要記。
+    var writtenRounds = 0;
+    var staleRounds = 0;
+    var failedRounds = 0;
+
+    // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
+    IReadOnlyList<(Market Market, string Ticker)>? universe = null;
+
     try
     {
         Console.WriteLine($"來源標記：{source}");
-        Console.WriteLine("取得個股清單…");
-
-        var universe = await universeClient.GetTickersAsync(cts.Token);
-
-        Console.WriteLine($"共 {universe.Count} 檔。{(loop ? $"每 {interval.TotalMinutes:0} 分鐘一輪，到 {sessionEnd:HH\\:mm} 為止。" : "抓一輪後結束。")}");
+        Console.WriteLine(loop
+            ? $"每 {interval.TotalMinutes:0} 分鐘一輪，撐到 {sessionEnd:HH\\:mm} 為止。"
+            : "抓一輪後結束。");
         Console.WriteLine();
-
-        // 休市時 MIS 照樣回應，但給的是上一個交易日的數字。照單全收的話，
-        // 每逢假日都會用今天的時間戳寫進昨天的日期。連續幾輪都對不上就當作沒開盤。
-        const int StaleRoundsBeforeGivingUp = 3;
-        var staleRounds = 0;
 
         while (true)
         {
@@ -196,36 +195,47 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
             var localTime = TimeZoneInfo.ConvertTime(capturedAt, taipei);
             var today = DateOnly.FromDateTime(localTime.DateTime);
 
-            var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
-
-            if (snapshot.TradeDate != today)
+            try
             {
-                staleRounds++;
-
-                Console.WriteLine(
-                    $"{localTime:HH:mm:ss} API 給的是 {snapshot.TradeDate:yyyy-MM-dd} 而不是今天，不寫入"
-                    + $"（第 {staleRounds} 次）。");
-
-                var openedAlready = TimeOnly.FromDateTime(localTime.DateTime) >= sessionStart;
-
-                if (!loop || (openedAlready && staleRounds >= StaleRoundsBeforeGivingUp))
+                if (universe is null)
                 {
-                    Console.WriteLine("今天沒有開盤，結束。");
-                    break;
+                    universe = await universeClient.GetTickersAsync(cts.Token);
+                    Console.WriteLine($"{localTime:HH:mm:ss} 個股清單共 {universe.Count} 檔。");
                 }
 
-                await Task.Delay(interval, cts.Token);
-                continue;
+                var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
+
+                // 休市時 MIS 照樣回應，但給的是上一個交易日的數字。日期對不上就是不寫，
+                // 但也不能因此收工——開盤前本來就會對不上，盤中對不上則代表還沒輪到我們。
+                if (snapshot.TradeDate != today)
+                {
+                    staleRounds++;
+
+                    Console.WriteLine(
+                        $"{localTime:HH:mm:ss} API 給的是 {snapshot.TradeDate:yyyy-MM-dd} 而不是今天，不寫入"
+                        + $"（第 {staleRounds} 次）。");
+                }
+                else
+                {
+                    var written = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);
+                    var total = snapshot.Quotes.Sum(quote => quote.EstimatedTradingValue);
+                    writtenRounds++;
+
+                    Console.WriteLine(
+                        $"{localTime:HH:mm:ss} 交易日 {snapshot.TradeDate:yyyy-MM-dd}："
+                        + $"寫入 {written} 檔，估算總成交值 {total / 100_000_000m:N0} 億。");
+                }
             }
+            catch (Exception exception)
+                when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+            {
+                // 單輪失敗不能中斷整場。逾時、被擋、資料庫連不上都算在內，
+                // 收工時再用 failedRounds 決定這一場是紅還是綠。
+                failedRounds++;
 
-            staleRounds = 0;
-
-            var written = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);
-            var total = snapshot.Quotes.Sum(quote => quote.EstimatedTradingValue);
-
-            Console.WriteLine(
-                $"{localTime:HH:mm:ss} 交易日 {snapshot.TradeDate:yyyy-MM-dd}："
-                + $"寫入 {written} 檔，估算總成交值 {total / 100_000_000m:N0} 億。");
+                Console.WriteLine(
+                    $"{localTime:HH:mm:ss} 這一輪失敗（第 {failedRounds} 次）：{exception.Message}");
+            }
 
             if (!loop)
             {
@@ -247,7 +257,26 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。已寫入的快照都保留在資料庫。");
+        return;
     }
+
+    Console.WriteLine();
+    Console.WriteLine($"收工：寫入 {writtenRounds} 輪、日期對不上 {staleRounds} 輪、失敗 {failedRounds} 輪。");
+
+    if (!loop || writtenRounds > 0)
+    {
+        return;
+    }
+
+    // 一輪都沒寫進去。整場都問得到 MIS、只是日期一直停在上一個交易日，那是休市；
+    // 只要中間有任何一輪連不上或寫不進去，就不能拿休市當藉口，得讓這一場紅掉。
+    if (failedRounds > 0)
+    {
+        throw new InvalidOperationException(
+            $"整場沒有寫進任何一輪，而且有 {failedRounds} 輪失敗——這不是休市，是收集失敗。");
+    }
+
+    Console.WriteLine("整場 MIS 都正常回應、但日期一直不是今天，判定為休市。");
 }
 
 /// <summary>
