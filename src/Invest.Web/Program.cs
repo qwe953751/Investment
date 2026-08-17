@@ -243,7 +243,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
             await Task.Delay(interval, cts.Token);
         }
     }
-    catch (OperationCanceledException)
+    catch (OperationCanceledException) when (cts.IsCancellationRequested)
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。已寫入的快照都保留在資料庫。");

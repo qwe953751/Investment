@@ -52,4 +52,37 @@ public static class SecurityCatalog
 
         return ids;
     }
+
+    /// <summary>
+    /// 讀取資料庫裡已知的個股，供交易所公開清單暫時無法連線時使用。
+    /// </summary>
+    public static async Task<IReadOnlyList<(Market Market, string Ticker)>> LoadForIntradayAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            """
+            select market, symbol
+            from securities
+            order by market, symbol
+            """,
+            connection);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var securities = new List<(Market Market, string Ticker)>();
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var market = reader.GetString(0) switch
+            {
+                "TWSE" => Market.Twse,
+                "TPEX" => Market.Tpex,
+                var value => throw new InvalidOperationException($"資料庫出現未知市場：{value}")
+            };
+
+            securities.Add((market, reader.GetString(1)));
+        }
+
+        return securities;
+    }
 }
