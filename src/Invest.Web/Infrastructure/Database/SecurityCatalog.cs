@@ -52,7 +52,7 @@ public static class SecurityCatalog
 
         return ids;
     }
-    
+
     /// <summary>
     /// 讀取資料庫裡已知的個股，供交易所公開清單暫時無法連線時使用。
     /// </summary>
