@@ -17,6 +17,10 @@ const PERIODS = [
     { days: 60, text: '60 日', hint: '最近 60 個交易日 vs 再往前 60 個交易日', intradayHint: '跟最近 60 個交易日的市場成交比對照' }
 ];
 
+// 兩種檢視的預設期間不一樣。盤後回答的是「昨天發生了什麼」，所以預設前一交易日；
+// 盤中是拿今天跟一段有代表性的期間對照，只比一天太容易被單日的異常帶走，所以預設 5 日。
+const DEFAULT_PERIOD = { daily: 1, intraday: 5 };
+
 const MODES = [
     {
         key: 'heat', text: '成交熱度',
@@ -189,7 +193,7 @@ const columns = () => (state.view === 'intraday' ? INTRADAY_COLUMNS : COLUMNS);
 
 const state = {
     view: 'daily',
-    period: 5,
+    period: DEFAULT_PERIOD.daily,
     date: '',      // 交易日，start() 從 manifest 取最新的一天。
     mode: 'heat',
     market: 'all',
@@ -1039,7 +1043,10 @@ async function loadIntraday(silent = false) {
     }
 
     if (raw.length === 0) {
-        showNotice('今天還沒有盤中資料。收集器在交易日 08:40 開始，每 5 分鐘寫入一輪。', true);
+        showNotice(
+            '今天還沒有盤中資料。'
+            + (schedule === null ? '' : `收集器在交易日 ${schedule.intradayStart} 開始。`),
+            true);
         return;
     }
 
@@ -1180,6 +1187,10 @@ function update(changes) {
     if (changes.view !== undefined && changes.view !== state.view) {
         changes.sortKey = 'rank';
         changes.sortDescending = false;
+
+        // 期間在兩邊是兩件事（本期多長 vs 跟多長的期間對照），預設值也不一樣，
+        // 所以切過去要換成那一邊的預設，不要把上一個檢視的選擇帶過去。
+        changes.period ??= DEFAULT_PERIOD[changes.view];
     }
 
     Object.assign(state, changes);
