@@ -64,6 +64,11 @@ const TAIPEI_CLOCK = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false
 });
 
+// en-CA 給的是 yyyy-MM-dd，跟資料檔的日期格式一致。
+const TAIPEI_DATE = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit'
+});
+
 /// 這一輪走到整個交易時段的幾成。收盤後固定是 1，此時預估值等於實際值。
 function sessionProgress(capturedAtIso) {
     const [hour, minute] = TAIPEI_CLOCK.format(new Date(capturedAtIso)).split(':').map(Number);
@@ -206,6 +211,11 @@ let dates = [];
 let version = '';
 let latestTradingDate = '';
 
+// 收集時間表。唯一的定義在 C# 的 CollectionSchedule，這裡只是讀過來，
+// 刻意不放預設值：在這裡抄一份時間，改了排程就會漏改，畫面會在錯的時間點換行為。
+// manifest 給不出來（舊版 manifest）時就當成沒有記憶功能，一律用預設選項。
+let schedule = null;
+
 // 盤中頁直接讀資料庫的連線資訊（公開金鑰，只有讀取權限）。
 // manifest 裡沒有這一段時盤中切換鈕會停用。
 let supabase = null;
@@ -320,6 +330,95 @@ function renderThresholdInput() {
     unit.textContent = '億元';
 
     host.append(input, unit);
+}
+
+// 上次選的篩選條件。有效期跟著取資料的時間走：
+//
+//     盤中收集開跑（intradayStart）  → 從這裡開始記
+//     盤後回補開跑（dailyRefresh）  → 存的東西作廢，回到預設
+//
+// 也就是這兩個時刻之間選的東西重整不會跑掉，跨過盤後那一刻再開就是全新的預設值——
+// 那時候換的是新一天的盤後資料，停在昨天的基準日或空的盤中頁只會誤導人。
+// 鎖定的股號不吃這個有效期，那是長期追蹤名單，見下面的 LOCK_STORAGE_KEY。
+const SETTINGS_STORAGE_KEY = 'invest.settings';
+
+/// 現在落在哪一段記憶期。回傳台北日期字串當標記，不在記憶期內回傳 null。
+function settingsWindow() {
+    if (schedule === null) {
+        return null;
+    }
+
+    // 'HH:mm' 補零過，直接字串比大小就是時間比大小。
+    const now = TAIPEI_CLOCK.format(new Date());
+
+    if (now < schedule.intradayStart || now >= schedule.dailyRefresh) {
+        return null;
+    }
+
+    return TAIPEI_DATE.format(new Date());
+}
+
+function writeSettings() {
+    const windowKey = settingsWindow();
+
+    if (windowKey === null) {
+        return;
+    }
+
+    try {
+        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ window: windowKey, ...state }));
+    } catch {
+        // 無痕模式寫不進去。這一次的選擇照樣有效，只是重整後回到預設。
+    }
+}
+
+// 存著的值可能已經不存在了（期間或門檻改版、交易日滾掉、資料庫連線沒了），
+// 所以一個一個驗，驗不過的那一項就留在預設值，不要因為一項壞了整組丟掉。
+function applyStoredSettings() {
+    let stored;
+
+    try {
+        stored = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY));
+    } catch {
+        return;
+    }
+
+    // window 對不上就是跨過了盤後那一刻，這份記憶已經過期。
+    if (stored === null || typeof stored !== 'object' || stored.window !== settingsWindow()) {
+        return;
+    }
+
+    // 盤中頁在沒有資料庫連線時是停用的，存著的值不能繞過這件事。
+    if (stored.view === 'intraday' && supabase !== null) {
+        state.view = 'intraday';
+    }
+
+    if (PERIODS.some(period => period.days === stored.period)) {
+        state.period = stored.period;
+    }
+
+    if (dates.includes(stored.date)) {
+        state.date = stored.date;
+    }
+
+    if (MODES.some(mode => mode.key === stored.mode)) {
+        state.mode = stored.mode;
+    }
+
+    if (MARKETS.some(market => market.key === stored.market)) {
+        state.market = stored.market;
+    }
+
+    // 門檻可以自己輸入任意金額，所以只驗「是不是合理的數字」，不驗在不在按鈕清單裡。
+    if (Number.isFinite(stored.threshold) && stored.threshold >= 0) {
+        state.threshold = stored.threshold;
+    }
+
+    // 排序欄位得屬於這個檢視，而且是可排序的那些。view 上面可能已經改過，所以放最後驗。
+    if (columns().some(column => column.key === stored.sortKey && column.fixed !== true)) {
+        state.sortKey = stored.sortKey;
+        state.sortDescending = stored.sortDescending === true;
+    }
 }
 
 // 鎖定的股號。追蹤中的標的即使掉出前 100 名也要看得到現在排第幾，進榜時整列標色。
@@ -763,6 +862,7 @@ function renderTable() {
                 state.sortDescending = !column.ascending;
             }
 
+            writeSettings();
             renderTable();
         });
 
@@ -1083,6 +1183,7 @@ function update(changes) {
     }
 
     Object.assign(state, changes);
+    writeSettings();
     renderSnapshotNote();
     renderFilters();
     load();
@@ -1091,8 +1192,14 @@ function update(changes) {
 let snapshotNote = '';
 
 function renderSnapshotNote() {
+    // 收集器的時間也從 manifest 來，不在這裡寫死，否則改了排程這句話就會騙人。
+    const collector = schedule === null
+        ? ''
+        : `收集器在交易日 ${schedule.intradayStart} 開始、${schedule.intradayEnd} 收工，`
+            + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
+
     el('snapshot-note').textContent = state.view === 'intraday'
-        ? '盤中資料直接來自資料庫，每分鐘自動重讀一次。收集器在交易日 08:40 開始，每 5 分鐘寫入一輪。'
+        ? '盤中資料直接來自資料庫，每分鐘自動重讀一次。' + collector
         : snapshotNote;
 }
 
@@ -1121,10 +1228,14 @@ async function start() {
     dates = manifest.dates;
     version = manifest.version;
     latestTradingDate = manifest.latestTradingDate;
+    schedule = manifest.schedule ?? null;
     supabase = manifest.supabase ?? null;
     dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));
     alteredTrading = new Set(manifest.alteredTrading ?? []);
     state.date = dates[dates.length - 1];
+
+    // 預設值都擺好之後才套上次選的，這樣驗不過的項目自然留在預設。
+    applyStoredSettings();
 
     snapshotNote =
         `資料截至 ${manifest.latestTradingDate}，共 ${manifest.tradingDayCount} 個交易日、`

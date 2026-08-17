@@ -159,8 +159,8 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var source = Environment.GetEnvironmentVariable("INTRADAY_SOURCE") ?? Environment.MachineName;
 
     var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
-    var sessionEnd = new TimeOnly(13, 35);
-    var interval = TimeSpan.FromMinutes(5);
+    var sessionEnd = CollectionSchedule.IntradayEnd;
+    var interval = CollectionSchedule.IntradayInterval;
 
     using var scope = services.CreateScope();
     var universeClient = scope.ServiceProvider.GetRequiredService<StockUniverseClient>();

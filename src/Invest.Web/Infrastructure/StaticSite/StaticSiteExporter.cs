@@ -127,6 +127,7 @@ public sealed class StaticSiteExporter(
                 dataSet.Stocks.Count,
                 ToThresholdExports(),
                 [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))],
+                ToScheduleExport(),
                 ToSupabaseExport(),
                 ToDispositionExports(dispositions),
                 [.. alteredTrading]),
@@ -285,6 +286,17 @@ public sealed class StaticSiteExporter(
             RankingFormatter.ToThresholdText(threshold * 10_000m)))];
 
     /// <summary>
+    /// 收集時間表原封不動搬給前端。時間只有 <see cref="CollectionSchedule"/> 一份定義，
+    /// 前端自己抄一份的話，改了排程就會在錯的時間點換行為。
+    /// </summary>
+    private static ScheduleExport ToScheduleExport()
+        => new(
+            CollectionSchedule.IntradayStart.ToString("HH:mm", CultureInfo.InvariantCulture),
+            CollectionSchedule.IntradayEnd.ToString("HH:mm", CultureInfo.InvariantCulture),
+            (int)CollectionSchedule.IntradayInterval.TotalMinutes,
+            CollectionSchedule.DailyRefresh.ToString("HH:mm", CultureInfo.InvariantCulture));
+
+    /// <summary>
     /// 盤中頁不經過這支程式：瀏覽器拿著這組公開金鑰直接讀 Supabase。
     /// 靜態網站沒有伺服器可以代打，而盤中資料每 5 分鐘就變一次，
     /// 走「重新匯出再發佈」根本追不上。
@@ -329,6 +341,9 @@ public sealed class StaticSiteExporter(
         // 可以點的交易日（yyyy-MM-dd），由舊到新。月曆上不在這份清單裡的日子一律反灰。
         IReadOnlyList<string> Dates,
 
+        // 收集時間表。前端拿它決定選項要記到什麼時候作廢，以及盤中那句說明的文字。
+        ScheduleExport Schedule,
+
         SupabaseExport? Supabase,
 
         // 目前處於處置期間的個股。撮合被改成人工分盤，成交值會被壓低，名次不能照字面讀。
@@ -338,6 +353,12 @@ public sealed class StaticSiteExporter(
         IReadOnlyList<string> AlteredTrading);
 
     private sealed record ThresholdExport(int Key, string Text);
+
+    private sealed record ScheduleExport(
+        string IntradayStart,
+        string IntradayEnd,
+        int IntradayIntervalMinutes,
+        string DailyRefresh);
 
     private sealed record RankingExport(
         string Key,
