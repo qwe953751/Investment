@@ -448,6 +448,13 @@ body {
     white-space: nowrap;
 }
 
+.lock-chip-jump {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
 .lock-chip-ticker {
     font-variant-numeric: tabular-nums;
     font-weight: 700;
@@ -551,6 +558,11 @@ body {
     font-weight: normal;
 }
 
+/* 市場、名稱不需要排序功能，但不是「僅供參考」，外觀維持一般表頭即可。 */
+.ranking-table th.unsortable {
+    cursor: default;
+}
+
 .ranking-table td.estimate {
     color: #999;
 }
@@ -578,6 +590,12 @@ body {
 
 .ranking-table tbody tr.locked td:first-child {
     box-shadow: inset 3px 0 0 #2563eb;
+}
+
+/* 從鎖定名單點過來時短暫亮一下，讓人找得到跳到哪一列。 */
+.ranking-table tbody tr.jump-highlight td {
+    background: #fef3c7;
+    transition: background 1.5s ease;
 }
 
 .rank {

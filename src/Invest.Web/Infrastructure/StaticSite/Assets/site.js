@@ -125,9 +125,19 @@ const toTrendClass = value => (value > 0 ? 'positive' : value < 0 ? 'negative' :
 let dispositions = new Map();
 let alteredTrading = new Set();
 
+// 盤中的處置／全額交割走另一張表（market_flags），不共用上面那份：
+// manifest 只在盤後 export 時（約 18:00）重抓一次，之後整個交易日的盤中畫面
+// 都會共用同一份沒再更新過的快照。處置期滿、全額交割解除常常發生在半夜，
+// 沿用 manifest 會在隔天盤中顯示前一天甚至更早之前的舊狀態
+// （2026-08-18 曾把已經解禁的 3081 錯標成處置中）。market_flags 由盤中 Action
+// 在開場第一輪整批重寫，見 db/005_market_flags.sql。
+let intradayDispositions = new Map();
+let intradayAlteredTrading = new Set();
+
 function toBadges(ticker) {
     const badges = [];
-    const entry = dispositions.get(ticker);
+    const isIntraday = state.view === 'intraday';
+    const entry = (isIntraday ? intradayDispositions : dispositions).get(ticker);
 
     if (entry) {
         const interval = missing(entry.matchingMinutes)
@@ -141,7 +151,7 @@ function toBadges(ticker) {
         });
     }
 
-    if (alteredTrading.has(ticker)) {
+    if ((isIntraday ? intradayAlteredTrading : alteredTrading).has(ticker)) {
         badges.push({
             text: '全',
             cls: 'altered',
@@ -150,6 +160,35 @@ function toBadges(ticker) {
     }
 
     return badges;
+}
+
+// 從 market_flags 讀今天最新的處置／全額交割名單。抓不到就沿用上一次的名單，
+// 這份名單一天只會被盤中 Action 寫一次，差一次刷新不會有太大影響，
+// 但不能因為抓不到就讓整張盤中排行都顯示不出來。
+async function loadMarketFlags() {
+    try {
+        const response = await fetch(
+            `${supabase.url}/rest/v1/market_flags`
+            + '?select=ticker,disposition_period,disposition_matching_minutes,altered_trading',
+            { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+
+        if (!response.ok) {
+            throw new Error(String(response.status));
+        }
+
+        const raw = await response.json();
+
+        intradayDispositions = new Map(raw
+            .filter(row => row.disposition_period)
+            .map(row => [row.ticker, {
+                period: row.disposition_period,
+                matchingMinutes: row.disposition_matching_minutes
+            }]));
+
+        intradayAlteredTrading = new Set(raw.filter(row => row.altered_trading).map(row => row.ticker));
+    } catch {
+        // 沿用舊名單，不拋出去打斷盤中資料的載入。
+    }
 }
 
 const toRankChangeText = rankChange => (missing(rankChange)
@@ -163,8 +202,8 @@ const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。名稱左邊的「處」與「全」是目前的交易限制。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
-    { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
+    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
+    { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '平均每日成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
     { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
@@ -179,8 +218,8 @@ const COLUMNS = [
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱左邊的「處」與「全」是目前的交易限制。', ascending: true, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
-    { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', ascending: true, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
+    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
+    { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '今日成交額（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '今日盤中的市場成交比 − 過去觀察期間的市場成交比，單位是百分點。正值代表今天這一檔吸走的資金比過去那段期間更多。過去期間沒有這一檔就顯示 —。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
@@ -419,7 +458,7 @@ function applyStoredSettings() {
     }
 
     // 排序欄位得屬於這個檢視，而且是可排序的那些。view 上面可能已經改過，所以放最後驗。
-    if (columns().some(column => column.key === stored.sortKey && column.fixed !== true)) {
+    if (columns().some(column => column.key === stored.sortKey && column.fixed !== true && column.sortable !== false)) {
         state.sortKey = stored.sortKey;
         state.sortDescending = stored.sortDescending === true;
     }
@@ -494,6 +533,20 @@ function toLockedRankText(ticker) {
     return rank === undefined ? '未入榜' : `第 ${rank} 名`;
 }
 
+/// 點鎖定的標的，跳到它在排行榜裡的那一列。表格只畫出前 100 名，
+/// 超過 100 名的個股那一列根本不存在，找不到就什麼都不做。
+function jumpToRankedRow(ticker) {
+    const row = document.querySelector(`#table-body tr[data-ticker="${CSS.escape(ticker)}"]`);
+
+    if (!row) {
+        return;
+    }
+
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.classList.add('jump-highlight');
+    window.setTimeout(() => row.classList.remove('jump-highlight'), 1500);
+}
+
 function renderLockRow(focusInput = false) {
     const host = el('lock-row');
     host.replaceChildren();
@@ -552,6 +605,12 @@ function renderLockRow(focusInput = false) {
         const chip = document.createElement('span');
         chip.className = 'lock-chip';
 
+        // 點代號、名稱、名次這三塊跳到排行榜裡的那一列；超過前 100 名沒有列可跳，點了沒反應。
+        const jump = document.createElement('span');
+        jump.className = 'lock-chip-jump';
+        jump.dataset.hint = '跳到排行榜位置（超過 100 名不會動）';
+        jump.addEventListener('click', () => jumpToRankedRow(ticker));
+
         const code = document.createElement('span');
         code.className = 'lock-chip-ticker';
         code.textContent = ticker;
@@ -564,6 +623,8 @@ function renderLockRow(focusInput = false) {
         rank.className = 'lock-chip-rank';
         rank.textContent = toLockedRankText(ticker);
 
+        jump.append(code, name, rank);
+
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'lock-chip-remove';
@@ -575,7 +636,7 @@ function renderLockRow(focusInput = false) {
             renderTable();
         });
 
-        chip.append(code, name, rank, remove);
+        chip.append(jump, remove);
         host.append(chip);
     }
 
@@ -852,6 +913,15 @@ function renderTable() {
             continue;
         }
 
+        // 市場只有兩種值、名稱本來就不是拿來排序用的欄位，兩欄都不需要排序功能，
+        // 但也不是「僅供參考」的欄位，所以外觀維持一般表頭，只是拿掉可以點的樣子。
+        if (column.sortable === false) {
+            cell.className = 'unsortable' + key;
+            cell.textContent = column.title;
+            head.append(cell);
+            continue;
+        }
+
         cell.className = (state.sortKey === column.key ? 'sortable sorted' : 'sortable') + key;
         cell.textContent = column.title
             + (state.sortKey === column.key ? (state.sortDescending ? ' ▼' : ' ▲') : '');
@@ -880,6 +950,7 @@ function renderTable() {
 
     for (const row of sortedRows(current.rows)) {
         const tr = document.createElement('tr');
+        tr.dataset.ticker = row.ticker;
 
         if (lockedTickers.has(row.ticker)) {
             tr.className = 'locked';
@@ -1023,10 +1094,13 @@ async function loadIntraday(silent = false) {
     let raw;
 
     try {
-        const response = await fetch(`${supabase.url}/rest/v1/intraday_latest?${query}`, {
-            headers: { apikey: supabase.anonKey },
-            cache: 'no-store'
-        });
+        const [response] = await Promise.all([
+            fetch(`${supabase.url}/rest/v1/intraday_latest?${query}`, {
+                headers: { apikey: supabase.anonKey },
+                cache: 'no-store'
+            }),
+            loadMarketFlags()
+        ]);
 
         if (!response.ok) {
             throw new Error(String(response.status));

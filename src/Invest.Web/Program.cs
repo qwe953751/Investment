@@ -46,6 +46,7 @@ builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddSingleton<DailyQuoteStore>();
 builder.Services.AddSingleton<IntradayQuoteStore>();
 builder.Services.AddSingleton<IntradayCurveStore>();
+builder.Services.AddSingleton<MarketFlagStore>();
 builder.Services.AddSingleton<DailyQuoteSyncStore>();
 builder.Services.AddSingleton<HeartbeatStore>();
 builder.Services.AddSingleton<SchemaMigrations>();
@@ -166,6 +167,8 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var universeClient = scope.ServiceProvider.GetRequiredService<StockUniverseClient>();
     var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
     var store = scope.ServiceProvider.GetRequiredService<IntradayQuoteStore>();
+    var marketFlagClient = scope.ServiceProvider.GetRequiredService<MarketFlagClient>();
+    var marketFlagStore = scope.ServiceProvider.GetRequiredService<MarketFlagStore>();
 
     using var cts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, eventArgs) =>
@@ -203,6 +206,28 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                 {
                     universe = await universeClient.GetTickersAsync(cts.Token);
                     Console.WriteLine($"{localTime:HH:mm:ss} 個股清單共 {universe.Count} 檔。");
+
+                    // 處置與全額交割不會在交易時段中途變動，開場抓一次寫進 market_flags 就夠。
+                    // 盤中頁面直接讀那張表，不再沿用 manifest.json 裡「上次盤後 export」時的舊快照
+                    // ——那份最晚在前一天 18:00 產生，跨過午夜到今天盤中之間解禁的個股會顯示錯誤。
+                    try
+                    {
+                        var dispositions = await marketFlagClient.GetCurrentAsync(today, cts.Token);
+                        var alteredTrading = await marketFlagClient.GetAlteredTradingAsync(cts.Token);
+
+                        await marketFlagStore.SaveAsync(dispositions, alteredTrading, cts.Token);
+
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} 更新交易限制名單：處置 {dispositions.Count} 檔、"
+                            + $"全額交割 {alteredTrading.Count} 檔。");
+                    }
+                    catch (Exception exception)
+                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                    {
+                        // 抓不到就沿用資料庫裡上一場留下的名單，不能因此讓整場報價收集跟著中止。
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} 交易限制名單更新失敗，沿用舊名單：{exception.Message}");
+                    }
                 }
 
                 var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
