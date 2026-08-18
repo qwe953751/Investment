@@ -4,10 +4,11 @@
 #
 #   scripts/backup-supabase.sh [快照目錄]
 #
-# 備份範圍刻意不含 daily_quotes 與 intraday_* 的**內容**：
-# 盤後行情的權威是 data/imports 的 JSON，資料庫只是查詢副本。
-# 如果快照裡有一份三個月前的行情，還原時就有機會拿舊資料蓋掉正確資料——
-# 這是正確性問題，不是省空間。結構仍然會備份，還原後直接 sync 就能補滿。
+# 備份範圍刻意不含 daily_quotes、intraday_* 與 monthly_revenue 的**內容**：
+# 盤後行情的權威是 data/imports 的 JSON，月營收的權威是公開資訊觀測站，
+# 資料庫都只是查詢副本。如果快照裡有一份三個月前的行情，還原時就有機會
+# 拿舊資料蓋掉正確資料——這是正確性問題，不是省空間。
+# 結構仍然會備份，還原後 sync（行情）或 revenue --backfill（營收）就能補滿。
 #
 # 保留策略是 GFS：最近 5 份、每週 4 份、每月 6 份，合計約半年。
 # 輪替掉的檔案只是從目錄消失，git 歷史裡永遠找得回來。
@@ -48,6 +49,7 @@ plain="$work/dump.sql"
     --exclude-table-data='public.daily_quotes' \
     --exclude-table-data='public.intraday_quotes' \
     --exclude-table-data='public.intraday_runs' \
+    --exclude-table-data='public.monthly_revenue' \
     > "$plain"
 
 # 第一層：內容看起來像不像一份完整的 dump。
@@ -62,7 +64,7 @@ if ! grep -q 'CREATE TABLE public.securities' "$plain"; then
 fi
 
 # 排除清單失效的話（例如表被改名）行情就會偷偷混進備份裡，這裡直接擋下來。
-for excluded in daily_quotes intraday_quotes intraday_runs; do
+for excluded in daily_quotes intraday_quotes intraday_runs monthly_revenue; do
     if grep -q "^COPY public.$excluded " "$plain"; then
         echo "備份裡出現 $excluded 的資料，排除清單失效了。" >&2
         exit 1

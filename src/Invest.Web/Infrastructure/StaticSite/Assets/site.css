@@ -669,6 +669,26 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+/* YOY 與 MOM 擠在同一欄，上下兩行。兩行都要，沒有的那一行顯示 —，
+   位置固定在那裡，整欄的 YOY 才會對齊在同一條線上。 */
+.revenue-growth {
+    line-height: 1.35;
+}
+
+.revenue-growth .growth-line {
+    display: block;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+/* 標籤只是告訴你這一行是哪個比較基準，永遠是灰的、也不跟著漲跌變色。 */
+.revenue-growth .growth-label {
+    margin-right: 4px;
+    color: #999;
+    font-size: 11px;
+    font-weight: normal;
+}
+
 .positive {
     color: #b42318;
     font-weight: 600;

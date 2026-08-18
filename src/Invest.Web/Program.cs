@@ -1,5 +1,6 @@
 using Invest.Web.Components;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.Revenue;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.Database;
 using Invest.Web.Infrastructure.MarketData;
@@ -7,6 +8,7 @@ using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
 using Invest.Web.Infrastructure.StaticSite;
+using Microsoft.Extensions.Options;
 
 // 命令列模式：
 //   dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
@@ -16,11 +18,12 @@ using Invest.Web.Infrastructure.StaticSite;
 //   dotnet run --project src/Invest.Web -- verify
 //   dotnet run --project src/Invest.Web -- status  [來源] [輸出檔]
 //   dotnet run --project src/Invest.Web -- curve
+//   dotnet run --project src/Invest.Web -- revenue [--backfill 月數]
 // 這種位置引數不符合 CommandLineConfigurationProvider 的格式，會讓它丟例外，
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "export" or "intraday" or "sync" or "verify" or "status" or "curve";
+    command is "backfill" or "export" or "intraday" or "sync" or "verify" or "status" or "curve" or "revenue";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -42,11 +45,13 @@ builder.Services.AddHttpClient<TwseHolidayCalendar>(ConfigureQuoteClient);
 
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 
 builder.Services.AddSingleton<DailyQuoteStore>();
 builder.Services.AddSingleton<IntradayQuoteStore>();
 builder.Services.AddSingleton<IntradayCurveStore>();
 builder.Services.AddSingleton<MarketFlagStore>();
+builder.Services.AddSingleton<RevenueStore>();
 builder.Services.AddSingleton<DailyQuoteSyncStore>();
 builder.Services.AddSingleton<HeartbeatStore>();
 builder.Services.AddSingleton<SchemaMigrations>();
@@ -96,6 +101,12 @@ if (command is "status")
 if (command is "curve")
 {
     await RunCurveAsync(app.Services);
+    return;
+}
+
+if (command is "revenue")
+{
+    await RunRevenueAsync(app.Services, args);
     return;
 }
 
@@ -594,6 +605,130 @@ static async Task RunBackfillAsync(IServiceProvider services, string[] args)
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。已下載的日期都保留在快取，重跑會從斷點繼續。");
+    }
+}
+
+/// <summary>
+/// 更新月營收，然後重算「上個月」那一格給網頁看的 YOY／MOM／創幾個月新高。
+///
+/// 不帶參數時只打兩支 OpenAPI（上市＋上櫃各一支，一次給完全部公司的最新一期），
+/// 幾十秒就跑完，所以排程可以在公告期每兩小時打一次。
+/// --backfill 是一次性的歷史回補，逐月去公開資訊觀測站抓，會慢很多。
+/// </summary>
+static async Task RunRevenueAsync(IServiceProvider services, string[] args)
+{
+    // 已經有資料的月份直接略過，但最近兩個月一律重抓：
+    // 公告期內每天都有新的幾十家補進來，更正也多半發生在剛公告完那陣子。
+    const int AlwaysRefreshMonths = 2;
+
+    var backfillIndex = Array.IndexOf(args, "--backfill");
+    var backfillMonths = backfillIndex >= 0 && args.Length > backfillIndex + 1
+        && int.TryParse(args[backfillIndex + 1], out var parsed)
+        ? parsed
+        : 0;
+
+    using var scope = services.CreateScope();
+    var client = scope.ServiceProvider.GetRequiredService<RevenueClient>();
+    var store = scope.ServiceProvider.GetRequiredService<RevenueStore>();
+    var migrations = scope.ServiceProvider.GetRequiredService<SchemaMigrations>();
+    var options = scope.ServiceProvider.GetRequiredService<IOptions<MarketDataOptions>>().Value;
+
+    if (!SchemaMigrations.Report(await migrations.CheckAsync(), migrations.Directory))
+    {
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+    var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei).DateTime);
+    var eligible = RevenueSummaryCalculator.EligibleMonth(today);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        if (backfillMonths > 0)
+        {
+            var existing = await store.LoadMonthCountsAsync(cts.Token);
+
+            Console.WriteLine($"回補 {backfillMonths} 個月，從 {eligible:yyyy-MM} 往回。");
+            Console.WriteLine("每個月要抓四個檔案（上市／上櫃 × 國內／外國企業），中間有延遲避免被擋。");
+            Console.WriteLine();
+
+            var month = eligible;
+
+            for (var index = 0; index < backfillMonths; index++, month = month.AddMonths(-1))
+            {
+                var settled = index >= AlwaysRefreshMonths;
+
+                if (settled && existing.TryGetValue(month, out var count) && count > 0)
+                {
+                    Console.WriteLine($"{month:yyyy-MM} 已有 {count} 檔，略過。");
+                    continue;
+                }
+
+                var rows = await client.GetMonthAsync(month, cts.Token);
+
+                if (rows.Count == 0)
+                {
+                    // 還沒到公告期的月份，觀測站給的是一頁空表。這不是錯誤。
+                    Console.WriteLine($"{month:yyyy-MM} 沒有資料（還沒公告或報表不存在）。");
+                }
+                else
+                {
+                    await store.SaveMonthlyAsync(rows, cts.Token);
+                    Console.WriteLine($"{month:yyyy-MM} 寫入 {rows.Count} 檔。");
+                }
+
+                await Task.Delay(options.RequestDelayMilliseconds, cts.Token);
+            }
+
+            Console.WriteLine();
+        }
+
+        var latest = await client.GetLatestAsync(cts.Token);
+
+        if (latest.Count > 0)
+        {
+            await store.SaveMonthlyAsync(latest, cts.Token);
+            Console.WriteLine($"最新一期寫入 {latest.Count} 檔。");
+        }
+        else
+        {
+            Console.WriteLine("最新一期抓不到資料，只用資料庫裡已有的歷史重算。");
+        }
+
+        var history = await store.LoadHistoryAsync(cts.Token);
+
+        var summaries = history
+            .Select(entry => (Ticker: entry.Key, Summary: RevenueSummaryCalculator.Summarize(eligible, entry.Value)))
+            .Where(item => item.Summary is not null)
+            .Select(item => (item.Ticker, Summary: item.Summary!))
+            .ToArray();
+
+        await store.SaveLatestAsync(summaries, cts.Token);
+
+        var highs = summaries.Count(item => item.Summary.HighStreak is not null);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            $"完成。上個月是 {eligible:yyyy-MM}，{summaries.Length} 檔有營收"
+            + $"（歷史共 {history.Count} 檔），其中 {highs} 檔創高。");
+
+        if (summaries.Length == 0)
+        {
+            Console.WriteLine($"{eligible:yyyy-MM} 目前一檔都還沒公告，網頁上的營收欄會全部顯示 —。");
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine();
+        Console.WriteLine("已中斷。已寫入的月份都保留在資料庫，重跑會略過。");
     }
 }
 

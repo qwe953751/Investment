@@ -162,6 +162,41 @@ function toBadges(ticker) {
     return badges;
 }
 
+// PostgREST 一次最多只回 1000 列，超過的直接被截掉，而且回應是 200 不是錯誤——
+// 兩千檔的表用一支請求拿只會拿到前面一千檔，剩下的整批消失卻沒有任何徵兆。
+// 所以凡是「整張表都要」的查詢一律走這裡，用 Range 一頁一頁拿到尾。
+const PAGE_SIZE = 1000;
+
+async function fetchAllRows(table, select, extraQuery = '') {
+    const rows = [];
+
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+        const response = await fetch(
+            `${supabase.url}/rest/v1/${table}?select=${select}${extraQuery}`,
+            {
+                headers: {
+                    apikey: supabase.anonKey,
+                    Range: `${offset}-${offset + PAGE_SIZE - 1}`
+                },
+                cache: 'no-store'
+            });
+
+        if (!response.ok) {
+            throw new Error(String(response.status));
+        }
+
+        const page = await response.json();
+
+        rows.push(...page);
+
+        // 拿不滿一頁就是到底了。剛好滿一頁時還會多跑一次拿到空的，
+        // 這比用 content-range 解總數可靠——那個標頭在某些設定下是 `*`。
+        if (page.length < PAGE_SIZE) {
+            return rows;
+        }
+    }
+}
+
 // 從 market_flags 讀今天最新的處置／全額交割名單。抓不到就沿用上一次的名單，
 // 這份名單一天只會被盤中 Action 寫一次，差一次刷新不會有太大影響，
 // 但不能因為抓不到就讓整張盤中排行都顯示不出來。
@@ -195,21 +230,118 @@ const toRankChangeText = rankChange => (missing(rankChange)
     ? '—'
     : rankChange > 0 ? `▲ ${rankChange}` : rankChange < 0 ? `▼ ${Math.abs(rankChange)}` : '－');
 
-// 與 TradingValueRanking.razor 的欄位一致，連 hint 的文字都一樣：
+// ── 月營收 ──────────────────────────────────────────────────────────────
+//
+// 資料在 Supabase 的 revenue_latest，不在靜態快照裡：公司要在每月 10 日前申報上個月營收，
+// 那十天內整天都會多出幾家，靜態站一天只重算一次（18:00），中間公告的就要等隔天。
+// 跟 market_flags 同一個理由、同一種做法。
+
+let revenueByTicker = new Map();
+
+// 今天該看哪一個月：一律是上個月，不看日期，也不會退回去拿上上個月。
+// 8 月看到的只能是 7 月，就算 6 月的數字擺在手邊也不能拿出來用。
+// 後端寫進 revenue_latest 時已經照這個規則挑過一次，這裡再算一次是因為
+// 跨月當下那張表還沒重算，內容會停在上上個月——那時候整欄要顯示 —。
+function eligibleMonthKey() {
+    const [year, month] = TAIPEI_DATE.format(new Date()).split('-').map(Number);
+
+    return month === 1
+        ? `${year - 1}-12`
+        : `${year}-${String(month - 1).padStart(2, '0')}`;
+}
+
+async function loadRevenue() {
+    if (supabase === null) {
+        return;
+    }
+
+    try {
+        const raw = await fetchAllRows(
+            'revenue_latest', 'ticker,month,yoy,mom,high_months,record_high');
+
+        const eligible = eligibleMonthKey();
+
+        // month 是該月一號（2026-07-01），只比對年月。對不上就整批丟掉：
+        // 寧可顯示 —，也不要讓人拿上上個月的營收當上個月的看。
+        revenueByTicker = new Map(raw
+            .filter(row => row.month.slice(0, 7) === eligible)
+            .map(row => [row.ticker, {
+                yoy: row.yoy,
+                mom: row.mom,
+                highMonths: row.high_months,
+                recordHigh: row.record_high
+            }]));
+    } catch {
+        // 營收讀不到就讓那兩欄顯示 —，不影響排行本身。
+        revenueByTicker = new Map();
+    }
+}
+
+const revenueOf = ticker => revenueByTicker.get(ticker) ?? null;
+
+// YOY 與 MOM 擠在同一欄，上下兩行各自標名。排序時看 YOY。
+function toRevenueGrowthCell(ticker) {
+    const revenue = revenueOf(ticker);
+
+    return {
+        cls: 'numeric revenue-growth',
+        lines: [
+            {
+                label: 'YOY',
+                text: toSignedPercentText(revenue?.yoy ?? null),
+                cls: 'growth-line ' + toTrendClass(revenue?.yoy)
+            },
+            {
+                label: 'MOM',
+                text: toSignedPercentText(revenue?.mom ?? null),
+                cls: 'growth-line ' + toTrendClass(revenue?.mom)
+            }
+        ]
+    };
+}
+
+// 創幾個月新高。N+ 代表往回數到手上的資料用完都沒有更高的，
+// 也就是「至少 N 個月」——再往前的資料不在手上，不能說它是歷史新高。
+function toHighMonthsCell(ticker) {
+    const revenue = revenueOf(ticker);
+
+    if (revenue === null || missing(revenue.highMonths)) {
+        return { text: '—', cls: 'numeric' };
+    }
+
+    return {
+        text: revenue.highMonths + (revenue.recordHigh ? '+' : ''),
+        cls: 'numeric positive'
+    };
+}
+
+const REVENUE_GROWTH_HINT = '上個月的單月營收增減。YOY 跟去年同月比、MOM 跟上個月比，'
+    + '兩個都由我們自己的營收歷史算出來，不抄報表上算好的欄位。'
+    + '點這一欄是以 YOY 排序。公司要在每月 10 日前申報，還沒公告就顯示 —。';
+
+const HIGH_MONTHS_HINT = '上個月的營收往回數，連續幾個月都沒有比它高的（含當月自己）。'
+    + '數到手上的歷史用完會標成 N+，意思是「至少 N 個月」。沒創高顯示 —。';
+
 // 每一欄的算法滑鼠停在標題上就看得到，不必回頭翻 README。
 // value 取排序用的數字，null 代表無法計算，一律沉到最後。
+//
+// 大部分欄位與 TradingValueRanking.razor 相同（連 hint 的文字都一樣），
+// 但營收那兩欄只在這裡有：它們是瀏覽器直接跟 Supabase 拿的，
+// 而 Razor 那頁是本機開發用的檢視，沒有接這條線。
 const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
     { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
-    { key: 'value', title: '平均每日成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
+    { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
     { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '本期市場成交比 − 前期市場成交比，單位是百分點。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'price', title: '期間漲跌', hint: '（期間終點收盤價 − 基準收盤價）÷ 基準收盤價。基準是進入期間之前的最後一個收盤價，所以期間內第一天的漲跌也算在內。', value: row => row.priceChange, cell: row => ({ text: toSignedPercentText(row.priceChange), cls: 'numeric ' + toTrendClass(row.priceChange) }) },
-    { key: 'close', title: '收盤價', hint: '期間最後一個交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) }
+    { key: 'close', title: '收盤價', hint: '期間最後一個交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
+    { key: 'revenue', title: '營收增減', hint: REVENUE_GROWTH_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
+    { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) }
 ];
 
 // 盤中要跟過去期間比，卡在「今天還沒過完」：拿半天的量去比人家一整天的量一定小。
@@ -220,12 +352,16 @@ const INTRADAY_COLUMNS = [
     { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
     { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
-    { key: 'value', title: '今日成交額（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
+    { key: 'value', title: '成交值（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '今日盤中的市場成交比 − 過去觀察期間的市場成交比，單位是百分點。正值代表今天這一檔吸走的資金比過去那段期間更多。過去期間沒有這一檔就顯示 —。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
-    { key: 'estimate', title: '預估收盤（億）', fixed: true, hint: '把目前累計的成交額按時間比例推到 13:30 收盤：目前累計 ÷ 這一天已經過的時段比例。台股的量是 U 型的，開盤與尾盤爆量、中午乾涸，所以早盤會高估、中午會低估。這一欄只能參考，不能排序，排行榜一律以左邊的實際累計成交額為準。', value: row => row.estimate, cell: row => ({ text: row.estimate === null ? '—' : toBillionText(row.estimate), cls: 'numeric estimate' }) },
     { key: 'price', title: '漲跌幅', hint: '相對昨日收盤價。尚未成交的個股沒有現價，顯示 —。', value: row => row.priceChange, cell: row => ({ text: toSignedPercentText(row.priceChange, 2), cls: 'numeric ' + toTrendClass(row.priceChange) }) },
-    { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) }
+    { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
+    { key: 'revenue', title: '營收增減', hint: REVENUE_GROWTH_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
+    { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) },
+    // 僅供參考的欄位擺在最後：排行榜一律以實際累計成交值為準，
+    // 放在成交值旁邊會讓兩個數字看起來一樣有份量。
+    { key: 'estimate', title: '預估成交值（億）', fixed: true, hint: '把目前累計的成交額按時間比例推到 13:30 收盤：目前累計 ÷ 這一天已經過的時段比例。台股的量是 U 型的，開盤與尾盤爆量、中午乾涸，所以早盤會高估、中午會低估。這一欄只能參考，不能排序，排行榜一律以前面的實際累計成交值為準。', value: row => row.estimate, cell: row => ({ text: row.estimate === null ? '—' : toBillionText(row.estimate), cls: 'numeric estimate' }) }
 ];
 
 const columns = () => (state.view === 'intraday' ? INTRADAY_COLUMNS : COLUMNS);
@@ -957,9 +1093,30 @@ function renderTable() {
         }
 
         for (const column of columns()) {
-            const { text, cls, badges } = column.cell(row);
+            const { text, cls, badges, lines } = column.cell(row);
             const td = document.createElement('td');
             td.className = cls;
+
+            // YOY 與 MOM 共用一欄，上下兩行。兩個數字的漲跌顏色是各自的，
+            // 所以每一行自己一個 span，不能整格套同一個顏色。
+            if (lines) {
+                for (const line of lines) {
+                    const span = document.createElement('span');
+                    span.className = line.cls;
+
+                    // 標籤自己一個 span：漲跌顏色只上在數字上，
+                    // 整行都染紅的話 YOY 三個字會跟數字搶注意力。
+                    const label = document.createElement('span');
+                    label.className = 'growth-label';
+                    label.textContent = line.label;
+
+                    span.append(label, line.text);
+                    td.append(span);
+                }
+
+                tr.append(td);
+                continue;
+            }
 
             // 標記排在股名左邊，由上往下疊。左邊那一格的寬度固定保留著，沒有標記的列也一樣，
             // 所以整欄的名字都從同一個位置起算，不會被標記推歪。
@@ -1069,6 +1226,14 @@ function wireRefreshButton() {
                 return;
             }
 
+            // 快照沒變不代表營收沒變：公告期內每隔兩小時就有幾十家補進來，
+            // 那是寫在資料庫裡的，跟這份快照的版本號無關。
+            await loadRevenue();
+
+            if (current) {
+                renderTable();
+            }
+
             status.textContent = `已是最新（資料截至 ${latestTradingDate}）`;
         } catch {
             status.textContent = '連不上，稍後再試';
@@ -1088,25 +1253,19 @@ async function loadIntraday(silent = false) {
         showNotice('盤中行情載入中…', false);
     }
 
-    const query = 'select=symbol,name,market,price,turnover,change_percent,trade_date,captured_at'
-        + '&order=turnover.desc';
-
     let raw;
 
     try {
-        const [response] = await Promise.all([
-            fetch(`${supabase.url}/rest/v1/intraday_latest?${query}`, {
-                headers: { apikey: supabase.anonKey },
-                cache: 'no-store'
-            }),
-            loadMarketFlags()
+        // 整張表都要：市場成交比的分母是全市場加總，少一檔分母就小一點、
+        // 每一檔的比例就全部偏高。上市＋上櫃有兩千檔，一定會超過單頁上限。
+        [raw] = await Promise.all([
+            fetchAllRows(
+                'intraday_latest',
+                'symbol,name,market,price,turnover,change_percent,trade_date,captured_at',
+                '&order=turnover.desc'),
+            loadMarketFlags(),
+            loadRevenue()
         ]);
-
-        if (!response.ok) {
-            throw new Error(String(response.status));
-        }
-
-        raw = await response.json();
     } catch {
         // 靜默更新失敗就讓畫面停在上一輪的數字，總比把整張表換成錯誤訊息好。
         if (!silent) {
@@ -1330,6 +1489,10 @@ async function start() {
     wireRefreshButton();
     startIntradayTimer();
     renderFilters();
+
+    // 營收要在第一次畫表之前就位。晚一步到的話那兩欄會先顯示 — 再跳成數字，
+    // 看起來像抓錯了。只是一支小請求，擋在前面不會有感。
+    await loadRevenue();
     await load();
 }
 

@@ -1,0 +1,65 @@
+# 月營收。跟行情分開跑，因為它的節奏跟開盤時間無關。
+#
+# 上市櫃公司依規定要在每月 10 日前申報上個月的營收，晚上與假日都在報，
+# 所以綁在盤中／盤後那兩個時段既會漏掉一堆公司，又要在剩下二十幾天空轉。
+#
+# 這條流程只寫資料庫、不重新發佈靜態網站：
+# 營收在公告期內整天都會多出幾家，靜態站一天只重算一次（18:00），
+# 中間公告的就要等隔天才看得到。網頁是直接讀 Supabase 的 revenue_latest。
+
+name: 月營收
+
+on:
+  schedule:
+    # 台北時間 = UTC + 8。分鐘用 20 避開整點，那是所有人排程的尖峰。
+    #
+    # 公告期（每月 1–10 日）每 2 小時一次：台北 09、11、13、15、17、19、21。
+    - cron: '20 1,3,5,7,9,11,13 1-10 * *'
+    # 公告期過後每天一次：台北 19:00。剩下的多半是更正，一天看一次就夠。
+    - cron: '20 11 11-31 * *'
+
+  # 想立刻更新、或要往回補歷史時手動觸發。
+  workflow_dispatch:
+    inputs:
+      backfill-months:
+        description: 回補幾個月（0 表示只抓最新一期）
+        default: '0'
+
+permissions:
+  contents: read
+
+# 兩次執行重疊會同時重寫 revenue_latest，讓後面那次等前面跑完。
+concurrency:
+  group: revenue
+
+jobs:
+  revenue:
+    runs-on: ubuntu-latest
+    # 只抓最新一期大概兩分鐘；回補六十個月要抓兩百多個檔案，留寬一點。
+    timeout-minutes: 120
+
+    env:
+      # 「上個月」必須是台北的上個月：UTC 還停在月底時台北已經跨月了。
+      TZ: Asia/Taipei
+      BACKFILL_MONTHS: ${{ inputs.backfill-months || '0' }}
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 驗證計算公式
+        run: dotnet test -c Release
+
+      - name: 更新營收
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ "$BACKFILL_MONTHS" -gt 0 ]; then
+              dotnet run -c Release --project src/Invest.Web -- revenue --backfill "$BACKFILL_MONTHS"
+          else
+              dotnet run -c Release --project src/Invest.Web -- revenue
+          fi
