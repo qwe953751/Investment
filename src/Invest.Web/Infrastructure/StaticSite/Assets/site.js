@@ -349,6 +349,7 @@ const COLUMNS = [
 // 所以 09:05 就能看，完全不依賴預估值。
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
+    { key: 'change', title: '排名變化', hint: '過去觀察期間的排名 − 今日盤中排名，▲ 代表今天的名次比平常前面。名次是相對的，所以今天只走了半天也能直接比。過去期間沒有這一檔就顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
     { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
@@ -1038,7 +1039,7 @@ function renderTable() {
         cell.dataset.hint = column.hint;
 
         // 表頭掛上自己的欄位名，對齊與釘選才有辦法用 class 指定。
-        // 盤中比盤後少一個「排名變化」欄，用位置指定的話兩邊會各指到不同欄位。
+        // 盤後與盤中的欄位不完全一樣，用 nth-child 指定的話兩邊會各指到不同欄位。
         const key = ' col-' + column.key;
 
         // 預估值只能參考，開放排序等於變相鼓勵拿它排名次。
@@ -1325,6 +1326,20 @@ async function loadIntraday(silent = false) {
     const ranked = [...candidates].sort(
         order(state.mode === 'accel' ? row => row.shareChange : row => row.value));
 
+    // 盤中的「前期排名」是同一批候選在對照期間裡的名次——盤後拿前一段期間比，
+    // 盤中就拿過去那段期間比。兩份名次都在同一個候選集合上算，
+    // 名次差才純粹是順序變動，不會混進「有些股票只出現在其中一邊」的雜訊。
+    //
+    // 名次是相對的，所以「今天只走了半天」不影響：半天的量排出來的順序，
+    // 跟整天的平均排出來的順序可以直接比，和市場成交比是同一個道理。
+    const pastSortKey = state.mode === 'accel'
+        ? row => referenceByTicker.get(row.ticker)?.shareChange ?? null
+        : row => referenceByTicker.get(row.ticker)?.value ?? null;
+
+    const previousRanks = new Map([...candidates]
+        .sort(order(pastSortKey))
+        .map((row, index) => [row.ticker, index + 1]));
+
     current = {
         tradeDate: raw[0].trade_date,
         capturedAt: toTaipeiText(raw[0].captured_at),
@@ -1332,7 +1347,19 @@ async function loadIntraday(silent = false) {
         marketTotal,
         referencePeriod: reference?.currentPeriod ?? '資料不足',
         rankedStockCount: candidates.length,
-        rows: ranked.slice(0, TOP_COUNT).map((row, index) => ({ ...row, rank: index + 1 })),
+        rows: ranked.slice(0, TOP_COUNT).map((row, index) => {
+            const rank = index + 1;
+
+            // 對照期間裡查無此股（新上市、或那段期間完全沒成交）就沒有前期名次可言，
+            // 顯示「—」比給一個假的名次誠實。
+            const comparable = !missing(pastSortKey(row));
+
+            return {
+                ...row,
+                rank,
+                rankChange: comparable ? previousRanks.get(row.ticker) - rank : null
+            };
+        }),
         rankByTicker: new Map(ranked.map((row, index) => [row.ticker, index + 1]))
     };
 
