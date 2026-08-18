@@ -178,6 +178,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var writtenRounds = 0;
     var staleRounds = 0;
     var failedRounds = 0;
+    var rejectedRounds = 0;
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
@@ -218,13 +219,27 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                 }
                 else
                 {
-                    var written = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);
-                    var total = snapshot.Quotes.Sum(quote => quote.EstimatedTradingValue);
-                    writtenRounds++;
+                    var result = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);
 
-                    Console.WriteLine(
-                        $"{localTime:HH:mm:ss} 交易日 {snapshot.TradeDate:yyyy-MM-dd}："
-                        + $"寫入 {written} 檔，估算總成交值 {total / 100_000_000m:N0} 億。");
+                    if (result.Written)
+                    {
+                        writtenRounds++;
+
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} 交易日 {snapshot.TradeDate:yyyy-MM-dd}："
+                            + $"寫入 {result.QuoteCount} 檔，估算總成交值 {result.Total / 100_000_000m:N0} 億。");
+                    }
+                    else
+                    {
+                        // 累計金額倒退代表這一輪的報價本身有問題，寫進去只會讓畫面上的數字亂跳。
+                        // 下一輪重抓就好，比較基準留在上一個好的數字上，所以不會被壞資料帶著走。
+                        rejectedRounds++;
+
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} 估算總成交值 {result.Total / 100_000_000m:N0} 億"
+                            + $"比上一輪的 {result.PreviousTotal / 100_000_000m:N0} 億還少，"
+                            + $"累計金額不可能倒退，整輪丟掉不寫（第 {rejectedRounds} 次）。");
+                    }
                 }
             }
             catch (Exception exception)
@@ -262,19 +277,36 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     }
 
     Console.WriteLine();
-    Console.WriteLine($"收工：寫入 {writtenRounds} 輪、日期對不上 {staleRounds} 輪、失敗 {failedRounds} 輪。");
+    Console.WriteLine(
+        $"收工：寫入 {writtenRounds} 輪、日期對不上 {staleRounds} 輪、"
+        + $"失敗 {failedRounds} 輪、金額倒退丟掉 {rejectedRounds} 輪。");
 
-    if (!loop || writtenRounds > 0)
+    if (!loop)
     {
+        return;
+    }
+
+    // 有寫進去，但中間一直被擋，代表 MIS 給的東西時好時壞，數字不能全信。
+    // 這種半殘狀態最危險，因為畫面照樣顯示得出來，所以要讓這一場紅掉去看日誌。
+    if (writtenRounds > 0)
+    {
+        if (rejectedRounds > 0)
+        {
+            throw new InvalidOperationException(
+                $"有 {rejectedRounds} 輪的全市場累計成交金額比上一輪還少而被丟掉。"
+                + "累計金額不可能倒退，代表這些輪的報價有問題，要去看收集器的日誌。");
+        }
+
         return;
     }
 
     // 一輪都沒寫進去。整場都問得到 MIS、只是日期一直停在上一個交易日，那是休市；
     // 只要中間有任何一輪連不上或寫不進去，就不能拿休市當藉口，得讓這一場紅掉。
-    if (failedRounds > 0)
+    if (failedRounds > 0 || rejectedRounds > 0)
     {
         throw new InvalidOperationException(
-            $"整場沒有寫進任何一輪，而且有 {failedRounds} 輪失敗——這不是休市，是收集失敗。");
+            $"整場沒有寫進任何一輪，而且有 {failedRounds} 輪失敗、{rejectedRounds} 輪金額倒退"
+            + "——這不是休市，是收集失敗。");
     }
 
     Console.WriteLine("整場 MIS 都正常回應、但日期一直不是今天，判定為休市。");

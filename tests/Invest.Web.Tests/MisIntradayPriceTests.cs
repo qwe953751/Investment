@@ -134,3 +134,51 @@ public class MisIntradayPriceTests
         }
     }
 }
+
+/// <summary>
+/// 全市場累計成交金額只能往上走：09:10 的數字不可能比 09:05 小。
+/// 2026-08-18 那天正是這條性質被破壞了才發現收集器壞掉，所以把它變成收集器自己會擋的規則。
+/// </summary>
+public class IntradayTurnoverRegressionTests
+{
+    [Fact]
+    public void 今天的第一輪沒有比較基準一律放行()
+    {
+        Assert.False(IntradayQuoteStore.IsRegression(total: 6_500_00000000m, previousTotal: null));
+    }
+
+    [Fact]
+    public void 金額往上走是正常的()
+    {
+        Assert.False(IntradayQuoteStore.IsRegression(
+            total: 6_698_00000000m, previousTotal: 6_543_00000000m));
+    }
+
+    /// <summary>
+    /// 寫進去的是「現價 × 累計成交量」的估算值，量沒怎麼增加而價格普遍下跌時
+    /// 合計會小幅回落。這是估算法本身的性質，不是壞資料。
+    /// </summary>
+    [Fact]
+    public void 價格普遍下跌造成的小幅回落不算異常()
+    {
+        Assert.False(IntradayQuoteStore.IsRegression(
+            total: 6_400_00000000m, previousTotal: 6_543_00000000m));
+    }
+
+    /// <summary>2026-08-18 實際的壞資料：940 億掉到 686 億，少了 27%。</summary>
+    [Theory]
+    [InlineData(685_80000000, 940_50000000)]
+    [InlineData(159_92000000, 179_72000000)]
+    [InlineData(250_99000000, 545_90000000)]
+    public void 大幅倒退要被擋下來(long total, long previousTotal)
+    {
+        Assert.True(IntradayQuoteStore.IsRegression(total, previousTotal));
+    }
+
+    [Fact]
+    public void 上一輪是零的時候不比較()
+    {
+        // 開盤前全市場都沒有成交，合計是 0，不能拿來當基準。
+        Assert.False(IntradayQuoteStore.IsRegression(total: 0m, previousTotal: 0m));
+    }
+}
