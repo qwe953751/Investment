@@ -188,7 +188,7 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
     /// intraday_quotes 靠外鍵的 on delete cascade 一起走。
     ///
     /// intraday_curve 不在此列：那張表存的是全市場的累計成交額曲線，
-    /// 盤後行情裡沒有這個資訊，刪掉就再也算不回來。一天只有 54 列。
+    /// 盤後行情裡沒有這個資訊，刪掉就再也算不回來。一天只有 197 列。
     /// </summary>
     private async Task<int> DeleteSettledIntradayAsync(
         NpgsqlConnection connection,

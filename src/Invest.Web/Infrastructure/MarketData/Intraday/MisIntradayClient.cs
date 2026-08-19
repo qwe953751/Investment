@@ -17,6 +17,23 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     private const int BatchSize = 150;
     private const int BatchDelayMilliseconds = 300;
 
+    /// <summary>
+    /// 單次請求的上限。共用的 HttpClient 設 60 秒是為了盤後那些大報表，
+    /// 對這裡太長了：一輪只有 <see cref="CollectionSchedule.IntradayInterval"/>，
+    /// 一次卡住就吃掉半輪。實測一批 150 檔約 0.3～2 秒，15 秒已經是八倍餘裕，
+    /// 超過就當它不會回來了，重試比等它划算。
+    /// </summary>
+    private static readonly TimeSpan AttemptTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// 一批最多打幾次。
+    ///
+    /// 全市場要拆成十四批，任何一批掛掉，整輪一千九百多檔就全部作廢——
+    /// 實測 MIS 偶爾會回傳被截斷的 JSON 或整個卡住不回，而且是隨機的：
+    /// 同一分鐘手動重打就正常。為了一批的抖動丟掉整輪太貴，就地重試便宜得多。
+    /// </summary>
+    private const int MaxAttempts = 3;
+
     /// <summary>台股一張等於 1000 股，API 給的累計量單位是張。</summary>
     private const decimal SharesPerLot = 1000m;
 
@@ -27,11 +44,18 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         var quotes = new List<IntradayQuote>(universe.Count);
         var tradeDate = default(DateOnly?);
 
+        // 一輪的硬上限就是一輪的間隔：重試再怎麼慢也不能拖到下一輪的時間。
+        // 真的超時就讓這一輪失敗，收集器會直接跳到下一格重來（CollectionSchedule.NextRound），
+        // 而不是兩輪擠在一起。
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        budget.CancelAfter(CollectionSchedule.IntradayInterval);
+
         foreach (var batch in universe.Chunk(BatchSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var (batchQuotes, batchDate) = await ReadBatchAsync(batch, cancellationToken);
+            var (batchQuotes, batchDate) = await ReadBatchAsync(batch, budget.Token);
 
             quotes.AddRange(batchQuotes);
 
@@ -41,7 +65,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
                 tradeDate = date;
             }
 
-            await Task.Delay(BatchDelayMilliseconds, cancellationToken);
+            await Task.Delay(BatchDelayMilliseconds, budget.Token);
         }
 
         if (tradeDate is null)
@@ -81,7 +105,56 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         };
     }
 
+    /// <summary>
+    /// 打一批，抖一下就重試。
+    ///
+    /// 只有「這一次沒拿到東西」才重試——逾時、連線被切、JSON 被截斷。
+    /// 這些都是傳輸層的抖動，同一個請求再打一次通常就好了。
+    /// 回應本身合法但內容有問題（例如 rtmessage 說參數不足）不在此列：
+    /// 那種重打幾次都一樣，<see cref="ReadBatchOnceAsync"/> 自己會略過並回空的。
+    ///
+    /// 打完還是不行就往外丟，讓整輪失敗——寧可少一輪，也不要寫進少了 150 檔的殘缺快照：
+    /// 那會讓全市場合計、市場成交比、量能曲線同時失真，而且事後看不出來。
+    /// </summary>
     private async Task<(IReadOnlyList<IntradayQuote> Quotes, DateOnly? TradeDate)> ReadBatchAsync(
+        (Market Market, string Ticker)[] batch,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            // 每一次嘗試自己有上限，卡住的那一次不會把整輪的預算吃光。
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            timeout.CancelAfter(AttemptTimeout);
+
+            try
+            {
+                return await ReadBatchOnceAsync(batch, timeout.Token);
+            }
+            catch (Exception exception) when (IsTransient(exception, cancellationToken) && attempt < MaxAttempts)
+            {
+                logger.LogWarning(
+                    "盤中 API 這批 {Count} 檔第 {Attempt} 次失敗（{Message}），重試。",
+                    batch.Length,
+                    attempt,
+                    exception.Message);
+
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 值得重試的失敗：逾時與連線問題（<see cref="HttpRequestException"/>、
+    /// 被自己的 <see cref="AttemptTimeout"/> 取消）、以及讀到一半被切斷的 JSON。
+    ///
+    /// 外層真的要求停止（Ctrl-C、整輪預算用完）時一律不重試，否則就停不下來了。
+    /// </summary>
+    private static bool IsTransient(Exception exception, CancellationToken cancellationToken)
+        => !cancellationToken.IsCancellationRequested
+            && exception is HttpRequestException or JsonException or OperationCanceledException;
+
+    private async Task<(IReadOnlyList<IntradayQuote> Quotes, DateOnly? TradeDate)> ReadBatchOnceAsync(
         (Market Market, string Ticker)[] batch,
         CancellationToken cancellationToken)
     {

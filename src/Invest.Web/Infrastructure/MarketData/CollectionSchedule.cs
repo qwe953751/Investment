@@ -19,9 +19,32 @@ public static class CollectionSchedule
     /// <summary>盤中最後一輪的截止時間。收盤是 13:30，多留五分鐘等最後一筆進來。</summary>
     public static readonly TimeOnly IntradayEnd = new(13, 35);
 
-    /// <summary>盤中每一輪的間隔。</summary>
-    public static readonly TimeSpan IntradayInterval = TimeSpan.FromMinutes(5);
+    /// <summary>
+    /// 盤中每一輪的間隔。
+    ///
+    /// 下限由一輪要跑多久決定：全市場約 2000 檔、MIS 一次最多 150 檔，
+    /// 所以一輪是十四次請求，實測 12～75 秒（中位數 36 秒）。
+    /// 2 分鐘留得住餘裕，1 分鐘就會常常來不及。
+    /// </summary>
+    public static readonly TimeSpan IntradayInterval = TimeSpan.FromMinutes(2);
 
     /// <summary>盤後回補開跑。收盤行情大約下午三點公布，留三小時緩衝。</summary>
     public static readonly TimeOnly DailyRefresh = new(18, 0);
+
+    /// <summary>
+    /// 下一輪該在幾點開跑：把時間切成 <see cref="IntradayInterval"/> 的格子，回傳下一格。
+    ///
+    /// 不能用「跑完再睡固定時間」——那樣每一輪的工作時間會一路疊上去，
+    /// 說好的 5 分鐘實測走成 5 分 12 秒到 5 分 36 秒，而且每天飄的量都不一樣。
+    /// 對齊時鐘之後，輪距就真的是間隔本身，時刻也固定落在 09:00、09:02、09:04……
+    ///
+    /// 某一輪跑太久超過了下一格，回傳的自然是再下一格：慢的那輪只會少收一次，
+    /// 不會補跑，也不會兩輪擠在一起。
+    /// </summary>
+    public static DateTimeOffset NextRound(DateTimeOffset now)
+    {
+        var ticks = IntradayInterval.Ticks;
+
+        return new DateTimeOffset((now.Ticks / ticks + 1) * ticks, now.Offset);
+    }
 }

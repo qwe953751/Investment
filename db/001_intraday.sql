@@ -1,8 +1,12 @@
 -- 盤中快照的資料表。貼進 Supabase 的 SQL Editor 執行即可，可重複執行。
 --
--- 拆成三張表是為了省空間：每 5 分鐘一輪、每輪約 1800 檔，一天約十萬列。
--- 把「哪一輪抓的」與「哪一檔股票」抽成獨立的表之後，
--- 明細列只留數字，一天約 9 MB，免費方案的 500 MB 才撐得住。
+-- 拆成三張表是為了省空間：每 2 分鐘一輪、每輪約 2000 檔，一天約三十九萬列。
+-- 把「哪一輪抓的」與「哪一檔股票」抽成獨立的表之後，明細列只留數字，
+-- 連索引實測是一列 171 bytes，一天約 63 MB。
+--
+-- 撐得住的前提是「當天的盤後資料一到齊就整批刪掉」
+-- （見 DailyQuoteSyncStore.DeleteSettledIntradayAsync），所以盤中資料不會累積。
+-- 反過來說，sync 連續幾天沒跑成功的話，免費方案的 500 MB 大概一週就滿。
 
 create table if not exists securities (
     id          integer generated always as identity primary key,

@@ -163,7 +163,7 @@ static async Task RunExportAsync(IServiceProvider services, string[] args)
 /// 抓一輪（或整個交易時段）的盤中報價寫進資料庫。
 ///
 /// 累計成交量是自開盤起算，所以單跑一次也拿得到當日完整數字，
-/// 中午才從別台電腦開始跑不會少算。--loop 只是為了留下每 5 分鐘的軌跡。
+/// 中午才從別台電腦開始跑不會少算。--loop 只是為了留下一輪一輪的軌跡。
 /// </summary>
 static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 {
@@ -294,7 +294,10 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                 break;
             }
 
-            var next = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei).Add(interval);
+            // 下一輪的時刻對齊時鐘，不是「從現在起再等 interval」：
+            // 後者會把每一輪的工作時間疊進輪距裡，說好的 2 分鐘會走成 2 分半。
+            var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei);
+            var next = CollectionSchedule.NextRound(now);
 
             if (TimeOnly.FromDateTime(next.DateTime) > sessionEnd)
             {
@@ -302,7 +305,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                 break;
             }
 
-            await Task.Delay(interval, cts.Token);
+            await Task.Delay(next - now, cts.Token);
         }
     }
     catch (OperationCanceledException) when (cts.IsCancellationRequested)
@@ -760,15 +763,18 @@ static async Task RunCurveAsync(IServiceProvider services)
     var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
     var days = points.Select(point => point.TradeDate).Distinct().Count();
 
-    // 同一個時刻在不同天的比例平均起來就是 f(t)。收集間隔是 5 分鐘，
-    // 但排程偶爾誤點，所以先歸到最近的 5 分鐘格子再平均。
+    // 同一個時刻在不同天的比例平均起來就是 f(t)。格子寬度跟著收集間隔走，
+    // 因為間隔就是資料的解析度：格子開得比間隔窄，多出來的格子只會是空的。
+    // 每一輪本來就對齊時鐘，但舊資料是「跑完再睡」留下的，時刻會飄，先歸格再平均。
+    var slotMinutes = Math.Max(1, (int)CollectionSchedule.IntradayInterval.TotalMinutes);
+
     var slots = points
         .Select(point =>
         {
             var local = TimeZoneInfo.ConvertTime(point.CapturedAt, taipei);
             var minute = local.Hour * 60 + local.Minute;
 
-            return (Slot: minute / 5 * 5, point.Ratio);
+            return (Slot: minute / slotMinutes * slotMinutes, point.Ratio);
         })
         .GroupBy(item => item.Slot)
         .OrderBy(group => group.Key)
