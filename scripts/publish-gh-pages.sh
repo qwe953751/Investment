@@ -20,7 +20,16 @@ if [ ! -f "$site/index.html" ]; then
     exit 1
 fi
 
-version=$(python3 -c "import json;print(json.load(open('$site/manifest.json'))['version'])")
+# 連交易日一起印出來。發佈的來源是「上一次 export 留下的檔案」，不是現在的資料庫，
+# 所以 export 寫到別的地方（例如相對路徑落在 src/Invest.Web/publish/site）時，
+# 這支腳本會安靜地把舊快照推上去。把日期擺在眼前，推錯才看得出來。
+read -r version trade_date < <(python3 -c "
+import json
+
+manifest = json.load(open('$site/manifest.json'))
+
+print(manifest['version'], manifest.get('latestTradingDate', '?'))
+")
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -36,4 +45,4 @@ git add -A
 git commit -qm "更新排行快照 $version"
 git push -qf "$remote" gh-pages
 
-echo "已發佈快照 $version"
+echo "已發佈快照 $version（最新交易日 $trade_date）"

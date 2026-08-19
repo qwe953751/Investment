@@ -98,8 +98,13 @@ dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 為了在手機上隨時查看，`export` 指令會把所有篩選組合先算好，輸出成一份純靜態網站：
 
 ```bash
-dotnet run --project src/Invest.Web -- export publish/site
+dotnet run --project src/Invest.Web -- export "$(pwd)/publish/site"
 ```
+
+**路徑一定要給絕對的。** `dotnet run --project` 會把工作目錄切到專案資料夾，
+所以相對路徑會落在 `src/Invest.Web/publish/site`，而 `publish-gh-pages.sh`
+預設讀的是 repo 根目錄的 `publish/site`——兩邊對不上時，發佈出去的是上一次的舊快照，
+而且指令不會報錯。
 
 產出 300 個 JSON（60 交易日 × 5 期間）加上 `index.html` / `site.css` / `site.js`，
 整包約 131 MB，但單頁只載入其中一個約 460 KB 的檔案。20 MB 的原始行情不會上網。
