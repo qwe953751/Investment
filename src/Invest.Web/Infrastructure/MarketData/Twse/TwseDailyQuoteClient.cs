@@ -12,8 +12,14 @@ namespace Invest.Web.Infrastructure.MarketData.Twse;
 public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDailyQuoteClient> logger)
 {
     private const string DailyQuoteTableTitleKeyword = "每日收盤行情";
+    private const string PriceIndexTableTitleKeyword = "價格指數";
 
     public async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesAsync(
+        DateOnly tradingDate,
+        CancellationToken cancellationToken = default)
+        => (await GetDailyDataAsync(tradingDate, cancellationToken)).Quotes;
+
+    public async Task<TwseDailyData> GetDailyDataAsync(
         DateOnly tradingDate,
         CancellationToken cancellationToken = default)
     {
@@ -32,7 +38,7 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
         {
             // 非交易日時回傳 {"stat":"很抱歉，沒有符合條件的資料!"}，沒有 tables 欄位。
             logger.LogInformation("TWSE {Date:yyyy-MM-dd} 沒有行情資料，視為非交易日。", tradingDate);
-            return [];
+            return new([], null);
         }
 
         var quoteTable = tables.EnumerateArray().FirstOrDefault(table =>
@@ -40,18 +46,34 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
             && title.ValueKind == JsonValueKind.String
             && title.GetString()!.Contains(DailyQuoteTableTitleKeyword, StringComparison.Ordinal));
 
-        if (quoteTable.ValueKind != JsonValueKind.Object
-            || !quoteTable.TryGetProperty("data", out var rows))
+        IReadOnlyList<DailyQuote> quotes = [];
+
+        if (quoteTable.ValueKind == JsonValueKind.Object
+            && quoteTable.TryGetProperty("data", out var rows)
+            && rows.ValueKind == JsonValueKind.Array)
+        {
+            quotes = rows.EnumerateArray()
+                .Select(ParseRow)
+                .OfType<DailyQuote>()
+                .ToArray();
+        }
+        else
         {
             logger.LogWarning("TWSE {Date:yyyy-MM-dd} 回應中找不到每日收盤行情表格。", tradingDate);
-            return [];
         }
 
-        return rows.EnumerateArray()
-            .Select(ParseRow)
-            .OfType<DailyQuote>()
-            .ToArray();
+        var indexTable = tables.EnumerateArray().FirstOrDefault(table =>
+            table.TryGetProperty("title", out var title)
+            && title.ValueKind == JsonValueKind.String
+            && title.GetString()!.Contains(PriceIndexTableTitleKeyword, StringComparison.Ordinal));
+
+        return new(quotes, ParseMarketIndex(indexTable));
     }
+
+    public async Task<MarketIndexQuote?> GetMarketIndexAsync(
+        DateOnly tradingDate,
+        CancellationToken cancellationToken = default)
+        => (await GetDailyDataAsync(tradingDate, cancellationToken)).MarketIndex;
 
     /// <summary>
     /// 欄位順序：0 證券代號、1 證券名稱、2 成交股數、3 成交筆數、4 成交金額、8 收盤價。
@@ -81,4 +103,90 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
             ClosePrice = QuoteFieldParser.ParseNullableDecimal(row[8].GetString())
         };
     }
+
+    private static MarketIndexQuote? ParseMarketIndex(JsonElement table)
+    {
+        if (table.ValueKind != JsonValueKind.Object
+            || !table.TryGetProperty("data", out var rows)
+            || rows.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var fields = table.TryGetProperty("fields", out var fieldArray)
+            && fieldArray.ValueKind == JsonValueKind.Array
+            ? fieldArray.EnumerateArray()
+                .Select(field => field.ValueKind == JsonValueKind.String ? field.GetString() : null)
+                .ToArray()
+            : [];
+
+        var nameIndex = FindField(fields, "指數") ?? 0;
+        var valueIndex = FindField(fields, "收盤指數", "收市") ?? (fields.Length > 1 ? 1 : 0);
+        var percentIndex = FindField(fields, "漲跌百分比(%)", "漲跌百分比");
+        var pointsIndex = FindField(fields, "漲跌點數", "漲跌");
+
+        foreach (var row in rows.EnumerateArray())
+        {
+            var name = QuoteFieldParser.ReadCell(row, nameIndex)?.Trim();
+
+            if (name is null || !name.Contains("發行量加權股價指數", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var value = QuoteFieldParser.ParseNullableDecimal(
+                QuoteFieldParser.ReadCell(row, valueIndex));
+
+            if (value is not { } indexValue || indexValue <= 0)
+            {
+                return null;
+            }
+
+            var changePercent = percentIndex is { } percent
+                ? QuoteFieldParser.ParseNullableDecimal(QuoteFieldParser.ReadCell(row, percent))
+                : null;
+
+            if (changePercent is null && pointsIndex is { } points)
+            {
+                var changePoints = QuoteFieldParser.ParseNullableDecimal(QuoteFieldParser.ReadCell(row, points));
+
+                if (changePoints is { } pointsValue)
+                {
+                    var previousClose = indexValue - pointsValue;
+
+                    if (previousClose > 0)
+                    {
+                        changePercent = decimal.Round(pointsValue / previousClose * 100m, 2);
+                    }
+                }
+            }
+
+            return new MarketIndexQuote
+            {
+                Market = Market.Twse,
+                Value = indexValue,
+                ChangePercent = changePercent
+            };
+        }
+
+        return null;
+    }
+
+    private static int? FindField(IReadOnlyList<string?> fields, params string[] names)
+    {
+        for (var index = 0; index < fields.Count; index++)
+        {
+            if (fields[index] is { } field
+                && names.Any(name => string.Equals(field, name, StringComparison.Ordinal)))
+            {
+                return index;
+            }
+        }
+
+        return null;
+    }
 }
+
+public sealed record TwseDailyData(
+    IReadOnlyList<DailyQuote> Quotes,
+    MarketIndexQuote? MarketIndex);

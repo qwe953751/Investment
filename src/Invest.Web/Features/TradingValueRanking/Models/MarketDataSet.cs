@@ -1,4 +1,5 @@
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Features.TradingValueRanking.Models;
 
@@ -12,9 +13,12 @@ public sealed class MarketDataSet
 
     public required IReadOnlyList<DailyStockTrading> DailyTrading { get; init; }
 
+    public required IReadOnlyList<DailyMarketIndex> MarketIndices { get; init; }
+
     public static MarketDataSet Empty { get; } = new()
     {
         Stocks = [],
-        DailyTrading = []
+        DailyTrading = [],
+        MarketIndices = []
     };
 }

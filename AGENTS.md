@@ -37,8 +37,8 @@
 
 ## 執行環境
 
-- 目標 Framework 為 `net10.0`，優先使用 .NET SDK 10.0.302。
-- 執行前確認 `dotnet --version`；若 PATH 指向其他 SDK，使用已安裝的 .NET 10 路徑。
+- 目標 Framework 為 `net10.0`；repo 根目錄的 `global.json` 以 .NET SDK 10.0.302 為基準，允許同一個 .NET 10 major/minor 下較新的 feature band。
+- 執行前確認 `dotnet --version` 必須是 10.x；若 PATH 指向其他 SDK，先修正 shell PATH 或使用已安裝的 .NET 10 路徑，不可用 .NET 8/9 代跑。
 - 專案需要的 Supabase 變數名稱為：
   - `SUPABASE_DB_URL`
   - `SUPABASE_ACCESS_TOKEN`

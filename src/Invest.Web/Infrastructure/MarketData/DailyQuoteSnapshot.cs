@@ -1,3 +1,5 @@
+using Invest.Web.Domain.Stocks;
+
 namespace Invest.Web.Infrastructure.MarketData;
 
 /// <summary>
@@ -12,6 +14,12 @@ public sealed class DailyQuoteSnapshot
     /// 2：只計一般交易，與玩股網、籌碼K 等市場常見的成交值排行一致。
     /// </summary>
     public const int CurrentSchemaVersion = 2;
+
+    /// <summary>
+    /// 市場指數欄位的格式版本。指數加入快照不改變個股成交值定義，
+    /// 所以與 <see cref="CurrentSchemaVersion"/> 分開，舊快照可以只補抓指數。
+    /// </summary>
+    public const int CurrentMarketIndexSchemaVersion = 1;
 
     /// <summary>
     /// 這個檔案是用哪一版定義產生的。舊版會被回補指令視為過期並重新下載，
@@ -31,6 +39,29 @@ public sealed class DailyQuoteSnapshot
     public required DateTimeOffset DownloadedAt { get; init; }
 
     public IReadOnlyList<DailyQuote> Quotes { get; init; } = [];
+
+    public int MarketIndexSchemaVersion { get; init; }
+
+    public IReadOnlyList<MarketIndexQuote> MarketIndices { get; init; } = [];
+
+    public bool HasCompleteMarketIndices
+        => MarketIndexSchemaVersion >= CurrentMarketIndexSchemaVersion
+            && MarketIndices.Any(index => index.Market == Market.Twse)
+            && MarketIndices.Any(index => index.Market == Market.Tpex);
+
+    /// <summary>
+    /// 在不重新計算個股成交值的情況下，補上同一交易日的市場指數。
+    /// </summary>
+    public DailyQuoteSnapshot WithMarketIndices(IReadOnlyList<MarketIndexQuote> marketIndices) => new()
+    {
+        SchemaVersion = SchemaVersion,
+        TradingDate = TradingDate,
+        IsTradingDay = IsTradingDay,
+        DownloadedAt = DateTimeOffset.Now,
+        Quotes = Quotes,
+        MarketIndexSchemaVersion = CurrentMarketIndexSchemaVersion,
+        MarketIndices = marketIndices
+    };
 
     public static DailyQuoteSnapshot NonTradingDay(DateOnly tradingDate) => new()
     {

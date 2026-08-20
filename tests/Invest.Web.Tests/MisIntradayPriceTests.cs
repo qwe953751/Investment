@@ -112,6 +112,26 @@ public class MisIntradayPriceTests
         Assert.Equal(0m, quote.ChangePercent);
     }
 
+    [Fact]
+    public async Task 同一輪會讀取加權與櫃買指數()
+    {
+        var snapshot = await ReadAsync("""
+            {"msgArray":[
+                {"c":"t00","ex":"tse","d":"20260818","z":"22345.67","y":"22200.00"},
+                {"c":"o00","ex":"otc","d":"20260818","z":"245.12","y":"242.78"},
+                {"c":"2330","n":"台積電","ex":"tse","d":"20260818","z":"2390.0000","y":"2400.0000","v":"1"}
+            ],"rtcode":"0000"}
+            """);
+
+        var twse = Assert.Single(snapshot.MarketIndices, index => index.Market == Market.Twse);
+        var tpex = Assert.Single(snapshot.MarketIndices, index => index.Market == Market.Tpex);
+
+        Assert.Equal(22345.67m, twse.Value);
+        Assert.Equal(decimal.Round((22345.67m - 22200m) / 22200m * 100m, 2), twse.ChangePercent);
+        Assert.Equal(245.12m, tpex.Value);
+        Assert.Equal(decimal.Round((245.12m - 242.78m) / 242.78m * 100m, 2), tpex.ChangePercent);
+    }
+
     private static async Task<IntradaySnapshot> ReadAsync(string json)
     {
         var client = new MisIntradayClient(

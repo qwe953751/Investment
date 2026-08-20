@@ -127,6 +127,7 @@ public sealed class StaticSiteExporter(
                 dataSet.Stocks.Count,
                 ToThresholdExports(),
                 [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))],
+                ToMarketIndexExports(dataSet, selectableDates),
                 ToScheduleExport(),
                 ToSupabaseExport(),
                 ToDispositionExports(dispositions),
@@ -286,6 +287,31 @@ public sealed class StaticSiteExporter(
             RankingFormatter.ToThresholdText(threshold * 10_000m)))];
 
     /// <summary>
+    /// 指數與交易日綁定，不放進期間排行 JSON，避免同一個交易日的兩個期間重複保存。
+    /// 前端只需要四個數字，市場 enum 在這裡轉成固定欄位名稱，避免把 C# enum 整數暴露給靜態頁。
+    /// </summary>
+    private static IReadOnlyList<MarketIndexExport> ToMarketIndexExports(
+        MarketDataSet dataSet,
+        IReadOnlyList<DateOnly> tradingDates)
+    {
+        var byDate = dataSet.MarketIndices.ToDictionary(entry => entry.TradingDate);
+
+        return [.. tradingDates.Select(date =>
+        {
+            byDate.TryGetValue(date, out var day);
+            var twse = day?.Quotes.FirstOrDefault(index => index.Market == Domain.Stocks.Market.Twse);
+            var tpex = day?.Quotes.FirstOrDefault(index => index.Market == Domain.Stocks.Market.Tpex);
+
+            return new MarketIndexExport(
+                date.ToString("yyyy-MM-dd"),
+                twse?.Value,
+                twse?.ChangePercent,
+                tpex?.Value,
+                tpex?.ChangePercent);
+        })];
+    }
+
+    /// <summary>
     /// 收集時間表原封不動搬給前端。時間只有 <see cref="CollectionSchedule"/> 一份定義，
     /// 前端自己抄一份的話，改了排程就會在錯的時間點換行為。
     /// </summary>
@@ -341,6 +367,9 @@ public sealed class StaticSiteExporter(
         // 可以點的交易日（yyyy-MM-dd），由舊到新。月曆上不在這份清單裡的日子一律反灰。
         IReadOnlyList<string> Dates,
 
+        // 所選交易日的加權／櫃買收盤指數與漲跌幅。舊快照缺資料時欄位會是 null。
+        IReadOnlyList<MarketIndexExport> MarketIndices,
+
         // 收集時間表。前端拿它決定選項要記到什麼時候作廢，以及盤中那句說明的文字。
         ScheduleExport Schedule,
 
@@ -353,6 +382,13 @@ public sealed class StaticSiteExporter(
         IReadOnlyList<string> AlteredTrading);
 
     private sealed record ThresholdExport(int Key, string Text);
+
+    private sealed record MarketIndexExport(
+        string Date,
+        decimal? TwseIndex,
+        decimal? TwseChangePercent,
+        decimal? TpexIndex,
+        decimal? TpexChangePercent);
 
     private sealed record ScheduleExport(
         string IntradayStart,

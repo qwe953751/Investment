@@ -1,0 +1,65 @@
+using System.Net;
+using System.Text;
+using Invest.Web.Domain.Stocks;
+using Invest.Web.Infrastructure.MarketData.Tpex;
+using Invest.Web.Infrastructure.MarketData.Twse;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace Invest.Web.Tests;
+
+public sealed class MarketIndexClientTests
+{
+    [Fact]
+    public async Task TWSE會從價格指數表讀取加權指數與漲跌幅()
+    {
+        var client = new TwseDailyQuoteClient(
+            new HttpClient(new CannedResponseHandler("""
+                {"tables":[{
+                    "title":"價格指數(臺灣證券交易所)",
+                    "fields":["指數","收盤指數","漲跌(+/-)","漲跌點數","漲跌百分比(%)"],
+                    "data":[["發行量加權股價指數","22345.67","+","145.67","+0.66"]]
+                }]}
+                """)),
+            NullLogger<TwseDailyQuoteClient>.Instance);
+
+        var data = await client.GetDailyDataAsync(new DateOnly(2026, 8, 18));
+
+        var index = Assert.IsType<Invest.Web.Infrastructure.MarketData.MarketIndexQuote>(data.MarketIndex);
+        Assert.Equal(Market.Twse, index.Market);
+        Assert.Equal(22345.67m, index.Value);
+        Assert.Equal(0.66m, index.ChangePercent);
+    }
+
+    [Fact]
+    public async Task TPEx會以收市與漲跌點數計算櫃買漲跌幅()
+    {
+        var client = new TpexMarketIndexClient(
+            new HttpClient(new CannedResponseHandler("""
+                {"tables":[{
+                    "fields":["日期","開市","最高","最低","收市","漲/跌"],
+                    "data":[["115/08/18","243.00","246.00","242.00","245.12","+2.34"]]
+                }]}
+                """)),
+            NullLogger<TpexMarketIndexClient>.Instance);
+
+        var index = await client.GetAsync(new DateOnly(2026, 8, 18));
+
+        Assert.NotNull(index);
+        Assert.Equal(Market.Tpex, index.Market);
+        Assert.Equal(245.12m, index.Value);
+        Assert.Equal(decimal.Round(2.34m / (245.12m - 2.34m) * 100m, 2), index.ChangePercent);
+    }
+
+    private sealed class CannedResponseHandler(string json) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        }
+    }
+}

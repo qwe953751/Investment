@@ -1,6 +1,7 @@
 # Invest — 台股成交值排行
 
 個人使用的投資研究網頁系統。第一個功能是「個股成交值排行」，用來判斷哪些標的近期正在吸收市場成交值。
+盤後與盤中摘要同時顯示加權指數、櫃買指數及漲跌幅；這些是市場狀態資料，不是買賣訊號。
 族群分類會在串接 Google Sheets 之後加入。
 
 ## 文件導覽
@@ -22,15 +23,19 @@
 **階段一：計算引擎與互動網頁**
 
 - 行情資料是**證交所與櫃買中心的真實每日收盤行情**，由 `Infrastructure/MarketData` 逐日下載後快取在本機。
+- 盤後與盤中摘要都帶有**加權指數／櫃買指數及漲跌幅**；盤後使用交易日收盤值，盤中使用 MIS 最新一輪。
 - 排行榜上的每個數字都由原始成交值即時算出，沒有任何預先寫死的結果，公式全部有單元測試釘住。
 
-尚未實作：SQLite / EF Core、Google Sheets API 與族群分類、圖表。
+尚未實作：Google Sheets API 與族群分類、圖表。SQLite / EF Core 不在目前架構內；目前使用 Supabase PostgreSQL 與 Npgsql。
 
 ## 環境需求
 
-- macOS
+- macOS / Windows / Linux
 - .NET 10 SDK
 - VS Code + C# Dev Kit
+
+repo 根目錄的 `global.json` 會選擇 .NET SDK 10.0.302，或同一個 .NET 10 major/minor 下較新的 feature band。
+執行前確認 `dotnet --version` 是 `10.x`；不要用 .NET 8/9 建置這個 `net10.0` 專案。
 
 ## 如何執行
 
@@ -56,7 +61,7 @@ dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 ```
 
 - 官方 API 一次只給一天，所以回補是「從起始日往回走，每天打一輪請求」。
-  一輪包含兩個市場的收盤行情，加上七份用來扣除非一般交易的報表（詳見下一節）。
+  一輪包含兩個市場的收盤行情、加權／櫃買指數，加上七份用來扣除非一般交易的報表（詳見下一節）。
 - 已下載過的日期會直接略過，因此這個指令可以重複執行，中斷後再跑會從斷點繼續。
 - 非交易日也會被記錄下來，不會反覆重打同一個沒有資料的日期。
   但「今天」還沒過完之前不會下這個判斷：收盤行情下午才公布，公布前抓到的空資料
@@ -68,7 +73,11 @@ dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 
 快取檔放在 `data/imports/yyyy-MM-dd.json`，不進版控。
 檔案裡的 `schemaVersion` 記錄成交值的定義版本，定義改變時舊檔會被回補指令視為過期並自動重下，
-避免新舊定義混在同一份排行裡。
+避免新舊定義混在同一份排行裡。`marketIndexSchemaVersion` 與 `marketIndices` 保存當日兩個市場指數；
+升級後再次執行 `backfill` 會只補抓缺少的指數，不重算既有個股成交值。
+
+指數來源是官方公開資料：[TWSE OpenAPI](https://openapi.twse.com.tw/) 的價格指數資料與
+[TPEx OpenAPI](https://www.tpex.org.tw/openapi/) 的櫃買指數歷史資料；盤中指數則與個股一起讀 MIS 的 `tse_t00.tw`、`otc_o00.tw` 頻道。
 
 ### 成交值只計一般交易
 
@@ -106,7 +115,7 @@ dotnet run --project src/Invest.Web -- export "$(pwd)/publish/site"
 預設讀的是 repo 根目錄的 `publish/site`——兩邊對不上時，發佈出去的是上一次的舊快照，
 而且指令不會報錯。
 
-產出 300 個 JSON（60 交易日 × 5 期間）加上 `index.html` / `site.css` / `site.js`，
+產出最近 120 個可選交易日 × 5 種期間，也就是最多 600 個 JSON，加上 `index.html` / `site.css` / `site.js`，
 整包約 131 MB，但單頁只載入其中一個約 460 KB 的檔案。20 MB 的原始行情不會上網。
 
 一個檔案就是一份**完整名單**：全市場近兩千檔，不篩市場、不設門檻、不截斷筆數，
@@ -116,7 +125,7 @@ dotnet run --project src/Invest.Web -- export "$(pwd)/publish/site"
 檔案裡只寫數字，顯示文字由前端套格式。原本連文字都先算好，但那樣單檔將近 1 MB，
 交易日一多整包就撐不住；只留數字後單檔剩下約四分之一。
 
-交易日只輸出最近 60 天：每多一天就是五個期間各一份全市場名單（約 2.2 MB）。
+交易日只輸出最近 120 天：每多一天就是五個期間各一份全市場名單（約 2.2 MB）。
 上限定義在 `RankingDates.SelectableTradingDayCount`，排行頁與靜態網站共用同一份日期清單，
 月曆上不在清單裡的日子一律反灰不能點。
 
@@ -124,6 +133,9 @@ dotnet run --project src/Invest.Web -- export "$(pwd)/publish/site"
 把 `site.css` / `site.js` 與資料檔的網址都帶上 `?v=`。
 GitHub Pages 的快取是十分鐘且無法改標頭，靠網址變動才能讓手機立刻拿到新版；
 萬一瀏覽器仍拿著舊的 `site.js` 去要已經不存在的檔名，前端會比對 manifest 版本自動重載一次。
+
+`manifest.json` 另外保存每個可選交易日的 `marketIndices`；切換盤後交易日時，摘要的指數會跟著交易日切換，
+不會誤用最新一天的指數。
 
 **計算只有一份**：exporter 直接呼叫 `TradingValueRankingQueryService`，
 所有指標都是 C# 算的；前端只做「篩選、排序、編號、套顯示格式」這幾件事，不重寫任何公式。
@@ -185,6 +197,9 @@ curl -X POST "https://api.supabase.com/v1/projects/<專案 ref>/database/query" 
      -H "Content-Type: application/json" \
      -d "$(jq -Rs '{query: .}' db/004_intraday_curve.sql)"
 ```
+
+新增市場指數前先套用 `db/007_market_indices.sql`。它只在 `intraday_runs` 增加四個可為空的欄位，
+並更新 `intraday_latest` view；舊盤中輪次沒有指數時會顯示 `—`，不會補造歷史值。
 
 不用寫入用的那組連線字串，是因為 `invest_writer` 沒有建表權限，也不該有——
 它的密碼放在 GitHub Secrets，給了 DDL 權限等於讓 CI 有能力改結構。
@@ -281,6 +296,7 @@ Invest/
 | 市場成交比 | 個股期間成交值 ÷ 全市場期間成交值 |
 | 排名變化 | 前期排名 − 本期排名（正數代表上升） |
 | 期間漲跌 | （期間終點收盤價 − 基準收盤價）÷ 基準收盤價 |
+| 指數漲跌幅 | （當日指數 − 前一交易日收盤指數）÷ 前一交易日收盤指數 |
 
 - 「前期」固定採緊鄰的同長度區間（例如近 20 日 vs 再往前 20 日）。
 - 市場成交比的分母一律是上市＋上櫃全體，不隨畫面上的市場篩選改變，這樣切換市場時比例才能互相比較。
@@ -300,6 +316,8 @@ Invest/
 畫面左上角切到**盤中**，看的是當天到目前為止的累計成交額。這一頁不走靜態 JSON——
 盤中每 2 分鐘就變一次，重新匯出再發佈追不上——而是瀏覽器拿 manifest 裡的 anon key
 直接讀 Supabase 的 `intraday_latest`，每分鐘自己重讀一次。
+
+摘要區的加權與櫃買指數同樣取自這一輪 MIS 快照；盤後則取所選交易日的官方收盤資料。
 
 盤中的**觀察期間**按鈕不是「本期多長」，而是「今天要跟過去多長的期間對照」，
 交易日選擇器則收起來（盤中永遠是今天）。對照用的是**市場成交比**：

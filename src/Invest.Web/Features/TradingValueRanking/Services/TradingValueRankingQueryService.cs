@@ -95,9 +95,16 @@ public sealed class TradingValueRankingQueryService(
     {
         var stocks = new Dictionary<string, Stock>();
         var trading = new List<DailyStockTrading>();
+        var marketIndices = new List<DailyMarketIndex>(snapshots.Count);
 
         foreach (var snapshot in snapshots)
         {
+            marketIndices.Add(new DailyMarketIndex
+            {
+                TradingDate = snapshot.TradingDate,
+                Quotes = snapshot.MarketIndices
+            });
+
             foreach (var quote in snapshot.Quotes)
             {
                 stocks[quote.Ticker] = new Stock
@@ -121,7 +128,8 @@ public sealed class TradingValueRankingQueryService(
         return new MarketDataSet
         {
             Stocks = [.. stocks.Values],
-            DailyTrading = trading
+            DailyTrading = trading,
+            MarketIndices = marketIndices
         };
     }
 }

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Infrastructure.MarketData.Intraday;
 
@@ -43,6 +44,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     {
         var quotes = new List<IntradayQuote>(universe.Count);
         var tradeDate = default(DateOnly?);
+        var marketIndices = new Dictionary<Market, MarketIndexQuote>();
 
         // 一輪的硬上限就是一輪的間隔：重試再怎麼慢也不能拖到下一輪的時間。
         // 真的超時就讓這一輪失敗，收集器會直接跳到下一格重來（CollectionSchedule.NextRound），
@@ -51,13 +53,24 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
         budget.CancelAfter(CollectionSchedule.IntradayInterval);
 
+        var batchNumber = 0;
+
         foreach (var batch in universe.Chunk(BatchSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var (batchQuotes, batchDate) = await ReadBatchAsync(batch, budget.Token);
+            var (batchQuotes, batchDate, batchIndices) = await ReadBatchAsync(
+                batch,
+                includeMarketIndices: batchNumber == 0,
+                budget.Token);
+
+            batchNumber++;
 
             quotes.AddRange(batchQuotes);
+            foreach (var index in batchIndices)
+            {
+                marketIndices[index.Market] = index;
+            }
 
             // 少數個股停牌時不會回傳，日期以有回應的為準，取最新的一天。
             if (batchDate is { } date && (tradeDate is null || date > tradeDate))
@@ -101,7 +114,8 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         return new IntradaySnapshot
         {
             TradeDate = tradeDate.Value,
-            Quotes = quotes
+            Quotes = quotes,
+            MarketIndices = [.. marketIndices.Values.OrderBy(index => index.Market)]
         };
     }
 
@@ -116,8 +130,12 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     /// 打完還是不行就往外丟，讓整輪失敗——寧可少一輪，也不要寫進少了 150 檔的殘缺快照：
     /// 那會讓全市場合計、市場成交比、量能曲線同時失真，而且事後看不出來。
     /// </summary>
-    private async Task<(IReadOnlyList<IntradayQuote> Quotes, DateOnly? TradeDate)> ReadBatchAsync(
+    private async Task<(
+        IReadOnlyList<IntradayQuote> Quotes,
+        DateOnly? TradeDate,
+        IReadOnlyList<MarketIndexQuote> MarketIndices)> ReadBatchAsync(
         (Market Market, string Ticker)[] batch,
+        bool includeMarketIndices,
         CancellationToken cancellationToken)
     {
         for (var attempt = 1; ; attempt++)
@@ -129,7 +147,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
             try
             {
-                return await ReadBatchOnceAsync(batch, timeout.Token);
+                return await ReadBatchOnceAsync(batch, includeMarketIndices, timeout.Token);
             }
             catch (Exception exception) when (IsTransient(exception, cancellationToken) && attempt < MaxAttempts)
             {
@@ -154,11 +172,20 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         => !cancellationToken.IsCancellationRequested
             && exception is HttpRequestException or JsonException or OperationCanceledException;
 
-    private async Task<(IReadOnlyList<IntradayQuote> Quotes, DateOnly? TradeDate)> ReadBatchOnceAsync(
+    private async Task<(
+        IReadOnlyList<IntradayQuote> Quotes,
+        DateOnly? TradeDate,
+        IReadOnlyList<MarketIndexQuote> MarketIndices)> ReadBatchOnceAsync(
         (Market Market, string Ticker)[] batch,
+        bool includeMarketIndices,
         CancellationToken cancellationToken)
     {
         var channels = new StringBuilder();
+
+        if (includeMarketIndices)
+        {
+            channels.Append("tse_t00.tw|otc_o00.tw");
+        }
 
         foreach (var (market, ticker) in batch)
         {
@@ -192,15 +219,20 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
                 : "沒有 msgArray";
 
             logger.LogWarning("盤中 API 回應異常（{Message}），這批 {Count} 檔略過。", message, batch.Length);
-            return ([], null);
+            return ([], null, []);
         }
 
         var quotes = new List<IntradayQuote>(batch.Length);
+        var marketIndices = new List<MarketIndexQuote>(2);
         var tradeDate = default(DateOnly?);
 
         foreach (var item in items.EnumerateArray())
         {
-            if (ParseQuote(item) is { } quote)
+            if (ParseMarketIndex(item) is { } index)
+            {
+                marketIndices.Add(index);
+            }
+            else if (ParseQuote(item) is { } quote)
             {
                 quotes.Add(quote);
             }
@@ -211,7 +243,50 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             }
         }
 
-        return (quotes, tradeDate);
+        return (quotes, tradeDate, marketIndices);
+    }
+
+    /// <summary>
+    /// MIS 的 t00／o00 是兩個大盤指數頻道，不是個股，不能交給個股解析器。
+    /// z 是目前指數，y 是前一日收盤；非交易時段退回昨收時漲跌幅自然為 0%。
+    /// </summary>
+    private static MarketIndexQuote? ParseMarketIndex(JsonElement item)
+    {
+        var ticker = ReadString(item, "c")?.Trim().ToLowerInvariant();
+        var exchange = ReadString(item, "ex")?.Trim().ToLowerInvariant();
+
+        var market = (exchange, ticker) switch
+        {
+            ("tse", "t00") => Market.Twse,
+            ("otc", "o00") => Market.Tpex,
+            _ => (Market?)null
+        };
+
+        if (market is not { } validMarket)
+        {
+            return null;
+        }
+
+        var value = QuoteFieldParser.ParseNullableDecimal(ReadString(item, "z"))
+            ?? QuoteFieldParser.ParseNullableDecimal(ReadString(item, "pz"))
+            ?? QuoteFieldParser.ParseNullableDecimal(ReadString(item, "y"));
+        var previousClose = QuoteFieldParser.ParseNullableDecimal(ReadString(item, "y"));
+
+        if (value is not { } indexValue)
+        {
+            return null;
+        }
+
+        return new MarketIndexQuote
+        {
+            Market = validMarket,
+            Value = indexValue,
+            ChangePercent = indexValue is { } current
+                && previousClose is { } baseline
+                && baseline > 0
+                ? decimal.Round((current - baseline) / baseline * 100m, 2)
+                : null
+        };
     }
 
     /// <summary>
@@ -347,4 +422,6 @@ public sealed record IntradaySnapshot
     public required DateOnly TradeDate { get; init; }
 
     public required IReadOnlyList<IntradayQuote> Quotes { get; init; }
+
+    public IReadOnlyList<MarketIndexQuote> MarketIndices { get; init; } = [];
 }

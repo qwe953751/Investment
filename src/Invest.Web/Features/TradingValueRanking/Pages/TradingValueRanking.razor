@@ -1,5 +1,7 @@
 @page "/trading-value-ranking"
 
+@using Invest.Web.Infrastructure.MarketData
+
 @inject TradingValueRankingQueryService RankingService
 
 <PageTitle>個股成交值排行</PageTitle>
@@ -159,6 +161,18 @@
                 <span class="summary-label">符合條件</span>
                 @_result.RankedStockCount 檔，顯示前 @_result.Rows.Count 名
             </div>
+            @foreach (var (market, label) in MarketIndexDefinitions)
+            {
+                var index = SelectedMarketIndices.FirstOrDefault(item => item.Market == market);
+
+                <div class="summary-index">
+                    <span class="summary-label">@label</span>
+                    <span class="numeric">@IndexValueText(index)</span>
+                    <span class="@RankingFormatter.ToTrendCssClass(IndexChangeRate(index))">
+                        (@RankingFormatter.ToSignedPercentText(IndexChangeRate(index), 2))
+                    </span>
+                </div>
+            }
         </section>
 
         <div class="table-container">
@@ -217,7 +231,7 @@
             <p>市場成交比的分母一律是上市＋上櫃全體，不隨市場篩選改變，因此切換市場時比例可以直接互相比較。</p>
             <p>成交門檻是為了資金加速模式：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜沒有參考價值。</p>
             <p>期間漲跌以進入期間前的最後一個收盤價為基準，所以期間內第一天的漲跌也算在內。</p>
-            <p>目前只有收盤後的完整交易日資料，當日盤中即時行情列為之後的優化項目。</p>
+            <p>加權指數與櫃買指數是所選交易日的收盤值；括號內為相對前一交易日收盤的漲跌幅。</p>
         </footer>
     }
 </div>
@@ -237,6 +251,12 @@
         (MarketFilter.All, "全部"),
         (MarketFilter.Twse, "上市"),
         (MarketFilter.Tpex, "上櫃")
+    ];
+
+    private static readonly (Market Market, string Label)[] MarketIndexDefinitions =
+    [
+        (Market.Twse, "加權指數"),
+        (Market.Tpex, "櫃買指數")
     ];
 
     /// <summary>
@@ -296,6 +316,8 @@
     private RankingQuery _query = new();
     private TradingValueRankingResult? _result;
     private IReadOnlyList<DateOnly> _tradingDates = [];
+    private IReadOnlyDictionary<DateOnly, IReadOnlyList<MarketIndexQuote>> _marketIndices =
+        new Dictionary<DateOnly, IReadOnlyList<MarketIndexQuote>>();
     private bool _loading = true;
     private string _sortKey = "rank";
     private bool _sortDescending;
@@ -315,6 +337,7 @@
         var dataSet = await RankingService.GetDataSetAsync();
 
         _stockNames = dataSet.Stocks.ToDictionary(stock => stock.Ticker, stock => stock.Name);
+        _marketIndices = dataSet.MarketIndices.ToDictionary(day => day.TradingDate, day => day.Quotes);
         _tradingDates = RankingDates.Selectable(dataSet.DailyTrading.Select(trading => trading.TradingDate));
         _query = _query with { EndDate = _tradingDates.Count > 0 ? _tradingDates[^1] : null };
 
@@ -393,6 +416,17 @@
         _query = _query with { MinimumAverageDailyTradingValue = threshold };
         return ReloadAsync();
     }
+
+    private IReadOnlyList<MarketIndexQuote> SelectedMarketIndices
+        => _query.EndDate is { } date && _marketIndices.TryGetValue(date, out var indices)
+            ? indices
+            : [];
+
+    private static string IndexValueText(MarketIndexQuote? index)
+        => index is null ? "—" : index.Value.ToString("N2");
+
+    private static decimal? IndexChangeRate(MarketIndexQuote? index)
+        => index?.ChangePercent is { } changePercent ? changePercent / 100m : null;
 
     /// <summary>
     /// 自訂金額輸入框顯示的數字：平均每日成交值（億元）。按下按鈕時輸入框跟著顯示同一個數字。

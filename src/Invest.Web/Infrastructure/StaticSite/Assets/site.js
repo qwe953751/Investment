@@ -112,6 +112,8 @@ const toSignedPercentText = (rate, decimals = 1) => (missing(rate)
 
 const toCloseText = close => (missing(close) ? '—' : toFixedText(close, 2));
 
+const toIndexText = index => (missing(index) ? '—' : toFixedText(Number(index), 2));
+
 // 盤中資料的時間一律用台北時間顯示。手機不見得在台灣，交給瀏覽器的當地時區會看到錯的盤中時間。
 const TAIPEI_TIME = new Intl.DateTimeFormat('zh-TW', {
     timeZone: 'Asia/Taipei',
@@ -392,6 +394,7 @@ let current = null;
 // 這些都由 manifest 決定，start() 先讀好才畫按鈕、抓資料。
 let thresholds = [];
 let dates = [];
+let marketIndices = new Map();
 let version = '';
 let latestTradingDate = '';
 
@@ -1156,7 +1159,7 @@ function renderTable() {
 }
 
 function renderSummary() {
-    const items = state.view === 'intraday'
+    const baseItems = state.view === 'intraday'
         ? [
             ['交易日', current.tradeDate.replaceAll('-', '/')],
             ['資料時間', current.capturedAt],
@@ -1172,15 +1175,34 @@ function renderSummary() {
             ['符合條件', `${current.rankedStockCount} 檔，顯示前 ${current.rows.length} 名`]
         ];
 
+    const index = state.view === 'intraday'
+        ? current.marketIndices
+        : marketIndices.get(state.date);
+
+    const items = [
+        ...baseItems,
+        ['加權指數', toIndexText(index?.twseIndex), index?.twseChangePercent],
+        ['櫃買指數', toIndexText(index?.tpexIndex), index?.tpexChangePercent]
+    ];
+
     const summary = el('summary');
     summary.replaceChildren();
 
-    for (const [label, value] of items) {
+    for (const [label, value, changePercent] of items) {
         const item = document.createElement('div');
         const tag = document.createElement('span');
         tag.className = 'summary-label';
         tag.textContent = label;
-        item.append(tag, value);
+
+        if (missing(changePercent)) {
+            item.append(tag, value);
+        } else {
+            const change = document.createElement('span');
+            change.className = toTrendClass(Number(changePercent));
+            change.textContent = `(${toSignedPercentText(Number(changePercent) / 100, 2)})`;
+            item.append(tag, value, ' ', change);
+        }
+
         summary.append(item);
     }
 }
@@ -1266,7 +1288,7 @@ async function loadIntraday(silent = false) {
         [raw] = await Promise.all([
             fetchAllRows(
                 'intraday_latest',
-                'symbol,name,market,price,turnover,change_percent,trade_date,captured_at',
+                'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent',
                 '&order=turnover.desc'),
             loadMarketFlags(),
             loadRevenue()
@@ -1349,6 +1371,12 @@ async function loadIntraday(silent = false) {
         capturedAt: toTaipeiText(raw[0].captured_at),
         progress,
         marketTotal,
+        marketIndices: {
+            twseIndex: missing(raw[0].twse_index) ? null : Number(raw[0].twse_index),
+            twseChangePercent: missing(raw[0].twse_change_percent) ? null : Number(raw[0].twse_change_percent),
+            tpexIndex: missing(raw[0].tpex_index) ? null : Number(raw[0].tpex_index),
+            tpexChangePercent: missing(raw[0].tpex_change_percent) ? null : Number(raw[0].tpex_change_percent)
+        },
         referencePeriod: reference?.currentPeriod ?? '資料不足',
         rankedStockCount: candidates.length,
         rows: ranked.slice(0, TOP_COUNT).map((row, index) => {
@@ -1501,6 +1529,7 @@ async function start() {
 
     thresholds = manifest.thresholds;
     dates = manifest.dates;
+    marketIndices = new Map((manifest.marketIndices ?? []).map(entry => [entry.date, entry]));
     version = manifest.version;
     latestTradingDate = manifest.latestTradingDate;
     schedule = manifest.schedule ?? null;

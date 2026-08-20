@@ -1,4 +1,5 @@
 using Invest.Web.Infrastructure.Database;
+using Invest.Web.Domain.Stocks;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -135,10 +136,18 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
     {
         await using var command = new NpgsqlCommand(
             """
-            insert into intraday_runs (trade_date, captured_at, source, quote_count)
-            values (@tradeDate, @capturedAt, @source, @quoteCount)
+            insert into intraday_runs (
+                trade_date, captured_at, source, quote_count,
+                twse_index, twse_change_percent, tpex_index, tpex_change_percent)
+            values (
+                @tradeDate, @capturedAt, @source, @quoteCount,
+                @twseIndex, @twseChangePercent, @tpexIndex, @tpexChangePercent)
             on conflict (trade_date, captured_at, source)
-                do update set quote_count = excluded.quote_count
+                do update set quote_count = excluded.quote_count,
+                              twse_index = excluded.twse_index,
+                              twse_change_percent = excluded.twse_change_percent,
+                              tpex_index = excluded.tpex_index,
+                              tpex_change_percent = excluded.tpex_change_percent
             returning id
             """,
             connection);
@@ -147,6 +156,14 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         command.Parameters.AddWithValue("capturedAt", capturedAt);
         command.Parameters.AddWithValue("source", source);
         command.Parameters.AddWithValue("quoteCount", snapshot.Quotes.Count);
+
+        var twse = snapshot.MarketIndices.FirstOrDefault(index => index.Market == Market.Twse);
+        var tpex = snapshot.MarketIndices.FirstOrDefault(index => index.Market == Market.Tpex);
+
+        AddNullableDecimal(command, "twseIndex", twse?.Value);
+        AddNullableDecimal(command, "twseChangePercent", twse?.ChangePercent);
+        AddNullableDecimal(command, "tpexIndex", tpex?.Value);
+        AddNullableDecimal(command, "tpexChangePercent", tpex?.ChangePercent);
 
         var runId = (long)(await command.ExecuteScalarAsync(cancellationToken))!;
 
@@ -159,6 +176,17 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         await cleanup.ExecuteNonQueryAsync(cancellationToken);
 
         return runId;
+    }
+
+    private static void AddNullableDecimal(
+        NpgsqlCommand command,
+        string name,
+        decimal? value)
+    {
+        command.Parameters.Add(new NpgsqlParameter(name, NpgsqlDbType.Numeric)
+        {
+            Value = value is { } number ? number : DBNull.Value
+        });
     }
 
     /// <summary>

@@ -38,6 +38,7 @@ builder.Services.Configure<MarketDataOptions>(
 // 官方網站會擋掉沒有 User-Agent 的請求，這些 client 一定要帶。
 builder.Services.AddHttpClient<TwseDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexDailyQuoteClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<TpexMarketIndexClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseNonRegularTradingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexNonRegularTradingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MarketFlagClient>(ConfigureQuoteClient);
@@ -574,7 +575,7 @@ static async Task RunBackfillAsync(IServiceProvider services, string[] args)
 
     Console.WriteLine($"開始回補 {targetTradingDays} 個交易日，從 {startFrom:yyyy-MM-dd} 往回。");
     Console.WriteLine($"快取位置：{store.Directory}");
-    Console.WriteLine("每個日期要打四輪官方 API（上市與上櫃的收盤行情，以及各自的零股與鉅額交易），");
+    Console.WriteLine("每個日期要抓上市／上櫃收盤行情、兩個市場指數，以及各自的零股與鉅額交易報表，");
     Console.WriteLine("中間有延遲避免被擋，請耐心等候。");
     Console.WriteLine();
 
@@ -594,7 +595,7 @@ static async Task RunBackfillAsync(IServiceProvider services, string[] args)
 
         Console.WriteLine();
         Console.WriteLine($"完成。交易日 {report.TradingDayCount} 天"
-            + $"（新下載 {report.DownloadedCount}、略過已存在 {report.SkippedCount}）");
+            + $"（新下載 {report.DownloadedCount}、補上指數 {report.IndexUpdatedCount}、略過已存在 {report.SkippedCount}）");
         Console.WriteLine($"最早日期：{report.EarliestDate:yyyy-MM-dd}");
 
         if (report.FailedDates.Count > 0)

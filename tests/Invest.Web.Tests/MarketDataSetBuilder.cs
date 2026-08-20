@@ -1,5 +1,6 @@
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Models;
+using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Tests;
 
@@ -71,6 +72,7 @@ internal sealed class MarketDataSetBuilder
     public MarketDataSet Build() => new()
     {
         Stocks = [.. _stocks.Values],
-        DailyTrading = _trading
+        DailyTrading = _trading,
+        MarketIndices = []
     };
 }

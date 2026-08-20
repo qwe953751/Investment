@@ -8,12 +8,13 @@ namespace Invest.Web.Infrastructure.MarketData;
 /// 逐日下載上市與上櫃行情並寫入快取。
 ///
 /// 官方 API 一次只給一天，所以回補是「從最近的日期往回走，每天打一輪請求」。
-/// 一輪包含兩個市場的收盤行情，加上七份用來扣除非一般交易的報表。
+/// 一輪包含兩個市場的收盤行情、兩個市場指數，加上七份用來扣除非一般交易的報表。
 /// 已經下載過的日期會直接略過，因此這個方法可以重複執行，中斷後再跑會從斷點繼續。
 /// </summary>
 public sealed class MarketDataDownloader(
     TwseDailyQuoteClient twseClient,
     TpexDailyQuoteClient tpexClient,
+    TpexMarketIndexClient tpexIndexClient,
     TwseNonRegularTradingClient twseNonRegularClient,
     TpexNonRegularTradingClient tpexNonRegularClient,
     TwseHolidayCalendar holidayCalendar,
@@ -66,6 +67,25 @@ public sealed class MarketDataDownloader(
 
                 if (cached is { SchemaVersion: >= DailyQuoteSnapshot.CurrentSchemaVersion })
                 {
+                    if (!cached.HasCompleteMarketIndices)
+                    {
+                        progress?.Report($"{date:yyyy-MM-dd} 補抓加權與櫃買指數");
+
+                        var marketIndices = await DownloadMarketIndicesAsync(
+                            date, progress, cancellationToken);
+
+                        if (marketIndices is null)
+                        {
+                            report.FailedDates.Add(date);
+                            progress?.Report($"{date:yyyy-MM-dd} 指數下載失敗，已跳過");
+                            continue;
+                        }
+
+                        await store.SaveAsync(
+                            cached.WithMarketIndices(marketIndices), cancellationToken);
+                        report.IndexUpdatedCount++;
+                    }
+
                     report.TradingDayCount++;
                     report.SkippedCount++;
                     progress?.Report($"{date:yyyy-MM-dd} 已存在，略過（累計 {report.TradingDayCount} 個交易日）");
@@ -110,16 +130,18 @@ public sealed class MarketDataDownloader(
         IProgress<string>? progress,
         CancellationToken cancellationToken)
     {
-        var twse = await WithRetryAsync(
-            () => twseClient.GetDailyQuotesAsync(date, cancellationToken),
+        var twseData = await WithRetryAsync(
+            () => twseClient.GetDailyDataAsync(date, cancellationToken),
             $"TWSE {date:yyyy-MM-dd}",
             progress,
             cancellationToken);
 
-        if (twse is null)
+        if (twseData is null)
         {
             return null;
         }
+
+        var twse = twseData.Quotes;
 
         await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
 
@@ -179,18 +201,59 @@ public sealed class MarketDataDownloader(
 
         await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
 
+        var tpexIndex = await WithRetryAsync(
+            async () => (await tpexIndexClient.GetAsync(date, cancellationToken))!,
+            $"TPEx 指數 {date:yyyy-MM-dd}",
+            progress,
+            cancellationToken);
+
+        if (twseData.MarketIndex is not { } twseIndex || tpexIndex is not { } validTpexIndex)
+        {
+            progress?.Report($"{date:yyyy-MM-dd} 找不到完整的上市／上櫃指數，這天不寫入");
+            return null;
+        }
+
         return new DailyQuoteSnapshot
         {
             SchemaVersion = DailyQuoteSnapshot.CurrentSchemaVersion,
             TradingDate = date,
             IsTradingDay = true,
             DownloadedAt = DateTimeOffset.Now,
+            MarketIndexSchemaVersion = DailyQuoteSnapshot.CurrentMarketIndexSchemaVersion,
+            MarketIndices = [twseIndex, validTpexIndex],
             Quotes =
             [
                 .. ToRegularTradingOnly(twse, twseNonRegular),
                 .. ToRegularTradingOnly(tpex, tpexNonRegular)
             ]
         };
+    }
+
+    private async Task<IReadOnlyList<MarketIndexQuote>?> DownloadMarketIndicesAsync(
+        DateOnly date,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        var twseIndex = await WithRetryAsync(
+            async () => (await twseClient.GetMarketIndexAsync(date, cancellationToken))!,
+            $"TWSE 指數 {date:yyyy-MM-dd}",
+            progress,
+            cancellationToken);
+
+        if (twseIndex is null)
+        {
+            return null;
+        }
+
+        await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+
+        var tpexIndex = await WithRetryAsync(
+            async () => (await tpexIndexClient.GetAsync(date, cancellationToken))!,
+            $"TPEx 指數 {date:yyyy-MM-dd}",
+            progress,
+            cancellationToken);
+
+        return tpexIndex is null ? null : [twseIndex, tpexIndex];
     }
 
     /// <summary>
@@ -263,6 +326,8 @@ public sealed class BackfillReport
     public int DownloadedCount { get; set; }
 
     public int SkippedCount { get; set; }
+
+    public int IndexUpdatedCount { get; set; }
 
     public DateOnly? EarliestDate { get; set; }
 
