@@ -7,7 +7,7 @@ namespace Invest.Web.Infrastructure.MarketData.Twse;
 /// 讀取臺灣證券交易所的每日收盤行情。
 ///
 /// 一次請求即可取得當日全部上市個股，不需要逐檔查詢。
-/// 端點：rwd/zh/afterTrading/MI_INDEX?date=yyyyMMdd&amp;type=ALLBUT0999&amp;response=json
+/// 端點：wwwc.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=yyyyMMdd&amp;type=ALLBUT0999&amp;response=json
 /// </summary>
 public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDailyQuoteClient> logger)
 {
@@ -23,7 +23,7 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
         DateOnly tradingDate,
         CancellationToken cancellationToken = default)
     {
-        var url = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
+        var url = "https://wwwc.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
             + $"?date={tradingDate:yyyyMMdd}&type=ALLBUT0999&response=json";
 
         using var response = await httpClient.GetAsync(url, cancellationToken);
