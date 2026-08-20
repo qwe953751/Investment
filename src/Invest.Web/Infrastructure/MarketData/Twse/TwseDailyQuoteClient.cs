@@ -13,6 +13,7 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
 {
     private const string DailyQuoteTableTitleKeyword = "每日收盤行情";
     private const string PriceIndexTableTitleKeyword = "價格指數";
+    private const string MarketSummaryIndexField = "發行量加權股價指數";
 
     public async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesAsync(
         DateOnly tradingDate,
@@ -73,7 +74,18 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
     public async Task<MarketIndexQuote?> GetMarketIndexAsync(
         DateOnly tradingDate,
         CancellationToken cancellationToken = default)
-        => (await GetDailyDataAsync(tradingDate, cancellationToken)).MarketIndex;
+    {
+        var url = "https://wwwc.twse.com.tw/exchangeReport/FMTQIK"
+            + $"?date={tradingDate:yyyyMMdd}&response=json";
+
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+        return ParseMarketSummaryIndex(document.RootElement, tradingDate);
+    }
 
     /// <summary>
     /// 欄位順序：0 證券代號、1 證券名稱、2 成交股數、3 成交筆數、4 成交金額、8 收盤價。
@@ -149,6 +161,77 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
             if (changePercent is null && pointsIndex is { } points)
             {
                 var changePoints = QuoteFieldParser.ParseNullableDecimal(QuoteFieldParser.ReadCell(row, points));
+
+                if (changePoints is { } pointsValue)
+                {
+                    var previousClose = indexValue - pointsValue;
+
+                    if (previousClose > 0)
+                    {
+                        changePercent = decimal.Round(pointsValue / previousClose * 100m, 2);
+                    }
+                }
+            }
+
+            return new MarketIndexQuote
+            {
+                Market = Market.Twse,
+                Value = indexValue,
+                ChangePercent = changePercent
+            };
+        }
+
+        return null;
+    }
+
+    private static MarketIndexQuote? ParseMarketSummaryIndex(JsonElement root, DateOnly tradingDate)
+    {
+        if (!root.TryGetProperty("fields", out var fieldArray)
+            || fieldArray.ValueKind != JsonValueKind.Array
+            || !root.TryGetProperty("data", out var rows)
+            || rows.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var fields = fieldArray.EnumerateArray()
+            .Select(field => field.ValueKind == JsonValueKind.String ? field.GetString() : null)
+            .ToArray();
+        var dateIndex = FindField(fields, "日期");
+        var valueIndex = FindField(fields, MarketSummaryIndexField);
+        var pointsIndex = FindField(fields, "漲跌點數");
+
+        if (dateIndex is not { } dateColumn || valueIndex is not { } valueColumn)
+        {
+            return null;
+        }
+
+        var targetDate = $"{tradingDate.Year - 1911:000}/{tradingDate:MM/dd}";
+
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (!string.Equals(
+                    QuoteFieldParser.ReadCell(row, dateColumn)?.Trim(),
+                    targetDate,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var value = QuoteFieldParser.ParseNullableDecimal(
+                QuoteFieldParser.ReadCell(row, valueColumn));
+
+            if (value is not { } indexValue || indexValue <= 0)
+            {
+                return null;
+            }
+
+            decimal? changePercent = null;
+
+            if (pointsIndex is { } pointsColumn)
+            {
+                var changePoints = QuoteFieldParser.ParseNullableDecimal(
+                    QuoteFieldParser.ReadCell(row, pointsColumn));
 
                 if (changePoints is { } pointsValue)
                 {

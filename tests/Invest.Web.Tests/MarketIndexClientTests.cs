@@ -31,6 +31,27 @@ public sealed class MarketIndexClientTests
     }
 
     [Fact]
+    public async Task TWSE補抓指數會從月度市場報表讀取指定日期()
+    {
+        var client = new TwseDailyQuoteClient(
+            new HttpClient(new CannedResponseHandler("""
+                {"fields":["日期","成交股數","成交金額","成交筆數","發行量加權股價指數","漲跌點數"],
+                 "data":[
+                    ["115/03/04","17027132902","1099338575770","8552766","32828.88","-1494.77"],
+                    ["115/03/03","16527604581","1113233319063","8200698","34323.65","-771.44"]
+                 ]}
+                """)),
+            NullLogger<TwseDailyQuoteClient>.Instance);
+
+        var index = await client.GetMarketIndexAsync(new DateOnly(2026, 3, 3));
+
+        Assert.NotNull(index);
+        Assert.Equal(Market.Twse, index.Market);
+        Assert.Equal(34323.65m, index.Value);
+        Assert.Equal(decimal.Round(-771.44m / (34323.65m + 771.44m) * 100m, 2), index.ChangePercent);
+    }
+
+    [Fact]
     public async Task TPEx會以收市與漲跌點數計算櫃買漲跌幅()
     {
         var client = new TpexMarketIndexClient(

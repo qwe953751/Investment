@@ -76,7 +76,7 @@ dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 避免新舊定義混在同一份排行裡。`marketIndexSchemaVersion` 與 `marketIndices` 保存當日兩個市場指數；
 升級後再次執行 `backfill` 會只補抓缺少的指數，不重算既有個股成交值。
 
-指數來源是官方公開資料：[TWSE OpenAPI](https://openapi.twse.com.tw/) 的價格指數資料與
+指數來源是官方公開資料：TWSE 的 `MI_INDEX`／`FMTQIK` 價格指數資料與
 [TPEx OpenAPI](https://www.tpex.org.tw/openapi/) 的櫃買指數歷史資料；盤中指數則與個股一起讀 MIS 的 `tse_t00.tw`、`otc_o00.tw` 頻道。
 
 ### 成交值只計一般交易
