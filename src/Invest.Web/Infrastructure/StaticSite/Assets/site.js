@@ -1134,7 +1134,14 @@ function selectedKLineBars(ticker) {
         return bars;
     }
 
-    return [...bars.filter(bar => bar.date !== endDate), liveBar]
+    const historicalBars = bars.filter(bar => bar.date !== endDate);
+
+    return [...historicalBars, {
+        ...liveBar,
+        previousClose: historicalBars.length
+            ? historicalBars[historicalBars.length - 1].close
+            : null
+    }]
         .sort((left, right) => left.date.localeCompare(right.date));
 }
 
@@ -1150,6 +1157,21 @@ function svgElement(name, attributes = {}, text = null) {
     }
 
     return element;
+}
+
+function klineTrendClass(bar, index, bars) {
+    const previousClose = missing(bar.previousClose)
+        ? index > 0 ? bars[index - 1].close : null
+        : bar.previousClose;
+    const referenceClose = missing(previousClose) ? bar.open : previousClose;
+    const close = Number(bar.close);
+    const reference = Number(referenceClose);
+
+    return close > reference
+        ? 'daily-kline-up'
+        : close < reference
+            ? 'daily-kline-down'
+            : 'daily-kline-flat';
 }
 
 function renderKLineSvg(ticker, name, bars) {
@@ -1194,7 +1216,7 @@ function renderKLineSvg(ticker, name, bars) {
         const candleX = x(index);
         const bodyTop = Math.min(y(open), y(close));
         const bodyHeight = Math.max(Math.abs(y(open) - y(close)), 1.5);
-        const trend = close > open ? 'positive' : close < open ? 'negative' : 'unchanged';
+        const trend = klineTrendClass(bar, index, bars);
 
         svg.append(
             svgElement('line', {

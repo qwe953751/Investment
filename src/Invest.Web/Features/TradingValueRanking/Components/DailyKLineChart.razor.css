@@ -74,30 +74,30 @@
     stroke-width: 1.2;
 }
 
-.daily-kline-body.positive {
-    fill: #b42318;
-    stroke: #b42318;
+.daily-kline-body.daily-kline-up {
+    fill: #e82830;
+    stroke: #e82830;
 }
 
-.daily-kline-wick.positive {
-    stroke: #b42318;
+.daily-kline-wick.daily-kline-up {
+    stroke: #e82830;
 }
 
-.daily-kline-body.negative {
-    fill: #067647;
-    stroke: #067647;
+.daily-kline-body.daily-kline-down {
+    fill: #38b448;
+    stroke: #38b448;
 }
 
-.daily-kline-wick.negative {
-    stroke: #067647;
+.daily-kline-wick.daily-kline-down {
+    stroke: #38b448;
 }
 
-.daily-kline-body.unchanged {
+.daily-kline-body.daily-kline-flat {
     fill: #667085;
     stroke: #667085;
 }
 
-.daily-kline-wick.unchanged {
+.daily-kline-wick.daily-kline-flat {
     stroke: #667085;
 }
 
@@ -108,24 +108,25 @@
     stroke-linejoin: round;
 }
 
+/* 與常用 APP 色票一致；網站只使用 MA5、MA20、MA60、MA240。 */
 .ma5 {
-    color: #d97706;
-    stroke: #d97706;
+    color: #4f80ff;
+    stroke: #4f80ff;
 }
 
 .ma20 {
-    color: #2563eb;
-    stroke: #2563eb;
+    color: #ef9b01;
+    stroke: #ef9b01;
 }
 
 .ma60 {
-    color: #7c3aed;
-    stroke: #7c3aed;
+    color: #ffafe9;
+    stroke: #ffafe9;
 }
 
 .ma240 {
-    color: #475467;
-    stroke: #475467;
+    color: #8600d9;
+    stroke: #8600d9;
 }
 
 .daily-kline-empty {

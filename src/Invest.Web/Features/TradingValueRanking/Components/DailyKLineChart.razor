@@ -183,7 +183,12 @@
                 bar.Close,
                 PlotLeft + step * (index + 0.5),
                 bodyWidth,
-                bar.Close > bar.Open ? "positive" : bar.Close < bar.Open ? "negative" : "unchanged");
+                DailyKLineTrendCalculator.Get(bar) switch
+                {
+                    DailyKLineTrend.Up => "daily-kline-up",
+                    DailyKLineTrend.Down => "daily-kline-down",
+                    _ => "daily-kline-flat"
+                });
         })];
     }
 

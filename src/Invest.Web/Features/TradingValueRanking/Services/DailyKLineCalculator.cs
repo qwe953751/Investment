@@ -30,6 +30,7 @@ public static class DailyKLineCalculator
             .ToArray();
         var prefixCloseSums = new List<decimal>(rows.Length + 1) { 0m };
         var result = new List<DailyKLinePoint>();
+        decimal? previousClose = null;
 
         foreach (var row in rows)
         {
@@ -38,6 +39,8 @@ public static class DailyKLineCalculator
                 .Aggregate(1m, (current, item) => current * item.Factor);
             var close = row.ClosePrice!.Value * factor;
             prefixCloseSums.Add(prefixCloseSums[^1] + close);
+            var closeBeforeThisBar = previousClose;
+            previousClose = close;
 
             if (row.TradingDate < startDate
                 || row.TradingDate > endDate
@@ -54,6 +57,7 @@ public static class DailyKLineCalculator
                 row.HighPrice.Value * factor,
                 row.LowPrice.Value * factor,
                 close,
+                closeBeforeThisBar,
                 MovingAverage(prefixCloseSums, 5),
                 MovingAverage(prefixCloseSums, 20),
                 MovingAverage(prefixCloseSums, 60),
@@ -78,7 +82,29 @@ public sealed record DailyKLinePoint(
     decimal High,
     decimal Low,
     decimal Close,
+    decimal? PreviousClose,
     decimal? Ma5,
     decimal? Ma20,
     decimal? Ma60,
     decimal? Ma240);
+
+public enum DailyKLineTrend
+{
+    Up,
+    Down,
+    Unchanged
+}
+
+public static class DailyKLineTrendCalculator
+{
+    public static DailyKLineTrend Get(DailyKLinePoint point)
+    {
+        var referenceClose = point.PreviousClose ?? point.Open;
+
+        return point.Close > referenceClose
+            ? DailyKLineTrend.Up
+            : point.Close < referenceClose
+                ? DailyKLineTrend.Down
+                : DailyKLineTrend.Unchanged;
+    }
+}

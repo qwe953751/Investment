@@ -95,6 +95,37 @@ public sealed class DailyKLineTests
     }
 
     [Fact]
+    public void K棒漲跌以收盤價相對前一交易日收盤判斷()
+    {
+        var firstDate = new DateOnly(2026, 8, 12);
+        var trading = new[]
+        {
+            Bar(firstDate, 2415m),
+            new DailyStockTrading
+            {
+                TradingDate = firstDate.AddDays(1),
+                Ticker = "2330",
+                OpenPrice = 2440m,
+                HighPrice = 2450m,
+                LowPrice = 2425m,
+                ClosePrice = 2435m,
+                TradingValue = 1m
+            }
+        };
+
+        var selected = DailyKLineSelector.Select(
+            trading,
+            [],
+            "2330",
+            firstDate.AddDays(1),
+            firstDate.AddDays(1),
+            months: 1);
+
+        Assert.Equal(2415m, selected[1].PreviousClose);
+        Assert.Equal(DailyKLineTrend.Up, DailyKLineTrendCalculator.Get(selected[1]));
+    }
+
+    [Fact]
     public void 補抓日K不會改動成交值與收盤價()
     {
         var snapshot = new DailyQuoteSnapshot
