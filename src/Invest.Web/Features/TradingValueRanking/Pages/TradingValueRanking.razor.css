@@ -317,6 +317,44 @@
     font-weight: 600;
 }
 
+.stock-name-button {
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.stock-name-button:hover {
+    color: #1a56db;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.kline-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+}
+
+.kline-popover {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    z-index: 21;
+    width: min(600px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    overflow: auto;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: white;
+    box-shadow: 0 8px 24px #00000026;
+    transform: translate(-50%, -50%);
+}
+
 .market {
     color: #666;
     font-size: 13px;

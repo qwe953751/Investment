@@ -53,7 +53,8 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
     }
 
     /// <summary>
-    /// 欄位順序：0 代號、1 名稱、2 收盤、8 成交股數、9 成交金額、10 成交筆數。
+    /// 欄位順序：0 代號、1 名稱、2 收盤、5 開盤、6 最高、7 最低、
+    /// 8 成交股數、9 成交金額、10 成交筆數。
     /// </summary>
     private static DailyQuote? ParseRow(JsonElement row)
     {
@@ -75,6 +76,9 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
             Ticker = ticker!,
             Name = row[1].GetString()?.Trim() ?? ticker!,
             ClosePrice = QuoteFieldParser.ParseNullableDecimal(row[2].GetString()),
+            OpenPrice = QuoteFieldParser.ParseNullableDecimal(row[5].GetString()),
+            HighPrice = QuoteFieldParser.ParseNullableDecimal(row[6].GetString()),
+            LowPrice = QuoteFieldParser.ParseNullableDecimal(row[7].GetString()),
             TradingVolume = QuoteFieldParser.ParseDecimal(row[8].GetString()),
             TradingValue = QuoteFieldParser.ParseDecimal(row[9].GetString()),
             TransactionCount = QuoteFieldParser.ParseInt(row[10].GetString())

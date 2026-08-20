@@ -242,9 +242,12 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 
         await using var command = new NpgsqlCommand(
             """
-            insert into intraday_quotes (run_id, security_id, price, turnover, change_percent)
+            insert into intraday_quotes (
+                run_id, security_id, price, turnover, change_percent,
+                open_price, high_price, low_price)
             select @runId, * from unnest(
-                @securityIds::int[], @prices::numeric[], @turnovers::bigint[], @changePercents::numeric[])
+                @securityIds::int[], @prices::numeric[], @turnovers::bigint[], @changePercents::numeric[],
+                @openPrices::numeric[], @highPrices::numeric[], @lowPrices::numeric[])
             """,
             connection);
 
@@ -258,6 +261,18 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         command.Parameters.Add(new NpgsqlParameter("changePercents", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
         {
             Value = rows.Select(row => row.ChangePercent).ToArray()
+        });
+        command.Parameters.Add(new NpgsqlParameter("openPrices", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+        {
+            Value = rows.Select(row => row.OpenPrice).ToArray()
+        });
+        command.Parameters.Add(new NpgsqlParameter("highPrices", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+        {
+            Value = rows.Select(row => row.HighPrice).ToArray()
+        });
+        command.Parameters.Add(new NpgsqlParameter("lowPrices", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+        {
+            Value = rows.Select(row => row.LowPrice).ToArray()
         });
 
         return await command.ExecuteNonQueryAsync(cancellationToken);

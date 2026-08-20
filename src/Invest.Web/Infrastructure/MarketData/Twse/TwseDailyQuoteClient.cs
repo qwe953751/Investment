@@ -88,7 +88,8 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
     }
 
     /// <summary>
-    /// 欄位順序：0 證券代號、1 證券名稱、2 成交股數、3 成交筆數、4 成交金額、8 收盤價。
+    /// 欄位順序：0 證券代號、1 證券名稱、2 成交股數、3 成交筆數、4 成交金額、
+    /// 5 開盤價、6 最高價、7 最低價、8 收盤價。
     /// </summary>
     private static DailyQuote? ParseRow(JsonElement row)
     {
@@ -112,6 +113,9 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
             TradingVolume = QuoteFieldParser.ParseDecimal(row[2].GetString()),
             TransactionCount = QuoteFieldParser.ParseInt(row[3].GetString()),
             TradingValue = QuoteFieldParser.ParseDecimal(row[4].GetString()),
+            OpenPrice = QuoteFieldParser.ParseNullableDecimal(row[5].GetString()),
+            HighPrice = QuoteFieldParser.ParseNullableDecimal(row[6].GetString()),
+            LowPrice = QuoteFieldParser.ParseNullableDecimal(row[7].GetString()),
             ClosePrice = QuoteFieldParser.ParseNullableDecimal(row[8].GetString())
         };
     }

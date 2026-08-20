@@ -615,6 +615,181 @@ body {
     font-weight: 600;
 }
 
+.stock-name-button {
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.stock-name-button:hover {
+    color: #1a56db;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.kline-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+}
+
+.kline-popover {
+    position: fixed;
+    z-index: 21;
+    width: min(600px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    padding: 0;
+    overflow: auto;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: white;
+    box-shadow: 0 8px 24px #00000026;
+}
+
+.kline-backdrop[hidden],
+.kline-popover[hidden] {
+    display: none;
+}
+
+.daily-kline-card {
+    padding: 12px 14px 10px;
+    background: white;
+}
+
+.daily-kline-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 4px;
+}
+
+.daily-kline-period {
+    margin-left: 8px;
+    color: #667085;
+    font-size: 12px;
+}
+
+.daily-kline-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 12px;
+    margin: 7px 0 2px;
+    color: #667085;
+    font-size: 11px;
+}
+
+.daily-kline-legend span::before {
+    display: inline-block;
+    width: 14px;
+    margin-right: 4px;
+    border-top: 2px solid currentColor;
+    vertical-align: middle;
+    content: "";
+}
+
+.daily-kline-close {
+    padding: 4px 9px;
+    border: 1px solid #aaa;
+    border-radius: 5px;
+    background: white;
+    color: #444;
+    cursor: pointer;
+}
+
+.daily-kline-close:hover {
+    background: #f0f0f0;
+}
+
+.daily-kline-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.daily-kline-grid line,
+.daily-kline-grid-line {
+    stroke: #dbe4ef;
+    stroke-width: 1;
+}
+
+.daily-kline-grid text,
+.daily-kline-axis,
+.daily-kline-date {
+    fill: #667085;
+    font-size: 11px;
+}
+
+.daily-kline-wick,
+.daily-kline-body {
+    stroke-width: 1.2;
+}
+
+.daily-kline-body.positive {
+    fill: #b42318;
+    stroke: #b42318;
+}
+
+.daily-kline-wick.positive {
+    stroke: #b42318;
+}
+
+.daily-kline-body.negative {
+    fill: #067647;
+    stroke: #067647;
+}
+
+.daily-kline-wick.negative {
+    stroke: #067647;
+}
+
+.daily-kline-body.unchanged {
+    fill: #667085;
+    stroke: #667085;
+}
+
+.daily-kline-wick.unchanged {
+    stroke: #667085;
+}
+
+.daily-kline-ma {
+    fill: none;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.ma5 {
+    color: #d97706;
+    stroke: #d97706;
+}
+
+.ma20 {
+    color: #2563eb;
+    stroke: #2563eb;
+}
+
+.ma60 {
+    color: #7c3aed;
+    stroke: #7c3aed;
+}
+
+.ma240 {
+    color: #475467;
+    stroke: #475467;
+}
+
+.daily-kline-empty {
+    margin: 10px 0 4px;
+    color: #667085;
+    font-size: 13px;
+}
+
 /* 交易限制的標記排在股名左邊，由上往下疊。
    標記那一格的寬度固定保留著，沒有標記的列也一樣，所以整欄的名字都從同一個位置起算。 */
 .name-cell {

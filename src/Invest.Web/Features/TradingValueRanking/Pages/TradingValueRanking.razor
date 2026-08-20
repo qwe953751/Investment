@@ -1,8 +1,11 @@
 @page "/trading-value-ranking"
 
+@using Invest.Web.Features.TradingValueRanking.Components
 @using Invest.Web.Infrastructure.MarketData
+@using Invest.Web.Infrastructure.MarketData.CorporateActions
 
 @inject TradingValueRankingQueryService RankingService
+@inject CorporateActionClient CorporateActionClient
 
 <PageTitle>個股成交值排行</PageTitle>
 
@@ -200,7 +203,14 @@
                             </td>
 
                             <td class="ticker">@row.Ticker</td>
-                            <td class="stock-name">@row.Name</td>
+                            <td class="stock-name">
+                                <button type="button" class="stock-name-button"
+                                        aria-expanded="@(_expandedTicker == row.Ticker)"
+                                        data-hint="點擊開啟這檔標的最近三個月還原權息日 K"
+                                        @onclick="() => ToggleKLineAsync(row.Ticker)">
+                                    @row.Name
+                                </button>
+                            </td>
                             <td class="market">@RankingFormatter.ToMarketText(row.Market)</td>
 
                             <td class="numeric">@RankingFormatter.ToBillionText(row.AverageDailyTradingValue)</td>
@@ -225,6 +235,21 @@
                 </tbody>
             </table>
         </div>
+
+        @if (ExpandedKLineRow is { } klineRow)
+        {
+            <div class="kline-backdrop" @onclick="CloseKLine"></div>
+            <section class="kline-popover" role="dialog" aria-modal="false"
+                     aria-label="@($"{klineRow.Ticker} {klineRow.Name} 還原權息日 K")">
+                <DailyKLineChart Ticker="@klineRow.Ticker"
+                                 Name="@klineRow.Name"
+                                 EndDate="@KLineEndDate"
+                                 Bars="@KLineBars(klineRow.Ticker)"
+                                 Loading="@_kLineLoading"
+                                 ErrorMessage="@_kLineError"
+                                 OnClose="CloseKLine" />
+            </section>
+        }
 
         <footer class="page-footer">
             <p>成交值只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除，與玩股網、籌碼K 的成交值排行一致。</p>
@@ -284,7 +309,7 @@
             "只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。",
             row => null, Ascending: true),
 
-        new("name", "名稱", "股票名稱，取自證交所與櫃買中心的每日收盤行情。",
+        new("name", "名稱", "點擊標的名稱會開啟最近三個月還原權息日 K 彈窗，不會改動排行表格；名稱取自證交所與櫃買中心的每日收盤行情。",
             row => null, Ascending: true),
 
         new("market", "市場", "上市（證交所）或上櫃（櫃買中心）。",
@@ -315,6 +340,7 @@
 
     private RankingQuery _query = new();
     private TradingValueRankingResult? _result;
+    private MarketDataSet _dataSet = MarketDataSet.Empty;
     private IReadOnlyList<DateOnly> _tradingDates = [];
     private IReadOnlyDictionary<DateOnly, IReadOnlyList<MarketIndexQuote>> _marketIndices =
         new Dictionary<DateOnly, IReadOnlyList<MarketIndexQuote>>();
@@ -331,10 +357,16 @@
     private IReadOnlyDictionary<string, string> _stockNames = new Dictionary<string, string>();
     private string _lockInput = string.Empty;
     private string? _lockError;
+    private string? _expandedTicker;
+    private IReadOnlyList<StockPriceAdjustment> _priceAdjustments = [];
+    private bool _kLineLoaded;
+    private bool _kLineLoading;
+    private string? _kLineError;
 
     protected override async Task OnInitializedAsync()
     {
         var dataSet = await RankingService.GetDataSetAsync();
+        _dataSet = dataSet;
 
         _stockNames = dataSet.Stocks.ToDictionary(stock => stock.Ticker, stock => stock.Name);
         _marketIndices = dataSet.MarketIndices.ToDictionary(day => day.TradingDate, day => day.Quotes);
@@ -343,6 +375,63 @@
 
         await ReloadAsync();
     }
+
+    private DateOnly KLineEndDate
+        => _query.EndDate ?? _tradingDates.LastOrDefault();
+
+    private IReadOnlyList<DailyKLinePoint> KLineBars(string ticker)
+        => !_kLineLoaded
+            ? []
+            : DailyKLineSelector.Select(
+                _dataSet.DailyTrading,
+                _priceAdjustments,
+                ticker,
+                KLineEndDate,
+                _dataSet.DailyTrading.Max(row => row.TradingDate));
+
+    private async Task ToggleKLineAsync(string ticker)
+    {
+        if (_expandedTicker == ticker)
+        {
+            CloseKLine();
+            return;
+        }
+
+        _expandedTicker = ticker;
+
+        if (_kLineLoaded || _kLineLoading || _dataSet.DailyTrading.Count == 0)
+        {
+            return;
+        }
+
+        _kLineLoading = true;
+        _kLineError = null;
+        StateHasChanged();
+
+        try
+        {
+            var firstDate = _dataSet.DailyTrading.Min(row => row.TradingDate);
+            var lastDate = _dataSet.DailyTrading.Max(row => row.TradingDate);
+            _priceAdjustments = await CorporateActionClient.GetAsync(firstDate, lastDate);
+            _kLineLoaded = true;
+        }
+        catch (Exception)
+        {
+            _kLineError = "官方權息資料載入失敗；為避免把原始價誤標成還原價，本次不顯示 K 線。";
+        }
+        finally
+        {
+            _kLineLoading = false;
+        }
+    }
+
+    private void CloseKLine()
+        => _expandedTicker = null;
+
+    private StockRankingRow? ExpandedKLineRow
+        => _expandedTicker is { } ticker
+            ? _result?.Rows.FirstOrDefault(row => row.Ticker == ticker)
+            : null;
 
     private IEnumerable<StockRankingRow> SortedRows
     {

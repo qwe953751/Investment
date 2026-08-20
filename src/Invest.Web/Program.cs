@@ -4,6 +4,7 @@ using Invest.Web.Features.Revenue;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.Database;
 using Invest.Web.Infrastructure.MarketData;
+using Invest.Web.Infrastructure.MarketData.CorporateActions;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
@@ -12,6 +13,7 @@ using Microsoft.Extensions.Options;
 
 // 命令列模式：
 //   dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
+//   dotnet run --project src/Invest.Web -- backfill-bars [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop]
 //   dotnet run --project src/Invest.Web -- sync     [保留交易日數]
@@ -23,7 +25,7 @@ using Microsoft.Extensions.Options;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "export" or "intraday" or "sync" or "verify" or "status" or "curve" or "revenue";
+    command is "backfill" or "backfill-bars" or "export" or "intraday" or "sync" or "verify" or "status" or "curve" or "revenue";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -42,6 +44,7 @@ builder.Services.AddHttpClient<TpexMarketIndexClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseNonRegularTradingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexNonRegularTradingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MarketFlagClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<CorporateActionClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseHolidayCalendar>(ConfigureQuoteClient);
 
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
@@ -69,9 +72,27 @@ if (command is "backfill")
     return;
 }
 
+if (command is "backfill-bars")
+{
+    await RunDailyBarBackfillAsync(app.Services, args);
+    return;
+}
+
 if (command is "export")
 {
-    await RunExportAsync(app.Services, args);
+    try
+    {
+        await RunExportAsync(app.Services, args);
+    }
+    catch (Exception exception)
+    {
+        // 命令列匯出失敗要回傳非零狀態，但不要讓 Windows 把未處理的
+        // .NET 例外升級成 Invest.Web.exe 應用程式錯誤對話框。
+        Console.Error.WriteLine($"匯出失敗：{exception.Message}");
+        Console.Error.WriteLine(exception);
+        Environment.ExitCode = 1;
+    }
+
     return;
 }
 
@@ -609,6 +630,55 @@ static async Task RunBackfillAsync(IServiceProvider services, string[] args)
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。已下載的日期都保留在快取，重跑會從斷點繼續。");
+    }
+}
+
+static async Task RunDailyBarBackfillAsync(IServiceProvider services, string[] args)
+{
+    var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 90;
+    var startFrom = args.Length > 2 && DateOnly.TryParse(args[2], out var parsedDate)
+        ? parsedDate
+        : DateOnly.FromDateTime(DateTime.Today);
+
+    using var scope = services.CreateScope();
+    var downloader = scope.ServiceProvider.GetRequiredService<MarketDataDownloader>();
+    var store = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
+
+    Console.WriteLine($"開始補抓最近 {targetTradingDays} 個交易日的日 K，截止 {startFrom:yyyy-MM-dd}。 ");
+    Console.WriteLine($"快取位置：{store.Directory}");
+    Console.WriteLine("只補開盤、最高、最低，不會改寫既有成交值、成交量、成交筆數或收盤價。");
+    Console.WriteLine();
+
+    var progress = new Progress<string>(Console.WriteLine);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        var report = await downloader.BackfillDailyBarsAsync(
+            targetTradingDays, startFrom, progress, cts.Token);
+
+        Console.WriteLine();
+        Console.WriteLine($"完成。涵蓋 {report.TradingDayCount} 天"
+            + $"（更新 {report.UpdatedCount}、略過已有日 K {report.SkippedCount}）");
+
+        if (report.FailedDates.Count > 0)
+        {
+            Console.WriteLine($"失敗 {report.FailedDates.Count} 天："
+                + string.Join(", ", report.FailedDates.Select(date => date.ToString("yyyy-MM-dd"))));
+            Console.WriteLine("重跑同一個指令即可補上失敗日期。");
+            Environment.ExitCode = 1;
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine();
+        Console.WriteLine("已中斷。已完成的日 K 都保留在快取，重跑會從缺少的日期繼續。");
     }
 }
 

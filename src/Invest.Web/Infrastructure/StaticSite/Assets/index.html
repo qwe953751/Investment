@@ -26,7 +26,7 @@
             所有數字都由原始成交值算出；摘要同時顯示加權與櫃買指數收盤值及漲跌幅。
         </p>
         <p data-view="intraday">
-            資料來源為證交所盤中即時行情，每 2 分鐘收集一輪。成交額是用現價乘上累計成交量推算的，
+            資料來源為證交所盤中即時行情，依頁面顯示的排程收集。成交額是用現價乘上累計成交量推算的，
             不是官方數字；摘要的加權與櫃買指數及漲跌幅則直接取盤中指數頻道。收盤後一律以盤後行情為準。
         </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
@@ -98,11 +98,15 @@
                 09:27 以前分母太小，一律顯示 —。這一欄只能參考、不能排序，名次一律以實際累計成交額為準。</p>
             <p data-view="intraday">成交比變化是拿今天的市場成交比去減觀察期間的市場成交比。半天的量沒辦法直接跟一整天的量比，
                 但比例可以：分子與分母都取自同一輪，時段進度會自己約掉，所以這一欄不必等到收盤、也不依賴預估值。</p>
-            <p data-view="intraday">這一頁直接讀資料庫，每分鐘自己更新一次，不必按檢查更新。收集器每 2 分鐘寫入一輪，
-                所以資料時間最多會落後兩分多鐘。</p>
+            <p data-view="intraday">這一頁直接讀資料庫，依 manifest 的同一個更新間隔自動重讀，不必按檢查更新；
+                加權、櫃買與已開啟標的的當日 K 棒會在同一輪同步更新。</p>
         </footer>
     </div>
 </div>
+
+<div class="kline-backdrop" id="kline-backdrop" hidden></div>
+<section class="kline-popover" id="kline-popover" role="dialog"
+         aria-modal="false" aria-labelledby="kline-title" hidden></section>
 
 <script src="hint.js"></script>
 <script src="site.js"></script>

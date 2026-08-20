@@ -125,6 +125,90 @@ public sealed class MarketDataDownloader(
         return report;
     }
 
+    /// <summary>
+    /// 只為既有快照補抓日 K 的開高低欄位，不重算或覆蓋成交值。
+    /// 新版完整回補產生的快照已經帶有這些欄位，因此只會處理舊快照。
+    /// </summary>
+    public async Task<DailyBarBackfillReport> BackfillDailyBarsAsync(
+        int targetTradingDays,
+        DateOnly startFrom,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(targetTradingDays, 1);
+
+        var snapshots = await store.LoadAllAsync(cancellationToken);
+        var targets = snapshots
+            .Where(snapshot => snapshot.TradingDate <= startFrom)
+            .TakeLast(targetTradingDays)
+            .ToArray();
+        var report = new DailyBarBackfillReport
+        {
+            TradingDayCount = targets.Length
+        };
+
+        foreach (var snapshot in targets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (snapshot.HasCompleteDailyBars)
+            {
+                report.SkippedCount++;
+                continue;
+            }
+
+            progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 補抓日 K 開高低");
+            var dailyQuotes = await DownloadDailyBarsAsync(
+                snapshot.TradingDate, progress, cancellationToken);
+
+            if (dailyQuotes is null)
+            {
+                report.FailedDates.Add(snapshot.TradingDate);
+                progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 日 K 下載失敗，已跳過");
+                continue;
+            }
+
+            await store.SaveAsync(snapshot.WithDailyBars(dailyQuotes), cancellationToken);
+            report.UpdatedCount++;
+            progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 日 K 完成（{dailyQuotes.Count} 檔）");
+        }
+
+        return report;
+    }
+
+    private async Task<IReadOnlyList<DailyQuote>?> DownloadDailyBarsAsync(
+        DateOnly date,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        var twse = await WithRetryAsync(
+            () => twseClient.GetDailyQuotesAsync(date, cancellationToken),
+            $"TWSE 日 K {date:yyyy-MM-dd}",
+            progress,
+            cancellationToken);
+
+        if (twse is null)
+        {
+            return null;
+        }
+
+        await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+
+        var tpex = await WithRetryAsync(
+            () => tpexClient.GetDailyQuotesAsync(date, cancellationToken),
+            $"TPEx 日 K {date:yyyy-MM-dd}",
+            progress,
+            cancellationToken);
+
+        if (tpex is null || twse.Count == 0 || tpex.Count == 0)
+        {
+            return null;
+        }
+
+        await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+        return [.. twse, .. tpex];
+    }
+
     private async Task<DailyQuoteSnapshot?> DownloadDayAsync(
         DateOnly date,
         IProgress<string>? progress,
@@ -220,6 +304,7 @@ public sealed class MarketDataDownloader(
             IsTradingDay = true,
             DownloadedAt = DateTimeOffset.Now,
             MarketIndexSchemaVersion = DailyQuoteSnapshot.CurrentMarketIndexSchemaVersion,
+            DailyBarSchemaVersion = DailyQuoteSnapshot.CurrentDailyBarSchemaVersion,
             MarketIndices = [twseIndex, validTpexIndex],
             Quotes =
             [
@@ -330,6 +415,17 @@ public sealed class BackfillReport
     public int IndexUpdatedCount { get; set; }
 
     public DateOnly? EarliestDate { get; set; }
+
+    public List<DateOnly> FailedDates { get; } = [];
+}
+
+public sealed class DailyBarBackfillReport
+{
+    public int TradingDayCount { get; init; }
+
+    public int UpdatedCount { get; set; }
+
+    public int SkippedCount { get; set; }
 
     public List<DateOnly> FailedDates { get; } = [];
 }

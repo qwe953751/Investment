@@ -15,6 +15,21 @@ public sealed record DailyQuote
     public required string Name { get; init; }
 
     /// <summary>
+    /// 開盤價。當日無成交時為 null。
+    /// </summary>
+    public decimal? OpenPrice { get; init; }
+
+    /// <summary>
+    /// 最高價。當日無成交時為 null。
+    /// </summary>
+    public decimal? HighPrice { get; init; }
+
+    /// <summary>
+    /// 最低價。當日無成交時為 null。
+    /// </summary>
+    public decimal? LowPrice { get; init; }
+
+    /// <summary>
     /// 收盤價。當日無成交時為 null。
     /// </summary>
     public decimal? ClosePrice { get; init; }

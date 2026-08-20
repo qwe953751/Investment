@@ -3,9 +3,11 @@ using System.Reflection;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
+using Invest.Web.Infrastructure.MarketData.CorporateActions;
 
 namespace Invest.Web.Infrastructure.StaticSite;
 
@@ -27,6 +29,7 @@ namespace Invest.Web.Infrastructure.StaticSite;
 public sealed class StaticSiteExporter(
     TradingValueRankingQueryService ranking,
     MarketFlagClient marketFlags,
+    CorporateActionClient corporateActions,
     IConfiguration configuration)
 {
     /// <summary>
@@ -65,6 +68,27 @@ public sealed class StaticSiteExporter(
 
         var selectableDates = RankingDates.Selectable(tradingDates);
         var fileCount = 0;
+
+        var kLineFileCount = 0;
+
+        if (tradingDates.Length > 0 && selectableDates.Count > 0)
+        {
+            // MA240 會使用顯示區間以前的收盤，因此權息事件也要涵蓋整份可用歷史，
+            // 不能只抓畫面上的三個月。
+            var adjustments = await corporateActions.GetAsync(
+                tradingDates[0],
+                tradingDates[^1],
+                cancellationToken);
+            kLineFileCount = await WriteKLineExportsAsync(
+                Path.Combine(dataDirectory, "kline"),
+                dataSet,
+                selectableDates,
+                adjustments,
+                tradingDates[^1],
+                cancellationToken);
+        }
+
+        progress?.Report($"已寫出 {kLineFileCount} 檔最近三個月還原權息日 K 資料");
 
         var generatedAt = DateTimeOffset.Now;
 
@@ -312,6 +336,85 @@ public sealed class StaticSiteExporter(
     }
 
     /// <summary>
+    /// 每檔標的一份日 K，避免使用者只看一檔卻先下載整個市場。
+    /// 輸出範圍從最舊可選基準日往前三個月開始，切換歷史基準日時仍有完整圖形；
+    /// MA 則由計算器使用更早的有效收盤，不要求那些舊資料也具備完整 OHLC。
+    /// </summary>
+    private static async Task<int> WriteKLineExportsAsync(
+        string directory,
+        MarketDataSet dataSet,
+        IReadOnlyList<DateOnly> selectableDates,
+        IReadOnlyList<StockPriceAdjustment> adjustments,
+        DateOnly adjustmentThroughDate,
+        CancellationToken cancellationToken)
+    {
+        if (selectableDates.Count == 0)
+        {
+            return 0;
+        }
+
+        Directory.CreateDirectory(directory);
+        var startDate = selectableDates[0].AddMonths(-DailyKLineSelector.DefaultMonths);
+        var endDate = selectableDates[^1];
+        var eventsByTicker = adjustments
+            .Where(item => item.EffectiveDate <= adjustmentThroughDate)
+            .GroupBy(item => item.Ticker, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+        var count = 0;
+
+        foreach (var trading in dataSet.DailyTrading
+            .GroupBy(row => row.Ticker, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var ticker = trading.Key;
+            var tickerEvents = eventsByTicker.TryGetValue(ticker, out var foundEvents)
+                ? foundEvents
+                : [];
+            var points = DailyKLineCalculator.Calculate(
+                trading,
+                tickerEvents,
+                ticker,
+                startDate,
+                endDate,
+                adjustmentThroughDate);
+
+            if (points.Count == 0)
+            {
+                continue;
+            }
+
+            var export = new KLineExport(
+                "forward-rights-dividends",
+                adjustmentThroughDate.ToString("yyyy-MM-dd"),
+                tickerEvents.Length,
+                [.. points.Select(point => new KLineBarExport(
+                    point.TradingDate.ToString("yyyy-MM-dd"),
+                    RoundKLine(point.Open),
+                    RoundKLine(point.High),
+                    RoundKLine(point.Low),
+                    RoundKLine(point.Close),
+                    RoundKLine(point.Ma5),
+                    RoundKLine(point.Ma20),
+                    RoundKLine(point.Ma60),
+                    RoundKLine(point.Ma240)))]);
+
+            await WriteJsonAsync(
+                Path.Combine(directory, ticker + ".json"),
+                export,
+                cancellationToken);
+            count++;
+        }
+
+        return count;
+    }
+
+    private static decimal RoundKLine(decimal value) => Math.Round(value, 4);
+
+    private static decimal? RoundKLine(decimal? value)
+        => value is { } number ? RoundKLine(number) : null;
+
+    /// <summary>
     /// 收集時間表原封不動搬給前端。時間只有 <see cref="CollectionSchedule"/> 一份定義，
     /// 前端自己抄一份的話，改了排程就會在錯的時間點換行為。
     /// </summary>
@@ -389,6 +492,23 @@ public sealed class StaticSiteExporter(
         decimal? TwseChangePercent,
         decimal? TpexIndex,
         decimal? TpexChangePercent);
+
+    private sealed record KLineExport(
+        string AdjustmentMethod,
+        string AdjustmentThrough,
+        int AdjustmentEventCount,
+        IReadOnlyList<KLineBarExport> Bars);
+
+    private sealed record KLineBarExport(
+        string Date,
+        decimal Open,
+        decimal High,
+        decimal Low,
+        decimal Close,
+        decimal? Ma5,
+        decimal? Ma20,
+        decimal? Ma60,
+        decimal? Ma240);
 
     private sealed record ScheduleExport(
         string IntradayStart,

@@ -10,6 +10,27 @@ namespace Invest.Web.Tests;
 public sealed class MarketIndexClientTests
 {
     [Fact]
+    public async Task TWSE每日行情會讀取日K開高低收()
+    {
+        var client = new TwseDailyQuoteClient(
+            new HttpClient(new CannedResponseHandler("""
+                {"tables":[{
+                    "title":"每日收盤行情",
+                    "data":[["2330","台積電","100,000","2,000","238,000,000","2,370.00","2,415.00","2,375.00","2,380.00"]]
+                }]}
+                """)),
+            NullLogger<TwseDailyQuoteClient>.Instance);
+
+        var data = await client.GetDailyDataAsync(new DateOnly(2026, 8, 18));
+        var quote = Assert.Single(data.Quotes);
+
+        Assert.Equal(2370m, quote.OpenPrice);
+        Assert.Equal(2415m, quote.HighPrice);
+        Assert.Equal(2375m, quote.LowPrice);
+        Assert.Equal(2380m, quote.ClosePrice);
+    }
+
+    [Fact]
     public async Task TWSE會從價格指數表讀取加權指數與漲跌幅()
     {
         var client = new TwseDailyQuoteClient(
@@ -69,6 +90,27 @@ public sealed class MarketIndexClientTests
         Assert.Equal(Market.Tpex, index.Market);
         Assert.Equal(245.12m, index.Value);
         Assert.Equal(decimal.Round(2.34m / (245.12m - 2.34m) * 100m, 2), index.ChangePercent);
+    }
+
+    [Fact]
+    public async Task TPEx每日行情會讀取日K開高低收()
+    {
+        var client = new TpexDailyQuoteClient(
+            new HttpClient(new CannedResponseHandler("""
+                {"tables":[{
+                    "title":"上櫃股票行情",
+                    "data":[["6488","環球晶","950.00","+10.00","10.00","940.00","960.00","930.00","1,000","950,000","100"]]
+                }]}
+                """)),
+            NullLogger<TpexDailyQuoteClient>.Instance);
+
+        var quotes = await client.GetDailyQuotesAsync(new DateOnly(2026, 8, 18));
+        var quote = Assert.Single(quotes);
+
+        Assert.Equal(940m, quote.OpenPrice);
+        Assert.Equal(960m, quote.HighPrice);
+        Assert.Equal(930m, quote.LowPrice);
+        Assert.Equal(950m, quote.ClosePrice);
     }
 
     private sealed class CannedResponseHandler(string json) : HttpMessageHandler

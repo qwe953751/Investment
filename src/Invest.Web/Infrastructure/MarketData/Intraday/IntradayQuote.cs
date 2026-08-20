@@ -48,6 +48,17 @@ public sealed record IntradayQuote
     public decimal? Price { get; init; }
 
     /// <summary>
+    /// MIS 回傳的當日開盤價。盤中日 K 只在這個欄位有值時才畫當日 K 棒。
+    /// </summary>
+    public decimal? OpenPrice { get; init; }
+
+    /// <summary> MIS 回傳的當日最高價。</summary>
+    public decimal? HighPrice { get; init; }
+
+    /// <summary> MIS 回傳的當日最低價。</summary>
+    public decimal? LowPrice { get; init; }
+
+    /// <summary>
     /// <see cref="Price"/> 是從哪個欄位來的。
     /// </summary>
     public required IntradayPriceSource PriceSource { get; init; }

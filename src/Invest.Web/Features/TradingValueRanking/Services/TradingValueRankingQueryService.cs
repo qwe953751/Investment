@@ -119,6 +119,9 @@ public sealed class TradingValueRankingQueryService(
                 {
                     TradingDate = snapshot.TradingDate,
                     Ticker = quote.Ticker,
+                    OpenPrice = quote.OpenPrice,
+                    HighPrice = quote.HighPrice,
+                    LowPrice = quote.LowPrice,
                     ClosePrice = quote.ClosePrice,
                     TradingValue = quote.TradingValue
                 });

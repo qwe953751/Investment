@@ -7,6 +7,14 @@
 // 其餘公式一律不搬過來，否則就會有兩份定義各自漂移。
 
 const TOP_COUNT = 100;
+const KLINE_DIRECTORY = 'data/kline';
+const KLINE_MONTHS = 3;
+const KLINE_MOVING_AVERAGES = [
+    { key: 'ma5', label: 'MA5', className: 'ma5' },
+    { key: 'ma20', label: 'MA20', className: 'ma20' },
+    { key: 'ma60', label: 'MA60', className: 'ma60' },
+    { key: 'ma240', label: 'MA240', className: 'ma240' }
+];
 
 // 同一組期間按鈕在兩種檢視是兩件事：盤後是「本期多長」，盤中是「今天要跟過去多長的期間對照」。
 const PERIODS = [
@@ -44,17 +52,13 @@ const MARKETS = [
 // 盤中看的是「今天到現在為止」，兩邊沒有共用的期間概念，所以連篩選條件都不一樣。
 // 盤中排在左邊，但預設仍然是盤後（state.view）：開盤時間以外盤中沒有東西可看。
 const VIEWS = [
-    { key: 'intraday', text: '盤中', hint: '證交所的即時行情，每 2 分鐘收集一輪寫進資料庫，這一頁每分鐘自己重讀。' },
+    { key: 'intraday', text: '盤中', hint: '證交所的即時行情，依收集排程更新；加權、櫃買與已開啟標的的當日 K 棒同步重讀。' },
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' }
 ];
 
-// 盤中頁自己重讀的間隔。收集器是 2 分鐘一輪，這裡抓短一點只是為了讓
-// 新的一輪一寫進去就看得到，多打幾次也只是讀同一列。
-//
-// 不再往下調：一次重讀就是全市場約 2000 列，開著整個交易時段的分頁
-// 每天要吃掉上百 MB 的流量，而 Supabase 免費方案一個月只有 5 GB。
-// 現在最壞情況是資料落後一輪再加一分鐘，換來的是整天開著也不會爆額度。
-const INTRADAY_REFRESH_MS = 60_000;
+// 盤中頁的更新週期與收集器共用 manifest 裡的 CollectionSchedule。
+// 舊版 manifest 沒有這欄時才退回目前的 2 分鐘，避免前端失去更新能力。
+const DEFAULT_INTRADAY_REFRESH_MS = 2 * 60_000;
 
 // 台股連續交易 09:00–13:30，共 270 分鐘。預估收盤成交額是用「已經過的時段比例」
 // 當分母把目前累計值推到收盤。
@@ -338,7 +342,7 @@ const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所與櫃買中心的每日收盤行情。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
@@ -357,7 +361,7 @@ const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '過去觀察期間的排名 − 今日盤中排名，▲ 代表今天的名次比平常前面。名次是相對的，所以今天只走了半天也能直接比。過去期間沒有這一檔就顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
-    { key: 'name', title: '名稱', hint: '股票名稱，取自證交所的盤中行情。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker) }) },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
     { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '成交值（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
@@ -390,6 +394,11 @@ const state = {
 // 同一個組合切回來時不重打一次 fetch。
 const cache = new Map();
 let current = null;
+const klineData = new Map();
+const klinePromises = new Map();
+let klineError = '';
+let expandedTicker = null;
+let klineAnchor = null;
 
 // 這些都由 manifest 決定，start() 先讀好才畫按鈕、抓資料。
 let thresholds = [];
@@ -402,10 +411,18 @@ let latestTradingDate = '';
 // 刻意不放預設值：在這裡抄一份時間，改了排程就會漏改，畫面會在錯的時間點換行為。
 // manifest 給不出來（舊版 manifest）時就當成沒有記憶功能，一律用預設選項。
 let schedule = null;
+let intradayRefreshMs = DEFAULT_INTRADAY_REFRESH_MS;
 
 // 盤中頁直接讀資料庫的連線資訊（公開金鑰，只有讀取權限）。
 // manifest 裡沒有這一段時盤中切換鈕會停用。
 let supabase = null;
+
+function configureIntradayRefresh() {
+    const minutes = Number(schedule?.intradayIntervalMinutes);
+    intradayRefreshMs = Number.isFinite(minutes) && minutes > 0
+        ? minutes * 60_000
+        : DEFAULT_INTRADAY_REFRESH_MS;
+}
 
 const el = id => document.getElementById(id);
 
@@ -1037,6 +1054,379 @@ function sortedRows(rows) {
     return copy;
 }
 
+function makeKLineButton(ticker, name) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'stock-name-button';
+    button.textContent = name;
+    button.dataset.ticker = ticker;
+    button.dataset.hint = '點擊開啟這檔標的最近三個月還原權息日 K';
+    button.setAttribute('aria-expanded', String(expandedTicker === ticker));
+    button.addEventListener('click', () => toggleKLine(ticker, name, button));
+    return button;
+}
+
+async function loadKLineData(ticker) {
+    if (klineData.has(ticker)) {
+        return;
+    }
+
+    if (!klinePromises.has(ticker)) {
+        klinePromises.set(ticker, (async () => {
+            const response = await fetch(`${KLINE_DIRECTORY}/${ticker}.json?v=${version}`);
+
+            if (!response.ok) {
+                throw new Error(String(response.status));
+            }
+
+            const payload = await response.json();
+
+            if (payload?.adjustmentMethod !== 'forward-rights-dividends'
+                || !Array.isArray(payload.bars)) {
+                throw new Error('invalid adjusted K-line payload');
+            }
+
+            klineData.set(ticker, payload);
+        })());
+    }
+
+    try {
+        await klinePromises.get(ticker);
+    } finally {
+        klinePromises.delete(ticker);
+    }
+}
+
+function klineEndDate() {
+    return state.view === 'intraday' ? current?.tradeDate : state.date;
+}
+
+function klineStartDate(endDate) {
+    const date = toDate(endDate);
+    date.setMonth(date.getMonth() - KLINE_MONTHS);
+    return toKey(date);
+}
+
+function selectedKLineBars(ticker) {
+    const endDate = klineEndDate();
+
+    if (!endDate || !klineData.has(ticker)) {
+        return [];
+    }
+
+    const startDate = klineStartDate(endDate);
+    const bars = (klineData.get(ticker)?.bars ?? [])
+        .filter(bar => bar.date >= startDate && bar.date <= endDate);
+
+    if (state.view !== 'intraday') {
+        return bars;
+    }
+
+    // 盤中把 MIS 的當日開高低與最新現價接到歷史日 K 尾端；
+    // 每次 loadIntraday 重畫表格時，這一根也會跟著同一輪更新。
+    const liveBar = current?.rows.find(row => row.ticker === ticker)?.liveKLine;
+
+    if (!liveBar
+        || liveBar.open === null
+        || liveBar.high === null
+        || liveBar.low === null
+        || liveBar.close === null) {
+        return bars;
+    }
+
+    return [...bars.filter(bar => bar.date !== endDate), liveBar]
+        .sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function svgElement(name, attributes = {}, text = null) {
+    const element = document.createElementNS('http://www.w3.org/2000/svg', name);
+
+    for (const [key, value] of Object.entries(attributes)) {
+        element.setAttribute(key, String(value));
+    }
+
+    if (text !== null) {
+        element.textContent = text;
+    }
+
+    return element;
+}
+
+function renderKLineSvg(ticker, name, bars) {
+    const width = 600;
+    const height = 318;
+    const left = 56;
+    const right = 586;
+    const top = 16;
+    const bottom = 258;
+    const prices = bars.flatMap(bar => [
+        bar.low,
+        bar.high,
+        ...KLINE_MOVING_AVERAGES.map(line => bar[line.key])
+    ]).filter(value => !missing(value)).map(Number).filter(Number.isFinite);
+    const dataMin = Math.min(...prices);
+    const dataMax = Math.max(...prices);
+    const dataRange = dataMax > dataMin ? dataMax - dataMin : Math.max(dataMax * 0.02, 1);
+    const padding = dataRange * 0.04;
+    const min = dataMin - padding;
+    const max = dataMax + padding;
+    const y = price => top + (max - Number(price)) / (max - min) * (bottom - top);
+    const step = (right - left) / Math.max(bars.length, 1);
+    const bodyWidth = Math.min(8, Math.max(2.5, step * 0.62));
+    const x = index => left + step * (index + 0.5);
+    const svg = svgElement('svg', {
+        class: 'daily-kline-svg',
+        viewBox: `0 0 ${width} ${height}`,
+        role: 'img',
+        'aria-label': `${ticker} ${name} 三個月還原權息日 K 圖，包含 MA5、MA20、MA60、MA240`
+    });
+
+    for (const price of [max, (max + min) / 2, min]) {
+        const lineY = y(price);
+        svg.append(
+            svgElement('line', { class: 'daily-kline-grid-line', x1: left, x2: right, y1: lineY, y2: lineY }),
+            svgElement('text', { class: 'daily-kline-axis', x: left - 8, y: lineY + 4, 'text-anchor': 'end' }, toFixedText(price, 2)));
+    }
+
+    bars.forEach((bar, index) => {
+        const open = Number(bar.open);
+        const close = Number(bar.close);
+        const candleX = x(index);
+        const bodyTop = Math.min(y(open), y(close));
+        const bodyHeight = Math.max(Math.abs(y(open) - y(close)), 1.5);
+        const trend = close > open ? 'positive' : close < open ? 'negative' : 'unchanged';
+
+        svg.append(
+            svgElement('line', {
+                class: `daily-kline-wick ${trend}`,
+                x1: candleX,
+                x2: candleX,
+                y1: y(bar.high),
+                y2: y(bar.low)
+            }),
+            svgElement('rect', {
+                class: `daily-kline-body ${trend}`,
+                x: candleX - bodyWidth / 2,
+                y: bodyTop,
+                width: bodyWidth,
+                height: bodyHeight
+            }));
+    });
+
+    for (const line of KLINE_MOVING_AVERAGES) {
+        const commands = [];
+        let drawing = false;
+
+        bars.forEach((bar, index) => {
+            const value = bar[line.key];
+
+            if (missing(value) || !Number.isFinite(Number(value))) {
+                drawing = false;
+                return;
+            }
+
+            commands.push(`${drawing ? 'L' : 'M'} ${x(index)} ${y(value)}`);
+            drawing = true;
+        });
+
+        if (commands.length > 1) {
+            svg.append(svgElement('path', {
+                class: `daily-kline-ma ${line.className}`,
+                d: commands.join(' ')
+            }));
+        }
+    }
+
+    const labels = [bars[0], bars[Math.floor(bars.length / 2)], bars[bars.length - 1]];
+    labels.forEach((bar, index) => {
+        const labelIndex = index === 0 ? 0 : index === 1 ? Math.floor(bars.length / 2) : bars.length - 1;
+        const x = left + step * (labelIndex + 0.5);
+        svg.append(svgElement('text', {
+            class: 'daily-kline-date',
+            x,
+            y: 292,
+            'text-anchor': 'middle'
+        }, bar.date.slice(5).replace('-', '/')));
+    });
+
+    return svg;
+}
+
+function renderKLineLegend() {
+    const legend = document.createElement('div');
+    legend.className = 'daily-kline-legend';
+
+    for (const line of KLINE_MOVING_AVERAGES) {
+        const item = document.createElement('span');
+        item.className = line.className;
+        item.textContent = line.label;
+        legend.append(item);
+    }
+
+    return legend;
+}
+
+function positionKLinePopover(anchor) {
+    if (!anchor?.isConnected) {
+        return;
+    }
+
+    const popover = el('kline-popover');
+    const anchorRect = anchor.getBoundingClientRect();
+    const popoverRect = popover.getBoundingClientRect();
+    const margin = 12;
+    const gap = 7;
+    let left = anchorRect.left + anchorRect.width / 2 - popoverRect.width / 2;
+    left = Math.max(margin, Math.min(left, window.innerWidth - popoverRect.width - margin));
+
+    let top = anchorRect.bottom + gap;
+
+    if (top + popoverRect.height > window.innerHeight - margin
+        && anchorRect.top - popoverRect.height - gap >= margin) {
+        top = anchorRect.top - popoverRect.height - gap;
+    }
+
+    top = Math.max(margin, Math.min(top, window.innerHeight - popoverRect.height - margin));
+    popover.style.left = `${Math.round(left)}px`;
+    popover.style.top = `${Math.round(top)}px`;
+}
+
+function renderKLinePopover(ticker, name, anchor) {
+    const popover = el('kline-popover');
+    popover.replaceChildren();
+
+    const card = document.createElement('div');
+    card.className = 'daily-kline-card';
+
+    const header = document.createElement('div');
+    header.className = 'daily-kline-header';
+
+    const title = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.id = 'kline-title';
+    strong.textContent = `${ticker} ${name}`;
+    const period = document.createElement('span');
+    period.className = 'daily-kline-period';
+    const endDate = klineEndDate();
+    period.textContent = endDate
+        ? `還原權息日 K・${klineStartDate(endDate).replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
+        : '還原權息日 K';
+    title.append(strong, period);
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'daily-kline-close';
+    close.textContent = '關閉';
+    close.addEventListener('click', closeKLine);
+    header.append(title, close);
+    card.append(header);
+
+    if (klineError) {
+        const message = document.createElement('p');
+        message.className = 'daily-kline-empty';
+        message.textContent = '讀不到已驗證的還原權息日 K，請重新產生靜態網站。';
+        card.append(message);
+    } else if (!klineData.has(ticker)) {
+        const message = document.createElement('p');
+        message.className = 'daily-kline-empty';
+        message.textContent = '日 K 載入中…';
+        card.append(message);
+    } else {
+        const bars = selectedKLineBars(ticker);
+
+        if (bars.length === 0) {
+            const message = document.createElement('p');
+            message.className = 'daily-kline-empty';
+            message.textContent = '這個期間沒有完整的日 K 資料。';
+            card.append(message);
+        } else {
+            card.append(renderKLineLegend(), renderKLineSvg(ticker, name, bars));
+        }
+    }
+
+    popover.append(card);
+    popover.hidden = false;
+    el('kline-backdrop').hidden = false;
+    positionKLinePopover(anchor);
+}
+
+function setKLineButtonStates() {
+    document.querySelectorAll('.stock-name-button[data-ticker]').forEach(button => {
+        button.setAttribute('aria-expanded', String(button.dataset.ticker === expandedTicker));
+    });
+}
+
+function closeKLine(restoreFocus = true) {
+    const previousAnchor = klineAnchor;
+    expandedTicker = null;
+    klineAnchor = null;
+    klineError = '';
+    el('kline-popover').hidden = true;
+    el('kline-backdrop').hidden = true;
+    setKLineButtonStates();
+
+    if (restoreFocus && previousAnchor?.isConnected) {
+        previousAnchor.focus();
+    }
+}
+
+function refreshKLinePopover() {
+    if (expandedTicker === null) {
+        return;
+    }
+
+    const row = current?.rows.find(candidate => candidate.ticker === expandedTicker);
+    const anchor = [...document.querySelectorAll('.stock-name-button[data-ticker]')]
+        .find(button => button.dataset.ticker === expandedTicker);
+
+    if (!row || !anchor) {
+        closeKLine(false);
+        return;
+    }
+
+    klineAnchor = anchor;
+    renderKLinePopover(row.ticker, row.name, anchor);
+    setKLineButtonStates();
+}
+
+async function toggleKLine(ticker, name, anchor) {
+    if (expandedTicker === ticker) {
+        closeKLine();
+        return;
+    }
+
+    expandedTicker = ticker;
+    klineAnchor = anchor;
+    klineError = '';
+    setKLineButtonStates();
+    renderKLinePopover(ticker, name, anchor);
+
+    if (klineData.has(ticker)) {
+        return;
+    }
+
+    try {
+        await loadKLineData(ticker);
+    } catch {
+        klineError = '讀不到日 K 資料';
+    }
+
+    if (expandedTicker === ticker) {
+        renderKLinePopover(ticker, name, anchor);
+    }
+}
+
+function configureKLinePopover() {
+    el('kline-backdrop').addEventListener('click', () => closeKLine(false));
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && expandedTicker !== null) {
+            closeKLine();
+        }
+    });
+    window.addEventListener('resize', () => positionKLinePopover(klineAnchor));
+    window.addEventListener('scroll', () => positionKLinePopover(klineAnchor), true);
+}
+
 function renderTable() {
     const head = el('table-head');
     head.replaceChildren();
@@ -1101,7 +1491,7 @@ function renderTable() {
         }
 
         for (const column of columns()) {
-            const { text, cls, badges, lines } = column.cell(row);
+            const { text, cls, badges, lines, kline } = column.cell(row);
             const td = document.createElement('td');
             td.className = cls;
 
@@ -1140,14 +1530,21 @@ function renderTable() {
                     gutter.append(mark);
                 }
 
-                const label = document.createElement('span');
-                label.textContent = String(text);
+                const label = kline
+                    ? makeKLineButton(row.ticker, String(text))
+                    : document.createElement('span');
+
+                if (!kline) {
+                    label.textContent = String(text);
+                }
 
                 const group = document.createElement('span');
                 group.className = 'name-cell';
                 group.append(gutter, label);
 
                 td.append(group);
+            } else if (kline) {
+                td.append(makeKLineButton(row.ticker, String(text)));
             } else {
                 td.append(String(text));
             }
@@ -1156,6 +1553,8 @@ function renderTable() {
 
         body.append(tr);
     }
+
+    refreshKLinePopover();
 }
 
 function renderSummary() {
@@ -1288,7 +1687,7 @@ async function loadIntraday(silent = false) {
         [raw] = await Promise.all([
             fetchAllRows(
                 'intraday_latest',
-                'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent',
+                'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent,open_price,high_price,low_price',
                 '&order=turnover.desc'),
             loadMarketFlags(),
             loadRevenue()
@@ -1322,7 +1721,14 @@ async function loadIntraday(silent = false) {
         value: Number(row.turnover),
         estimate: estimable ? Number(row.turnover) / progress : null,
         priceChange: missing(row.change_percent) ? null : Number(row.change_percent) / 100,
-        close: missing(row.price) ? null : Number(row.price)
+        close: missing(row.price) ? null : Number(row.price),
+        liveKLine: {
+            date: row.trade_date,
+            open: missing(row.open_price) ? null : Number(row.open_price),
+            high: missing(row.high_price) ? null : Number(row.high_price),
+            low: missing(row.low_price) ? null : Number(row.low_price),
+            close: missing(row.price) ? null : Number(row.price)
+        }
     }));
 
     nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
@@ -1474,6 +1880,10 @@ async function load() {
 }
 
 function update(changes) {
+    if (changes.view !== undefined || changes.date !== undefined) {
+        closeKLine(false);
+    }
+
     // 兩種檢視的欄位不一樣，沿用上一個檢視的排序欄位會找不到對應的欄，
     // 表格就會停在一個沒有標示的排序狀態。切換時一律回到名次。
     if (changes.view !== undefined && changes.view !== state.view) {
@@ -1502,7 +1912,7 @@ function renderSnapshotNote() {
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
 
     el('snapshot-note').textContent = state.view === 'intraday'
-        ? '盤中資料直接來自資料庫，每分鐘自動重讀一次。' + collector
+        ? `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
         : snapshotNote;
 }
 
@@ -1513,7 +1923,7 @@ function startIntradayTimer() {
         if (state.view === 'intraday' && !document.hidden) {
             loadIntraday(true);
         }
-    }, INTRADAY_REFRESH_MS);
+    }, intradayRefreshMs);
 
     document.addEventListener('visibilitychange', () => {
         if (state.view === 'intraday' && !document.hidden) {
@@ -1533,6 +1943,7 @@ async function start() {
     version = manifest.version;
     latestTradingDate = manifest.latestTradingDate;
     schedule = manifest.schedule ?? null;
+    configureIntradayRefresh();
     supabase = manifest.supabase ?? null;
     dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));
     alteredTrading = new Set(manifest.alteredTrading ?? []);
@@ -1547,6 +1958,7 @@ async function start() {
 
     renderSnapshotNote();
     wireRefreshButton();
+    configureKLinePopover();
     startIntradayTimer();
     renderFilters();
 

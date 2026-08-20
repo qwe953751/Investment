@@ -1,0 +1,246 @@
+@using System.Globalization
+@using Microsoft.AspNetCore.Components
+@using Invest.Web.Features.TradingValueRanking.Services
+
+<div class="daily-kline-card">
+    <div class="daily-kline-header">
+        <div>
+            <strong>@Ticker @Name</strong>
+            <span class="daily-kline-period">還原權息日 K・@StartDateText ~ @EndDate.ToString("yyyy/MM/dd")</span>
+        </div>
+        <button type="button" class="daily-kline-close" @onclick="OnClose">關閉</button>
+    </div>
+
+    @if (Loading)
+    {
+        <p class="daily-kline-empty">正在載入交易所權息資料…</p>
+    }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <p class="daily-kline-empty">@ErrorMessage</p>
+    }
+    else if (Candles.Count == 0)
+    {
+        <p class="daily-kline-empty">目前沒有完整的三個月日 K，請先執行 <code>backfill-bars 90</code>。</p>
+    }
+    else
+    {
+        <div class="daily-kline-legend" aria-label="移動平均線圖例">
+            <span class="ma5">MA5</span>
+            <span class="ma20">MA20</span>
+            <span class="ma60">MA60</span>
+            <span class="ma240">MA240</span>
+        </div>
+        <svg class="daily-kline-svg" viewBox="0 0 @Width @Height" role="img"
+             aria-label="@Ticker @Name 三個月還原權息日 K 圖，包含 MA5、MA20、MA60、MA240">
+            <g class="daily-kline-grid">
+                @foreach (var price in AxisPrices)
+                {
+                    var y = PriceY(price);
+                    <line x1="@Svg(PlotLeft)" x2="@Svg(PlotRight)"
+                          y1="@Svg(y)" y2="@Svg(y)" />
+                    @SvgText(PlotLeft - 8, y + 4, price.ToString("N2"), "", "end")
+                }
+            </g>
+
+            @foreach (var candle in Candles)
+            {
+                var highY = PriceY(candle.High);
+                var lowY = PriceY(candle.Low);
+                var openY = PriceY(candle.Open);
+                var closeY = PriceY(candle.Close);
+                var bodyTop = Math.Min(openY, closeY);
+                var bodyHeight = Math.Max(Math.Abs(openY - closeY), 1.5d);
+
+                <line class="daily-kline-wick @candle.CssClass"
+                      x1="@Svg(candle.X)" x2="@Svg(candle.X)"
+                      y1="@Svg(highY)" y2="@Svg(lowY)" />
+                <rect class="daily-kline-body @candle.CssClass"
+                      x="@Svg(candle.X - candle.BodyWidth / 2)"
+                      y="@Svg(bodyTop)"
+                      width="@Svg(candle.BodyWidth)"
+                      height="@Svg(bodyHeight)" />
+            }
+
+            @foreach (var line in MovingAverageLines)
+            {
+                if (line.Path is not null)
+                {
+                    <path class="daily-kline-ma @line.CssClass" d="@line.Path" />
+                }
+            }
+
+            @foreach (var candle in AxisCandles)
+            {
+                @SvgText(candle.X, DateLabelY, candle.Date.ToString("MM/dd"), "daily-kline-date", "middle")
+            }
+        </svg>
+    }
+</div>
+
+@code {
+    private const double Width = 600;
+    private const double Height = 318;
+    private const double PlotLeft = 56;
+    private const double PlotRight = 586;
+    private const double PlotTop = 16;
+    private const double PlotBottom = 258;
+    private const double DateLabelY = 292;
+
+    [Parameter, EditorRequired]
+    public string Ticker { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string Name { get; set; } = string.Empty;
+
+    [Parameter]
+    public DateOnly EndDate { get; set; }
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<DailyKLinePoint> Bars { get; set; } = [];
+
+    [Parameter]
+    public bool Loading { get; set; }
+
+    [Parameter]
+    public string? ErrorMessage { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    private IReadOnlyList<Candle> Candles
+        => Bars.Count == 0
+            ? []
+            : BuildCandles(Bars);
+
+    private IReadOnlyList<Candle> AxisCandles
+        => Candles.Count <= 3
+            ? Candles
+            : [Candles[0], Candles[Candles.Count / 2], Candles[^1]];
+
+    private IReadOnlyList<decimal> AxisPrices
+    {
+        get
+        {
+            if (PriceValues.Count == 0)
+            {
+                return [];
+            }
+
+            var min = PriceValues.Min();
+            var max = PriceValues.Max();
+            return [max, (max + min) / 2m, min];
+        }
+    }
+
+    private IReadOnlyList<decimal> PriceValues
+        => [.. Bars
+            .SelectMany(bar => new decimal?[]
+            {
+                bar.Low, bar.High, bar.Ma5, bar.Ma20, bar.Ma60, bar.Ma240
+            })
+            .Where(value => value is not null)
+            .Select(value => value!.Value)];
+
+    private string StartDateText
+        => Candles.Count == 0
+            ? EndDate.AddMonths(-3).ToString("yyyy/MM/dd")
+            : Candles[0].Date.ToString("yyyy/MM/dd");
+
+    private double MinPrice
+        => PriceValues.Count == 0 ? 0 : (double)PriceValues.Min();
+
+    private double MaxPrice
+        => PriceValues.Count == 0 ? 0 : (double)PriceValues.Max();
+
+    private double PriceY(decimal price)
+    {
+        var min = MinPrice;
+        var max = MaxPrice;
+        var range = max - min;
+
+        if (range <= 0)
+        {
+            range = Math.Max(max * 0.02, 1);
+            min -= range / 2;
+        }
+
+        return PlotTop + (max - (double)price) / range * (PlotBottom - PlotTop);
+    }
+
+    private static IReadOnlyList<Candle> BuildCandles(IReadOnlyList<DailyKLinePoint> bars)
+    {
+        var step = (PlotRight - PlotLeft) / Math.Max(bars.Count, 1);
+        var bodyWidth = Math.Clamp(step * 0.62, 2.5, 8);
+
+        return [.. bars.Select((bar, index) =>
+        {
+            return new Candle(
+                bar.TradingDate,
+                bar.High,
+                bar.Low,
+                bar.Open,
+                bar.Close,
+                PlotLeft + step * (index + 0.5),
+                bodyWidth,
+                bar.Close > bar.Open ? "positive" : bar.Close < bar.Open ? "negative" : "unchanged");
+        })];
+    }
+
+    private IReadOnlyList<MovingAverageLine> MovingAverageLines =>
+    [
+        new("ma5", MovingAveragePath(bar => bar.Ma5)),
+        new("ma20", MovingAveragePath(bar => bar.Ma20)),
+        new("ma60", MovingAveragePath(bar => bar.Ma60)),
+        new("ma240", MovingAveragePath(bar => bar.Ma240))
+    ];
+
+    private string? MovingAveragePath(Func<DailyKLinePoint, decimal?> valueOf)
+    {
+        var commands = new List<string>();
+        var drawing = false;
+        var validPointCount = 0;
+
+        for (var index = 0; index < Bars.Count; index++)
+        {
+            if (valueOf(Bars[index]) is not { } value)
+            {
+                drawing = false;
+                continue;
+            }
+
+            commands.Add($"{(drawing ? "L" : "M")} {Svg(Candles[index].X)} {Svg(PriceY(value))}");
+            drawing = true;
+            validPointCount++;
+        }
+
+        return validPointCount >= 2 ? string.Join(' ', commands) : null;
+    }
+
+    private static string Svg(double value)
+        => value.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static MarkupString SvgText(
+        double x,
+        double y,
+        string text,
+        string className,
+        string anchor)
+    {
+        var css = string.IsNullOrEmpty(className) ? string.Empty : $" class=\"{className}\"";
+        return new MarkupString(
+            $"<text{css} x=\"{Svg(x)}\" y=\"{Svg(y)}\" text-anchor=\"{anchor}\">{text}</text>");
+    }
+
+    private sealed record Candle(
+        DateOnly Date,
+        decimal High,
+        decimal Low,
+        decimal Open,
+        decimal Close,
+        double X,
+        double BodyWidth,
+        string CssClass);
+
+    private sealed record MovingAverageLine(string CssClass, string? Path);
+}

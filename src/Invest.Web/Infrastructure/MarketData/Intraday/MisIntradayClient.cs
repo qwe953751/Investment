@@ -304,6 +304,9 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
         var (price, priceSource) = ResolvePrice(item);
 
+        var open = QuoteFieldParser.ParseNullableDecimal(ReadString(item, "o"));
+        var high = QuoteFieldParser.ParseNullableDecimal(ReadString(item, "h"));
+        var low = QuoteFieldParser.ParseNullableDecimal(ReadString(item, "l"));
         var previousClose = QuoteFieldParser.ParseNullableDecimal(ReadString(item, "y"));
         var volume = QuoteFieldParser.ParseDecimal(ReadString(item, "v")) * SharesPerLot;
 
@@ -314,6 +317,9 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             Name = ReadString(item, "n")?.Trim() ?? ticker!,
             Price = price,
             PriceSource = priceSource,
+            OpenPrice = open,
+            HighPrice = high,
+            LowPrice = low,
             TradingVolume = volume,
             EstimatedTradingValue = price is { } value ? decimal.Round(value * volume, 0) : 0m,
             ChangePercent = price is { } current && previousClose is { } baseline && baseline > 0

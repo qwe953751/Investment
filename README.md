@@ -26,7 +26,7 @@
 - 盤後與盤中摘要都帶有**加權指數／櫃買指數及漲跌幅**；盤後使用交易日收盤值，盤中使用 MIS 最新一輪。
 - 排行榜上的每個數字都由原始成交值即時算出，沒有任何預先寫死的結果，公式全部有單元測試釘住。
 
-尚未實作：Google Sheets API 與族群分類、圖表。SQLite / EF Core 不在目前架構內；目前使用 Supabase PostgreSQL 與 Npgsql。
+尚未實作：Google Sheets API 與族群分類。SQLite / EF Core 不在目前架構內；目前使用 Supabase PostgreSQL 與 Npgsql。
 
 ## 環境需求
 
@@ -47,6 +47,7 @@ dotnet test                                # 驗證計算公式
 
 # 第一次執行必做：回補行情。逐日下載並快取到 data/imports/
 dotnet run --project src/Invest.Web -- backfill 300
+dotnet run --project src/Invest.Web -- backfill-bars 90
 
 dotnet run --project src/Invest.Web        # 啟動網站
 ```
@@ -75,6 +76,16 @@ dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 檔案裡的 `schemaVersion` 記錄成交值的定義版本，定義改變時舊檔會被回補指令視為過期並自動重下，
 避免新舊定義混在同一份排行裡。`marketIndexSchemaVersion` 與 `marketIndices` 保存當日兩個市場指數；
 升級後再次執行 `backfill` 會只補抓缺少的指數，不重算既有個股成交值。
+
+日 K 的開盤、最高、最低、收盤另外以 `dailyBarSchemaVersion` 管理。既有快照只缺這些欄位時，
+用下面的命令補抓最近約三個月；它只補價格欄位，不改成交值、成交量、成交筆數或既有收盤價：
+
+```bash
+dotnet run --project src/Invest.Web -- backfill-bars 90
+```
+
+新日期則由一般 `backfill` 直接帶入日 K。官方端點回傳不完整時該日期不會被標記成完成，
+重跑同一命令即可繼續補。
 
 指數來源是官方公開資料：TWSE 的 `MI_INDEX`／`FMTQIK` 價格指數資料與
 [TPEx OpenAPI](https://www.tpex.org.tw/openapi/) 的櫃買指數歷史資料；盤中指數則與個股一起讀 MIS 的 `tse_t00.tw`、`otc_o00.tw` 頻道。
@@ -115,7 +126,8 @@ dotnet run --project src/Invest.Web -- export "$(pwd)/publish/site"
 預設讀的是 repo 根目錄的 `publish/site`——兩邊對不上時，發佈出去的是上一次的舊快照，
 而且指令不會報錯。
 
-產出最近 120 個可選交易日 × 5 種期間，也就是最多 600 個 JSON，加上 `index.html` / `site.css` / `site.js`，
+產出最近 120 個可選交易日 × 5 種期間，也就是最多 600 個排行 JSON，另有一份 `data/kline.json` 保存日 K，
+加上 `index.html` / `site.css` / `site.js`，
 整包約 131 MB，但單頁只載入其中一個約 460 KB 的檔案。20 MB 的原始行情不會上網。
 
 一個檔案就是一份**完整名單**：全市場近兩千檔，不篩市場、不設門檻、不截斷筆數，
@@ -136,6 +148,10 @@ GitHub Pages 的快取是十分鐘且無法改標頭，靠網址變動才能讓�
 
 `manifest.json` 另外保存每個可選交易日的 `marketIndices`；切換盤後交易日時，摘要的指數會跟著交易日切換，
 不會誤用最新一天的指數。
+
+排行表的**標的名稱可以點擊**：該列正下方會展開一個小型日 K 圖，不會蓋住原本的排行或其他訊息。
+圖表顯示點擊檢視日往前三個月的官方開高低收；盤中與盤後共用這份已完成的日 K 歷史，
+盤中另外把 MIS 當日開高低與最新現價接成尚未收盤的當日 K 棒，隨盤中資料輪次更新。
 
 **計算只有一份**：exporter 直接呼叫 `TradingValueRankingQueryService`，
 所有指標都是 C# 算的；前端只做「篩選、排序、編號、套顯示格式」這幾件事，不重寫任何公式。
@@ -200,6 +216,9 @@ curl -X POST "https://api.supabase.com/v1/projects/<專案 ref>/database/query" 
 
 新增市場指數前先套用 `db/007_market_indices.sql`。它只在 `intraday_runs` 增加四個可為空的欄位，
 並更新 `intraday_latest` view；舊盤中輪次沒有指數時會顯示 `—`，不會補造歷史值。
+
+盤中日 K 需要再套用 `db/008_intraday_kline.sql`。它在 `intraday_quotes` 保存 MIS 的當日開、高、低，
+並把三個欄位接到 `intraday_latest`；舊盤中輪次沒有這些欄位時，前端只顯示已完成的盤後日 K。
 
 不用寫入用的那組連線字串，是因為 `invest_writer` 沒有建表權限，也不該有——
 它的密碼放在 GitHub Secrets，給了 DDL 權限等於讓 CI 有能力改結構。
@@ -311,13 +330,24 @@ Invest/
 月份切換也會停在有資料的範圍內；月曆兩側的 `‹` `›` 可以直接跳到前後一個交易日。
 期間越長需要的歷史越多（成交熱度 2N、資金加速 3N），資料不足時該組合會顯示還差幾個交易日。
 
+## 日 K 圖
+
+點擊排行榜上的**標的名稱**即可展開日 K。圖表固定以日 K 為週期，顯示該檢視日期往前三個月，
+並在同一列下方追加，不使用覆蓋表格的浮動視窗；再次點擊名稱或按「收合」即可關閉。
+
+盤後的檢視日期來自交易日選擇器；盤中的檢視日期是當日 MIS 快照日期，
+盤後圖表只畫已完成的盤後日 K；盤中圖表則在尾端追加當日尚未收盤的 MIS K 棒。
+已完成日 K 來源是 `data/imports/*.json` 的官方收盤行情，靜態網站匯出後寫成 `data/kline.json`，
+只有第一次展開標的時才載入；盤中當日棒直接跟著同一輪 Supabase 更新。
+
 ## 盤中排行
 
 畫面左上角切到**盤中**，看的是當天到目前為止的累計成交額。這一頁不走靜態 JSON——
 盤中每 2 分鐘就變一次，重新匯出再發佈追不上——而是瀏覽器拿 manifest 裡的 anon key
-直接讀 Supabase 的 `intraday_latest`，每分鐘自己重讀一次。
+直接讀 Supabase 的 `intraday_latest`，依 manifest 裡的同一個更新間隔重讀一次。
 
-摘要區的加權與櫃買指數同樣取自這一輪 MIS 快照；盤後則取所選交易日的官方收盤資料。
+摘要區的加權與櫃買指數，以及已展開標的的當日 K 棒，都取自這一輪 MIS 快照，
+同一個計時器同步更新；盤後則取所選交易日的官方收盤資料。
 
 盤中的**觀察期間**按鈕不是「本期多長」，而是「今天要跟過去多長的期間對照」，
 交易日選擇器則收起來（盤中永遠是今天）。對照用的是**市場成交比**：

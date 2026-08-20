@@ -41,6 +41,9 @@ public class MisIntradayPriceTests
 
         // (2375 + 2380) / 2
         Assert.Equal(2377.5m, quote.Price);
+        Assert.Equal(2415m, quote.OpenPrice);
+        Assert.Equal(2415m, quote.HighPrice);
+        Assert.Equal(2375m, quote.LowPrice);
 
         // 7356 張 = 7,356,000 股
         Assert.Equal(7_356_000m, quote.TradingVolume);

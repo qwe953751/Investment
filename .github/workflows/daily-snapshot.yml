@@ -104,6 +104,11 @@ jobs:
               sleep 600
           done
 
+      # 新增日 K 後，既有快取只缺開高低欄位；這一步只補最近約三個月，
+      # 不重算成交值，也不重新下載整份歷史行情。之後新日期由 backfill 直接帶入。
+      - name: 補抓三個月日 K
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-bars 90
+
       - name: 保存行情快取
         working-directory: data
         run: |

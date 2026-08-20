@@ -2,13 +2,19 @@ namespace Invest.Web.Domain.Stocks;
 
 /// <summary>
 /// 個股單日行情。
-/// 第一階段只保留成交值排行需要的欄位，開高低與成交筆數等待串接 TWSE / TPEx 時再補。
+/// 成交值排行與日 K 共用同一份官方日行情。
 /// </summary>
 public sealed class DailyStockTrading
 {
     public required DateOnly TradingDate { get; init; }
 
     public required string Ticker { get; init; }
+
+    public decimal? OpenPrice { get; init; }
+
+    public decimal? HighPrice { get; init; }
+
+    public decimal? LowPrice { get; init; }
 
     /// <summary>
     /// 收盤價。當日無成交時官方不提供價格，此時為 null。
