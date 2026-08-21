@@ -8,8 +8,8 @@ namespace Invest.Web.Infrastructure.MarketData.Intraday;
 /// <summary>
 /// 把盤中快照寫進 Supabase 上的 PostgreSQL。資料表定義在 db/001_intraday.sql。
 ///
-/// 盤中資料是暫時的：當日盤後正式行情補齊之後就整批刪除（見 <c>sync</c> 指令），
-/// 所以資料庫裡最多只會有當天的量。
+/// 盤中明細只保留最新交易日：下一個較新交易日的有效快照寫入成功後，
+/// 才在同一筆交易內刪除舊日期。休市、來源失敗或壞資料都不會先把舊資料清空。
 ///
 /// 唯一留下來的是 intraday_curve：每輪一列的全市場成交額合計，
 /// 用來累積台股的日內量能曲線。定義在 db/004_intraday_curve.sql。
@@ -29,6 +29,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
     /// 2026-08-18 出事那天的回落是 27% 到 74%，這條線抓得到。
     /// </summary>
     private const decimal MaxAcceptableDrop = 0.10m;
+
+    internal const string DeleteSupersededRunsCommandText =
+        "delete from intraday_runs where trade_date < @tradeDate";
 
     /// <summary>
     /// 這一輪的全市場合計是不是倒退到不合理。今天的第一輪沒有比較基準，一律放行。
@@ -83,9 +86,22 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 
         await InsertCurveAsync(connection, runId, snapshot.TradeDate, capturedAt, cancellationToken);
 
+        // 先把新輪次與量能曲線都寫好，再清理舊交易日。
+        // 全部都在同一筆 transaction：後面任一步失敗會整批 rollback，舊資料仍在。
+        var deletedCachedRuns = await DeleteSupersededRunsAsync(
+            connection, snapshot.TradeDate, cancellationToken);
+
         await transaction.CommitAsync(cancellationToken);
 
         logger.LogInformation("寫入 {Count} 檔盤中報價（run {RunId}）。", written, runId);
+
+        if (deletedCachedRuns > 0)
+        {
+            logger.LogInformation(
+                "新交易日 {TradeDate:yyyy-MM-dd} 已成功寫入，刪除 {Count} 輪舊盤中快照。",
+                snapshot.TradeDate,
+                deletedCachedRuns);
+        }
 
         return new IntradaySaveResult
         {
@@ -122,6 +138,16 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         var value = await command.ExecuteScalarAsync(cancellationToken);
 
         return value is null or DBNull ? null : Convert.ToDecimal(value);
+    }
+
+    private static async Task<int> DeleteSupersededRunsAsync(
+        NpgsqlConnection connection,
+        DateOnly tradeDate,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(DeleteSupersededRunsCommandText, connection);
+        command.Parameters.AddWithValue("tradeDate", tradeDate);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     /// <summary>

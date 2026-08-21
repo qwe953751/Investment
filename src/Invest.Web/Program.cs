@@ -374,8 +374,8 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 }
 
 /// <summary>
-/// 把本機的盤後行情同步到 Supabase，維持最近 300 個交易日的滾動視窗，
-/// 並刪掉已經有正式資料那幾天的盤中快照。
+/// 把本機的盤後行情同步到 Supabase，維持最近 300 個交易日的滾動視窗。
+/// 盤中快照由下一個有效交易日的收集輪次接手，sync 不先清空。
 /// </summary>
 static async Task RunSyncAsync(IServiceProvider services, string[] args)
 {
@@ -403,7 +403,7 @@ static async Task RunSyncAsync(IServiceProvider services, string[] args)
     Console.WriteLine();
     Console.WriteLine(
         $"完成。新增 {report.InsertedDates} 個交易日（{report.InsertedRows:N0} 列）、"
-        + $"清除逾期 {report.PrunedRows:N0} 列、刪除盤中快照 {report.PrunedIntradayRuns} 輪。");
+        + $"清除逾期 {report.PrunedRows:N0} 列。");
 }
 
 /// <summary>
@@ -785,14 +785,20 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
             .Select(item => (item.Ticker, Summary: item.Summary!))
             .ToArray();
 
-        await store.SaveLatestAsync(summaries, cts.Token);
+        var historySummaries = history
+            .SelectMany(entry => RevenueSummaryCalculator.SummarizeRecent(entry.Value, 20)
+                .Select(summary => (Ticker: entry.Key, Summary: summary)))
+            .ToArray();
+
+        await store.SaveSummariesAsync(summaries, historySummaries, cts.Token);
 
         var highs = summaries.Count(item => item.Summary.HighStreak is not null);
 
         Console.WriteLine();
         Console.WriteLine(
             $"完成。上個月是 {eligible:yyyy-MM}，{summaries.Length} 檔有營收"
-            + $"（歷史共 {history.Count} 檔），其中 {highs} 檔創高。");
+            + $"（歷史共 {history.Count} 檔、彈窗摘要 {historySummaries.Length:N0} 列），"
+            + $"其中 {highs} 檔創高。");
 
         if (summaries.Length == 0)
         {

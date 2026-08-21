@@ -250,6 +250,26 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
+    public void 日漲跌與當週漲跌使用各自的前收基準且不受排行期間影響()
+    {
+        // 2026/01/09（週五）收 100；下一週一收 110、週二收 121。
+        // 日漲跌是週二相對週一 +10%，週漲跌是週二相對上週五 +21%。
+        var dataSet = new MarketDataSetBuilder()
+            .Day(5, "1101", 100, close: 100)
+            .Day(8, "1101", 100, close: 110)
+            .Day(9, "1101", 100, close: 121)
+            .Build();
+
+        var row = Row(_calculator.Calculate(
+            dataSet,
+            Query(periodDays: 1) with { EndDate = MarketDataSetBuilder.DayOf(9) }), "1101");
+
+        Assert.Equal(0.1m, row.DailyPriceChangeRate);
+        Assert.Equal(0.21m, row.WeeklyPriceChangeRate);
+        Assert.Equal(100m, row.WeeklyBaselineClosePrice);
+    }
+
+    [Fact]
     public void 期間之前沒有收盤價時漲跌是無法計算()
     {
         var dataSet = new MarketDataSetBuilder()

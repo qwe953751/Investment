@@ -84,6 +84,13 @@ public static class RankingFormatter
         _ => "—"
     };
 
+    public static string ToMarketMark(Market market) => market switch
+    {
+        Market.Twse => "市",
+        Market.Tpex => "櫃",
+        _ => "—"
+    };
+
     /// <summary>
     /// 期間文字。期間只有一天時不重複印同一個日期。
     /// </summary>

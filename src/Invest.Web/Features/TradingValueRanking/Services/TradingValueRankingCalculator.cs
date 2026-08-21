@@ -100,24 +100,34 @@ public sealed class TradingValueRankingCalculator
             .ToDictionary(entry => entry.Ticker, entry => entry.Rank);
 
         var rows = ranked
-            .Select((candidate, index) => new StockRankingRow
+            .Select((candidate, index) =>
             {
-                Rank = index + 1,
-                PreviousRank = candidate.HasPreviousRank(query.Mode)
-                    ? previousRanks[candidate.Stock.Ticker]
-                    : null,
-                Ticker = candidate.Stock.Ticker,
-                Name = candidate.Stock.Name,
-                Market = candidate.Stock.Market,
-                AverageDailyTradingValue = candidate.Current.AverageDailyTradingValue,
-                PreviousAverageDailyTradingValue = candidate.Previous.AverageDailyTradingValue,
-                TradingValueChangeRate = candidate.ChangeRate,
-                PreviousTradingValueChangeRate = candidate.PreviousChangeRate,
-                MarketShare = Share(candidate.Current.TotalTradingValue, marketTotal),
-                PreviousMarketShare = Share(candidate.Previous.TotalTradingValue, previousMarketTotal),
-                PriceChangeRate = candidate.Current.PriceChangeRate,
-                ClosePrice = candidate.Current.EndClose,
-                ActiveTradingDayCount = candidate.Current.ActiveDayCount
+                var price = CalculatePriceChanges(
+                    byTicker[candidate.Stock.Ticker],
+                    current[^1]);
+
+                return new StockRankingRow
+                {
+                    Rank = index + 1,
+                    PreviousRank = candidate.HasPreviousRank(query.Mode)
+                        ? previousRanks[candidate.Stock.Ticker]
+                        : null,
+                    Ticker = candidate.Stock.Ticker,
+                    Name = candidate.Stock.Name,
+                    Market = candidate.Stock.Market,
+                    AverageDailyTradingValue = candidate.Current.AverageDailyTradingValue,
+                    PreviousAverageDailyTradingValue = candidate.Previous.AverageDailyTradingValue,
+                    TradingValueChangeRate = candidate.ChangeRate,
+                    PreviousTradingValueChangeRate = candidate.PreviousChangeRate,
+                    MarketShare = Share(candidate.Current.TotalTradingValue, marketTotal),
+                    PreviousMarketShare = Share(candidate.Previous.TotalTradingValue, previousMarketTotal),
+                    PriceChangeRate = candidate.Current.PriceChangeRate,
+                    DailyPriceChangeRate = price.DailyChangeRate,
+                    WeeklyPriceChangeRate = price.WeeklyChangeRate,
+                    WeeklyBaselineClosePrice = price.WeeklyBaselineClose,
+                    ClosePrice = candidate.Current.EndClose,
+                    ActiveTradingDayCount = candidate.Current.ActiveDayCount
+                };
             })
             .Take(query.TopCount)
             .ToArray();
@@ -159,6 +169,54 @@ public sealed class TradingValueRankingCalculator
 
     private static decimal Share(decimal part, decimal total)
         => total == 0m ? 0m : part / total;
+
+    private static PriceChanges CalculatePriceChanges(
+        IReadOnlyList<DailyStockTrading> rows,
+        DateOnly endDate)
+    {
+        var daysSinceMonday = ((int)endDate.DayOfWeek + 6) % 7;
+        var weekStart = endDate.AddDays(-daysSinceMonday);
+        decimal? dailyBaseline = null;
+        decimal? weeklyBaseline = null;
+        decimal? endClose = null;
+
+        foreach (var row in rows)
+        {
+            if (row.TradingDate > endDate)
+            {
+                break;
+            }
+
+            if (row.ClosePrice is not { } close)
+            {
+                continue;
+            }
+
+            if (row.TradingDate < weekStart)
+            {
+                weeklyBaseline = close;
+            }
+
+            if (row.TradingDate < endDate)
+            {
+                dailyBaseline = close;
+            }
+            else
+            {
+                endClose = close;
+            }
+        }
+
+        return new PriceChanges(
+            ChangeRate(endClose, dailyBaseline),
+            ChangeRate(endClose, weeklyBaseline),
+            weeklyBaseline);
+    }
+
+    private static decimal? ChangeRate(decimal? current, decimal? baseline)
+        => current is { } value && baseline is > 0m
+            ? (value - baseline.Value) / baseline.Value
+            : null;
 
     private static bool MatchesMarket(Market market, MarketFilter filter) => filter switch
     {
@@ -286,4 +344,9 @@ public sealed class TradingValueRankingCalculator
         public bool HasPreviousRank(RankingMode mode) => PreviousSortKey(mode) is not null
             && (mode == RankingMode.CapitalAcceleration || Previous.AverageDailyTradingValue > 0m);
     }
+
+    private sealed record PriceChanges(
+        decimal? DailyChangeRate,
+        decimal? WeeklyChangeRate,
+        decimal? WeeklyBaselineClose);
 }

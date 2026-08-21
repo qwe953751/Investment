@@ -20,14 +20,64 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 日K圖包含四條均線()
+    public void 日K圖包含五條均線()
     {
         var script = ReadAsset("site.js");
 
-        foreach (var period in new[] { 5, 20, 60, 240 })
+        foreach (var period in new[] { 5, 10, 20, 60, 240 })
         {
             Assert.Contains($"ma{period}", script, StringComparison.OrdinalIgnoreCase);
         }
+    }
+
+    [Fact]
+    public void 年線不主導K棒價格尺度且超出時標示圖外()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("KLINE_PRICE_SCALE_AVERAGES", script, StringComparison.Ordinal);
+        Assert.Contains("line.key !== 'ma240'", script, StringComparison.Ordinal);
+        Assert.Contains("（圖外）", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 漲跌幅同格顯示日與週且排序仍使用日漲跌()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("toPriceChangeCell", script, StringComparison.Ordinal);
+        Assert.Contains("label: '日'", script, StringComparison.Ordinal);
+        Assert.Contains("label: '週'", script, StringComparison.Ordinal);
+        Assert.Contains("value: row => row.priceChange", script, StringComparison.Ordinal);
+        Assert.Contains("row.weeklyPriceChange", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 漲跌幅與營收增減共用放大的上下層排版()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("metric-stack price-change", script, StringComparison.Ordinal);
+        Assert.Contains("metric-stack revenue-growth", script, StringComparison.Ordinal);
+        Assert.Contains("metric-line metric-primary", script, StringComparison.Ordinal);
+        Assert.Contains("metric-line metric-secondary", script, StringComparison.Ordinal);
+        var normalizedStyles = styles.Replace("\r\n", "\n", StringComparison.Ordinal);
+        Assert.Contains(".metric-primary {\n    font-size: 16px", normalizedStyles, StringComparison.Ordinal);
+        Assert.Contains(".metric-secondary {\n    font-size: 14px", normalizedStyles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 市場改為代號旁標記且不再佔獨立欄位()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("const MARKET_MARK = { twse: '市', tpex: '櫃' }", script, StringComparison.Ordinal);
+        Assert.Contains("marketMark: MARKET_MARK[row.market]", script, StringComparison.Ordinal);
+        Assert.Contains("mark.className = 'market-mark'", script, StringComparison.Ordinal);
+        Assert.Contains(".market-mark", styles, StringComparison.Ordinal);
+        Assert.DoesNotContain("key: 'market', title: '市場'", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -69,6 +119,29 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("?.yoy", customColumns, StringComparison.Ordinal);
         Assert.DoesNotContain("單月營收", customColumns, StringComparison.Ordinal);
         Assert.DoesNotContain("'ticker,month,revenue", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 營收增減儲存格開啟四乘四比例的浮動彈窗()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css").Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("id=\"revenue-popover\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"revenue-backdrop\"", html, StringComparison.Ordinal);
+        Assert.Contains("role=\"dialog\"", html, StringComparison.Ordinal);
+        Assert.Contains("const REVENUE_HISTORY_TABLE = 'revenue_history'", script, StringComparison.Ordinal);
+        Assert.Contains("?select=month,revenue,mom,yoy", script, StringComparison.Ordinal);
+        Assert.Contains("toggleRevenueDetails", script, StringComparison.Ordinal);
+        Assert.Contains("renderRevenueChartSvg", script, StringComparison.Ordinal);
+        Assert.Contains("slice(-5)", script, StringComparison.Ordinal);
+        Assert.Contains("local-revenue-preview", script, StringComparison.Ordinal);
+        Assert.Contains("window.location.hostname", script, StringComparison.Ordinal);
+        Assert.Contains("buildLocalRevenuePreview", script, StringComparison.Ordinal);
+        Assert.Contains(".revenue-popover", styles, StringComparison.Ordinal);
+        Assert.Contains("grid-template-rows: 3fr 2fr", styles, StringComparison.Ordinal);
+        Assert.DoesNotContain("renderRevenueRow", script, StringComparison.Ordinal);
     }
 
     private static string ReadAsset(string fileName)

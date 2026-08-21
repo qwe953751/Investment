@@ -87,7 +87,7 @@
             <p data-view="daily">成交值只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除，與玩股網、籌碼K 的成交值排行一致。</p>
             <p data-view="daily">市場成交比的分母一律是上市＋上櫃全體，不隨市場篩選改變，因此切換市場時比例可以直接互相比較。</p>
             <p data-view="daily">成交門檻是為了資金加速模式：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜沒有參考價值。</p>
-            <p data-view="daily">期間漲跌以進入期間前的最後一個收盤價為基準，所以期間內第一天的漲跌也算在內。</p>
+            <p data-view="daily">漲跌幅上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。排序一律使用日漲跌幅。</p>
             <p data-view="daily">加權指數與櫃買指數是所選交易日的收盤值；括號內為相對前一交易日收盤的漲跌幅。</p>
             <p data-view="daily">這是一份靜態快照，數字在本機回補行情後重新發佈才會更新，不會自己變動。</p>
             <p>名稱左邊的標記講的是這一檔<strong>目前</strong>的交易限制：「處」是處置期間、撮合被改成人工分盤，
@@ -97,7 +97,7 @@
                 也不改交割條件。</p>
             <p data-view="intraday">成交額是現價 × 累計成交量推算的。證交所的盤中介面只給累計「量」不給累計「值」，
                 實測誤差中位數 0.47%，前 100 名的名次與盤後正式資料一致。</p>
-            <p data-view="intraday">漲跌幅以昨日收盤價為基準，與看盤軟體相同。尚未成交的個股沒有現價，漲跌顯示 —。</p>
+            <p data-view="intraday">漲跌幅上層「日」以昨日收盤價為基準，下層「週」以本週開始前最後有效收盤價為基準；排序一律使用日漲跌幅。尚未成交時顯示 —。</p>
             <p data-view="intraday">摘要的加權與櫃買指數來自同一輪盤中快照；舊輪次尚未保存指數時顯示 —，不補造數字。</p>
             <p data-view="intraday">預估收盤是目前累計成交額 ÷ 時段進度，把現在的速度直線推到 13:30。
                 台股的量是 U 型的，開盤與尾盤爆量、中午乾涸，所以早盤會高估、中午會低估；
@@ -115,6 +115,10 @@
 <div class="kline-backdrop" id="kline-backdrop" hidden></div>
 <section class="kline-popover" id="kline-popover" role="dialog"
          aria-modal="false" aria-labelledby="kline-title" hidden></section>
+
+<div class="revenue-backdrop" id="revenue-backdrop" hidden></div>
+<section class="revenue-popover" id="revenue-popover" role="dialog"
+         aria-modal="false" aria-labelledby="revenue-title" hidden></section>
 
 <script src="hint.js"></script>
 <script src="site.js"></script>

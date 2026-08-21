@@ -59,6 +59,21 @@ public sealed class StockRankingRow
     public decimal? PriceChangeRate { get; init; }
 
     /// <summary>
+    /// 所選交易日收盤價相對前一個有效收盤價的漲跌幅。
+    /// </summary>
+    public decimal? DailyPriceChangeRate { get; init; }
+
+    /// <summary>
+    /// 所選交易日收盤價相對該週開始前最後有效收盤價的漲跌幅。
+    /// </summary>
+    public decimal? WeeklyPriceChangeRate { get; init; }
+
+    /// <summary>
+    /// 當週漲跌幅的基準收盤價。盤中頁用它把最新現價換算成當週漲跌幅。
+    /// </summary>
+    public decimal? WeeklyBaselineClosePrice { get; init; }
+
+    /// <summary>
     /// 期間最後一個有成交的收盤價。
     /// </summary>
     public decimal? ClosePrice { get; init; }

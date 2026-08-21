@@ -9,6 +9,22 @@ namespace Invest.Web.Features.Revenue;
 public static class RevenueSummaryCalculator
 {
     /// <summary>
+    /// 依月份由舊到新輸出最近幾期摘要，供營收圖表使用。
+    /// YoY／MoM 仍呼叫 <see cref="Summarize"/>，避免前端或匯出器各自重寫公式。
+    /// </summary>
+    public static IReadOnlyList<RevenueSummary> SummarizeRecent(
+        IReadOnlyDictionary<DateOnly, long> history,
+        int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(count);
+
+        return [.. history.Keys
+            .Order()
+            .TakeLast(count)
+            .Select(month => Summarize(month, history)!)];
+    }
+
+    /// <summary>
     /// 今天該看哪一個月的營收：一律是上個月，不看日期。
     ///
     /// 公司要在每月 10 日前申報上個月的營收，所以月初那幾天很多家還沒公告。

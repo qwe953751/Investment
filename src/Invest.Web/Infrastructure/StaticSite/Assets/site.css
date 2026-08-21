@@ -681,16 +681,17 @@ body {
     text-underline-offset: 3px;
 }
 
-.kline-backdrop {
+.kline-backdrop,
+.revenue-backdrop {
     position: fixed;
     inset: 0;
     z-index: 20;
 }
 
-.kline-popover {
+.kline-popover,
+.revenue-popover {
     position: fixed;
     z-index: 21;
-    width: min(600px, calc(100vw - 24px));
     max-height: calc(100vh - 24px);
     padding: 0;
     overflow: auto;
@@ -700,8 +701,18 @@ body {
     box-shadow: 0 8px 24px #00000026;
 }
 
+.kline-popover {
+    width: min(600px, calc(100vw - 24px));
+}
+
+.revenue-popover {
+    width: min(560px, calc(100vw - 24px));
+}
+
 .kline-backdrop[hidden],
-.kline-popover[hidden] {
+.kline-popover[hidden],
+.revenue-backdrop[hidden],
+.revenue-popover[hidden] {
     display: none;
 }
 
@@ -813,10 +824,15 @@ body {
     stroke-linejoin: round;
 }
 
-/* 與常用 APP 色票一致；網站只使用 MA5、MA20、MA60、MA240。 */
+/* 與常用 APP 色票一致；MA10 使用較淡的薄荷綠，和下跌 K 棒的鮮綠分開。 */
 .ma5 {
     color: #4f80ff;
     stroke: #4f80ff;
+}
+
+.ma10 {
+    color: #65bfa3;
+    stroke: #65bfa3;
 }
 
 .ma20 {
@@ -836,6 +852,140 @@ body {
 
 .daily-kline-empty {
     margin: 10px 0 4px;
+    color: #667085;
+    font-size: 13px;
+}
+
+.revenue-card {
+    padding: 12px 14px;
+    background: white;
+}
+
+.revenue-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.revenue-period {
+    margin-left: 8px;
+    color: #667085;
+    font-size: 12px;
+}
+
+/* 上層圖表與下層列表固定 3:2，高度正好是 1.5 倍。 */
+.revenue-content {
+    display: grid;
+    grid-template-rows: 3fr 2fr;
+    height: min(360px, calc(100vh - 96px));
+    min-height: 300px;
+    overflow: hidden;
+    border: 1px solid #e4e7ec;
+    border-radius: 8px;
+}
+
+.revenue-chart-panel {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    padding: 8px 8px 2px;
+    background: #202322;
+}
+
+.revenue-chart-legend {
+    display: flex;
+    gap: 14px;
+    padding: 0 4px 2px;
+    color: #d0d5dd;
+    font-size: 11px;
+}
+
+.revenue-chart-legend span::before {
+    display: inline-block;
+    width: 13px;
+    margin-right: 4px;
+    vertical-align: middle;
+    content: '';
+}
+
+.revenue-legend-bars::before {
+    height: 8px;
+    background: #ff9800;
+}
+
+.revenue-legend-yoy::before {
+    border-top: 2px solid #9aa0a6;
+}
+
+.revenue-chart-svg {
+    display: block;
+    min-height: 0;
+    width: 100%;
+    flex: 1;
+}
+
+.revenue-chart-grid {
+    stroke: #4a4e4d;
+    stroke-width: 1;
+}
+
+.revenue-chart-axis,
+.revenue-chart-month {
+    fill: #d0d5dd;
+    font-size: 10px;
+}
+
+.revenue-chart-bar {
+    fill: #ff9800;
+}
+
+.revenue-chart-yoy {
+    fill: none;
+    stroke: #9aa0a6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+}
+
+.revenue-list-panel {
+    min-height: 0;
+    overflow: auto;
+    background: #fff;
+}
+
+.revenue-list {
+    width: 100%;
+    height: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 12px;
+}
+
+.revenue-list th,
+.revenue-list td {
+    padding: 3px 7px;
+    border-bottom: 1px solid #eaecf0;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.revenue-list th {
+    background: #f2f4f7;
+    color: #475467;
+    font-weight: 600;
+}
+
+.revenue-list th:first-child,
+.revenue-list td:first-child {
+    text-align: left;
+}
+
+.revenue-empty {
+    align-self: center;
+    justify-self: center;
+    margin: 0;
     color: #667085;
     font-size: 13px;
 }
@@ -889,33 +1039,68 @@ body {
     color: #6a1b9a;
 }
 
-.market {
-    color: #666;
-    font-size: 13px;
+.market-mark {
+    display: inline-block;
+    min-width: 18px;
+    margin-left: 6px;
+    padding: 0 3px;
+    border: 1px solid #d0d5dd;
+    border-radius: 3px;
+    background: #f2f4f7;
+    color: #667085;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+    text-align: center;
+    vertical-align: 1px;
 }
 
 .numeric {
     font-variant-numeric: tabular-nums;
 }
 
-/* YOY 與 MOM 擠在同一欄，上下兩行。兩行都要，沒有的那一行顯示 —，
-   位置固定在那裡，整欄的 YOY 才會對齊在同一條線上。 */
-.revenue-growth {
-    line-height: 1.35;
+.metric-stack {
+    line-height: 1.25;
 }
 
-.revenue-growth .growth-line {
+.metric-line {
     display: block;
-    font-size: 13px;
     white-space: nowrap;
 }
 
-/* 標籤只是告訴你這一行是哪個比較基準，永遠是灰的、也不跟著漲跌變色。 */
-.revenue-growth .growth-label {
+.metric-primary {
+    font-size: 16px;
+}
+
+.metric-secondary {
+    font-size: 14px;
+}
+
+.metric-label {
     margin-right: 4px;
     color: #999;
-    font-size: 11px;
+    font-size: 0.8em;
     font-weight: normal;
+}
+
+.revenue-cell-button {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
+    text-align: right;
+    cursor: pointer;
+}
+
+.revenue-cell-button:hover,
+.revenue-cell-button:focus-visible {
+    background: #f5f8ff;
+    outline: 2px solid #b2ccff;
+    outline-offset: 2px;
 }
 
 .positive {
@@ -1003,13 +1188,15 @@ body {
     .ranking-table td.ticker {
         position: sticky;
         left: 0;
+        width: 80px;
+        min-width: 80px;
         background: #fff;
     }
 
     .ranking-table th.col-name,
     .ranking-table td.stock-name {
         position: sticky;
-        left: 62px;
+        left: 80px;
         background: #fff;
     }
 

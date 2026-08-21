@@ -272,10 +272,8 @@
 
 .ranking-table td.ticker,
 .ranking-table td.stock-name,
-.ranking-table td.market,
 .ranking-table th:nth-child(3),
-.ranking-table th:nth-child(4),
-.ranking-table th:nth-child(5) {
+.ranking-table th:nth-child(4) {
     text-align: left;
 }
 
@@ -355,13 +353,48 @@
     transform: translate(-50%, -50%);
 }
 
-.market {
-    color: #666;
-    font-size: 13px;
+.market-mark {
+    display: inline-block;
+    min-width: 18px;
+    margin-left: 6px;
+    padding: 0 3px;
+    border: 1px solid #d0d5dd;
+    border-radius: 3px;
+    background: #f2f4f7;
+    color: #667085;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+    text-align: center;
+    vertical-align: 1px;
 }
 
 .numeric {
     font-variant-numeric: tabular-nums;
+}
+
+.metric-stack {
+    line-height: 1.25;
+}
+
+.metric-line {
+    display: block;
+    white-space: nowrap;
+}
+
+.metric-primary {
+    font-size: 16px;
+}
+
+.metric-secondary {
+    font-size: 14px;
+}
+
+.metric-label {
+    margin-right: 4px;
+    color: #999;
+    font-size: 0.8em;
+    font-weight: normal;
 }
 
 .positive {

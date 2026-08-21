@@ -1,7 +1,7 @@
 -- 盤中的全市場累計成交額曲線。一輪一列，一天約 197 列。
 --
--- 為什麼要獨立一張表：intraday_runs / intraday_quotes 在當天盤後資料補齊後會整批刪除
--- （見 DailyQuoteSyncStore.DeleteSettledIntradayAsync），一天三十九萬列留不起。
+-- 為什麼要獨立一張表：intraday_runs / intraday_quotes 在下一個有效交易日開始後會整批刪除
+-- （見 IntradayQuoteStore.DeleteSupersededRunsAsync），一天三十九萬列無法長期保留。
 -- 但「量在一天之內是怎麼跑出來的」這件事只有盤中看得到，盤後行情裡沒有，
 -- 刪掉之後永遠算不回來。所以每一輪順手把全市場合計抽成一列留著，一年約五萬列。
 --

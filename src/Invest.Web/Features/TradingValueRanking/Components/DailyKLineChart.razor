@@ -27,12 +27,13 @@
     {
         <div class="daily-kline-legend" aria-label="移動平均線圖例">
             <span class="ma5">MA5</span>
+            <span class="ma10">MA10</span>
             <span class="ma20">MA20</span>
             <span class="ma60">MA60</span>
-            <span class="ma240">MA240</span>
+            <span class="ma240">@Ma240Label</span>
         </div>
         <svg class="daily-kline-svg" viewBox="0 0 @Width @Height" role="img"
-             aria-label="@Ticker @Name 三個月還原權息日 K 圖，包含 MA5、MA20、MA60、MA240">
+             aria-label="@Ticker @Name 三個月還原權息日 K 圖，包含 MA5、MA10、MA20、MA60、MA240">
             <g class="daily-kline-grid">
                 @foreach (var price in AxisPrices)
                 {
@@ -137,7 +138,9 @@
         => [.. Bars
             .SelectMany(bar => new decimal?[]
             {
-                bar.Low, bar.High, bar.Ma5, bar.Ma20, bar.Ma60, bar.Ma240
+                // MA240 距離現價太遠時不應壓縮 K 棒；年線仍保留在圖例，
+                // 落在這個主要價格範圍內時才畫出來。
+                bar.Low, bar.High, bar.Ma5, bar.Ma10, bar.Ma20, bar.Ma60
             })
             .Where(value => value is not null)
             .Select(value => value!.Value)];
@@ -152,6 +155,16 @@
 
     private double MaxPrice
         => PriceValues.Count == 0 ? 0 : (double)PriceValues.Max();
+
+    private bool Ma240Visible
+        => Bars.Any(bar => bar.Ma240 is { } value
+            && (double)value >= MinPrice
+            && (double)value <= MaxPrice);
+
+    private string Ma240Label
+        => Bars.Any(bar => bar.Ma240 is not null) && !Ma240Visible
+            ? "MA240（圖外）"
+            : "MA240";
 
     private double PriceY(decimal price)
     {
@@ -195,6 +208,7 @@
     private IReadOnlyList<MovingAverageLine> MovingAverageLines =>
     [
         new("ma5", MovingAveragePath(bar => bar.Ma5)),
+        new("ma10", MovingAveragePath(bar => bar.Ma10)),
         new("ma20", MovingAveragePath(bar => bar.Ma20)),
         new("ma60", MovingAveragePath(bar => bar.Ma60)),
         new("ma240", MovingAveragePath(bar => bar.Ma240))
@@ -208,7 +222,9 @@
 
         for (var index = 0; index < Bars.Count; index++)
         {
-            if (valueOf(Bars[index]) is not { } value)
+            if (valueOf(Bars[index]) is not { } value
+                || (double)value < MinPrice
+                || (double)value > MaxPrice)
             {
                 drawing = false;
                 continue;

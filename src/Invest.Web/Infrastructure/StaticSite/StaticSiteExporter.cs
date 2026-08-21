@@ -273,7 +273,9 @@ public sealed class StaticSiteExporter(
         Round(row.PreviousTradingValueChangeRate),
         RoundSignificant(row.MarketShare),
         RoundSignificant(row.MarketShareChange),
-        Round(row.PriceChangeRate),
+        Round(row.DailyPriceChangeRate),
+        Round(row.WeeklyPriceChangeRate),
+        row.WeeklyBaselineClosePrice,
         row.ClosePrice);
 
     /// <summary>
@@ -396,6 +398,7 @@ public sealed class StaticSiteExporter(
                     RoundKLine(point.Close),
                     RoundKLine(point.PreviousClose),
                     RoundKLine(point.Ma5),
+                    RoundKLine(point.Ma10),
                     RoundKLine(point.Ma20),
                     RoundKLine(point.Ma60),
                     RoundKLine(point.Ma240)))]);
@@ -508,6 +511,7 @@ public sealed class StaticSiteExporter(
         decimal Close,
         decimal? PreviousClose,
         decimal? Ma5,
+        decimal? Ma10,
         decimal? Ma20,
         decimal? Ma60,
         decimal? Ma240);
@@ -540,6 +544,8 @@ public sealed class StaticSiteExporter(
         decimal Share,
         decimal ShareChange,
         decimal? PriceChange,
+        decimal? WeeklyPriceChange,
+        decimal? WeeklyBaselineClose,
         decimal? Close);
 }
 

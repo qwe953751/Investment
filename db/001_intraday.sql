@@ -4,9 +4,10 @@
 -- 把「哪一輪抓的」與「哪一檔股票」抽成獨立的表之後，明細列只留數字，
 -- 連索引實測是一列 171 bytes，一天約 63 MB。
 --
--- 撐得住的前提是「當天的盤後資料一到齊就整批刪掉」
--- （見 DailyQuoteSyncStore.DeleteSettledIntradayAsync），所以盤中資料不會累積。
--- 反過來說，sync 連續幾天沒跑成功的話，免費方案的 500 MB 大概一週就滿。
+-- 撐得住的前提是「下一個有效交易日寫入成功後，刪掉舊日期」
+-- （見 IntradayQuoteStore.DeleteSupersededRunsAsync），所以盤中資料只保留最新交易日。
+-- 休市或來源失敗時沒有新快照進入 transaction，舊資料不會被先刪。
+-- 新交易日寫入失敗時會繼續留著舊日期；一旦新快照成功，舊輪次當場清理。
 
 create table if not exists securities (
     id          integer generated always as identity primary key,

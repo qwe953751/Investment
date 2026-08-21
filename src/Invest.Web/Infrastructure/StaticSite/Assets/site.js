@@ -9,13 +9,22 @@
 const TOP_COUNT = 100;
 const CUSTOM_PAGE_SIZE = 100;
 const KLINE_DIRECTORY = 'data/kline';
+const REVENUE_HISTORY_TABLE = 'revenue_history';
+const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && new URLSearchParams(window.location.search).get('local-revenue-preview') === '1';
 const KLINE_MONTHS = 3;
 const KLINE_MOVING_AVERAGES = [
     { key: 'ma5', label: 'MA5', className: 'ma5' },
+    { key: 'ma10', label: 'MA10', className: 'ma10' },
     { key: 'ma20', label: 'MA20', className: 'ma20' },
     { key: 'ma60', label: 'MA60', className: 'ma60' },
     { key: 'ma240', label: 'MA240', className: 'ma240' }
 ];
+
+// 年線離現價很遠時若硬塞進同一個 Y 軸，會把近期 K 棒壓成一條線。
+// 主要尺度只看 K 棒與短中期均線；MA240 落在範圍內仍照常顯示，否則在圖例標成圖外。
+const KLINE_PRICE_SCALE_AVERAGES = KLINE_MOVING_AVERAGES
+    .filter(line => line.key !== 'ma240');
 
 // 同一組期間按鈕在兩種檢視是兩件事：盤後是「本期多長」，盤中是「今天要跟過去多長的期間對照」。
 const PERIODS = [
@@ -94,8 +103,8 @@ function sessionProgress(capturedAtIso) {
 // 門檻的按鈕金額與文字都來自 manifest，單位是平均每日成交值（key 為萬元），
 // 這樣按鈕上的金額可以直接跟表格那一欄對照。
 
-// 顯示格式，與 C# 的 RankingFormatter 對應。資料檔只放數字，文字在這裡套出來。
-const MARKET_TEXT = { twse: '上市', tpex: '上櫃' };
+// 市場不另佔一欄，改以短標記跟在股票代號旁。
+const MARKET_MARK = { twse: '市', tpex: '櫃' };
 
 const missing = value => value === null || value === undefined;
 
@@ -269,7 +278,7 @@ async function loadRevenue() {
 
     try {
         const raw = await fetchAllRows(
-            'revenue_latest', 'ticker,month,yoy,mom,high_months,record_high');
+            'revenue_latest', 'ticker,month,yoy,mom,revenue,high_months,record_high');
 
         const eligible = eligibleMonthKey();
 
@@ -278,6 +287,8 @@ async function loadRevenue() {
         revenueByTicker = new Map(raw
             .filter(row => row.month.slice(0, 7) === eligible)
             .map(row => [row.ticker, {
+                month: row.month.slice(0, 7),
+                revenue: Number(row.revenue),
                 yoy: row.yoy,
                 mom: row.mom,
                 highMonths: row.high_months,
@@ -291,26 +302,51 @@ async function loadRevenue() {
 
 const revenueOf = ticker => revenueByTicker.get(ticker) ?? null;
 
-// YOY 與 MOM 擠在同一欄，上下兩行各自標名。排序時看 YOY。
+// 漲跌幅與營收增長共用同一套上下層排版；營收排序時仍只看 YOY。
 function toRevenueGrowthCell(ticker) {
     const revenue = revenueOf(ticker);
 
     return {
-        cls: 'numeric revenue-growth',
+        cls: 'numeric metric-stack revenue-growth',
+        revenueDetails: true,
         lines: [
             {
                 label: 'YOY',
                 text: toSignedPercentText(revenue?.yoy ?? null),
-                cls: 'growth-line ' + toTrendClass(revenue?.yoy)
+                cls: 'metric-line metric-primary ' + toTrendClass(revenue?.yoy)
             },
             {
                 label: 'MOM',
                 text: toSignedPercentText(revenue?.mom ?? null),
-                cls: 'growth-line ' + toTrendClass(revenue?.mom)
+                cls: 'metric-line metric-secondary ' + toTrendClass(revenue?.mom)
             }
         ]
     };
 }
+
+function toPriceChangeCell(daily, weekly) {
+    return {
+        cls: 'numeric metric-stack price-change',
+        lines: [
+            {
+                label: '日',
+                text: toSignedPercentText(daily),
+                cls: 'metric-line metric-primary ' + toTrendClass(daily)
+            },
+            {
+                label: '週',
+                text: toSignedPercentText(weekly),
+                cls: 'metric-line metric-secondary ' + toTrendClass(weekly)
+            }
+        ]
+    };
+}
+
+const toTickerCell = row => ({
+    text: row.ticker,
+    cls: 'ticker',
+    marketMark: MARKET_MARK[row.market]
+});
 
 // 創幾個月新高。N+ 代表往回數到手上的資料用完都沒有更高的，
 // 也就是「至少 N 個月」——再往前的資料不在手上，不能說它是歷史新高。
@@ -329,7 +365,8 @@ function toHighMonthsCell(ticker) {
 
 const REVENUE_GROWTH_HINT = '上個月的單月營收增減。YOY 跟去年同月比、MOM 跟上個月比，'
     + '兩個都由我們自己的營收歷史算出來，不抄報表上算好的欄位。'
-    + '點這一欄是以 YOY 排序。公司要在每月 10 日前申報，還沒公告就顯示 —。';
+    + '點表頭以 YOY 排序；點儲存格開啟 20 個月圖表與最近 5 個月列表。'
+    + '公司要在每月 10 日前申報，還沒公告就顯示 —。';
 
 const HIGH_MONTHS_HINT = '上個月的營收往回數，連續幾個月都沒有比它高的（含當月自己）。'
     + '數到手上的歷史用完會標成 N+，意思是「至少 N 個月」。沒創高顯示 —。';
@@ -343,14 +380,13 @@ const HIGH_MONTHS_HINT = '上個月的營收往回數，連續幾個月都沒有
 const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
-    { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
+    { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
-    { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
     { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '本期市場成交比 − 前期市場成交比，單位是百分點。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
-    { key: 'price', title: '期間漲跌', hint: '（期間終點收盤價 − 基準收盤價）÷ 基準收盤價。基準是進入期間之前的最後一個收盤價，所以期間內第一天的漲跌也算在內。', value: row => row.priceChange, cell: row => ({ text: toSignedPercentText(row.priceChange), cls: 'numeric ' + toTrendClass(row.priceChange) }) },
+    { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'close', title: '收盤價', hint: '期間最後一個交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_GROWTH_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) }
@@ -362,13 +398,12 @@ const COLUMNS = [
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '過去觀察期間的排名 − 今日盤中排名，▲ 代表今天的名次比平常前面。名次是相對的，所以今天只走了半天也能直接比。過去期間沒有這一檔就顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
-    { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
+    { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單；右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
-    { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'value', title: '成交值（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '今日盤中的市場成交比 − 過去觀察期間的市場成交比，單位是百分點。正值代表今天這一檔吸走的資金比過去那段期間更多。過去期間沒有這一檔就顯示 —。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
-    { key: 'price', title: '漲跌幅', hint: '相對昨日收盤價。尚未成交的個股沒有現價，顯示 —。', value: row => row.priceChange, cell: row => ({ text: toSignedPercentText(row.priceChange, 2), cls: 'numeric ' + toTrendClass(row.priceChange) }) },
+    { key: 'price', title: '漲跌幅', hint: '上層「日」是現價相對昨日收盤價；下層「週」是現價相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_GROWTH_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) },
@@ -378,9 +413,8 @@ const INTRADAY_COLUMNS = [
 ];
 
 const CUSTOM_COLUMNS = [
-    { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列，不建立成交值名次。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
+    { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列；右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
-    { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。自訂頁固定瀏覽兩個市場的全部個股。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
     { key: 'close', title: '收盤價', hint: '所選交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'revenue', title: '營收增長', hint: REVENUE_GROWTH_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'value', title: '成交值（億）', hint: '所選單一交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) }
@@ -417,6 +451,11 @@ const klinePromises = new Map();
 let klineError = '';
 let expandedTicker = null;
 let klineAnchor = null;
+const revenueHistoryData = new Map();
+const revenueHistoryPromises = new Map();
+let revenueHistoryError = '';
+let expandedRevenueTicker = null;
+let revenueAnchor = null;
 
 // 這些都由 manifest 決定，start() 先讀好才畫按鈕、抓資料。
 let thresholds = [];
@@ -867,6 +906,13 @@ const toKey = date => date.getFullYear()
 
 const toDate = key => new Date(+key.slice(0, 4), +key.slice(5, 7) - 1, +key.slice(8, 10));
 
+const weekStartKey = key => {
+    const date = toDate(key);
+    const daysSinceMonday = (date.getDay() + 6) % 7;
+    date.setDate(date.getDate() - daysSinceMonday);
+    return toKey(date);
+};
+
 const monthIndex = date => date.getFullYear() * 12 + date.getMonth();
 
 function renderDatePicker() {
@@ -1312,7 +1358,7 @@ function renderKLineSvg(ticker, name, bars) {
     const prices = bars.flatMap(bar => [
         bar.low,
         bar.high,
-        ...KLINE_MOVING_AVERAGES.map(line => bar[line.key])
+        ...KLINE_PRICE_SCALE_AVERAGES.map(line => bar[line.key])
     ]).filter(value => !missing(value)).map(Number).filter(Number.isFinite);
     const dataMin = Math.min(...prices);
     const dataMax = Math.max(...prices);
@@ -1328,7 +1374,7 @@ function renderKLineSvg(ticker, name, bars) {
         class: 'daily-kline-svg',
         viewBox: `0 0 ${width} ${height}`,
         role: 'img',
-        'aria-label': `${ticker} ${name} 三個月還原權息日 K 圖，包含 MA5、MA20、MA60、MA240`
+        'aria-label': `${ticker} ${name} 三個月還原權息日 K 圖，包含 MA5、MA10、MA20、MA60、MA240`
     });
 
     for (const price of [max, (max + min) / 2, min]) {
@@ -1370,7 +1416,10 @@ function renderKLineSvg(ticker, name, bars) {
         bars.forEach((bar, index) => {
             const value = bar[line.key];
 
-            if (missing(value) || !Number.isFinite(Number(value))) {
+            if (missing(value)
+                || !Number.isFinite(Number(value))
+                || Number(value) < min
+                || Number(value) > max) {
                 drawing = false;
                 return;
             }
@@ -1402,26 +1451,41 @@ function renderKLineSvg(ticker, name, bars) {
     return svg;
 }
 
-function renderKLineLegend() {
+function renderKLineLegend(bars) {
     const legend = document.createElement('div');
     legend.className = 'daily-kline-legend';
+
+    const prices = bars.flatMap(bar => [
+        bar.low,
+        bar.high,
+        ...KLINE_PRICE_SCALE_AVERAGES.map(line => bar[line.key])
+    ]).filter(value => !missing(value)).map(Number).filter(Number.isFinite);
+    const dataMin = Math.min(...prices);
+    const dataMax = Math.max(...prices);
+    const dataRange = dataMax > dataMin ? dataMax - dataMin : Math.max(dataMax * 0.02, 1);
+    const min = dataMin - dataRange * 0.04;
+    const max = dataMax + dataRange * 0.04;
 
     for (const line of KLINE_MOVING_AVERAGES) {
         const item = document.createElement('span');
         item.className = line.className;
-        item.textContent = line.label;
+        const values = bars
+            .map(bar => Number(bar[line.key]))
+            .filter(Number.isFinite);
+        const visible = values.some(value => value >= min && value <= max);
+        item.textContent = line.label + (values.length > 0 && !visible ? '（圖外）' : '');
         legend.append(item);
     }
 
     return legend;
 }
 
-function positionKLinePopover(anchor) {
+function positionPopover(popoverId, anchor) {
     if (!anchor?.isConnected) {
         return;
     }
 
-    const popover = el('kline-popover');
+    const popover = el(popoverId);
     const anchorRect = anchor.getBoundingClientRect();
     const popoverRect = popover.getBoundingClientRect();
     const margin = 12;
@@ -1440,6 +1504,9 @@ function positionKLinePopover(anchor) {
     popover.style.left = `${Math.round(left)}px`;
     popover.style.top = `${Math.round(top)}px`;
 }
+
+const positionKLinePopover = anchor => positionPopover('kline-popover', anchor);
+const positionRevenuePopover = anchor => positionPopover('revenue-popover', anchor);
 
 function renderKLinePopover(ticker, name, anchor) {
     const popover = el('kline-popover');
@@ -1490,7 +1557,7 @@ function renderKLinePopover(ticker, name, anchor) {
             message.textContent = '這個期間沒有完整的日 K 資料。';
             card.append(message);
         } else {
-            card.append(renderKLineLegend(), renderKLineSvg(ticker, name, bars));
+            card.append(renderKLineLegend(bars), renderKLineSvg(ticker, name, bars));
         }
     }
 
@@ -1545,6 +1612,7 @@ async function toggleKLine(ticker, name, anchor) {
         return;
     }
 
+    closeRevenueDetails(false);
     expandedTicker = ticker;
     klineAnchor = anchor;
     klineError = '';
@@ -1575,6 +1643,382 @@ function configureKLinePopover() {
     });
     window.addEventListener('resize', () => positionKLinePopover(klineAnchor));
     window.addEventListener('scroll', () => positionKLinePopover(klineAnchor), true);
+}
+
+function buildLocalRevenuePreview(ticker) {
+    const latest = revenueOf(ticker);
+    const latestMonth = /^\d{4}-\d{2}$/.test(latest?.month ?? '') ? latest.month : '2026-07';
+    const end = new Date(`${latestMonth}-01T00:00:00Z`);
+    const ratios = Array.from({ length: 32 }, (_, index) =>
+        (0.76 + index * 0.009) * (1 + Math.sin(index * 1.17) * 0.12 + Math.cos(index * 0.43) * 0.05));
+    const latestRevenue = Number(latest?.revenue) > 0 ? Number(latest.revenue) : 10_000_000_000;
+    const scale = latestRevenue / ratios[ratios.length - 1];
+
+    return ratios.slice(12).map((ratio, displayIndex) => {
+        const index = displayIndex + 12;
+        const month = new Date(Date.UTC(
+            end.getUTCFullYear(),
+            end.getUTCMonth() - 19 + displayIndex,
+            1));
+
+        return {
+            month: month.toISOString().slice(0, 7),
+            revenue: Math.round(ratio * scale),
+            mom: ratio / ratios[index - 1] - 1,
+            yoy: ratio / ratios[index - 12] - 1
+        };
+    });
+}
+
+async function loadRevenueHistoryData(ticker) {
+    if (revenueHistoryData.has(ticker)) {
+        return;
+    }
+
+    if (LOCAL_REVENUE_PREVIEW) {
+        revenueHistoryData.set(ticker, buildLocalRevenuePreview(ticker));
+        return;
+    }
+
+    if (!revenueHistoryPromises.has(ticker)) {
+        revenueHistoryPromises.set(ticker, (async () => {
+            if (supabase === null) {
+                throw new Error('Supabase is not configured');
+            }
+
+            const response = await fetch(
+                `${supabase.url}/rest/v1/${REVENUE_HISTORY_TABLE}`
+                + `?select=month,revenue,mom,yoy&ticker=eq.${encodeURIComponent(ticker)}`
+                + '&order=month.asc',
+                {
+                    headers: { apikey: supabase.anonKey },
+                    cache: 'no-store'
+                });
+
+            if (!response.ok) {
+                throw new Error(String(response.status));
+            }
+
+            const rows = await response.json();
+
+            if (!Array.isArray(rows)) {
+                throw new Error('invalid revenue history payload');
+            }
+
+            revenueHistoryData.set(ticker, rows);
+        })());
+    }
+
+    try {
+        await revenueHistoryPromises.get(ticker);
+    } finally {
+        revenueHistoryPromises.delete(ticker);
+    }
+}
+
+function selectedRevenueMonths(ticker) {
+    const months = (revenueHistoryData.get(ticker) ?? []).map(month => ({
+        month: month.month.slice(0, 7),
+        revenue: Number(month.revenue),
+        mom: missing(month.mom) ? null : Number(month.mom),
+        yoy: missing(month.yoy) ? null : Number(month.yoy)
+    }));
+    const latest = revenueOf(ticker);
+
+    // 兩張摘要表會在同一筆 transaction 替換；這裡仍以 revenue_latest
+    // 覆蓋最新月，讓彈窗與儲存格必定使用同一個物件的數字。
+    if (!LOCAL_REVENUE_PREVIEW && latest?.month && Number.isFinite(latest.revenue)) {
+        const row = {
+            month: latest.month,
+            revenue: latest.revenue,
+            mom: missing(latest.mom) ? null : Number(latest.mom),
+            yoy: missing(latest.yoy) ? null : Number(latest.yoy)
+        };
+        const index = months.findIndex(month => month.month === latest.month);
+
+        if (index >= 0) {
+            months[index] = row;
+        } else {
+            months.push(row);
+        }
+    }
+
+    return months
+        .filter(month => month.month && Number.isFinite(month.revenue))
+        .sort((left, right) => left.month.localeCompare(right.month))
+        .slice(-20);
+}
+
+function renderRevenueChartSvg(ticker, name, months) {
+    const width = 520;
+    const height = 205;
+    const left = 44;
+    const right = 474;
+    const top = 10;
+    const bottom = 177;
+    const plotWidth = right - left;
+    const plotHeight = bottom - top;
+    const maximumRevenue = Math.max(1, ...months.map(month => month.revenue));
+    const yoyValues = months.map(month => month.yoy).filter(value => !missing(value));
+    const yoyMinimum = yoyValues.length ? Math.min(...yoyValues) : 0;
+    const yoyMaximum = yoyValues.length ? Math.max(...yoyValues) : 1;
+    const yoyRange = yoyMaximum > yoyMinimum ? yoyMaximum - yoyMinimum : 1;
+    const yRevenue = value => bottom - value / maximumRevenue * plotHeight;
+    const yYoy = value => bottom - (value - yoyMinimum) / yoyRange * plotHeight;
+    const step = plotWidth / months.length;
+    const barWidth = Math.max(3, step * 0.66);
+    const svg = svgElement('svg', {
+        class: 'revenue-chart-svg',
+        viewBox: `0 0 ${width} ${height}`,
+        role: 'img',
+        'aria-label': `${ticker} ${name} 最近 ${months.length} 個月營收與 YoY 圖`
+    });
+
+    for (const ratio of [0, 0.5, 1]) {
+        const y = top + ratio * plotHeight;
+        svg.append(svgElement('line', { x1: left, y1: y, x2: right, y2: y, class: 'revenue-chart-grid' }));
+        svg.append(svgElement('text', {
+            x: left - 5,
+            y: y + 3,
+            class: 'revenue-chart-axis',
+            'text-anchor': 'end'
+        }, `${toFixedText(maximumRevenue * (1 - ratio) / 100_000_000, 0)}億`));
+    }
+
+    months.forEach((month, index) => {
+        const x = left + index * step + (step - barWidth) / 2;
+        const y = yRevenue(month.revenue);
+        svg.append(svgElement('rect', {
+            x,
+            y,
+            width: barWidth,
+            height: Math.max(1, bottom - y),
+            rx: 1,
+            class: 'revenue-chart-bar'
+        }));
+
+        if (index % 4 === 0 || index === months.length - 1) {
+            svg.append(svgElement('text', {
+                x: x + barWidth / 2,
+                y: bottom + 15,
+                class: 'revenue-chart-month',
+                'text-anchor': 'middle'
+            }, month.month.replace('-', '/')));
+        }
+    });
+
+    let path = '';
+    let drawing = false;
+
+    months.forEach((month, index) => {
+        if (missing(month.yoy)) {
+            drawing = false;
+            return;
+        }
+
+        const x = left + index * step + step / 2;
+        const y = yYoy(month.yoy);
+        path += `${drawing ? ' L' : ' M'} ${x} ${y}`;
+        drawing = true;
+    });
+
+    if (path) {
+        svg.append(svgElement('path', { d: path.trim(), class: 'revenue-chart-yoy' }));
+        svg.append(svgElement('text', {
+            x: right + 5,
+            y: top + 3,
+            class: 'revenue-chart-axis'
+        }, toSignedPercentText(yoyMaximum)));
+        svg.append(svgElement('text', {
+            x: right + 5,
+            y: bottom + 3,
+            class: 'revenue-chart-axis'
+        }, toSignedPercentText(yoyMinimum)));
+    }
+
+    return svg;
+}
+
+function renderRevenueList(months) {
+    const panel = document.createElement('div');
+    panel.className = 'revenue-list-panel';
+    const table = document.createElement('table');
+    table.className = 'revenue-list';
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    for (const title of ['月份', '月營收（億）', 'MoM', 'YoY']) {
+        const cell = document.createElement('th');
+        cell.textContent = title;
+        headRow.append(cell);
+    }
+
+    head.append(headRow);
+    const body = document.createElement('tbody');
+
+    for (const month of months.slice(-5).reverse()) {
+        const row = document.createElement('tr');
+        const values = [
+            { text: month.month.replace('-', '/') },
+            { text: toBillionText(month.revenue) },
+            { text: toSignedPercentText(month.mom), cls: toTrendClass(month.mom) },
+            { text: toSignedPercentText(month.yoy), cls: toTrendClass(month.yoy) }
+        ];
+
+        for (const value of values) {
+            const cell = document.createElement('td');
+            cell.textContent = value.text;
+            cell.className = value.cls ?? '';
+            row.append(cell);
+        }
+
+        body.append(row);
+    }
+
+    table.append(head, body);
+    panel.append(table);
+    return panel;
+}
+
+function renderRevenuePopover(ticker, name, anchor) {
+    const popover = el('revenue-popover');
+    popover.replaceChildren();
+    const card = document.createElement('div');
+    card.className = 'revenue-card';
+    const header = document.createElement('div');
+    header.className = 'revenue-header';
+    const title = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.id = 'revenue-title';
+    strong.textContent = `${ticker} ${name}`;
+    const period = document.createElement('span');
+    period.className = 'revenue-period';
+    period.textContent = LOCAL_REVENUE_PREVIEW ? '20 個月營收（本機樣板）' : '20 個月營收';
+    title.append(strong, period);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'daily-kline-close';
+    close.textContent = '關閉';
+    close.addEventListener('click', closeRevenueDetails);
+    header.append(title, close);
+    card.append(header);
+
+    const content = document.createElement('div');
+    content.className = 'revenue-content';
+    const months = selectedRevenueMonths(ticker);
+
+    if (revenueHistoryError) {
+        const message = document.createElement('p');
+        message.className = 'revenue-empty';
+        message.textContent = '讀不到已驗證的營收歷史，請重新產生靜態網站。';
+        content.append(message);
+    } else if (!revenueHistoryData.has(ticker)) {
+        const message = document.createElement('p');
+        message.className = 'revenue-empty';
+        message.textContent = '營收歷史載入中…';
+        content.append(message);
+    } else if (months.length === 0) {
+        const message = document.createElement('p');
+        message.className = 'revenue-empty';
+        message.textContent = '這檔標的還沒有可顯示的營收歷史。';
+        content.append(message);
+    } else {
+        const chart = document.createElement('div');
+        chart.className = 'revenue-chart-panel';
+        const legend = document.createElement('div');
+        legend.className = 'revenue-chart-legend';
+        const bars = document.createElement('span');
+        bars.className = 'revenue-legend-bars';
+        bars.textContent = '月營收';
+        const yoy = document.createElement('span');
+        yoy.className = 'revenue-legend-yoy';
+        yoy.textContent = 'YoY';
+        legend.append(bars, yoy);
+        chart.append(legend, renderRevenueChartSvg(ticker, name, months));
+        content.append(chart, renderRevenueList(months));
+    }
+
+    card.append(content);
+    popover.append(card);
+    popover.hidden = false;
+    el('revenue-backdrop').hidden = false;
+    positionRevenuePopover(anchor);
+}
+
+function setRevenueButtonStates() {
+    document.querySelectorAll('.revenue-cell-button[data-ticker]').forEach(button => {
+        button.setAttribute('aria-expanded', String(button.dataset.ticker === expandedRevenueTicker));
+    });
+}
+
+function closeRevenueDetails(restoreFocus = true) {
+    const previousAnchor = revenueAnchor;
+    expandedRevenueTicker = null;
+    revenueAnchor = null;
+    revenueHistoryError = '';
+    el('revenue-popover').hidden = true;
+    el('revenue-backdrop').hidden = true;
+    setRevenueButtonStates();
+
+    if (restoreFocus && previousAnchor?.isConnected) {
+        previousAnchor.focus();
+    }
+}
+
+function refreshRevenuePopover() {
+    if (expandedRevenueTicker === null) {
+        return;
+    }
+
+    const row = current?.rows.find(candidate => candidate.ticker === expandedRevenueTicker);
+    const anchor = [...document.querySelectorAll('.revenue-cell-button[data-ticker]')]
+        .find(button => button.dataset.ticker === expandedRevenueTicker);
+
+    if (!row || !anchor) {
+        closeRevenueDetails(false);
+        return;
+    }
+
+    revenueAnchor = anchor;
+    renderRevenuePopover(row.ticker, row.name, anchor);
+    setRevenueButtonStates();
+}
+
+async function toggleRevenueDetails(ticker, name, anchor) {
+    if (expandedRevenueTicker === ticker) {
+        closeRevenueDetails();
+        return;
+    }
+
+    closeKLine(false);
+    expandedRevenueTicker = ticker;
+    revenueAnchor = anchor;
+    revenueHistoryError = '';
+    setRevenueButtonStates();
+    renderRevenuePopover(ticker, name, anchor);
+
+    if (!revenueHistoryData.has(ticker)) {
+        try {
+            await loadRevenueHistoryData(ticker);
+        } catch {
+            revenueHistoryError = '讀不到營收歷史';
+        }
+    }
+
+    if (expandedRevenueTicker === ticker) {
+        renderRevenuePopover(ticker, name, anchor);
+    }
+}
+
+function configureRevenuePopover() {
+    el('revenue-backdrop').addEventListener('click', () => closeRevenueDetails(false));
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && expandedRevenueTicker !== null) {
+            closeRevenueDetails();
+        }
+    });
+    window.addEventListener('resize', () => positionRevenuePopover(revenueAnchor));
+    window.addEventListener('scroll', () => positionRevenuePopover(revenueAnchor), true);
 }
 
 function renderTable() {
@@ -1647,25 +2091,44 @@ function renderTable() {
         }
 
         for (const column of columns()) {
-            const { text, cls, badges, lines, kline } = column.cell(row);
+            const { text, cls, badges, lines, kline, marketMark, revenueDetails } = column.cell(row);
             const td = document.createElement('td');
             td.className = cls;
 
-            // YOY 與 MOM 共用一欄，上下兩行。兩個數字的漲跌顏色是各自的，
+            // 日／週與 YOY／MOM 都共用上下兩行。兩個數字的漲跌顏色是各自的，
             // 所以每一行自己一個 span，不能整格套同一個顏色。
             if (lines) {
+                const target = revenueDetails
+                    ? document.createElement('button')
+                    : td;
+
+                if (revenueDetails) {
+                    target.type = 'button';
+                    target.className = 'revenue-cell-button';
+                    target.dataset.ticker = row.ticker;
+                    target.dataset.hint = '點擊開啟 20 個月營收圖表與最近 5 個月列表';
+                    target.setAttribute('aria-controls', 'revenue-popover');
+                    target.setAttribute('aria-expanded', String(expandedRevenueTicker === row.ticker));
+                    target.setAttribute('aria-label', `${row.ticker} ${row.name} 營收詳情`);
+                    target.addEventListener('click', () => toggleRevenueDetails(row.ticker, row.name, target));
+                }
+
                 for (const line of lines) {
                     const span = document.createElement('span');
                     span.className = line.cls;
 
                     // 標籤自己一個 span：漲跌顏色只上在數字上，
-                    // 整行都染紅的話 YOY 三個字會跟數字搶注意力。
+                    // 整行都染紅的話標籤會跟數字搶注意力。
                     const label = document.createElement('span');
-                    label.className = 'growth-label';
+                    label.className = 'metric-label';
                     label.textContent = line.label;
 
                     span.append(label, line.text);
-                    td.append(span);
+                    target.append(span);
+                }
+
+                if (revenueDetails) {
+                    td.append(target);
                 }
 
                 tr.append(td);
@@ -1703,6 +2166,16 @@ function renderTable() {
                 td.append(makeKLineButton(row.ticker, String(text)));
             } else {
                 td.append(String(text));
+
+                if (marketMark) {
+                    const mark = document.createElement('span');
+                    mark.className = 'market-mark';
+                    mark.textContent = marketMark;
+                    mark.dataset.hint = marketMark === '市'
+                        ? '上市（證交所）'
+                        : '上櫃（櫃買中心）';
+                    td.append(mark);
+                }
             }
             tr.append(td);
         }
@@ -1712,6 +2185,7 @@ function renderTable() {
 
     renderPagination();
     refreshKLinePopover();
+    refreshRevenuePopover();
 }
 
 function renderSummary() {
@@ -1921,6 +2395,8 @@ async function loadIntraday(silent = false) {
     // 對照組固定取最新一個交易日結尾的期間：盤中永遠是今天，沒有往回選日期這回事。
     const reference = await fetchPeriod(`${state.period}-${dates[dates.length - 1]}`);
     const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
+    const sameWeekAsReference = weekStartKey(raw[0].trade_date)
+        === weekStartKey(dates[dates.length - 1]);
 
     if (state.mode === 'accel' && referenceByTicker.size === 0) {
         showNotice(`讀不到過去 ${state.period} 個交易日的對照資料，資金加速排不出來，請改用成交熱度。`, true);
@@ -1929,9 +2405,15 @@ async function loadIntraday(silent = false) {
 
     for (const row of rows) {
         const past = referenceByTicker.get(row.ticker);
+        const weeklyBaseline = sameWeekAsReference
+            ? past?.weeklyBaselineClose
+            : past?.close;
 
         row.share = marketTotal > 0 ? row.value / marketTotal : null;
         row.shareChange = past && !missing(row.share) ? row.share - past.share : null;
+        row.weeklyPriceChange = !missing(row.close) && Number(weeklyBaseline) > 0
+            ? (row.close - Number(weeklyBaseline)) / Number(weeklyBaseline)
+            : null;
     }
 
     const candidates = rows.filter(row => state.market === 'all' || row.market === state.market);
@@ -2114,6 +2596,7 @@ async function load() {
 function update(changes) {
     if (changes.view !== undefined || changes.date !== undefined) {
         closeKLine(false);
+        closeRevenueDetails(false);
     }
 
     // 三種檢視的欄位不一樣，沿用上一個檢視的排序欄位會找不到對應的欄。
@@ -2199,6 +2682,7 @@ async function start() {
     renderSnapshotNote();
     wireRefreshButton();
     configureKLinePopover();
+    configureRevenuePopover();
     startIntradayTimer();
     renderFilters();
 

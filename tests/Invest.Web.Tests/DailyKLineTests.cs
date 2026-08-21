@@ -62,7 +62,7 @@ public sealed class DailyKLineTests
     }
 
     [Fact]
-    public void 均線使用圖表期間之前的有效收盤且包含五二十六十與二百四十日()
+    public void 均線使用圖表期間之前的有效收盤且包含五十二十六十與二百四十日()
     {
         var firstDate = new DateOnly(2025, 1, 1);
         var trading = Enumerable.Range(0, 260)
@@ -83,12 +83,14 @@ public sealed class DailyKLineTests
 
         var first = selected[0];
         Assert.Equal(239m, first.Ma5);
+        Assert.Equal(236.5m, first.Ma10);
         Assert.Equal(231.5m, first.Ma20);
         Assert.Equal(211.5m, first.Ma60);
         Assert.Equal(121.5m, first.Ma240);
 
         var last = selected[^1];
         Assert.Equal(258m, last.Ma5);
+        Assert.Equal(255.5m, last.Ma10);
         Assert.Equal(250.5m, last.Ma20);
         Assert.Equal(230.5m, last.Ma60);
         Assert.Equal(140.5m, last.Ma240);

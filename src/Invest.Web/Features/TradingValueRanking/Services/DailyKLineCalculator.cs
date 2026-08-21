@@ -59,6 +59,7 @@ public static class DailyKLineCalculator
                 close,
                 closeBeforeThisBar,
                 MovingAverage(prefixCloseSums, 5),
+                MovingAverage(prefixCloseSums, 10),
                 MovingAverage(prefixCloseSums, 20),
                 MovingAverage(prefixCloseSums, 60),
                 MovingAverage(prefixCloseSums, 240)));
@@ -84,6 +85,7 @@ public sealed record DailyKLinePoint(
     decimal Close,
     decimal? PreviousClose,
     decimal? Ma5,
+    decimal? Ma10,
     decimal? Ma20,
     decimal? Ma60,
     decimal? Ma240);

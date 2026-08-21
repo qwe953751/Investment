@@ -42,9 +42,8 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
         }
 
         var prunedDates = await PruneAsync(connection, retentionTradingDays, cancellationToken);
-        var prunedIntraday = await DeleteSettledIntradayAsync(connection, cancellationToken);
 
-        return new DailyQuoteSyncReport(insertedDates, insertedRows, prunedDates, prunedIntraday);
+        return new DailyQuoteSyncReport(insertedDates, insertedRows, prunedDates);
     }
 
     /// <summary>
@@ -183,40 +182,12 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
         return deleted;
     }
 
-    /// <summary>
-    /// 盤後資料一到齊，同一天的盤中快照就沒有保留價值，整批刪掉。
-    /// intraday_quotes 靠外鍵的 on delete cascade 一起走。
-    ///
-    /// intraday_curve 不在此列：那張表存的是全市場的累計成交額曲線，
-    /// 盤後行情裡沒有這個資訊，刪掉就再也算不回來。一天只有 197 列。
-    /// </summary>
-    private async Task<int> DeleteSettledIntradayAsync(
-        NpgsqlConnection connection,
-        CancellationToken cancellationToken)
-    {
-        await using var command = new NpgsqlCommand(
-            """
-            delete from intraday_runs
-            where trade_date in (select distinct trade_date from daily_quotes)
-            """,
-            connection);
-
-        var deleted = await command.ExecuteNonQueryAsync(cancellationToken);
-
-        if (deleted > 0)
-        {
-            logger.LogInformation("盤後資料已補齊，刪除 {Count} 輪盤中快照。", deleted);
-        }
-
-        return deleted;
-    }
 }
 
 public sealed record DailyQuoteSyncReport(
     int InsertedDates,
     int InsertedRows,
-    int PrunedRows,
-    int PrunedIntradayRuns);
+    int PrunedRows);
 
 public sealed record DailyQuoteTotals(
     DateOnly TradingDate,

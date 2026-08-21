@@ -202,7 +202,9 @@
                                 @RankingFormatter.ToRankChangeText(row.RankChange)
                             </td>
 
-                            <td class="ticker">@row.Ticker</td>
+                            <td class="ticker">
+                                @row.Ticker<span class="market-mark" data-hint="@RankingFormatter.ToMarketText(row.Market)">@RankingFormatter.ToMarketMark(row.Market)</span>
+                            </td>
                             <td class="stock-name">
                                 <button type="button" class="stock-name-button"
                                         aria-expanded="@(_expandedTicker == row.Ticker)"
@@ -211,8 +213,6 @@
                                     @row.Name
                                 </button>
                             </td>
-                            <td class="market">@RankingFormatter.ToMarketText(row.Market)</td>
-
                             <td class="numeric">@RankingFormatter.ToBillionText(row.AverageDailyTradingValue)</td>
 
                             <td class="numeric @RankingFormatter.ToTrendCssClass(row.TradingValueChangeRate)">
@@ -225,8 +225,13 @@
                                 @RankingFormatter.ToSignedPercentText(row.MarketShareChange, 2)
                             </td>
 
-                            <td class="numeric @RankingFormatter.ToTrendCssClass(row.PriceChangeRate)">
-                                @RankingFormatter.ToSignedPercentText(row.PriceChangeRate)
+                            <td class="numeric metric-stack price-change">
+                                <span class="metric-line metric-primary @RankingFormatter.ToTrendCssClass(row.DailyPriceChangeRate)">
+                                    <span class="metric-label">日</span>@RankingFormatter.ToSignedPercentText(row.DailyPriceChangeRate)
+                                </span>
+                                <span class="metric-line metric-secondary @RankingFormatter.ToTrendCssClass(row.WeeklyPriceChangeRate)">
+                                    <span class="metric-label">週</span>@RankingFormatter.ToSignedPercentText(row.WeeklyPriceChangeRate)
+                                </span>
                             </td>
 
                             <td class="numeric">@(row.ClosePrice?.ToString("N2") ?? "—")</td>
@@ -306,13 +311,10 @@
             row => row.RankChange),
 
         new("ticker", "代號",
-            "只收一般股票：代號四位數字且不以 0 開頭。ETF、權證、受益證券、特別股都不在榜上。",
+            "只收一般股票：代號四位數字且不以 0 開頭。右側「市／櫃」標記代表上市或上櫃。",
             row => null, Ascending: true),
 
         new("name", "名稱", "點擊標的名稱會開啟最近三個月還原權息日 K 彈窗，不會改動排行表格；名稱取自證交所與櫃買中心的每日收盤行情。",
-            row => null, Ascending: true),
-
-        new("market", "市場", "上市（證交所）或上櫃（櫃買中心）。",
             row => null, Ascending: true),
 
         new("value", "平均每日成交值（億）",
@@ -331,9 +333,9 @@
             "本期市場成交比 − 前期市場成交比，單位是百分點。",
             row => row.MarketShareChange),
 
-        new("price", "期間漲跌",
-            "（期間終點收盤價 − 基準收盤價）÷ 基準收盤價。基準是進入期間之前的最後一個收盤價，所以期間內第一天的漲跌也算在內。",
-            row => row.PriceChangeRate),
+        new("price", "漲跌幅",
+            "上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。",
+            row => row.DailyPriceChangeRate),
 
         new("close", "收盤價", "期間最後一個交易日的收盤價。", row => row.ClosePrice)
     ];
@@ -445,15 +447,12 @@
                 return rows;
             }
 
-            // 代號、名稱、市場是文字，走另一條排序路徑。
-            if (column.Key is "ticker" or "name" or "market")
+            // 代號、名稱是文字，走另一條排序路徑。
+            if (column.Key is "ticker" or "name")
             {
-                var text = column.Key switch
-                {
-                    "ticker" => (Func<StockRankingRow, string>)(row => row.Ticker),
-                    "name" => row => row.Name,
-                    _ => row => RankingFormatter.ToMarketText(row.Market)
-                };
+                Func<StockRankingRow, string> text = column.Key == "ticker"
+                    ? row => row.Ticker
+                    : row => row.Name;
 
                 return _sortDescending
                     ? rows.OrderByDescending(text, StringComparer.Ordinal)

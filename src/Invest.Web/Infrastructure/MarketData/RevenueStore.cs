@@ -6,9 +6,9 @@ using NpgsqlTypes;
 namespace Invest.Web.Infrastructure.MarketData;
 
 /// <summary>
-/// 月營收在 Supabase 的兩張表：monthly_revenue 存原始的逐月營收，
-/// revenue_latest 存「上個月」那一格算好的結果給網頁直接讀。
-/// 資料表定義與分工的理由寫在 db/006_revenue.sql。
+/// 月營收在 Supabase 的三層：monthly_revenue 存原始逐月資料，
+/// revenue_latest 存「上個月」那格，revenue_history 存每標的最近 20 個月摘要。
+/// 兩張對外表的 YoY／MoM 都由 C# 同一個計算器產生。
 /// </summary>
 public sealed class RevenueStore(ILogger<RevenueStore> logger)
 {
@@ -105,22 +105,25 @@ public sealed class RevenueStore(ILogger<RevenueStore> logger)
     }
 
     /// <summary>
-    /// 整批重寫 revenue_latest。跨月的時候上一個月那批要整個消失，
-    /// 不能只把新的疊上去——否則 9 月會同時看到 8 月與 7 月兩種資料。
+    /// 整批重寫最新格與 20 個月歷史。兩張表在同一筆 transaction 內替換，
+    /// 不會出現表格已是新公告、彈窗還是舊公告的半套狀態。
     /// </summary>
-    public async Task SaveLatestAsync(
-        IReadOnlyCollection<(string Ticker, RevenueSummary Summary)> rows,
+    public async Task SaveSummariesAsync(
+        IReadOnlyCollection<(string Ticker, RevenueSummary Summary)> latestRows,
+        IReadOnlyCollection<(string Ticker, RevenueSummary Summary)> historyRows,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        await using (var clear = new NpgsqlCommand("delete from revenue_latest", connection))
+        await using (var clear = new NpgsqlCommand(
+            "delete from revenue_latest; delete from revenue_history;",
+            connection))
         {
             await clear.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        if (rows.Count > 0)
+        if (latestRows.Count > 0)
         {
             await using var command = new NpgsqlCommand(
                 """
@@ -132,39 +135,85 @@ public sealed class RevenueStore(ILogger<RevenueStore> logger)
                 """,
                 connection);
 
-            command.Parameters.AddWithValue("tickers", rows.Select(row => row.Ticker).ToArray());
+            command.Parameters.AddWithValue("tickers", latestRows.Select(row => row.Ticker).ToArray());
 
             command.Parameters.Add(new NpgsqlParameter("months", NpgsqlDbType.Array | NpgsqlDbType.Date)
             {
-                Value = rows.Select(row => row.Summary.Month).ToArray()
+                Value = latestRows.Select(row => row.Summary.Month).ToArray()
             });
 
-            command.Parameters.AddWithValue("revenues", rows.Select(row => row.Summary.Revenue).ToArray());
+            command.Parameters.AddWithValue("revenues", latestRows.Select(row => row.Summary.Revenue).ToArray());
 
             command.Parameters.Add(new NpgsqlParameter("yoy", NpgsqlDbType.Array | NpgsqlDbType.Double)
             {
-                Value = rows.Select(row => (object?)row.Summary.YearOverYear ?? DBNull.Value).ToArray()
+                Value = latestRows.Select(row => (object?)row.Summary.YearOverYear ?? DBNull.Value).ToArray()
             });
 
             command.Parameters.Add(new NpgsqlParameter("mom", NpgsqlDbType.Array | NpgsqlDbType.Double)
             {
-                Value = rows.Select(row => (object?)row.Summary.MonthOverMonth ?? DBNull.Value).ToArray()
+                Value = latestRows.Select(row => (object?)row.Summary.MonthOverMonth ?? DBNull.Value).ToArray()
             });
 
             command.Parameters.Add(new NpgsqlParameter("highMonths", NpgsqlDbType.Array | NpgsqlDbType.Integer)
             {
-                Value = rows.Select(row => (object?)row.Summary.HighStreak?.Months ?? DBNull.Value).ToArray()
+                Value = latestRows.Select(row => (object?)row.Summary.HighStreak?.Months ?? DBNull.Value).ToArray()
             });
 
             command.Parameters.AddWithValue(
                 "recordHigh",
-                rows.Select(row => row.Summary.HighStreak?.OnRecord ?? false).ToArray());
+                latestRows.Select(row => row.Summary.HighStreak?.OnRecord ?? false).ToArray());
+
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (historyRows.Count > 0)
+        {
+            await using var command = new NpgsqlCommand(
+                """
+                insert into revenue_history (ticker, month, revenue, yoy, mom)
+                select * from unnest(
+                    @historyTickers::text[], @historyMonths::date[], @historyRevenues::bigint[],
+                    @historyYoy::float8[], @historyMom::float8[])
+                """,
+                connection);
+
+            command.Parameters.AddWithValue(
+                "historyTickers",
+                historyRows.Select(row => row.Ticker).ToArray());
+            command.Parameters.Add(new NpgsqlParameter(
+                "historyMonths",
+                NpgsqlDbType.Array | NpgsqlDbType.Date)
+            {
+                Value = historyRows.Select(row => row.Summary.Month).ToArray()
+            });
+            command.Parameters.AddWithValue(
+                "historyRevenues",
+                historyRows.Select(row => row.Summary.Revenue).ToArray());
+            command.Parameters.Add(new NpgsqlParameter(
+                "historyYoy",
+                NpgsqlDbType.Array | NpgsqlDbType.Double)
+            {
+                Value = historyRows
+                    .Select(row => (object?)row.Summary.YearOverYear ?? DBNull.Value)
+                    .ToArray()
+            });
+            command.Parameters.Add(new NpgsqlParameter(
+                "historyMom",
+                NpgsqlDbType.Array | NpgsqlDbType.Double)
+            {
+                Value = historyRows
+                    .Select(row => (object?)row.Summary.MonthOverMonth ?? DBNull.Value)
+                    .ToArray()
+            });
 
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
 
-        logger.LogInformation("更新營收摘要：{Count} 檔。", rows.Count);
+        logger.LogInformation(
+            "更新營收摘要：最新 {LatestCount} 檔、歷史 {HistoryCount} 列。",
+            latestRows.Count,
+            historyRows.Count);
     }
 }

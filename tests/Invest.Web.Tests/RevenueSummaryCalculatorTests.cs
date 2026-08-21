@@ -170,4 +170,20 @@ public class RevenueSummaryCalculatorTests
 
         Assert.Null(RevenueSummaryCalculator.Summarize(Month(2026, 7), history)!.HighStreak);
     }
+
+    [Fact]
+    public void 營收詳細圖只取最新二十個月並保持月份順序()
+    {
+        var first = Month(2024, 1);
+        var history = Enumerable.Range(0, 33)
+            .ToDictionary(index => first.AddMonths(index), index => 100L + index);
+
+        var summaries = RevenueSummaryCalculator.SummarizeRecent(history, 20);
+        var expectedMonths = history.Keys.Order().TakeLast(20).ToArray();
+
+        Assert.Equal(20, summaries.Count);
+        Assert.Equal(expectedMonths, summaries.Select(summary => summary.Month));
+        Assert.Equal((double)(132 - 120) / 120, summaries[^1].YearOverYear!.Value, 10);
+        Assert.Equal((double)(132 - 131) / 131, summaries[^1].MonthOverMonth!.Value, 10);
+    }
 }

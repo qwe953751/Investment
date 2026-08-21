@@ -108,10 +108,15 @@
     stroke-linejoin: round;
 }
 
-/* 與常用 APP 色票一致；網站只使用 MA5、MA20、MA60、MA240。 */
+/* 與常用 APP 色票一致；MA10 使用較淡的薄荷綠，和下跌 K 棒的鮮綠分開。 */
 .ma5 {
     color: #4f80ff;
     stroke: #4f80ff;
+}
+
+.ma10 {
+    color: #65bfa3;
+    stroke: #65bfa3;
 }
 
 .ma20 {
