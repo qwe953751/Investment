@@ -7,6 +7,7 @@
 // 其餘公式一律不搬過來，否則就會有兩份定義各自漂移。
 
 const TOP_COUNT = 100;
+const CUSTOM_PAGE_SIZE = 100;
 const KLINE_DIRECTORY = 'data/kline';
 const KLINE_MONTHS = 3;
 const KLINE_MOVING_AVERAGES = [
@@ -27,7 +28,7 @@ const PERIODS = [
 
 // 兩種檢視的預設期間不一樣。盤後回答的是「昨天發生了什麼」，所以預設前一交易日；
 // 盤中是拿今天跟一段有代表性的期間對照，只比一天太容易被單日的異常帶走，所以預設 5 日。
-const DEFAULT_PERIOD = { daily: 1, intraday: 5 };
+const DEFAULT_PERIOD = { daily: 1, intraday: 5, custom: 1 };
 
 const MODES = [
     {
@@ -53,7 +54,8 @@ const MARKETS = [
 // 盤中排在左邊，但預設仍然是盤後（state.view）：開盤時間以外盤中沒有東西可看。
 const VIEWS = [
     { key: 'intraday', text: '盤中', hint: '證交所的即時行情，依收集排程更新；加權、櫃買與已開啟標的的當日 K 棒同步重讀。' },
-    { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' }
+    { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
+    { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' }
 ];
 
 // 盤中頁的更新週期與收集器共用 manifest 裡的 CollectionSchedule。
@@ -375,7 +377,18 @@ const INTRADAY_COLUMNS = [
     { key: 'estimate', title: '預估成交值（億）', fixed: true, hint: '把目前累計的成交額按時間比例推到 13:30 收盤：目前累計 ÷ 這一天已經過的時段比例。台股的量是 U 型的，開盤與尾盤爆量、中午乾涸，所以早盤會高估、中午會低估。這一欄只能參考，不能排序，排行榜一律以前面的實際累計成交值為準。', value: row => row.estimate, cell: row => ({ text: row.estimate === null ? '—' : toBillionText(row.estimate), cls: 'numeric estimate' }) }
 ];
 
-const columns = () => (state.view === 'intraday' ? INTRADAY_COLUMNS : COLUMNS);
+const CUSTOM_COLUMNS = [
+    { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列，不建立成交值名次。', ascending: true, text: row => row.ticker, cell: row => ({ text: row.ticker, cls: 'ticker' }) },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
+    { key: 'market', title: '市場', hint: '上市（證交所）或上櫃（櫃買中心）。自訂頁固定瀏覽兩個市場的全部個股。', sortable: false, text: row => MARKET_TEXT[row.market], cell: row => ({ text: MARKET_TEXT[row.market], cls: 'market' }) },
+    { key: 'close', title: '收盤價', hint: '所選交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
+    { key: 'revenue', title: '營收增長', hint: REVENUE_GROWTH_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
+    { key: 'value', title: '成交值（億）', hint: '所選單一交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) }
+];
+
+const columns = () => state.view === 'intraday'
+    ? INTRADAY_COLUMNS
+    : state.view === 'custom' ? CUSTOM_COLUMNS : COLUMNS;
 
 const state = {
     view: 'daily',
@@ -386,10 +399,15 @@ const state = {
 
     // 平均每日成交值的門檻，單位為元。按鈕與自訂輸入框都是設定這個值。
     threshold: 100_000_000,
+    customThreshold: 0,
+    customPage: 1,
 
     sortKey: 'rank',
     sortDescending: false
 };
+
+const thresholdStateKey = () => (state.view === 'custom' ? 'customThreshold' : 'threshold');
+const activeThreshold = () => state[thresholdStateKey()];
 
 // 同一個組合切回來時不重打一次 fetch。
 const cache = new Map();
@@ -453,11 +471,15 @@ function renderOptions(containerId, options, selected, onSelect) {
 // 留著反而會讓人以為切到盤中還在篩什麼。市場與鎖定兩邊都適用。
 function applyViewVisibility() {
     for (const element of document.querySelectorAll('[data-view]')) {
-        element.hidden = element.dataset.view !== state.view;
+        element.hidden = !element.dataset.view.split(/\s+/).includes(state.view);
     }
 }
 
 function renderFilters() {
+    const custom = state.view === 'custom';
+    el('page-heading').textContent = custom ? '自訂資料瀏覽' : '個股成交值排行';
+    document.title = el('page-heading').textContent;
+
     renderOptions(
         'view-options',
         VIEWS.map(view => ({
@@ -496,10 +518,18 @@ function renderFilters() {
         thresholds.map(threshold => ({
             key: threshold.key * 10_000,
             text: threshold.text,
-            hint: threshold.key > 0 ? `平均每日成交值 ${threshold.text} 以上` : '不過濾'
+            hint: threshold.key > 0
+                ? `${custom ? '當日' : '平均每日'}成交值 ${threshold.text} 以上`
+                : '不過濾'
         })),
-        state.threshold,
-        threshold => update({ threshold }));
+        activeThreshold(),
+        threshold => update({ [thresholdStateKey()]: threshold }));
+
+    const thresholdLabel = el('threshold-label');
+    thresholdLabel.textContent = custom ? '成交值下限' : '成交門檻';
+    thresholdLabel.dataset.hint = custom
+        ? '所選單一交易日的成交值下限。預設不限，所有符合資料定義的上市櫃個股都可透過分頁瀏覽。'
+        : '「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。';
 
     renderThresholdInput();
     renderLockRow();
@@ -517,16 +547,24 @@ function renderThresholdInput() {
     input.min = '0';
     input.step = '0.1';
     input.placeholder = '自訂';
-    input.dataset.hint = '自己輸入金額，單位與按鈕相同：平均每日成交值（億元）';
+    input.dataset.hint = state.view === 'custom'
+        ? '自己輸入所選交易日的成交值下限，單位為億元'
+        : '自己輸入金額，單位與按鈕相同：平均每日成交值（億元）';
 
-    const daily = state.threshold / 100_000_000;
-    input.value = daily > 0 ? String(Math.round(daily * 100) / 100) : '';
+    const thresholdInBillions = activeThreshold() / 100_000_000;
+    input.value = thresholdInBillions > 0
+        ? String(Math.round(thresholdInBillions * 100) / 100)
+        : '';
 
     input.addEventListener('change', () => {
         // 清空輸入框等於不過濾。
         const typed = Number.parseFloat(input.value);
 
-        update({ threshold: Number.isFinite(typed) && typed > 0 ? typed * 100_000_000 : 0 });
+        update({
+            [thresholdStateKey()]: Number.isFinite(typed) && typed > 0
+                ? typed * 100_000_000
+                : 0
+        });
     });
 
     const unit = document.createElement('span');
@@ -593,8 +631,14 @@ function applyStoredSettings() {
     }
 
     // 盤中頁在沒有資料庫連線時是停用的，存著的值不能繞過這件事。
-    if (stored.view === 'intraday' && supabase !== null) {
-        state.view = 'intraday';
+    if (VIEWS.some(view => view.key === stored.view)
+        && (stored.view !== 'intraday' || supabase !== null)) {
+        state.view = stored.view;
+
+        if (state.view === 'custom') {
+            state.sortKey = 'ticker';
+            state.sortDescending = false;
+        }
     }
 
     if (PERIODS.some(period => period.days === stored.period)) {
@@ -616,6 +660,10 @@ function applyStoredSettings() {
     // 門檻可以自己輸入任意金額，所以只驗「是不是合理的數字」，不驗在不在按鈕清單裡。
     if (Number.isFinite(stored.threshold) && stored.threshold >= 0) {
         state.threshold = stored.threshold;
+    }
+
+    if (Number.isFinite(stored.customThreshold) && stored.customThreshold >= 0) {
+        state.customThreshold = stored.customThreshold;
     }
 
     // 排序欄位得屬於這個檢視，而且是可排序的那些。view 上面可能已經改過，所以放最後驗。
@@ -1048,10 +1096,90 @@ function sortedRows(rows) {
             return state.sortDescending ? -compared : compared;
         }
 
-        return left.rank - right.rank;
+        return left.ticker < right.ticker ? -1 : left.ticker > right.ticker ? 1 : 0;
     });
 
     return copy;
+}
+
+function rowsForCurrentPage() {
+    const sorted = sortedRows(current.rows);
+
+    if (state.view !== 'custom') {
+        return sorted;
+    }
+
+    const pageCount = Math.max(1, Math.ceil(sorted.length / CUSTOM_PAGE_SIZE));
+    state.customPage = Math.min(Math.max(state.customPage, 1), pageCount);
+    const start = (state.customPage - 1) * CUSTOM_PAGE_SIZE;
+
+    return sorted.slice(start, start + CUSTOM_PAGE_SIZE);
+}
+
+function setCustomPage(page) {
+    const pageCount = Math.max(1, Math.ceil(current.rows.length / CUSTOM_PAGE_SIZE));
+    const nextPage = Math.min(Math.max(page, 1), pageCount);
+
+    if (nextPage === state.customPage) {
+        return;
+    }
+
+    closeKLine(false);
+    state.customPage = nextPage;
+    renderTable();
+    el('table-container').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderPagination() {
+    const host = el('pagination');
+    host.replaceChildren();
+
+    if (state.view !== 'custom' || current.rows.length <= CUSTOM_PAGE_SIZE) {
+        host.hidden = true;
+        return;
+    }
+
+    const pageCount = Math.ceil(current.rows.length / CUSTOM_PAGE_SIZE);
+
+    const button = (text, page, disabled) => {
+        const control = document.createElement('button');
+        control.type = 'button';
+        control.className = 'pagination-button';
+        control.textContent = text;
+        control.disabled = disabled;
+        control.addEventListener('click', () => setCustomPage(page));
+        return control;
+    };
+
+    const pageLabel = document.createElement('label');
+    pageLabel.className = 'pagination-page';
+    pageLabel.append('第 ');
+
+    const pageSelect = document.createElement('select');
+    pageSelect.className = 'pagination-select';
+    pageSelect.setAttribute('aria-label', '頁碼');
+
+    for (let page = 1; page <= pageCount; page++) {
+        const option = document.createElement('option');
+        option.value = String(page);
+        option.textContent = String(page);
+        option.selected = page === state.customPage;
+        pageSelect.append(option);
+    }
+
+    pageSelect.addEventListener('change', () => setCustomPage(Number(pageSelect.value)));
+    pageLabel.append(pageSelect, ` / ${pageCount} 頁`);
+
+    const count = document.createElement('span');
+    count.className = 'pagination-count';
+    count.textContent = `共 ${current.rows.length} 檔`;
+
+    host.append(
+        button('‹ 上一頁', state.customPage - 1, state.customPage === 1),
+        pageLabel,
+        button('下一頁 ›', state.customPage + 1, state.customPage === pageCount),
+        count);
+    host.hidden = false;
 }
 
 function makeKLineButton(ticker, name) {
@@ -1450,6 +1578,8 @@ function configureKLinePopover() {
 }
 
 function renderTable() {
+    el('data-table').classList.toggle('custom-table', state.view === 'custom');
+
     const head = el('table-head');
     head.replaceChildren();
 
@@ -1492,6 +1622,10 @@ function renderTable() {
                 state.sortDescending = !column.ascending;
             }
 
+            if (state.view === 'custom') {
+                state.customPage = 1;
+            }
+
             writeSettings();
             renderTable();
         });
@@ -1504,7 +1638,7 @@ function renderTable() {
 
     const lockedTickers = new Set(locked);
 
-    for (const row of sortedRows(current.rows)) {
+    for (const row of rowsForCurrentPage()) {
         const tr = document.createElement('tr');
         tr.dataset.ticker = row.ticker;
 
@@ -1576,10 +1710,36 @@ function renderTable() {
         body.append(tr);
     }
 
+    renderPagination();
     refreshKLinePopover();
 }
 
 function renderSummary() {
+    if (state.view === 'custom') {
+        const threshold = activeThreshold();
+        const items = [
+            ['交易日', state.date.replaceAll('-', '/')],
+            ['全市場資料', `${current.totalStockCount} 檔`],
+            ['成交值下限', threshold === 0 ? '不限' : `${toBillionText(threshold)} 億元`],
+            ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`],
+            ['營收月份', eligibleMonthKey().replace('-', '/')]
+        ];
+
+        const summary = el('summary');
+        summary.replaceChildren();
+
+        for (const [label, value] of items) {
+            const item = document.createElement('div');
+            const tag = document.createElement('span');
+            tag.className = 'summary-label';
+            tag.textContent = label;
+            item.append(tag, value);
+            summary.append(item);
+        }
+
+        return;
+    }
+
     const baseItems = state.view === 'intraday'
         ? [
             ['交易日', current.tradeDate.replaceAll('-', '/')],
@@ -1849,9 +2009,59 @@ async function fetchPeriod(key) {
     return cache.get(key);
 }
 
+async function loadCustom() {
+    const key = `1-${state.date}`;
+
+    if (!cache.has(key)) {
+        showNotice('單日資料載入中…', false);
+    }
+
+    const data = await fetchPeriod(`1-${state.date}`);
+
+    if (!data) {
+        if (await reloadIfStale()) {
+            return;
+        }
+
+        showNotice(`讀不到 ${state.date} 的單日資料，請在本機重新產生一次靜態網站。`, true);
+        return;
+    }
+
+    nameByTicker = new Map(data.rows.map(row => [row.ticker, row.name]));
+
+    if (!data.hasSufficientData) {
+        showNotice(data.message ?? '資料不足。', true);
+        return;
+    }
+
+    const rows = data.rows.filter(row => row.value >= state.customThreshold);
+    current = {
+        ...data,
+        rows,
+        totalStockCount: data.rows.length,
+        rankedStockCount: rows.length,
+        rankByTicker: new Map()
+    };
+
+    const pageCount = Math.max(1, Math.ceil(rows.length / CUSTOM_PAGE_SIZE));
+    state.customPage = Math.min(state.customPage, pageCount);
+
+    el('notice').hidden = true;
+    el('ranking').hidden = false;
+
+    renderSummary();
+    renderTable();
+    renderLockRow();
+}
+
 async function load() {
     if (state.view === 'intraday') {
         await loadIntraday();
+        return;
+    }
+
+    if (state.view === 'custom') {
+        await loadCustom();
         return;
     }
 
@@ -1906,15 +2116,23 @@ function update(changes) {
         closeKLine(false);
     }
 
-    // 兩種檢視的欄位不一樣，沿用上一個檢視的排序欄位會找不到對應的欄，
-    // 表格就會停在一個沒有標示的排序狀態。切換時一律回到名次。
+    // 三種檢視的欄位不一樣，沿用上一個檢視的排序欄位會找不到對應的欄。
+    // 自訂頁沒有名次，預設依代號排列；其餘兩頁回到名次。
     if (changes.view !== undefined && changes.view !== state.view) {
-        changes.sortKey = 'rank';
+        changes.sortKey = changes.view === 'custom' ? 'ticker' : 'rank';
         changes.sortDescending = false;
+        changes.customPage = 1;
 
         // 期間在兩邊是兩件事（本期多長 vs 跟多長的期間對照），預設值也不一樣，
         // 所以切過去要換成那一邊的預設，不要把上一個檢視的選擇帶過去。
         changes.period ??= DEFAULT_PERIOD[changes.view];
+    }
+
+    const nextView = changes.view ?? state.view;
+
+    if (nextView === 'custom'
+        && (changes.date !== undefined || changes.customThreshold !== undefined)) {
+        changes.customPage = 1;
     }
 
     Object.assign(state, changes);

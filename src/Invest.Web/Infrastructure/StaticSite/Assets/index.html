@@ -12,7 +12,7 @@
 <div class="ranking-page">
     <header class="page-header">
         <div class="page-title">
-            <h1>個股成交值排行</h1>
+            <h1 id="page-heading">個股成交值排行</h1>
             <button type="button" class="refresh-button" id="refresh"
                     data-hint="問伺服器有沒有更新的快照。有的話直接換成新的，下面的數字跟著更新。">
                 <span class="refresh-icon">↻</span>檢查更新
@@ -29,37 +29,41 @@
             資料來源為證交所盤中即時行情，依頁面顯示的排程收集。成交額是用現價乘上累計成交量推算的，
             不是官方數字；摘要的加權與櫃買指數及漲跌幅則直接取盤中指數頻道。收盤後一律以盤後行情為準。
         </p>
+        <p data-view="custom">
+            瀏覽單一交易日的全部上市櫃個股，不建立預設排行；可選日期與成交值下限，
+            表格預設依股票代號排列，超過 100 檔時分頁顯示。
+        </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
     </header>
 
     <section class="filter-panel">
-        <div class="filter-group">
+        <div class="filter-group" data-view="daily intraday">
             <span class="filter-label" data-hint="盤後：本期的長度，前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。盤中：今天要拿來對照的過去期間長度。">觀察期間</span>
             <div class="button-row" id="period-options"></div>
         </div>
 
-        <div class="filter-group" data-view="daily">
+        <div class="filter-group" data-view="daily custom">
             <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
             <div class="date-picker" id="date-picker"></div>
         </div>
 
-        <div class="filter-group">
+        <div class="filter-group" data-view="daily intraday">
             <span class="filter-label" data-hint="決定排行榜依哪個數字排序。盤後的資金加速看成交值增減率，盤中看成交比變化。">排行模式</span>
             <div class="button-row" id="mode-options"></div>
         </div>
 
-        <div class="filter-group">
+        <div class="filter-group" data-view="daily intraday">
             <span class="filter-label" data-hint="只篩選要看的市場。市場成交比的分母不受影響，一律是上市＋上櫃全體。">市場</span>
             <div class="button-row" id="market-options"></div>
         </div>
 
-        <div class="filter-group" data-view="daily">
-            <span class="filter-label" data-hint="「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。">成交門檻</span>
+        <div class="filter-group" data-view="daily custom">
+            <span class="filter-label" id="threshold-label" data-hint="「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。">成交門檻</span>
             <div class="button-row" id="threshold-options"></div>
             <span class="threshold-custom" id="threshold-custom"></span>
         </div>
 
-        <div class="filter-group">
+        <div class="filter-group" data-view="daily intraday">
             <span class="filter-label" data-hint="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
             <div class="lock-row" id="lock-row"></div>
         </div>
@@ -70,12 +74,14 @@
     <div id="ranking" hidden>
         <section class="summary" id="summary"></section>
 
-        <div class="table-container">
-            <table class="ranking-table">
+        <div class="table-container" id="table-container">
+            <table class="ranking-table" id="data-table">
                 <thead><tr id="table-head"></tr></thead>
                 <tbody id="table-body"></tbody>
             </table>
         </div>
+
+        <nav class="pagination" id="pagination" aria-label="自訂資料分頁" hidden></nav>
 
         <footer class="page-footer">
             <p data-view="daily">成交值只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除，與玩股網、籌碼K 的成交值排行一致。</p>
@@ -100,6 +106,8 @@
                 但比例可以：分子與分母都取自同一輪，時段進度會自己約掉，所以這一欄不必等到收盤、也不依賴預估值。</p>
             <p data-view="intraday">這一頁直接讀資料庫，依 manifest 的同一個更新間隔自動重讀，不必按檢查更新；
                 加權、櫃買與已開啟標的的當日 K 棒會在同一輪同步更新。</p>
+            <p data-view="custom">成交值為所選交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。</p>
+            <p data-view="custom">營收增長顯示目前應公告月份的 YOY 與 MOM，月份會顯示在摘要；目前不依歷史交易日回溯當時已公告的月份。</p>
         </footer>
     </div>
 </div>

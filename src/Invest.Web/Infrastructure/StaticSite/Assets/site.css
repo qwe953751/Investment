@@ -528,6 +528,55 @@ body {
     border-collapse: collapse;
 }
 
+.ranking-table.custom-table {
+    min-width: 720px;
+}
+
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.pagination-button,
+.pagination-select {
+    padding: 8px 12px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: inherit;
+    font: inherit;
+}
+
+.pagination-button {
+    cursor: pointer;
+}
+
+.pagination-button:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.pagination-button:disabled {
+    color: #aaa;
+    border-color: #ddd;
+    cursor: not-allowed;
+}
+
+.pagination-page {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.pagination-count {
+    color: #666;
+    white-space: nowrap;
+}
+
 .ranking-table th,
 .ranking-table td {
     padding: 12px;
@@ -939,6 +988,10 @@ body {
     .ranking-table {
         min-width: 900px;
         font-size: 14px;
+    }
+
+    .ranking-table.custom-table {
+        min-width: 680px;
     }
 
     .ranking-table th,
