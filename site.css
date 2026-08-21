@@ -1,0 +1,1321 @@
+/* 靜態版排行頁的樣式。內容與 TradingValueRanking.razor.css 對齊，
+   另外補上手機版的版面，因為這份快照主要就是拿手機看的。 */
+
+:root {
+    color-scheme: light;
+}
+
+/* 切換檢視是靠 hidden 屬性收合的，而 .filter-group 這類有 display 的規則
+   會蓋掉瀏覽器預設的 [hidden] { display: none }，收不起來。 */
+[hidden] {
+    display: none !important;
+}
+
+body {
+    margin: 0;
+    background-color: #ffffff;
+    color: #1a1a1a;
+    font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans TC",
+        "PingFang TC", "Microsoft JhengHei", "Helvetica Neue", sans-serif;
+}
+
+.ranking-page {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 32px;
+}
+
+.page-header {
+    margin-bottom: 24px;
+}
+
+.page-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.page-header h1 {
+    margin: 0;
+    font-size: 32px;
+}
+
+/* 快照不會自己變新，這顆按鈕負責去問有沒有新版本。 */
+.refresh-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border: 1px solid #aaa;
+    border-radius: 999px;
+    background: white;
+    color: inherit;
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.refresh-button:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.refresh-button:disabled {
+    color: #aaa;
+    border-color: #ddd;
+    cursor: progress;
+}
+
+.refresh-icon {
+    font-size: 16px;
+    line-height: 1;
+}
+
+.refresh-status {
+    color: #888;
+    font-size: 13px;
+}
+
+.page-header p {
+    margin: 0;
+    color: #666;
+}
+
+/* 盤後／盤中。整頁最上層的分岔，不放進下面的篩選面板，
+   免得看起來像是又一個篩選條件。 */
+.view-switch {
+    display: inline-flex;
+    gap: 4px;
+    padding: 4px;
+    margin-bottom: 12px;
+    border: 1px solid #ddd;
+    border-radius: 999px;
+    background: #f0f0f0;
+}
+
+.view-switch .toggle-button {
+    min-width: 72px;
+    padding: 6px 18px;
+    border-color: transparent;
+    border-radius: 999px;
+    background: transparent;
+}
+
+.view-switch .toggle-button:hover:not(:disabled):not(.selected) {
+    background: #e4e4e4;
+}
+
+.view-switch .toggle-button.selected {
+    border-color: #222;
+    background: #222;
+    color: white;
+}
+
+.snapshot-note {
+    margin-top: 8px !important;
+    font-size: 13px;
+    color: #888 !important;
+}
+
+.filter-panel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 24px;
+    padding: 16px;
+    margin-bottom: 16px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fafafa;
+}
+
+.filter-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.filter-label {
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* 有說明可看的標籤畫一條虛線底線，否則沒人知道可以停在上面。 */
+.filter-label[data-hint] {
+    cursor: help;
+    text-decoration: underline dotted #bbb;
+    text-underline-offset: 4px;
+}
+
+/* 說明泡泡。座標由 hint.js 算好後寫進 style，這裡只負責長相。
+   同一份樣式在 Blazor 端的 wwwroot/app.css 也有一份。 */
+.hint-bubble {
+    position: fixed;
+    z-index: 100;
+    max-width: 320px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #2b2b2b;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.6;
+    text-align: left;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+}
+
+.hint-bubble.visible {
+    opacity: 1;
+    visibility: visible;
+}
+
+.button-row {
+    display: flex;
+    gap: 8px;
+}
+
+.toggle-button {
+    min-width: 64px;
+    padding: 8px 14px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.toggle-button:hover:not(:disabled):not(.selected) {
+    background: #f0f0f0;
+}
+
+.toggle-button.selected {
+    border-color: #222;
+    background: #222;
+    color: white;
+}
+
+.toggle-button:disabled {
+    color: #aaa;
+    border-color: #ddd;
+    cursor: not-allowed;
+}
+
+.threshold-custom {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.threshold-input {
+    width: 80px;
+    padding: 8px 10px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    text-align: right;
+}
+
+.threshold-unit {
+    color: #666;
+    white-space: nowrap;
+}
+
+.custom-control {
+    display: inline-flex;
+    align-items: center;
+}
+
+.custom-select,
+.custom-search-input {
+    min-width: 132px;
+    padding: 8px 10px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: inherit;
+    font: inherit;
+}
+
+.custom-search-input {
+    width: 150px;
+}
+
+.custom-search-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.custom-search-submit {
+    padding: 8px 12px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.custom-search-submit:hover,
+.custom-search-submit:focus-visible {
+    background: #f0f0f0;
+}
+
+.checkbox-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.status-filter-row {
+    display: flex;
+    align-items: center;
+    min-height: 22px;
+}
+
+.status-filter-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.status-filter-special {
+    padding-left: 0;
+}
+
+.status-filter-group-label {
+    color: #667085;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.status-filter-group-label {
+    font-weight: 600;
+}
+
+.checkbox-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.custom-checkbox {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: #222;
+}
+
+/* 交易日選擇器。與 TradingDatePicker.razor.css 同一份樣式。 */
+.date-picker {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.date-step {
+    width: 38px;
+    height: 38px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.date-step:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.date-step:disabled {
+    color: #ccc;
+    cursor: not-allowed;
+}
+
+.date-trigger {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 140px;
+    padding: 8px 14px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    cursor: pointer;
+}
+
+.date-trigger:hover {
+    background: #f0f0f0;
+}
+
+.date-trigger-icon {
+    margin-left: auto;
+    color: #888;
+    font-size: 12px;
+}
+
+/* 透明底板，接住月曆以外的點擊把它收起來。 */
+.calendar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+}
+
+.calendar {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 11;
+    width: 280px;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: white;
+    box-shadow: 0 8px 24px #00000026;
+}
+
+.calendar-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.calendar-title {
+    flex: 1;
+    text-align: center;
+    font-weight: 600;
+}
+
+.calendar-nav {
+    width: 28px;
+    height: 28px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.calendar-nav:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.calendar-nav:disabled {
+    color: #ccc;
+    cursor: not-allowed;
+}
+
+.calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+}
+
+.calendar-weekday {
+    padding: 4px 0;
+    color: #888;
+    font-size: 12px;
+    text-align: center;
+}
+
+.calendar-day {
+    aspect-ratio: 1;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    color: #222;
+    cursor: pointer;
+}
+
+.calendar-day:hover:not(:disabled) {
+    background: #eee;
+}
+
+/* 沒有行情的日子：反灰、不能點。當月與非當月的灰再分深淺，才看得出月份邊界。 */
+.calendar-day:disabled {
+    color: #bbb;
+    cursor: not-allowed;
+}
+
+.calendar-day.other-month {
+    color: #ccc;
+}
+
+.calendar-day.other-month:disabled {
+    color: #e0e0e0;
+}
+
+.calendar-day.selected {
+    background: #222;
+    color: white;
+}
+
+.calendar-hint {
+    margin: 10px 0 0;
+    color: #888;
+    font-size: 12px;
+    text-align: center;
+}
+
+/* 只有圖示的方形按鈕：＋ 加入鎖定、✕ 全部清除。 */
+.icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: #444;
+    font: inherit;
+    font-size: 17px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.icon-button:hover {
+    background: #f0f0f0;
+}
+
+/* 全部清除是唯一一次抹掉整份清單的按鈕，滑過時轉紅提醒一下。 */
+.icon-button.danger:hover {
+    border-color: #f0b4ae;
+    background: #fef3f2;
+    color: #b42318;
+}
+
+.lock-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.lock-input {
+    width: 90px;
+    padding: 8px 10px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+}
+
+.lock-error {
+    color: #b42318;
+    font-size: 13px;
+}
+
+.lock-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px 5px 10px;
+    border: 1px solid #bfdbfe;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #1e40af;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.lock-chip-jump {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.lock-chip-ticker {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+}
+
+.lock-chip-name {
+    font-weight: 600;
+}
+
+.lock-chip-rank {
+    color: #3b6fd4;
+}
+
+.lock-chip-remove {
+    padding: 0 4px;
+    border: none;
+    background: none;
+    color: #7aa5e8;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.lock-chip-remove:hover {
+    color: #1e40af;
+}
+
+.summary {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+    color: #333;
+}
+
+.summary-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 24px;
+}
+
+.summary-index-row {
+    padding-top: 8px;
+    border-top: 1px solid #eee;
+}
+
+.summary-label {
+    display: inline-block;
+    margin-right: 6px;
+    color: #888;
+    font-size: 13px;
+}
+
+.summary-index {
+    font-variant-numeric: tabular-nums;
+}
+
+.summary-index-changes {
+    display: inline-flex;
+    flex-direction: column;
+    vertical-align: middle;
+    line-height: 1.2;
+}
+
+.notice {
+    padding: 24px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fafafa;
+    color: #555;
+}
+
+.notice.warning {
+    border-color: #f0c36d;
+    background: #fdf6e3;
+    color: #7a5b00;
+}
+
+.table-container {
+    overflow-x: auto;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    -webkit-overflow-scrolling: touch;
+}
+
+.ranking-table {
+    width: 100%;
+    min-width: 1200px;
+    border-collapse: collapse;
+}
+
+.ranking-table.custom-table {
+    min-width: 720px;
+}
+
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.pagination-button,
+.pagination-select {
+    padding: 8px 12px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: inherit;
+    font: inherit;
+}
+
+.pagination-button {
+    cursor: pointer;
+}
+
+.pagination-button:hover:not(:disabled) {
+    background: #f0f0f0;
+}
+
+.pagination-button:disabled {
+    color: #aaa;
+    border-color: #ddd;
+    cursor: not-allowed;
+}
+
+.pagination-page {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.pagination-count {
+    color: #666;
+    white-space: nowrap;
+}
+
+.ranking-table th,
+.ranking-table td {
+    padding: 12px;
+    border-bottom: 1px solid #e5e5e5;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.ranking-table th {
+    position: sticky;
+    top: 0;
+    background: #f5f5f5;
+    font-weight: 600;
+}
+
+.ranking-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.ranking-table th.sortable:hover {
+    background: #ececec;
+}
+
+.ranking-table th.sorted {
+    color: #1a56db;
+}
+
+/* 預估值只能參考，不開放排序，所以也不要有可以點的樣子。 */
+.ranking-table th.fixed {
+    color: #999;
+    font-weight: normal;
+}
+
+/* 市場、名稱不需要排序功能，但不是「僅供參考」，外觀維持一般表頭即可。 */
+.ranking-table th.unsortable {
+    cursor: default;
+}
+
+.ranking-table td.estimate {
+    color: #999;
+}
+
+.ranking-table tbody tr:hover {
+    background: #fafafa;
+}
+
+.ranking-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* 鎖定的個股。左側色條讓它在滿滿的數字裡一眼就能找到。 */
+.ranking-table tbody tr.locked {
+    background: #eff6ff;
+}
+
+.ranking-table tbody tr.locked:hover {
+    background: #dbeafe;
+}
+
+.ranking-table tbody tr.locked td {
+    border-bottom-color: #bfdbfe;
+}
+
+.ranking-table tbody tr.locked td:first-child {
+    box-shadow: inset 3px 0 0 #2563eb;
+}
+
+/* 從鎖定名單點過來時短暫亮一下，讓人找得到跳到哪一列。 */
+.ranking-table tbody tr.jump-highlight td {
+    background: #fef3c7;
+    transition: background 1.5s ease;
+}
+
+.rank {
+    font-weight: 700;
+}
+
+.ticker {
+    font-variant-numeric: tabular-nums;
+    color: #666;
+}
+
+.stock-name {
+    font-weight: 600;
+}
+
+.stock-name-button {
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.stock-name-button:hover {
+    color: #1a56db;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.kline-backdrop,
+.revenue-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+}
+
+/* K 線／營收彈窗只在同一組資料更新時同步重畫；切換頁籤或交易日會關閉。 */
+.kline-popover,
+.revenue-popover {
+    position: fixed;
+    z-index: 21;
+    max-height: calc(100vh - 24px);
+    padding: 0;
+    overflow: auto;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: white;
+    box-shadow: 0 8px 24px #00000026;
+}
+
+.kline-popover {
+    width: min(600px, calc(100vw - 24px));
+}
+
+.revenue-popover {
+    width: min(560px, calc(100vw - 24px));
+}
+
+.kline-backdrop[hidden],
+.kline-popover[hidden],
+.revenue-backdrop[hidden],
+.revenue-popover[hidden] {
+    display: none;
+}
+
+.daily-kline-card {
+    padding: 12px 14px 10px;
+    background: white;
+}
+
+.daily-kline-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 4px;
+}
+
+.daily-kline-period {
+    margin-left: 8px;
+    color: #667085;
+    font-size: 12px;
+}
+
+.daily-kline-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 12px;
+    margin: 7px 0 2px;
+    color: #667085;
+    font-size: 11px;
+}
+
+.daily-kline-legend span::before {
+    display: inline-block;
+    width: 14px;
+    margin-right: 4px;
+    border-top: 2px solid currentColor;
+    vertical-align: middle;
+    content: "";
+}
+
+.daily-kline-close {
+    padding: 4px 9px;
+    border: 1px solid #aaa;
+    border-radius: 5px;
+    background: white;
+    color: #444;
+    cursor: pointer;
+}
+
+.daily-kline-close:hover {
+    background: #f0f0f0;
+}
+
+.daily-kline-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.daily-kline-grid line,
+.daily-kline-grid-line {
+    stroke: #dbe4ef;
+    stroke-width: 1;
+}
+
+.daily-kline-grid text,
+.daily-kline-axis,
+.daily-kline-date {
+    fill: #667085;
+    font-size: 11px;
+}
+
+.daily-kline-wick,
+.daily-kline-body {
+    stroke-width: 1.2;
+}
+
+.daily-kline-body.daily-kline-up {
+    fill: #e82830;
+    stroke: #e82830;
+}
+
+.daily-kline-wick.daily-kline-up {
+    stroke: #e82830;
+}
+
+.daily-kline-body.daily-kline-down {
+    fill: #38b448;
+    stroke: #38b448;
+}
+
+.daily-kline-wick.daily-kline-down {
+    stroke: #38b448;
+}
+
+.daily-kline-body.daily-kline-flat {
+    fill: #667085;
+    stroke: #667085;
+}
+
+.daily-kline-wick.daily-kline-flat {
+    stroke: #667085;
+}
+
+.daily-kline-ma {
+    fill: none;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* 與常用 APP 色票一致；MA10 使用較淡的薄荷綠，和下跌 K 棒的鮮綠分開。 */
+.ma5 {
+    color: #4f80ff;
+    stroke: #4f80ff;
+}
+
+.ma10 {
+    color: #65bfa3;
+    stroke: #65bfa3;
+}
+
+.ma20 {
+    color: #ef9b01;
+    stroke: #ef9b01;
+}
+
+.ma60 {
+    color: #ffafe9;
+    stroke: #ffafe9;
+}
+
+.ma240 {
+    color: #8600d9;
+    stroke: #8600d9;
+}
+
+.daily-kline-empty {
+    margin: 10px 0 4px;
+    color: #667085;
+    font-size: 13px;
+}
+
+.revenue-card {
+    padding: 12px 14px;
+    background: white;
+}
+
+.revenue-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.revenue-period {
+    margin-left: 8px;
+    color: #667085;
+    font-size: 12px;
+}
+
+/* 上層圖表與下層列表固定 3:2，高度正好是 1.5 倍。 */
+.revenue-content {
+    display: grid;
+    grid-template-rows: 3fr 2fr;
+    height: min(360px, calc(100vh - 96px));
+    min-height: 300px;
+    overflow: hidden;
+    border: 1px solid #e4e7ec;
+    border-radius: 8px;
+}
+
+.revenue-chart-panel {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    padding: 8px 8px 2px;
+    background: #202322;
+}
+
+.revenue-chart-legend {
+    display: flex;
+    gap: 14px;
+    padding: 0 4px 2px;
+    color: #d0d5dd;
+    font-size: 11px;
+}
+
+.revenue-chart-legend span::before {
+    display: inline-block;
+    width: 13px;
+    margin-right: 4px;
+    vertical-align: middle;
+    content: '';
+}
+
+.revenue-legend-bars::before {
+    height: 8px;
+    background: #ff9800;
+}
+
+.revenue-legend-yoy::before {
+    border-top: 2px solid #9aa0a6;
+}
+
+.revenue-chart-svg {
+    display: block;
+    min-height: 0;
+    width: 100%;
+    flex: 1;
+}
+
+.revenue-chart-grid {
+    stroke: #4a4e4d;
+    stroke-width: 1;
+}
+
+.revenue-chart-axis,
+.revenue-chart-month {
+    fill: #d0d5dd;
+    font-size: 10px;
+}
+
+.revenue-chart-bar {
+    fill: #ff9800;
+}
+
+.revenue-chart-yoy {
+    fill: none;
+    stroke: #9aa0a6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+}
+
+.revenue-list-panel {
+    min-height: 0;
+    overflow: auto;
+    background: #fff;
+}
+
+.revenue-list {
+    width: 100%;
+    height: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 12px;
+}
+
+.revenue-list th,
+.revenue-list td {
+    padding: 3px 7px;
+    border-bottom: 1px solid #eaecf0;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.revenue-list th {
+    background: #f2f4f7;
+    color: #475467;
+    font-weight: 600;
+}
+
+.revenue-list th:first-child,
+.revenue-list td:first-child {
+    text-align: left;
+}
+
+.revenue-empty {
+    align-self: center;
+    justify-self: center;
+    margin: 0;
+    color: #667085;
+    font-size: 13px;
+}
+
+/* 交易限制的標記排在股名左邊，由上往下疊。
+   標記那一格的寬度固定保留著，沒有標記的列也一樣，所以整欄的名字都從同一個位置起算。 */
+.name-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    line-height: 18px;
+}
+
+/* 右邊補一塊跟標記等寬的空白。左右對稱，股名才會落在欄位正中央、跟表頭對齊；
+   只留左邊的話整欄股名會被推右 11px。 */
+.name-cell::after {
+    content: '';
+    flex: none;
+    width: 17px;
+}
+
+.badges {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 2px;
+    width: 17px;
+}
+
+/* 淡底彩字：標記要看得到，但不能比股名還搶眼。 */
+.badge {
+    border: 1px solid;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 17px;
+    text-align: center;
+}
+
+.badge.disposition {
+    background: #fdecea;
+    border-color: #e6a2a2;
+    color: #c62828;
+}
+
+/* 全額交割用紫色，不用橘色：橘跟處置的紅太近，同一疊裡會分不出來。 */
+.badge.altered {
+    background: #f3e9f7;
+    border-color: #c9a3d6;
+    color: #6a1b9a;
+}
+
+.market-mark {
+    display: inline-block;
+    min-width: 18px;
+    margin-left: 6px;
+    padding: 0 3px;
+    border: 1px solid #d0d5dd;
+    border-radius: 3px;
+    background: #f2f4f7;
+    color: #667085;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+    text-align: center;
+    vertical-align: 1px;
+}
+
+.numeric {
+    font-variant-numeric: tabular-nums;
+}
+
+.metric-stack {
+    line-height: 1.25;
+}
+
+.metric-line {
+    display: block;
+    white-space: nowrap;
+}
+
+.metric-primary {
+    font-size: 16px;
+}
+
+.metric-secondary {
+    font-size: 14px;
+}
+
+.metric-label {
+    margin-right: 4px;
+    color: #999;
+    font-size: 0.8em;
+    font-weight: normal;
+}
+
+.revenue-cell-button {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
+    text-align: right;
+    cursor: pointer;
+}
+
+.revenue-cell-button:hover,
+.revenue-cell-button:focus-visible {
+    background: #f5f8ff;
+    outline: 2px solid #b2ccff;
+    outline-offset: 2px;
+}
+
+.positive {
+    color: #b42318;
+    font-weight: 600;
+}
+
+.negative {
+    color: #067647;
+    font-weight: 600;
+}
+
+.unchanged {
+    color: #666;
+}
+
+.page-footer {
+    margin-top: 16px;
+    color: #888;
+    font-size: 13px;
+}
+
+.page-footer p {
+    margin: 4px 0;
+}
+
+/* 手機版：整頁縮排收窄，篩選改成上下堆疊，表格靠左右滑動看。
+   代號與名稱兩欄釘在左邊，橫向捲動時才知道現在看的是哪一檔。 */
+@media (max-width: 720px) {
+    .ranking-page {
+        padding: 16px 12px 32px;
+    }
+
+    .page-header h1 {
+        font-size: 24px;
+    }
+
+    .page-header p {
+        font-size: 14px;
+    }
+
+    .filter-panel {
+        gap: 14px;
+        padding: 12px;
+    }
+
+    .filter-group {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        width: 100%;
+    }
+
+    .button-row {
+        flex-wrap: wrap;
+    }
+
+    .toggle-button {
+        min-width: 0;
+        flex: 1 1 auto;
+        padding: 10px 12px;
+        font-size: 14px;
+    }
+
+    .summary {
+        gap: 8px;
+        font-size: 14px;
+    }
+
+    .summary-row {
+        gap: 8px 20px;
+    }
+
+    .ranking-table {
+        min-width: 900px;
+        font-size: 14px;
+    }
+
+    .ranking-table.custom-table {
+        min-width: 680px;
+    }
+
+    .ranking-table th,
+    .ranking-table td {
+        padding: 8px;
+    }
+
+    .ranking-table th.col-ticker,
+    .ranking-table td.ticker {
+        position: sticky;
+        left: 0;
+        width: 80px;
+        min-width: 80px;
+        background: #fff;
+    }
+
+    .ranking-table th.col-name,
+    .ranking-table td.stock-name {
+        position: sticky;
+        left: 80px;
+        background: #fff;
+    }
+
+    .ranking-table th.col-ticker,
+    .ranking-table th.col-name {
+        z-index: 1;
+        background: #f5f5f5;
+    }
+}
