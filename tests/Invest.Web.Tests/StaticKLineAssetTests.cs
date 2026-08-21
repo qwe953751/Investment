@@ -40,6 +40,37 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("還原權息日 K", script, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 自訂頁使用單日全量資料並以一百檔分頁()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("{ key: 'custom', text: '自訂'", script, StringComparison.Ordinal);
+        Assert.Contains("const CUSTOM_PAGE_SIZE = 100", script, StringComparison.Ordinal);
+        Assert.Contains("const CUSTOM_COLUMNS", script, StringComparison.Ordinal);
+        Assert.Contains("fetchPeriod(`1-${state.date}`)", script, StringComparison.Ordinal);
+        Assert.Contains("sorted.slice(start, start + CUSTOM_PAGE_SIZE)", script, StringComparison.Ordinal);
+        Assert.Contains("changes.view === 'custom' ? 'ticker' : 'rank'", script, StringComparison.Ordinal);
+        Assert.Contains("'revenue_latest', 'ticker,month,yoy,mom", script, StringComparison.Ordinal);
+        Assert.Contains("id=\"pagination\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 自訂頁顯示營收增長而非單月營收金額()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("const CUSTOM_COLUMNS", StringComparison.Ordinal);
+        var end = script.IndexOf("const columns =", start, StringComparison.Ordinal);
+        var customColumns = script[start..end];
+
+        Assert.Contains("title: '營收增長'", customColumns, StringComparison.Ordinal);
+        Assert.Contains("toRevenueGrowthCell(row.ticker)", customColumns, StringComparison.Ordinal);
+        Assert.Contains("?.yoy", customColumns, StringComparison.Ordinal);
+        Assert.DoesNotContain("單月營收", customColumns, StringComparison.Ordinal);
+        Assert.DoesNotContain("'ticker,month,revenue", script, StringComparison.Ordinal);
+    }
+
     private static string ReadAsset(string fileName)
     {
         var assembly = typeof(StaticSiteExporter).Assembly;
