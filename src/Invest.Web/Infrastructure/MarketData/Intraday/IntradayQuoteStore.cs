@@ -164,16 +164,20 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             """
             insert into intraday_runs (
                 trade_date, captured_at, source, quote_count,
-                twse_index, twse_change_percent, tpex_index, tpex_change_percent)
+                twse_index, twse_change_percent, twse_year_to_date_change_percent,
+                tpex_index, tpex_change_percent, tpex_year_to_date_change_percent)
             values (
                 @tradeDate, @capturedAt, @source, @quoteCount,
-                @twseIndex, @twseChangePercent, @tpexIndex, @tpexChangePercent)
+                @twseIndex, @twseChangePercent, @twseYearToDateChangePercent,
+                @tpexIndex, @tpexChangePercent, @tpexYearToDateChangePercent)
             on conflict (trade_date, captured_at, source)
                 do update set quote_count = excluded.quote_count,
                               twse_index = excluded.twse_index,
                               twse_change_percent = excluded.twse_change_percent,
+                              twse_year_to_date_change_percent = excluded.twse_year_to_date_change_percent,
                               tpex_index = excluded.tpex_index,
-                              tpex_change_percent = excluded.tpex_change_percent
+                              tpex_change_percent = excluded.tpex_change_percent,
+                              tpex_year_to_date_change_percent = excluded.tpex_year_to_date_change_percent
             returning id
             """,
             connection);
@@ -188,8 +192,10 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 
         AddNullableDecimal(command, "twseIndex", twse?.Value);
         AddNullableDecimal(command, "twseChangePercent", twse?.ChangePercent);
+        AddNullableDecimal(command, "twseYearToDateChangePercent", twse?.YearToDateChangePercent);
         AddNullableDecimal(command, "tpexIndex", tpex?.Value);
         AddNullableDecimal(command, "tpexChangePercent", tpex?.ChangePercent);
+        AddNullableDecimal(command, "tpexYearToDateChangePercent", tpex?.YearToDateChangePercent);
 
         var runId = (long)(await command.ExecuteScalarAsync(cancellationToken))!;
 

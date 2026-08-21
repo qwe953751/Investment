@@ -152,6 +152,7 @@ public sealed class StaticSiteExporter(
                 ToThresholdExports(),
                 [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))],
                 ToMarketIndexExports(dataSet, selectableDates),
+                ToMarketIndexYearStartExports(dataSet, tradingDates),
                 ToScheduleExport(),
                 ToSupabaseExport(),
                 ToDispositionExports(dispositions),
@@ -332,8 +333,50 @@ public sealed class StaticSiteExporter(
                 date.ToString("yyyy-MM-dd"),
                 twse?.Value,
                 twse?.ChangePercent,
+                MarketIndexPerformanceCalculator.YearToDateChangePercent(
+                    dataSet.MarketIndices,
+                    date,
+                    Domain.Stocks.Market.Twse),
                 tpex?.Value,
-                tpex?.ChangePercent);
+                tpex?.ChangePercent,
+                MarketIndexPerformanceCalculator.YearToDateChangePercent(
+                    dataSet.MarketIndices,
+                    date,
+                    Domain.Stocks.Market.Tpex));
+        })];
+    }
+
+    /// <summary>
+    /// 盤中若資料庫還沒套用年初漲幅欄位，前端可以用這份年初基準暫時降級計算，
+    /// 但正式的盤中欄位仍由收集器使用同一個 C# 計算器寫入。
+    /// </summary>
+    private static IReadOnlyList<MarketIndexYearStartExport> ToMarketIndexYearStartExports(
+        MarketDataSet dataSet,
+        IReadOnlyList<DateOnly> tradingDates)
+    {
+        var years = tradingDates
+            .Select(date => date.Year)
+            .Distinct()
+            .Order();
+
+        return [.. years.Select(year =>
+        {
+            var throughDate = new DateOnly(year - 1, 12, 31);
+            var twse = dataSet.MarketIndices
+                .Where(day => day.TradingDate <= throughDate)
+                .OrderByDescending(day => day.TradingDate)
+                .Select(day => day.Quotes.FirstOrDefault(index => index.Market == Domain.Stocks.Market.Twse))
+                .FirstOrDefault(index => index is not null && index.Value > 0m);
+            var tpex = dataSet.MarketIndices
+                .Where(day => day.TradingDate <= throughDate)
+                .OrderByDescending(day => day.TradingDate)
+                .Select(day => day.Quotes.FirstOrDefault(index => index.Market == Domain.Stocks.Market.Tpex))
+                .FirstOrDefault(index => index is not null && index.Value > 0m);
+
+            return new MarketIndexYearStartExport(
+                year.ToString(CultureInfo.InvariantCulture),
+                twse?.Value,
+                tpex?.Value);
         })];
     }
 
@@ -477,6 +520,9 @@ public sealed class StaticSiteExporter(
         // 所選交易日的加權／櫃買收盤指數與漲跌幅。舊快照缺資料時欄位會是 null。
         IReadOnlyList<MarketIndexExport> MarketIndices,
 
+        // 盤中舊版資料庫沒有年初欄位時的降級基準。沒有基準就顯示 —。
+        IReadOnlyList<MarketIndexYearStartExport> MarketIndexYearStarts,
+
         // 收集時間表。前端拿它決定選項要記到什麼時候作廢，以及盤中那句說明的文字。
         ScheduleExport Schedule,
 
@@ -494,8 +540,15 @@ public sealed class StaticSiteExporter(
         string Date,
         decimal? TwseIndex,
         decimal? TwseChangePercent,
+        decimal? TwseYearToDateChangePercent,
         decimal? TpexIndex,
-        decimal? TpexChangePercent);
+        decimal? TpexChangePercent,
+        decimal? TpexYearToDateChangePercent);
+
+    private sealed record MarketIndexYearStartExport(
+        string Year,
+        decimal? TwseIndex,
+        decimal? TpexIndex);
 
     private sealed record KLineExport(
         string AdjustmentMethod,

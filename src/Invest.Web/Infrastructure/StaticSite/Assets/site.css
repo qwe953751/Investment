@@ -227,6 +227,95 @@ body {
     white-space: nowrap;
 }
 
+.custom-control {
+    display: inline-flex;
+    align-items: center;
+}
+
+.custom-select,
+.custom-search-input {
+    min-width: 132px;
+    padding: 8px 10px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: inherit;
+    font: inherit;
+}
+
+.custom-search-input {
+    width: 150px;
+}
+
+.custom-search-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.custom-search-submit {
+    padding: 8px 12px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.custom-search-submit:hover,
+.custom-search-submit:focus-visible {
+    background: #f0f0f0;
+}
+
+.checkbox-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.status-filter-row {
+    display: flex;
+    align-items: center;
+    min-height: 22px;
+}
+
+.status-filter-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.status-filter-special {
+    padding-left: 0;
+}
+
+.status-filter-group-label {
+    color: #667085;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.status-filter-group-label {
+    font-weight: 600;
+}
+
+.checkbox-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.custom-checkbox {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: #222;
+}
+
 /* 交易日選擇器。與 TradingDatePicker.razor.css 同一份樣式。 */
 .date-picker {
     position: relative;
@@ -484,10 +573,22 @@ body {
 
 .summary {
     display: flex;
-    flex-wrap: wrap;
-    gap: 24px;
+    flex-direction: column;
+    gap: 8px;
     margin-bottom: 16px;
     color: #333;
+}
+
+.summary-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 24px;
+}
+
+.summary-index-row {
+    padding-top: 8px;
+    border-top: 1px solid #eee;
 }
 
 .summary-label {
@@ -499,6 +600,13 @@ body {
 
 .summary-index {
     font-variant-numeric: tabular-nums;
+}
+
+.summary-index-changes {
+    display: inline-flex;
+    flex-direction: column;
+    vertical-align: middle;
+    line-height: 1.2;
 }
 
 .notice {
@@ -688,6 +796,7 @@ body {
     z-index: 20;
 }
 
+/* K 線／營收彈窗只在同一組資料更新時同步重畫；切換頁籤或交易日會關閉。 */
 .kline-popover,
 .revenue-popover {
     position: fixed;
@@ -1166,8 +1275,12 @@ body {
     }
 
     .summary {
-        gap: 8px 20px;
+        gap: 8px;
         font-size: 14px;
+    }
+
+    .summary-row {
+        gap: 8px 20px;
     }
 
     .ranking-table {

@@ -63,6 +63,16 @@
             <span class="threshold-custom" id="threshold-custom"></span>
         </div>
 
+        <div class="filter-group" data-view="custom">
+            <span class="filter-label" data-hint="可同時勾選處置股與全額交割；全部代表不依交易限制篩選。">交易限制</span>
+            <div class="checkbox-row" id="custom-status-options"></div>
+        </div>
+
+        <div class="filter-group" data-view="custom">
+            <span class="filter-label">搜尋</span>
+            <span class="custom-control" id="custom-search"></span>
+        </div>
+
         <div class="filter-group" data-view="daily intraday">
             <span class="filter-label" data-hint="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
             <div class="lock-row" id="lock-row"></div>
@@ -107,7 +117,7 @@
             <p data-view="intraday">這一頁直接讀資料庫，依 manifest 的同一個更新間隔自動重讀，不必按檢查更新；
                 加權、櫃買與已開啟標的的當日 K 棒會在同一輪同步更新。</p>
             <p data-view="custom">成交值為所選交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。</p>
-            <p data-view="custom">營收增長顯示目前應公告月份的 YOY 與 MOM，月份會顯示在摘要；目前不依歷史交易日回溯當時已公告的月份。</p>
+            <p data-view="custom">營收增減顯示上個月的 YOY 與 MOM；點擊儲存格可查看 20 個月圖表與最近 5 個月列表。交易限制可複選，搜尋股號或名稱會只留下符合內容並跳到第一筆。</p>
         </footer>
     </div>
 </div>

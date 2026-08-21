@@ -192,10 +192,22 @@
 
 .summary {
     display: flex;
-    flex-wrap: wrap;
-    gap: 24px;
+    flex-direction: column;
+    gap: 8px;
     margin-bottom: 16px;
     color: #333;
+}
+
+.summary-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 24px;
+}
+
+.summary-index-row {
+    padding-top: 8px;
+    border-top: 1px solid #eee;
 }
 
 .summary-label {
@@ -207,6 +219,33 @@
 
 .summary-index {
     font-variant-numeric: tabular-nums;
+}
+
+.summary-index-changes {
+    display: inline-flex;
+    flex-direction: column;
+    vertical-align: middle;
+    line-height: 1.2;
+}
+
+.metric-line {
+    display: block;
+    white-space: nowrap;
+}
+
+.metric-primary {
+    font-size: 16px;
+}
+
+.metric-secondary {
+    font-size: 14px;
+}
+
+.metric-label {
+    margin-right: 4px;
+    color: #999;
+    font-size: 0.8em;
+    font-weight: normal;
 }
 
 .notice {

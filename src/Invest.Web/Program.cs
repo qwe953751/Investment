@@ -200,6 +200,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var universeClient = scope.ServiceProvider.GetRequiredService<StockUniverseClient>();
     var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
     var store = scope.ServiceProvider.GetRequiredService<IntradayQuoteStore>();
+    var dailyQuoteStore = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
     var marketFlagClient = scope.ServiceProvider.GetRequiredService<MarketFlagClient>();
     var marketFlagStore = scope.ServiceProvider.GetRequiredService<MarketFlagStore>();
 
@@ -215,6 +216,15 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var staleRounds = 0;
     var failedRounds = 0;
     var rejectedRounds = 0;
+
+    // 年初基準只需指數欄位；沿用既有 JSON 快取載入入口，盤中與盤後共用同一份歷史。
+    var dailyIndexHistory = (await dailyQuoteStore.LoadAllAsync(cts.Token))
+        .Select(snapshot => new DailyMarketIndex
+        {
+            TradingDate = snapshot.TradingDate,
+            Quotes = snapshot.MarketIndices
+        })
+        .ToArray();
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
@@ -277,6 +287,21 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                 }
                 else
                 {
+                    snapshot = snapshot with
+                    {
+                        MarketIndices = snapshot.MarketIndices
+                            .Select(index => index with
+                            {
+                                YearToDateChangePercent =
+                                    MarketIndexPerformanceCalculator.YearToDateChangePercent(
+                                        dailyIndexHistory,
+                                        snapshot.TradeDate,
+                                        index.Market,
+                                        index.Value)
+                            })
+                            .ToArray()
+                    };
+
                     var result = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);
 
                     if (result.Written)

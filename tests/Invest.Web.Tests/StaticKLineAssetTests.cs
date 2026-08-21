@@ -31,6 +31,35 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void K棒顏色依同一根開收盤判斷()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("function klineTrendClass(bar)", script, StringComparison.Ordinal);
+        Assert.Contains("const open = Number(bar.open)", script, StringComparison.Ordinal);
+        Assert.Contains("return close > open", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("const previousClose = missing(bar.previousClose)", script, StringComparison.Ordinal);
+        Assert.Contains(".kline-backdrop", styles, StringComparison.Ordinal);
+        var normalizedStyles = styles.Replace("\r\n", "\n", StringComparison.Ordinal);
+        Assert.DoesNotContain(".kline-backdrop {\n    pointer-events: none", normalizedStyles, StringComparison.Ordinal);
+        Assert.Contains("el('kline-backdrop').addEventListener('click', () => closeKLine(false));", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void K線切換頁籤或交易日會關閉彈窗但盤中更新會重畫內容()
+    {
+        var script = ReadAsset("site.js");
+        var updateStart = script.IndexOf("function update(changes)", StringComparison.Ordinal);
+        var updateEnd = script.IndexOf("let snapshotNote", updateStart, StringComparison.Ordinal);
+        var update = script[updateStart..updateEnd];
+
+        Assert.DoesNotContain("expandedKLineView", script, StringComparison.Ordinal);
+        Assert.Contains("closeKLine(false)", update, StringComparison.Ordinal);
+        Assert.Contains("refreshKLinePopover", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 年線不主導K棒價格尺度且超出時標示圖外()
     {
         var script = ReadAsset("site.js");
@@ -101,24 +130,80 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const CUSTOM_COLUMNS", script, StringComparison.Ordinal);
         Assert.Contains("fetchPeriod(`1-${state.date}`)", script, StringComparison.Ordinal);
         Assert.Contains("sorted.slice(start, start + CUSTOM_PAGE_SIZE)", script, StringComparison.Ordinal);
-        Assert.Contains("changes.view === 'custom' ? 'ticker' : 'rank'", script, StringComparison.Ordinal);
+        Assert.Contains("changes.view === 'custom' ? state.customSortKey : 'rank'", script, StringComparison.Ordinal);
         Assert.Contains("'revenue_latest', 'ticker,month,yoy,mom", script, StringComparison.Ordinal);
         Assert.Contains("id=\"pagination\"", html, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void 自訂頁顯示營收增長而非單月營收金額()
+    public void 自訂頁顯示營收增減而非單月營收金額()
     {
         var script = ReadAsset("site.js");
         var start = script.IndexOf("const CUSTOM_COLUMNS", StringComparison.Ordinal);
         var end = script.IndexOf("const columns =", start, StringComparison.Ordinal);
         var customColumns = script[start..end];
 
-        Assert.Contains("title: '營收增長'", customColumns, StringComparison.Ordinal);
+        Assert.Contains("title: '營收增減'", customColumns, StringComparison.Ordinal);
         Assert.Contains("toRevenueGrowthCell(row.ticker)", customColumns, StringComparison.Ordinal);
         Assert.Contains("?.yoy", customColumns, StringComparison.Ordinal);
         Assert.DoesNotContain("單月營收", customColumns, StringComparison.Ordinal);
-        Assert.DoesNotContain("'ticker,month,revenue", script, StringComparison.Ordinal);
+        Assert.Contains("?select=month,revenue,mom,yoy&ticker=eq.", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 自訂頁可複選交易限制並搜尋且不顯示外部營收年月()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+
+        Assert.DoesNotContain("id=\"custom-revenue-month\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"custom-status-options\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"custom-search\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("customRevenueMonth", script, StringComparison.Ordinal);
+        Assert.Contains("customStatusFilters", script, StringComparison.Ordinal);
+        Assert.Contains("input.type = 'checkbox'", script, StringComparison.Ordinal);
+        Assert.Contains("customStatusMatches", script, StringComparison.Ordinal);
+        Assert.Contains("customSearchMatches", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("loadRevenueHistoryIndex", script, StringComparison.Ordinal);
+        Assert.Contains("jumpToCustomSearchResult", script, StringComparison.Ordinal);
+        Assert.Contains("customSearchDraft", script, StringComparison.Ordinal);
+        Assert.Contains("submit.type = 'submit'", script, StringComparison.Ordinal);
+        Assert.Contains("event.preventDefault()", script, StringComparison.Ordinal);
+        Assert.Contains("指定限制（可複選）", script, StringComparison.Ordinal);
+        Assert.Contains("status-filter-row", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("status-filter-guide", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("營收月份", script, StringComparison.Ordinal);
+
+        var start = script.IndexOf("const CUSTOM_COLUMNS", StringComparison.Ordinal);
+        var end = script.IndexOf("const columns =", start, StringComparison.Ordinal);
+        var customColumns = script[start..end];
+        Assert.Contains("title: '漲跌幅'", customColumns, StringComparison.Ordinal);
+        Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange)", customColumns, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 指數摘要同時顯示日與今年漲跌幅且支援舊盤中欄位()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("twseYearToDateChangePercent", script, StringComparison.Ordinal);
+        Assert.Contains("tpexYearToDateChangePercent", script, StringComparison.Ordinal);
+        Assert.Contains("marketIndexYearStarts", script, StringComparison.Ordinal);
+        Assert.Contains("['今年', yearToDatePercent, 'metric-secondary']", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("['年初', yearToDatePercent, 'metric-secondary']", script, StringComparison.Ordinal);
+        Assert.Contains("INTRADAY_SELECT_LEGACY", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 盤中盤後指數獨立放在說明列下方的第二列()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css").Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("summary-explanation-row", script, StringComparison.Ordinal);
+        Assert.Contains("summary-index-row", script, StringComparison.Ordinal);
+        Assert.Contains(".summary {\n    display: flex;\n    flex-direction: column;", styles, StringComparison.Ordinal);
+        Assert.Contains(".summary-index-row {\n    padding-top: 8px;\n    border-top: 1px solid #eee;", styles, StringComparison.Ordinal);
     }
 
     [Fact]

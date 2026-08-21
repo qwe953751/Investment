@@ -302,7 +302,45 @@ async function loadRevenue() {
 
 const revenueOf = ticker => revenueByTicker.get(ticker) ?? null;
 
-// 漲跌幅與營收增長共用同一套上下層排版；營收排序時仍只看 YOY。
+function normalizeRevenueHistoryRow(row) {
+    const month = typeof row.month === 'string' ? row.month.slice(0, 7) : '';
+    const revenue = Number(row.revenue);
+
+    if (!/^\d{4}-\d{2}$/.test(month) || !Number.isFinite(revenue)) {
+        return null;
+    }
+
+    return {
+        month,
+        revenue,
+        mom: missing(row.mom) ? null : Number(row.mom),
+        yoy: missing(row.yoy) ? null : Number(row.yoy)
+    };
+}
+
+function customStatusMatches(ticker) {
+    const filters = state.customStatusFilters;
+
+    if (filters.all || (!filters.disposition && !filters.fullDelivery)) {
+        return true;
+    }
+
+    return (filters.disposition && dispositions.has(ticker))
+        || (filters.fullDelivery && alteredTrading.has(ticker));
+}
+
+function customSearchMatches(row) {
+    const search = state.customSearch.trim().toLocaleLowerCase();
+
+    if (search.length === 0) {
+        return true;
+    }
+
+    return row.ticker.toLocaleLowerCase().includes(search)
+        || row.name.toLocaleLowerCase().includes(search);
+}
+
+// 漲跌幅與營收增減共用同一套上下層排版；營收排序時仍只看 YOY。
 function toRevenueGrowthCell(ticker) {
     const revenue = revenueOf(ticker);
 
@@ -363,7 +401,7 @@ function toHighMonthsCell(ticker) {
     };
 }
 
-const REVENUE_GROWTH_HINT = '上個月的單月營收增減。YOY 跟去年同月比、MOM 跟上個月比，'
+const REVENUE_CHANGE_HINT = '上個月的單月營收增減。YOY 跟去年同月比、MOM 跟上個月比，'
     + '兩個都由我們自己的營收歷史算出來，不抄報表上算好的欄位。'
     + '點表頭以 YOY 排序；點儲存格開啟 20 個月圖表與最近 5 個月列表。'
     + '公司要在每月 10 日前申報，還沒公告就顯示 —。';
@@ -388,7 +426,7 @@ const COLUMNS = [
     { key: 'shareChange', title: '成交比變化', hint: '本期市場成交比 − 前期市場成交比，單位是百分點。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'close', title: '收盤價', hint: '期間最後一個交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
-    { key: 'revenue', title: '營收增減', hint: REVENUE_GROWTH_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
+    { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) }
 ];
 
@@ -405,7 +443,7 @@ const INTRADAY_COLUMNS = [
     { key: 'shareChange', title: '成交比變化', hint: '今日盤中的市場成交比 − 過去觀察期間的市場成交比，單位是百分點。正值代表今天這一檔吸走的資金比過去那段期間更多。過去期間沒有這一檔就顯示 —。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是現價相對昨日收盤價；下層「週」是現價相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
-    { key: 'revenue', title: '營收增減', hint: REVENUE_GROWTH_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
+    { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) },
     // 僅供參考的欄位擺在最後：排行榜一律以實際累計成交值為準，
     // 放在成交值旁邊會讓兩個數字看起來一樣有份量。
@@ -416,7 +454,8 @@ const CUSTOM_COLUMNS = [
     { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列；右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
     { key: 'close', title: '收盤價', hint: '所選交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
-    { key: 'revenue', title: '營收增長', hint: REVENUE_GROWTH_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
+    { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
+    { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'value', title: '成交值（億）', hint: '所選單一交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) }
 ];
 
@@ -435,6 +474,15 @@ const state = {
     threshold: 100_000_000,
     customThreshold: 0,
     customPage: 1,
+    customStatusFilters: {
+        all: true,
+        disposition: false,
+        fullDelivery: false
+    },
+    customSearch: '',
+    customSearchDraft: '',
+    customSortKey: 'ticker',
+    customSortDescending: false,
 
     sortKey: 'rank',
     sortDescending: false
@@ -450,17 +498,20 @@ const klineData = new Map();
 const klinePromises = new Map();
 let klineError = '';
 let expandedTicker = null;
+let expandedKLineName = '';
 let klineAnchor = null;
 const revenueHistoryData = new Map();
 const revenueHistoryPromises = new Map();
 let revenueHistoryError = '';
 let expandedRevenueTicker = null;
 let revenueAnchor = null;
+let customSearchJumpPending = false;
 
 // 這些都由 manifest 決定，start() 先讀好才畫按鈕、抓資料。
 let thresholds = [];
 let dates = [];
 let marketIndices = new Map();
+let marketIndexYearStarts = new Map();
 let version = '';
 let latestTradingDate = '';
 
@@ -571,6 +622,7 @@ function renderFilters() {
         : '「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。';
 
     renderThresholdInput();
+    renderCustomControls();
     renderLockRow();
 }
 
@@ -611,6 +663,110 @@ function renderThresholdInput() {
     unit.textContent = '億元';
 
     host.append(input, unit);
+}
+
+function renderCustomControls() {
+    const statusHost = el('custom-status-options');
+    statusHost.replaceChildren();
+    statusHost.setAttribute('role', 'group');
+    statusHost.setAttribute('aria-label', '交易限制：全部不過濾；處置股與全額交割可複選');
+    const statusDefinitions = [
+        ['all', '全部'],
+        ['disposition', '處置股'],
+        ['fullDelivery', '全額交割']
+    ];
+    const filters = state.customStatusFilters;
+
+    const addStatusOption = (parent, key, text, className) => {
+        const label = document.createElement('label');
+        label.className = `checkbox-option ${className}`;
+
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'custom-checkbox';
+        input.checked = filters[key] === true;
+        input.setAttribute('aria-label', text);
+        input.addEventListener('change', () => {
+            const next = {
+                ...state.customStatusFilters,
+                [key]: input.checked
+            };
+
+            if (key === 'all' && input.checked) {
+                next.disposition = false;
+                next.fullDelivery = false;
+            } else if (key !== 'all' && input.checked) {
+                // 點選任一特殊狀態時，取消「全部」，但保留另一個特殊狀態，
+                // 因此處置股與全額交割可以同時勾選。
+                next.all = false;
+            }
+
+            if (!next.all && !next.disposition && !next.fullDelivery) {
+                next.all = true;
+            }
+
+            update({ customStatusFilters: next, customPage: 1 });
+        });
+
+        label.append(input, text);
+        parent.append(label);
+    };
+
+    const allGroup = document.createElement('span');
+    allGroup.className = 'status-filter-group status-filter-all';
+    addStatusOption(allGroup, statusDefinitions[0][0], '全部（不過濾）', 'status-option-all');
+
+    const specialGroup = document.createElement('div');
+    specialGroup.className = 'status-filter-group status-filter-special';
+    const specialLabel = document.createElement('span');
+    specialLabel.className = 'status-filter-group-label';
+    specialLabel.textContent = '指定限制（可複選）';
+    specialGroup.append(specialLabel);
+    addStatusOption(specialGroup, statusDefinitions[1][0], statusDefinitions[1][1], 'status-option-special');
+    addStatusOption(specialGroup, statusDefinitions[2][0], statusDefinitions[2][1], 'status-option-special');
+
+    const allRow = document.createElement('div');
+    allRow.className = 'status-filter-row';
+    allRow.append(allGroup);
+
+    const specialRow = document.createElement('div');
+    specialRow.className = 'status-filter-row';
+    specialRow.append(specialGroup);
+
+    statusHost.append(allRow, specialRow);
+
+    const searchHost = el('custom-search');
+    searchHost.replaceChildren();
+    const form = document.createElement('form');
+    form.className = 'custom-search-form';
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        update({
+            customSearch: search.value.trim(),
+            customSearchDraft: search.value,
+            customPage: 1
+        });
+    });
+
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'custom-search-input';
+    search.placeholder = '股號／名稱';
+    search.setAttribute('aria-label', '搜尋股號或名稱');
+    search.setAttribute('aria-controls', 'table-body');
+    search.value = state.customSearchDraft;
+    search.addEventListener('input', () => {
+        state.customSearchDraft = search.value;
+        writeSettings();
+    });
+
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'custom-search-submit';
+    submit.textContent = '確認';
+    submit.setAttribute('aria-label', '確認搜尋');
+    form.append(search, submit);
+    searchHost.append(form);
 }
 
 // 上次選的篩選條件。有效期跟著取資料的時間走：
@@ -675,8 +831,8 @@ function applyStoredSettings() {
         state.view = stored.view;
 
         if (state.view === 'custom') {
-            state.sortKey = 'ticker';
-            state.sortDescending = false;
+            state.sortKey = state.customSortKey;
+            state.sortDescending = state.customSortDescending;
         }
     }
 
@@ -705,8 +861,47 @@ function applyStoredSettings() {
         state.customThreshold = stored.customThreshold;
     }
 
+    if (typeof stored.customSearch === 'string') {
+        state.customSearch = stored.customSearch;
+    }
+
+    if (typeof stored.customSearchDraft === 'string') {
+        state.customSearchDraft = stored.customSearchDraft;
+    } else {
+        state.customSearchDraft = state.customSearch;
+    }
+
+    if (stored.customStatusFilters && typeof stored.customStatusFilters === 'object') {
+        const filters = stored.customStatusFilters;
+        const next = {
+            all: filters.all === true,
+            disposition: filters.disposition === true,
+            fullDelivery: filters.fullDelivery === true
+        };
+
+        if (!next.all && !next.disposition && !next.fullDelivery) {
+            next.all = true;
+        }
+
+        state.customStatusFilters = next;
+    }
+
+    const storedCustomSortKey = stored.customSortKey
+        ?? (stored.view === 'custom' ? stored.sortKey : null);
+    const storedCustomSortDescending = stored.customSortDescending
+        ?? (stored.view === 'custom' ? stored.sortDescending : false);
+
+    if (CUSTOM_COLUMNS.some(column =>
+        column.key === storedCustomSortKey && column.fixed !== true && column.sortable !== false)) {
+        state.customSortKey = storedCustomSortKey;
+        state.customSortDescending = storedCustomSortDescending === true;
+    }
+
     // 排序欄位得屬於這個檢視，而且是可排序的那些。view 上面可能已經改過，所以放最後驗。
-    if (columns().some(column => column.key === stored.sortKey && column.fixed !== true && column.sortable !== false)) {
+    if (state.view === 'custom') {
+        state.sortKey = state.customSortKey;
+        state.sortDescending = state.customSortDescending;
+    } else if (columns().some(column => column.key === stored.sortKey && column.fixed !== true && column.sortable !== false)) {
         state.sortKey = stored.sortKey;
         state.sortDescending = stored.sortDescending === true;
     }
@@ -1176,6 +1371,23 @@ function setCustomPage(page) {
     el('table-container').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+function jumpToCustomSearchResult() {
+    if (!customSearchJumpPending) {
+        return;
+    }
+
+    customSearchJumpPending = false;
+    const first = document.querySelector('#table-body tr[data-ticker]');
+
+    if (!first || state.view !== 'custom' || state.customSearch.trim().length === 0) {
+        return;
+    }
+
+    first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    first.classList.add('jump-highlight');
+    window.setTimeout(() => first.classList.remove('jump-highlight'), 1500);
+}
+
 function renderPagination() {
     const host = el('pagination');
     host.replaceChildren();
@@ -1333,17 +1545,17 @@ function svgElement(name, attributes = {}, text = null) {
     return element;
 }
 
-function klineTrendClass(bar, index, bars) {
-    const previousClose = missing(bar.previousClose)
-        ? index > 0 ? bars[index - 1].close : null
-        : bar.previousClose;
-    const referenceClose = missing(previousClose) ? bar.open : previousClose;
+function klineTrendClass(bar) {
+    const open = Number(bar.open);
     const close = Number(bar.close);
-    const reference = Number(referenceClose);
 
-    return close > reference
+    if (!Number.isFinite(open) || !Number.isFinite(close)) {
+        return 'daily-kline-flat';
+    }
+
+    return close > open
         ? 'daily-kline-up'
-        : close < reference
+        : close < open
             ? 'daily-kline-down'
             : 'daily-kline-flat';
 }
@@ -1390,7 +1602,7 @@ function renderKLineSvg(ticker, name, bars) {
         const candleX = x(index);
         const bodyTop = Math.min(y(open), y(close));
         const bodyHeight = Math.max(Math.abs(y(open) - y(close)), 1.5);
-        const trend = klineTrendClass(bar, index, bars);
+        const trend = klineTrendClass(bar);
 
         svg.append(
             svgElement('line', {
@@ -1481,11 +1693,20 @@ function renderKLineLegend(bars) {
 }
 
 function positionPopover(popoverId, anchor) {
+    const popover = el(popoverId);
+
     if (!anchor?.isConnected) {
+        const popoverRect = popover.getBoundingClientRect();
+        const margin = 12;
+        popover.style.left = `${Math.round(Math.max(
+            margin,
+            (window.innerWidth - popoverRect.width) / 2))}px`;
+        popover.style.top = `${Math.round(Math.max(
+            margin,
+            (window.innerHeight - popoverRect.height) / 2))}px`;
         return;
     }
 
-    const popover = el(popoverId);
     const anchorRect = anchor.getBoundingClientRect();
     const popoverRect = popover.getBoundingClientRect();
     const margin = 12;
@@ -1576,6 +1797,7 @@ function setKLineButtonStates() {
 function closeKLine(restoreFocus = true) {
     const previousAnchor = klineAnchor;
     expandedTicker = null;
+    expandedKLineName = '';
     klineAnchor = null;
     klineError = '';
     el('kline-popover').hidden = true;
@@ -1614,6 +1836,7 @@ async function toggleKLine(ticker, name, anchor) {
 
     closeRevenueDetails(false);
     expandedTicker = ticker;
+    expandedKLineName = name;
     klineAnchor = anchor;
     klineError = '';
     setKLineButtonStates();
@@ -1630,7 +1853,10 @@ async function toggleKLine(ticker, name, anchor) {
     }
 
     if (expandedTicker === ticker) {
-        renderKLinePopover(ticker, name, anchor);
+        renderKLinePopover(
+            ticker,
+            nameByTicker.get(ticker) ?? expandedKLineName,
+            klineAnchor);
     }
 }
 
@@ -1676,7 +1902,8 @@ async function loadRevenueHistoryData(ticker) {
     }
 
     if (LOCAL_REVENUE_PREVIEW) {
-        revenueHistoryData.set(ticker, buildLocalRevenuePreview(ticker));
+        const preview = buildLocalRevenuePreview(ticker);
+        revenueHistoryData.set(ticker, preview);
         return;
     }
 
@@ -1705,7 +1932,8 @@ async function loadRevenueHistoryData(ticker) {
                 throw new Error('invalid revenue history payload');
             }
 
-            revenueHistoryData.set(ticker, rows);
+            const normalized = rows.map(normalizeRevenueHistoryRow).filter(row => row !== null);
+            revenueHistoryData.set(ticker, normalized);
         })());
     }
 
@@ -2068,6 +2296,8 @@ function renderTable() {
 
             if (state.view === 'custom') {
                 state.customPage = 1;
+                state.customSortKey = state.sortKey;
+                state.customSortDescending = state.sortDescending;
             }
 
             writeSettings();
@@ -2186,6 +2416,7 @@ function renderTable() {
     renderPagination();
     refreshKLinePopover();
     refreshRevenuePopover();
+    jumpToCustomSearchResult();
 }
 
 function renderSummary() {
@@ -2195,12 +2426,13 @@ function renderSummary() {
             ['交易日', state.date.replaceAll('-', '/')],
             ['全市場資料', `${current.totalStockCount} 檔`],
             ['成交值下限', threshold === 0 ? '不限' : `${toBillionText(threshold)} 億元`],
-            ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`],
-            ['營收月份', eligibleMonthKey().replace('-', '/')]
+            ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
         ];
 
         const summary = el('summary');
         summary.replaceChildren();
+        const row = document.createElement('div');
+        row.className = 'summary-row summary-explanation-row';
 
         for (const [label, value] of items) {
             const item = document.createElement('div');
@@ -2208,8 +2440,10 @@ function renderSummary() {
             tag.className = 'summary-label';
             tag.textContent = label;
             item.append(tag, value);
-            summary.append(item);
+            row.append(item);
         }
+
+        summary.append(row);
 
         return;
     }
@@ -2234,32 +2468,60 @@ function renderSummary() {
         ? current.marketIndices
         : marketIndices.get(state.date);
 
-    const items = [
-        ...baseItems,
-        ['加權指數', toIndexText(index?.twseIndex), index?.twseChangePercent],
-        ['櫃買指數', toIndexText(index?.tpexIndex), index?.tpexChangePercent]
-    ];
-
     const summary = el('summary');
     summary.replaceChildren();
+    const explanationRow = document.createElement('div');
+    explanationRow.className = 'summary-row summary-explanation-row';
 
-    for (const [label, value, changePercent] of items) {
+    for (const [label, value] of baseItems) {
         const item = document.createElement('div');
         const tag = document.createElement('span');
         tag.className = 'summary-label';
         tag.textContent = label;
+        item.append(tag, value);
+        explanationRow.append(item);
+    }
 
-        if (missing(changePercent)) {
-            item.append(tag, value);
-        } else {
-            const change = document.createElement('span');
-            change.className = toTrendClass(Number(changePercent));
-            change.textContent = `(${toSignedPercentText(Number(changePercent) / 100, 2)})`;
-            item.append(tag, value, ' ', change);
+    summary.append(explanationRow);
+
+    const indexItems = [
+        ['加權指數', index?.twseIndex, index?.twseChangePercent, index?.twseYearToDateChangePercent],
+        ['櫃買指數', index?.tpexIndex, index?.tpexChangePercent, index?.tpexYearToDateChangePercent]
+    ];
+    const indexRow = document.createElement('div');
+    indexRow.className = 'summary-row summary-index-row';
+
+    for (const [label, indexValue, dailyPercent, yearToDatePercent] of indexItems) {
+        const item = document.createElement('div');
+        item.className = 'summary-index';
+        const tag = document.createElement('span');
+        tag.className = 'summary-label';
+        tag.textContent = label;
+
+        const changes = document.createElement('span');
+        changes.className = 'summary-index-changes';
+
+        for (const [caption, percent, lineClass] of [
+            ['日', dailyPercent, 'metric-primary'],
+            ['今年', yearToDatePercent, 'metric-secondary']
+        ]) {
+            const line = document.createElement('span');
+            line.className = `metric-line ${lineClass} ${toTrendClass(percent)}`;
+            const metricLabel = document.createElement('span');
+            metricLabel.className = 'metric-label';
+            metricLabel.textContent = caption;
+            line.append(
+                metricLabel,
+                toSignedPercentText(missing(percent) ? null : Number(percent) / 100, 2));
+            changes.append(line);
         }
 
-        summary.append(item);
+        item.append(tag, toIndexText(indexValue), ' ', changes);
+
+        indexRow.append(item);
     }
+
+    summary.append(indexRow);
 }
 
 function showNotice(message, isWarning) {
@@ -2341,10 +2603,7 @@ async function loadIntraday(silent = false) {
         // 整張表都要：市場成交比的分母是全市場加總，少一檔分母就小一點、
         // 每一檔的比例就全部偏高。上市＋上櫃有兩千檔，一定會超過單頁上限。
         [raw] = await Promise.all([
-            fetchAllRows(
-                'intraday_latest',
-                'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent,open_price,high_price,low_price',
-                '&order=turnover.desc'),
+            fetchIntradayRows(),
             loadMarketFlags(),
             loadRevenue()
         ]);
@@ -2444,8 +2703,10 @@ async function loadIntraday(silent = false) {
         marketIndices: {
             twseIndex: missing(raw[0].twse_index) ? null : Number(raw[0].twse_index),
             twseChangePercent: missing(raw[0].twse_change_percent) ? null : Number(raw[0].twse_change_percent),
+            twseYearToDateChangePercent: intradayYearToDatePercent(raw[0], 'twse'),
             tpexIndex: missing(raw[0].tpex_index) ? null : Number(raw[0].tpex_index),
-            tpexChangePercent: missing(raw[0].tpex_change_percent) ? null : Number(raw[0].tpex_change_percent)
+            tpexChangePercent: missing(raw[0].tpex_change_percent) ? null : Number(raw[0].tpex_change_percent),
+            tpexYearToDateChangePercent: intradayYearToDatePercent(raw[0], 'tpex')
         },
         referencePeriod: reference?.currentPeriod ?? '資料不足',
         rankedStockCount: candidates.length,
@@ -2471,6 +2732,36 @@ async function loadIntraday(silent = false) {
     renderSummary();
     renderTable();
     renderLockRow();
+}
+
+const INTRADAY_SELECT = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price';
+const INTRADAY_SELECT_LEGACY = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent,open_price,high_price,low_price';
+
+async function fetchIntradayRows() {
+    try {
+        return await fetchAllRows('intraday_latest', INTRADAY_SELECT, '&order=turnover.desc');
+    } catch {
+        // db/010 尚未套用時，沿用舊 view；年初欄位再由 manifest 基準暫算。
+        return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
+    }
+}
+
+function intradayYearToDatePercent(row, market) {
+    const stored = row[`${market}_year_to_date_change_percent`];
+
+    if (!missing(stored)) {
+        return Number(stored);
+    }
+
+    const year = String(row.trade_date).slice(0, 4);
+    const baseline = marketIndexYearStarts.get(year)?.[`${market}Index`];
+    const value = row[`${market}_index`];
+
+    if (missing(value) || missing(baseline) || Number(baseline) <= 0) {
+        return null;
+    }
+
+    return (Number(value) - Number(baseline)) / Number(baseline) * 100;
 }
 
 // 一份「期間 × 交易日」的完整名單。盤後檢視直接畫它，盤中檢視拿它當對照組。
@@ -2509,6 +2800,9 @@ async function loadCustom() {
         return;
     }
 
+    // 重新畫交易限制與搜尋控制，保留使用者目前的狀態。
+    renderCustomControls();
+
     nameByTicker = new Map(data.rows.map(row => [row.ticker, row.name]));
 
     if (!data.hasSufficientData) {
@@ -2516,7 +2810,10 @@ async function loadCustom() {
         return;
     }
 
-    const rows = data.rows.filter(row => row.value >= state.customThreshold);
+    const rows = data.rows.filter(row =>
+        row.value >= state.customThreshold
+        && customStatusMatches(row.ticker)
+        && customSearchMatches(row));
     current = {
         ...data,
         rows,
@@ -2602,9 +2899,8 @@ function update(changes) {
     // 三種檢視的欄位不一樣，沿用上一個檢視的排序欄位會找不到對應的欄。
     // 自訂頁沒有名次，預設依代號排列；其餘兩頁回到名次。
     if (changes.view !== undefined && changes.view !== state.view) {
-        changes.sortKey = changes.view === 'custom' ? 'ticker' : 'rank';
-        changes.sortDescending = false;
-        changes.customPage = 1;
+        changes.sortKey = changes.view === 'custom' ? state.customSortKey : 'rank';
+        changes.sortDescending = changes.view === 'custom' ? state.customSortDescending : false;
 
         // 期間在兩邊是兩件事（本期多長 vs 跟多長的期間對照），預設值也不一樣，
         // 所以切過去要換成那一邊的預設，不要把上一個檢視的選擇帶過去。
@@ -2614,8 +2910,15 @@ function update(changes) {
     const nextView = changes.view ?? state.view;
 
     if (nextView === 'custom'
-        && (changes.date !== undefined || changes.customThreshold !== undefined)) {
+        && (changes.date !== undefined
+            || changes.customThreshold !== undefined
+            || changes.customStatusFilters !== undefined
+            || changes.customSearch !== undefined)) {
         changes.customPage = 1;
+    }
+
+    if (changes.customSearch !== undefined) {
+        customSearchJumpPending = changes.customSearch.trim().length > 0;
     }
 
     Object.assign(state, changes);
@@ -2663,6 +2966,8 @@ async function start() {
     thresholds = manifest.thresholds;
     dates = manifest.dates;
     marketIndices = new Map((manifest.marketIndices ?? []).map(entry => [entry.date, entry]));
+    marketIndexYearStarts = new Map((manifest.marketIndexYearStarts ?? [])
+        .map(entry => [String(entry.year), entry]));
     version = manifest.version;
     latestTradingDate = manifest.latestTradingDate;
     schedule = manifest.schedule ?? null;

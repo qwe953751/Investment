@@ -12,6 +12,12 @@ public sealed record MarketIndexQuote
     public required decimal Value { get; init; }
 
     public decimal? ChangePercent { get; init; }
+
+    /// <summary>
+    /// 相對前一年最後一個有效交易日的年初至今漲跌幅，單位是百分比數字。
+    /// 盤後由靜態匯出計算；盤中由收集器帶入同一套計算結果。
+    /// </summary>
+    public decimal? YearToDateChangePercent { get; init; }
 }
 
 /// <summary>

@@ -148,34 +148,43 @@
     else
     {
         <section class="summary">
-            <div>
-                <span class="summary-label">本期</span>
-                @RankingFormatter.ToPeriodText(_result.CurrentPeriodStart, _result.CurrentPeriodEnd)
-            </div>
-            <div>
-                <span class="summary-label">前期</span>
-                @RankingFormatter.ToPeriodText(_result.PreviousPeriodStart, _result.PreviousPeriodEnd)
-            </div>
-            <div>
-                <span class="summary-label">全市場日均成交值</span>
-                @RankingFormatter.ToBillionText(_result.MarketTotalTradingValue / _result.PeriodDays, 0) 億元
-            </div>
-            <div>
-                <span class="summary-label">符合條件</span>
-                @_result.RankedStockCount 檔，顯示前 @_result.Rows.Count 名
-            </div>
-            @foreach (var (market, label) in MarketIndexDefinitions)
-            {
-                var index = SelectedMarketIndices.FirstOrDefault(item => item.Market == market);
-
-                <div class="summary-index">
-                    <span class="summary-label">@label</span>
-                    <span class="numeric">@IndexValueText(index)</span>
-                    <span class="@RankingFormatter.ToTrendCssClass(IndexChangeRate(index))">
-                        (@RankingFormatter.ToSignedPercentText(IndexChangeRate(index), 2))
-                    </span>
+            <div class="summary-row summary-explanation-row">
+                <div>
+                    <span class="summary-label">本期</span>
+                    @RankingFormatter.ToPeriodText(_result.CurrentPeriodStart, _result.CurrentPeriodEnd)
                 </div>
-            }
+                <div>
+                    <span class="summary-label">前期</span>
+                    @RankingFormatter.ToPeriodText(_result.PreviousPeriodStart, _result.PreviousPeriodEnd)
+                </div>
+                <div>
+                    <span class="summary-label">全市場日均成交值</span>
+                    @RankingFormatter.ToBillionText(_result.MarketTotalTradingValue / _result.PeriodDays, 0) 億元
+                </div>
+                <div>
+                    <span class="summary-label">符合條件</span>
+                    @_result.RankedStockCount 檔，顯示前 @_result.Rows.Count 名
+                </div>
+            </div>
+            <div class="summary-row summary-index-row">
+                @foreach (var (market, label) in MarketIndexDefinitions)
+                {
+                    var index = SelectedMarketIndices.FirstOrDefault(item => item.Market == market);
+
+                    <div class="summary-index">
+                        <span class="summary-label">@label</span>
+                        <span class="numeric">@IndexValueText(index)</span>
+                        <span class="summary-index-changes">
+                            <span class="metric-line metric-primary @RankingFormatter.ToTrendCssClass(IndexChangeRate(index))">
+                                <span class="metric-label">日</span>@RankingFormatter.ToSignedPercentText(IndexChangeRate(index), 2)
+                            </span>
+                            <span class="metric-line metric-secondary @RankingFormatter.ToTrendCssClass(IndexYearToDateRate(index))">
+                                <span class="metric-label">今年</span>@RankingFormatter.ToSignedPercentText(IndexYearToDateRate(index), 2)
+                            </span>
+                        </span>
+                    </div>
+                }
+            </div>
         </section>
 
         <div class="table-container">
@@ -515,6 +524,21 @@
 
     private static decimal? IndexChangeRate(MarketIndexQuote? index)
         => index?.ChangePercent is { } changePercent ? changePercent / 100m : null;
+
+    private decimal? IndexYearToDateRate(MarketIndexQuote? index)
+    {
+        if (index is null || _query.EndDate is not { } date)
+        {
+            return null;
+        }
+
+        var changePercent = MarketIndexPerformanceCalculator.YearToDateChangePercent(
+            _dataSet.MarketIndices,
+            date,
+            index.Market);
+
+        return changePercent / 100m;
+    }
 
     /// <summary>
     /// 自訂金額輸入框顯示的數字：平均每日成交值（億元）。按下按鈕時輸入框跟著顯示同一個數字。
