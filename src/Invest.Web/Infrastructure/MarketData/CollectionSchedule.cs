@@ -42,8 +42,13 @@ public static class CollectionSchedule
     /// 不會補跑，也不會兩輪擠在一起。
     /// </summary>
     public static DateTimeOffset NextRound(DateTimeOffset now)
+        => NextRound(now, IntradayInterval);
+
+    /// <inheritdoc cref="NextRound(DateTimeOffset)"/>
+    /// <param name="interval">格子的大小。成交金額對照那支跑得比收集器稀疏，用的不是同一個間隔。</param>
+    public static DateTimeOffset NextRound(DateTimeOffset now, TimeSpan interval)
     {
-        var ticks = IntradayInterval.Ticks;
+        var ticks = interval.Ticks;
 
         return new DateTimeOffset((now.Ticks / ticks + 1) * ticks, now.Offset);
     }

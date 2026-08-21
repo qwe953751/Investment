@@ -278,6 +278,32 @@ dotnet run --project src/Invest.Web -- curve
 累積滿 10 個交易日之後，`status` 會在 STATUS.md 提醒可以換公式了。
 細節與尚未決定的事項在 [TODO.md](TODO.md)。
 
+## 盤中成交金額對照（暫時的）
+
+```bash
+dotnet run --project src/Invest.Web -- turnover-audit          # 對一輪，然後印進度
+dotnet run --project src/Invest.Web -- turnover-audit --loop   # 整場每 5 分鐘一輪
+```
+
+盤中的成交金額是「現價 × 累計成交量」推算的——MIS 只給累計量，不給累計金額。
+股價一路往下走時，早盤那些量其實是用更高的價格成交的，用當下的價回乘就會少算。
+
+這個指令每輪**同時**問 MIS 與玩股網（`investrue/all-quote-info`，那邊給的是真正的累計金額），
+把兩邊的差異寫進 `turnover_audit_rounds` 與 `turnover_audit_outliers`。
+兩邊要併發抓，否則量到的是時間差不是算法差。
+只存每輪的摘要與最多 50 檔離群值，不存全市場逐檔（逐檔六天約 65 萬列）。
+
+**這只是量測，不會改變盤中收集器的任何行為**，前端也不讀這兩張表。
+排程在 `.github/workflows/turnover-audit.yml`，每個交易日自己跑。
+不加 `--loop` 會印出每個交易日收了幾輪、還差幾天。
+
+收滿 6 個完整交易日、盤中來源換好之後，這整套要刪掉：
+`db/011_turnover_audit.sql`（檔頭有刪表指令）、
+`src/Invest.Web/Infrastructure/TurnoverAudit/`、
+`tests/Invest.Web.Tests/TurnoverAuditTests.cs`、
+那支 workflow，以及 `Program.cs` 裡的指令與 DI 註冊。
+背景與後續實作寫在 [TODO.md](TODO.md) 第 9 項。
+
 ## 對帳
 
 ```bash
