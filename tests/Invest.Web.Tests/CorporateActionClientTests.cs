@@ -73,8 +73,83 @@ public sealed class CorporateActionClientTests
             31));
     }
 
+    [Fact]
+    public async Task 櫃買抖一下回五百二十會重試而不是讓整份輸出中斷()
+    {
+        var handler = new FlakyHandler(HttpStatusCode.BadGateway);
+        var client = new CorporateActionClient(
+            new HttpClient(handler),
+            NullLogger<CorporateActionClient>.Instance);
+
+        var events = await client.GetAsync(
+            new DateOnly(2026, 6, 1),
+            new DateOnly(2026, 6, 30));
+
+        Assert.Equal(2, handler.PostCount);
+        Assert.Contains(events, item => item is { Market: Market.Tpex, Ticker: "6488" });
+        Assert.Contains(events, item => item is { Market: Market.Twse, Ticker: "2330" });
+    }
+
+    [Fact]
+    public async Task 對方改版不重試()
+    {
+        var handler = new FlakyHandler(null);
+        var client = new CorporateActionClient(
+            new HttpClient(handler),
+            NullLogger<CorporateActionClient>.Instance);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => client.GetAsync(
+            new DateOnly(2026, 6, 1),
+            new DateOnly(2026, 6, 30)));
+
+        Assert.Equal(1, handler.PostCount);
+    }
+
+    /// <summary>
+    /// 第一次 POST（櫃買）依 <paramref name="firstFailure"/> 決定怎麼壞：
+    /// 給狀態碼就回那個狀態碼（傳輸層抖動），給 null 就回一份 stat 不是 ok 的合法 JSON（對方改版）。
+    /// </summary>
+    private sealed class FlakyHandler(HttpStatusCode? firstFailure) : HttpMessageHandler
+    {
+        private readonly ResponseHandler inner = new();
+
+        public int PostCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Method != HttpMethod.Post)
+            {
+                return inner.SendPublicAsync(request, cancellationToken);
+            }
+
+            PostCount++;
+
+            if (PostCount > 1)
+            {
+                return inner.SendPublicAsync(request, cancellationToken);
+            }
+
+            return Task.FromResult(firstFailure is { } status
+                ? new HttpResponseMessage(status)
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"stat":"查無資料","date":"20260601~20260630"}""",
+                        Encoding.UTF8,
+                        "application/json")
+                });
+        }
+    }
+
     private sealed class ResponseHandler : HttpMessageHandler
     {
+        public Task<HttpResponseMessage> SendPublicAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => SendAsync(request, cancellationToken);
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)

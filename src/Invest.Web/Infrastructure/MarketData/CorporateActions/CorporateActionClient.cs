@@ -14,6 +14,14 @@ public sealed class CorporateActionClient(
     private const string TwseSource = "TWSE TWT49U";
     private const string TpexSource = "TPEx exDailyQ";
 
+    /// <summary>
+    /// 一份完整歷史要按月分段，來回是幾十個請求；只要有一個抖掉，整個 export 就沒了。
+    /// 2026-08-21 的每日排行快照就是這樣死的：櫃買回 520，
+    /// 「輸出靜態網站」中斷 → 沒有 index.html → 發佈也跟著失敗，
+    /// 那天的行情明明都抓齊了，網站卻停在前一天。
+    /// </summary>
+    private const int MaxAttempts = 3;
+
     public async Task<IReadOnlyList<StockPriceAdjustment>> GetAsync(
         DateOnly startDate,
         DateOnly endDate,
@@ -30,8 +38,14 @@ public sealed class CorporateActionClient(
         // 按日曆月分段，保留完整歷史又避免悄悄截掉 MA240 需要的早期事件。
         foreach (var range in DateRanges(startDate, endDate))
         {
-            var twseTask = GetTwseAsync(range.Start, range.End, cancellationToken);
-            var tpexTask = GetTpexAsync(range.Start, range.End, cancellationToken);
+            var twseTask = WithRetryAsync(
+                TwseSource,
+                token => GetTwseAsync(range.Start, range.End, token),
+                cancellationToken);
+            var tpexTask = WithRetryAsync(
+                TpexSource,
+                token => GetTpexAsync(range.Start, range.End, token),
+                cancellationToken);
             await Task.WhenAll(twseTask, tpexTask);
             result.AddRange(await twseTask);
             result.AddRange(await tpexTask);
@@ -50,6 +64,49 @@ public sealed class CorporateActionClient(
             result.Count);
         return result;
     }
+
+    /// <summary>
+    /// 抖一下就重試，重試完還是不行才往外丟。
+    ///
+    /// 值得重試的只有傳輸層的抖動：連線被切、逾時、5xx（<see cref="HttpRequestException"/>）、
+    /// 讀到一半被截斷的 JSON。這些同一個請求再打一次通常就好了。
+    ///
+    /// 「回應合法但內容不對」不重試——欄位改名、日期對不上、stat 不是 ok，
+    /// 那是對方改版，重打幾次都一樣，而且必須讓它紅出來。
+    ///
+    /// 重試用完還是失敗就中止整個 export，不退回「沒還原權息的 K 線」：
+    /// 那種圖在除權息日會憑空多一段跳空，看起來像真的，事後也查不出來。
+    /// 寧可網站停在前一天，也不要畫錯的價格。
+    /// </summary>
+    private async Task<IReadOnlyList<StockPriceAdjustment>> WithRetryAsync(
+        string source,
+        Func<CancellationToken, Task<IReadOnlyList<StockPriceAdjustment>>> read,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await read(cancellationToken);
+            }
+            catch (Exception exception)
+                when (attempt < MaxAttempts && IsTransient(exception, cancellationToken))
+            {
+                logger.LogWarning(
+                    "{Source} 第 {Attempt} 次失敗（{Message}），{Seconds} 秒後重試。",
+                    source,
+                    attempt,
+                    exception.Message,
+                    attempt);
+
+                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+            }
+        }
+    }
+
+    private static bool IsTransient(Exception exception, CancellationToken cancellationToken)
+        => !cancellationToken.IsCancellationRequested
+            && exception is HttpRequestException or JsonException or IOException;
 
     private async Task<IReadOnlyList<StockPriceAdjustment>> GetTwseAsync(
         DateOnly startDate,
