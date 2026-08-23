@@ -230,14 +230,9 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var failedRounds = 0;
     var rejectedRounds = 0;
 
-    // 年初基準只需指數欄位；沿用既有 JSON 快取載入入口，盤中與盤後共用同一份歷史。
-    var dailyIndexHistory = (await dailyQuoteStore.LoadAllAsync(cts.Token))
-        .Select(snapshot => new DailyMarketIndex
-        {
-            TradingDate = snapshot.TradingDate,
-            Quotes = snapshot.MarketIndices
-        })
-        .ToArray();
+    // 年初基準只需指數欄位，所以走只讀指數的入口，不要為了兩三個數字
+    // 把三百多天的全市場個股報價全部反序列化。
+    var dailyIndexHistory = await dailyQuoteStore.LoadMarketIndicesAsync(cts.Token);
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
@@ -812,7 +807,8 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
         }
         else
         {
-            Console.WriteLine("最新一期抓不到資料，只用資料庫裡已有的歷史重算。");
+            // 抓取或解析失敗現在會直接丟出來，走到這裡代表對方真的回了一份空的。
+            Console.WriteLine("最新一期是空的，只用資料庫裡已有的歷史重算。");
         }
 
         var history = await store.LoadHistoryAsync(cts.Token);

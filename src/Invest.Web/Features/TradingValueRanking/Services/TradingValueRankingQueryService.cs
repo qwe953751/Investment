@@ -1,6 +1,7 @@
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Infrastructure.MarketData;
+using Invest.Web.Infrastructure.MarketData.CorporateActions;
 
 namespace Invest.Web.Features.TradingValueRanking.Services;
 
@@ -13,6 +14,7 @@ namespace Invest.Web.Features.TradingValueRanking.Services;
 public sealed class TradingValueRankingQueryService(
     DailyQuoteStore store,
     TradingValueRankingCalculator calculator,
+    CorporateActionClient corporateActions,
     ILogger<TradingValueRankingQueryService> logger)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -78,11 +80,19 @@ public sealed class TradingValueRankingQueryService(
             return MarketDataSet.Empty;
         }
 
-        var dataSet = ToDataSet(snapshots);
+        // 權息事件跟行情一起載入、一起快取，讓排行表的漲跌與日 K 用的是同一份。
+        // 抓不到就整份失敗，不退回「沒還原」：除權息當天原始價會憑空掉一段，
+        // 表格上那根跌幅看起來像真的，事後根本查不出來。
+        var adjustments = await corporateActions.GetAsync(
+            snapshots[0].TradingDate,
+            snapshots[^1].TradingDate,
+            cancellationToken);
+
+        var dataSet = ToDataSet(snapshots, adjustments);
 
         logger.LogInformation(
-            "已載入 {DayCount} 個交易日、{StockCount} 檔個股的行情。",
-            snapshots.Count, dataSet.Stocks.Count);
+            "已載入 {DayCount} 個交易日、{StockCount} 檔個股的行情，權息事件 {AdjustmentCount} 筆。",
+            snapshots.Count, dataSet.Stocks.Count, adjustments.Count);
 
         return dataSet;
     }
@@ -91,7 +101,9 @@ public sealed class TradingValueRankingQueryService(
     /// 把逐日快照攤平成計算器要的形狀。
     /// snapshots 已依日期遞增排序，所以同一檔股票的名稱會被後面的日期覆蓋，最終取到最新名稱。
     /// </summary>
-    private static MarketDataSet ToDataSet(IReadOnlyList<DailyQuoteSnapshot> snapshots)
+    private static MarketDataSet ToDataSet(
+        IReadOnlyList<DailyQuoteSnapshot> snapshots,
+        IReadOnlyList<StockPriceAdjustment> adjustments)
     {
         var stocks = new Dictionary<string, Stock>();
         var trading = new List<DailyStockTrading>();
@@ -132,7 +144,8 @@ public sealed class TradingValueRankingQueryService(
         {
             Stocks = [.. stocks.Values],
             DailyTrading = trading,
-            MarketIndices = marketIndices
+            MarketIndices = marketIndices,
+            PriceAdjustments = adjustments
         };
     }
 }

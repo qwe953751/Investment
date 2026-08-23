@@ -2,10 +2,8 @@
 
 @using Invest.Web.Features.TradingValueRanking.Components
 @using Invest.Web.Infrastructure.MarketData
-@using Invest.Web.Infrastructure.MarketData.CorporateActions
 
 @inject TradingValueRankingQueryService RankingService
-@inject CorporateActionClient CorporateActionClient
 
 <PageTitle>個股成交值排行</PageTitle>
 
@@ -218,7 +216,7 @@
                                 <button type="button" class="stock-name-button"
                                         aria-expanded="@(_expandedTicker == row.Ticker)"
                                         data-hint="點擊開啟這檔標的最近三個月還原權息日 K"
-                                        @onclick="() => ToggleKLineAsync(row.Ticker)">
+                                        @onclick="() => ToggleKLine(row.Ticker)">
                                     @row.Name
                                 </button>
                             </td>
@@ -259,8 +257,6 @@
                                  Name="@klineRow.Name"
                                  EndDate="@KLineEndDate"
                                  Bars="@KLineBars(klineRow.Ticker)"
-                                 Loading="@_kLineLoading"
-                                 ErrorMessage="@_kLineError"
                                  OnClose="CloseKLine" />
             </section>
         }
@@ -369,10 +365,6 @@
     private string _lockInput = string.Empty;
     private string? _lockError;
     private string? _expandedTicker;
-    private IReadOnlyList<StockPriceAdjustment> _priceAdjustments = [];
-    private bool _kLineLoaded;
-    private bool _kLineLoading;
-    private string? _kLineError;
 
     protected override async Task OnInitializedAsync()
     {
@@ -391,50 +383,17 @@
         => _query.EndDate ?? _tradingDates.LastOrDefault();
 
     private IReadOnlyList<DailyKLinePoint> KLineBars(string ticker)
-        => !_kLineLoaded
+        => _dataSet.DailyTrading.Count == 0
             ? []
             : DailyKLineSelector.Select(
                 _dataSet.DailyTrading,
-                _priceAdjustments,
+                _dataSet.PriceAdjustments,
                 ticker,
                 KLineEndDate,
                 _dataSet.DailyTrading.Max(row => row.TradingDate));
 
-    private async Task ToggleKLineAsync(string ticker)
-    {
-        if (_expandedTicker == ticker)
-        {
-            CloseKLine();
-            return;
-        }
-
-        _expandedTicker = ticker;
-
-        if (_kLineLoaded || _kLineLoading || _dataSet.DailyTrading.Count == 0)
-        {
-            return;
-        }
-
-        _kLineLoading = true;
-        _kLineError = null;
-        StateHasChanged();
-
-        try
-        {
-            var firstDate = _dataSet.DailyTrading.Min(row => row.TradingDate);
-            var lastDate = _dataSet.DailyTrading.Max(row => row.TradingDate);
-            _priceAdjustments = await CorporateActionClient.GetAsync(firstDate, lastDate);
-            _kLineLoaded = true;
-        }
-        catch (Exception)
-        {
-            _kLineError = "官方權息資料載入失敗；為避免把原始價誤標成還原價，本次不顯示 K 線。";
-        }
-        finally
-        {
-            _kLineLoading = false;
-        }
-    }
+    private void ToggleKLine(string ticker)
+        => _expandedTicker = _expandedTicker == ticker ? null : ticker;
 
     private void CloseKLine()
         => _expandedTicker = null;

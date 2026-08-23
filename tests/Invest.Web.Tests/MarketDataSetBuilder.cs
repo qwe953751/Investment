@@ -14,8 +14,29 @@ internal sealed class MarketDataSetBuilder
 
     private readonly Dictionary<string, Stock> _stocks = [];
     private readonly List<DailyStockTrading> _trading = [];
+    private readonly List<StockPriceAdjustment> _adjustments = [];
 
     public static DateOnly DayOf(int dayNumber) => BaseDate.AddDays(dayNumber - 1);
+
+    /// <summary>
+    /// 登記一筆除權息：<paramref name="dayNumber"/> 當天以 <paramref name="referencePrice"/>
+    /// 為開盤競價基準，前一日收盤價是 <paramref name="previousClose"/>。
+    /// </summary>
+    public MarketDataSetBuilder ExDividend(
+        int dayNumber,
+        string ticker,
+        decimal previousClose,
+        decimal referencePrice)
+    {
+        _adjustments.Add(new StockPriceAdjustment(
+            ticker,
+            DayOf(dayNumber),
+            previousClose,
+            referencePrice,
+            "測試"));
+
+        return this;
+    }
 
     public MarketDataSetBuilder Stock(string ticker, Market market = Market.Twse, string? name = null)
     {
@@ -73,6 +94,7 @@ internal sealed class MarketDataSetBuilder
     {
         Stocks = [.. _stocks.Values],
         DailyTrading = _trading,
-        MarketIndices = []
+        MarketIndices = [],
+        PriceAdjustments = _adjustments
     };
 }

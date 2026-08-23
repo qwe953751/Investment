@@ -81,6 +81,62 @@ public sealed class DailyQuoteStore
         return snapshots.OrderBy(snapshot => snapshot.TradingDate).ToArray();
     }
 
+    /// <summary>
+    /// 只讀出每個交易日的市場指數，依日期遞增排序。
+    ///
+    /// 盤中要算「年初至今」只需要指數那兩三個數字，但整份快取是三百多個檔案、
+    /// 八十幾 MB 的個股報價；用完整格式反序列化等於為了兩行資料把全市場每一列
+    /// 都建成物件。這裡用只有指數欄位的格式讀，個股那一段會被直接跳過。
+    /// </summary>
+    public async Task<IReadOnlyList<DailyMarketIndex>> LoadMarketIndicesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (!System.IO.Directory.Exists(_directory))
+        {
+            return [];
+        }
+
+        var history = new List<DailyMarketIndex>();
+
+        foreach (var path in System.IO.Directory.EnumerateFiles(_directory, "*.json"))
+        {
+            MarketIndexOnlySnapshot? snapshot;
+
+            try
+            {
+                await using var stream = File.OpenRead(path);
+                snapshot = await JsonSerializer.DeserializeAsync<MarketIndexOnlySnapshot>(
+                    stream, SerializerOptions, cancellationToken);
+            }
+            catch (JsonException exception)
+            {
+                _logger.LogError(exception, "行情快取檔 {Path} 格式損毀，已略過。刪除後重新下載即可。", path);
+                continue;
+            }
+
+            if (snapshot is { IsTradingDay: true })
+            {
+                history.Add(new DailyMarketIndex
+                {
+                    TradingDate = snapshot.TradingDate,
+                    Quotes = snapshot.MarketIndices
+                });
+            }
+        }
+
+        return history.OrderBy(day => day.TradingDate).ToArray();
+    }
+
+    /// <summary>快取檔的子集格式，只保留 <see cref="LoadMarketIndicesAsync"/> 要用的欄位。</summary>
+    private sealed class MarketIndexOnlySnapshot
+    {
+        public DateOnly TradingDate { get; init; }
+
+        public bool IsTradingDay { get; init; }
+
+        public IReadOnlyList<MarketIndexQuote> MarketIndices { get; init; } = [];
+    }
+
     private async Task<DailyQuoteSnapshot?> ReadAsync(string path, CancellationToken cancellationToken)
     {
         try

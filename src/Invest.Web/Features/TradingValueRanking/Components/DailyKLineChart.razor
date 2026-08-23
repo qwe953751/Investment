@@ -11,15 +11,7 @@
         <button type="button" class="daily-kline-close" @onclick="OnClose">關閉</button>
     </div>
 
-    @if (Loading)
-    {
-        <p class="daily-kline-empty">正在載入交易所權息資料…</p>
-    }
-    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
-    {
-        <p class="daily-kline-empty">@ErrorMessage</p>
-    }
-    else if (Candles.Count == 0)
+    @if (Candles.Count == 0)
     {
         <p class="daily-kline-empty">目前沒有完整的三個月日 K，請先執行 <code>backfill-bars 90</code>。</p>
     }
@@ -99,12 +91,6 @@
 
     [Parameter, EditorRequired]
     public IReadOnlyList<DailyKLinePoint> Bars { get; set; } = [];
-
-    [Parameter]
-    public bool Loading { get; set; }
-
-    [Parameter]
-    public string? ErrorMessage { get; set; }
 
     [Parameter]
     public EventCallback OnClose { get; set; }

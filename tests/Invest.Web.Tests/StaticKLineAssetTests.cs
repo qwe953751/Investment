@@ -157,7 +157,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("toRevenueGrowthCell(row.ticker)", customColumns, StringComparison.Ordinal);
         Assert.Contains("?.yoy", customColumns, StringComparison.Ordinal);
         Assert.DoesNotContain("單月營收", customColumns, StringComparison.Ordinal);
-        Assert.Contains("?select=month,revenue,mom,yoy&ticker=eq.", script, StringComparison.Ordinal);
+        Assert.Contains("&ticker=eq.${encodeURIComponent(ticker)}&order=month.asc", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -227,7 +227,12 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("id=\"revenue-backdrop\"", html, StringComparison.Ordinal);
         Assert.Contains("role=\"dialog\"", html, StringComparison.Ordinal);
         Assert.Contains("const REVENUE_HISTORY_TABLE = 'revenue_history'", script, StringComparison.Ordinal);
-        Assert.Contains("?select=month,revenue,mom,yoy", script, StringComparison.Ordinal);
+
+        // 每月營收歷史一律走分頁查詢。直接打一支的話 PostgREST 超過 1000 列會安靜地截掉。
+        Assert.Contains(
+            "fetchAllRows(\n                REVENUE_HISTORY_TABLE,\n                'month,revenue,mom,yoy',",
+            script.Replace("\r\n", "\n", StringComparison.Ordinal),
+            StringComparison.Ordinal);
         Assert.Contains("toggleRevenueDetails", script, StringComparison.Ordinal);
         Assert.Contains("renderRevenueChartSvg", script, StringComparison.Ordinal);
         Assert.Contains("slice(-5)", script, StringComparison.Ordinal);

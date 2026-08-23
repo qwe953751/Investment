@@ -40,11 +40,24 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
 
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
 
-        var existing = await ReadExistingDatesAsync(connection, cancellationToken);
+        var existing = await ReadExistingCountsAsync(connection, cancellationToken);
 
-        // 只送資料庫還沒有的日期。既有日期不重寫，避免每天都在搬四十幾萬列。
+        // 視窗外的日期送上去也會在下面被 PruneAsync 立刻刪掉，
+        // 白搬幾萬列還讓「新增 N 個交易日」每天都是同一個數字。
+        var retained = snapshots
+            .Select(snapshot => snapshot.TradingDate)
+            .OrderByDescending(date => date)
+            .Take(retentionTradingDays)
+            .ToHashSet();
+
+        // 比的是檔數而不只是「這天在不在」。同一天可能上次只寫進去一部分
+        // （例如當時的快取只有上市、或寫到一半被中止），日期看起來有了，
+        // 內容卻是殘的——只看日期的話這種天數永遠補不回來。
         var pending = snapshots
-            .Where(snapshot => !existing.Contains(snapshot.TradingDate))
+            .Where(snapshot => retained.Contains(snapshot.TradingDate))
+            .Where(snapshot =>
+                existing.GetValueOrDefault(snapshot.TradingDate)
+                    < snapshot.Quotes.Select(quote => quote.Ticker).Distinct(StringComparer.Ordinal).Count())
             .OrderBy(snapshot => snapshot.TradingDate)
             .ToArray();
 
@@ -55,11 +68,16 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var before = existing.GetValueOrDefault(snapshot.TradingDate);
+
             insertedRows += await InsertDayAsync(connection, snapshot, cancellationToken);
             insertedDates++;
 
-            logger.LogInformation("已同步 {Date:yyyy-MM-dd}（{Count} 檔）。",
-                snapshot.TradingDate, snapshot.Quotes.Count);
+            logger.LogInformation(
+                "已同步 {Date:yyyy-MM-dd}（資料庫原有 {Before} 檔，本機 {Count} 檔）。",
+                snapshot.TradingDate,
+                before,
+                snapshot.Quotes.Count);
         }
 
         var prunedDates = await PruneAsync(connection, retentionTradingDays, cancellationToken);
@@ -103,24 +121,24 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
         return totals;
     }
 
-    private static async Task<HashSet<DateOnly>> ReadExistingDatesAsync(
+    private static async Task<Dictionary<DateOnly, int>> ReadExistingCountsAsync(
         NpgsqlConnection connection,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
-            "select distinct trade_date from daily_quotes",
+            "select trade_date, count(*) from daily_quotes group by trade_date",
             connection);
 
-        var dates = new HashSet<DateOnly>();
+        var counts = new Dictionary<DateOnly, int>();
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         while (await reader.ReadAsync(cancellationToken))
         {
-            dates.Add(reader.GetFieldValue<DateOnly>(0));
+            counts[reader.GetFieldValue<DateOnly>(0)] = (int)reader.GetInt64(1);
         }
 
-        return dates;
+        return counts;
     }
 
     private static async Task<int> InsertDayAsync(

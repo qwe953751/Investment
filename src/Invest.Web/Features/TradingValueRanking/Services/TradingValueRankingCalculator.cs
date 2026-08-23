@@ -52,10 +52,19 @@ public sealed class TradingValueRankingCalculator
 
         var stocksByTicker = dataSet.Stocks.ToDictionary(stock => stock.Ticker);
 
-        var currentStats = Aggregate(byTicker, current);
-        var previousStats = Aggregate(byTicker, previous);
+        // 只留算得出還原倍數的事件。倍數是 參考價 ÷ 前一日收盤價，兩邊都得是正數。
+        var adjustmentsByTicker = dataSet.PriceAdjustments
+            .Where(item => item.PreviousClose > 0m && item.ReferencePrice > 0m)
+            .GroupBy(item => item.Ticker)
+            .ToDictionary(
+                group => group.Key,
+                IReadOnlyList<StockPriceAdjustment> (group) =>
+                    [.. group.OrderBy(item => item.EffectiveDate)]);
+
+        var currentStats = Aggregate(byTicker, adjustmentsByTicker, current);
+        var previousStats = Aggregate(byTicker, adjustmentsByTicker, previous);
         var priorStats = prior.Length > 0
-            ? Aggregate(byTicker, prior)
+            ? Aggregate(byTicker, adjustmentsByTicker, prior)
             : new Dictionary<string, PeriodStats>();
 
         // 分母一律是上市＋上櫃全體，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
@@ -104,6 +113,7 @@ public sealed class TradingValueRankingCalculator
             {
                 var price = CalculatePriceChanges(
                     byTicker[candidate.Stock.Ticker],
+                    adjustmentsByTicker.GetValueOrDefault(candidate.Stock.Ticker, []),
                     current[^1]);
 
                 return new StockRankingRow
@@ -172,13 +182,17 @@ public sealed class TradingValueRankingCalculator
 
     private static PriceChanges CalculatePriceChanges(
         IReadOnlyList<DailyStockTrading> rows,
+        IReadOnlyList<StockPriceAdjustment> adjustments,
         DateOnly endDate)
     {
         var daysSinceMonday = ((int)endDate.DayOfWeek + 6) % 7;
         var weekStart = endDate.AddDays(-daysSinceMonday);
         decimal? dailyBaseline = null;
+        DateOnly? dailyBaselineDate = null;
         decimal? weeklyBaseline = null;
+        DateOnly? weeklyBaselineDate = null;
         decimal? endClose = null;
+        DateOnly? endCloseDate = null;
 
         foreach (var row in rows)
         {
@@ -195,22 +209,66 @@ public sealed class TradingValueRankingCalculator
             if (row.TradingDate < weekStart)
             {
                 weeklyBaseline = close;
+                weeklyBaselineDate = row.TradingDate;
             }
 
             if (row.TradingDate < endDate)
             {
                 dailyBaseline = close;
+                dailyBaselineDate = row.TradingDate;
             }
             else
             {
                 endClose = close;
+                endCloseDate = row.TradingDate;
             }
         }
 
+        var adjustedDaily = Rebase(dailyBaseline, dailyBaselineDate, endCloseDate, adjustments);
+        var adjustedWeekly = Rebase(weeklyBaseline, weeklyBaselineDate, endCloseDate, adjustments);
+
         return new PriceChanges(
-            ChangeRate(endClose, dailyBaseline),
-            ChangeRate(endClose, weeklyBaseline),
-            weeklyBaseline);
+            ChangeRate(endClose, adjustedDaily),
+            ChangeRate(endClose, adjustedWeekly),
+            adjustedWeekly);
+    }
+
+    /// <summary>
+    /// 把過去某天的收盤價換算到 <paramref name="basisDate"/> 當天的價格基準上。
+    ///
+    /// 除權息之後價格會憑空掉一段，直接拿前一天的原始收盤價當基準的話，
+    /// 表格上會出現一根根本沒發生的跌幅——而且旁邊點開的日 K 是還原過的，兩邊互相打架。
+    ///
+    /// 換算方向跟市場慣例一致，不是我們自己發明的：除權息當天的漲跌，
+    /// 交易所本來就是以「除權息參考價」為基準，不是以前一日收盤價。
+    /// 倍數是 參考價 ÷ 前一日收盤價，所以日漲跌的基準乘上倍數後，
+    /// 剛好就等於參考價，跟券商 App 與新聞上看到的數字對得起來。
+    ///
+    /// 只調整基準，不動 <c>endClose</c>：基準日之後的事件才會被乘進來，
+    /// 基準日本身就是最新那天時倍數是 1，所以畫面上的「現價」永遠是真正成交的價格。
+    /// </summary>
+    private static decimal? Rebase(
+        decimal? baseline,
+        DateOnly? baselineDate,
+        DateOnly? basisDate,
+        IReadOnlyList<StockPriceAdjustment> adjustments)
+    {
+        if (baseline is not { } value || baselineDate is not { } from || basisDate is not { } through)
+        {
+            return baseline;
+        }
+
+        var factor = 1m;
+
+        foreach (var adjustment in adjustments)
+        {
+            if (adjustment.EffectiveDate > from && adjustment.EffectiveDate <= through)
+            {
+                factor *= adjustment.Factor;
+            }
+        }
+
+        return value * factor;
     }
 
     private static decimal? ChangeRate(decimal? current, decimal? baseline)
@@ -230,6 +288,7 @@ public sealed class TradingValueRankingCalculator
     /// </summary>
     private static Dictionary<string, PeriodStats> Aggregate(
         Dictionary<string, DailyStockTrading[]> byTicker,
+        Dictionary<string, IReadOnlyList<StockPriceAdjustment>> adjustmentsByTicker,
         DateOnly[] window)
     {
         var start = window[0];
@@ -241,7 +300,9 @@ public sealed class TradingValueRankingCalculator
             decimal total = 0m;
             var activeDays = 0;
             decimal? baselineClose = null;
+            DateOnly? baselineDate = null;
             decimal? endClose = null;
+            DateOnly? endCloseDate = null;
 
             foreach (var row in rows)
             {
@@ -253,6 +314,7 @@ public sealed class TradingValueRankingCalculator
                     if (row.ClosePrice is { } previousClose)
                     {
                         baselineClose = previousClose;
+                        baselineDate = row.TradingDate;
                     }
 
                     continue;
@@ -273,6 +335,7 @@ public sealed class TradingValueRankingCalculator
                 if (row.ClosePrice is { } close)
                 {
                     endClose = close;
+                    endCloseDate = row.TradingDate;
                 }
             }
 
@@ -287,7 +350,11 @@ public sealed class TradingValueRankingCalculator
                 // 分母用區間實際的交易日數，而不是使用者選的 N，遇到資料缺漏時才不會失真。
                 AverageDailyTradingValue = total / window.Length,
                 ActiveDayCount = activeDays,
-                BaselineClose = baselineClose,
+                BaselineClose = Rebase(
+                    baselineClose,
+                    baselineDate,
+                    endCloseDate,
+                    adjustmentsByTicker.GetValueOrDefault(ticker, [])),
                 EndClose = endClose
             };
         }

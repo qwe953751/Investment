@@ -18,6 +18,12 @@ public sealed class MarketDataSet
 
     public required IReadOnlyList<DailyMarketIndex> MarketIndices { get; init; }
 
+    /// <summary>
+    /// 官方權息事件。日 K 用它做向前還原，排行表的漲跌用它把基準價換算到現在的價格基準上。
+    /// 兩邊共用同一份，除權息當天表格與圖才不會各說各話。
+    /// </summary>
+    public IReadOnlyList<StockPriceAdjustment> PriceAdjustments { get; init; } = [];
+
     public static MarketDataSet Empty { get; } = new()
     {
         Stocks = [],

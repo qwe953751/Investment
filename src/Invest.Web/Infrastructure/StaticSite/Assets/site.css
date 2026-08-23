@@ -1040,6 +1040,13 @@ body {
     stroke-width: 1;
 }
 
+/* YoY 的零軸。比一般格線亮一點，虛線是為了跟營收刻度區分開來。 */
+.revenue-chart-zero {
+    stroke: #8b9199;
+    stroke-dasharray: 4 3;
+    stroke-width: 1;
+}
+
 .revenue-chart-axis,
 .revenue-chart-month {
     fill: #d0d5dd;

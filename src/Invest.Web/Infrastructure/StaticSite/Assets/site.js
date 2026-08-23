@@ -1720,6 +1720,13 @@ function renderKLineLegend(bars) {
 function positionPopover(popoverId, anchor) {
     const popover = el(popoverId);
 
+    // 兩個彈窗都掛在 window 的 scroll（capture 模式）上，所以捲動表格時
+    // 每一格都會呼叫進來兩次。沒開的時候直接走掉——不然光是 getBoundingClientRect
+    // 就會逼瀏覽器重算版面，整張表捲起來會頓。
+    if (popover.hidden) {
+        return;
+    }
+
     if (!anchor?.isConnected) {
         const popoverRect = popover.getBoundingClientRect();
         const margin = 12;
@@ -1938,24 +1945,13 @@ async function loadRevenueHistoryData(ticker) {
                 throw new Error('Supabase is not configured');
             }
 
-            const response = await fetch(
-                `${supabase.url}/rest/v1/${REVENUE_HISTORY_TABLE}`
-                + `?select=month,revenue,mom,yoy&ticker=eq.${encodeURIComponent(ticker)}`
-                + '&order=month.asc',
-                {
-                    headers: { apikey: supabase.anonKey },
-                    cache: 'no-store'
-                });
-
-            if (!response.ok) {
-                throw new Error(String(response.status));
-            }
-
-            const rows = await response.json();
-
-            if (!Array.isArray(rows)) {
-                throw new Error('invalid revenue history payload');
-            }
+            // 走 fetchAllRows 而不是自己打一支：這是全站唯一一支繞過分頁的查詢，
+            // 單一檔的月份數現在還不到 1000，但超過的那天 PostgREST 會安靜地截掉，
+            // 圖上少掉的幾個月看不出來。
+            const rows = await fetchAllRows(
+                REVENUE_HISTORY_TABLE,
+                'month,revenue,mom,yoy',
+                `&ticker=eq.${encodeURIComponent(ticker)}&order=month.asc`);
 
             const normalized = rows.map(normalizeRevenueHistoryRow).filter(row => row !== null);
             revenueHistoryData.set(ticker, normalized);
@@ -1996,8 +1992,14 @@ function selectedRevenueMonths(ticker) {
         }
     }
 
+    // 儲存格用 eligibleMonthKey() 擋掉「還沒公告的月份」，彈窗也得照同一條規則擋。
+    // 不然跨月當下 revenue_latest 還停在上上個月時，表格顯示 —、
+    // 點開卻看得到上上個月的數字，同一列的兩個地方各說各話。
+    const eligible = eligibleMonthKey();
+
     return months
         .filter(month => month.month && Number.isFinite(month.revenue))
+        .filter(month => month.month <= eligible)
         .sort((left, right) => left.month.localeCompare(right.month))
         .slice(-20);
 }
@@ -2013,8 +2015,10 @@ function renderRevenueChartSvg(ticker, name, months) {
     const plotHeight = bottom - top;
     const maximumRevenue = Math.max(1, ...months.map(month => month.revenue));
     const yoyValues = months.map(month => month.yoy).filter(value => !missing(value));
-    const yoyMinimum = yoyValues.length ? Math.min(...yoyValues) : 0;
-    const yoyMaximum = yoyValues.length ? Math.max(...yoyValues) : 1;
+    // 零一定要在範圍內。純 min-max 縮放會把「+3% 到 +5%」畫得跟「-40% 到 +60%」
+    // 一樣起伏，折線的高低完全失去意義，也看不出哪幾個月其實是衰退。
+    const yoyMinimum = Math.min(0, ...yoyValues);
+    const yoyMaximum = Math.max(0, ...yoyValues);
     const yoyRange = yoyMaximum > yoyMinimum ? yoyMaximum - yoyMinimum : 1;
     const yRevenue = value => bottom - value / maximumRevenue * plotHeight;
     const yYoy = value => bottom - (value - yoyMinimum) / yoyRange * plotHeight;
@@ -2027,6 +2031,11 @@ function renderRevenueChartSvg(ticker, name, months) {
         'aria-label': `${ticker} ${name} 最近 ${months.length} 個月營收與 YoY 圖`
     });
 
+    // 小型股整年營收都不到一億，四捨五入到整數會印成 0億／0億／0億，
+    // 三格刻度變成同一個數字，等於沒有 Y 軸。刻度間距小就多留小數位。
+    const axisTop = maximumRevenue / 100_000_000;
+    const axisDecimals = axisTop >= 10 ? 0 : axisTop >= 1 ? 1 : 2;
+
     for (const ratio of [0, 0.5, 1]) {
         const y = top + ratio * plotHeight;
         svg.append(svgElement('line', { x1: left, y1: y, x2: right, y2: y, class: 'revenue-chart-grid' }));
@@ -2035,7 +2044,7 @@ function renderRevenueChartSvg(ticker, name, months) {
             y: y + 3,
             class: 'revenue-chart-axis',
             'text-anchor': 'end'
-        }, `${toFixedText(maximumRevenue * (1 - ratio) / 100_000_000, 0)}億`));
+        }, `${toFixedText(axisTop * (1 - ratio), axisDecimals)}億`));
     }
 
     months.forEach((month, index) => {
@@ -2076,6 +2085,23 @@ function renderRevenueChartSvg(ticker, name, months) {
     });
 
     if (path) {
+        // 有正有負時把零軸畫出來，折線穿過哪裡才看得出是成長還是衰退。
+        if (yoyMinimum < 0 && yoyMaximum > 0) {
+            const zeroY = yYoy(0);
+            svg.append(svgElement('line', {
+                x1: left,
+                y1: zeroY,
+                x2: right,
+                y2: zeroY,
+                class: 'revenue-chart-zero'
+            }));
+            svg.append(svgElement('text', {
+                x: right + 5,
+                y: zeroY + 3,
+                class: 'revenue-chart-axis'
+            }, '0%'));
+        }
+
         svg.append(svgElement('path', { d: path.trim(), class: 'revenue-chart-yoy' }));
         svg.append(svgElement('text', {
             x: right + 5,
@@ -2762,11 +2788,21 @@ async function loadIntraday(silent = false) {
 const INTRADAY_SELECT = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price';
 const INTRADAY_SELECT_LEGACY = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent,open_price,high_price,low_price';
 
+// db/010 還沒套用時，帶年初欄位的那支查詢每次都會失敗。盤中每兩分鐘刷新一次，
+// 不記住的話每一輪都要先白打一次必定失敗的請求，才輪到真正拿得到資料的那支。
+let intradayLegacySelect = false;
+
 async function fetchIntradayRows() {
+    if (intradayLegacySelect) {
+        return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
+    }
+
     try {
         return await fetchAllRows('intraday_latest', INTRADAY_SELECT, '&order=turnover.desc');
     } catch {
-        // db/010 尚未套用時，沿用舊 view；年初欄位再由 manifest 基準暫算。
+        // 沿用舊 view；年初欄位再由 manifest 基準暫算。套用 db/010 後重新整理就會切回來。
+        intradayLegacySelect = true;
+
         return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
     }
 }

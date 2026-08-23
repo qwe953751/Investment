@@ -270,6 +270,72 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
+    public void 除權息當天的日漲跌以參考價為基準而不是前一日收盤價()
+    {
+        // 第 8 天除息 10 元：前一日收 110，參考價 100，當天收 100。
+        // 拿原始收盤價當基準會算成 -9.09%，那一段跌幅根本沒發生，
+        // 而且旁邊點開的日 K 是還原過的，圖上那天是平的，兩邊互相打架。
+        var dataSet = new MarketDataSetBuilder()
+            .Day(5, "1101", 100, close: 110)
+            .Day(8, "1101", 100, close: 100)
+            .ExDividend(8, "1101", previousClose: 110, referencePrice: 100)
+            .Build();
+
+        var row = Row(_calculator.Calculate(
+            dataSet,
+            Query(periodDays: 1) with { EndDate = MarketDataSetBuilder.DayOf(8) }), "1101");
+
+        Assert.Equal(0m, row.DailyPriceChangeRate);
+        Assert.Equal(0m, row.PriceChangeRate);
+
+        // 顯示的收盤價仍然是真正成交的 100，不是被還原過的價格。
+        Assert.Equal(100m, row.ClosePrice);
+    }
+
+    [Fact]
+    public void 除權息之前的週基準與期間基準都會一起換算()
+    {
+        // 2026/01/09（週五）收 200；下週一（第 8 天）除權息，前一日收 200、參考價 100，
+        // 也就是一股拆成兩股的效果。週二（第 9 天）收 110。
+        // 週基準要從 200 換算成 100，週漲跌才會是 +10%，而不是 -45%。
+        var dataSet = new MarketDataSetBuilder()
+            .Day(5, "1101", 100, close: 200)
+            .Day(8, "1101", 100, close: 100)
+            .Day(9, "1101", 100, close: 110)
+            .ExDividend(8, "1101", previousClose: 200, referencePrice: 100)
+            .Build();
+
+        var row = Row(_calculator.Calculate(
+            dataSet,
+            Query(periodDays: 1) with { EndDate = MarketDataSetBuilder.DayOf(9) }), "1101");
+
+        Assert.Equal(0.1m, row.WeeklyPriceChangeRate);
+        Assert.Equal(100m, row.WeeklyBaselineClosePrice);
+        Assert.Equal(0.1m, row.DailyPriceChangeRate);
+    }
+
+    [Fact]
+    public void 沒有權息事件時漲跌與原本完全一樣()
+    {
+        // 換算只在事件落在基準日與基準日之後的區間內才生效，
+        // 一般日子的數字不能因為多帶了一份權息清單就漂掉。
+        var dataSet = new MarketDataSetBuilder()
+            .Day(5, "1101", 100, close: 100)
+            .Day(8, "1101", 100, close: 110)
+            // 事件屬於另一檔，且日期也不在區間內。
+            .ExDividend(3, "2330", previousClose: 500, referencePrice: 450)
+            .Day(5, "2330", 100, close: 500)
+            .Day(8, "2330", 100, close: 500)
+            .Build();
+
+        var row = Row(_calculator.Calculate(
+            dataSet,
+            Query(periodDays: 1) with { EndDate = MarketDataSetBuilder.DayOf(8) }), "1101");
+
+        Assert.Equal(0.1m, row.DailyPriceChangeRate);
+    }
+
+    [Fact]
     public void 期間之前沒有收盤價時漲跌是無法計算()
     {
         var dataSet = new MarketDataSetBuilder()

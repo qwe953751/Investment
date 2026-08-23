@@ -7,7 +7,6 @@ using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
-using Invest.Web.Infrastructure.MarketData.CorporateActions;
 
 namespace Invest.Web.Infrastructure.StaticSite;
 
@@ -29,7 +28,6 @@ namespace Invest.Web.Infrastructure.StaticSite;
 public sealed class StaticSiteExporter(
     TradingValueRankingQueryService ranking,
     MarketFlagClient marketFlags,
-    CorporateActionClient corporateActions,
     IConfiguration configuration)
 {
     /// <summary>
@@ -73,17 +71,14 @@ public sealed class StaticSiteExporter(
 
         if (tradingDates.Length > 0 && selectableDates.Count > 0)
         {
-            // MA240 會使用顯示區間以前的收盤，因此權息事件也要涵蓋整份可用歷史，
-            // 不能只抓畫面上的三個月。
-            var adjustments = await corporateActions.GetAsync(
-                tradingDates[0],
-                tradingDates[^1],
-                cancellationToken);
+            // 權息事件跟著資料集走，跟排行表的漲跌用同一份。
+            // MA240 會使用顯示區間以前的收盤，所以那一份本來就涵蓋整段可用歷史，
+            // 不是只有畫面上的三個月。
             kLineFileCount = await WriteKLineExportsAsync(
                 Path.Combine(dataDirectory, "kline"),
                 dataSet,
                 selectableDates,
-                adjustments,
+                dataSet.PriceAdjustments,
                 tradingDates[^1],
                 cancellationToken);
         }
@@ -334,20 +329,28 @@ public sealed class StaticSiteExporter(
             var twse = day?.Quotes.FirstOrDefault(index => index.Market == Domain.Stocks.Market.Twse);
             var tpex = day?.Quotes.FirstOrDefault(index => index.Market == Domain.Stocks.Market.Tpex);
 
+            // 這一天的指數缺了，年初至今就要一起留白。
+            // YearToDateChangePercent 會往回找最近一天有值的收盤，
+            // 照著印會變成「指數 —、今年 +12.3%」——右邊那個數字是前幾天的，
+            // 但畫面上看起來跟正常的一模一樣，錯了也沒人會發現。
             return new MarketIndexExport(
                 date.ToString("yyyy-MM-dd"),
                 twse?.Value,
                 twse?.ChangePercent,
-                MarketIndexPerformanceCalculator.YearToDateChangePercent(
-                    dataSet.MarketIndices,
-                    date,
-                    Domain.Stocks.Market.Twse),
+                twse is null
+                    ? null
+                    : MarketIndexPerformanceCalculator.YearToDateChangePercent(
+                        dataSet.MarketIndices,
+                        date,
+                        Domain.Stocks.Market.Twse),
                 tpex?.Value,
                 tpex?.ChangePercent,
-                MarketIndexPerformanceCalculator.YearToDateChangePercent(
-                    dataSet.MarketIndices,
-                    date,
-                    Domain.Stocks.Market.Tpex));
+                tpex is null
+                    ? null
+                    : MarketIndexPerformanceCalculator.YearToDateChangePercent(
+                        dataSet.MarketIndices,
+                        date,
+                        Domain.Stocks.Market.Tpex));
         })];
     }
 

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -27,6 +28,15 @@ public sealed partial class RevenueClient(HttpClient httpClient, ILogger<Revenue
     /// 結尾的 0 是國內公司、1 是外國企業（KY 股在這一份），兩份都要拿才算完整。
     /// </summary>
     private const string MonthlyReportUrl = "https://mopsov.twse.com.tw/nas/t21/{0}/t21sc03_{1}_{2}_{3}.html";
+
+    private const int MaxAttempts = 3;
+
+    /// <summary>
+    /// 還沒到公告期的月份，觀測站給的是一頁幾百位元組的空表，解出零列是正常的。
+    /// 但一頁「有內容」的報表也解不出任何一列，那是版面改了——這兩件事看起來一樣，
+    /// 用回應大小分開：超過這個門檻還是零列就當解析壞掉，不能默默當成還沒公告。
+    /// </summary>
+    private const int EmptyReportMaxBytes = 4096;
 
     /// <summary>
     /// 報表是一列一家公司：代號、名稱、當月營收、上月營收、去年當月營收……
@@ -69,11 +79,15 @@ public sealed partial class RevenueClient(HttpClient httpClient, ILogger<Revenue
         string url,
         CancellationToken cancellationToken)
     {
-        var document = await ReadJsonAsync(url, cancellationToken);
+        using var document = await WithRetryAsync(
+            url,
+            token => ReadJsonAsync(url, token),
+            cancellationToken);
 
-        if (document is null || document.RootElement.ValueKind != JsonValueKind.Array)
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
         {
-            return [];
+            throw new InvalidOperationException(
+                $"{url} 回的不是陣列，營收 OpenAPI 的格式變了。");
         }
 
         var result = new List<MonthlyRevenue>();
@@ -131,24 +145,22 @@ public sealed partial class RevenueClient(HttpClient httpClient, ILogger<Revenue
         DateOnly month,
         CancellationToken cancellationToken)
     {
-        string html;
+        byte[] bytes;
 
         try
         {
-            using var response = await httpClient.GetAsync(url, cancellationToken);
-            response.EnsureSuccessStatusCode();
-
-            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-
-            html = Encoding.Latin1.GetString(bytes);
+            bytes = await WithRetryAsync(url, token => ReadBytesAsync(url, token), cancellationToken);
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.NotFound)
         {
-            logger.LogWarning(exception, "{Url} 讀不到月營收報表。", url);
+            // 這一份報表根本不存在（例如某個市場那年沒有外國企業檔）。
+            // 這是「沒有這個月」的合法答案，跟抓取失敗不同。
+            logger.LogInformation("{Url} 沒有這份月營收報表。", url);
 
             return [];
         }
 
+        var html = Encoding.Latin1.GetString(bytes);
         var result = new List<MonthlyRevenue>();
 
         foreach (var match in MonthlyRowPattern.Matches(html).Cast<Match>())
@@ -164,6 +176,12 @@ public sealed partial class RevenueClient(HttpClient httpClient, ILogger<Revenue
             {
                 result.Add(new MonthlyRevenue(ticker, month, revenue));
             }
+        }
+
+        if (result.Count == 0 && bytes.Length > EmptyReportMaxBytes)
+        {
+            throw new InvalidDataException(
+                $"{url} 回了 {bytes.Length:N0} 位元組卻解不出任何一列，月營收報表的版面變了。");
         }
 
         return result;
@@ -196,24 +214,68 @@ public sealed partial class RevenueClient(HttpClient httpClient, ILogger<Revenue
     private static string? Text(JsonElement item, string property)
         => item.TryGetProperty(property, out var value) ? value.GetString() : null;
 
-    private async Task<JsonDocument?> ReadJsonAsync(string url, CancellationToken cancellationToken)
+    private async Task<JsonDocument> ReadJsonAsync(string url, CancellationToken cancellationToken)
     {
-        try
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+    }
+
+    private async Task<byte[]> ReadBytesAsync(string url, CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 抖一下就重試，重試完還是不行才往外丟。
+    ///
+    /// 以前這裡是抓到例外就記一行 warning、回空的，於是「這個月還沒公告」與
+    /// 「連線壞掉／版面改了」在呼叫端長得一模一樣，營收整批消失也只會安靜地少一欄。
+    /// 現在傳輸層的抖動自己重試，真的救不回來就讓它中止整批。
+    ///
+    /// 「回應合法但內容不對」不重試——那是對方改版，重打幾次都一樣。
+    /// </summary>
+    private async Task<T> WithRetryAsync<T>(
+        string url,
+        Func<CancellationToken, Task<T>> read,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
         {
-            using var response = await httpClient.GetAsync(url, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            try
+            {
+                return await read(cancellationToken);
+            }
+            catch (Exception exception)
+                when (attempt < MaxAttempts && IsTransient(exception, cancellationToken))
+            {
+                logger.LogWarning(
+                    "{Url} 第 {Attempt} 次失敗（{Message}），{Seconds} 秒後重試。",
+                    url,
+                    attempt,
+                    exception.Message,
+                    attempt);
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-
-            return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        }
-        catch (Exception exception) when (exception is HttpRequestException or JsonException or TaskCanceledException)
-        {
-            logger.LogWarning(exception, "{Url} 讀不到營收資料。", url);
-
-            return null;
+                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+            }
         }
     }
+
+    private static bool IsTransient(Exception exception, CancellationToken cancellationToken)
+        => !cancellationToken.IsCancellationRequested
+            && exception switch
+            {
+                // 報表不存在是合法答案，重打幾次都還是不存在。
+                HttpRequestException { StatusCode: HttpStatusCode.NotFound } => false,
+                HttpRequestException or JsonException or IOException => true,
+                _ => false
+            };
 }
 
 /// <summary>某一檔在某一個月的單月營收，單位是元。</summary>
