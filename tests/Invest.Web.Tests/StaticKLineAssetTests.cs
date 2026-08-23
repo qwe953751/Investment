@@ -244,6 +244,48 @@ public sealed class StaticKLineAssetTests
         Assert.DoesNotContain("renderRevenueRow", script, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 異常鈴鐺直接讀資料庫而不是讀快照裡的欄位()
+    {
+        // 這件事是整個鈴鐺存在的理由：最該通知的情況就是「靜態網站沒發佈成功」，
+        // 那時候線上的 manifest 還是舊的，任何寫進快照裡的訊息都送不出去。
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("id=\"alert-bell\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"alert-panel\"", html, StringComparison.Ordinal);
+        Assert.Contains("/rest/v1/site_alerts", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("manifest.alerts", script, StringComparison.Ordinal);
+        Assert.Contains(".alert-panel", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 異常訊息裡的連結只認自家Actions網址()
+    {
+        // detail 來自資料庫。無條件做成 <a href> 的話，那張表的任何一列
+        // 都能在頁面上放出任意連結；其餘一律當純文字塞進 textContent。
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("alert.detail.startsWith('https://github.com/')", script, StringComparison.Ordinal);
+        Assert.Contains("detail.textContent = alert.detail;", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("panel.innerHTML =", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 盤中刷新用牆上時鐘判斷而不是靠計時器沒被凍住()
+    {
+        // 手機把分頁凍住時 setInterval 整個停擺，解凍後是「接著跑」不是「補跑」，
+        // 畫面可以停在好幾分鐘前的數字而完全看不出來。
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("function intradayIsStale()", script, StringComparison.Ordinal);
+        Assert.Contains("Date.now() - lastIntradayLoadedAt >= intradayRefreshMs", script, StringComparison.Ordinal);
+        Assert.Contains("'visibilitychange', 'focus', 'pageshow', 'online'", script, StringComparison.Ordinal);
+        Assert.Contains("function intradayAgeText()", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("setInterval(", script, StringComparison.Ordinal);
+    }
+
     private static string ReadAsset(string fileName)
     {
         var assembly = typeof(StaticSiteExporter).Assembly;

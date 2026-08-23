@@ -215,6 +215,23 @@ jobs:
           git commit -qm "備份與狀態 $(date +%Y-%m-%d)"
           git push -q
 
+      # 網站上那個鈴鐺。放在最後、而且用 always()，因為它要回答的是
+      # 「這一輪整體有沒有成功」——前面任何一步紅了都算沒成功。
+      # 訊息寫進 Supabase 而不是快照，正是因為最該通知的情況就是發佈失敗：
+      # 那時候線上的 manifest 還是舊的，寫進快照裡的字永遠送不出去。
+      - name: 更新網站上的警報
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ '${{ job.status }}' = 'success' ]; then
+              dotnet run -c Release --project src/Invest.Web -- alert-clear "每日排行快照"
+          else
+              dotnet run -c Release --project src/Invest.Web -- alert "每日排行快照" error \
+                  "這一輪有步驟失敗，網站上的排行可能還停在前一個交易日。" "$RUN_URL"
+          fi
+
       - name: 失敗時留下線索
         if: failure()
         run: |

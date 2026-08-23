@@ -29,12 +29,14 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- curve
 //   dotnet run --project src/Invest.Web -- revenue [--backfill 月數]
 //   dotnet run --project src/Invest.Web -- turnover-audit [--loop]
+//   dotnet run --project src/Invest.Web -- alert   <來源> <error|warning> <訊息> [連結]
+//   dotnet run --project src/Invest.Web -- alert-clear <來源>
 // 這種位置引數不符合 CommandLineConfigurationProvider 的格式，會讓它丟例外，
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "export" or "intraday" or "backfill-intraday-heat" or "sync" or "verify"
-        or "status" or "curve" or "revenue" or "turnover-audit";
+        or "status" or "curve" or "revenue" or "turnover-audit" or "alert" or "alert-clear";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -71,6 +73,7 @@ builder.Services.AddSingleton<MarketFlagStore>();
 builder.Services.AddSingleton<RevenueStore>();
 builder.Services.AddSingleton<DailyQuoteSyncStore>();
 builder.Services.AddSingleton<HeartbeatStore>();
+builder.Services.AddSingleton<SiteAlertStore>();
 builder.Services.AddSingleton<SchemaMigrations>();
 builder.Services.AddTransient<MarketDataDownloader>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
@@ -136,6 +139,12 @@ if (command is "verify")
 if (command is "status")
 {
     await RunStatusAsync(app.Services, args);
+    return;
+}
+
+if (command is "alert" or "alert-clear")
+{
+    await RunAlertAsync(app.Services, command, args);
     return;
 }
 
@@ -377,6 +386,21 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
             if (TimeOnly.FromDateTime(next.DateTime) > sessionEnd)
             {
                 Console.WriteLine("已過收盤時間，結束。");
+                break;
+            }
+
+            // 颱風假這種臨時休市不會事先知道，但長相很好認：MIS 一直答得出來，
+            // 日期卻始終停在上一個交易日。開盤一小時後還是這樣就收工，不空轉到 13:35。
+            // 只要有任何一輪是「失敗」而不是「日期對不上」，就分不出休市與故障，繼續跑。
+            if (writtenRounds == 0
+                && staleRounds > 0
+                && failedRounds == 0
+                && rejectedRounds == 0
+                && TimeOnly.FromDateTime(next.DateTime) > CollectionSchedule.IntradayGiveUp)
+            {
+                Console.WriteLine(
+                    $"到 {CollectionSchedule.IntradayGiveUp:HH\\:mm} 為止 {staleRounds} 輪都是上一個交易日的資料，"
+                    + "判定今天沒有開盤，提早收工。");
                 break;
             }
 
@@ -693,6 +717,61 @@ static string SqlDecimal(decimal? value)
         : "null";
 
 static JsonSerializerOptions CreatePublicJsonOptions() => new(JsonSerializerDefaults.Web);
+
+/// <summary>
+/// 記一則異常給網站上的鈴鐺，或在流程跑成功時把它收掉。
+///
+/// 這支指令由 workflow 呼叫：失敗的步驟用 <c>alert</c>、整段跑完用 <c>alert-clear</c>。
+/// **它自己絕對不能讓 workflow 紅掉**——通知寫不進去是小事，
+/// 因為這一步失敗而蓋掉前面真正的錯誤才是大事，所以連不上資料庫只印訊息不丟例外。
+/// </summary>
+static async Task RunAlertAsync(IServiceProvider services, string command, string[] args)
+{
+    using var scope = services.CreateScope();
+    var store = scope.ServiceProvider.GetRequiredService<SiteAlertStore>();
+
+    try
+    {
+        if (command is "alert-clear")
+        {
+            if (args.Length < 2)
+            {
+                Console.WriteLine("用法：alert-clear <來源>");
+                return;
+            }
+
+            var resolved = await store.ResolveAsync(args[1]);
+
+            Console.WriteLine(resolved > 0
+                ? $"{args[1]}：解除 {resolved} 則警報。"
+                : $"{args[1]}：目前沒有未解除的警報。");
+
+            return;
+        }
+
+        if (args.Length < 4)
+        {
+            Console.WriteLine("用法：alert <來源> <error|warning> <訊息> [連結]");
+            return;
+        }
+
+        var severity = args[2].ToLowerInvariant();
+
+        if (severity is not ("error" or "warning"))
+        {
+            Console.WriteLine($"嚴重程度只能是 error 或 warning，收到「{args[2]}」。");
+            return;
+        }
+
+        await store.RaiseAsync(args[1], severity, args[3], args.Length > 4 ? args[4] : null);
+
+        Console.WriteLine($"{args[1]}：已記錄 {severity}——{args[3]}");
+    }
+    catch (Exception exception)
+    {
+        Console.WriteLine($"警報寫不進資料庫，略過：{exception.Message}");
+    }
+}
 
 /// <summary>
 /// 把本機的盤後行情同步到 Supabase，維持最近 300 個交易日的滾動視窗。

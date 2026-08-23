@@ -65,4 +65,26 @@ public class CollectionScheduleTests
         // 但 09:00 這種整點就不一定是格子邊界，量能曲線的格子也對不上鐘點。
         Assert.Equal(0, TimeSpan.FromHours(1).Ticks % Interval.Ticks);
     }
+
+    [Fact]
+    public void 判休市的時刻要在開盤之後收工之前()
+    {
+        // 早於開盤就會把「開盤前 MIS 當然給上一個交易日」誤判成休市；
+        // 晚於收工則永遠不會觸發，颱風假照樣空轉一整天。
+        var open = new TimeOnly(9, 0);
+
+        Assert.True(CollectionSchedule.IntradayGiveUp > open);
+        Assert.True(CollectionSchedule.IntradayGiveUp < CollectionSchedule.IntradayEnd);
+    }
+
+    [Fact]
+    public void 判休市之前至少要跑滿十輪才有足夠證據()
+    {
+        // 只憑一兩輪就收工太衝動：MIS 偶爾會慢半拍換日期。
+        // 開盤到判定時刻之間能跑幾輪，直接由輪距決定，改輪距這條線要跟著看。
+        var open = new TimeOnly(9, 0);
+        var rounds = (CollectionSchedule.IntradayGiveUp - open) / Interval;
+
+        Assert.True(rounds >= 10, $"開盤到判休市之間只有 {rounds} 輪，證據不夠。");
+    }
 }

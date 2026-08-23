@@ -73,3 +73,18 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- intraday --loop
+
+      # 網站上那個鈴鐺。休市會正常結束、不會走到這裡的 else，
+      # 所以颱風假不會每次都在畫面上留一個紅點。
+      - name: 更新網站上的警報
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ '${{ job.status }}' = 'success' ]; then
+              dotnet run -c Release --project src/Invest.Web -- alert-clear "盤中報價收集"
+          else
+              dotnet run -c Release --project src/Invest.Web -- alert "盤中報價收集" error \
+                  "盤中收集這一場沒有正常收工，盤中頁的數字可能停在中途。" "$RUN_URL"
+          fi

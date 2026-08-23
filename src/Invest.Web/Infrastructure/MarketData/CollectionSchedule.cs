@@ -28,6 +28,20 @@ public static class CollectionSchedule
     /// </summary>
     public static readonly TimeSpan IntradayInterval = TimeSpan.FromMinutes(2);
 
+    /// <summary>
+    /// 判定休市、提早收工的時刻。
+    ///
+    /// 台北市宣布停班就不開盤，颱風假是臨時宣布的，排程不可能事先知道。
+    /// 但不必去讀停班公告：真的休市時 MIS 照樣回應，只是日期停在上一個交易日，
+    /// 收集器本來就認得出來。開盤是 09:00，撐到這個時間還一輪都沒收到當日資料，
+    /// 就可以收工了，不必空轉到 13:35。
+    ///
+    /// 留一小時而不是開盤就判，是因為公告可能出錯、也可能開盤延後；
+    /// 而且只在「完全沒有失敗的輪次」時才敢這樣判（見 RunIntradayAsync）——
+    /// 有失敗就分不出休市與故障，寧可繼續跑。
+    /// </summary>
+    public static readonly TimeOnly IntradayGiveUp = new(10, 0);
+
     /// <summary>盤後回補開跑。收盤行情大約下午三點公布，留三小時緩衝。</summary>
     public static readonly TimeOnly DailyRefresh = new(18, 0);
 

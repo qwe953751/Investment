@@ -18,6 +18,15 @@
                 <span class="refresh-icon">↻</span>檢查更新
             </button>
             <span class="refresh-status" id="refresh-status"></span>
+            <div class="alert-bell" id="alert-bell" hidden>
+                <button type="button" class="alert-button" id="alert-toggle"
+                        aria-expanded="false"
+                        data-hint="自動流程出過的異常。有紅點代表現在還沒恢復，點開看是哪個流程、什麼時候開始的。">
+                    <span class="alert-icon">⚠</span>
+                    <span class="alert-count" id="alert-count"></span>
+                </button>
+                <div class="alert-panel" id="alert-panel" hidden></div>
+            </div>
         </div>
         <div class="view-switch" id="view-options"></div>
 

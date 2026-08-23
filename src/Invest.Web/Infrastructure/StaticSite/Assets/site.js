@@ -256,6 +256,144 @@ async function fetchAllRows(table, select, extraQuery = '') {
     }
 }
 
+// 自動流程的異常紀錄。這一份刻意不從 manifest.json 讀：
+// 最需要被通知的情況就是「靜態網站沒發佈成功」，那時候線上的 manifest 還是舊的，
+// 寫在裡面的訊息永遠送不出去。資料庫是唯一在發佈失敗時仍然會更新的地方。
+//
+// 已解除的也一起拿，但只拿最近的幾則：使用者要看得出「上次壞過但已經好了」，
+// 跟「從來沒壞過」不一樣。紅點只算沒解除的。
+const ALERT_HISTORY = 20;
+
+// 鈴鐺自己重讀的間隔。異常是分鐘級的事件，不必跟盤中報價一樣密集，
+// 但也不能只在開頁時讀一次：發佈失敗的時候使用者正盯著沒更新的畫面。
+const ALERT_REFRESH_MS = 5 * 60_000;
+
+let lastAlertsLoadedAt = 0;
+
+async function loadAlerts() {
+    if (supabase === null) {
+        return [];
+    }
+
+    const response = await fetch(
+        `${supabase.url}/rest/v1/site_alerts`
+        + '?select=raised_at,source,severity,message,detail,resolved_at'
+        + `&order=raised_at.desc&limit=${ALERT_HISTORY}`,
+        { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
+    }
+
+    return await response.json();
+}
+
+function renderAlertPanel(alerts) {
+    const panel = el('alert-panel');
+
+    panel.replaceChildren();
+
+    if (alerts.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'alert-empty';
+        empty.textContent = '目前沒有異常紀錄。';
+        panel.append(empty);
+        return;
+    }
+
+    for (const alert of alerts) {
+        const item = document.createElement('div');
+        item.className = alert.resolved_at === null ? 'alert-item' : 'alert-item is-resolved';
+
+        const head = document.createElement('div');
+        head.className = 'alert-item-head';
+
+        const when = document.createElement('span');
+        when.className = 'alert-time';
+        when.textContent = toTaipeiText(alert.raised_at);
+
+        const who = document.createElement('span');
+        who.className = 'alert-source';
+        who.textContent = alert.source;
+
+        const state = document.createElement('span');
+        state.className = 'alert-state';
+        state.textContent = alert.resolved_at === null
+            ? (alert.severity === 'error' ? '未恢復' : '注意')
+            : '已恢復';
+
+        head.append(when, who, state);
+
+        const message = document.createElement('p');
+        message.className = 'alert-message';
+        message.textContent = alert.message;
+
+        item.append(head, message);
+
+        // detail 一律當成純文字塞進 textContent，只有長得像我們自己的 Actions 網址時才做成連結，
+        // 否則資料庫裡的任何一列都能在頁面上放出任意連結。
+        if (typeof alert.detail === 'string' && alert.detail.startsWith('https://github.com/')) {
+            const link = document.createElement('a');
+            link.className = 'alert-link';
+            link.href = alert.detail;
+            link.rel = 'noopener noreferrer';
+            link.target = '_blank';
+            link.textContent = '看執行紀錄';
+            item.append(link);
+        } else if (alert.detail) {
+            const detail = document.createElement('p');
+            detail.className = 'alert-detail';
+            detail.textContent = alert.detail;
+            item.append(detail);
+        }
+
+        panel.append(item);
+    }
+}
+
+async function refreshAlerts() {
+    let alerts;
+
+    // 失敗也算一次，否則連不上資料庫時每一格 tick 都會再試一遍。
+    lastAlertsLoadedAt = Date.now();
+
+    try {
+        alerts = await loadAlerts();
+    } catch {
+        // 連不上就當作沒有異常可報。這個鈴鐺是附加資訊，
+        // 不能因為它讀不到就在畫面上多出一個永遠消不掉的警告。
+        return;
+    }
+
+    const bell = el('alert-bell');
+    const open = alerts.filter(alert => alert.resolved_at === null);
+
+    bell.hidden = alerts.length === 0;
+    bell.classList.toggle('has-open', open.length > 0);
+    el('alert-count').textContent = open.length > 0 ? String(open.length) : '';
+
+    renderAlertPanel(alerts);
+}
+
+function wireAlertBell() {
+    const toggle = el('alert-toggle');
+    const panel = el('alert-panel');
+
+    toggle.addEventListener('click', () => {
+        const opening = panel.hidden;
+        panel.hidden = !opening;
+        toggle.setAttribute('aria-expanded', String(opening));
+    });
+
+    // 點面板以外的地方就收起來，跟 K 線那兩個彈窗同一個作法。
+    document.addEventListener('click', event => {
+        if (!panel.hidden && !el('alert-bell').contains(event.target)) {
+            panel.hidden = true;
+            toggle.setAttribute('aria-expanded', 'false');
+        }
+    });
+}
+
 // 從 market_flags 讀今天最新的處置／全額交割名單。抓不到就沿用上一次的名單，
 // 這份名單一天只會被盤中 Action 寫一次，差一次刷新不會有太大影響，
 // 但不能因為抓不到就讓整張盤中排行都顯示不出來。
@@ -2596,7 +2734,7 @@ function renderSummary() {
     const baseItems = state.view === 'intraday'
         ? [
             ['交易日', current.tradeDate.replaceAll('-', '/')],
-            ['資料時間', current.capturedAt],
+            ['資料時間', current.capturedAt + intradayAgeText()],
             ['時段進度', current.progress >= 1 ? '已收盤' : toPercentText(current.progress)],
             ['全市場累計成交額', toBillionText(current.marketTotal) + ' 億元'],
             ['對照期間', current.referencePeriod],
@@ -2949,6 +3087,10 @@ async function loadIntraday(silent = false) {
         return;
     }
 
+    // 抓成功就記時間，包含「今天還沒有資料」那種空的成功：
+    // 那也是一次有效的問答，不重試才不會每十幾秒就再問一次資料庫。
+    lastIntradayLoadedAt = Date.now();
+
     if (raw.length === 0) {
         showNotice(
             '今天還沒有盤中資料。'
@@ -3036,6 +3178,7 @@ async function loadIntraday(silent = false) {
     current = {
         tradeDate: raw[0].trade_date,
         capturedAt: toTaipeiText(raw[0].captured_at),
+        capturedAtIso: raw[0].captured_at,
         progress,
         marketTotal,
         marketHeat,
@@ -3394,20 +3537,73 @@ function renderSnapshotNote() {
             : snapshotNote;
 }
 
-// 盤中頁自己更新。分頁切到背景時不打，回到前景先補一次，
-// 免得手機鎖屏一小時後回來看到的是一小時前的數字。
-function startIntradayTimer() {
-    setInterval(() => {
-        if (state.view === 'intraday' && !document.hidden) {
-            loadIntraday(true);
-        }
-    }, intradayRefreshMs);
+// 盤中頁自己更新。
+//
+// 這裡刻意不用 setInterval：手機把分頁凍住的時候計時器整個停擺，解凍之後
+// 它是「從凍住的地方接著跑」，不是「補上錯過的那幾次」，所以畫面可以停在
+// 好幾分鐘前的數字而畫面上完全看不出來。改成每次自己排下一次，並且一律
+// 拿牆上時鐘判斷該不該抓——凍多久都只會讓下一次立刻補抓，不會愈拖愈遠。
+let lastIntradayLoadedAt = 0;
 
-    document.addEventListener('visibilitychange', () => {
-        if (state.view === 'intraday' && !document.hidden) {
-            loadIntraday(true);
+function intradayIsStale() {
+    return Date.now() - lastIntradayLoadedAt >= intradayRefreshMs;
+}
+
+// 資料時間旁邊那句「幾分鐘前」。手機上最難判斷的就是「這個數字是現在的嗎」，
+// 收盤後不顯示：那時候不再更新是正常的，寫「三小時前」只會嚇人。
+function intradayAgeText() {
+    if (current === null || current.progress >= 1) {
+        return '';
+    }
+
+    const minutes = Math.floor((Date.now() - new Date(current.capturedAtIso).getTime()) / 60_000);
+
+    if (!Number.isFinite(minutes) || minutes < 1) {
+        return '（剛剛）';
+    }
+
+    return `（${minutes} 分鐘前）`;
+}
+
+function refreshIntradayIfDue() {
+    if (state.view !== 'intraday' || document.hidden || !intradayIsStale()) {
+        return;
+    }
+
+    loadIntraday(true);
+}
+
+function startIntradayTimer() {
+    // 排程用的間隔比輪距短，是為了讓「該抓了」這件事被發現得夠快；
+    // 真正要不要抓由 refreshIntradayIfDue 用牆上時鐘決定，不會因此多打資料庫。
+    const tick = Math.max(15_000, Math.round(intradayRefreshMs / 4));
+
+    const tickOnce = () => {
+        refreshIntradayIfDue();
+
+        // 「幾分鐘前」要自己走，不能等下一次抓資料才更新——
+        // 抓不到的時候正是最需要看到它一直往上加的時候。
+        if (state.view === 'intraday' && !document.hidden && current !== null) {
+            renderSummary();
         }
-    });
+
+        // 鈴鐺不分檢視都要跟著走：盤後發佈失敗時使用者多半停在盤後頁。
+        if (!document.hidden && Date.now() - lastAlertsLoadedAt >= ALERT_REFRESH_MS) {
+            refreshAlerts();
+        }
+
+        setTimeout(tickOnce, tick);
+    };
+
+    setTimeout(tickOnce, tick);
+
+    // 手機回到前景的事件不只一種，而且各家瀏覽器發的不一樣：
+    // 鎖屏解鎖是 visibilitychange、從背景分頁切回來可能只有 focus、
+    // iOS 從 back-forward cache 還原只發 pageshow。少接一個就會漏掉一種情況。
+    // 斷網重連也要補一次，否則斷線那輪失敗之後要等到下一格才會重試。
+    for (const name of ['visibilitychange', 'focus', 'pageshow', 'online']) {
+        window.addEventListener(name, refreshIntradayIfDue);
+    }
 }
 
 async function start() {
@@ -3445,10 +3641,14 @@ async function start() {
 
     renderSnapshotNote();
     wireRefreshButton();
+    wireAlertBell();
     configureKLinePopover();
     configureRevenuePopover();
     startIntradayTimer();
     renderFilters();
+
+    // 鈴鐺是附加資訊，不擋第一次畫面：連不上資料庫時整頁還是要照常出來。
+    refreshAlerts();
 
     // 營收要在第一次畫表之前就位。晚一步到的話那兩欄會先顯示 — 再跳成數字，
     // 看起來像抓錯了。只是一支小請求，擋在前面不會有感。
