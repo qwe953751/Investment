@@ -322,11 +322,23 @@
 }
 
 .market-heat-scale {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     margin-top: 7px;
     color: #8b95a7;
     font-size: 12px;
+}
+
+.market-heat-scale-cold {
+    text-align: left;
+}
+
+.market-heat-scale-neutral {
+    text-align: center;
+}
+
+.market-heat-scale-hot {
+    text-align: right;
 }
 
 .market-heat-history {
@@ -473,12 +485,22 @@
 
 .market-heat-index-changes {
     display: flex;
+    align-items: center;
+    flex-direction: column;
     justify-content: center;
-    gap: 10px;
+    gap: 0;
     margin-top: 5px;
-    font-size: 12px;
     font-variant-numeric: tabular-nums;
+    line-height: 1.25;
     white-space: nowrap;
+}
+
+.market-heat-index-daily {
+    font-size: 16px;
+}
+
+.market-heat-index-year {
+    font-size: 14px;
 }
 
 .market-heat-meta {

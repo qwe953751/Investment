@@ -192,6 +192,20 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 靜態站不再包含持倉或GoogleSheet映射樣板()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.DoesNotContain("持倉", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Google Sheet", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("portfolio", script, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Google Sheet", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("portfolio", styles, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void 指數摘要同時顯示日與今年漲跌幅且支援舊盤中欄位()
     {
         var script = ReadAsset("site.js");
@@ -214,6 +228,31 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("summary-index-row", script, StringComparison.Ordinal);
         Assert.Contains(".summary {\n    display: flex;\n    flex-direction: column;", styles, StringComparison.Ordinal);
         Assert.Contains(".summary-index-row {\n    padding-top: 8px;\n    border-top: 1px solid #eee;", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 熱絡表比例尺三段定位且指數日與今年上下分層()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css").Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        foreach (var className in new[]
+                 {
+                     "market-heat-scale-cold",
+                     "market-heat-scale-neutral",
+                     "market-heat-scale-hot",
+                     "market-heat-index-daily",
+                     "market-heat-index-year"
+                 })
+        {
+            Assert.Contains(className, script, StringComparison.Ordinal);
+        }
+
+        Assert.Contains(".market-heat-scale {\n    display: grid;", styles, StringComparison.Ordinal);
+        Assert.Contains("grid-template-columns: repeat(3, minmax(0, 1fr));", styles, StringComparison.Ordinal);
+        Assert.Contains(".market-heat-index-changes {\n    display: flex;\n    align-items: center;\n    flex-direction: column;", styles, StringComparison.Ordinal);
+        Assert.Contains(".market-heat-index-daily {\n    font-size: 16px;", styles, StringComparison.Ordinal);
+        Assert.Contains(".market-heat-index-year {\n    font-size: 14px;", styles, StringComparison.Ordinal);
     }
 
     [Fact]

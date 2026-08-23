@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>市場熱絡程度｜設計原型</title>
+    <link rel="stylesheet" href="market-heat.css">
+</head>
+<body>
+    <main class="prototype-shell ranking-layout">
+        <div class="prototype-banner">
+            <span>PROTOTYPE</span>
+            <span>這是既有排行榜的嵌入樣板；分數畫面顯示整數，背後仍保留小數計算。</span>
+        </div>
+
+        <header class="ranking-page-header">
+            <div class="ranking-title-row">
+                <div class="ranking-title-group">
+                    <p class="eyebrow">Invest · 台股市場資料</p>
+                    <h1>個股成交值排行</h1>
+                    <button type="button" class="mock-refresh">↻ 檢查更新</button>
+                </div>
+                <div class="view-switch" role="tablist" aria-label="市場資料時段">
+                    <button type="button" data-view="intraday" role="tab">盤中</button>
+                    <button type="button" data-view="daily" role="tab">盤後</button>
+                </div>
+            </div>
+            <p class="ranking-description">資料來源為證交所與櫃買中心行情；此頁只顯示一般交易個股，所有數字為本機樣板資料。</p>
+            <p class="ranking-description">市場熱絡程度會放在排行摘要上方，讓市場狀態先於本期／前期名單摘要，再接個股排行。</p>
+            <p class="snapshot-note">資料截至 2026/08/22 · 本機樣板產生於 10:12 · 點擊底部按鈕可切換熱度版型</p>
+        </header>
+
+        <section class="mock-filter-panel" aria-label="排行榜篩選條件">
+            <div class="mock-filter-group">
+                <span class="mock-filter-label">觀察期間</span>
+                <button type="button" class="mock-filter-button is-active">前一交易日</button>
+                <button type="button" class="mock-filter-button">5 日</button>
+                <button type="button" class="mock-filter-button">10 日</button>
+                <button type="button" class="mock-filter-button">20 日</button>
+            </div>
+            <div class="mock-filter-group">
+                <span class="mock-filter-label">排行模式</span>
+                <button type="button" class="mock-filter-button is-active">成交熱度</button>
+                <button type="button" class="mock-filter-button">資金加速</button>
+            </div>
+            <div class="mock-filter-group">
+                <span class="mock-filter-label">市場</span>
+                <button type="button" class="mock-filter-button is-active">全部</button>
+                <button type="button" class="mock-filter-button">上市</button>
+                <button type="button" class="mock-filter-button">上櫃</button>
+            </div>
+        </section>
+
+        <section id="heat-host" aria-live="polite"></section>
+
+        <section class="mock-summary" aria-label="排行榜摘要">
+            <div class="mock-summary-row">
+                <span>本期 <strong id="mock-current-period">2026/08/18 ~ 2026/08/22</strong></span>
+                <span>前期 <strong id="mock-previous-period">2026/08/11 ~ 2026/08/15</strong></span>
+                <span>符合條件 <strong id="mock-match-count">1,972 檔</strong></span>
+                <span>顯示前 <strong>100 名</strong></span>
+            </div>
+        </section>
+
+        <section class="mock-ranking" aria-label="個股成交值排行榜">
+            <div class="mock-ranking-heading">
+                <strong>個股成交值排行</strong>
+                <span>市場熱絡程度置於排行榜摘要上方</span>
+            </div>
+            <div class="mock-table-container">
+                <table class="mock-ranking-table">
+                    <thead>
+                        <tr>
+                            <th>排名</th>
+                            <th>排名變化</th>
+                            <th>代號</th>
+                            <th>名稱</th>
+                            <th>平均成交值（億）</th>
+                            <th>成交比變化</th>
+                            <th>漲跌幅</th>
+                            <th>收盤價</th>
+                            <th>營收增減</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>1</td><td class="mock-positive">▲ 2</td><td>2330 <small class="market-tag">市</small></td><td class="mock-stock-name">台積電</td><td>357.81</td><td class="mock-positive">+1.82%</td><td><strong class="mock-positive">+0.51%</strong><small>週 +2.84%</small></td><td>2,380.00</td><td><strong class="mock-positive">YOY +42.1%</strong><small>MOM +8.6%</small></td></tr>
+                        <tr><td>2</td><td class="mock-positive">▲ 1</td><td>2454 <small class="market-tag">市</small></td><td class="mock-stock-name">聯發科</td><td>323.89</td><td class="mock-positive">+1.24%</td><td><strong class="mock-positive">+1.10%</strong><small>週 +3.20%</small></td><td>1,245.00</td><td><strong class="mock-positive">YOY +18.4%</strong><small>MOM +4.2%</small></td></tr>
+                        <tr><td>3</td><td class="mock-negative">▼ 1</td><td>2408 <small class="market-tag">市</small></td><td class="mock-stock-name">南亞科</td><td>249.51</td><td class="mock-negative">-0.38%</td><td><strong class="mock-negative">-0.79%</strong><small>週 -1.56%</small></td><td>517.00</td><td><strong class="mock-negative">YOY -6.2%</strong><small>MOM -1.0%</small></td></tr>
+                        <tr><td>4</td><td>—</td><td>3037 <small class="market-tag">市</small></td><td class="mock-stock-name">欣興</td><td>176.66</td><td class="mock-positive">+0.64%</td><td><strong class="mock-positive">+2.35%</strong><small>週 +5.40%</small></td><td>168.50</td><td><strong class="mock-positive">YOY +9.7%</strong><small>MOM +2.1%</small></td></tr>
+                        <tr><td>5</td><td class="mock-positive">▲ 3</td><td>3189 <small class="market-tag">櫃</small></td><td class="mock-stock-name">景碩</td><td>142.08</td><td class="mock-positive">+0.29%</td><td><strong class="mock-negative">-0.42%</strong><small>週 +1.18%</small></td><td>286.00</td><td><strong class="mock-positive">YOY +12.6%</strong><small>MOM +3.4%</small></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <p class="prototype-note">
+            樣板重點：排行榜既有的摘要與表格不被取代；市場熱絡程度是中間的一個可抽換區塊。數字目前是示意資料，正式版再接既有資料流與計算服務。
+        </p>
+    </main>
+
+    <nav class="prototype-switcher" aria-label="原型版型切換">
+        <span>版型預覽</span>
+        <button type="button" data-variant="strip">狀態條</button>
+        <button type="button" data-variant="meter">儀表卡</button>
+        <button type="button" data-variant="detail">詳情卡</button>
+    </nav>
+
+    <script src="market-heat.js"></script>
+</body>
+</html>

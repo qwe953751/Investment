@@ -12,10 +12,6 @@ const KLINE_DIRECTORY = 'data/kline';
 const REVENUE_HISTORY_TABLE = 'revenue_history';
 const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && new URLSearchParams(window.location.search).get('local-revenue-preview') === '1';
-// 本機樣板直接開根網址就能看到；公開站不會啟用，因為 GitHub Pages 不是 localhost。
-// 要在本機暫時回到一般排行頁，可帶上 `?portfolio-preview=0`。
-const LOCAL_PORTFOLIO_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
-    && new URLSearchParams(window.location.search).get('portfolio-preview') !== '0';
 const KLINE_MONTHS = 3;
 const KLINE_MOVING_AVERAGES = [
     { key: 'ma5', label: 'MA5', className: 'ma5' },
@@ -41,7 +37,7 @@ const PERIODS = [
 
 // 兩種檢視的預設期間不一樣。盤後回答的是「昨天發生了什麼」，所以預設前一交易日；
 // 盤中是拿今天跟一段有代表性的期間對照，只比一天太容易被單日的異常帶走，所以預設 5 日。
-const DEFAULT_PERIOD = { daily: 1, intraday: 5, custom: 1, portfolio: 1 };
+const DEFAULT_PERIOD = { daily: 1, intraday: 5, custom: 1 };
 
 const MODES = [
     {
@@ -70,12 +66,6 @@ const VIEWS = [
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
     { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' }
 ];
-const PORTFOLIO_VIEW = {
-    key: 'portfolio',
-    text: '持倉',
-    hint: '本機樣板：把 Google Sheet 的持倉與族群映射到網站；點擊名稱開啟還原權息日 K 線。'
-};
-const availableViews = () => LOCAL_PORTFOLIO_PREVIEW ? [...VIEWS, PORTFOLIO_VIEW] : VIEWS;
 
 // 盤中頁的更新週期與收集器共用 manifest 裡的 CollectionSchedule。
 // 舊版 manifest 沒有這欄時才退回目前的 2 分鐘，避免前端失去更新能力。
@@ -635,33 +625,9 @@ const CUSTOM_COLUMNS = [
     { key: 'value', title: '成交值（億）', hint: '所選單一交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) }
 ];
 
-// 本機限定的持倉樣板。這些是示範數字，不是使用者實際持倉；真正接上 Sheet 時只替換資料來源，
-// 表格欄位與既有 K 線彈窗不用再造一套。
-const LOCAL_PORTFOLIO_POSITIONS = [
-    { ticker: '2330', group: '半導體', quantity: 100, averageCost: 2200 },
-    { ticker: '2454', group: '半導體', quantity: 50, averageCost: 3600 },
-    { ticker: '2408', group: '記憶體', quantity: 200, averageCost: 500 },
-    { ticker: '3037', group: '電子零組件', quantity: 100, averageCost: 1000 },
-    { ticker: '2308', group: '電子零組件', quantity: 80, averageCost: 1800 }
-];
-
-const PORTFOLIO_COLUMNS = [
-    { key: 'group', title: '族群', hint: '目前由 Google Sheet 的族群映射欄提供；真正接線後會以你的分類為準。', text: row => row.group, cell: row => ({ text: row.group, cls: 'portfolio-group' }) },
-    { key: 'ticker', title: '代號', hint: '右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
-    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
-    { key: 'quantity', title: '持股數', hint: '示範持倉數量，真正接上 Google Sheet 後由持倉欄提供。', value: row => row.quantity, cell: row => ({ text: toFixedText(row.quantity, 0), cls: 'numeric' }) },
-    { key: 'averageCost', title: '成本均價', hint: '示範持倉成本均價。', value: row => row.averageCost, cell: row => ({ text: toCloseText(row.averageCost), cls: 'numeric' }) },
-    { key: 'close', title: '現價', hint: '所選交易日的收盤價，取既有行情資料。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
-    { key: 'marketValue', title: '市值', hint: '現價 × 持股數量。', value: row => row.marketValue, cell: row => ({ text: toMoneyText(row.marketValue), cls: 'numeric' }) },
-    { key: 'unrealized', title: '未實現損益', hint: '（現價 − 成本均價）× 持股數量。', value: row => row.unrealized, cell: row => ({ text: toSignedMoneyText(row.unrealized), cls: 'numeric ' + toTrendClass(row.unrealized) }) },
-    { key: 'returnRate', title: '報酬率', hint: '（現價 − 成本均價）÷ 成本均價。', value: row => row.returnRate, cell: row => ({ text: toSignedPercentText(row.returnRate), cls: 'numeric ' + toTrendClass(row.returnRate) }) },
-    { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日漲跌幅；下層「週」是本週漲跌幅。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) }
-];
-
 const columns = () => state.view === 'intraday'
     ? INTRADAY_COLUMNS
-    : state.view === 'custom' ? CUSTOM_COLUMNS
-        : state.view === 'portfolio' ? PORTFOLIO_COLUMNS : COLUMNS;
+    : state.view === 'custom' ? CUSTOM_COLUMNS : COLUMNS;
 
 const state = {
     view: 'daily',
@@ -771,15 +737,12 @@ function applyViewVisibility() {
 
 function renderFilters() {
     const custom = state.view === 'custom';
-    const portfolio = state.view === 'portfolio';
-    el('page-heading').textContent = portfolio
-        ? '持倉總覽（本機樣板）'
-        : custom ? '自訂資料瀏覽' : '個股成交值排行';
+    el('page-heading').textContent = custom ? '自訂資料瀏覽' : '個股成交值排行';
     document.title = el('page-heading').textContent;
 
     renderOptions(
         'view-options',
-        availableViews().map(view => ({
+        VIEWS.map(view => ({
             ...view,
             disabled: view.key === 'intraday' && supabase === null
         })),
@@ -1033,7 +996,7 @@ function applyStoredSettings() {
     }
 
     // 盤中頁在沒有資料庫連線時是停用的，存著的值不能繞過這件事。
-    if (availableViews().some(view => view.key === stored.view)
+    if (VIEWS.some(view => view.key === stored.view)
         && (stored.view !== 'intraday' || supabase !== null)) {
         state.view = stored.view;
 
@@ -2505,7 +2468,6 @@ function configureRevenuePopover() {
 
 function renderTable() {
     el('data-table').classList.toggle('custom-table', state.view === 'custom');
-    el('data-table').classList.toggle('portfolio-table', state.view === 'portfolio');
 
     const head = el('table-head');
     head.replaceChildren();
@@ -2675,34 +2637,6 @@ function renderTable() {
 }
 
 function renderSummary() {
-    if (state.view === 'portfolio') {
-        const groups = new Set(current.rows.map(row => row.group)).size;
-        const items = [
-            ['資料來源', 'Google Sheet 映射樣板'],
-            ['交易日', current.tradeDate.replaceAll('-', '/')],
-            ['持倉標的', `${current.rows.length} 檔／${groups} 個族群`],
-            ['總市值', toMoneyText(current.totalMarketValue)],
-            ['未實現損益', toSignedMoneyText(current.totalUnrealized)]
-        ];
-
-        const summary = el('summary');
-        summary.replaceChildren();
-        const row = document.createElement('div');
-        row.className = 'summary-row summary-explanation-row portfolio-summary-row';
-
-        for (const [label, value] of items) {
-            const item = document.createElement('div');
-            const tag = document.createElement('span');
-            tag.className = 'summary-label';
-            tag.textContent = label;
-            item.append(tag, value);
-            row.append(item);
-        }
-
-        summary.append(row);
-        return;
-    }
-
     if (state.view === 'custom') {
         const threshold = activeThreshold();
         const items = [
@@ -2851,7 +2785,16 @@ function renderMarketHeat(heat, index) {
 
     const scale = document.createElement('div');
     scale.className = 'market-heat-scale';
-    scale.append('冷清', '中性', '熱絡');
+    for (const [label, className] of [
+        ['冷清', 'market-heat-scale-cold'],
+        ['中性', 'market-heat-scale-neutral'],
+        ['熱絡', 'market-heat-scale-hot']
+    ]) {
+        const item = document.createElement('span');
+        item.className = className;
+        item.textContent = label;
+        scale.append(item);
+    }
 
     const history = document.createElement('div');
     history.className = 'market-heat-history';
@@ -2950,7 +2893,7 @@ function renderMarketHeat(heat, index) {
 
         const titleRow = document.createElement('div');
         titleRow.className = 'market-heat-index-title';
-        titleRow.dataset.hint = `${label}的所選交易日收盤指數，並列顯示當日與今年截至該日的漲跌幅。`;
+        titleRow.dataset.hint = `${label}的所選交易日收盤指數；上層顯示日漲跌幅，下層顯示今年截至該日的漲跌幅。`;
         titleRow.append(label, '示意');
 
         const indexValue = document.createElement('strong');
@@ -2960,10 +2903,10 @@ function renderMarketHeat(heat, index) {
         const changes = document.createElement('div');
         changes.className = 'market-heat-index-changes';
         const dailyText = document.createElement('span');
-        dailyText.className = toTrendClass(daily);
+        dailyText.className = `market-heat-index-daily ${toTrendClass(daily)}`;
         dailyText.textContent = `日 ${toSignedPercentText(missing(daily) ? null : Number(daily) / 100, 2)}`;
         const ytdText = document.createElement('span');
-        ytdText.className = toTrendClass(yearToDate);
+        ytdText.className = `market-heat-index-year ${toTrendClass(yearToDate)}`;
         ytdText.textContent = `今年 ${toSignedPercentText(missing(yearToDate) ? null : Number(yearToDate) / 100, 2)}`;
         changes.append(dailyText, ytdText);
 
@@ -3368,54 +3311,6 @@ async function loadCustom() {
     renderLockRow();
 }
 
-async function loadPortfolioPreview() {
-    const data = await fetchPeriod(`1-${state.date}`);
-
-    if (!data) {
-        showNotice(`讀不到 ${state.date} 的樣板行情，請在本機重新產生一次靜態網站。`, true);
-        return;
-    }
-
-    const quotes = new Map(data.rows.map(row => [row.ticker, row]));
-    const rows = LOCAL_PORTFOLIO_POSITIONS.map(position => {
-        const quote = quotes.get(position.ticker) ?? {};
-        const close = missing(quote.close) ? null : Number(quote.close);
-        const marketValue = close === null ? null : close * position.quantity;
-        const unrealized = close === null
-            ? null
-            : (close - position.averageCost) * position.quantity;
-
-        return {
-            ...quote,
-            ...position,
-            name: quote.name ?? position.ticker,
-            market: quote.market ?? 'twse',
-            close,
-            marketValue,
-            unrealized,
-            returnRate: position.averageCost > 0 && close !== null
-                ? (close - position.averageCost) / position.averageCost
-                : null
-        };
-    });
-
-    nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
-    current = {
-        tradeDate: state.date,
-        rows,
-        totalMarketValue: rows.reduce((total, row) => total + (row.marketValue ?? 0), 0),
-        totalUnrealized: rows.reduce((total, row) => total + (row.unrealized ?? 0), 0),
-        rankedStockCount: rows.length,
-        rankByTicker: new Map()
-    };
-
-    el('notice').hidden = true;
-    el('ranking').hidden = false;
-    renderSummary();
-    renderTable();
-    renderLockRow();
-}
-
 async function load() {
     if (state.view === 'intraday') {
         await loadIntraday();
@@ -3424,11 +3319,6 @@ async function load() {
 
     if (state.view === 'custom') {
         await loadCustom();
-        return;
-    }
-
-    if (state.view === 'portfolio') {
-        await loadPortfolioPreview();
         return;
     }
 
@@ -3488,9 +3378,6 @@ function update(changes) {
     // 自訂頁沒有名次，預設依代號排列；其餘兩頁回到名次。
     if (changes.view !== undefined && changes.view !== state.view) {
         changes.sortKey = changes.view === 'custom' ? state.customSortKey : 'rank';
-        if (changes.view === 'portfolio') {
-            changes.sortKey = 'group';
-        }
         changes.sortDescending = changes.view === 'custom' ? state.customSortDescending : false;
 
         // 期間在兩邊是兩件事（本期多長 vs 跟多長的期間對照），預設值也不一樣，
@@ -3530,11 +3417,9 @@ function renderSnapshotNote() {
         : `收集器在交易日 ${schedule.intradayStart} 開始、${schedule.intradayEnd} 收工，`
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
 
-    el('snapshot-note').textContent = state.view === 'portfolio'
-        ? '本機樣板資料：持倉與族群模擬 Google Sheet，現價與 K 線沿用既有行情快照。'
-        : state.view === 'intraday'
-            ? `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
-            : snapshotNote;
+    el('snapshot-note').textContent = state.view === 'intraday'
+        ? `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
+        : snapshotNote;
 }
 
 // 盤中頁自己更新。
@@ -3627,13 +3512,6 @@ async function start() {
 
     // 預設值都擺好之後才套上次選的，這樣驗不過的項目自然留在預設。
     applyStoredSettings();
-
-    // 只有本機靜態預覽會進入樣板；公開網站仍維持原本的盤後預設頁。
-    if (LOCAL_PORTFOLIO_PREVIEW) {
-        state.view = 'portfolio';
-        state.sortKey = 'group';
-        state.sortDescending = false;
-    }
 
     snapshotNote =
         `資料截至 ${manifest.latestTradingDate}，共 ${manifest.tradingDayCount} 個交易日、`

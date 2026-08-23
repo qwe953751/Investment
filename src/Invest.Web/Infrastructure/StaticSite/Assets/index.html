@@ -42,10 +42,6 @@
             瀏覽單一交易日的全部上市櫃個股，不建立預設排行；可選日期與成交值下限，
             表格預設依股票代號排列，超過 100 檔時分頁顯示。
         </p>
-        <p data-view="portfolio">
-            本機樣板將 Google Sheet 的持倉與族群映射到網站；目前使用去識別化的示範資料，
-            點擊標的名稱可開啟既有的三個月還原權息日 K 線。
-        </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
     </header>
 
@@ -60,7 +56,7 @@
                 <div class="button-row" id="period-options"></div>
             </div>
 
-            <div class="filter-group" data-view="daily custom portfolio">
+            <div class="filter-group" data-view="daily custom">
                 <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
                 <div class="date-picker" id="date-picker"></div>
             </div>
@@ -131,7 +127,6 @@
                 加權、櫃買與已開啟標的的當日 K 棒會在同一輪同步更新。</p>
             <p data-view="custom">成交值為所選交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。</p>
             <p data-view="custom">營收增減顯示上個月的 YOY 與 MOM；點擊儲存格可查看 20 個月圖表與最近 5 個月列表。交易限制可複選，搜尋股號或名稱會只留下符合內容並跳到第一筆。</p>
-            <p data-view="portfolio">這是本機樣板：持倉與族群資料先用模擬的 Google Sheet 映射，現價與漲跌幅取既有行情快照；之後再替換成真正的 Sheet 讀取服務。</p>
         </footer>
     </div>
 </div>

@@ -67,7 +67,10 @@ jobs:
               create role anon;
               create role authenticated;
               create role service_role;
-              create role invest_writer;"
+              create role invest_writer;
+              -- Supabase 的託管 PostgreSQL 角色不會出現在 pg_dump 裡，
+              -- 但 public schema 的權限／擁有者語句仍可能引用它。
+              create role supabase_admin;"
           docker exec restoretest psql -U postgres -v ON_ERROR_STOP=1 -q \
               -c "create database restored;"
           docker exec restoretest psql -U postgres -d restored -v ON_ERROR_STOP=1 -q \
