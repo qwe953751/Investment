@@ -1808,3 +1808,492 @@ body {
         background: #f5f5f5;
     }
 }
+
+/* ───────────────────────── 族群分類與熱度 ─────────────────────────
+
+   排行榜的族群欄與整個族群頁。族群頁跟 #ranking 是平行的兩塊，
+   共用表格與說明泡泡的樣式，但自己有一組樹狀與展開的版面。 */
+
+/* 排行榜那一格。上下兩層各自是一顆連結，所以不能整格 white-space: nowrap 之後
+   讓兩層擠在同一行——名稱長的族群會把整張表撐開。 */
+.topic-cell {
+    max-width: 200px;
+    text-align: left !important;
+    white-space: normal !important;
+}
+
+.topic-links {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+.topic-link,
+.topic-link-blank {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    max-width: 100%;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: left;
+}
+
+.topic-link {
+    cursor: pointer;
+    color: #1a56db;
+}
+
+.topic-link:hover {
+    text-decoration: underline;
+}
+
+/* 當前題材比大題材具體，字重反過來壓住上層，一眼就分得出哪一層是細節。 */
+.topic-current {
+    color: #444;
+}
+
+.topic-link.topic-current {
+    color: #1e40af;
+    font-weight: 600;
+}
+
+.topic-link-blank,
+.topic-missing {
+    color: #999;
+    font-size: 13px;
+    cursor: help;
+}
+
+/* 「大」「現」兩個字級標記。固定寬度，兩層的族群名才會對齊。 */
+.topic-level {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    background: #eef1f6;
+    color: #667085;
+    font-size: 10px;
+    line-height: 16px;
+    text-align: center;
+}
+
+.topic-link.topic-current .topic-level {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+/* ── 族群頁的外框 ── */
+
+.topic-switch {
+    margin-bottom: 16px;
+}
+
+.topic-panel {
+    display: block;
+}
+
+.topic-warnings ul {
+    margin: 8px 0 0;
+    padding-left: 20px;
+}
+
+.topic-intro {
+    margin: 0 0 12px;
+    color: #666;
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+.topic-section-title {
+    margin: 24px 0 8px;
+    font-size: 16px;
+}
+
+/* ── 熱度排行 ── */
+
+.topic-heat-table td {
+    font-variant-numeric: tabular-nums;
+}
+
+.topic-heat-table td.topic-name-cell {
+    text-align: left;
+    white-space: normal;
+}
+
+.topic-heat-table td.topic-composite {
+    font-weight: 700;
+}
+
+/* 新聞熱度整欄現在都是 —，調淡一點，免得看起來像算壞了。 */
+.topic-heat-table td.topic-empty {
+    color: #bbb;
+}
+
+.topic-row.expanded {
+    background: #f4f8ff;
+}
+
+.topic-name-button {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    width: 100%;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.topic-caret {
+    flex: none;
+    width: 12px;
+    color: #98a2b3;
+}
+
+.topic-label {
+    font-weight: 600;
+}
+
+.topic-name-button:hover .topic-label {
+    text-decoration: underline;
+}
+
+/* 節點在樹上的位置。字小一級並吃掉整行，長路徑才不會把欄位撐爆。 */
+.topic-path {
+    flex-basis: 100%;
+    padding-left: 18px;
+    color: #98a2b3;
+    font-size: 12px;
+}
+
+.topic-tag {
+    flex: none;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: #eef1f6;
+    color: #667085;
+    font-size: 11px;
+    font-weight: 400;
+}
+
+.topic-tag-narrative {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.topic-tag-group {
+    background: #ede9fe;
+    color: #5b21b6;
+}
+
+.topic-tag-ecosystem {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.topic-tag-review {
+    background: #fee2e2;
+    color: #991b1b;
+    cursor: help;
+}
+
+/* ── 展開後的成員明細 ── */
+
+.topic-member-row > td {
+    padding: 0 12px 16px !important;
+    background: #f8fafc;
+    text-align: left !important;
+}
+
+.topic-member-title {
+    margin: 0 0 8px;
+    color: #667085;
+    font-size: 13px;
+}
+
+.topic-member-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.topic-member-table th,
+.topic-member-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid #eef1f6;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.topic-member-table th {
+    background: #f1f5f9;
+    color: #475467;
+    font-weight: 600;
+}
+
+.topic-member-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.topic-member-block {
+    margin-top: 12px;
+    padding: 12px;
+    background: #f8fafc;
+}
+
+/* ── 族群列表 ── */
+
+.topic-tree-layout {
+    display: grid;
+    grid-template-columns: minmax(260px, 1fr) minmax(320px, 1.2fr);
+    gap: 20px;
+    align-items: start;
+}
+
+.topic-tree-side,
+.topic-detail-side {
+    min-width: 0;
+}
+
+/* 樹很長，右邊的詳情跟著捲會一直看不到，所以釘住。 */
+.topic-detail-side {
+    position: sticky;
+    top: 12px;
+}
+
+.topic-branch {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.topic-branch .topic-branch {
+    padding-left: 16px;
+    border-left: 1px solid #e5e7eb;
+}
+
+.topic-branch-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+}
+
+.topic-branch-toggle {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: #98a2b3;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.topic-branch-toggle:hover {
+    background: #eef1f6;
+}
+
+.topic-branch-toggle.placeholder {
+    cursor: default;
+}
+
+.topic-branch-name {
+    padding: 2px 6px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.topic-branch-name:hover {
+    background: #eef1f6;
+}
+
+.topic-branch-name.selected {
+    background: #1a56db;
+    color: white;
+}
+
+/* 從排行榜跳過來時亮一下，否則在一百多個節點裡找不到跳到哪個。 */
+.topic-branch-name.topic-jump-highlight {
+    background: #fde68a;
+    color: #1a1a1a;
+    transition: background 1.5s ease;
+}
+
+.topic-detail {
+    padding: 16px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fafafa;
+}
+
+.topic-detail-title {
+    margin: 0 0 12px;
+    font-size: 20px;
+}
+
+.topic-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 14px;
+    margin: 0;
+    font-size: 14px;
+}
+
+.topic-facts dt {
+    color: #888;
+}
+
+.topic-facts dd {
+    margin: 0;
+    word-break: break-word;
+}
+
+/* ── 催化事件與人工編輯 ── */
+
+/* 示範資料一定要一眼看得出來，否則會有人拿去當真的看。 */
+.topic-sample-banner {
+    margin-bottom: 16px;
+    border-color: #c7d2fe;
+    background: #eef2ff;
+    color: #3730a3;
+}
+
+.topic-sample-banner p {
+    margin: 8px 0 0;
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+.topic-sample-tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: #4338ca;
+    color: white;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.topic-sample-row td {
+    font-size: 13px;
+}
+
+.topic-event-table td.topic-summary,
+.topic-edit-table td.topic-summary {
+    max-width: 280px;
+    text-align: left;
+    white-space: normal;
+}
+
+.topic-date {
+    color: #667085;
+    font-variant-numeric: tabular-nums;
+}
+
+.topic-links-cell {
+    display: table-cell;
+    text-align: left !important;
+    white-space: normal !important;
+}
+
+.topic-links-cell .topic-link,
+.topic-links-cell .topic-link-blank {
+    display: block;
+}
+
+.topic-status {
+    font-weight: 600;
+}
+
+.topic-status.is-active {
+    color: #166534;
+}
+
+.topic-status.is-fading {
+    color: #92400e;
+}
+
+.topic-status.is-expired {
+    color: #98a2b3;
+}
+
+/* AI 判斷與人工決定要分得開：人工的可以蓋掉 AI 的，反過來不行。 */
+.topic-author.by-ai {
+    color: #6d28d9;
+}
+
+.topic-author.by-human {
+    color: #1a1a1a;
+    font-weight: 600;
+}
+
+.topic-pending {
+    margin-top: 24px;
+}
+
+.topic-pending-block {
+    margin-bottom: 16px;
+}
+
+.topic-pending-block h3 {
+    margin: 0 0 6px;
+    font-size: 14px;
+}
+
+.topic-pending-block ul {
+    margin: 0;
+    padding-left: 20px;
+    color: #444;
+    font-size: 14px;
+    line-height: 1.9;
+}
+
+/* 手機版：樹與詳情改成上下堆疊，詳情不再釘住（釘住會蓋掉半個螢幕）。 */
+@media (max-width: 900px) {
+    .topic-tree-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .topic-detail-side {
+        position: static;
+    }
+}
+
+@media (max-width: 720px) {
+    .topic-cell {
+        max-width: 150px;
+    }
+
+    .topic-switch {
+        display: flex;
+        width: 100%;
+    }
+
+    .topic-event-table td.topic-summary,
+    .topic-edit-table td.topic-summary {
+        max-width: 200px;
+    }
+}

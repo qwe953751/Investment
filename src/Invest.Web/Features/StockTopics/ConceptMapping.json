@@ -1,0 +1,718 @@
+{
+  "_說明": "概念股分頁的 113 個概念，對應到 上市櫃名單&族群 F:J 樹的歸類結果。版本二（自動歸類）。",
+  "_類型": {
+    "MATCH": "名稱直接對上既有 F:J 節點，直接使用該節點",
+    "A": "既有節點的別名，建立 TopicAlias，不新增節點",
+    "B": "真正的供應鏈段位但樹上沒有，依 target 的路徑新增節點",
+    "C": "全新的大類（多為傳產與軟體），F:J 完全沒有這一塊，新增為頂層節點",
+    "D": "客戶／生態系關聯，不是供應鏈段位，不進固定族群樹",
+    "E": "集團關聯，不是供應鏈段位，不進固定族群樹",
+    "F": "市場敘事，屬於動態的當前題材層，不進固定族群樹",
+    "G": "選股條件不是產業分類，不納入族群系統"
+  },
+  "_待合併": [
+    [
+      "DDI(面板驅動IC)",
+      "DDI(顯示器驅動IC)"
+    ],
+    [
+      "IP/ASIC",
+      "IP"
+    ],
+    [
+      "重電/儲能",
+      "儲能"
+    ]
+  ],
+  "_一概念多節點": {
+    "矽晶圓/碳化矽": [
+      "矽晶圓",
+      "SiC/GaN 磊晶"
+    ],
+    "車用mosfet(車用二極體)": [
+      "MOSFET/IGBT",
+      "二極體(Diode)",
+      "車用電子"
+    ]
+  },
+  "mappings": [
+    {
+      "concept": "高價股",
+      "type": "G",
+      "target": "",
+      "note": "股價高低，與產業無關"
+    },
+    {
+      "concept": "IC設計",
+      "type": "MATCH",
+      "target": "IC設計",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "IP/ASIC",
+      "type": "B",
+      "target": "半導體>IC設計>IP/ASIC",
+      "note": ""
+    },
+    {
+      "concept": "AI",
+      "type": "F",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "AI PC",
+      "type": "F",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "IC通路",
+      "type": "MATCH",
+      "target": "IC通路",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "低軌衛星",
+      "type": "MATCH",
+      "target": "低軌衛星",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "電動車",
+      "type": "F",
+      "target": "",
+      "note": "兼具產業與敘事"
+    },
+    {
+      "concept": "車用電子",
+      "type": "MATCH",
+      "target": "車用電子",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "汽車零組件",
+      "type": "B",
+      "target": "傳產>汽車>汽車零組件",
+      "note": ""
+    },
+    {
+      "concept": "汽車",
+      "type": "B",
+      "target": "車用電子 之外另立 傳產>汽車",
+      "note": ""
+    },
+    {
+      "concept": "BBU(電池備援電力模組)",
+      "type": "MATCH",
+      "target": "BBU",
+      "note": "正規化後對上 F:J 節點"
+    },
+    {
+      "concept": "電源",
+      "type": "MATCH",
+      "target": "電源",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "CPO(光通訊/矽光子)",
+      "type": "MATCH",
+      "target": "CPO",
+      "note": "正規化後對上 F:J 節點"
+    },
+    {
+      "concept": "網通",
+      "type": "MATCH",
+      "target": "網通",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "記憶體",
+      "type": "MATCH",
+      "target": "記憶體",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "DRAM",
+      "type": "B",
+      "target": "儲存>記憶體>DRAM（需把 DRAM/HBM 拆成 DRAM 與 HBM）",
+      "note": ""
+    },
+    {
+      "concept": "NAND",
+      "type": "A",
+      "target": "NAND Flash",
+      "note": ""
+    },
+    {
+      "concept": "記憶體模組",
+      "type": "MATCH",
+      "target": "記憶體模組",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "MCU",
+      "type": "MATCH",
+      "target": "MCU",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "被動元件",
+      "type": "MATCH",
+      "target": "被動元件",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "矽晶圓/碳化矽",
+      "type": "B",
+      "target": "同時對到 矽晶圓 與 SiC/GaN 磊晶（一概念兩節點）",
+      "note": ""
+    },
+    {
+      "concept": "折疊機/軸承",
+      "type": "B",
+      "target": "零組件>軸承",
+      "note": ""
+    },
+    {
+      "concept": "機器人",
+      "type": "MATCH",
+      "target": "機器人",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "電機",
+      "type": "B",
+      "target": "電力>電機",
+      "note": ""
+    },
+    {
+      "concept": "電器電纜/線纜",
+      "type": "B",
+      "target": "電力>電纜線材",
+      "note": ""
+    },
+    {
+      "concept": "重電/儲能",
+      "type": "B",
+      "target": "電力>重電 已有；儲能 為新增",
+      "note": ""
+    },
+    {
+      "concept": "光學鏡頭",
+      "type": "B",
+      "target": "光電>光學鏡頭",
+      "note": ""
+    },
+    {
+      "concept": "光電",
+      "type": "MATCH",
+      "target": "光電",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "FOPLP",
+      "type": "A",
+      "target": "扇出型面板級封裝(FOPLP)",
+      "note": ""
+    },
+    {
+      "concept": "電子零組件",
+      "type": "A",
+      "target": "零組件",
+      "note": ""
+    },
+    {
+      "concept": "光纖",
+      "type": "B",
+      "target": "CPO 或 網通 底下（有歧義）",
+      "note": ""
+    },
+    {
+      "concept": "連接線材",
+      "type": "MATCH",
+      "target": "連接線材",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "電腦周邊設備",
+      "type": "A",
+      "target": "電腦/週邊設備",
+      "note": ""
+    },
+    {
+      "concept": "工業電腦/IPC",
+      "type": "A",
+      "target": "工業電腦(IPC)",
+      "note": ""
+    },
+    {
+      "concept": "資服/資訊服務/資安",
+      "type": "C",
+      "target": "",
+      "note": "軟體服務業，F:J 完全沒有這塊"
+    },
+    {
+      "concept": "軟體/軟體系統商",
+      "type": "C",
+      "target": "",
+      "note": "同上"
+    },
+    {
+      "concept": "安控",
+      "type": "B",
+      "target": "網通>安控",
+      "note": ""
+    },
+    {
+      "concept": "特用化學",
+      "type": "MATCH",
+      "target": "特用化學",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "ABF載板",
+      "type": "A",
+      "target": "ABF",
+      "note": ""
+    },
+    {
+      "concept": "CCL（銅箔基板）",
+      "type": "A",
+      "target": "銅箔基板(CCL)",
+      "note": ""
+    },
+    {
+      "concept": "PCB上游",
+      "type": "B",
+      "target": "PCB>PCB上游",
+      "note": ""
+    },
+    {
+      "concept": "PCB材料設備",
+      "type": "B",
+      "target": "PCB>PCB材料",
+      "note": ""
+    },
+    {
+      "concept": "PCB設備",
+      "type": "MATCH",
+      "target": "PCB設備",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "PCB",
+      "type": "MATCH",
+      "target": "PCB",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "IP",
+      "type": "B",
+      "target": "同上，與 IP/ASIC 為重複概念，需合併",
+      "note": ""
+    },
+    {
+      "concept": "散熱",
+      "type": "MATCH",
+      "target": "散熱",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "散熱周邊",
+      "type": "B",
+      "target": "散熱>散熱周邊",
+      "note": ""
+    },
+    {
+      "concept": "DDI(面板驅動IC)",
+      "type": "B",
+      "target": "半導體>IC設計>驅動IC(DDI)（與既有 DDI封測 建關聯）",
+      "note": ""
+    },
+    {
+      "concept": "CoWoS(2.5D/3D封裝)",
+      "type": "MATCH",
+      "target": "CoWoS",
+      "note": "正規化後對上 F:J 節點"
+    },
+    {
+      "concept": "機殼",
+      "type": "MATCH",
+      "target": "機殼",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "導軌",
+      "type": "MATCH",
+      "target": "導軌",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "PMIC(電源管理IC)",
+      "type": "B",
+      "target": "半導體>IC設計>PMIC",
+      "note": ""
+    },
+    {
+      "concept": "PA(功率放大器)(砷化鎵)",
+      "type": "A",
+      "target": "砷化鎵",
+      "note": ""
+    },
+    {
+      "concept": "功率元件",
+      "type": "A",
+      "target": "功率半導體",
+      "note": ""
+    },
+    {
+      "concept": "車用mosfet(車用二極體)",
+      "type": "B",
+      "target": "功率半導體>MOSFET/IGBT 與 二極體，並關聯 車用電子（多父節點）",
+      "note": ""
+    },
+    {
+      "concept": "DDI(顯示器驅動IC)",
+      "type": "B",
+      "target": "同上，與 DDI(面板驅動IC) 為重複概念，需合併",
+      "note": ""
+    },
+    {
+      "concept": "手機",
+      "type": "B",
+      "target": "電腦/週邊設備>手機 或 另立大類",
+      "note": ""
+    },
+    {
+      "concept": "板卡",
+      "type": "B",
+      "target": "電腦/週邊設備>板卡",
+      "note": ""
+    },
+    {
+      "concept": "軍工",
+      "type": "MATCH",
+      "target": "軍工",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "無人機",
+      "type": "B",
+      "target": "軍工>無人機（並關聯 太空）",
+      "note": ""
+    },
+    {
+      "concept": "鴻海集團",
+      "type": "E",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "神盾集團",
+      "type": "E",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "正崴集團",
+      "type": "E",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "AMD概念股",
+      "type": "D",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "AWS概念股",
+      "type": "D",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "SMCI概念股",
+      "type": "D",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "蘋果概念股",
+      "type": "D",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "台積電概念股",
+      "type": "D",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "廠務",
+      "type": "A",
+      "target": "廠務設備",
+      "note": ""
+    },
+    {
+      "concept": "半導體設備",
+      "type": "MATCH",
+      "target": "半導體設備",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "半導體檢測",
+      "type": "B",
+      "target": "半導體設備>檢測設備（也可能指 檢測分析，語意有歧義）",
+      "note": ""
+    },
+    {
+      "concept": "電子",
+      "type": "G",
+      "target": "",
+      "note": "範圍等於整個電子業，當族群會讓熱度排行失去鑑別度"
+    },
+    {
+      "concept": "IC封測",
+      "type": "MATCH",
+      "target": "IC封測",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "探針",
+      "type": "A",
+      "target": "探針卡(Probe Card)",
+      "note": ""
+    },
+    {
+      "concept": "晶圓代工",
+      "type": "MATCH",
+      "target": "晶圓代工",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "權值股",
+      "type": "G",
+      "target": "",
+      "note": "市值大小，與產業無關"
+    },
+    {
+      "concept": "東元集團",
+      "type": "E",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "LED",
+      "type": "MATCH",
+      "target": "LED",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "面板/面板設備",
+      "type": "A",
+      "target": "面板",
+      "note": ""
+    },
+    {
+      "concept": "化工",
+      "type": "B",
+      "target": "傳產>石化>化學產品 附近",
+      "note": ""
+    },
+    {
+      "concept": "工具機",
+      "type": "MATCH",
+      "target": "工具機",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "機械零組件",
+      "type": "B",
+      "target": "傳產>工業自動化>機械零組件",
+      "note": ""
+    },
+    {
+      "concept": "電子支付",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "太陽能",
+      "type": "MATCH",
+      "target": "太陽能",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "生技/生醫",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "防疫股",
+      "type": "F",
+      "target": "",
+      "note": "已過期的歷史題材"
+    },
+    {
+      "concept": "金融保險",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "觀光/飯店/餐旅",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "飛機",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "貨櫃航",
+      "type": "B",
+      "target": "傳產>航運>貨櫃航運",
+      "note": ""
+    },
+    {
+      "concept": "散裝航",
+      "type": "B",
+      "target": "傳產>航運>散裝航運",
+      "note": ""
+    },
+    {
+      "concept": "綠能(環保)",
+      "type": "B",
+      "target": "傳產>廢棄物處理 附近",
+      "note": ""
+    },
+    {
+      "concept": "儲能",
+      "type": "B",
+      "target": "電力>儲能（與 重電/儲能 重複）",
+      "note": ""
+    },
+    {
+      "concept": "稀土/貴金屬",
+      "type": "B",
+      "target": "傳產>貴金屬（既有）+ 稀土",
+      "note": ""
+    },
+    {
+      "concept": "黃金",
+      "type": "B",
+      "target": "傳產>貴金屬>黃金",
+      "note": ""
+    },
+    {
+      "concept": "鋼鐵/銅",
+      "type": "B",
+      "target": "傳產>鋼鐵",
+      "note": ""
+    },
+    {
+      "concept": "都更",
+      "type": "B",
+      "target": "傳產>營建>都更",
+      "note": ""
+    },
+    {
+      "concept": "營建",
+      "type": "MATCH",
+      "target": "營建",
+      "note": "名稱與 F:J 節點完全相同"
+    },
+    {
+      "concept": "食品",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "塑膠",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "玻璃陶瓷",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "橡膠",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "紡織",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "造紙",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "水泥",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "貿易百貨",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "運動休閒",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "居家生活",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "遊戲",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "水資源",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "高爾夫球",
+      "type": "C",
+      "target": "",
+      "note": ""
+    },
+    {
+      "concept": "腳踏車",
+      "type": "C",
+      "target": "",
+      "note": ""
+    }
+  ]
+}

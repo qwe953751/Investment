@@ -42,6 +42,11 @@
             瀏覽單一交易日的全部上市櫃個股，不建立預設排行；可選日期與成交值下限，
             表格預設依股票代號排列，超過 100 檔時分頁顯示。
         </p>
+        <p data-view="topics">
+            把個股的市場成交比依族群重新加總，回答「錢正在往哪一段供應鏈流」。族群樹與概念股成員都來自
+            Google Sheet，熱度一律由排行榜的既有數字聚合，不另外算一套成交值。同一檔股票掛在幾個族群，
+            每個族群就都完整計一次——這裡看的是資金流向，不是把一檔股票切成幾份。
+        </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
     </header>
 
@@ -128,6 +133,13 @@
             <p data-view="custom">成交值為所選交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。</p>
             <p data-view="custom">營收增減顯示上個月的 YOY 與 MOM；點擊儲存格可查看 20 個月圖表與最近 5 個月列表。交易限制可複選，搜尋股號或名稱會只留下符合內容並跳到第一筆。</p>
         </footer>
+    </div>
+
+    <!-- 族群檢視。整塊跟 #ranking 平行，不共用篩選面板：族群只需要觀察期間，
+         把它塞進上面那一組條件裡，切過來會看到一排跟自己無關的按鈕。 -->
+    <div id="topics" hidden>
+        <div class="view-switch topic-switch" id="topic-tab-options"></div>
+        <section class="topic-panel" id="topic-panel"></section>
     </div>
 </div>
 

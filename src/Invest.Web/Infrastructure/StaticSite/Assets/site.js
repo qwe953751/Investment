@@ -64,7 +64,16 @@ const MARKETS = [
 const VIEWS = [
     { key: 'intraday', text: '盤中', hint: '證交所的即時行情，依收集排程更新；加權、櫃買與已開啟標的的當日 K 棒同步重讀。' },
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
-    { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' }
+    { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' },
+    { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' }
+];
+
+// 族群檢視底下的四個分頁。熱度排行是主畫面，其餘三個是它的來源與維護紀錄。
+const TOPIC_TABS = [
+    { key: 'heat', text: '熱度排行', hint: '族群依綜合熱度排序。點任何一列展開這個族群目前吃到成交值的成員。' },
+    { key: 'tree', text: '族群列表', hint: 'Google Sheet 上那棵供應鏈樹，點節點看它涵蓋哪些股票。排行榜族群欄的連結就是跳到這裡。' },
+    { key: 'events', text: '催化事件', hint: '族群為什麼熱起來的事件紀錄。新聞來源還沒接上，目前放的是示範資料。' },
+    { key: 'edits', text: '人工編輯', hint: '分類被改過哪些地方，以及還等著使用者拍板的合併與歧義。' }
 ];
 
 // 盤中頁的更新週期與收集器共用 manifest 裡的 CollectionSchedule。
@@ -575,6 +584,28 @@ const REVENUE_CHANGE_HINT = '上個月的單月營收增減。YOY 跟去年同�
 const HIGH_MONTHS_HINT = '上個月的營收往回數，連續幾個月都沒有比它高的（含當月自己）。'
     + '數到手上的歷史用完會標成 N+，意思是「至少 N 個月」。沒創高顯示 —。';
 
+const TOPIC_COLUMN_HINT = '上層是大題材（供應鏈樹的最上層），下層是當前題材（這檔股票掛到的最細節點）。'
+    + '兩層各自是連結，點下去跳到族群列表的那個節點。'
+    + '規格上這一格應該由 AI 依近期新聞判斷，新聞來源還沒接上，'
+    + '所以現在是「掛在哪個節點最深就顯示哪個」的暫定規則。';
+
+// 族群欄的資料是 C# 先算好的（TopicAttributionResolver），這裡只負責畫。
+// 熱度、成員、深度那些完全不在這支腳本裡重算，否則就會有兩份定義各自漂移。
+let attributionByTicker = new Map();
+
+const attributionOf = ticker => attributionByTicker.get(ticker) ?? null;
+
+// 排序用不到（這一欄不排序），但搜尋與複製時要有純文字可用。
+function topicColumnText(ticker) {
+    const attribution = attributionOf(ticker);
+
+    if (attribution === null) {
+        return '待分類';
+    }
+
+    return `${attribution.bigTopicName ?? '待分類'}／${attribution.currentTopicName ?? '待確認'}`;
+}
+
 // 每一欄的算法滑鼠停在標題上就看得到，不必回頭翻 README。
 // value 取排序用的數字，null 代表無法計算，一律沉到最後。
 //
@@ -586,6 +617,7 @@ const COLUMNS = [
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
+    { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
     { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
@@ -649,6 +681,13 @@ const state = {
     customSearchDraft: '',
     customSortKey: 'ticker',
     customSortDescending: false,
+
+    // 族群頁。期間預設 5 日而不是 1 日：族群熱度看的是「一段資金流向」，
+    // 只看一天很容易被單日的除權息或一檔大單帶走整個族群的分數。
+    topicTab: 'heat',
+    topicPeriod: 5,
+    topicSortKey: 'composite',
+    topicSortDescending: true,
 
     sortKey: 'rank',
     sortDescending: false
@@ -733,11 +772,26 @@ function applyViewVisibility() {
     for (const element of document.querySelectorAll('[data-view]')) {
         element.hidden = !element.dataset.view.split(/\s+/).includes(state.view);
     }
+
+    // 排行榜那一整塊與族群頁互斥，但它們兩個都沒有 data-view：#ranking 的顯示與否
+    // 是 load() 依有沒有抓到資料決定的，掛上 data-view 會被上面這個迴圈蓋掉。
+    const topics = state.view === 'topics';
+    el('topics').hidden = !topics;
+
+    if (topics) {
+        el('ranking').hidden = true;
+        el('notice').hidden = true;
+    }
 }
+
+const PAGE_HEADINGS = {
+    custom: '自訂資料瀏覽',
+    topics: '族群分類與熱度'
+};
 
 function renderFilters() {
     const custom = state.view === 'custom';
-    el('page-heading').textContent = custom ? '自訂資料瀏覽' : '個股成交值排行';
+    el('page-heading').textContent = PAGE_HEADINGS[state.view] ?? '個股成交值排行';
     document.title = el('page-heading').textContent;
 
     renderOptions(
@@ -1020,6 +1074,21 @@ function applyStoredSettings() {
 
     if (MARKETS.some(market => market.key === stored.market)) {
         state.market = stored.market;
+    }
+
+    if (TOPIC_TABS.some(tab => tab.key === stored.topicTab)) {
+        state.topicTab = stored.topicTab;
+    }
+
+    // 族群的期間清單是 topics.json 決定的，這時候還沒讀進來，
+    // 所以只驗「是不是排行榜有的期間」，真正對不上會在 prepareTopics 再退回第一個。
+    if (PERIODS.some(period => period.days === stored.topicPeriod)) {
+        state.topicPeriod = stored.topicPeriod;
+    }
+
+    if (TOPIC_HEAT_COLUMNS.some(column => column.key === stored.topicSortKey)) {
+        state.topicSortKey = stored.topicSortKey;
+        state.topicSortDescending = stored.topicSortDescending === true;
     }
 
     // 門檻可以自己輸入任意金額，所以只驗「是不是合理的數字」，不驗在不在按鈕清單裡。
@@ -2538,9 +2607,18 @@ function renderTable() {
         }
 
         for (const column of columns()) {
-            const { text, cls, badges, lines, kline, marketMark, revenueDetails } = column.cell(row);
+            const { text, cls, badges, lines, kline, marketMark, revenueDetails, topic } = column.cell(row);
             const td = document.createElement('td');
             td.className = cls;
+
+            // 族群欄：上下兩層各自是一顆連結，點下去跳到族群列表的那個節點。
+            // 一定要用 Topic Id 帶過去，不能用中文名字——名字在人工編輯頁改得動，
+            // 改完連結就會找不到節點，而且改的人不會知道自己弄壞了排行榜。
+            if (cls === 'topic-cell') {
+                td.append(makeTopicCell(row.ticker, topic));
+                tr.append(td);
+                continue;
+            }
 
             // 日／週與 YOY／MOM 都共用上下兩行。兩個數字的漲跌顏色是各自的，
             // 所以每一行自己一個 span，不能整格套同一個顏色。
@@ -3311,9 +3389,1108 @@ async function loadCustom() {
     renderLockRow();
 }
 
+// ───────────────────────── 族群分類與熱度 ─────────────────────────
+//
+// 熱度、廣度、成員名單、大題材／當前題材全部是 C# 算好寫進 data/topics.json 的，
+// 這一段只做四件事：挑期間、排序、編名次、把數字排版。公式一行都不在這裡。
+//
+// 兩個檔案的分工：
+//
+//   data/topic-attributions.json  只有大題材／當前題材，排行榜那一欄用的，很小。
+//   data/topics.json              分類全樹＋五個期間的熱度與成員明細，將近 2 MB，
+//                                 只有真的切到族群頁才下載。
+
+let topicData = null;
+let topicActive = null;
+let topicById = new Map();
+let topicNote = '';
+let topicLoadError = '';
+
+// 熱度排行展開中的族群（一次只開一個，開兩個以上在手機上會整頁都是明細）。
+let expandedTopicId = null;
+
+// 族群列表：目前選中的節點，以及展開中的枝幹。
+let selectedTopicId = null;
+const openTopicBranches = new Set();
+
+// 從排行榜的族群欄點過來時要跳到的節點。畫面還沒畫出來就沒辦法捲動，
+// 所以先記著，等族群列表畫完再處理。
+let pendingTopicFocus = '';
+
+const TOPIC_CATEGORY_TEXT = {
+    fixed: '固定族群',
+    narrative: '市場敘事',
+    group: '集團',
+    ecosystem: '客戶生態系'
+};
+
+// 沒有新聞來源時這一格要說的話。硬寫「無」會讓人以為系統查過了、確定沒事。
+const TOPIC_NO_EVENT_TEXT = '近期有資金異動，但尚無明確催化事件。';
+
+// 狀態直接當 class 名稱會變成中文選擇器，CSS 那邊很難讀，所以在這裡換成拉丁字。
+const TOPIC_STATUS_CLASS = {
+    生效中: 'is-active',
+    已衰減: 'is-fading',
+    已失效: 'is-expired'
+};
+
+const topicScoreText = score => (missing(score) ? '—' : toFixedText(Number(score), 1));
+
+function topicName(id) {
+    return topicById.get(id)?.name ?? '';
+}
+
+/// 族群欄那一格。上層大題材、下層當前題材，各自是一顆可以點的連結。
+function makeTopicCell(ticker, attribution) {
+    const group = document.createElement('span');
+    group.className = 'topic-links';
+
+    if (attribution === null) {
+        const blank = document.createElement('span');
+        blank.className = 'topic-missing';
+        blank.textContent = '待分類';
+        blank.dataset.hint = '這一檔沒有出現在任何族群名單裡。族群分類是手工維護的，'
+            + '漏掉一檔很正常，補在 Google Sheet 上重新發佈就會出現。';
+        group.append(blank);
+        return group;
+    }
+
+    group.append(
+        makeTopicLink(attribution.bigTopicId, attribution.bigTopicName, 'big', ticker, attribution),
+        makeTopicLink(attribution.currentTopicId, attribution.currentTopicName, 'current', ticker, attribution));
+
+    return group;
+}
+
+function makeTopicLink(topicId, name, level, ticker, attribution) {
+    const label = level === 'big' ? '大' : '現';
+
+    if (!topicId) {
+        const blank = document.createElement('span');
+        blank.className = `topic-link-blank topic-${level}`;
+        blank.append(makeTopicLevelLabel(label), '待確認');
+        blank.dataset.hint = level === 'current'
+            ? '這一檔只掛在大題材那一層，底下沒有更細的節點可以指。'
+                + '規格上「證據不足時不要硬猜」，所以這裡留白而不是隨便填一個。'
+            : '分類表裡找不到它的頂層族群。';
+        return blank;
+    }
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `topic-link topic-${level}`;
+    button.append(makeTopicLevelLabel(label), name);
+
+    // 催化事件泡泡。桌機滑過、手機點一下都會出來，靠的是 hint.js 的 data-hint，
+    // 不必再自己做一套彈窗。
+    button.dataset.hint = `${ticker} ${nameByTicker.get(ticker) ?? ''}｜`
+        + `${attribution.bigTopicName ?? '—'} → ${attribution.currentTopicName ?? '待確認'}\n`
+        + `${TOPIC_NO_EVENT_TEXT}目前共掛在 ${attribution.topicCount} 個族群節點底下。`
+        + '點一下跳到族群列表的這個節點。';
+
+    button.addEventListener('click', () => focusTopic(topicId));
+    return button;
+}
+
+function makeTopicLevelLabel(text) {
+    const label = document.createElement('span');
+    label.className = 'topic-level';
+    label.textContent = text;
+    return label;
+}
+
+/// 從排行榜跳到族群列表的某個節點。用 Id 不用名字：名字在人工編輯頁改得動。
+function focusTopic(topicId) {
+    pendingTopicFocus = topicId;
+    update({ view: 'topics', topicTab: 'tree' });
+}
+
+// 排行榜那一欄要的東西很小，跟族群頁的完整資料分開抓，讓沒切過去的人不必付那 2 MB。
+async function loadAttributions() {
+    try {
+        const response = await fetch(`data/topic-attributions.json?v=${version}`);
+
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+        attributionByTicker = new Map(data.attributions.map(item => [item.ticker, item]));
+    } catch {
+        // 族群欄是附加資訊，抓不到就整欄顯示待分類，不能擋住排行榜。
+    }
+}
+
+async function loadTopics() {
+    const panel = el('topic-panel');
+
+    if (topicData === null && topicLoadError === '') {
+        panel.replaceChildren(makeTopicNotice('族群資料載入中…', false));
+
+        try {
+            const response = await fetch(`data/topics.json?v=${version}`);
+
+            if (!response.ok) {
+                throw new Error(String(response.status));
+            }
+
+            topicData = await response.json();
+        } catch {
+            topicLoadError = '讀不到 data/topics.json。這一份是本機 export 時產生的，'
+                + '請重新產生一次靜態網站再發佈。';
+        }
+
+        prepareTopics();
+        renderSnapshotNote();
+    }
+
+    renderTopicTabs();
+    renderTopicPanel();
+}
+
+function prepareTopics() {
+    if (topicData === null) {
+        return;
+    }
+
+    topicActive = topicData.mappings.find(mapping => mapping.version === topicData.activeVersion)
+        ?? topicData.mappings[0]
+        ?? null;
+
+    topicById = new Map((topicActive?.topics ?? []).map(topic => [topic.id, topic]));
+
+    if (!TOPIC_PERIOD_DAYS().includes(state.topicPeriod)) {
+        state.topicPeriod = TOPIC_PERIOD_DAYS()[0] ?? state.topicPeriod;
+    }
+
+    topicNote = topicActive === null
+        ? ''
+        : `族群熱度算在 ${topicData.baseDate} 這一天上，共 ${topicActive.treeTopicCount} 個階層節點、`
+            + `${topicActive.conceptTopicCount} 個樹外概念、${topicActive.stockCount} 檔股票。`
+            + `目前顯示「${topicActive.label}」。`;
+}
+
+const TOPIC_PERIOD_DAYS = () => (topicData?.periods ?? []).map(period => period.periodDays);
+
+const topicPeriod = () => (topicData?.periods ?? [])
+    .find(period => period.periodDays === state.topicPeriod) ?? null;
+
+function makeTopicNotice(message, isWarning) {
+    const notice = document.createElement('section');
+    notice.className = isWarning ? 'notice warning' : 'notice';
+    notice.textContent = message;
+    return notice;
+}
+
+function renderTopicTabs() {
+    renderOptions('topic-tab-options', TOPIC_TABS, state.topicTab, topicTab => {
+        expandedTopicId = null;
+        update({ topicTab });
+    });
+}
+
+function renderTopicPanel() {
+    const panel = el('topic-panel');
+    panel.replaceChildren();
+
+    if (topicLoadError !== '') {
+        panel.append(makeTopicNotice(topicLoadError, true));
+        return;
+    }
+
+    if (topicActive === null || topicActive.topics.length === 0) {
+        panel.append(makeTopicNotice(
+            '這份快照沒有族群分類。分類來自 Google Sheet，export 當下抓不到就會是空的。', true));
+        return;
+    }
+
+    if (topicData.warnings.length > 0) {
+        panel.append(makeTopicWarnings(topicData.warnings));
+    }
+
+    if (state.topicTab === 'heat') {
+        renderTopicHeat(panel);
+    } else if (state.topicTab === 'tree') {
+        renderTopicTree(panel);
+    } else if (state.topicTab === 'events') {
+        renderTopicEvents(panel);
+    } else {
+        renderTopicEdits(panel);
+    }
+}
+
+function makeTopicWarnings(warnings) {
+    const box = document.createElement('section');
+    box.className = 'notice warning topic-warnings';
+    const title = document.createElement('strong');
+    title.textContent = `分類匯入時有 ${warnings.length} 件事沒處理乾淨：`;
+    box.append(title);
+
+    const list = document.createElement('ul');
+
+    for (const warning of warnings) {
+        const item = document.createElement('li');
+        item.textContent = warning;
+        list.append(item);
+    }
+
+    box.append(list);
+    return box;
+}
+
+// ── 分頁一：族群熱度排行榜 ──────────────────────────────────
+
+// 每一欄的算法停在標題上就看得到，跟排行榜同一個作法。
+const TOPIC_HEAT_COLUMNS = [
+    { key: 'composite', title: '綜合熱度', hint: '資金熱度、族群廣度、新聞熱度的加權平均。新聞現在沒有來源，那 15% 會按比例分回前兩項，滿分仍然是 100——直接把新聞當 0 分的話每個族群都會憑空少掉 15 分。', value: row => row.compositeScore, cell: row => ({ text: topicScoreText(row.compositeScore), cls: 'numeric topic-composite' }) },
+    { key: 'fund', title: '資金熱度', hint: '族群成員的市場成交比加總，除以這一輪最熱的族群再拉到 0～100。同一檔股票掛在幾個族群，每個族群就都完整計一次：這裡看的是資金流向，不是把一檔股票切成幾份。', value: row => row.fundScore, cell: row => ({ text: topicScoreText(row.fundScore), cls: 'numeric' }) },
+    { key: 'breadth', title: '族群廣度', hint: '回答「是整個族群在動，還是只有一檔在動」。排行參與率 50%、上漲家數比 30%、資金分散度 20%，再依實際有量的檔數打折。這條公式還沒拍板，是文件裡的候選版本。', value: row => row.breadthScore, cell: row => ({ text: topicScoreText(row.breadthScore), cls: 'numeric' }) },
+    { key: 'news', title: '新聞熱度', hint: '目前沒有任何新聞來源接上來，一律顯示 —。接上之後這一欄才會有數字，綜合熱度的權重也會跟著回到 60 / 25 / 15。', value: row => row.newsScore, cell: row => ({ text: topicScoreText(row.newsScore), cls: 'numeric topic-empty' }) },
+    { key: 'share', title: '成交比合計', hint: '族群成員的市場成交比直接加總，也就是資金熱度標準化之前的原始數字。全市場合計會超過 100%，因為一檔股票會出現在好幾個族群裡。', value: row => row.fundRawShare, cell: row => ({ text: toPercentText(row.fundRawShare), cls: 'numeric' }) },
+    { key: 'members', title: '成員', hint: '這個族群涵蓋幾檔股票（含所有子節點，同一檔只算一次）。括號內是這段期間真的有成交量的檔數。', value: row => row.memberCount, cell: row => ({ text: `${row.memberCount}（${row.quotedCount}）`, cls: 'numeric' }) },
+    { key: 'participation', title: '排行參與率', hint: '族群裡有多少比例的成員進到全市場成交值前 50 名。', value: row => row.participationRate, cell: row => ({ text: toPercentText(row.participationRate, 1), cls: 'numeric' }) },
+    { key: 'rising', title: '上漲家數比', hint: '有報價的成員裡收紅的比例。', value: row => row.risingRate, cell: row => ({ text: toPercentText(row.risingRate, 1), cls: 'numeric' }) },
+    { key: 'dispersion', title: '資金分散度', hint: '成交值是平均分佈還是集中在一兩檔。1 代表完全平均，0 代表全部集中在一檔。已經對成員數做過修正，五檔的族群不會天生輸給三十檔的。', value: row => row.dispersionRate, cell: row => ({ text: toPercentText(row.dispersionRate, 1), cls: 'numeric' }) }
+];
+
+function renderTopicHeat(panel) {
+    const period = topicPeriod();
+
+    panel.append(makeTopicPeriodPanel());
+    renderTopicPeriodOptions();
+
+    if (period === null) {
+        panel.append(makeTopicNotice('這份快照沒有算這個期間的族群熱度。', true));
+        return;
+    }
+
+    if (!period.hasSufficientData) {
+        panel.append(makeTopicNotice(period.message ?? '資料不足。', true));
+        return;
+    }
+
+    panel.append(makeTopicHeatSummary(period));
+
+    const sortColumn = TOPIC_HEAT_COLUMNS.find(item => item.key === state.topicSortKey)
+        ?? TOPIC_HEAT_COLUMNS[0];
+
+    const rows = [...period.rows].sort((left, right) => {
+        const a = sortColumn.value(left);
+        const b = sortColumn.value(right);
+
+        // 算不出來的（例如整個族群都沒有量）一律沉到最後，不論升冪降冪。
+        if (missing(a) !== missing(b)) {
+            return missing(a) ? 1 : -1;
+        }
+
+        if (a === b) {
+            return topicName(left.topicId).localeCompare(topicName(right.topicId), 'zh-Hant');
+        }
+
+        return state.topicSortDescending ? b - a : a - b;
+    });
+
+    const container = document.createElement('div');
+    container.className = 'table-container';
+
+    const table = document.createElement('table');
+    table.className = 'ranking-table topic-heat-table';
+
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    const rank = document.createElement('th');
+    rank.className = 'unsortable col-rank';
+    rank.textContent = '名次';
+    rank.dataset.hint = '依目前排序欄位的名次。預設是綜合熱度。';
+    headRow.append(rank);
+
+    const name = document.createElement('th');
+    name.className = 'unsortable col-topic-name';
+    name.textContent = '族群';
+    name.dataset.hint = '點任何一列展開這個族群目前吃到成交值的成員（依成交比由大到小，最多 '
+        + `${topicData.maxMembersPerTopic} 檔）。`;
+    headRow.append(name);
+
+    for (const column of TOPIC_HEAT_COLUMNS) {
+        const cell = document.createElement('th');
+        cell.dataset.hint = column.hint;
+        cell.className = (state.topicSortKey === column.key ? 'sortable sorted' : 'sortable')
+            + ' col-' + column.key;
+        cell.textContent = column.title
+            + (state.topicSortKey === column.key ? (state.topicSortDescending ? ' ▼' : ' ▲') : '');
+
+        cell.addEventListener('click', () => {
+            if (state.topicSortKey === column.key) {
+                state.topicSortDescending = !state.topicSortDescending;
+            } else {
+                state.topicSortKey = column.key;
+                state.topicSortDescending = true;
+            }
+
+            writeSettings();
+            renderTopicPanel();
+        });
+
+        headRow.append(cell);
+    }
+
+    head.append(headRow);
+    table.append(head);
+
+    const body = document.createElement('tbody');
+    const columnCount = TOPIC_HEAT_COLUMNS.length + 2;
+
+    rows.forEach((row, index) => {
+        const topic = topicById.get(row.topicId);
+        const tr = document.createElement('tr');
+        tr.className = expandedTopicId === row.topicId ? 'topic-row expanded' : 'topic-row';
+
+        const rankCell = document.createElement('td');
+        rankCell.className = 'rank';
+        rankCell.textContent = index + 1;
+        tr.append(rankCell);
+
+        const nameCell = document.createElement('td');
+        nameCell.className = 'topic-name-cell';
+        nameCell.append(makeTopicRowButton(row, topic));
+        tr.append(nameCell);
+
+        for (const column of TOPIC_HEAT_COLUMNS) {
+            const { text, cls } = column.cell(row);
+            const td = document.createElement('td');
+            td.className = cls;
+            td.textContent = text;
+            tr.append(td);
+        }
+
+        body.append(tr);
+
+        // 成員明細預設收起來：一百多個族群同時攤開，畫面會長到沒辦法用。
+        if (expandedTopicId === row.topicId) {
+            body.append(makeTopicMemberRow(row, columnCount));
+        }
+    });
+
+    table.append(body);
+    container.append(table);
+    panel.append(container, makeTopicHeatFooter(period));
+}
+
+function makeTopicRowButton(row, topic) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'topic-name-button';
+    button.setAttribute('aria-expanded', String(expandedTopicId === row.topicId));
+
+    const caret = document.createElement('span');
+    caret.className = 'topic-caret';
+    caret.textContent = expandedTopicId === row.topicId ? '▾' : '▸';
+
+    const label = document.createElement('span');
+    label.className = 'topic-label';
+    label.textContent = topic?.name ?? row.topicId;
+
+    button.append(caret, label);
+
+    if (topic && topic.category !== 'fixed') {
+        const tag = document.createElement('span');
+        tag.className = 'topic-tag topic-tag-' + topic.category;
+        tag.textContent = TOPIC_CATEGORY_TEXT[topic.category] ?? topic.category;
+        tag.dataset.hint = '這不是供應鏈上的一段，是集團、客戶生態系或市場敘事。'
+            + '它跟固定族群混在同一張排行榜上，但兩者回答的不是同一個問題。';
+        button.append(tag);
+    }
+
+    // 節點在樹上的位置。同一個名字可能掛在兩個母題底下，所以路徑可能不只一條。
+    const paths = (topic?.paths ?? []).map(path => path.join(' › '));
+
+    if (paths.length > 0) {
+        const path = document.createElement('span');
+        path.className = 'topic-path';
+        path.textContent = paths[0] + (paths.length > 1 ? `（另有 ${paths.length - 1} 條路徑）` : '');
+        button.append(path);
+    }
+
+    button.addEventListener('click', () => {
+        expandedTopicId = expandedTopicId === row.topicId ? null : row.topicId;
+        renderTopicPanel();
+    });
+
+    return button;
+}
+
+function makeTopicMemberRow(row, columnCount) {
+    const tr = document.createElement('tr');
+    tr.className = 'topic-member-row';
+
+    const td = document.createElement('td');
+    td.colSpan = columnCount;
+    td.append(makeTopicMemberTitle(row), makeTopicMemberTable(row));
+    tr.append(td);
+    return tr;
+}
+
+function makeTopicMemberTitle(row) {
+    const title = document.createElement('p');
+    title.className = 'topic-member-title';
+    title.textContent = row.members.length < row.memberCount
+        ? `依市場成交比由大到小，只列前 ${row.members.length} 檔（整個族群共 ${row.memberCount} 檔）。`
+        : `全部 ${row.members.length} 檔，依市場成交比由大到小。`;
+    return title;
+}
+
+function makeTopicMemberTable(row) {
+    const table = document.createElement('table');
+    table.className = 'topic-member-table';
+
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    for (const text of ['代號', '名稱', '市場成交比', '漲跌幅', '全市場名次']) {
+        const cell = document.createElement('th');
+        cell.textContent = text;
+        headRow.append(cell);
+    }
+
+    head.append(headRow);
+
+    const body = document.createElement('tbody');
+
+    for (const member of row.members) {
+        const memberRow = document.createElement('tr');
+
+        const ticker = document.createElement('td');
+        ticker.className = 'ticker';
+        ticker.textContent = member.ticker;
+
+        if (member.market) {
+            const mark = document.createElement('span');
+            mark.className = 'market-mark';
+            mark.textContent = MARKET_MARK[member.market] ?? '';
+            ticker.append(mark);
+        }
+
+        const name = document.createElement('td');
+        name.className = 'stock-name';
+        name.textContent = member.name || topicData.stockNames[member.ticker] || '—';
+
+        const share = document.createElement('td');
+        share.className = 'numeric';
+        share.textContent = toPercentText(member.marketShare);
+
+        const change = document.createElement('td');
+        change.className = 'numeric ' + toTrendClass(member.priceChangeRate);
+        change.textContent = toSignedPercentText(member.priceChangeRate);
+
+        const rank = document.createElement('td');
+        rank.className = 'numeric';
+        rank.textContent = missing(member.rank) ? '—' : member.rank;
+
+        memberRow.append(ticker, name, share, change, rank);
+        body.append(memberRow);
+    }
+
+    table.append(head, body);
+    return table;
+}
+
+function makeTopicPeriodPanel() {
+    const wrapper = document.createElement('section');
+    wrapper.className = 'filter-panel';
+
+    const group = document.createElement('div');
+    group.className = 'filter-group';
+
+    const label = document.createElement('span');
+    label.className = 'filter-label';
+    label.textContent = '觀察期間';
+    label.dataset.hint = '族群熱度是把這段期間的個股成交比重新加總。期間換掉，熱門的族群也會跟著換：'
+        + '一天看的是今天誰在動，六十天看的是這一季的資金落在哪裡。';
+
+    const row = document.createElement('div');
+    row.className = 'button-row';
+    row.id = 'topic-period-options';
+
+    group.append(label, row);
+    wrapper.append(group);
+    return wrapper;
+}
+
+// renderOptions 是靠 id 找容器的，所以按鈕一定要等期間面板接進 DOM 之後才畫。
+function renderTopicPeriodOptions() {
+    renderOptions(
+        'topic-period-options',
+        PERIODS.filter(period => TOPIC_PERIOD_DAYS().includes(period.days))
+            .map(period => ({ key: period.days, text: period.text, hint: period.hint })),
+        state.topicPeriod,
+        days => {
+            expandedTopicId = null;
+            update({ topicPeriod: days });
+        });
+}
+
+function makeTopicHeatSummary(period) {
+    const summary = document.createElement('section');
+    summary.className = 'summary';
+
+    const row = document.createElement('div');
+    row.className = 'summary-row summary-explanation-row';
+
+    const sample = period.rows[0];
+    const items = [
+        ['期間', period.period ?? '—'],
+        ['有熱度的族群', `${period.rows.length} 個`],
+        ['實際權重', sample
+            ? `資金 ${toPercentText(sample.fundWeight, 0)}、廣度 ${toPercentText(sample.breadthWeight, 0)}、`
+                + `新聞 ${toPercentText(sample.newsWeight, 0)}`
+            : '—'],
+        ['分類版本', topicActive.label]
+    ];
+
+    for (const [label, value] of items) {
+        const item = document.createElement('div');
+        const tag = document.createElement('span');
+        tag.className = 'summary-label';
+        tag.textContent = label;
+        item.append(tag, value);
+        row.append(item);
+    }
+
+    summary.append(row);
+    return summary;
+}
+
+function makeTopicHeatFooter(period) {
+    const footer = document.createElement('footer');
+    footer.className = 'page-footer';
+
+    const lines = [
+        '族群熱度不是另外算一套成交值，而是把排行榜已經算好的市場成交比依族群重新加總，'
+            + '所以它跟盤後排行永遠對得起來。',
+        '同一檔股票掛在幾個族群，每個族群就都完整計它一次，不做拆分。'
+            + '這是刻意的：要看的是「錢往哪一段流」，把台積電切成三份會讓每一段都看起來不熱。'
+            + '因此全部族群的成交比加起來會超過 100%。',
+        `新聞熱度目前沒有來源，那 15% 會按比例分回資金與廣度，滿分仍然是 100。`
+            + '上面「實際權重」寫的就是這一輪真正用到的數字。',
+        '資金熱度的分母是這一輪最熱的那個族群，所以 100 分代表「這一輪的第一名」，'
+            + '不是絕對的滿分。這個作法還沒拍板。',
+        '族群廣度用的是文件裡的候選公式（排行參與率 50%、上漲家數比 30%、資金分散度 20%，'
+            + '再依有量檔數打折），同樣還沒拍板。',
+        `熱度算在 ${topicData.baseDate}，期間為 ${period.period ?? '—'}。`
+            + '族群分類只有「現在這一份」，拿今天的名單回頭套三個月前的行情會算出一段從來沒發生過的歷史，'
+            + '所以熱度只做最新一天。'
+    ];
+
+    for (const line of lines) {
+        const item = document.createElement('p');
+        item.textContent = line;
+        footer.append(item);
+    }
+
+    return footer;
+}
+
+// ── 分頁二：族群列表 ────────────────────────────────────────
+
+function renderTopicTree(panel) {
+    // 節點詳情要顯示這個期間的熱度與成員，所以期間選擇器兩個分頁都要有。
+    panel.append(makeTopicPeriodPanel());
+    renderTopicPeriodOptions();
+
+    const layout = document.createElement('div');
+    layout.className = 'topic-tree-layout';
+
+    const treeSide = document.createElement('div');
+    treeSide.className = 'topic-tree-side';
+
+    const intro = document.createElement('p');
+    intro.className = 'topic-intro';
+    intro.textContent = 'Google Sheet 上那棵供應鏈樹。同一個節點可能同時掛在兩個母題底下'
+        + '（例如 FOPLP 既在低軌衛星也在面板級封裝），所以它會出現在兩個地方，但成員只算一次。';
+    treeSide.append(intro);
+
+    const roots = topicActive.topics
+        .filter(topic => topic.source === 'tree' && topic.depth === 0)
+        .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
+
+    treeSide.append(makeTopicBranchList(roots, new Set()));
+
+    // 樹外的三類：集團、客戶生態系、市場敘事。它們不是供應鏈段位，
+    // 混進樹裡會讓「這是哪一段」這個問題失去意義，所以另外列。
+    for (const category of ['narrative', 'group', 'ecosystem']) {
+        const nodes = topicActive.topics
+            .filter(topic => topic.source === 'concept' && topic.category === category)
+            .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
+
+        if (nodes.length === 0) {
+            continue;
+        }
+
+        const title = document.createElement('h2');
+        title.className = 'topic-section-title';
+        title.textContent = `${TOPIC_CATEGORY_TEXT[category]}（${nodes.length}）`;
+        title.dataset.hint = '不是供應鏈上的一段，所以不放進樹裡，但仍然會算熱度。';
+        treeSide.append(title, makeTopicBranchList(nodes, new Set()));
+    }
+
+    const detailSide = document.createElement('div');
+    detailSide.className = 'topic-detail-side';
+    detailSide.id = 'topic-detail';
+    detailSide.append(makeTopicDetail(selectedTopicId));
+
+    layout.append(treeSide, detailSide);
+    panel.append(layout);
+
+    applyPendingTopicFocus();
+}
+
+function makeTopicBranchList(nodes, ancestors) {
+    const list = document.createElement('ul');
+    list.className = 'topic-branch';
+
+    for (const node of nodes) {
+        list.append(makeTopicBranchItem(node, ancestors));
+    }
+
+    return list;
+}
+
+function makeTopicBranchItem(node, ancestors) {
+    const item = document.createElement('li');
+    item.className = 'topic-branch-item';
+
+    const line = document.createElement('div');
+    line.className = 'topic-branch-line';
+
+    const children = (node.childIds ?? [])
+        .map(id => topicById.get(id))
+        .filter(child => child !== undefined && !ancestors.has(child.id))
+        .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
+
+    const open = openTopicBranches.has(node.id);
+
+    if (children.length > 0) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'topic-branch-toggle';
+        toggle.textContent = open ? '▾' : '▸';
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.setAttribute('aria-label', `${open ? '收合' : '展開'} ${node.name}`);
+        toggle.addEventListener('click', () => {
+            if (open) {
+                openTopicBranches.delete(node.id);
+            } else {
+                openTopicBranches.add(node.id);
+            }
+
+            renderTopicPanel();
+        });
+        line.append(toggle);
+    } else {
+        const spacer = document.createElement('span');
+        spacer.className = 'topic-branch-toggle placeholder';
+        line.append(spacer);
+    }
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = selectedTopicId === node.id
+        ? 'topic-branch-name selected'
+        : 'topic-branch-name';
+    button.dataset.topicId = node.id;
+    button.textContent = node.name;
+    button.addEventListener('click', () => {
+        selectedTopicId = node.id;
+        renderTopicPanel();
+    });
+    line.append(button);
+
+    if (node.category !== 'fixed') {
+        const tag = document.createElement('span');
+        tag.className = 'topic-tag topic-tag-' + node.category;
+        tag.textContent = TOPIC_CATEGORY_TEXT[node.category] ?? node.category;
+        line.append(tag);
+    }
+
+    if (node.needsReview) {
+        const tag = document.createElement('span');
+        tag.className = 'topic-tag topic-tag-review';
+        tag.textContent = '待整理';
+        tag.dataset.hint = '這個節點的歸類還有疑義，等使用者拍板。細節看人工編輯頁。';
+        line.append(tag);
+    }
+
+    item.append(line);
+
+    if (children.length > 0 && open) {
+        const nested = new Set(ancestors);
+        nested.add(node.id);
+        item.append(makeTopicBranchList(children, nested));
+    }
+
+    return item;
+}
+
+function makeTopicDetail(topicId) {
+    const box = document.createElement('section');
+    box.className = 'topic-detail';
+
+    const node = topicId === null ? null : topicById.get(topicId);
+
+    if (!node) {
+        const hint = document.createElement('p');
+        hint.className = 'topic-intro';
+        hint.textContent = '點左邊任何一個節點，這裡會列出它涵蓋的股票與目前的熱度。';
+        box.append(hint);
+        return box;
+    }
+
+    const title = document.createElement('h2');
+    title.className = 'topic-detail-title';
+    title.textContent = node.name;
+    box.append(title);
+
+    const facts = document.createElement('dl');
+    facts.className = 'topic-facts';
+
+    const period = topicPeriod();
+    const row = period?.rows.find(item => item.topicId === node.id) ?? null;
+    const paths = (node.paths ?? []).map(path => path.join(' › '));
+
+    const entries = [
+        ['分類', TOPIC_CATEGORY_TEXT[node.category] ?? node.category],
+        ['樹上位置', paths.length > 0 ? paths.join('｜') : '不在固定族群樹上'],
+        ['別名', node.aliases?.length ? node.aliases.join('、') : '—'],
+        ['來自概念股', node.sourceConcepts?.length ? node.sourceConcepts.join('、') : '—'],
+        ['成員檔數', row ? `${row.memberCount} 檔（有量 ${row.quotedCount} 檔）` : '這個期間沒有成交'],
+        [`綜合熱度（${period?.period ?? '—'}）`, row ? topicScoreText(row.compositeScore) : '—'],
+        ['歸類備註', node.mappingNote || '—']
+    ];
+
+    for (const [label, value] of entries) {
+        const term = document.createElement('dt');
+        term.textContent = label;
+        const detail = document.createElement('dd');
+        detail.textContent = value;
+        facts.append(term, detail);
+    }
+
+    box.append(facts);
+
+    if (row === null) {
+        const empty = document.createElement('p');
+        empty.className = 'topic-intro';
+        empty.textContent = '這個節點在目前的觀察期間沒有任何成員有成交量，所以列不出成員明細。'
+            + '換一個期間或到熱度排行看看。';
+        box.append(empty);
+        return box;
+    }
+
+    box.append(makeTopicMemberBlock(row));
+    return box;
+}
+
+function makeTopicMemberBlock(row) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'topic-member-block table-container';
+    wrapper.append(makeTopicMemberTitle(row), makeTopicMemberTable(row));
+    return wrapper;
+}
+
+/// 從排行榜跳過來時把沿路的枝幹打開、選中節點、捲到看得見的地方。
+function applyPendingTopicFocus() {
+    if (pendingTopicFocus === '') {
+        return;
+    }
+
+    const target = pendingTopicFocus;
+    pendingTopicFocus = '';
+
+    if (!topicById.has(target)) {
+        return;
+    }
+
+    // 往上把所有祖先展開。多重父節點的話每一條路都開，反正選中的只有一個。
+    const queue = [...(topicById.get(target).parentIds ?? [])];
+    const seen = new Set();
+
+    while (queue.length > 0) {
+        const id = queue.pop();
+
+        if (seen.has(id) || !topicById.has(id)) {
+            continue;
+        }
+
+        seen.add(id);
+        openTopicBranches.add(id);
+        queue.push(...(topicById.get(id).parentIds ?? []));
+    }
+
+    selectedTopicId = target;
+    renderTopicPanel();
+
+    const button = document.querySelector(`.topic-branch-name[data-topic-id="${target}"]`);
+
+    if (button) {
+        button.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        button.classList.add('topic-jump-highlight');
+        setTimeout(() => button.classList.remove('topic-jump-highlight'), 1600);
+    }
+}
+
+// ── 分頁三：催化事件／新聞資料 ──────────────────────────────
+
+function renderTopicEvents(panel) {
+    panel.append(makeSampleBanner(
+        '催化事件的新聞來源還沒接上，下面這幾則是示範資料，用來確認欄位夠不夠、版面對不對。',
+        '族群熱度一行都不讀它：新聞熱度目前一律顯示 —。真的接上新聞來源之後，這一頁改讀真實資料。'));
+
+    const events = topicData.sampleEvents ?? [];
+
+    if (events.length === 0) {
+        panel.append(makeTopicNotice('目前沒有任何催化事件。', false));
+        return;
+    }
+
+    const container = document.createElement('div');
+    container.className = 'table-container';
+
+    const table = document.createElement('table');
+    table.className = 'ranking-table topic-event-table';
+
+    const headings = [
+        ['日期', '事件發生或被報導的日期。'],
+        ['事件', '一句話講完發生什麼事。'],
+        ['催化類型', '漲價、擴產、訂單、政策、財報這幾類。分類是為了之後看「哪一種事件真的帶得動資金」。'],
+        ['影響範圍', '公司事件、族群事件、總體事件，還是只是間接關聯。'],
+        ['關聯族群', '這則事件掛到哪些族群節點。點下去跳到族群列表。'],
+        ['直接程度', '公司直接、族群直接、客戶／生態系關聯、市場題材聯想。越往後越容易誤判。'],
+        ['信心', '0～1。低於 0.5 的多半是媒體轉述或題材聯想，不該拿來當進出依據。'],
+        ['狀態', '生效中、已衰減、已失效。事件會過期，不標的話舊消息會一直撐著熱度。'],
+        ['來源', '這則消息是從哪裡來的。']
+    ];
+
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    for (const [text, hint] of headings) {
+        const cell = document.createElement('th');
+        cell.className = 'unsortable';
+        cell.textContent = text;
+        cell.dataset.hint = hint;
+        headRow.append(cell);
+    }
+
+    head.append(headRow);
+
+    const body = document.createElement('tbody');
+
+    for (const event of events) {
+        const tr = document.createElement('tr');
+        tr.className = 'topic-sample-row';
+
+        appendTextCell(tr, event.date, 'topic-date');
+        appendTextCell(tr, event.summary, 'topic-summary');
+        appendTextCell(tr, event.catalystType);
+        appendTextCell(tr, event.scope);
+
+        const topics = document.createElement('td');
+        topics.className = 'topic-links-cell';
+
+        event.topicNames.forEach((name, index) => {
+            const id = event.topicIds?.[index] ?? null;
+
+            if (id && topicById.has(id)) {
+                const link = document.createElement('button');
+                link.type = 'button';
+                link.className = 'topic-link';
+                link.textContent = name;
+                link.addEventListener('click', () => focusTopic(id));
+                topics.append(link);
+            } else {
+                const plain = document.createElement('span');
+                plain.className = 'topic-link-blank';
+                plain.textContent = name;
+                plain.dataset.hint = '示範資料裡的名字，目前的分類表上找不到對應節點。';
+                topics.append(plain);
+            }
+        });
+
+        tr.append(topics);
+        appendTextCell(tr, event.directness);
+        appendTextCell(tr, toFixedText(Number(event.confidence), 2), 'numeric');
+        appendTextCell(tr, event.status, 'topic-status ' + (TOPIC_STATUS_CLASS[event.status] ?? ''));
+        appendTextCell(tr, event.source);
+        body.append(tr);
+    }
+
+    table.append(head, body);
+    container.append(table);
+    panel.append(container);
+}
+
+function appendTextCell(row, text, cls) {
+    const cell = document.createElement('td');
+
+    if (cls) {
+        cell.className = cls;
+    }
+
+    cell.textContent = text ?? '—';
+    row.append(cell);
+    return cell;
+}
+
+function makeSampleBanner(...lines) {
+    const box = document.createElement('section');
+    box.className = 'notice topic-sample-banner';
+
+    const tag = document.createElement('span');
+    tag.className = 'topic-sample-tag';
+    tag.textContent = '示範資料';
+    box.append(tag);
+
+    for (const line of lines) {
+        const item = document.createElement('p');
+        item.textContent = line;
+        box.append(item);
+    }
+
+    return box;
+}
+
+// ── 分頁四：人工編輯 ────────────────────────────────────────
+
+function renderTopicEdits(panel) {
+    panel.append(makeSampleBanner(
+        '編輯紀錄本身還沒有寫入的地方，下面這幾筆是示範資料，用來確認要記哪些欄位。',
+        '底下的「等著拍板」與「歸類還有疑義」則是真的：那些是這一份分類目前真實的狀態。'));
+
+    const container = document.createElement('div');
+    container.className = 'table-container';
+
+    const table = document.createElement('table');
+    table.className = 'ranking-table topic-edit-table';
+
+    const headings = [
+        ['時間', '這筆修改是什麼時候發生的。'],
+        ['對象', '被改的族群或概念。'],
+        ['欄位', '改的是名稱、別名、父子關係、顯示狀態還是催化事件。'],
+        ['改前', '原本的值。'],
+        ['改後', '改成什麼。'],
+        ['修改者', '人工還是 AI。AI 改的可以被人工覆蓋，反過來不行。'],
+        ['鎖定', '打勾代表這一筆是人工決定，之後 AI 重新分類時不會被蓋掉。'],
+        ['說明', '為什麼這樣改。']
+    ];
+
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    for (const [text, hint] of headings) {
+        const cell = document.createElement('th');
+        cell.className = 'unsortable';
+        cell.textContent = text;
+        cell.dataset.hint = hint;
+        headRow.append(cell);
+    }
+
+    head.append(headRow);
+
+    const body = document.createElement('tbody');
+
+    for (const edit of topicData.sampleEdits ?? []) {
+        const tr = document.createElement('tr');
+        tr.className = 'topic-sample-row';
+
+        appendTextCell(tr, edit.changedAt, 'topic-date');
+        appendTextCell(tr, edit.target);
+        appendTextCell(tr, edit.field);
+        appendTextCell(tr, edit.before);
+        appendTextCell(tr, edit.after);
+        appendTextCell(tr, edit.author, 'topic-author ' + (edit.author === 'AI' ? 'by-ai' : 'by-human'));
+        appendTextCell(tr, edit.locked ? '✓' : '—', 'numeric');
+        appendTextCell(tr, edit.note, 'topic-summary');
+        body.append(tr);
+    }
+
+    table.append(head, body);
+    container.append(table);
+    panel.append(container);
+
+    panel.append(makeTopicPendingBlock());
+}
+
+function makeTopicPendingBlock() {
+    const box = document.createElement('section');
+    box.className = 'topic-pending';
+
+    const merges = topicData.pendingMerges ?? [];
+    const multi = Object.entries(topicData.multiNodeConcepts ?? {});
+    const review = topicActive.topics.filter(topic => topic.needsReview);
+
+    const title = document.createElement('h2');
+    title.className = 'topic-section-title';
+    title.textContent = '等著使用者拍板的事';
+    box.append(title);
+
+    const intro = document.createElement('p');
+    intro.className = 'topic-intro';
+    intro.textContent = '這幾件事程式刻意不替你決定：合併兩個概念、把一個概念拆到多個節點、'
+        + '判斷有歧義的歸類，做錯了之後會很難發現，因為熱度照樣算得出數字。';
+    box.append(intro);
+
+    box.append(makeTopicPendingList(
+        `重複的概念，等著合併（${merges.length}）`,
+        merges.map(group => `${group.join(' ＝ ')}　→　目前兩邊都還在，成員各自累積`)));
+
+    box.append(makeTopicPendingList(
+        `一個概念掛到多個節點（${multi.length}）`,
+        multi.map(([concept, nodes]) => `${concept}　→　${nodes.join('、')}`)));
+
+    box.append(makeTopicPendingList(
+        `歸類還有疑義（${review.length}）`,
+        review.map(topic => `${topic.name}　→　${topic.mappingNote || '原始歸類表標了歧義'}`)));
+
+    return box;
+}
+
+function makeTopicPendingList(title, lines) {
+    const block = document.createElement('div');
+    block.className = 'topic-pending-block';
+
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    block.append(heading);
+
+    if (lines.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'topic-intro';
+        empty.textContent = '目前沒有。';
+        block.append(empty);
+        return block;
+    }
+
+    const list = document.createElement('ul');
+
+    for (const line of lines) {
+        const item = document.createElement('li');
+        item.textContent = line;
+        list.append(item);
+    }
+
+    block.append(list);
+    return block;
+}
+
 async function load() {
     if (state.view === 'intraday') {
         await loadIntraday();
+        return;
+    }
+
+    if (state.view === 'topics') {
+        await loadTopics();
         return;
     }
 
@@ -3416,6 +4593,11 @@ function renderSnapshotNote() {
         ? ''
         : `收集器在交易日 ${schedule.intradayStart} 開始、${schedule.intradayEnd} 收工，`
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
+
+    if (state.view === 'topics') {
+        el('snapshot-note').textContent = topicNote || snapshotNote;
+        return;
+    }
 
     el('snapshot-note').textContent = state.view === 'intraday'
         ? `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
@@ -3528,9 +4710,9 @@ async function start() {
     // 鈴鐺是附加資訊，不擋第一次畫面：連不上資料庫時整頁還是要照常出來。
     refreshAlerts();
 
-    // 營收要在第一次畫表之前就位。晚一步到的話那兩欄會先顯示 — 再跳成數字，
-    // 看起來像抓錯了。只是一支小請求，擋在前面不會有感。
-    await loadRevenue();
+    // 營收與族群欄都要在第一次畫表之前就位。晚一步到的話那幾欄會先顯示 — 再跳成內容，
+    // 看起來像抓錯了。兩支都是小請求，擋在前面不會有感。
+    await Promise.all([loadRevenue(), loadAttributions()]);
     await load();
 }
 
