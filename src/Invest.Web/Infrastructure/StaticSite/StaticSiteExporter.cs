@@ -212,54 +212,140 @@ public sealed class StaticSiteExporter(
             catalog = new TopicCatalog { Warnings = [$"讀取族群分類時發生錯誤：{exception.Message}"] };
         }
 
+        var active = catalog.Active;
         var periods = new List<TopicPeriodExport>();
 
-        foreach (var (periodDays, ranking) in rankings.OrderBy(entry => entry.Key))
+        if (active is not null)
         {
-            var heat = TopicHeatCalculator.Calculate(catalog, ranking);
+            foreach (var (periodDays, ranking) in rankings.OrderBy(entry => entry.Key))
+            {
+                var heat = TopicHeatCalculator.Calculate(active, ranking);
 
-            periods.Add(new TopicPeriodExport(
-                periodDays,
-                heat.HasSufficientData,
-                heat.Message,
-                RankingFormatter.ToPeriodText(heat.PeriodStart, heat.PeriodEnd),
-                [.. heat.Rows.Select(ToExport)]));
+                periods.Add(new TopicPeriodExport(
+                    periodDays,
+                    heat.HasSufficientData,
+                    heat.Message,
+                    RankingFormatter.ToPeriodText(heat.PeriodStart, heat.PeriodEnd),
+                    [.. heat.Rows.Select(ToExport)]));
+            }
         }
 
-        var linkCount = catalog.Links.Count;
-        var treeCount = catalog.Topics.Count(topic => topic.Source == TopicSource.Tree);
-        var conceptCount = catalog.Topics.Count(topic => topic.Source == TopicSource.Concept);
+        // 排行榜那一格的大題材／當前題材只算顯示中的那一版：
+        // 版本一的樹幾乎沒有成員，算出來會有八成的股票是空白。
+        var attributions = active is null
+            ? []
+            : TopicAttributionResolver.Resolve(active);
+
+        var mappings = catalog.Mappings
+            .Select(mapping => new TopicMappingExport(
+                mapping.Version,
+                mapping.Label,
+                mapping.Description,
+                mapping.Topics.Count(topic => topic.Source == TopicSource.Tree),
+                mapping.Topics.Count(topic => topic.Source == TopicSource.Concept),
+                mapping.Links.Select(link => link.Ticker).Distinct(StringComparer.Ordinal).Count(),
+                mapping.Links.Count,
+                [.. mapping.Topics.Select(ToExport)]))
+            .ToArray();
+
+        var topicIdByName = active?.Topics
+            .GroupBy(topic => topic.Name, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.Ordinal)
+            ?? [];
 
         await WriteJsonAsync(
             Path.Combine(dataDirectory, "topics.json"),
             new TopicsExport(
                 baseDate?.ToString("yyyy-MM-dd") ?? "—",
-                treeCount,
-                conceptCount,
-                catalog.Links.Select(link => link.Ticker).Distinct(StringComparer.Ordinal).Count(),
-                linkCount,
+                catalog.ActiveVersion,
                 TopicHeatCalculator.MaxExportedMembers,
+                TopicHeatCalculator.FundWeight,
+                TopicHeatCalculator.BreadthWeight,
+                TopicHeatCalculator.NewsWeight,
                 catalog.Warnings,
-                [.. catalog.Topics.Select(ToExport)],
+                mappings,
                 catalog.StockNames,
+                [.. attributions.Select(item => new TopicAttributionExport(
+                    item.Ticker,
+                    item.BigTopicId,
+                    item.BigTopicName,
+                    item.CurrentTopicId,
+                    item.CurrentTopicName,
+                    item.TopicCount))],
+                [.. catalog.PendingMerges],
+                catalog.MultiNodeConcepts,
+                [.. TopicSampleData.Events.Select(item => new TopicEventExport(
+                    item.Date,
+                    item.Summary,
+                    item.CatalystType,
+                    item.Scope,
+                    item.TopicNames,
+                    [.. item.TopicNames.Select(name => topicIdByName.GetValueOrDefault(name))],
+                    item.DirectTickers,
+                    item.Source,
+                    item.Directness,
+                    item.Confidence,
+                    item.Status,
+                    item.UpdatedAt))],
+                [.. TopicSampleData.Edits.Select(item => new TopicEditExport(
+                    item.ChangedAt,
+                    item.Target,
+                    item.Field,
+                    item.Before,
+                    item.After,
+                    item.Author,
+                    item.Note,
+                    item.Locked))],
                 periods),
             cancellationToken);
 
-        return catalog.IsEmpty
-            ? "族群分類讀不到，topics.json 寫出空的資料，族群頁會顯示尚無資料"
-            : $"族群分類：{treeCount} 個階層節點、{conceptCount} 個概念、{linkCount} 筆股票對應";
+        // 排行榜的族群欄只用得到大題材／當前題材這一小塊，但 topics.json 連五個期間的
+        // 成員明細一起將近 2 MB。為了畫兩行字讓每一個開排行榜的人都下載那麼多東西太重，
+        // 所以另外寫一份薄的；族群頁自己要看熱度時才去讀完整那份。
+        await WriteJsonAsync(
+            Path.Combine(dataDirectory, "topic-attributions.json"),
+            new TopicAttributionsExport(
+                catalog.ActiveVersion,
+                [.. attributions.Select(item => new TopicAttributionExport(
+                    item.Ticker,
+                    item.BigTopicId,
+                    item.BigTopicName,
+                    item.CurrentTopicId,
+                    item.CurrentTopicName,
+                    item.TopicCount))]),
+            cancellationToken);
+
+        if (catalog.IsEmpty)
+        {
+            return "族群分類讀不到，topics.json 寫出空的資料，族群頁會顯示尚無資料";
+        }
+
+        var report = mappings.Select(mapping =>
+            $"{mapping.Label} {mapping.TreeTopicCount} 個階層節點、"
+            + $"{mapping.ConceptTopicCount} 個樹外概念、{mapping.LinkCount} 筆股票對應");
+
+        return "族群分類：" + string.Join("；", report);
     }
 
     private static TopicExport ToExport(Topic topic) => new(
         topic.Id,
         topic.Name,
         topic.Source == TopicSource.Tree ? "tree" : "concept",
+        topic.Category switch
+        {
+            TopicCategory.Narrative => "narrative",
+            TopicCategory.Group => "group",
+            TopicCategory.Ecosystem => "ecosystem",
+            _ => "fixed"
+        },
         topic.Depth,
         topic.ParentIds,
         topic.ChildIds,
         topic.Aliases,
         topic.LinkedTopicId,
         topic.NeedsReview ? true : null,
+        topic.MappingNote,
+        topic.SourceConcepts,
         topic.DirectTickers,
         topic.Paths);
 
@@ -793,19 +879,47 @@ public sealed class StaticSiteExporter(
     /// </summary>
     private sealed record TopicsExport(
         string BaseDate,
+        int ActiveVersion,
+        int MaxMembersPerTopic,
+        decimal DefaultFundWeight,
+        decimal DefaultBreadthWeight,
+        decimal DefaultNewsWeight,
+        IReadOnlyList<string> Warnings,
+        IReadOnlyList<TopicMappingExport> Mappings,
+        IReadOnlyDictionary<string, string> StockNames,
+        IReadOnlyList<TopicAttributionExport> Attributions,
+        IReadOnlyList<IReadOnlyList<string>> PendingMerges,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> MultiNodeConcepts,
+        IReadOnlyList<TopicEventExport> SampleEvents,
+        IReadOnlyList<TopicEditExport> SampleEdits,
+        IReadOnlyList<TopicPeriodExport> Periods);
+
+    /// <summary>
+    /// topic-attributions.json：排行榜族群欄的專用檔案，只有大題材／當前題材。
+    /// 內容是 topics.json 的子集，重複寫一份是為了不讓排行榜為了兩行字下載整份熱度明細。
+    /// </summary>
+    private sealed record TopicAttributionsExport(
+        int ActiveVersion,
+        IReadOnlyList<TopicAttributionExport> Attributions);
+
+    /// <summary>
+    /// 一份分類。兩份一起送到前端，畫面預設顯示 ActiveVersion 那一份，
+    /// 另一份留著讓使用者對照「原本的表格長什麼樣」。
+    /// </summary>
+    private sealed record TopicMappingExport(
+        int Version,
+        string Label,
+        string Description,
         int TreeTopicCount,
         int ConceptTopicCount,
         int StockCount,
         int LinkCount,
-        int MaxMembersPerTopic,
-        IReadOnlyList<string> Warnings,
-        IReadOnlyList<TopicExport> Topics,
-        IReadOnlyDictionary<string, string> StockNames,
-        IReadOnlyList<TopicPeriodExport> Periods);
+        IReadOnlyList<TopicExport> Topics);
 
     /// <summary>
-    /// 一個族群節點。Source 分成 tree（使用者維護的 F:J 五層分類）與 concept（概念股分頁的欄位），
-    /// 這是兩套各自獨立的分類，只有名字一樣的才用 LinkedTopicId 牽起來，不做合併。
+    /// 一個族群節點。Source 分成 tree（F:J 五層分類）與 concept（沒有進樹的概念）。
+    /// Category 再分固定族群、市場敘事、集團與客戶生態系——後三者不是供應鏈段位，
+    /// 混在一起排熱度會看不出誰是誰。
     ///
     /// ParentIds 是複數：同一個名字可能掛在兩個母題底下（例如 FOPLP），
     /// 硬要它只有一個父節點就得把它拆成兩個節點，成員數會被重複計算。
@@ -814,14 +928,60 @@ public sealed class StaticSiteExporter(
         string Id,
         string Name,
         string Source,
+        string Category,
         int Depth,
         IReadOnlyList<string> ParentIds,
         IReadOnlyList<string> ChildIds,
         IReadOnlyList<string> Aliases,
         string? LinkedTopicId,
         bool? NeedsReview,
+        string? MappingNote,
+        IReadOnlyList<string> SourceConcepts,
         IReadOnlyList<string> DirectTickers,
         IReadOnlyList<IReadOnlyList<string>> Paths);
+
+    /// <summary>
+    /// 排行榜「族群」欄那一格：這檔股票要顯示哪一個大題材與當前題材。
+    /// 挑法在 TopicAttributionResolver，是暫定規則不是 AI 判斷，畫面上要標明。
+    /// </summary>
+    private sealed record TopicAttributionExport(
+        string Ticker,
+        string? BigTopicId,
+        string? BigTopicName,
+        string? CurrentTopicId,
+        string? CurrentTopicName,
+        int TopicCount);
+
+    /// <summary>
+    /// 催化事件。目前全部是 TopicSampleData 的示範資料，熱度一行都不讀它，
+    /// 前端必須把「示範」兩個字標在畫面上。
+    /// </summary>
+    private sealed record TopicEventExport(
+        string Date,
+        string Summary,
+        string CatalystType,
+        string Scope,
+        IReadOnlyList<string> TopicNames,
+        IReadOnlyList<string?> TopicIds,
+        IReadOnlyList<string> DirectTickers,
+        string Source,
+        string Directness,
+        decimal Confidence,
+        string Status,
+        string UpdatedAt);
+
+    /// <summary>
+    /// 人工修正紀錄。同樣是示範資料：靜態網站存不了東西，這一頁先做版面。
+    /// </summary>
+    private sealed record TopicEditExport(
+        string ChangedAt,
+        string Target,
+        string Field,
+        string Before,
+        string After,
+        string Author,
+        string Note,
+        bool Locked);
 
     /// <summary>
     /// 單一期間的族群熱度。結構刻意跟 RankingExport 一致：

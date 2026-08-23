@@ -58,4 +58,43 @@ public sealed class Topic
     /// 多重父節點時會有多條。概念股沒有路徑。
     /// </summary>
     public IReadOnlyList<IReadOnlyList<string>> Paths { get; init; } = [];
+
+    /// <summary>
+    /// 這個節點是哪一種東西。版本二歸類時才有意義：
+    /// 概念股那 113 個裡面有一部分根本不是供應鏈段位（集團、客戶生態系、市場敘事），
+    /// 硬塞進固定族群樹會讓「PCB」跟「鴻海集團」變成同一種東西。
+    /// 分開標之後畫面才能一眼看出這一列是產業還是敘事。
+    /// </summary>
+    public TopicCategory Category { get; init; } = TopicCategory.Fixed;
+
+    /// <summary>
+    /// 歸類的說明文字，直接取自 ConceptMapping.json 的 target 與 note。
+    /// 這是使用者之後要拍板的依據，所以原文照搬，不改寫。
+    /// </summary>
+    public string? MappingNote { get; init; }
+
+    /// <summary>
+    /// 版本二歸進這個節點的概念名稱。畫面上要看得出「這個節點的成員是從哪幾個概念來的」，
+    /// 否則使用者只會看到一個突然多出兩百檔成員的節點，卻不知道為什麼。
+    /// </summary>
+    public IReadOnlyList<string> SourceConcepts { get; init; } = [];
+}
+
+/// <summary>
+/// 節點的性質。固定族群才是 F:J 那棵供應鏈樹要回答的問題（公司實際在做什麼），
+/// 其餘三種是另外三件事，混在一起排熱度會看不出誰是誰。
+/// </summary>
+public enum TopicCategory
+{
+    /// <summary>固定族群：供應鏈段位。</summary>
+    Fixed,
+
+    /// <summary>市場敘事，屬於動態的當前題材層（AI、AI PC、電動車）。</summary>
+    Narrative,
+
+    /// <summary>集團關聯（鴻海集團、東元集團）。</summary>
+    Group,
+
+    /// <summary>客戶／生態系關聯（台積電概念股、蘋果概念股）。</summary>
+    Ecosystem
 }

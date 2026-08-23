@@ -54,7 +54,7 @@ public static class TopicHeatCalculator
     private const decimal DispersionWeight = 0.20m;
 
     public static TopicHeatResult Calculate(
-        TopicCatalog catalog,
+        TopicMapping mapping,
         TradingValueRankingResult ranking)
     {
         if (!ranking.HasSufficientData)
@@ -68,10 +68,10 @@ public static class TopicHeatCalculator
         }
 
         var quotes = ranking.Rows.ToDictionary(row => row.Ticker, StringComparer.Ordinal);
-        var members = ResolveMembers(catalog);
+        var members = TopicMembership.Resolve(mapping);
         var draft = new List<Draft>();
 
-        foreach (var topic in catalog.Topics)
+        foreach (var topic in mapping.Topics)
         {
             var tickers = members.GetValueOrDefault(topic.Id, []);
 
@@ -103,68 +103,6 @@ public static class TopicHeatCalculator
             PeriodEnd = ranking.CurrentPeriodEnd,
             Rows = rows
         };
-    }
-
-    /// <summary>
-    /// 算出每個族群「去重之後」的成員名單。
-    ///
-    /// 兩件事在這裡處理：
-    ///
-    ///   1. F:J 樹本身沒有股票對應，只有名稱剛好對得上概念股的那三十幾個節點拿得到成員。
-    ///      上層節點的成員是自己加上所有子孫的聯集。
-    ///   2. 聯集一律用 distinct 股票代號。直接把子節點的數字相加的話，
-    ///      同時掛在兩個子節點下的股票會被算兩次。
-    /// </summary>
-    private static Dictionary<string, HashSet<string>> ResolveMembers(TopicCatalog catalog)
-    {
-        var byId = catalog.Topics.ToDictionary(topic => topic.Id, StringComparer.Ordinal);
-        var resolved = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
-        var visiting = new HashSet<string>(StringComparer.Ordinal);
-
-        HashSet<string> Resolve(string id)
-        {
-            if (resolved.TryGetValue(id, out var cached))
-            {
-                return cached;
-            }
-
-            // 使用者的分類允許多重父節點，理論上不該出現環，但這份表格是手工維護的，
-            // 真的環進去會直接 stack overflow，所以擋一下。
-            if (!visiting.Add(id))
-            {
-                return [];
-            }
-
-            var set = new HashSet<string>(StringComparer.Ordinal);
-
-            if (byId.TryGetValue(id, out var topic))
-            {
-                set.UnionWith(topic.DirectTickers);
-
-                // 名稱對得上的概念股名單就是這個樹節點目前唯一的成員來源。
-                if (topic.Source == TopicSource.Tree && topic.LinkedTopicId is { } linkedId)
-                {
-                    set.UnionWith(byId.GetValueOrDefault(linkedId)?.DirectTickers ?? []);
-                }
-
-                foreach (var childId in topic.ChildIds)
-                {
-                    set.UnionWith(Resolve(childId));
-                }
-            }
-
-            visiting.Remove(id);
-            resolved[id] = set;
-
-            return set;
-        }
-
-        foreach (var topic in catalog.Topics)
-        {
-            Resolve(topic.Id);
-        }
-
-        return resolved;
     }
 
     private static Draft Measure(
