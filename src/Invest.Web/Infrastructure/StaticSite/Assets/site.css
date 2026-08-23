@@ -1201,7 +1201,9 @@ body {
     color: inherit;
     font: inherit;
     line-height: inherit;
-    text-align: right;
+    /* 表格內容一律置中。這顆按鈕整格蓋在儲存格上，靠右會讓「營收增減」
+       那一欄跟左右鄰居對不齊，看起來像多空了一欄。 */
+    text-align: center;
     cursor: pointer;
 }
 

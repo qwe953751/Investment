@@ -90,7 +90,12 @@ public sealed class StaticSiteExporter(
 
         progress?.Report($"已寫出 {kLineFileCount} 檔最近三個月還原權息日 K 資料");
 
-        var generatedAt = DateTimeOffset.Now;
+        // 一律換算成台北時間，不要用這台機器的時區。
+        // 這個值同時決定畫面上的「本快照產生於」與下面查交易限制用的日期；
+        // runner 忘了設 TZ 而落在 UTC 時，台北的早上八點會被當成前一天，
+        // 拿到的處置股名單就差一天。
+        var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+        var generatedAt = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei);
 
         // 這份快照的版本號。資料檔、CSS 與 JS 的網址都會帶上它：
         // 重新發佈後版本號一變，網址跟著變，瀏覽器手上的舊檔就自動失效。

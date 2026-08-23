@@ -113,6 +113,23 @@ public sealed class RevenueStore(ILogger<RevenueStore> logger)
         IReadOnlyCollection<(string Ticker, RevenueSummary Summary)> historyRows,
         CancellationToken cancellationToken = default)
     {
+        // 下面是「先清空再整批寫回」，所以要先擋掉「清空之後什麼都寫不回去」。
+        //
+        // 判斷用 historyRows 而不是 latestRows：
+        // latestRows 只收「上個月有公告的那些檔」，月初那幾天一檔都還沒公告是正常的，
+        // 那時 revenue_latest 本來就該是空的，畫面顯示 — 才對。
+        // historyRows 收的是每一檔最近 20 個月，只要 monthly_revenue 裡還有任何一列就不會是空的。
+        // 它變成 0 只有一個意思：整份歷史沒讀出來，來源或解析壞了。
+        //
+        // 這時候照原樣清空，網站上每一檔的營收欄位會一起變空白，而且要等下次成功
+        // 抓取才長得回來。所以直接讓它紅掉，兩張表原封不動。
+        if (historyRows.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "算出來的營收歷史是 0 列，不覆寫 revenue_latest／revenue_history。"
+                + "monthly_revenue 有六十幾個月的歷史，這代表讀取或解析失敗，先查上游。");
+        }
+
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 

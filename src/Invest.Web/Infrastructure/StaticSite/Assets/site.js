@@ -502,7 +502,11 @@ let expandedKLineName = '';
 let klineAnchor = null;
 const revenueHistoryData = new Map();
 const revenueHistoryPromises = new Map();
-let revenueHistoryError = '';
+
+// 讀失敗的代號。**不能是單一個旗標**：使用者點開 A、還沒失敗就改點 B 的話，
+// A 的 catch 會晚一步把旗標打開，B 的彈窗就會掛著 A 的錯誤訊息。
+// 盤中每 2 分鐘重畫一次，這個錯誤會一直跟著 B 直到關掉彈窗為止。
+const revenueHistoryFailures = new Set();
 let expandedRevenueTicker = null;
 let revenueAnchor = null;
 let customSearchJumpPending = false;
@@ -1545,17 +1549,30 @@ function svgElement(name, attributes = {}, text = null) {
     return element;
 }
 
+// 紅綠一律比「昨收」，沒有昨收才退回開盤價。
+// 這條規則的正本是 C# 的 DailyKLineTrendCalculator，兩邊必須一模一樣：
+// 跳空開高、收在開盤價之下但仍高於昨收的那種 K 棒，
+// 用開盤價比是綠的、用昨收比是紅的——同一根棒子在 Blazor 與靜態站會顏色相反。
+// 匯出的 JSON 本來就帶著 previousClose，這裡只是要記得用它。
 function klineTrendClass(bar) {
     const open = Number(bar.open);
     const close = Number(bar.close);
 
-    if (!Number.isFinite(open) || !Number.isFinite(close)) {
+    if (!Number.isFinite(close)) {
         return 'daily-kline-flat';
     }
 
-    return close > open
+    // 第一根棒子沒有昨收，JSON 裡是 null，所以這裡直接檢查原值、不先套 Number()：
+    // Number(null) 是 0 而且通過 Number.isFinite，那根棒子會拿 0 當基準、永遠是紅的。
+    const reference = Number.isFinite(bar.previousClose) ? bar.previousClose : open;
+
+    if (!Number.isFinite(reference)) {
+        return 'daily-kline-flat';
+    }
+
+    return close > reference
         ? 'daily-kline-up'
-        : close < open
+        : close < reference
             ? 'daily-kline-down'
             : 'daily-kline-flat';
 }
@@ -1681,9 +1698,17 @@ function renderKLineLegend(bars) {
     for (const line of KLINE_MOVING_AVERAGES) {
         const item = document.createElement('span');
         item.className = line.className;
+        // 先濾掉 null 再轉數字。反過來寫的話 Number(null) 會變成 0 而且通過
+        // Number.isFinite：上市不滿 240 天的個股整條 MA240 都是 null，
+        // 卻會被算成一串 0、全都落在價格區間外，圖例就掛上「（圖外）」——
+        // 那條線根本還不存在，不是跑到圖外。
         const values = bars
-            .map(bar => Number(bar[line.key]))
+            .map(bar => bar[line.key])
+            .filter(value => !missing(value))
+            .map(Number)
             .filter(Number.isFinite);
+        // 只有整條線都不在價格區間內才標「（圖外）」。有一段畫得出來就不標，
+        // 免得穿進穿出的均線讓標記一直閃。
         const visible = values.some(value => value >= min && value <= max);
         item.textContent = line.label + (values.length > 0 && !visible ? '（圖外）' : '');
         legend.append(item);
@@ -2135,7 +2160,7 @@ function renderRevenuePopover(ticker, name, anchor) {
     content.className = 'revenue-content';
     const months = selectedRevenueMonths(ticker);
 
-    if (revenueHistoryError) {
+    if (revenueHistoryFailures.has(ticker)) {
         const message = document.createElement('p');
         message.className = 'revenue-empty';
         message.textContent = '讀不到已驗證的營收歷史，請重新產生靜態網站。';
@@ -2183,7 +2208,6 @@ function closeRevenueDetails(restoreFocus = true) {
     const previousAnchor = revenueAnchor;
     expandedRevenueTicker = null;
     revenueAnchor = null;
-    revenueHistoryError = '';
     el('revenue-popover').hidden = true;
     el('revenue-backdrop').hidden = true;
     setRevenueButtonStates();
@@ -2221,7 +2245,8 @@ async function toggleRevenueDetails(ticker, name, anchor) {
     closeKLine(false);
     expandedRevenueTicker = ticker;
     revenueAnchor = anchor;
-    revenueHistoryError = '';
+    // 重點一次就再給它一次機會，不要讓上一次的失敗永遠黏在這一檔身上。
+    revenueHistoryFailures.delete(ticker);
     setRevenueButtonStates();
     renderRevenuePopover(ticker, name, anchor);
 
@@ -2229,7 +2254,7 @@ async function toggleRevenueDetails(ticker, name, anchor) {
         try {
             await loadRevenueHistoryData(ticker);
         } catch {
-            revenueHistoryError = '讀不到營收歷史';
+            revenueHistoryFailures.add(ticker);
         }
     }
 

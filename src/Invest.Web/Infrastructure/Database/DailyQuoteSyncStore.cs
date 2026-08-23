@@ -12,11 +12,32 @@ namespace Invest.Web.Infrastructure.Database;
 /// </summary>
 public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
 {
+    /// <summary>
+    /// 保留天數的下限。
+    ///
+    /// <c>sync</c> 的天數是命令列參數，而 <see cref="PruneAsync"/> 會**真的刪掉**視窗外的日期。
+    /// 少打一個 0（`sync 30` 而不是 `sync 300`）就會安靜地刪掉兩百多個交易日，
+    /// 而且它會回報「完成」，看起來一切正常。
+    ///
+    /// 240 是 MA240 要用的長度：低於這個數字，K 線圖的年線就算不出來了。
+    /// 資料本身在 data 分支救得回來，但要重跑一次完整回補，不值得為了打錯字付這個代價。
+    /// </summary>
+    public const int MinimumRetentionTradingDays = 240;
+
     public async Task<DailyQuoteSyncReport> SyncAsync(
         IReadOnlyList<DailyQuoteSnapshot> snapshots,
         int retentionTradingDays,
         CancellationToken cancellationToken = default)
     {
+        if (retentionTradingDays < MinimumRetentionTradingDays)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(retentionTradingDays),
+                retentionTradingDays,
+                $"保留天數不能少於 {MinimumRetentionTradingDays} 個交易日（MA240 要用）。"
+                + "真的要縮小視窗，先改 MinimumRetentionTradingDays。");
+        }
+
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
 
         var existing = await ReadExistingDatesAsync(connection, cancellationToken);

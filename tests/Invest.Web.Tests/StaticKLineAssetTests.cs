@@ -31,15 +31,25 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void K棒顏色依同一根開收盤判斷()
+    public void K棒顏色比昨收而不是比同一根的開盤價()
     {
+        // 這條規則的正本是 DailyKLineTrendCalculator（close 比 PreviousClose ?? Open）。
+        // 靜態站以前比的是開盤價，跳空開高又收在開盤價之下的那種棒子，
+        // 在 Blazor 是紅的、在手機上看到的靜態站是綠的。
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
         Assert.Contains("function klineTrendClass(bar)", script, StringComparison.Ordinal);
-        Assert.Contains("const open = Number(bar.open)", script, StringComparison.Ordinal);
-        Assert.Contains("return close > open", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("const previousClose = missing(bar.previousClose)", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "const reference = Number.isFinite(bar.previousClose) ? bar.previousClose : open;",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains("return close > reference", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("return close > open", script, StringComparison.Ordinal);
+
+        // Number(null) 是 0 而且通過 Number.isFinite，第一根棒子會拿 0 當基準、永遠是紅的。
+        Assert.DoesNotContain("Number(bar.previousClose)", script, StringComparison.Ordinal);
+
         Assert.Contains(".kline-backdrop", styles, StringComparison.Ordinal);
         var normalizedStyles = styles.Replace("\r\n", "\n", StringComparison.Ordinal);
         Assert.DoesNotContain(".kline-backdrop {\n    pointer-events: none", normalizedStyles, StringComparison.Ordinal);
