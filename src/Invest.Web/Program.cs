@@ -1,6 +1,7 @@
 using Invest.Web.Components;
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.Revenue;
+using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.Database;
 using Invest.Web.Infrastructure.MarketData;
@@ -214,6 +215,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
     var store = scope.ServiceProvider.GetRequiredService<IntradayQuoteStore>();
     var dailyQuoteStore = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
+    var rankingService = scope.ServiceProvider.GetRequiredService<TradingValueRankingQueryService>();
     var marketFlagClient = scope.ServiceProvider.GetRequiredService<MarketFlagClient>();
     var marketFlagStore = scope.ServiceProvider.GetRequiredService<MarketFlagStore>();
 
@@ -233,6 +235,8 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     // 年初基準只需指數欄位，所以走只讀指數的入口，不要為了兩三個數字
     // 把三百多天的全市場個股報價全部反序列化。
     var dailyIndexHistory = await dailyQuoteStore.LoadMarketIndicesAsync(cts.Token);
+    // 市場熱絡需要個股前收與成交值歷史；沿用排行榜快取入口，與盤後共用同一份資料。
+    var historicalDataSet = await rankingService.GetDataSetAsync(cts.Token);
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
@@ -308,6 +312,34 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                                         index.Value)
                             })
                             .ToArray()
+                    };
+
+                    var currentTrading = snapshot.Quotes
+                        .Select(quote => new DailyStockTrading
+                        {
+                            TradingDate = snapshot.TradeDate,
+                            Ticker = quote.Ticker,
+                            OpenPrice = quote.OpenPrice,
+                            HighPrice = quote.HighPrice,
+                            LowPrice = quote.LowPrice,
+                            ClosePrice = quote.Price,
+                            TradingValue = quote.EstimatedTradingValue
+                        })
+                        .ToArray();
+                    var heatIndices = historicalDataSet.MarketIndices
+                        .Append(new DailyMarketIndex
+                        {
+                            TradingDate = snapshot.TradeDate,
+                            Quotes = snapshot.MarketIndices
+                        })
+                        .ToArray();
+
+                    snapshot = snapshot with
+                    {
+                        MarketHeat = MarketHeatCalculator.Calculate(
+                            [.. historicalDataSet.DailyTrading, .. currentTrading],
+                            heatIndices,
+                            snapshot.TradeDate)
                     };
 
                     var result = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);

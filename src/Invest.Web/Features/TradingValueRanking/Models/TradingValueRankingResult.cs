@@ -33,6 +33,11 @@ public sealed class TradingValueRankingResult
     public decimal MarketTotalTradingValue { get; init; }
 
     /// <summary>
+    /// 所選基準日的市場熱絡程度。與排行門檻無關，分母固定是上市＋上櫃全市場。
+    /// </summary>
+    public MarketHeatMetrics? MarketHeat { get; init; }
+
+    /// <summary>
     /// 通過篩選、實際參與排名的個股數。<see cref="Rows"/> 只保留其中前幾名。
     /// </summary>
     public int RankedStockCount { get; init; }

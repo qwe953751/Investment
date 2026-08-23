@@ -165,11 +165,21 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             insert into intraday_runs (
                 trade_date, captured_at, source, quote_count,
                 twse_index, twse_change_percent, twse_year_to_date_change_percent,
-                tpex_index, tpex_change_percent, tpex_year_to_date_change_percent)
+                tpex_index, tpex_change_percent, tpex_year_to_date_change_percent,
+                market_heat_score, market_heat_short_trend_score, market_heat_breadth_score,
+                market_heat_volume_score, market_heat_index_daily_change_percent,
+                market_heat_index_weekly_change_percent, market_heat_up_count,
+                market_heat_down_count, market_heat_flat_count, market_heat_compared_stock_count,
+                market_heat_turnover, market_heat_average_turnover, market_heat_volume_ratio)
             values (
                 @tradeDate, @capturedAt, @source, @quoteCount,
                 @twseIndex, @twseChangePercent, @twseYearToDateChangePercent,
-                @tpexIndex, @tpexChangePercent, @tpexYearToDateChangePercent)
+                @tpexIndex, @tpexChangePercent, @tpexYearToDateChangePercent,
+                @marketHeatScore, @marketHeatShortTrendScore, @marketHeatBreadthScore,
+                @marketHeatVolumeScore, @marketHeatIndexDailyChangePercent,
+                @marketHeatIndexWeeklyChangePercent, @marketHeatUpCount,
+                @marketHeatDownCount, @marketHeatFlatCount, @marketHeatComparedStockCount,
+                @marketHeatTurnover, @marketHeatAverageTurnover, @marketHeatVolumeRatio)
             on conflict (trade_date, captured_at, source)
                 do update set quote_count = excluded.quote_count,
                               twse_index = excluded.twse_index,
@@ -177,7 +187,20 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                               twse_year_to_date_change_percent = excluded.twse_year_to_date_change_percent,
                               tpex_index = excluded.tpex_index,
                               tpex_change_percent = excluded.tpex_change_percent,
-                              tpex_year_to_date_change_percent = excluded.tpex_year_to_date_change_percent
+                              tpex_year_to_date_change_percent = excluded.tpex_year_to_date_change_percent,
+                              market_heat_score = excluded.market_heat_score,
+                              market_heat_short_trend_score = excluded.market_heat_short_trend_score,
+                              market_heat_breadth_score = excluded.market_heat_breadth_score,
+                              market_heat_volume_score = excluded.market_heat_volume_score,
+                              market_heat_index_daily_change_percent = excluded.market_heat_index_daily_change_percent,
+                              market_heat_index_weekly_change_percent = excluded.market_heat_index_weekly_change_percent,
+                              market_heat_up_count = excluded.market_heat_up_count,
+                              market_heat_down_count = excluded.market_heat_down_count,
+                              market_heat_flat_count = excluded.market_heat_flat_count,
+                              market_heat_compared_stock_count = excluded.market_heat_compared_stock_count,
+                              market_heat_turnover = excluded.market_heat_turnover,
+                              market_heat_average_turnover = excluded.market_heat_average_turnover,
+                              market_heat_volume_ratio = excluded.market_heat_volume_ratio
             returning id
             """,
             connection);
@@ -196,6 +219,21 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         AddNullableDecimal(command, "tpexIndex", tpex?.Value);
         AddNullableDecimal(command, "tpexChangePercent", tpex?.ChangePercent);
         AddNullableDecimal(command, "tpexYearToDateChangePercent", tpex?.YearToDateChangePercent);
+
+        var heat = snapshot.MarketHeat;
+        AddNullableDecimal(command, "marketHeatScore", heat?.Score);
+        AddNullableDecimal(command, "marketHeatShortTrendScore", heat?.ShortTrendScore);
+        AddNullableDecimal(command, "marketHeatBreadthScore", heat?.BreadthScore);
+        AddNullableDecimal(command, "marketHeatVolumeScore", heat?.VolumeScore);
+        AddNullableDecimal(command, "marketHeatIndexDailyChangePercent", heat?.IndexDailyChangePercent);
+        AddNullableDecimal(command, "marketHeatIndexWeeklyChangePercent", heat?.IndexWeeklyChangePercent);
+        AddNullableInt(command, "marketHeatUpCount", heat?.UpCount);
+        AddNullableInt(command, "marketHeatDownCount", heat?.DownCount);
+        AddNullableInt(command, "marketHeatFlatCount", heat?.FlatCount);
+        AddNullableInt(command, "marketHeatComparedStockCount", heat?.ComparedStockCount);
+        AddNullableDecimal(command, "marketHeatTurnover", heat?.MarketTurnover);
+        AddNullableDecimal(command, "marketHeatAverageTurnover", heat?.AverageMarketTurnover);
+        AddNullableDecimal(command, "marketHeatVolumeRatio", heat?.VolumeRatio);
 
         var runId = (long)(await command.ExecuteScalarAsync(cancellationToken))!;
 
@@ -219,6 +257,14 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         {
             Value = value is { } number ? number : DBNull.Value
         });
+    }
+
+    private static void AddNullableInt(
+        NpgsqlCommand command,
+        string name,
+        int? value)
+    {
+        command.Parameters.AddWithValue(name, value is { } number ? number : DBNull.Value);
     }
 
     /// <summary>

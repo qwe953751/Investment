@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Infrastructure.MarketData.Intraday;
@@ -430,4 +431,9 @@ public sealed record IntradaySnapshot
     public required IReadOnlyList<IntradayQuote> Quotes { get; init; }
 
     public IReadOnlyList<MarketIndexQuote> MarketIndices { get; init; } = [];
+
+    /// <summary>
+    /// 與這一輪個股與指數同時算出的市場熱絡程度；舊版收集器未提供時可為 null。
+    /// </summary>
+    public MarketHeatMetrics? MarketHeat { get; init; }
 }

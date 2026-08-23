@@ -33,56 +33,60 @@
             瀏覽單一交易日的全部上市櫃個股，不建立預設排行；可選日期與成交值下限，
             表格預設依股票代號排列，超過 100 檔時分頁顯示。
         </p>
+        <p data-view="portfolio">
+            本機樣板將 Google Sheet 的持倉與族群映射到網站；目前使用去識別化的示範資料，
+            點擊標的名稱可開啟既有的三個月還原權息日 K 線。
+        </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
     </header>
-
-    <section class="filter-panel">
-        <div class="filter-group" data-view="daily intraday">
-            <span class="filter-label" data-hint="盤後：本期的長度，前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。盤中：今天要拿來對照的過去期間長度。">觀察期間</span>
-            <div class="button-row" id="period-options"></div>
-        </div>
-
-        <div class="filter-group" data-view="daily custom">
-            <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
-            <div class="date-picker" id="date-picker"></div>
-        </div>
-
-        <div class="filter-group" data-view="daily intraday">
-            <span class="filter-label" data-hint="決定排行榜依哪個數字排序。盤後的資金加速看成交值增減率，盤中看成交比變化。">排行模式</span>
-            <div class="button-row" id="mode-options"></div>
-        </div>
-
-        <div class="filter-group" data-view="daily intraday">
-            <span class="filter-label" data-hint="只篩選要看的市場。市場成交比的分母不受影響，一律是上市＋上櫃全體。">市場</span>
-            <div class="button-row" id="market-options"></div>
-        </div>
-
-        <div class="filter-group" data-view="daily custom">
-            <span class="filter-label" id="threshold-label" data-hint="「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。">成交門檻</span>
-            <div class="button-row" id="threshold-options"></div>
-            <span class="threshold-custom" id="threshold-custom"></span>
-        </div>
-
-        <div class="filter-group" data-view="custom">
-            <span class="filter-label" data-hint="可同時勾選處置股與全額交割；全部代表不依交易限制篩選。">交易限制</span>
-            <div class="checkbox-row" id="custom-status-options"></div>
-        </div>
-
-        <div class="filter-group" data-view="custom">
-            <span class="filter-label">搜尋</span>
-            <span class="custom-control" id="custom-search"></span>
-        </div>
-
-        <div class="filter-group" data-view="daily intraday">
-            <span class="filter-label" data-hint="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
-            <div class="lock-row" id="lock-row"></div>
-        </div>
-    </section>
 
     <section class="notice" id="notice">行情載入中…</section>
 
     <div id="ranking" hidden>
         <section class="summary" id="summary"></section>
+
+        <section class="filter-panel">
+            <div class="filter-group" data-view="daily intraday">
+                <span class="filter-label" data-hint="盤後：本期的長度，前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。盤中：今天要拿來對照的過去期間長度。">觀察期間</span>
+                <div class="button-row" id="period-options"></div>
+            </div>
+
+            <div class="filter-group" data-view="daily custom portfolio">
+                <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
+                <div class="date-picker" id="date-picker"></div>
+            </div>
+
+            <div class="filter-group" data-view="daily intraday">
+                <span class="filter-label" data-hint="決定排行榜依哪個數字排序。盤後的資金加速看成交值增減率，盤中看成交比變化。">排行模式</span>
+                <div class="button-row" id="mode-options"></div>
+            </div>
+
+            <div class="filter-group" data-view="daily intraday">
+                <span class="filter-label" data-hint="只篩選要看的市場。市場成交比的分母不受影響，一律是上市＋上櫃全體。">市場</span>
+                <div class="button-row" id="market-options"></div>
+            </div>
+
+            <div class="filter-group" data-view="daily custom">
+                <span class="filter-label" id="threshold-label" data-hint="「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。">成交門檻</span>
+                <div class="button-row" id="threshold-options"></div>
+                <span class="threshold-custom" id="threshold-custom"></span>
+            </div>
+
+            <div class="filter-group" data-view="custom">
+                <span class="filter-label" data-hint="可同時勾選處置股與全額交割；全部代表不依交易限制篩選。">交易限制</span>
+                <div class="checkbox-row" id="custom-status-options"></div>
+            </div>
+
+            <div class="filter-group" data-view="custom">
+                <span class="filter-label">搜尋</span>
+                <span class="custom-control" id="custom-search"></span>
+            </div>
+
+            <div class="filter-group" data-view="daily intraday">
+                <span class="filter-label" data-hint="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
+                <div class="lock-row" id="lock-row"></div>
+            </div>
+        </section>
 
         <div class="table-container" id="table-container">
             <table class="ranking-table" id="data-table">
@@ -118,6 +122,7 @@
                 加權、櫃買與已開啟標的的當日 K 棒會在同一輪同步更新。</p>
             <p data-view="custom">成交值為所選交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。</p>
             <p data-view="custom">營收增減顯示上個月的 YOY 與 MOM；點擊儲存格可查看 20 個月圖表與最近 5 個月列表。交易限制可複選，搜尋股號或名稱會只留下符合內容並跳到第一筆。</p>
+            <p data-view="portfolio">這是本機樣板：持倉與族群資料先用模擬的 Google Sheet 映射，現價與漲跌幅取既有行情快照；之後再替換成真正的 Sheet 讀取服務。</p>
         </footer>
     </div>
 </div>

@@ -70,6 +70,7 @@ public sealed class TradingValueRankingCalculator
         // 分母一律是上市＋上櫃全體，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
         var marketTotal = currentStats.Values.Sum(stats => stats.TotalTradingValue);
         var previousMarketTotal = previousStats.Values.Sum(stats => stats.TotalTradingValue);
+        var marketHeat = MarketHeatCalculator.Calculate(dataSet, current[^1]);
 
         var candidates = new List<Candidate>();
 
@@ -152,6 +153,7 @@ public sealed class TradingValueRankingCalculator
             PreviousPeriodStart = previous[0],
             PreviousPeriodEnd = previous[^1],
             MarketTotalTradingValue = marketTotal,
+            MarketHeat = marketHeat,
             RankedStockCount = candidates.Count,
             Rows = rows,
             RankByTicker = ranked

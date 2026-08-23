@@ -609,6 +609,282 @@ body {
     line-height: 1.2;
 }
 
+.market-heat-panel {
+    display: grid;
+    grid-template-columns: minmax(250px, 1.15fr) minmax(180px, .85fr) minmax(180px, .85fr) minmax(210px, .95fr);
+    gap: 12px 20px;
+    padding: 12px 16px 14px;
+    border: 1px solid #d9e0ea;
+    border-radius: 10px;
+    background: #fbfcfe;
+}
+
+.market-heat-overview {
+    display: flex;
+    min-width: 0;
+    min-height: 214px;
+    flex-direction: column;
+}
+
+.market-heat-heading {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+
+.market-heat-title,
+.market-heat-card-title,
+.market-heat-history-title,
+.market-heat-progress {
+    cursor: help;
+}
+
+.market-heat-title,
+.market-heat-card-title,
+.market-heat-history-title {
+    text-decoration: underline dotted #aab4c3;
+    text-underline-offset: 4px;
+}
+
+.market-heat-title {
+    color: #667085;
+    font-size: 14px;
+}
+
+.market-heat-score {
+    color: #17233c;
+    font-size: 26px;
+    font-variant-numeric: tabular-nums;
+}
+
+.market-heat-level {
+    font-size: 14px;
+    white-space: nowrap;
+}
+
+.market-heat-level.hot,
+.market-heat-level.warm {
+    color: #d97706;
+}
+
+.market-heat-level.neutral {
+    color: #667085;
+}
+
+.market-heat-level.cool,
+.market-heat-level.cold {
+    color: #2563eb;
+}
+
+.market-heat-progress {
+    margin-top: 10px;
+    height: 12px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #f3d3c5;
+}
+
+.market-heat-progress-fill {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #facc15, #f97316);
+    transition: width 180ms ease;
+}
+
+.market-heat-progress-fill.neutral {
+    background: #94a3b8;
+}
+
+.market-heat-progress-fill.cool,
+.market-heat-progress-fill.cold {
+    background: #60a5fa;
+}
+
+.market-heat-scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 7px;
+    color: #8b95a7;
+    font-size: 12px;
+}
+
+.market-heat-history {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: auto;
+    min-height: 48px;
+}
+
+.market-heat-history-title {
+    color: #667085;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.market-heat-history-item {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    color: #8b95a7;
+    font-size: 11px;
+    cursor: help;
+}
+
+.market-heat-history-score {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid #f5b82e;
+    border-radius: 50%;
+    background: #fff9e8;
+    color: #b45309;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+
+.market-heat-history-empty {
+    color: #98a2b3;
+    font-size: 13px;
+}
+
+.market-heat-indicators,
+.market-heat-indices,
+.market-heat-meta {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.market-heat-card {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid #e4e8ef;
+    border-radius: 8px;
+    background: #fff;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.market-heat-card-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    color: #667085;
+    font-size: 13px;
+}
+
+.market-heat-card-score {
+    color: #d97706;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.market-heat-card-value {
+    margin-top: 7px;
+    color: #344054;
+    font-size: 16px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.35;
+    white-space: nowrap;
+}
+
+.market-heat-breadth-value {
+    display: flex;
+    flex-direction: column;
+    white-space: normal;
+}
+
+.market-heat-up-count,
+.market-heat-index-changes .positive {
+    color: #b42318;
+}
+
+.market-heat-down-count,
+.market-heat-index-changes .negative {
+    color: #067647;
+}
+
+.market-heat-indices {
+    gap: 12px;
+}
+
+.market-heat-index-card {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid #e4e8ef;
+    border-radius: 8px;
+    background: #fff;
+}
+
+.market-heat-index-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    color: #667085;
+    cursor: help;
+    font-size: 13px;
+}
+
+.market-heat-index-title span:last-child {
+    color: #98a2b3;
+    font-size: 12px;
+}
+
+.market-heat-index-value {
+    display: block;
+    margin-top: 6px;
+    color: #344054;
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+
+.market-heat-index-changes {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 5px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.market-heat-meta {
+    justify-content: center;
+    gap: 14px;
+    padding-left: 4px;
+}
+
+.market-heat-meta > div {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px;
+    align-items: baseline;
+    color: #667085;
+    font-size: 13px;
+}
+
+.market-heat-meta strong {
+    color: #344054;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
 .notice {
     padding: 24px;
     border: 1px solid #ddd;
@@ -638,6 +914,10 @@ body {
 
 .ranking-table.custom-table {
     min-width: 720px;
+}
+
+.ranking-table.portfolio-table {
+    min-width: 1180px;
 }
 
 .pagination {
@@ -761,6 +1041,16 @@ body {
 
 .rank {
     font-weight: 700;
+}
+
+.portfolio-group {
+    color: #344054;
+    font-weight: 600;
+    text-align: left !important;
+}
+
+.portfolio-summary-row {
+    gap: 18px 28px;
 }
 
 .ticker {
@@ -1247,6 +1537,20 @@ body {
 
 /* 手機版：整頁縮排收窄，篩選改成上下堆疊，表格靠左右滑動看。
    代號與名稱兩欄釘在左邊，橫向捲動時才知道現在看的是哪一檔。 */
+@media (max-width: 1100px) {
+    .market-heat-panel {
+        grid-template-columns: minmax(240px, 1.15fr) minmax(175px, .85fr) minmax(175px, .85fr);
+    }
+
+    .market-heat-meta {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        padding: 10px 0 0;
+        border-top: 1px solid #e4e8ef;
+    }
+}
+
 @media (max-width: 720px) {
     .ranking-page {
         padding: 16px 12px 32px;
@@ -1290,6 +1594,23 @@ body {
 
     .summary-row {
         gap: 8px 20px;
+    }
+
+    .market-heat-panel {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .market-heat-overview {
+        min-height: 0;
+    }
+
+    .market-heat-history {
+        flex-wrap: wrap;
+    }
+
+    .market-heat-meta {
+        grid-template-columns: 1fr 1fr;
     }
 
     .ranking-table {

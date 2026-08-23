@@ -16,117 +16,6 @@
         </p>
     </header>
 
-    <section class="filter-panel">
-        <div class="filter-group">
-            <span class="filter-label" data-hint="本期的長度。前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。">觀察期間</span>
-            <div class="button-row">
-                @foreach (var (period, text, hint) in PeriodOptions)
-                {
-                    <button type="button"
-                            class="@ToggleClass(period == _query.PeriodDays)"
-                            data-hint="@hint"
-                            @onclick="() => ChangePeriodAsync(period)">
-                        @text
-                    </button>
-                }
-            </div>
-        </div>
-
-        <div class="filter-group">
-            <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
-            <TradingDatePicker AvailableDates="_tradingDates"
-                               Value="_query.EndDate"
-                               ValueChanged="ChangeEndDateAsync" />
-        </div>
-
-        <div class="filter-group">
-            <span class="filter-label" data-hint="決定排行榜依哪個數字排序。">排行模式</span>
-            <div class="button-row">
-                <button type="button"
-                        class="@ToggleClass(_query.Mode == RankingMode.TradingHeat)"
-                        data-hint="依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。"
-                        @onclick="() => ChangeModeAsync(RankingMode.TradingHeat)">
-                    成交熱度
-                </button>
-                <button type="button"
-                        class="@ToggleClass(_query.Mode == RankingMode.CapitalAcceleration)"
-                        data-hint="依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。"
-                        @onclick="() => ChangeModeAsync(RankingMode.CapitalAcceleration)">
-                    資金加速
-                </button>
-            </div>
-        </div>
-
-        <div class="filter-group">
-            <span class="filter-label" data-hint="只篩選要看的市場。市場成交比的分母不受影響，一律是上市＋上櫃全體。">市場</span>
-            <div class="button-row">
-                @foreach (var (filter, text) in MarketOptions)
-                {
-                    <button type="button"
-                            class="@ToggleClass(_query.Market == filter)"
-                            @onclick="() => ChangeMarketAsync(filter)">
-                        @text
-                    </button>
-                }
-            </div>
-        </div>
-
-        <div class="filter-group">
-            <span class="filter-label" data-hint="「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。">成交門檻</span>
-            <div class="button-row">
-                @foreach (var threshold in LiquidityOptions)
-                {
-                    <button type="button"
-                            class="@ToggleClass(_query.MinimumAverageDailyTradingValue == threshold)"
-                            data-hint="@ToThresholdHint(threshold)"
-                            @onclick="() => ChangeLiquidityAsync(threshold)">
-                        @RankingFormatter.ToThresholdText(threshold)
-                    </button>
-                }
-
-                @* 按鈕之外的任意金額。單位與按鈕一樣是平均每日成交值。 *@
-                <span class="threshold-custom">
-                    <input type="number" class="threshold-input" min="0" step="0.1"
-                           data-hint="自己輸入金額，單位與按鈕相同：平均每日成交值（億元）"
-                           placeholder="自訂" value="@CustomThresholdText"
-                           @onchange="ChangeCustomLiquidityAsync" />
-                    <span class="threshold-unit">億元</span>
-                </span>
-            </div>
-        </div>
-
-        <div class="filter-group">
-            <span class="filter-label" data-hint="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
-            <div class="lock-row">
-                <input type="text" class="lock-input" placeholder="股號" maxlength="6" inputmode="numeric"
-                       @bind="_lockInput" @bind:event="oninput" @onkeydown="LockKeyDown" />
-                <button type="button" class="icon-button" data-hint="加入鎖定" @onclick="AddLock">＋</button>
-
-                @if (_lockedTickers.Count > 0)
-                {
-                    <button type="button" class="icon-button danger" data-hint="全部清除"
-                            @onclick="ClearLocks">✕</button>
-                }
-
-                @if (_lockError is not null)
-                {
-                    <span class="lock-error">@_lockError</span>
-                }
-
-                @foreach (var ticker in _lockedTickers)
-                {
-                    <span class="lock-chip">
-                        <span class="lock-chip-ticker">@ticker</span>
-                        <span class="lock-chip-name">@_stockNames.GetValueOrDefault(ticker)</span>
-                        <span class="lock-chip-rank">@LockedRankText(ticker)</span>
-                        <button type="button" class="lock-chip-remove" data-hint="取消鎖定"
-                                @onclick="() => _lockedTickers.Remove(ticker)">×</button>
-                    </span>
-                }
-            </div>
-        </div>
-    </section>
-
     @if (_loading)
     {
         <section class="notice">行情載入中…</section>
@@ -146,6 +35,111 @@
     else
     {
         <section class="summary">
+            @if (_result.MarketHeat is { } heat)
+            {
+                <section class="market-heat-panel">
+                    <div class="market-heat-overview">
+                        <div class="market-heat-heading">
+                            <span class="market-heat-title"
+                                  data-hint="熱絡分數由短期趨勢 35%、參與廣度 35%、量能 30% 加權而成。每項先換算為 0～10 分，畫面顯示四捨五入後的整數；它是市場狀態參考，不是買賣訊號。">
+                                市場熱絡程度 · 盤後
+                            </span>
+                            <strong class="market-heat-score">@HeatScoreText(heat.Score)/10</strong>
+                            <span class="market-heat-level @HeatLevelClass(heat.Score)">@HeatLevelText(heat.Score)</span>
+                        </div>
+
+                        <div class="market-heat-progress"
+                             data-hint="分數越接近 10，代表趨勢、上漲參與與成交量同時偏強；越接近 0 則代表整體偏冷。">
+                            <span class="market-heat-progress-fill @HeatLevelClass(heat.Score)"
+                                  style="width:@HeatProgressWidth(heat.Score)"></span>
+                        </div>
+
+                        <div class="market-heat-scale"><span>冷清</span><span>中性</span><span>熱絡</span></div>
+
+                        <div class="market-heat-history">
+                            <span class="market-heat-history-title"
+                                  data-hint="只顯示所選日期之前的最近 5 個交易日，不把當天重複放進歷史分數；圓點內同樣只顯示四捨五入後的整數。">
+                                前 5 日分數
+                            </span>
+                            @foreach (var day in heat.PreviousDays)
+                            {
+                                <span class="market-heat-history-item"
+                                      data-hint="@($"{day.TradingDate:yyyy/MM/dd} 的市場熱絡分數：{HeatScoreText(day.Score)}/10。")">
+                                    <strong class="market-heat-history-score">@HeatScoreText(day.Score)</strong>
+                                    <small>@day.TradingDate.ToString("MM/dd")</small>
+                                </span>
+                            }
+                            @if (heat.PreviousDays.Count == 0)
+                            {
+                                <span class="market-heat-history-empty">尚無前五日資料</span>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="market-heat-indicators">
+                        <div class="market-heat-card">
+                            <div class="market-heat-card-title"
+                                 data-hint="短期趨勢分數：先取加權與櫃買指數的平均日漲跌，再以最近五個交易日的平均方向補充；日／週分別占 60%／40%，最後換成 0～10 分。">
+                                <span>短期趨勢</span><strong>@HeatScoreText(heat.ShortTrendScore) 分</strong>
+                            </div>
+                            @{ var twseIndex = SelectedMarketIndices.FirstOrDefault(item => item.Market == Market.Twse); }
+                            <div class="market-heat-card-value @RankingFormatter.ToTrendCssClass(IndexChangeRate(twseIndex))">
+                                加權 @RankingFormatter.ToSignedPercentText(IndexChangeRate(twseIndex), 2)
+                            </div>
+                        </div>
+
+                        <div class="market-heat-card">
+                            <div class="market-heat-card-title"
+                                 data-hint="參與廣度分數：逐檔比較當日收盤與前一個有效收盤；上漲減下跌後除以可比較檔數，再換成 0～10 分。沒有前收的標的不列入分母。">
+                                <span>參與廣度</span><strong>@HeatScoreText(heat.BreadthScore) 分</strong>
+                            </div>
+                            <div class="market-heat-card-value market-heat-breadth-value">
+                                <span class="market-heat-up-count">上漲 @heat.UpCount 檔</span>
+                                <span class="market-heat-down-count">下跌 @heat.DownCount 檔</span>
+                            </div>
+                        </div>
+
+                        <div class="market-heat-card">
+                            <div class="market-heat-card-title"
+                                 data-hint="量能分數：當日上市＋上櫃成交值，除以之前最多 20 個交易日的日均成交值；1.00 倍是中性 5 分，每增加 0.10 倍增加 1 分，最後限制在 0～10 分。">
+                                <span>量能</span><strong>@HeatScoreText(heat.VolumeScore) 分</strong>
+                            </div>
+                            <div class="market-heat-card-value">@HeatVolumeText(heat.VolumeRatio)</div>
+                        </div>
+                    </div>
+
+                    <div class="market-heat-indices">
+                        @foreach (var (market, label) in MarketIndexDefinitions)
+                        {
+                            var index = SelectedMarketIndices.FirstOrDefault(item => item.Market == market);
+
+                            <div class="market-heat-index-card">
+                                <div class="market-heat-index-title"
+                                     data-hint="@($"{label}的所選交易日收盤指數，並列顯示當日與今年截至該日的漲跌幅。")">
+                                    <span>@label</span><span>示意</span>
+                                </div>
+                                <strong class="market-heat-index-value">@IndexValueText(index)</strong>
+                                <div class="market-heat-index-changes">
+                                    <span class="@RankingFormatter.ToTrendCssClass(IndexChangeRate(index))">
+                                        日 @RankingFormatter.ToSignedPercentText(IndexChangeRate(index), 2)
+                                    </span>
+                                    <span class="@RankingFormatter.ToTrendCssClass(IndexYearToDateRate(index))">
+                                        今年 @RankingFormatter.ToSignedPercentText(IndexYearToDateRate(index), 2)
+                                    </span>
+                                </div>
+                            </div>
+                        }
+                    </div>
+
+                    <div class="market-heat-meta">
+                        <div><span>交易日</span><strong>@heat.TradingDate.ToString("yyyy/MM/dd")</strong></div>
+                        <div><span>資料時間</span><strong>盤後資料</strong></div>
+                        <div><span>時段進度</span><strong>已收盤</strong></div>
+                        <div><span>全市場成交額</span><strong>@HeatTurnoverText(heat.MarketTurnover) 億元</strong></div>
+                    </div>
+                </section>
+            }
+
             <div class="summary-row summary-explanation-row">
                 <div>
                     <span class="summary-label">本期</span>
@@ -164,24 +158,116 @@
                     @_result.RankedStockCount 檔，顯示前 @_result.Rows.Count 名
                 </div>
             </div>
-            <div class="summary-row summary-index-row">
-                @foreach (var (market, label) in MarketIndexDefinitions)
-                {
-                    var index = SelectedMarketIndices.FirstOrDefault(item => item.Market == market);
+        </section>
 
-                    <div class="summary-index">
-                        <span class="summary-label">@label</span>
-                        <span class="numeric">@IndexValueText(index)</span>
-                        <span class="summary-index-changes">
-                            <span class="metric-line metric-primary @RankingFormatter.ToTrendCssClass(IndexChangeRate(index))">
-                                <span class="metric-label">日</span>@RankingFormatter.ToSignedPercentText(IndexChangeRate(index), 2)
-                            </span>
-                            <span class="metric-line metric-secondary @RankingFormatter.ToTrendCssClass(IndexYearToDateRate(index))">
-                                <span class="metric-label">今年</span>@RankingFormatter.ToSignedPercentText(IndexYearToDateRate(index), 2)
-                            </span>
+        <section class="filter-panel">
+            <div class="filter-group">
+                <span class="filter-label" data-hint="本期的長度。前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。">觀察期間</span>
+                <div class="button-row">
+                    @foreach (var (period, text, hint) in PeriodOptions)
+                    {
+                        <button type="button"
+                                class="@ToggleClass(period == _query.PeriodDays)"
+                                data-hint="@hint"
+                                @onclick="() => ChangePeriodAsync(period)">
+                            @text
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
+                <TradingDatePicker AvailableDates="_tradingDates"
+                                   Value="_query.EndDate"
+                                   ValueChanged="ChangeEndDateAsync" />
+            </div>
+
+            <div class="filter-group">
+                <span class="filter-label" data-hint="決定排行榜依哪個數字排序。">排行模式</span>
+                <div class="button-row">
+                    <button type="button"
+                            class="@ToggleClass(_query.Mode == RankingMode.TradingHeat)"
+                            data-hint="依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。"
+                            @onclick="() => ChangeModeAsync(RankingMode.TradingHeat)">
+                        成交熱度
+                    </button>
+                    <button type="button"
+                            class="@ToggleClass(_query.Mode == RankingMode.CapitalAcceleration)"
+                            data-hint="依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。"
+                            @onclick="() => ChangeModeAsync(RankingMode.CapitalAcceleration)">
+                        資金加速
+                    </button>
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <span class="filter-label" data-hint="只篩選要看的市場。市場成交比的分母不受影響，一律是上市＋上櫃全體。">市場</span>
+                <div class="button-row">
+                    @foreach (var (filter, text) in MarketOptions)
+                    {
+                        <button type="button"
+                                class="@ToggleClass(_query.Market == filter)"
+                                @onclick="() => ChangeMarketAsync(filter)">
+                            @text
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <span class="filter-label" data-hint="「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。">成交門檻</span>
+                <div class="button-row">
+                    @foreach (var threshold in LiquidityOptions)
+                    {
+                        <button type="button"
+                                class="@ToggleClass(_query.MinimumAverageDailyTradingValue == threshold)"
+                                data-hint="@ToThresholdHint(threshold)"
+                                @onclick="() => ChangeLiquidityAsync(threshold)">
+                            @RankingFormatter.ToThresholdText(threshold)
+                        </button>
+                    }
+
+                    @* 按鈕之外的任意金額。單位與按鈕一樣是平均每日成交值。 *@
+                    <span class="threshold-custom">
+                        <input type="number" class="threshold-input" min="0" step="0.1"
+                               data-hint="自己輸入金額，單位與按鈕相同：平均每日成交值（億元）"
+                               placeholder="自訂" value="@CustomThresholdText"
+                               @onchange="ChangeCustomLiquidityAsync" />
+                        <span class="threshold-unit">億元</span>
+                    </span>
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <span class="filter-label" data-hint="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
+                <div class="lock-row">
+                    <input type="text" class="lock-input" placeholder="股號" maxlength="6" inputmode="numeric"
+                           @bind="_lockInput" @bind:event="oninput" @onkeydown="LockKeyDown" />
+                    <button type="button" class="icon-button" data-hint="加入鎖定" @onclick="AddLock">＋</button>
+
+                    @if (_lockedTickers.Count > 0)
+                    {
+                        <button type="button" class="icon-button danger" data-hint="全部清除"
+                                @onclick="ClearLocks">✕</button>
+                    }
+
+                    @if (_lockError is not null)
+                    {
+                        <span class="lock-error">@_lockError</span>
+                    }
+
+                    @foreach (var ticker in _lockedTickers)
+                    {
+                        <span class="lock-chip">
+                            <span class="lock-chip-ticker">@ticker</span>
+                            <span class="lock-chip-name">@_stockNames.GetValueOrDefault(ticker)</span>
+                            <span class="lock-chip-rank">@LockedRankText(ticker)</span>
+                            <button type="button" class="lock-chip-remove" data-hint="取消鎖定"
+                                    @onclick="() => _lockedTickers.Remove(ticker)">×</button>
                         </span>
-                    </div>
-                }
+                    }
+                </div>
             </div>
         </section>
 
@@ -480,6 +566,48 @@
 
     private static string IndexValueText(MarketIndexQuote? index)
         => index is null ? "—" : index.Value.ToString("N2");
+
+    private static string HeatScoreText(decimal? score)
+        => score is { } value
+            ? decimal.Round(value, 0, MidpointRounding.AwayFromZero).ToString("0")
+            : "—";
+
+    private static string HeatLevelClass(decimal? score)
+        => score switch
+        {
+            >= 7.5m => "hot",
+            >= 6m => "warm",
+            >= 4m => "neutral",
+            >= 2.5m => "cool",
+            _ => "cold"
+        };
+
+    private static string HeatLevelText(decimal? score)
+        => score switch
+        {
+            null => "● 資料不足",
+            >= 7.5m => "● 熱絡",
+            >= 6m => "● 偏熱",
+            >= 4m => "● 中性",
+            >= 2.5m => "● 偏冷",
+            _ => "● 冷清"
+        };
+
+    private static string HeatProgressWidth(decimal? score)
+        => score is { } value
+            ? $"{Math.Clamp(value * 10m, 0m, 100m):0.##}%"
+            : "0%";
+
+    private static string HeatPercentText(decimal? percent)
+        => percent is { } value
+            ? RankingFormatter.ToSignedPercentText(value / 100m, 2)
+            : "—";
+
+    private static string HeatVolumeText(decimal? ratio)
+        => ratio is { } value ? $"{value:N2} × 20 日均量" : "—";
+
+    private static string HeatTurnoverText(decimal? turnover)
+        => turnover is { } value ? RankingFormatter.ToBillionText(value, 2) : "—";
 
     private static decimal? IndexChangeRate(MarketIndexQuote? index)
         => index?.ChangePercent is { } changePercent ? changePercent / 100m : null;

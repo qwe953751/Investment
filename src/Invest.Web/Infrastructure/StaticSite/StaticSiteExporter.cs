@@ -252,8 +252,31 @@ public sealed class StaticSiteExporter(
             result.HasSufficientData
                 ? RankingFormatter.ToBillionText(result.MarketTotalTradingValue / result.PeriodDays, 0)
                 : "—",
+            ToMarketHeatExport(result.MarketHeat),
             [.. result.Rows.Select(ToExport)]);
     }
+
+    private static MarketHeatExport? ToMarketHeatExport(MarketHeatMetrics? heat)
+        => heat is null
+            ? null
+            : new MarketHeatExport(
+                heat.TradingDate.ToString("yyyy-MM-dd"),
+                Round(heat.Score),
+                Round(heat.ShortTrendScore),
+                Round(heat.BreadthScore),
+                Round(heat.VolumeScore),
+                Round(heat.IndexDailyChangePercent),
+                Round(heat.IndexWeeklyChangePercent),
+                heat.UpCount,
+                heat.DownCount,
+                heat.FlatCount,
+                heat.ComparedStockCount,
+                Round(heat.MarketTurnover),
+                Round(heat.AverageMarketTurnover),
+                Round(heat.VolumeRatio),
+                [.. heat.PreviousDays.Select(day => new MarketHeatHistoryExport(
+                    day.TradingDate.ToString("yyyy-MM-dd"),
+                    Round(day.Score)))]);
 
     /// <summary>
     /// 一列只寫數字，顯示文字由前端套用格式。
@@ -592,7 +615,27 @@ public sealed class StaticSiteExporter(
         string CurrentPeriod,
         string PreviousPeriod,
         string MarketDailyAverage,
+        MarketHeatExport? MarketHeat,
         IReadOnlyList<RowExport> Rows);
+
+    private sealed record MarketHeatExport(
+        string TradingDate,
+        decimal? Score,
+        decimal? ShortTrendScore,
+        decimal? BreadthScore,
+        decimal? VolumeScore,
+        decimal? IndexDailyChangePercent,
+        decimal? IndexWeeklyChangePercent,
+        int UpCount,
+        int DownCount,
+        int FlatCount,
+        int ComparedStockCount,
+        decimal? MarketTurnover,
+        decimal? AverageMarketTurnover,
+        decimal? VolumeRatio,
+        IReadOnlyList<MarketHeatHistoryExport> PreviousDays);
+
+    private sealed record MarketHeatHistoryExport(string TradingDate, decimal Score);
 
     private sealed record RowExport(
         string Ticker,

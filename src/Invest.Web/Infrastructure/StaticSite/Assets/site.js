@@ -12,6 +12,10 @@ const KLINE_DIRECTORY = 'data/kline';
 const REVENUE_HISTORY_TABLE = 'revenue_history';
 const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && new URLSearchParams(window.location.search).get('local-revenue-preview') === '1';
+// 本機樣板直接開根網址就能看到；公開站不會啟用，因為 GitHub Pages 不是 localhost。
+// 要在本機暫時回到一般排行頁，可帶上 `?portfolio-preview=0`。
+const LOCAL_PORTFOLIO_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && new URLSearchParams(window.location.search).get('portfolio-preview') !== '0';
 const KLINE_MONTHS = 3;
 const KLINE_MOVING_AVERAGES = [
     { key: 'ma5', label: 'MA5', className: 'ma5' },
@@ -37,7 +41,7 @@ const PERIODS = [
 
 // 兩種檢視的預設期間不一樣。盤後回答的是「昨天發生了什麼」，所以預設前一交易日；
 // 盤中是拿今天跟一段有代表性的期間對照，只比一天太容易被單日的異常帶走，所以預設 5 日。
-const DEFAULT_PERIOD = { daily: 1, intraday: 5, custom: 1 };
+const DEFAULT_PERIOD = { daily: 1, intraday: 5, custom: 1, portfolio: 1 };
 
 const MODES = [
     {
@@ -66,6 +70,12 @@ const VIEWS = [
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
     { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' }
 ];
+const PORTFOLIO_VIEW = {
+    key: 'portfolio',
+    text: '持倉',
+    hint: '本機樣板：把 Google Sheet 的持倉與族群映射到網站；點擊名稱開啟還原權息日 K 線。'
+};
+const availableViews = () => LOCAL_PORTFOLIO_PREVIEW ? [...VIEWS, PORTFOLIO_VIEW] : VIEWS;
 
 // 盤中頁的更新週期與收集器共用 manifest 裡的 CollectionSchedule。
 // 舊版 manifest 沒有這欄時才退回目前的 2 分鐘，避免前端失去更新能力。
@@ -115,6 +125,10 @@ const toFixedText = (value, decimals) => (Number(value.toFixed(decimals)) || 0)
 
 // 元轉億元。台股慣用單位，直接看元的位數太多。
 const toBillionText = value => toFixedText(value / 100_000_000, 2);
+const toMoneyText = value => (missing(value) ? '—' : `${toFixedText(Number(value), 0)} 元`);
+const toSignedMoneyText = value => (missing(value)
+    ? '—'
+    : `${value > 0 ? '+' : ''}${toMoneyText(value)}`);
 
 const toPercentText = (rate, decimals = 2) => (missing(rate)
     ? '—'
@@ -128,6 +142,30 @@ const toSignedPercentText = (rate, decimals = 1) => (missing(rate)
 const toCloseText = close => (missing(close) ? '—' : toFixedText(close, 2));
 
 const toIndexText = index => (missing(index) ? '—' : toFixedText(Number(index), 2));
+
+const toHeatScoreText = score => (missing(score) ? '—' : String(Math.round(Number(score))));
+
+const toHeatPercentText = percent => missing(percent)
+    ? '—'
+    : toSignedPercentText(Number(percent) / 100, 2);
+
+const heatLevel = score => {
+    if (missing(score)) {
+        return ['資料不足', 'neutral'];
+    }
+
+    const value = Number(score);
+
+    return value >= 7.5
+        ? ['熱絡', 'hot']
+        : value >= 6
+            ? ['偏熱', 'warm']
+            : value >= 4
+                ? ['中性', 'neutral']
+                : value >= 2.5
+                    ? ['偏冷', 'cool']
+                    : ['冷清', 'cold'];
+};
 
 // 盤中資料的時間一律用台北時間顯示。手機不見得在台灣，交給瀏覽器的當地時區會看到錯的盤中時間。
 const TAIPEI_TIME = new Intl.DateTimeFormat('zh-TW', {
@@ -459,9 +497,33 @@ const CUSTOM_COLUMNS = [
     { key: 'value', title: '成交值（億）', hint: '所選單一交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) }
 ];
 
+// 本機限定的持倉樣板。這些是示範數字，不是使用者實際持倉；真正接上 Sheet 時只替換資料來源，
+// 表格欄位與既有 K 線彈窗不用再造一套。
+const LOCAL_PORTFOLIO_POSITIONS = [
+    { ticker: '2330', group: '半導體', quantity: 100, averageCost: 2200 },
+    { ticker: '2454', group: '半導體', quantity: 50, averageCost: 3600 },
+    { ticker: '2408', group: '記憶體', quantity: 200, averageCost: 500 },
+    { ticker: '3037', group: '電子零組件', quantity: 100, averageCost: 1000 },
+    { ticker: '2308', group: '電子零組件', quantity: 80, averageCost: 1800 }
+];
+
+const PORTFOLIO_COLUMNS = [
+    { key: 'group', title: '族群', hint: '目前由 Google Sheet 的族群映射欄提供；真正接線後會以你的分類為準。', text: row => row.group, cell: row => ({ text: row.group, cls: 'portfolio-group' }) },
+    { key: 'ticker', title: '代號', hint: '右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
+    { key: 'quantity', title: '持股數', hint: '示範持倉數量，真正接上 Google Sheet 後由持倉欄提供。', value: row => row.quantity, cell: row => ({ text: toFixedText(row.quantity, 0), cls: 'numeric' }) },
+    { key: 'averageCost', title: '成本均價', hint: '示範持倉成本均價。', value: row => row.averageCost, cell: row => ({ text: toCloseText(row.averageCost), cls: 'numeric' }) },
+    { key: 'close', title: '現價', hint: '所選交易日的收盤價，取既有行情資料。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
+    { key: 'marketValue', title: '市值', hint: '現價 × 持股數量。', value: row => row.marketValue, cell: row => ({ text: toMoneyText(row.marketValue), cls: 'numeric' }) },
+    { key: 'unrealized', title: '未實現損益', hint: '（現價 − 成本均價）× 持股數量。', value: row => row.unrealized, cell: row => ({ text: toSignedMoneyText(row.unrealized), cls: 'numeric ' + toTrendClass(row.unrealized) }) },
+    { key: 'returnRate', title: '報酬率', hint: '（現價 − 成本均價）÷ 成本均價。', value: row => row.returnRate, cell: row => ({ text: toSignedPercentText(row.returnRate), cls: 'numeric ' + toTrendClass(row.returnRate) }) },
+    { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日漲跌幅；下層「週」是本週漲跌幅。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) }
+];
+
 const columns = () => state.view === 'intraday'
     ? INTRADAY_COLUMNS
-    : state.view === 'custom' ? CUSTOM_COLUMNS : COLUMNS;
+    : state.view === 'custom' ? CUSTOM_COLUMNS
+        : state.view === 'portfolio' ? PORTFOLIO_COLUMNS : COLUMNS;
 
 const state = {
     view: 'daily',
@@ -571,12 +633,15 @@ function applyViewVisibility() {
 
 function renderFilters() {
     const custom = state.view === 'custom';
-    el('page-heading').textContent = custom ? '自訂資料瀏覽' : '個股成交值排行';
+    const portfolio = state.view === 'portfolio';
+    el('page-heading').textContent = portfolio
+        ? '持倉總覽（本機樣板）'
+        : custom ? '自訂資料瀏覽' : '個股成交值排行';
     document.title = el('page-heading').textContent;
 
     renderOptions(
         'view-options',
-        VIEWS.map(view => ({
+        availableViews().map(view => ({
             ...view,
             disabled: view.key === 'intraday' && supabase === null
         })),
@@ -830,7 +895,7 @@ function applyStoredSettings() {
     }
 
     // 盤中頁在沒有資料庫連線時是停用的，存著的值不能繞過這件事。
-    if (VIEWS.some(view => view.key === stored.view)
+    if (availableViews().some(view => view.key === stored.view)
         && (stored.view !== 'intraday' || supabase !== null)) {
         state.view = stored.view;
 
@@ -2302,6 +2367,7 @@ function configureRevenuePopover() {
 
 function renderTable() {
     el('data-table').classList.toggle('custom-table', state.view === 'custom');
+    el('data-table').classList.toggle('portfolio-table', state.view === 'portfolio');
 
     const head = el('table-head');
     head.replaceChildren();
@@ -2471,6 +2537,34 @@ function renderTable() {
 }
 
 function renderSummary() {
+    if (state.view === 'portfolio') {
+        const groups = new Set(current.rows.map(row => row.group)).size;
+        const items = [
+            ['資料來源', 'Google Sheet 映射樣板'],
+            ['交易日', current.tradeDate.replaceAll('-', '/')],
+            ['持倉標的', `${current.rows.length} 檔／${groups} 個族群`],
+            ['總市值', toMoneyText(current.totalMarketValue)],
+            ['未實現損益', toSignedMoneyText(current.totalUnrealized)]
+        ];
+
+        const summary = el('summary');
+        summary.replaceChildren();
+        const row = document.createElement('div');
+        row.className = 'summary-row summary-explanation-row portfolio-summary-row';
+
+        for (const [label, value] of items) {
+            const item = document.createElement('div');
+            const tag = document.createElement('span');
+            tag.className = 'summary-label';
+            tag.textContent = label;
+            item.append(tag, value);
+            row.append(item);
+        }
+
+        summary.append(row);
+        return;
+    }
+
     if (state.view === 'custom') {
         const threshold = activeThreshold();
         const items = [
@@ -2533,8 +2627,6 @@ function renderSummary() {
         explanationRow.append(item);
     }
 
-    summary.append(explanationRow);
-
     const indexItems = [
         ['加權指數', index?.twseIndex, index?.twseChangePercent, index?.twseYearToDateChangePercent],
         ['櫃買指數', index?.tpexIndex, index?.tpexChangePercent, index?.tpexYearToDateChangePercent]
@@ -2572,7 +2664,197 @@ function renderSummary() {
         indexRow.append(item);
     }
 
-    summary.append(indexRow);
+    if (current.marketHeat) {
+        summary.append(renderMarketHeat(current.marketHeat, index));
+    }
+
+    summary.append(explanationRow);
+
+    if (!current.marketHeat) {
+        summary.append(indexRow);
+    }
+}
+
+function renderMarketHeat(heat, index) {
+    const panel = document.createElement('section');
+    panel.className = 'market-heat-panel';
+
+    const [level, levelClass] = heatLevel(heat.score);
+    const score = document.createElement('strong');
+    score.className = 'market-heat-score';
+    score.textContent = `${toHeatScoreText(heat.score)}/10`;
+
+    const title = document.createElement('span');
+    title.className = 'market-heat-title';
+    title.textContent = `市場熱絡程度 · ${state.view === 'intraday' ? '盤中' : '盤後'}`;
+    title.dataset.hint = '熱絡分數由短期趨勢 35%、參與廣度 35%、量能 30% 加權而成。每項先換算為 0～10 分，畫面顯示四捨五入後的整數；它是市場狀態參考，不是買賣訊號。';
+
+    const levelTag = document.createElement('span');
+    levelTag.className = `market-heat-level ${levelClass}`;
+    levelTag.textContent = `● ${level}`;
+
+    const overview = document.createElement('div');
+    overview.className = 'market-heat-overview';
+
+    const heading = document.createElement('div');
+    heading.className = 'market-heat-heading';
+    heading.append(title, score, levelTag);
+
+    const progress = document.createElement('div');
+    progress.className = 'market-heat-progress';
+    progress.dataset.hint = '分數越接近 10，代表趨勢、上漲參與與成交量同時偏強；越接近 0 則代表整體偏冷。';
+
+    const progressFill = document.createElement('span');
+    progressFill.className = `market-heat-progress-fill ${levelClass}`;
+    progressFill.style.width = missing(heat.score)
+        ? '0%'
+        : `${Math.max(0, Math.min(100, Number(heat.score) * 10))}%`;
+    progress.append(progressFill);
+
+    const scale = document.createElement('div');
+    scale.className = 'market-heat-scale';
+    scale.append('冷清', '中性', '熱絡');
+
+    const history = document.createElement('div');
+    history.className = 'market-heat-history';
+    const historyTitle = document.createElement('span');
+    historyTitle.className = 'market-heat-history-title';
+    historyTitle.textContent = '前 5 日分數';
+    historyTitle.dataset.hint = '只顯示所選日期之前的最近 5 個交易日，不把當天重複放進歷史分數；圓點內同樣只顯示四捨五入後的整數。';
+    history.append(historyTitle);
+
+    for (const day of heat.previousDays ?? []) {
+        const item = document.createElement('span');
+        item.className = 'market-heat-history-item';
+        item.dataset.hint = `${day.tradingDate.replaceAll('-', '/')} 的市場熱絡分數：${toHeatScoreText(day.score)}/10。`;
+
+        const point = document.createElement('strong');
+        point.className = 'market-heat-history-score';
+        point.textContent = toHeatScoreText(day.score);
+
+        const date = document.createElement('small');
+        date.textContent = day.tradingDate.slice(5).replace('-', '/');
+        item.append(point, date);
+        history.append(item);
+    }
+
+    if ((heat.previousDays ?? []).length === 0) {
+        const empty = document.createElement('span');
+        empty.className = 'market-heat-history-empty';
+        empty.textContent = '尚無前五日資料';
+        history.append(empty);
+    }
+
+    overview.append(heading, progress, scale, history);
+
+    const indicators = document.createElement('div');
+    indicators.className = 'market-heat-indicators';
+
+    const addCard = (titleText, valueText, scoreValue, hint, valueClass = '') => {
+        const card = document.createElement('div');
+        card.className = 'market-heat-card';
+
+        const cardTitle = document.createElement('div');
+        cardTitle.className = 'market-heat-card-title';
+        cardTitle.dataset.hint = hint;
+        cardTitle.append(titleText);
+
+        const cardScore = document.createElement('strong');
+        cardScore.className = 'market-heat-card-score';
+        cardScore.textContent = `${toHeatScoreText(scoreValue)} 分`;
+        cardTitle.append(cardScore);
+
+        const value = document.createElement('div');
+        value.className = `market-heat-card-value ${valueClass}`.trim();
+        if (titleText === '參與廣度') {
+            const up = document.createElement('span');
+            up.className = 'market-heat-up-count';
+            up.textContent = `上漲 ${heat.upCount} 檔`;
+            const down = document.createElement('span');
+            down.className = 'market-heat-down-count';
+            down.textContent = `下跌 ${heat.downCount} 檔`;
+            value.append(up, down);
+        } else {
+            value.textContent = valueText;
+        }
+
+        card.append(cardTitle, value);
+        indicators.append(card);
+    };
+
+    addCard(
+        '短期趨勢',
+        `加權 ${toSignedPercentText(missing(index?.twseChangePercent) ? null : Number(index.twseChangePercent) / 100, 2)}`,
+        heat.shortTrendScore,
+        '短期趨勢分數：先取加權與櫃買指數的平均日漲跌，再以最近五個交易日的平均方向補充；日／週分別占 60%／40%，最後換成 0～10 分。');
+
+    addCard(
+        '參與廣度',
+        `上漲 ${heat.upCount} 檔\n下跌 ${heat.downCount} 檔`,
+        heat.breadthScore,
+        '參與廣度分數：逐檔比較當日收盤與前一個有效收盤；上漲減下跌後除以可比較檔數，再換成 0～10 分。沒有前收的標的不列入分母。',
+        'market-heat-breadth-value');
+
+    addCard(
+        '量能',
+        missing(heat.volumeRatio)
+            ? '—'
+            : `${toFixedText(Number(heat.volumeRatio), 2)} × 20 日均量`,
+        heat.volumeScore,
+        '量能分數：當日上市＋上櫃成交值，除以之前最多 20 個交易日的日均成交值；1.00 倍是中性 5 分，每增加 0.10 倍增加 1 分，最後限制在 0～10 分。');
+
+    const indices = document.createElement('div');
+    indices.className = 'market-heat-indices';
+
+    const addIndexCard = (label, value, daily, yearToDate) => {
+        const card = document.createElement('div');
+        card.className = 'market-heat-index-card';
+
+        const titleRow = document.createElement('div');
+        titleRow.className = 'market-heat-index-title';
+        titleRow.dataset.hint = `${label}的所選交易日收盤指數，並列顯示當日與今年截至該日的漲跌幅。`;
+        titleRow.append(label, '示意');
+
+        const indexValue = document.createElement('strong');
+        indexValue.className = 'market-heat-index-value';
+        indexValue.textContent = toIndexText(value);
+
+        const changes = document.createElement('div');
+        changes.className = 'market-heat-index-changes';
+        const dailyText = document.createElement('span');
+        dailyText.className = toTrendClass(daily);
+        dailyText.textContent = `日 ${toSignedPercentText(missing(daily) ? null : Number(daily) / 100, 2)}`;
+        const ytdText = document.createElement('span');
+        ytdText.className = toTrendClass(yearToDate);
+        ytdText.textContent = `今年 ${toSignedPercentText(missing(yearToDate) ? null : Number(yearToDate) / 100, 2)}`;
+        changes.append(dailyText, ytdText);
+
+        card.append(titleRow, indexValue, changes);
+        indices.append(card);
+    };
+
+    addIndexCard('加權指數', index?.twseIndex, index?.twseChangePercent, index?.twseYearToDateChangePercent);
+    addIndexCard('櫃買指數', index?.tpexIndex, index?.tpexChangePercent, index?.tpexYearToDateChangePercent);
+
+    const meta = document.createElement('div');
+    meta.className = 'market-heat-meta';
+    const addMeta = (label, value) => {
+        const item = document.createElement('div');
+        const itemLabel = document.createElement('span');
+        itemLabel.textContent = label;
+        const itemValue = document.createElement('strong');
+        itemValue.textContent = value;
+        item.append(itemLabel, itemValue);
+        meta.append(item);
+    };
+
+    addMeta('交易日', heat.tradingDate.replaceAll('-', '/'));
+    addMeta('資料時間', state.view === 'intraday' ? (current?.capturedAt ?? '—') : '盤後資料');
+    addMeta('時段進度', state.view === 'intraday' ? '盤中' : '已收盤');
+    addMeta('全市場成交額', missing(heat.marketTurnover) ? '—' : `${toBillionText(Number(heat.marketTurnover))} 億元`);
+
+    panel.append(overview, indicators, indices, meta);
+    return panel;
 }
 
 function showNotice(message, isWarning) {
@@ -2701,6 +2983,11 @@ async function loadIntraday(silent = false) {
 
     // 分母是全市場，不隨市場篩選改變——與盤後那一欄同一個定義，兩邊的比例才對得起來。
     const marketTotal = rows.reduce((total, row) => total + row.value, 0);
+    const marketHeat = readIntradayMarketHeat(raw[0]);
+
+    if (marketHeat) {
+        marketHeat.previousDays = await loadMarketHeatHistory(raw[0].trade_date);
+    }
 
     // 對照組固定取最新一個交易日結尾的期間：盤中永遠是今天，沒有往回選日期這回事。
     const reference = await fetchPeriod(`${state.period}-${dates[dates.length - 1]}`);
@@ -2751,6 +3038,7 @@ async function loadIntraday(silent = false) {
         capturedAt: toTaipeiText(raw[0].captured_at),
         progress,
         marketTotal,
+        marketHeat,
         marketIndices: {
             twseIndex: missing(raw[0].twse_index) ? null : Number(raw[0].twse_index),
             twseChangePercent: missing(raw[0].twse_change_percent) ? null : Number(raw[0].twse_change_percent),
@@ -2785,6 +3073,7 @@ async function loadIntraday(silent = false) {
     renderLockRow();
 }
 
+const INTRADAY_SELECT_WITH_HEAT = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_average_turnover,market_heat_volume_ratio';
 const INTRADAY_SELECT = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price';
 const INTRADAY_SELECT_LEGACY = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent,open_price,high_price,low_price';
 
@@ -2798,13 +3087,55 @@ async function fetchIntradayRows() {
     }
 
     try {
-        return await fetchAllRows('intraday_latest', INTRADAY_SELECT, '&order=turnover.desc');
+        return await fetchAllRows('intraday_latest', INTRADAY_SELECT_WITH_HEAT, '&order=turnover.desc');
     } catch {
-        // 沿用舊 view；年初欄位再由 manifest 基準暫算。套用 db/010 後重新整理就會切回來。
-        intradayLegacySelect = true;
+        try {
+            // db/011 尚未套用時，先沿用已有年初指數欄位；熱絡指標會顯示資料不足。
+            return await fetchAllRows('intraday_latest', INTRADAY_SELECT, '&order=turnover.desc');
+        } catch {
+            // db/010 尚未套用時，沿用舊 view；年初欄位再由 manifest 基準暫算。
+            intradayLegacySelect = true;
 
-        return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
+            return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
+        }
     }
+}
+
+function readIntradayMarketHeat(row) {
+    if (missing(row.market_heat_score)) {
+        return null;
+    }
+
+    return {
+        tradingDate: row.trade_date,
+        score: Number(row.market_heat_score),
+        shortTrendScore: missing(row.market_heat_short_trend_score) ? null : Number(row.market_heat_short_trend_score),
+        breadthScore: missing(row.market_heat_breadth_score) ? null : Number(row.market_heat_breadth_score),
+        volumeScore: missing(row.market_heat_volume_score) ? null : Number(row.market_heat_volume_score),
+        indexDailyChangePercent: missing(row.market_heat_index_daily_change_percent) ? null : Number(row.market_heat_index_daily_change_percent),
+        indexWeeklyChangePercent: missing(row.market_heat_index_weekly_change_percent) ? null : Number(row.market_heat_index_weekly_change_percent),
+        upCount: Number(row.market_heat_up_count ?? 0),
+        downCount: Number(row.market_heat_down_count ?? 0),
+        flatCount: Number(row.market_heat_flat_count ?? 0),
+        comparedStockCount: Number(row.market_heat_compared_stock_count ?? 0),
+        marketTurnover: missing(row.market_heat_turnover) ? null : Number(row.market_heat_turnover),
+        averageMarketTurnover: missing(row.market_heat_average_turnover) ? null : Number(row.market_heat_average_turnover),
+        volumeRatio: missing(row.market_heat_volume_ratio) ? null : Number(row.market_heat_volume_ratio),
+        previousDays: []
+    };
+}
+
+async function loadMarketHeatHistory(currentDate) {
+    const previousDates = dates.filter(date => date < currentDate).slice(-5);
+    const previous = await Promise.all(previousDates.map(date => fetchPeriod(`1-${date}`)));
+
+    return previous
+        .map(data => data?.marketHeat)
+        .filter(heat => heat?.score !== undefined && heat?.score !== null)
+        .map(heat => ({
+            tradingDate: heat.tradingDate,
+            score: Number(heat.score)
+        }));
 }
 
 function intradayYearToDatePercent(row, market) {
@@ -2894,6 +3225,54 @@ async function loadCustom() {
     renderLockRow();
 }
 
+async function loadPortfolioPreview() {
+    const data = await fetchPeriod(`1-${state.date}`);
+
+    if (!data) {
+        showNotice(`讀不到 ${state.date} 的樣板行情，請在本機重新產生一次靜態網站。`, true);
+        return;
+    }
+
+    const quotes = new Map(data.rows.map(row => [row.ticker, row]));
+    const rows = LOCAL_PORTFOLIO_POSITIONS.map(position => {
+        const quote = quotes.get(position.ticker) ?? {};
+        const close = missing(quote.close) ? null : Number(quote.close);
+        const marketValue = close === null ? null : close * position.quantity;
+        const unrealized = close === null
+            ? null
+            : (close - position.averageCost) * position.quantity;
+
+        return {
+            ...quote,
+            ...position,
+            name: quote.name ?? position.ticker,
+            market: quote.market ?? 'twse',
+            close,
+            marketValue,
+            unrealized,
+            returnRate: position.averageCost > 0 && close !== null
+                ? (close - position.averageCost) / position.averageCost
+                : null
+        };
+    });
+
+    nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
+    current = {
+        tradeDate: state.date,
+        rows,
+        totalMarketValue: rows.reduce((total, row) => total + (row.marketValue ?? 0), 0),
+        totalUnrealized: rows.reduce((total, row) => total + (row.unrealized ?? 0), 0),
+        rankedStockCount: rows.length,
+        rankByTicker: new Map()
+    };
+
+    el('notice').hidden = true;
+    el('ranking').hidden = false;
+    renderSummary();
+    renderTable();
+    renderLockRow();
+}
+
 async function load() {
     if (state.view === 'intraday') {
         await loadIntraday();
@@ -2902,6 +3281,11 @@ async function load() {
 
     if (state.view === 'custom') {
         await loadCustom();
+        return;
+    }
+
+    if (state.view === 'portfolio') {
+        await loadPortfolioPreview();
         return;
     }
 
@@ -2961,11 +3345,16 @@ function update(changes) {
     // 自訂頁沒有名次，預設依代號排列；其餘兩頁回到名次。
     if (changes.view !== undefined && changes.view !== state.view) {
         changes.sortKey = changes.view === 'custom' ? state.customSortKey : 'rank';
+        if (changes.view === 'portfolio') {
+            changes.sortKey = 'group';
+        }
         changes.sortDescending = changes.view === 'custom' ? state.customSortDescending : false;
 
         // 期間在兩邊是兩件事（本期多長 vs 跟多長的期間對照），預設值也不一樣，
         // 所以切過去要換成那一邊的預設，不要把上一個檢視的選擇帶過去。
-        changes.period ??= DEFAULT_PERIOD[changes.view];
+        if (DEFAULT_PERIOD[changes.view] !== undefined) {
+            changes.period ??= DEFAULT_PERIOD[changes.view];
+        }
     }
 
     const nextView = changes.view ?? state.view;
@@ -2998,9 +3387,11 @@ function renderSnapshotNote() {
         : `收集器在交易日 ${schedule.intradayStart} 開始、${schedule.intradayEnd} 收工，`
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
 
-    el('snapshot-note').textContent = state.view === 'intraday'
-        ? `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
-        : snapshotNote;
+    el('snapshot-note').textContent = state.view === 'portfolio'
+        ? '本機樣板資料：持倉與族群模擬 Google Sheet，現價與 K 線沿用既有行情快照。'
+        : state.view === 'intraday'
+            ? `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
+            : snapshotNote;
 }
 
 // 盤中頁自己更新。分頁切到背景時不打，回到前景先補一次，
@@ -3040,6 +3431,13 @@ async function start() {
 
     // 預設值都擺好之後才套上次選的，這樣驗不過的項目自然留在預設。
     applyStoredSettings();
+
+    // 只有本機靜態預覽會進入樣板；公開網站仍維持原本的盤後預設頁。
+    if (LOCAL_PORTFOLIO_PREVIEW) {
+        state.view = 'portfolio';
+        state.sortKey = 'group';
+        state.sortDescending = false;
+    }
 
     snapshotNote =
         `資料截至 ${manifest.latestTradingDate}，共 ${manifest.tradingDayCount} 個交易日、`
