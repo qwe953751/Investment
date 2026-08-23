@@ -1,5 +1,7 @@
 using Invest.Web.Infrastructure.Database;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.TradingValueRanking.Models;
+using Invest.Web.Infrastructure.MarketData;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -110,6 +112,127 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             Total = total,
             PreviousTotal = previousTotal
         };
+    }
+
+    /// <summary>
+    /// 讀取目前網站會顯示的最新一輪盤中快照，供 migration 後補回衍生欄位。
+    /// 這裡只讀既有資料，不會動到明細或量能曲線。
+    /// </summary>
+    public async Task<StoredIntradaySnapshot?> LoadLatestSnapshotAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            """
+            with latest as (
+                select id, trade_date,
+                       twse_index, twse_change_percent,
+                       tpex_index, tpex_change_percent
+                from intraday_runs
+                order by trade_date desc, captured_at desc
+                limit 1
+            )
+            select latest.id, latest.trade_date,
+                   latest.twse_index, latest.twse_change_percent,
+                   latest.tpex_index, latest.tpex_change_percent,
+                   s.symbol, s.name, s.market,
+                   q.price, q.turnover, q.change_percent,
+                   q.open_price, q.high_price, q.low_price
+            from latest
+            join intraday_quotes q on q.run_id = latest.id
+            join securities s on s.id = q.security_id
+            order by q.security_id
+            """,
+            connection);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var quotes = new List<IntradayQuote>();
+        long? runId = null;
+        DateOnly tradeDate = default;
+        IReadOnlyList<MarketIndexQuote>? marketIndices = null;
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            runId ??= reader.GetInt64(0);
+            tradeDate = reader.GetFieldValue<DateOnly>(1);
+            marketIndices ??= ReadMarketIndices(reader);
+
+            quotes.Add(new IntradayQuote
+            {
+                Ticker = reader.GetString(6),
+                Name = reader.GetString(7),
+                Market = ParseMarket(reader.GetString(8)),
+                Price = ReadNullableDecimal(reader, 9),
+                EstimatedTradingValue = reader.GetFieldValue<long>(10),
+                ChangePercent = ReadNullableDecimal(reader, 11),
+                OpenPrice = ReadNullableDecimal(reader, 12),
+                HighPrice = ReadNullableDecimal(reader, 13),
+                LowPrice = ReadNullableDecimal(reader, 14),
+                PriceSource = IntradayPriceSource.None,
+                TradingVolume = 0m
+            });
+        }
+
+        return runId is null
+            ? null
+            : new StoredIntradaySnapshot(
+                runId.Value,
+                new IntradaySnapshot
+                {
+                    TradeDate = tradeDate,
+                    Quotes = quotes,
+                    MarketIndices = marketIndices ?? []
+                });
+    }
+
+    /// <summary>
+    /// 回填衍生的市場熱絡欄位；不觸碰原始報價、時間戳或盤中量能曲線。
+    /// </summary>
+    public async Task UpdateMarketHeatAsync(
+        long runId,
+        MarketHeatMetrics heat,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            """
+            update intraday_runs
+            set market_heat_score = @marketHeatScore,
+                market_heat_short_trend_score = @marketHeatShortTrendScore,
+                market_heat_breadth_score = @marketHeatBreadthScore,
+                market_heat_volume_score = @marketHeatVolumeScore,
+                market_heat_index_daily_change_percent = @marketHeatIndexDailyChangePercent,
+                market_heat_index_weekly_change_percent = @marketHeatIndexWeeklyChangePercent,
+                market_heat_up_count = @marketHeatUpCount,
+                market_heat_down_count = @marketHeatDownCount,
+                market_heat_flat_count = @marketHeatFlatCount,
+                market_heat_compared_stock_count = @marketHeatComparedStockCount,
+                market_heat_turnover = @marketHeatTurnover,
+                market_heat_average_turnover = @marketHeatAverageTurnover,
+                market_heat_volume_ratio = @marketHeatVolumeRatio
+            where id = @runId
+            """,
+            connection);
+
+        AddNullableDecimal(command, "marketHeatScore", heat.Score);
+        AddNullableDecimal(command, "marketHeatShortTrendScore", heat.ShortTrendScore);
+        AddNullableDecimal(command, "marketHeatBreadthScore", heat.BreadthScore);
+        AddNullableDecimal(command, "marketHeatVolumeScore", heat.VolumeScore);
+        AddNullableDecimal(command, "marketHeatIndexDailyChangePercent", heat.IndexDailyChangePercent);
+        AddNullableDecimal(command, "marketHeatIndexWeeklyChangePercent", heat.IndexWeeklyChangePercent);
+        AddNullableInt(command, "marketHeatUpCount", heat.UpCount);
+        AddNullableInt(command, "marketHeatDownCount", heat.DownCount);
+        AddNullableInt(command, "marketHeatFlatCount", heat.FlatCount);
+        AddNullableInt(command, "marketHeatComparedStockCount", heat.ComparedStockCount);
+        AddNullableDecimal(command, "marketHeatTurnover", heat.MarketTurnover);
+        AddNullableDecimal(command, "marketHeatAverageTurnover", heat.AverageMarketTurnover);
+        AddNullableDecimal(command, "marketHeatVolumeRatio", heat.VolumeRatio);
+        command.Parameters.AddWithValue("runId", runId);
+
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+        {
+            throw new InvalidOperationException($"找不到要回填的盤中快照 run {runId}。");
+        }
     }
 
     /// <summary>
@@ -267,6 +390,46 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         command.Parameters.AddWithValue(name, value is { } number ? number : DBNull.Value);
     }
 
+    private static IReadOnlyList<MarketIndexQuote> ReadMarketIndices(NpgsqlDataReader reader)
+    {
+        var indices = new List<MarketIndexQuote>(2);
+
+        AddMarketIndex(indices, Market.Twse, ReadNullableDecimal(reader, 2), ReadNullableDecimal(reader, 3));
+        AddMarketIndex(indices, Market.Tpex, ReadNullableDecimal(reader, 4), ReadNullableDecimal(reader, 5));
+
+        return indices;
+    }
+
+    private static void AddMarketIndex(
+        ICollection<MarketIndexQuote> indices,
+        Market market,
+        decimal? value,
+        decimal? changePercent)
+    {
+        if (value is not { } indexValue)
+        {
+            return;
+        }
+
+        indices.Add(new MarketIndexQuote
+        {
+            Market = market,
+            Value = indexValue,
+            ChangePercent = changePercent
+        });
+    }
+
+    private static Market ParseMarket(string raw)
+        => raw switch
+        {
+            "TWSE" => Market.Twse,
+            "TPEX" => Market.Tpex,
+            _ => throw new InvalidOperationException($"未知市場：{raw}。")
+        };
+
+    private static decimal? ReadNullableDecimal(NpgsqlDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal) ? null : reader.GetFieldValue<decimal>(ordinal);
+
     /// <summary>
     /// 明細會在盤後資料補齊後整批刪除，但全市場的累計成交額曲線刪掉就算不回來，
     /// 所以每輪留一列合計。直接從剛寫進去的明細加總，數字保證跟明細一致。
@@ -373,3 +536,8 @@ public sealed record IntradaySaveResult
     /// <summary>同一天上一輪的全市場成交金額。今天的第一輪是 null。</summary>
     public decimal? PreviousTotal { get; init; }
 }
+
+/// <summary>
+/// 資料庫裡最新一輪的原始盤中快照與其 run id。
+/// </summary>
+public sealed record StoredIntradaySnapshot(long RunId, IntradaySnapshot Snapshot);

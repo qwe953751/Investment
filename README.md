@@ -30,7 +30,7 @@
 
 ## 最新已發布版本
 
-本次「指數摘要第二列、今年漲幅、營收增減命名與營收彈窗」的合併提交是 `2321dcc`（2026-08-21），正式網站快照版本是 `1787304004`。
+本次「盤中市場熱絡資料修復」會以本提交重新發佈；盤中資料列已由正式公開 API 驗證可完整讀到熱絡欄位，正式網站仍維持既有靜態快照與即時 Supabase 盤中資料的分工。
 這一版已完成並驗收：
 
 - 盤中、盤後旁新增「自訂」頁；可瀏覽單一交易日的完整上市櫃資料，不建立預設排行。
@@ -46,6 +46,7 @@
 - 盤中 MIS 當日 K 棒、指數與同一個 2 分鐘更新計時器同步刷新。
 - `db/007_market_indices.sql`、`db/008_intraday_kline.sql`、`db/009_revenue_history.sql` 已套用 Supabase。
 - `db/010_market_index_ytd.sql` 已於 2026-08-21 套用 Supabase；盤中前端仍保留舊 view fallback，套不到就退回去，不以假資料代替。
+- `db/011_market_heat.sql` 已套用 Supabase；盤中與盤後使用同一個 C# 市場熱絡公式，並已回填最新盤中快照。
 - 營收彈窗已接上真實 `revenue_history`：39,448 列、1,976 檔；2330 有完整 20 個月資料。
 - 公開站 Edge 驗證通過：20 根柱、1 條 YoY 線、5 列列表、上下高度比 1.50、API 200、console error 0。
 - 盤中快照會保留到下一個較新交易日的有效資料成功寫入；休市、失敗與資料倒退不會清空舊資料。
@@ -251,6 +252,22 @@ curl -X POST "https://api.supabase.com/v1/projects/<專案 ref>/database/query" 
 
 營收彈窗需要 `db/009_revenue_history.sql`。它新增公開唯讀的 `revenue_history`，
 原始 `monthly_revenue` 仍然不對 anon 開放；套用後要再執行一次 `revenue`才會產生 20 個月摘要。
+
+市場熱絡需要 `db/011_market_heat.sql`。它只在 `intraday_runs` 新增可為空的熱絡欄位，
+並重建 `intraday_latest` view。一般盤中收集會在每一輪以 `MarketHeatCalculator` 寫入；
+若 migration 晚於最新快照才套用，可回填該輪，**不會重抓或重寫個股明細**：
+
+```bash
+dotnet run --project src/Invest.Web -- backfill-intraday-heat
+```
+
+公司網路無法直連 PostgreSQL 時，才明確使用下列受控路徑。它由正式網站公開的唯讀 API
+讀取快照、仍由 C# 計算、再以 Management API 精準更新同一個時間戳；需要
+`SUPABASE_ACCESS_TOKEN`，不能用於一般日常收集：
+
+```bash
+dotnet run --project src/Invest.Web -- backfill-intraday-heat --via-management-api
+```
 
 不用寫入用的那組連線字串，是因為 `invest_writer` 沒有建表權限，也不該有——
 它的密碼放在 GitHub Secrets，給了 DDL 權限等於讓 CI 有能力改結構。

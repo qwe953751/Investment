@@ -12,12 +12,17 @@ using Invest.Web.Infrastructure.MarketData.Twse;
 using Invest.Web.Infrastructure.StaticSite;
 using Invest.Web.Infrastructure.TurnoverAudit;
 using Microsoft.Extensions.Options;
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 // 命令列模式：
 //   dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-bars [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop]
+//   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
 //   dotnet run --project src/Invest.Web -- sync     [保留交易日數]
 //   dotnet run --project src/Invest.Web -- verify
 //   dotnet run --project src/Invest.Web -- status  [來源] [輸出檔]
@@ -28,7 +33,7 @@ using Microsoft.Extensions.Options;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "export" or "intraday" or "sync" or "verify"
+    command is "backfill" or "backfill-bars" or "export" or "intraday" or "backfill-intraday-heat" or "sync" or "verify"
         or "status" or "curve" or "revenue" or "turnover-audit";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -107,6 +112,12 @@ if (command is "export")
 if (command is "intraday")
 {
     await RunIntradayAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-intraday-heat")
+{
+    await RunIntradayHeatBackfillAsync(app.Services, args);
     return;
 }
 
@@ -314,32 +325,9 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                             .ToArray()
                     };
 
-                    var currentTrading = snapshot.Quotes
-                        .Select(quote => new DailyStockTrading
-                        {
-                            TradingDate = snapshot.TradeDate,
-                            Ticker = quote.Ticker,
-                            OpenPrice = quote.OpenPrice,
-                            HighPrice = quote.HighPrice,
-                            LowPrice = quote.LowPrice,
-                            ClosePrice = quote.Price,
-                            TradingValue = quote.EstimatedTradingValue
-                        })
-                        .ToArray();
-                    var heatIndices = historicalDataSet.MarketIndices
-                        .Append(new DailyMarketIndex
-                        {
-                            TradingDate = snapshot.TradeDate,
-                            Quotes = snapshot.MarketIndices
-                        })
-                        .ToArray();
-
                     snapshot = snapshot with
                     {
-                        MarketHeat = MarketHeatCalculator.Calculate(
-                            [.. historicalDataSet.DailyTrading, .. currentTrading],
-                            heatIndices,
-                            snapshot.TradeDate)
+                        MarketHeat = CalculateIntradayMarketHeat(historicalDataSet, snapshot)
                     };
 
                     var result = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);
@@ -437,6 +425,274 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
     Console.WriteLine("整場 MIS 都正常回應、但日期一直不是今天，判定為休市。");
 }
+
+/// <summary>
+/// 以已保存的最新盤中快照補回市場熱絡欄位。
+///
+/// migration 晚於快照套用時，不能等下個交易日才讓畫面恢復；此命令只更新分數欄位，
+/// 不會重抓行情或重寫任何盤中明細。計算仍完全走 <see cref="MarketHeatCalculator"/>。
+/// </summary>
+static async Task RunIntradayHeatBackfillAsync(IServiceProvider services, string[] args)
+{
+    var rankingService = services.GetRequiredService<TradingValueRankingQueryService>();
+    var viaManagementApi = args.Any(argument =>
+        string.Equals(argument, "--via-management-api", StringComparison.OrdinalIgnoreCase));
+    var store = viaManagementApi
+        ? null
+        : services.GetRequiredService<IntradayQuoteStore>();
+    var stored = store is null
+        ? null
+        : await store.LoadLatestSnapshotAsync();
+    var publicSnapshot = viaManagementApi
+        ? await LoadLatestIntradaySnapshotFromPublicApiAsync()
+        : null;
+    var snapshot = stored?.Snapshot ?? publicSnapshot?.Snapshot;
+
+    if (snapshot is null)
+    {
+        Console.WriteLine("沒有可回填的盤中快照。");
+        return;
+    }
+
+    var historicalDataSet = await rankingService.GetDataSetAsync();
+    var heat = CalculateIntradayMarketHeat(historicalDataSet, snapshot);
+
+    if (heat?.Score is null)
+    {
+        throw new InvalidOperationException(
+            $"盤中快照 {snapshot.TradeDate:yyyy-MM-dd} 沒有足夠資料計算市場熱絡程度。");
+    }
+
+    if (publicSnapshot is { } remote)
+    {
+        await UpdateMarketHeatViaManagementApiAsync(remote, heat);
+    }
+    else
+    {
+        await store!.UpdateMarketHeatAsync(stored!.RunId, heat);
+    }
+
+    Console.WriteLine(
+        $"已回填 {snapshot.TradeDate:yyyy-MM-dd} 盤中熱絡：{heat.Score:0.##}/10，"
+        + $"上漲 {heat.UpCount} 檔、下跌 {heat.DownCount} 檔。");
+}
+
+/// <summary>
+/// 將盤中最新值接到「交易日前」的盤後歷史後再算分數。
+/// 同一天的盤後收盤資料即使已經存在，也不能混入，否則回填結果會與當時的盤中快照不同。
+/// </summary>
+static MarketHeatMetrics? CalculateIntradayMarketHeat(
+    MarketDataSet historicalDataSet,
+    IntradaySnapshot snapshot)
+{
+    var history = historicalDataSet.DailyTrading
+        .Where(row => row.TradingDate < snapshot.TradeDate);
+    var currentTrading = snapshot.Quotes
+        .Select(quote => new DailyStockTrading
+        {
+            TradingDate = snapshot.TradeDate,
+            Ticker = quote.Ticker,
+            OpenPrice = quote.OpenPrice,
+            HighPrice = quote.HighPrice,
+            LowPrice = quote.LowPrice,
+            ClosePrice = quote.Price,
+            TradingValue = quote.EstimatedTradingValue
+        });
+    var heatIndices = historicalDataSet.MarketIndices
+        .Where(day => day.TradingDate < snapshot.TradeDate)
+        .Append(new DailyMarketIndex
+        {
+            TradingDate = snapshot.TradeDate,
+            Quotes = snapshot.MarketIndices
+        });
+
+    return MarketHeatCalculator.Calculate(
+        [.. history, .. currentTrading],
+        [.. heatIndices],
+        snapshot.TradeDate);
+}
+
+/// <summary>
+/// 公司網路無法直連 PostgreSQL 時，從正式靜態站已公開的唯讀 API 取回同一輪快照。
+/// 寫入仍只走 Management API，且命令列必須明確帶 <c>--via-management-api</c>。
+/// </summary>
+static async Task<PublicIntradaySnapshot?> LoadLatestIntradaySnapshotFromPublicApiAsync(
+    CancellationToken cancellationToken = default)
+{
+    using var client = new HttpClient();
+    var manifest = await LoadPublishedManifestAsync(client, cancellationToken);
+    var rows = new List<PublicIntradayRow>();
+    const int PageSize = 1_000;
+    const string Select =
+        "symbol,name,market,price,turnover,change_percent,trade_date,captured_at,"
+        + "twse_index,twse_change_percent,tpex_index,tpex_change_percent,open_price,high_price,low_price";
+
+    for (var offset = 0; ; offset += PageSize)
+    {
+        var endpoint = $"{manifest.Supabase.Url.TrimEnd('/')}/rest/v1/intraday_latest?select={Select}&order=symbol.asc";
+        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+        request.Headers.TryAddWithoutValidation("apikey", manifest.Supabase.AnonKey);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+            "Bearer", manifest.Supabase.AnonKey);
+        request.Headers.TryAddWithoutValidation("Range", $"{offset}-{offset + PageSize - 1}");
+
+        using var response = await client.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var page = JsonSerializer.Deserialize<List<PublicIntradayRow>>(json, CreatePublicJsonOptions()) ?? [];
+
+        rows.AddRange(page);
+
+        if (page.Count < PageSize)
+        {
+            break;
+        }
+    }
+
+    if (rows.Count == 0)
+    {
+        return null;
+    }
+
+    var first = rows[0];
+
+    if (rows.Any(row => row.TradeDate != first.TradeDate || row.CapturedAt != first.CapturedAt))
+    {
+        throw new InvalidOperationException("公開盤中 API 回傳了不同輪次的資料，拒絕回填。");
+    }
+
+    var indices = new List<MarketIndexQuote>(2);
+    AddMarketIndex(indices, Market.Twse, first.TwseIndex, first.TwseChangePercent);
+    AddMarketIndex(indices, Market.Tpex, first.TpexIndex, first.TpexChangePercent);
+
+    return new PublicIntradaySnapshot(
+        first.TradeDate,
+        first.CapturedAt,
+        new IntradaySnapshot
+        {
+            TradeDate = first.TradeDate,
+            MarketIndices = indices,
+            Quotes = rows.Select(row => new IntradayQuote
+            {
+                Ticker = row.Symbol,
+                Name = row.Name,
+                Market = ParseMarket(row.Market),
+                Price = row.Price,
+                OpenPrice = row.OpenPrice,
+                HighPrice = row.HighPrice,
+                LowPrice = row.LowPrice,
+                ChangePercent = row.ChangePercent,
+                EstimatedTradingValue = row.Turnover,
+                PriceSource = IntradayPriceSource.None,
+                TradingVolume = 0m
+            }).ToArray()
+        });
+}
+
+/// <summary>
+/// 只更新從公開快照讀到的同一個時間戳，避免回填流程在新一輪寫入時誤覆蓋新資料。
+/// </summary>
+static async Task UpdateMarketHeatViaManagementApiAsync(
+    PublicIntradaySnapshot snapshot,
+    MarketHeatMetrics heat,
+    CancellationToken cancellationToken = default)
+{
+    var token = Environment.GetEnvironmentVariable("SUPABASE_ACCESS_TOKEN");
+
+    if (string.IsNullOrWhiteSpace(token))
+    {
+        throw new InvalidOperationException("找不到 SUPABASE_ACCESS_TOKEN，無法使用 Management API 回填。");
+    }
+
+    using var client = new HttpClient();
+    var manifest = await LoadPublishedManifestAsync(client, cancellationToken);
+    var projectRef = new Uri(manifest.Supabase.Url).Host.Split('.')[0];
+    var timestamp = snapshot.CapturedAt.ToString("O", CultureInfo.InvariantCulture);
+    var date = snapshot.TradeDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    var query = $"""
+        with updated as (
+            update intraday_runs
+            set market_heat_score = {SqlDecimal(heat.Score)},
+                market_heat_short_trend_score = {SqlDecimal(heat.ShortTrendScore)},
+                market_heat_breadth_score = {SqlDecimal(heat.BreadthScore)},
+                market_heat_volume_score = {SqlDecimal(heat.VolumeScore)},
+                market_heat_index_daily_change_percent = {SqlDecimal(heat.IndexDailyChangePercent)},
+                market_heat_index_weekly_change_percent = {SqlDecimal(heat.IndexWeeklyChangePercent)},
+                market_heat_up_count = {heat.UpCount},
+                market_heat_down_count = {heat.DownCount},
+                market_heat_flat_count = {heat.FlatCount},
+                market_heat_compared_stock_count = {heat.ComparedStockCount},
+                market_heat_turnover = {SqlDecimal(heat.MarketTurnover)},
+                market_heat_average_turnover = {SqlDecimal(heat.AverageMarketTurnover)},
+                market_heat_volume_ratio = {SqlDecimal(heat.VolumeRatio)}
+            where trade_date = date '{date}'
+              and captured_at = timestamptz '{timestamp}'
+            returning id
+        )
+        select count(*)::int as updated_count from updated;
+        """;
+
+    using var request = new HttpRequestMessage(
+        HttpMethod.Post,
+        $"https://api.supabase.com/v1/projects/{projectRef}/database/query");
+    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+    request.Content = new StringContent(
+        JsonSerializer.Serialize(new { query }),
+        Encoding.UTF8,
+        "application/json");
+
+    using var response = await client.SendAsync(request, cancellationToken);
+    response.EnsureSuccessStatusCode();
+    using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+    var updatedCount = result.RootElement[0].GetProperty("updated_count").GetInt32();
+
+    if (updatedCount != 1)
+    {
+        throw new InvalidOperationException($"市場熱絡回填更新了 {updatedCount} 筆，預期應為 1 筆。");
+    }
+}
+
+static async Task<PublishedManifest> LoadPublishedManifestAsync(
+    HttpClient client,
+    CancellationToken cancellationToken)
+{
+    const string ManifestUrl = "https://qwe953751.github.io/Investment/manifest.json";
+    var json = await client.GetStringAsync(ManifestUrl, cancellationToken);
+    return JsonSerializer.Deserialize<PublishedManifest>(json, CreatePublicJsonOptions())
+        ?? throw new InvalidOperationException("讀不到正式網站的 manifest.json。");
+}
+
+static void AddMarketIndex(
+    ICollection<MarketIndexQuote> indices,
+    Market market,
+    decimal? value,
+    decimal? changePercent)
+{
+    if (value is { } indexValue)
+    {
+        indices.Add(new MarketIndexQuote
+        {
+            Market = market,
+            Value = indexValue,
+            ChangePercent = changePercent
+        });
+    }
+}
+
+static Market ParseMarket(string raw)
+    => raw switch
+    {
+        "TWSE" => Market.Twse,
+        "TPEX" => Market.Tpex,
+        _ => throw new InvalidOperationException($"未知市場：{raw}。")
+    };
+
+static string SqlDecimal(decimal? value)
+    => value is { } number
+        ? number.ToString(CultureInfo.InvariantCulture)
+        : "null";
+
+static JsonSerializerOptions CreatePublicJsonOptions() => new(JsonSerializerDefaults.Web);
 
 /// <summary>
 /// 把本機的盤後行情同步到 Supabase，維持最近 300 個交易日的滾動視窗。
@@ -1122,3 +1378,71 @@ static async Task ReportTurnoverAuditProgressAsync(
         ? $"完整的交易日已有 {complete} 天，可以下判斷、把盤中來源換掉，然後刪掉這份驗證資料了。"
         : $"完整的交易日目前 {complete} 天，還要再 {TurnoverAuditStore.RequiredDays - complete} 天。");
 }
+
+internal sealed record PublishedManifest
+{
+    [JsonPropertyName("supabase")]
+    public required PublishedSupabase Supabase { get; init; }
+}
+
+internal sealed record PublishedSupabase
+{
+    [JsonPropertyName("url")]
+    public required string Url { get; init; }
+
+    [JsonPropertyName("anonKey")]
+    public required string AnonKey { get; init; }
+}
+
+internal sealed record PublicIntradayRow
+{
+    [JsonPropertyName("symbol")]
+    public required string Symbol { get; init; }
+
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("market")]
+    public required string Market { get; init; }
+
+    [JsonPropertyName("price")]
+    public decimal? Price { get; init; }
+
+    [JsonPropertyName("turnover")]
+    public long Turnover { get; init; }
+
+    [JsonPropertyName("change_percent")]
+    public decimal? ChangePercent { get; init; }
+
+    [JsonPropertyName("trade_date")]
+    public required DateOnly TradeDate { get; init; }
+
+    [JsonPropertyName("captured_at")]
+    public required DateTimeOffset CapturedAt { get; init; }
+
+    [JsonPropertyName("twse_index")]
+    public decimal? TwseIndex { get; init; }
+
+    [JsonPropertyName("twse_change_percent")]
+    public decimal? TwseChangePercent { get; init; }
+
+    [JsonPropertyName("tpex_index")]
+    public decimal? TpexIndex { get; init; }
+
+    [JsonPropertyName("tpex_change_percent")]
+    public decimal? TpexChangePercent { get; init; }
+
+    [JsonPropertyName("open_price")]
+    public decimal? OpenPrice { get; init; }
+
+    [JsonPropertyName("high_price")]
+    public decimal? HighPrice { get; init; }
+
+    [JsonPropertyName("low_price")]
+    public decimal? LowPrice { get; init; }
+}
+
+internal sealed record PublicIntradaySnapshot(
+    DateOnly TradeDate,
+    DateTimeOffset CapturedAt,
+    IntradaySnapshot Snapshot);
