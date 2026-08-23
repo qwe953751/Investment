@@ -10,6 +10,7 @@ using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
 using Invest.Web.Infrastructure.StaticSite;
+using Invest.Web.Infrastructure.StockTopics;
 using Invest.Web.Infrastructure.TurnoverAudit;
 using Microsoft.Extensions.Options;
 using System.Globalization;
@@ -57,6 +58,9 @@ builder.Services.AddHttpClient<TpexNonRegularTradingClient>(ConfigureQuoteClient
 builder.Services.AddHttpClient<MarketFlagClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<CorporateActionClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseHolidayCalendar>(ConfigureQuoteClient);
+
+// 族群分類讀的是公開的 Google Sheet，一樣要帶 User-Agent 才不會被擋。
+builder.Services.AddHttpClient<GoogleSheetTopicClient>(ConfigureQuoteClient);
 
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
