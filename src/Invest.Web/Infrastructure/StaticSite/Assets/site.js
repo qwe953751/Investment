@@ -2684,6 +2684,19 @@ function renderSummary() {
     const index = state.view === 'intraday'
         ? current.marketIndices
         : marketIndices.get(state.date);
+    const displayIndex = index
+        ? {
+            ...index,
+            twseYearToDateChangePercent: resolveMarketIndexYearToDatePercent(
+                index,
+                'twse',
+                state.view === 'intraday' ? current.tradeDate : state.date),
+            tpexYearToDateChangePercent: resolveMarketIndexYearToDatePercent(
+                index,
+                'tpex',
+                state.view === 'intraday' ? current.tradeDate : state.date)
+        }
+        : null;
 
     const summary = el('summary');
     summary.replaceChildren();
@@ -2700,8 +2713,8 @@ function renderSummary() {
     }
 
     const indexItems = [
-        ['加權指數', index?.twseIndex, index?.twseChangePercent, index?.twseYearToDateChangePercent],
-        ['櫃買指數', index?.tpexIndex, index?.tpexChangePercent, index?.tpexYearToDateChangePercent]
+        ['加權指數', displayIndex?.twseIndex, displayIndex?.twseChangePercent, displayIndex?.twseYearToDateChangePercent],
+        ['櫃買指數', displayIndex?.tpexIndex, displayIndex?.tpexChangePercent, displayIndex?.tpexYearToDateChangePercent]
     ];
     const indexRow = document.createElement('div');
     indexRow.className = 'summary-row summary-index-row';
@@ -2737,7 +2750,7 @@ function renderSummary() {
     }
 
     if (current.marketHeat) {
-        summary.append(renderMarketHeat(current.marketHeat, index));
+        summary.append(renderMarketHeat(current.marketHeat, displayIndex));
     }
 
     summary.append(explanationRow);
@@ -3074,11 +3087,16 @@ async function loadIntraday(silent = false) {
         marketHeat.previousDays = await loadMarketHeatHistory(raw[0].trade_date);
     }
 
-    // 對照組固定取最新一個交易日結尾的期間：盤中永遠是今天，沒有往回選日期這回事。
-    const reference = await fetchPeriod(`${state.period}-${dates[dates.length - 1]}`);
+    // 對照日必須嚴格早於盤中快照的交易日。
+    // 正常交易日的快照日期是今天，這會自然取到昨天；休市日的快照仍停在上一個交易日，
+    // 若仍固定取 dates 最後一天，就會把快照自己的收盤資料拿來當對照，整欄變成跟自己比。
+    const referenceDate = dates.filter(date => date < raw[0].trade_date).at(-1);
+    const reference = referenceDate
+        ? await fetchPeriod(`${state.period}-${referenceDate}`)
+        : null;
     const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
-    const sameWeekAsReference = weekStartKey(raw[0].trade_date)
-        === weekStartKey(dates[dates.length - 1]);
+    const sameWeekAsReference = referenceDate !== undefined
+        && weekStartKey(raw[0].trade_date) === weekStartKey(referenceDate);
 
     if (state.mode === 'accel' && referenceByTicker.size === 0) {
         showNotice(`讀不到過去 ${state.period} 個交易日的對照資料，資金加速排不出來，請改用成交熱度。`, true);
@@ -3224,22 +3242,53 @@ async function loadMarketHeatHistory(currentDate) {
         }));
 }
 
-function intradayYearToDatePercent(row, market) {
-    const stored = row[`${market}_year_to_date_change_percent`];
+function marketIndexYearStartValue(year, market) {
+    const exported = marketIndexYearStarts.get(String(year))?.[`${market}Index`];
+
+    if (!missing(exported) && Number(exported) > 0) {
+        return Number(exported);
+    }
+
+    // 舊版 manifest 可能沒有 marketIndexYearStarts；若它仍保留去年 12 月的
+    // 每日指數，就從同一份 manifest 找最近的有效基準，讓舊快照也能顯示今年漲跌。
+    const cutoff = `${Number(year) - 1}-12-31`;
+
+    return [...marketIndices.values()]
+        .filter(entry => String(entry.date) <= cutoff && !missing(entry[`${market}Index`]))
+        .sort((left, right) => String(right.date).localeCompare(String(left.date)))
+        .map(entry => Number(entry[`${market}Index`]))
+        .find(value => value > 0) ?? null;
+}
+
+function resolveMarketIndexYearToDatePercent(index, market, date) {
+    if (!index || !date) {
+        return null;
+    }
+
+    const stored = index[`${market}YearToDateChangePercent`];
 
     if (!missing(stored)) {
         return Number(stored);
     }
 
-    const year = String(row.trade_date).slice(0, 4);
-    const baseline = marketIndexYearStarts.get(year)?.[`${market}Index`];
-    const value = row[`${market}_index`];
+    const baseline = marketIndexYearStartValue(String(date).slice(0, 4), market);
+    const value = index[`${market}Index`];
 
     if (missing(value) || missing(baseline) || Number(baseline) <= 0) {
         return null;
     }
 
     return (Number(value) - Number(baseline)) / Number(baseline) * 100;
+}
+
+function intradayYearToDatePercent(row, market) {
+    return resolveMarketIndexYearToDatePercent(
+        {
+            [`${market}Index`]: row[`${market}_index`],
+            [`${market}YearToDateChangePercent`]: row[`${market}_year_to_date_change_percent`]
+        },
+        market,
+        row.trade_date);
 }
 
 // 一份「期間 × 交易日」的完整名單。盤後檢視直接畫它，盤中檢視拿它當對照組。

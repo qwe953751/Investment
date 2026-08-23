@@ -219,6 +219,48 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 指數今年漲跌幅缺欄位時以年初基準補算()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains(
+            "function resolveMarketIndexYearToDatePercent(index, market, date)",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "marketIndexYearStarts.get(String(year))",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "resolveMarketIndexYearToDatePercent(",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "state.view === 'intraday' ? current.tradeDate : state.date",
+            script,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 盤中休市日對照日必須嚴格早於盤中快照交易日()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains(
+            "const referenceDate = dates.filter(date => date < raw[0].trade_date).at(-1)",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "fetchPeriod(`${state.period}-${referenceDate}`)",
+            script,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "fetchPeriod(`${state.period}-${dates[dates.length - 1]}`)",
+            script,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 盤中盤後指數獨立放在說明列下方的第二列()
     {
         var script = ReadAsset("site.js");
