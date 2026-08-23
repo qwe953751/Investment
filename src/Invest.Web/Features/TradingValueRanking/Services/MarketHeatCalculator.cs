@@ -39,13 +39,21 @@ public static class MarketHeatCalculator
             return null;
         }
 
+        // 分數要看好幾天，每天都要「當天誰在交易」跟「近 20 天各自成交多少」。
+        // 逐次用 Where 篩全表的話，一次 Calculate 就要把全市場交易紀錄整份掃過上百遍
+        // （近 20 天成交值那段尤其誇張：每天都要重新篩一次全表）。
+        // 先照日期分組一次，之後每天都是查表，不用再重新掃全表。
+        var rowsByDate = trading
+            .GroupBy(row => row.TradingDate)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+
         var currentDate = dates[^1];
-        var current = CalculateForDate(trading, marketIndices, dates, currentDate);
+        var current = CalculateForDate(rowsByDate, trading, marketIndices, dates, currentDate);
 
         var history = dates
             .Take(dates.Length - 1)
             .TakeLast(HistoryDays)
-            .Select(date => CalculateForDate(trading, marketIndices, dates, date))
+            .Select(date => CalculateForDate(rowsByDate, trading, marketIndices, dates, date))
             .Where(metrics => metrics.Score is not null)
             .Select(metrics => new MarketHeatHistoryPoint(metrics.TradingDate, metrics.Score!.Value))
             .ToArray();
@@ -54,13 +62,13 @@ public static class MarketHeatCalculator
     }
 
     private static MarketHeatMetrics CalculateForDate(
+        IReadOnlyDictionary<DateOnly, DailyStockTrading[]> rowsByDate,
         IReadOnlyList<DailyStockTrading> trading,
         IReadOnlyList<DailyMarketIndex> marketIndices,
         IReadOnlyList<DateOnly> dates,
         DateOnly date)
     {
-        var currentRows = trading
-            .Where(row => row.TradingDate == date)
+        var currentRows = rowsByDate.GetValueOrDefault(date, [])
             .GroupBy(row => row.Ticker, StringComparer.Ordinal)
             .Select(group => group.Last())
             .ToArray();
@@ -110,8 +118,7 @@ public static class MarketHeatCalculator
             .TakeLast(VolumeAverageDays)
             .ToArray();
         var priorTurnovers = priorDates
-            .Select(priorDate => trading
-                .Where(row => row.TradingDate == priorDate)
+            .Select(priorDate => rowsByDate.GetValueOrDefault(priorDate, [])
                 .Sum(row => row.TradingValue))
             .Where(value => value > 0m)
             .ToArray();

@@ -12,18 +12,24 @@ namespace Invest.Web.Features.TradingValueRanking.Services;
 /// </summary>
 public sealed class TradingValueRankingCalculator
 {
+    private readonly object _indexLock = new();
+    private readonly Dictionary<DateOnly, MarketHeatMetrics?> _heatCache = [];
+
+    private MarketDataSet? _indexedDataSet;
+    private DateOnly[] _allDates = [];
+    private Dictionary<string, DailyStockTrading[]> _byTicker = [];
+    private Dictionary<string, IReadOnlyList<StockPriceAdjustment>> _adjustmentsByTicker = [];
+    private Dictionary<string, Stock> _stocksByTicker = [];
+
     public TradingValueRankingResult Calculate(MarketDataSet dataSet, RankingQuery query)
     {
         var periodDays = query.PeriodDays;
         ArgumentOutOfRangeException.ThrowIfLessThan(periodDays, 1);
 
+        EnsureIndex(dataSet);
+
         // 基準日之後的行情一律當作還沒發生，往回選日期才會得到當時看到的排行。
-        var dates = dataSet.DailyTrading
-            .Select(trading => trading.TradingDate)
-            .Where(date => query.EndDate is not { } endDate || date <= endDate)
-            .Distinct()
-            .OrderBy(date => date)
-            .ToArray();
+        var dates = DatesThrough(query.EndDate);
 
         // 資金加速模式的「前期排名」本身是一個增減率，所以前期還需要自己的基期，總共三段。
         var requiredDays = query.Mode == RankingMode.CapitalAcceleration
@@ -44,39 +50,22 @@ public sealed class TradingValueRankingCalculator
             ? dates[^(periodDays * 3)..^(periodDays * 2)]
             : [];
 
-        var byTicker = dataSet.DailyTrading
-            .GroupBy(trading => trading.Ticker)
-            .ToDictionary(
-                group => group.Key,
-                group => group.OrderBy(trading => trading.TradingDate).ToArray());
-
-        var stocksByTicker = dataSet.Stocks.ToDictionary(stock => stock.Ticker);
-
-        // 只留算得出還原倍數的事件。倍數是 參考價 ÷ 前一日收盤價，兩邊都得是正數。
-        var adjustmentsByTicker = dataSet.PriceAdjustments
-            .Where(item => item.PreviousClose > 0m && item.ReferencePrice > 0m)
-            .GroupBy(item => item.Ticker)
-            .ToDictionary(
-                group => group.Key,
-                IReadOnlyList<StockPriceAdjustment> (group) =>
-                    [.. group.OrderBy(item => item.EffectiveDate)]);
-
-        var currentStats = Aggregate(byTicker, adjustmentsByTicker, current);
-        var previousStats = Aggregate(byTicker, adjustmentsByTicker, previous);
+        var currentStats = Aggregate(_byTicker, _adjustmentsByTicker, current);
+        var previousStats = Aggregate(_byTicker, _adjustmentsByTicker, previous);
         var priorStats = prior.Length > 0
-            ? Aggregate(byTicker, adjustmentsByTicker, prior)
+            ? Aggregate(_byTicker, _adjustmentsByTicker, prior)
             : new Dictionary<string, PeriodStats>();
 
         // 分母一律是上市＋上櫃全體，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
         var marketTotal = currentStats.Values.Sum(stats => stats.TotalTradingValue);
         var previousMarketTotal = previousStats.Values.Sum(stats => stats.TotalTradingValue);
-        var marketHeat = MarketHeatCalculator.Calculate(dataSet, current[^1]);
+        var marketHeat = GetMarketHeat(dataSet, current[^1]);
 
         var candidates = new List<Candidate>();
 
         foreach (var (ticker, stats) in currentStats)
         {
-            if (!stocksByTicker.TryGetValue(ticker, out var stock))
+            if (!_stocksByTicker.TryGetValue(ticker, out var stock))
             {
                 continue;
             }
@@ -113,8 +102,8 @@ public sealed class TradingValueRankingCalculator
             .Select((candidate, index) =>
             {
                 var price = CalculatePriceChanges(
-                    byTicker[candidate.Stock.Ticker],
-                    adjustmentsByTicker.GetValueOrDefault(candidate.Stock.Ticker, []),
+                    _byTicker[candidate.Stock.Ticker],
+                    _adjustmentsByTicker.GetValueOrDefault(candidate.Stock.Ticker, []),
                     current[^1]);
 
                 return new StockRankingRow
@@ -160,6 +149,91 @@ public sealed class TradingValueRankingCalculator
                 .Select((candidate, index) => (candidate.Stock.Ticker, Rank: index + 1))
                 .ToDictionary(entry => entry.Ticker, entry => entry.Rank)
         };
+    }
+
+    /// <summary>
+    /// 靜態網站要對同一份 dataSet 算出幾百種「日期 × 期間」組合，但按代號分組排序的歷史序列
+    /// 跟 dataSet 本身一樣不會變。不快取的話，每一次呼叫都要把全市場交易紀錄重新分組排序一次，
+    /// 光是這一步就佔掉一大半的匯出時間。dataSet 只有在回補新資料後才會換成新的實例，
+    /// 用參考是否相同判斷要不要重建即可。
+    /// </summary>
+    private void EnsureIndex(MarketDataSet dataSet)
+    {
+        if (ReferenceEquals(_indexedDataSet, dataSet))
+        {
+            return;
+        }
+
+        lock (_indexLock)
+        {
+            if (ReferenceEquals(_indexedDataSet, dataSet))
+            {
+                return;
+            }
+
+            _allDates = dataSet.DailyTrading
+                .Select(trading => trading.TradingDate)
+                .Distinct()
+                .OrderBy(date => date)
+                .ToArray();
+
+            _byTicker = dataSet.DailyTrading
+                .GroupBy(trading => trading.Ticker)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderBy(trading => trading.TradingDate).ToArray());
+
+            _stocksByTicker = dataSet.Stocks.ToDictionary(stock => stock.Ticker);
+
+            // 只留算得出還原倍數的事件。倍數是 參考價 ÷ 前一日收盤價，兩邊都得是正數。
+            _adjustmentsByTicker = dataSet.PriceAdjustments
+                .Where(item => item.PreviousClose > 0m && item.ReferencePrice > 0m)
+                .GroupBy(item => item.Ticker)
+                .ToDictionary(
+                    group => group.Key,
+                    IReadOnlyList<StockPriceAdjustment> (group) =>
+                        [.. group.OrderBy(item => item.EffectiveDate)]);
+
+            _heatCache.Clear();
+            _indexedDataSet = dataSet;
+        }
+    }
+
+    /// <summary>
+    /// 基準日之後的行情一律當作還沒發生。全部交易日已依日期排序快取起來，
+    /// 這裡只用二分搜尋找出「到基準日為止」落在哪個位置，不必每次重新篩選整份日期清單。
+    /// </summary>
+    private DateOnly[] DatesThrough(DateOnly? endDate)
+    {
+        if (endDate is not { } end)
+        {
+            return _allDates;
+        }
+
+        var index = Array.BinarySearch(_allDates, end);
+        var count = index >= 0 ? index + 1 : ~index;
+
+        return count == _allDates.Length ? _allDates : _allDates[..count];
+    }
+
+    /// <summary>
+    /// 靜態網站同一個交易日要用五種期間各算一次排行，但市場熱絡分數只跟最後一個交易日有關，
+    /// 五次呼叫其實是同一個答案。快取起來，避免同一天被重算五遍。
+    /// </summary>
+    private MarketHeatMetrics? GetMarketHeat(MarketDataSet dataSet, DateOnly date)
+    {
+        lock (_indexLock)
+        {
+            if (_heatCache.TryGetValue(date, out var cached))
+            {
+                return cached;
+            }
+
+            var result = MarketHeatCalculator.Calculate(dataSet, date);
+            _heatCache[date] = result;
+
+            return result;
+        }
     }
 
     /// <summary>
