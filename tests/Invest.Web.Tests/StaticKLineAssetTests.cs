@@ -191,17 +191,20 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange)", customColumns, StringComparison.Ordinal);
     }
 
+    // 原本這裡還擋「Google Sheet」這幾個字，因為當初的持倉樣板是唯一提到它的地方，
+    // 拿字串當代號比較省事。族群分類上線之後，族群樹與概念股成員真的是從 Google Sheet
+    // 讀進來的，說明文字非提不可，那個代號就失效了——改回只擋持倉樣板本身。
     [Fact]
-    public void 靜態站不再包含持倉或GoogleSheet映射樣板()
+    public void 靜態站不再包含持倉樣板()
     {
         var html = ReadAsset("index.html");
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
         Assert.DoesNotContain("持倉", html, StringComparison.Ordinal);
-        Assert.DoesNotContain("Google Sheet", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("portfolio", html, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("持倉", script, StringComparison.Ordinal);
         Assert.DoesNotContain("portfolio", script, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("Google Sheet", script, StringComparison.Ordinal);
         Assert.DoesNotContain("portfolio", styles, StringComparison.OrdinalIgnoreCase);
     }
 
