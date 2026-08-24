@@ -2453,13 +2453,39 @@ body {
     font-size: 13px;
 }
 
+.topic-member-filters {
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+/* 這一列是四個短標籤，不像期間選擇那樣要撐滿一整排，所以擋掉窄螢幕的等分拉伸。 */
+.topic-member-filter {
+    flex: none;
+    min-width: 0;
+    padding: 5px 10px;
+    font-size: 12px;
+}
+
+/* 成員全展開之後最長的族群超過兩百檔，不給高度上限會把整頁撐開。 */
+.topic-member-scroll {
+    max-height: 60vh;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: white;
+}
+
 .topic-member-table {
     width: 100%;
     border-collapse: collapse;
     background: white;
-    border: 1px solid #e5e7eb;
-    border-radius: 6px;
     font-size: 13px;
+}
+
+.topic-member-scroll thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
 }
 
 .topic-member-table th,
@@ -2487,6 +2513,52 @@ body {
 }
 
 /* ── 族群列表 ── */
+
+.topic-tree-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.topic-search-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 10px;
+    border: 1px solid #d0d5dd;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    color: #344054;
+}
+
+.topic-search-input:focus {
+    outline: none;
+    border-color: #2563eb;
+}
+
+.topic-tree-filters {
+    flex-wrap: wrap;
+}
+
+.topic-tree-filters .toggle-button {
+    flex: none;
+    min-width: 0;
+    padding: 5px 10px;
+    font-size: 12px;
+}
+
+.topic-heat-badge {
+    flex: none;
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: #e0e7ff;
+    color: #3730a3;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    cursor: help;
+}
 
 .topic-tree-layout {
     display: grid;

@@ -35,16 +35,6 @@ public static class TopicHeatCalculator
     public const int ParticipationRankLimit = 50;
 
     /// <summary>
-    /// 一個族群最多輸出幾檔成員明細。
-    ///
-    /// 上層節點（例如「半導體」）會把底下所有子節點的成員捲進來，動輒幾百檔；
-    /// 每一個期間都完整寫出來的話 topics.json 會膨脹到沒辦法用手機開。
-    /// 明細本來就是「點開看看誰在吃成交值」，依成交比由大到小取前面這些就夠了，
-    /// 完整檔數另外寫在 MemberCount。
-    /// </summary>
-    public const int MaxExportedMembers = 50;
-
-    /// <summary>
     /// 廣度三項的權重（文件 §6.2 的候選公式，尚未拍板）。
     /// </summary>
     private const decimal ParticipationWeight = 0.50m;
@@ -181,10 +171,12 @@ public static class TopicHeatCalculator
             DispersionRate = dispersion,
             SingleStockPenalty = penalty,
             BreadthScore = breadth,
+            // 成員一檔都不截斷。選到族群就是要看「這一段供應鏈到底有誰」，
+            // 截到前 50 檔會讓成員數大的節點永遠看不到後半段。
+            // 量過了：全展開只讓 topics.json 從 10,330 列長到 13,260 列。
             Members = [.. members
                 .OrderByDescending(member => member.MarketShare ?? -1m)
-                .ThenBy(member => member.Ticker, StringComparer.Ordinal)
-                .Take(MaxExportedMembers)]
+                .ThenBy(member => member.Ticker, StringComparer.Ordinal)]
         };
     }
 

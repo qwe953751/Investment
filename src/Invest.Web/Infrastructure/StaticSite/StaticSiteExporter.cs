@@ -258,7 +258,6 @@ public sealed class StaticSiteExporter(
             new TopicsExport(
                 baseDate?.ToString("yyyy-MM-dd") ?? "—",
                 catalog.ActiveVersion,
-                TopicHeatCalculator.MaxExportedMembers,
                 TopicHeatCalculator.FundWeight,
                 TopicHeatCalculator.BreadthWeight,
                 TopicHeatCalculator.NewsWeight,
@@ -886,7 +885,6 @@ public sealed class StaticSiteExporter(
     private sealed record TopicsExport(
         string BaseDate,
         int ActiveVersion,
-        int MaxMembersPerTopic,
         decimal DefaultFundWeight,
         decimal DefaultBreadthWeight,
         decimal DefaultNewsWeight,

@@ -93,7 +93,7 @@ const availableViews = () => SITE_ACCESS === 'viewer'
 
 // 族群檢視底下的四個分頁。熱度排行是主畫面，其餘三個是它的來源與維護紀錄。
 const TOPIC_TABS = [
-    { key: 'heat', text: '熱度排行', hint: '族群依綜合熱度排序。點任何一列展開這個族群目前吃到成交值的成員。' },
+    { key: 'heat', text: '熱度排行', hint: '族群依熱度排序。點任何一列展開這個族群的全部成員。' },
     { key: 'tree', text: '族群列表', hint: 'Google Sheet 上那棵供應鏈樹，點節點看它涵蓋哪些股票。排行榜族群欄的連結就是跳到這裡。' },
     { key: 'events', text: '催化事件', hint: '族群為什麼熱起來的事件紀錄。新聞來源還沒接上，目前放的是示範資料。' },
     { key: 'edits', text: '人工編輯', hint: '分類被改過哪些地方，以及還等著使用者拍板的合併與歧義。' }
@@ -781,6 +781,7 @@ const state = {
     topicPeriod: 5,
     topicSortKey: 'composite',
     topicSortDescending: true,
+    topicScope: 'all',
 
     sortKey: 'rank',
     sortDescending: false,
@@ -1301,6 +1302,10 @@ function applyStoredSettings() {
     if (TOPIC_HEAT_COLUMNS.some(column => column.key === stored.topicSortKey)) {
         state.topicSortKey = stored.topicSortKey;
         state.topicSortDescending = stored.topicSortDescending === true;
+    }
+
+    if (TOPIC_SCOPES.some(scope => scope.key === stored.topicScope)) {
+        state.topicScope = stored.topicScope;
     }
 
     // 門檻可以自己輸入任意金額，所以只驗「是不是合理的數字」，不驗在不在按鈕清單裡。
@@ -4256,6 +4261,103 @@ const TOPIC_CATEGORY_TEXT = {
     ecosystem: '客戶生態系'
 };
 
+// 熱度排行的層級切換。成員是由子節點往上繼承的，所以「儲存」與「記憶體」、
+// 「IC載板」與「ABF」常常是同一批股票、同一個分數——這不是公式錯，
+// 是不同層級本來就不該擠在同一張榜上比。預設仍然是全部節點：
+// 任何一種篩選都會讓人以為被濾掉的族群不見了，要換成哪一種是使用者的事。
+const TOPIC_SCOPES = [
+    {
+        key: 'all',
+        text: '全部節點',
+        hint: '不篩選，大族群、當前題材、市場敘事、集團與客戶生態系全部排在一起。'
+            + '同一條供應鏈的上下層會出現相同或極接近的分數，那是繼承造成的，不是重複計算。',
+        match: () => true
+    },
+    {
+        key: 'major',
+        text: '大族群',
+        hint: '只看供應鏈樹的最上層（半導體、PCB、散熱這一類），用來判斷主流資金往哪一段走。',
+        match: topic => topic.source === 'tree' && topic.depth === 0
+    },
+    {
+        key: 'current',
+        text: '當前題材',
+        hint: '只看供應鏈樹上的子節點（玻纖布、液冷、CoWoS 這一類），用來判斷市場現在交易的理由。',
+        match: topic => topic.source === 'tree' && topic.depth > 0
+    },
+    {
+        key: 'narrative',
+        text: '市場敘事',
+        hint: '只看跨供應鏈的題材（AI、AI PC、低軌衛星這一類）。它們不是供應鏈上的一段，'
+            + '成員來自好幾條不同的鏈，所以跟固定族群不能直接比大小。',
+        match: topic => topic.category === 'narrative'
+    }
+];
+
+// 成員清單的篩選。直接成員與繼承成員分開看，是為了回答「這個節點自己有誰」，
+// 因為上層節點的成員幾乎都是從子節點捲上來的。
+const TOPIC_MEMBER_FILTERS = [
+    {
+        key: 'all',
+        text: '全部',
+        hint: '這個節點涵蓋的所有股票，含所有子節點捲上來的成員，同一檔只算一次。',
+        match: () => true
+    },
+    {
+        key: 'direct',
+        text: '直接成員',
+        hint: '直接掛在這個節點上的股票，不含子節點的成員。',
+        match: (member, direct) => direct.has(member.ticker)
+    },
+    {
+        key: 'inherited',
+        text: '子族群繼承',
+        hint: '從底下的子節點捲上來的成員，本身沒有直接掛在這個節點。',
+        match: (member, direct) => !direct.has(member.ticker)
+    },
+    {
+        key: 'quoted',
+        text: '近期有成交',
+        hint: '這段觀察期間真的有成交量的成員。沒有量的通常是停牌、剛上市，或名單裡的代號有誤。',
+        match: member => !missing(member.marketShare)
+    }
+];
+
+// 族群樹的篩選狀態。搜尋字串與篩選一律不寫進 localStorage：
+// 它們是「現在正在找什麼」，不是偏好設定，下次開啟時應該是乾淨的整棵樹。
+let topicMemberFilter = 'all';
+let topicTreeSearch = '';
+let topicTreeFilter = 'all';
+
+// 篩選時要顯示哪些節點。null 代表沒在篩選，整棵樹都給看。
+let topicTreeVisible = null;
+
+// 篩選中把命中的路徑全部展開，不然使用者要一層一層點下去才看得到搜尋結果。
+let topicTreeForceOpen = false;
+
+// 「熱門」取前幾名。取 20 是因為第一層大族群大約就這個量級，
+// 再多會把整棵樹都算成熱門，篩了等於沒篩。
+const TOPIC_HOT_COUNT = 20;
+
+const TOPIC_TREE_FILTERS = [
+    { key: 'all', text: '全部', hint: '整棵樹，不篩選。' },
+    {
+        key: 'hot',
+        text: '熱門',
+        hint: `目前觀察期間熱度排名前 ${TOPIC_HOT_COUNT} 的節點。換期間就會換一批。`
+    },
+    {
+        key: 'review',
+        text: '待整理',
+        hint: '歸類還有疑義、等使用者拍板的節點。'
+    },
+    {
+        key: 'members',
+        text: '有成員',
+        hint: '目前觀察期間至少有一檔成員有成交量的節點。沒有量的節點列不出成員明細。'
+    }
+];
+
 // 沒有新聞來源時這一格要說的話。硬寫「無」會讓人以為系統查過了、確定沒事。
 const TOPIC_NO_EVENT_TEXT = '近期有資金異動，但尚無明確催化事件。';
 
@@ -4573,7 +4675,8 @@ function makeTopicWarnings(warnings) {
 
 // 每一欄的算法停在標題上就看得到，跟排行榜同一個作法。
 const TOPIC_HEAT_COLUMNS = [
-    { key: 'composite', title: '綜合熱度', hint: '資金熱度、族群廣度、新聞熱度的加權平均。新聞現在沒有來源，那 15% 會按比例分回前兩項，滿分仍然是 100——直接把新聞當 0 分的話每個族群都會憑空少掉 15 分。', value: row => row.compositeScore, cell: row => ({ text: topicScoreText(row.compositeScore), cls: 'numeric topic-composite' }) },
+    // 這一欄的名字與說明看有沒有新聞而定，統一由 topicCompositeColumn 決定，所以這裡不寫死。
+    { key: 'composite', value: row => row.compositeScore, cell: row => ({ text: topicScoreText(row.compositeScore), cls: 'numeric topic-composite' }) },
     { key: 'fund', title: '資金熱度', hint: '族群成員的市場成交比加總，除以這一輪最熱的族群再拉到 0～100。同一檔股票掛在幾個族群，每個族群就都完整計一次：這裡看的是資金流向，不是把一檔股票切成幾份。', value: row => row.fundScore, cell: row => ({ text: topicScoreText(row.fundScore), cls: 'numeric' }) },
     { key: 'breadth', title: '族群廣度', hint: '回答「是整個族群在動，還是只有一檔在動」。排行參與率 50%、上漲家數比 30%、資金分散度 20%，再依實際有量的檔數打折。這條公式還沒拍板，是文件裡的候選版本。', value: row => row.breadthScore, cell: row => ({ text: topicScoreText(row.breadthScore), cls: 'numeric' }) },
     { key: 'news', title: '新聞熱度', hint: '目前沒有任何新聞來源接上來，一律顯示 —。接上之後這一欄才會有數字，綜合熱度的權重也會跟著回到 60 / 25 / 15。', value: row => row.newsScore, cell: row => ({ text: topicScoreText(row.newsScore), cls: 'numeric topic-empty' }) },
@@ -4584,11 +4687,31 @@ const TOPIC_HEAT_COLUMNS = [
     { key: 'dispersion', title: '資金分散度', hint: '成交值是平均分佈還是集中在一兩檔。1 代表完全平均，0 代表全部集中在一檔。已經對成員數做過修正，五檔的族群不會天生輸給三十檔的。', value: row => row.dispersionRate, cell: row => ({ text: toPercentText(row.dispersionRate, 1), cls: 'numeric' }) }
 ];
 
+/// 新聞還沒有來源時，這一欄實際上只由資金與廣度兩項組成。
+/// 繼續叫它「綜合熱度」等於報一個做不到的口徑，所以照文件的建議改稱市場熱度，
+/// 等新聞接上、權重回到 60 / 25 / 15，名字才會變回綜合熱度。
+function topicCompositeColumn(period) {
+    const hasNews = (period?.rows?.[0]?.newsWeight ?? 0) > 0;
+
+    return hasNews
+        ? {
+            title: '綜合熱度',
+            hint: '資金熱度 60%、族群廣度 25%、新聞熱度 15% 的加權平均。'
+        }
+        : {
+            title: '市場熱度',
+            hint: '只由資金熱度與族群廣度兩項組成（權重按比例分成約 71% 與 29%），滿分仍然是 100。'
+                + '新聞還沒有任何來源，所以這裡不叫綜合熱度：那 15% 不是 0 分，是根本還沒開始算。'
+                + '新聞接上之後這一欄會變回綜合熱度，兩個口徑的分數不能直接互相比較。'
+        };
+}
+
 function renderTopicHeat(panel) {
     const period = topicPeriod();
 
-    panel.append(makeTopicPeriodPanel());
+    panel.append(makeTopicPeriodPanel(true));
     renderTopicPeriodOptions();
+    renderTopicScopeOptions();
 
     if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && intradayTopicLoadError !== '') {
         panel.append(makeTopicNotice(intradayTopicLoadError, true));
@@ -4613,7 +4736,20 @@ function renderTopicHeat(panel) {
     const sortColumn = TOPIC_HEAT_COLUMNS.find(item => item.key === state.topicSortKey)
         ?? TOPIC_HEAT_COLUMNS[0];
 
-    const rows = [...period.rows].sort((left, right) => {
+    const scope = TOPIC_SCOPES.find(item => item.key === state.topicScope) ?? TOPIC_SCOPES[0];
+    const scoped = period.rows.filter(row => {
+        const topic = topicById.get(row.topicId);
+        return topic === undefined ? scope.key === 'all' : scope.match(topic);
+    });
+
+    if (scoped.length === 0) {
+        panel.append(makeTopicNotice(
+            `目前的觀察期間裡，「${scope.text}」這個範圍沒有任何族群有成交。換一個範圍或期間看看。`,
+            true));
+        return;
+    }
+
+    const rows = [...scoped].sort((left, right) => {
         const a = sortColumn.value(left);
         const b = sortColumn.value(right);
 
@@ -4641,22 +4777,22 @@ function renderTopicHeat(panel) {
     const rank = document.createElement('th');
     rank.className = 'unsortable col-rank';
     rank.textContent = '名次';
-    rank.dataset.hint = '依目前排序欄位的名次。預設是綜合熱度。';
+    rank.dataset.hint = `依目前排序欄位的名次。預設是${topicCompositeColumn(period).title}。`;
     headRow.append(rank);
 
     const name = document.createElement('th');
     name.className = 'unsortable col-topic-name';
     name.textContent = '族群';
-    name.dataset.hint = '點任何一列展開這個族群目前吃到成交值的成員（依成交比由大到小，最多 '
-        + `${topicData.maxMembersPerTopic} 檔）。`;
+    name.dataset.hint = '點任何一列展開這個族群的全部成員，依市場成交比由大到小，一檔都不截斷。';
     headRow.append(name);
 
     for (const column of TOPIC_HEAT_COLUMNS) {
+        const naming = column.key === 'composite' ? topicCompositeColumn(period) : column;
         const cell = document.createElement('th');
-        cell.dataset.hint = column.hint;
+        cell.dataset.hint = naming.hint;
         cell.className = (state.topicSortKey === column.key ? 'sortable sorted' : 'sortable')
             + ' col-' + column.key;
-        cell.textContent = column.title
+        cell.textContent = naming.title
             + (state.topicSortKey === column.key ? (state.topicSortDescending ? ' ▼' : ' ▲') : '');
 
         cell.addEventListener('click', () => {
@@ -4754,6 +4890,7 @@ function makeTopicRowButton(row, topic) {
     button.addEventListener('click', () => {
         closeKLine(false);
         expandedTopicId = expandedTopicId === row.topicId ? null : row.topicId;
+        topicMemberFilter = 'all';
         renderTopicPanel();
     });
 
@@ -4766,21 +4903,62 @@ function makeTopicMemberRow(row, columnCount) {
 
     const td = document.createElement('td');
     td.colSpan = columnCount;
-    td.append(makeTopicMemberTitle(row), makeTopicMemberTable(row));
+    td.append(makeTopicMemberSection(row));
     tr.append(td);
     return tr;
 }
 
-function makeTopicMemberTitle(row) {
+/// 成員清單：篩選列、一行說明、表格。熱度排行展開與族群列表詳情共用同一段。
+function makeTopicMemberSection(row) {
+    const fragment = document.createDocumentFragment();
+    const direct = new Set(topicById.get(row.topicId)?.directTickers ?? []);
+    const filter = TOPIC_MEMBER_FILTERS.find(item => item.key === topicMemberFilter)
+        ?? TOPIC_MEMBER_FILTERS[0];
+    const members = row.members.filter(member => filter.match(member, direct));
+
+    fragment.append(
+        makeTopicMemberFilters(row, direct),
+        makeTopicMemberTitle(row, members, filter),
+        makeTopicMemberTable(members));
+
+    return fragment;
+}
+
+function makeTopicMemberFilters(row, direct) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'topic-member-filters button-row';
+
+    for (const item of TOPIC_MEMBER_FILTERS) {
+        const count = row.members.filter(member => item.match(member, direct)).length;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = topicMemberFilter === item.key
+            ? 'toggle-button topic-member-filter selected'
+            : 'toggle-button topic-member-filter';
+        button.textContent = `${item.text} ${count}`;
+        button.dataset.hint = item.hint;
+        button.disabled = count === 0 && topicMemberFilter !== item.key;
+        button.addEventListener('click', () => {
+            closeKLine(false);
+            topicMemberFilter = item.key;
+            renderTopicPanel();
+        });
+        wrapper.append(button);
+    }
+
+    return wrapper;
+}
+
+function makeTopicMemberTitle(row, members, filter) {
     const title = document.createElement('p');
     title.className = 'topic-member-title';
-    title.textContent = row.members.length < row.memberCount
-        ? `依市場成交比由大到小，只列前 ${row.members.length} 檔（整個族群共 ${row.memberCount} 檔）。`
-        : `全部 ${row.members.length} 檔，依市場成交比由大到小。`;
+    title.textContent = filter.key === 'all'
+        ? `全部 ${members.length} 檔，依市場成交比由大到小。`
+        : `${filter.text} ${members.length} 檔（整個族群共 ${row.memberCount} 檔），依市場成交比由大到小。`;
     return title;
 }
 
-function makeTopicMemberTable(row) {
+function makeTopicMemberTable(members) {
     const table = document.createElement('table');
     table.className = 'topic-member-table';
 
@@ -4797,7 +4975,7 @@ function makeTopicMemberTable(row) {
 
     const body = document.createElement('tbody');
 
-    for (const member of row.members) {
+    for (const member of members) {
         const memberRow = document.createElement('tr');
 
         const ticker = document.createElement('td');
@@ -4834,10 +5012,16 @@ function makeTopicMemberTable(row) {
     }
 
     table.append(head, body);
-    return table;
+
+    // 成員不截斷之後最長的族群有兩百多檔，直接攤在頁面上會把下一列推到很遠的地方。
+    // 表頭跟著捲軸釘住，捲到一半才不會忘記哪一欄是什麼。
+    const scroll = document.createElement('div');
+    scroll.className = 'topic-member-scroll';
+    scroll.append(table);
+    return scroll;
 }
 
-function makeTopicPeriodPanel() {
+function makeTopicPeriodPanel(includeScope = false) {
     const wrapper = document.createElement('section');
     wrapper.className = 'filter-panel';
 
@@ -4856,7 +5040,38 @@ function makeTopicPeriodPanel() {
 
     group.append(label, row);
     wrapper.append(group);
+
+    if (includeScope) {
+        const scopeGroup = document.createElement('div');
+        scopeGroup.className = 'filter-group';
+
+        const scopeLabel = document.createElement('span');
+        scopeLabel.className = 'filter-label';
+        scopeLabel.textContent = '排行範圍';
+        scopeLabel.dataset.hint = '族群樹上的成員是往上繼承的，所以上下層常常是同一批股票、同一個分數。'
+            + '限定範圍是為了讓同一個層級的族群互相比較，不是把被濾掉的族群當成不存在。';
+
+        const scopeRow = document.createElement('div');
+        scopeRow.className = 'button-row';
+        scopeRow.id = 'topic-scope-options';
+
+        scopeGroup.append(scopeLabel, scopeRow);
+        wrapper.append(scopeGroup);
+    }
+
     return wrapper;
+}
+
+function renderTopicScopeOptions() {
+    renderOptions(
+        'topic-scope-options',
+        TOPIC_SCOPES.map(scope => ({ key: scope.key, text: scope.text, hint: scope.hint })),
+        state.topicScope,
+        topicScope => {
+            closeKLine(false);
+            expandedTopicId = null;
+            update({ topicScope });
+        });
 }
 
 // renderOptions 是靠 id 找容器的，所以按鈕一定要等期間面板接進 DOM 之後才畫。
@@ -4931,8 +5146,9 @@ function makeTopicHeatFooter(period) {
         '同一檔股票掛在幾個族群，每個族群就都完整計它一次，不做拆分。'
             + '這是刻意的：要看的是「錢往哪一段流」，把台積電切成三份會讓每一段都看起來不熱。'
             + '因此全部族群的成交比加起來會超過 100%。',
-        `新聞熱度目前沒有來源，那 15% 會按比例分回資金與廣度，滿分仍然是 100。`
-            + '上面「實際權重」寫的就是這一輪真正用到的數字。',
+        '新聞熱度目前沒有來源，那 15% 會按比例分回資金與廣度，滿分仍然是 100。'
+            + `所以主欄叫「${topicCompositeColumn(period).title}」而不是綜合熱度——`
+            + '缺的那一項不是 0 分，是還沒開始算。上面「實際權重」寫的就是這一輪真正用到的數字。',
         '資金熱度的分母是這一輪最熱的那個族群，所以 100 分代表「這一輪的第一名」，'
             + '不是絕對的滿分。這個作法還沒拍板。',
         '族群廣度用的是文件裡的候選公式（排行參與率 50%、上漲家數比 30%、資金分散度 20%，'
@@ -4975,31 +5191,12 @@ function renderTopicTree(panel) {
     intro.className = 'topic-intro';
     intro.textContent = 'Google Sheet 上那棵供應鏈樹。同一個節點可能同時掛在兩個母題底下'
         + '（例如 FOPLP 既在低軌衛星也在面板級封裝），所以它會出現在兩個地方，但成員只算一次。';
-    treeSide.append(intro);
 
-    const roots = topicActive.topics
-        .filter(topic => topic.source === 'tree' && topic.depth === 0)
-        .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
+    const body = document.createElement('div');
+    body.id = 'topic-tree-body';
 
-    treeSide.append(makeTopicBranchList(roots, new Set()));
-
-    // 樹外的三類：集團、客戶生態系、市場敘事。它們不是供應鏈段位，
-    // 混進樹裡會讓「這是哪一段」這個問題失去意義，所以另外列。
-    for (const category of ['narrative', 'group', 'ecosystem']) {
-        const nodes = topicActive.topics
-            .filter(topic => topic.source === 'concept' && topic.category === category)
-            .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
-
-        if (nodes.length === 0) {
-            continue;
-        }
-
-        const title = document.createElement('h2');
-        title.className = 'topic-section-title';
-        title.textContent = `${TOPIC_CATEGORY_TEXT[category]}（${nodes.length}）`;
-        title.dataset.hint = '不是供應鏈上的一段，所以不放進樹裡，但仍然會算熱度。';
-        treeSide.append(title, makeTopicBranchList(nodes, new Set()));
-    }
+    treeSide.append(intro, makeTopicTreeControls(), body);
+    renderTopicTreeBody(body);
 
     const detailSide = document.createElement('div');
     detailSide.className = 'topic-detail-side';
@@ -5010,6 +5207,213 @@ function renderTopicTree(panel) {
     panel.append(layout);
 
     applyPendingTopicFocus();
+}
+
+/// 搜尋框與篩選列。搜尋只重畫樹本身而不是整個面板：
+/// 整片重畫會讓輸入框連同游標一起被換掉，打第二個字就得重新點一次。
+function makeTopicTreeControls() {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'topic-tree-controls';
+
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.id = 'topic-tree-search';
+    search.className = 'topic-search-input';
+    search.value = topicTreeSearch;
+    search.placeholder = '搜尋族群或股票';
+    search.dataset.hint = '族群名稱、別名、來源概念、股票代號與股票名稱都會找。'
+        + '命中的節點連同它上面整條路徑都會留著，這樣才看得出它掛在哪一段供應鏈。';
+    search.addEventListener('input', () => {
+        topicTreeSearch = search.value;
+        renderTopicTreeBody(el('topic-tree-body'));
+    });
+
+    const filters = document.createElement('div');
+    filters.className = 'button-row topic-tree-filters';
+
+    for (const item of TOPIC_TREE_FILTERS) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = topicTreeFilter === item.key ? 'toggle-button selected' : 'toggle-button';
+        button.textContent = item.text;
+        button.dataset.hint = item.hint;
+        button.addEventListener('click', () => {
+            closeKLine(false);
+            topicTreeFilter = item.key;
+            renderTopicPanel();
+        });
+        filters.append(button);
+    }
+
+    wrapper.append(search, filters);
+    return wrapper;
+}
+
+function renderTopicTreeBody(container) {
+    if (container === null) {
+        return;
+    }
+
+    container.replaceChildren();
+
+    const query = topicTreeSearch.trim().toLowerCase();
+    const filtering = query !== '' || topicTreeFilter !== 'all';
+
+    // 篩選中就整棵樹攤開：留下來的節點本來就不多，還要使用者一層一層點開沒有意義。
+    topicTreeVisible = filtering ? collectVisibleTopics(query) : null;
+    topicTreeForceOpen = filtering;
+
+    const roots = topicActive.topics
+        .filter(topic => topic.source === 'tree' && topic.depth === 0 && isTopicVisible(topic.id))
+        .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
+
+    let shown = roots.length;
+
+    if (roots.length > 0) {
+        container.append(makeTopicBranchList(roots, new Set()));
+    }
+
+    // 樹外的三類：集團、客戶生態系、市場敘事。它們不是供應鏈段位，
+    // 混進樹裡會讓「這是哪一段」這個問題失去意義，所以另外列。
+    for (const category of ['narrative', 'group', 'ecosystem']) {
+        const nodes = topicActive.topics
+            .filter(topic => topic.source === 'concept'
+                && topic.category === category
+                && isTopicVisible(topic.id))
+            .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
+
+        if (nodes.length === 0) {
+            continue;
+        }
+
+        shown += nodes.length;
+
+        const title = document.createElement('h2');
+        title.className = 'topic-section-title';
+        title.textContent = `${TOPIC_CATEGORY_TEXT[category]}（${nodes.length}）`;
+        title.dataset.hint = '不是供應鏈上的一段，所以不放進樹裡，但仍然會算熱度。';
+        container.append(title, makeTopicBranchList(nodes, new Set()));
+    }
+
+    if (shown === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'topic-intro';
+        empty.textContent = query === ''
+            ? '目前的篩選條件下沒有任何節點。'
+            : `沒有族群或股票對得上「${topicTreeSearch.trim()}」。`;
+        container.append(empty);
+    }
+}
+
+const isTopicVisible = id => topicTreeVisible === null || topicTreeVisible.has(id);
+
+/// 一個節點自己中了、或它底下任何一個子節點中了，就得留著——
+/// 只留中的那一個會讓它看起來像獨立的根，看不出掛在哪一段供應鏈上。
+function collectVisibleTopics(query) {
+    const visible = new Set();
+    const hot = topicHotIds();
+    const decided = new Map();
+
+    const walk = (node, trail) => {
+        if (decided.has(node.id)) {
+            return decided.get(node.id);
+        }
+
+        // 同一個節點可以有多個父節點，萬一資料把它繞回自己身上就此打住。
+        if (trail.has(node.id)) {
+            return false;
+        }
+
+        trail.add(node.id);
+        let keep = topicMatchesFilter(node, hot) && topicMatchesSearch(node, query);
+
+        for (const childId of node.childIds ?? []) {
+            const child = topicById.get(childId);
+
+            if (child !== undefined && walk(child, trail)) {
+                keep = true;
+            }
+        }
+
+        trail.delete(node.id);
+        decided.set(node.id, keep);
+
+        if (keep) {
+            visible.add(node.id);
+        }
+
+        return keep;
+    };
+
+    for (const topic of topicActive.topics) {
+        walk(topic, new Set());
+    }
+
+    return visible;
+}
+
+function topicMatchesSearch(node, query) {
+    if (query === '') {
+        return true;
+    }
+
+    const text = [node.name, ...(node.aliases ?? []), ...(node.sourceConcepts ?? [])]
+        .join(' ')
+        .toLowerCase();
+
+    if (text.includes(query)) {
+        return true;
+    }
+
+    // 股票也要找得到：輸入 2330 或台積電，要看得出它被掛在哪幾個節點底下。
+    // 只比對直接成員，繼承上來的成員由上面「子節點中了就留著」那條規則負責。
+    for (const ticker of node.directTickers ?? []) {
+        if (ticker.toLowerCase().includes(query)) {
+            return true;
+        }
+
+        const name = topicData?.stockNames?.[ticker];
+
+        if (name && name.toLowerCase().includes(query)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function topicMatchesFilter(node, hot) {
+    if (topicTreeFilter === 'hot') {
+        return hot.has(node.id);
+    }
+
+    if (topicTreeFilter === 'review') {
+        return node.needsReview === true;
+    }
+
+    if (topicTreeFilter === 'members') {
+        return (topicHeatRow(node.id)?.quotedCount ?? 0) > 0;
+    }
+
+    return true;
+}
+
+function topicHeatRow(topicId) {
+    const period = topicPeriod();
+    return period?.rows.find(row => row.topicId === topicId) ?? null;
+}
+
+function topicHotIds() {
+    const period = topicPeriod();
+
+    if (period === null || !period.hasSufficientData) {
+        return new Set();
+    }
+
+    return new Set([...period.rows]
+        .sort((left, right) => right.compositeScore - left.compositeScore)
+        .slice(0, TOPIC_HOT_COUNT)
+        .map(row => row.topicId));
 }
 
 function makeTopicBranchList(nodes, ancestors) {
@@ -5032,12 +5436,19 @@ function makeTopicBranchItem(node, ancestors) {
 
     const children = (node.childIds ?? [])
         .map(id => topicById.get(id))
-        .filter(child => child !== undefined && !ancestors.has(child.id))
+        .filter(child => child !== undefined && !ancestors.has(child.id) && isTopicVisible(child.id))
         .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
 
-    const open = openTopicBranches.has(node.id);
+    // 篩選中一律攤開。這時候的收合鈕點下去只會讓命中的節點消失，所以換成不能點的記號。
+    const forced = topicTreeForceOpen && children.length > 0;
+    const open = forced || openTopicBranches.has(node.id);
 
-    if (children.length > 0) {
+    if (forced) {
+        const mark = document.createElement('span');
+        mark.className = 'topic-branch-toggle placeholder';
+        mark.textContent = '▾';
+        line.append(mark);
+    } else if (children.length > 0) {
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = 'topic-branch-toggle';
@@ -5071,6 +5482,7 @@ function makeTopicBranchItem(node, ancestors) {
     button.addEventListener('click', () => {
         closeKLine(false);
         selectedTopicId = node.id;
+        topicMemberFilter = 'all';
         renderTopicPanel();
     });
     line.append(button);
@@ -5088,6 +5500,16 @@ function makeTopicBranchItem(node, ancestors) {
         tag.textContent = '待整理';
         tag.dataset.hint = '這個節點的歸類還有疑義，等使用者拍板。細節看人工編輯頁。';
         line.append(tag);
+    }
+
+    const heat = topicHeatRow(node.id);
+
+    if (heat) {
+        const badge = document.createElement('span');
+        badge.className = 'topic-heat-badge';
+        badge.textContent = topicScoreText(heat.compositeScore);
+        badge.dataset.hint = `${topicPeriod()?.period ?? ''} 的熱度分數，跟右邊排行表是同一個數字。`;
+        line.append(badge);
     }
 
     item.append(line);
@@ -5133,7 +5555,10 @@ function makeTopicDetail(topicId) {
         ['別名', node.aliases?.length ? node.aliases.join('、') : '—'],
         ['來自概念股', node.sourceConcepts?.length ? node.sourceConcepts.join('、') : '—'],
         ['成員檔數', row ? `${row.memberCount} 檔（有量 ${row.quotedCount} 檔）` : '這個期間沒有成交'],
-        [`綜合熱度（${period?.period ?? '—'}）`, row ? topicScoreText(row.compositeScore) : '—'],
+        [
+            `${topicCompositeColumn(period).title}（${period?.period ?? '—'}）`,
+            row ? topicScoreText(row.compositeScore) : '—'
+        ],
         ['歸類備註', node.mappingNote || '—']
     ];
 
@@ -5163,7 +5588,7 @@ function makeTopicDetail(topicId) {
 function makeTopicMemberBlock(row) {
     const wrapper = document.createElement('div');
     wrapper.className = 'topic-member-block table-container';
-    wrapper.append(makeTopicMemberTitle(row), makeTopicMemberTable(row));
+    wrapper.append(makeTopicMemberSection(row));
     return wrapper;
 }
 
@@ -5197,6 +5622,7 @@ function applyPendingTopicFocus() {
     }
 
     selectedTopicId = target;
+    topicMemberFilter = 'all';
     renderTopicPanel();
 
     const button = document.querySelector(`.topic-branch-name[data-topic-id="${target}"]`);
