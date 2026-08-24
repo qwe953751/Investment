@@ -1,4 +1,4 @@
-# 待辦事項（11 件）
+# 待辦事項（13 件）
 
 這份檔案是討論的存放處，不是進度表。每次要談某件事之前先讀這裡，
 就不用把前幾次的結論重講一遍。
@@ -19,6 +19,8 @@
 | 9 | 已合併的遠端分支要不要刪 | 🟡 等你決定 |
 | 10 | 盤中「成交比變化」疑似每列都是 +0.01% | 🟡 等盤中確認 |
 | 11 | 盤中輪距要不要縮到 1 分鐘 | 🟡 等第 8 項換完資料來源 |
+| 12 | 自訂網域換發布網址：app.admin / view.frank-investment.com | 🟡 卡在網域還沒註冊 |
+| 13 | 筆記附件 1/2/3（截圖內容）沒能寫入 | 🟡 等重傳截圖 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -629,6 +631,66 @@ key 是 `invest.lockedTickers`、讀寫都包 try/catch 讓無痕模式不會炸
 第 9 項換成玩股網那條路之後，一輪從**十四次 MIS 請求**變成**一次 request**，
 單輪耗時會從中位數 36 秒掉到個位數秒。那時候 1 分鐘的預算才可能撐得住，
 再回來量一次同樣這四個數字。
+
+---
+
+## 🟡 12. 自訂網域換發布網址：app.admin / view.frank-investment.com
+
+**狀態：卡在網域還沒註冊，我不能代辦**
+
+### 已討論（2026-08-24）
+
+你要求把最高權限網址從 `qwe953751.github.io/Investment/` 換成
+`app.admin.frank-investment.com`，檢視權限用 `view.frank-investment.com`，
+並且要求刪掉原本的網址。查了才發現：
+
+```
+$ whois frank-investment.com
+No match for domain "FRANK-INVESTMENT.COM"
+```
+
+`frank-investment.com` 沒有被任何人註冊。這代表：
+
+- **原本的網址現在不能刪**：新網址還沒有地方可以指，刪掉舊的等於整個網站消失。
+- 我沒有網域註冊商帳號、無法幫你買網域；DNS 與 GitHub Pages 的 custom domain
+  設定也要等網域存在之後才能動手——這幾步我可以之後接著做，但第一步要你自己來。
+
+**你要做的**：去網域註冊商（Cloudflare、Namecheap、GoDaddy 都可以）把
+`frank-investment.com` 註冊下來。註冊好之後告訴我，我接著把
+`app.admin` 與 `view` 兩個子網域的 DNS CNAME、GitHub Pages 的
+custom domain 設定、`daily-snapshot.yml` 的 `PAGES_ADMIN_CNAME` 都接上。
+
+**檢視權限現在已經有一個能用的入口**：獨立公開 repo
+`qwe953751/Investment-view`，網址
+`https://qwe953751.github.io/Investment-view/`，內嵌主站的
+`?access=viewer` 模式。網域正式生效前可以先用這個。
+
+### 尚未討論
+
+`app.admin` 與 `view` 各自要不要各自的 GitHub Pages 來源（目前是同一份
+`gh-pages` 分支靠 `?access=` 與 host 判斷切換），還是維持現在「兩個 repo
+指到同一份內容」的做法——網域到位後再一起定案。
+
+---
+
+## 🟡 13. 筆記附件 1/2/3（截圖內容）沒能寫入
+
+**狀態：等你重新傳一次截圖**
+
+### 已討論（2026-08-24）
+
+你要求把「附件 1、2、3」（你訊息裡附的 3 張 Google Sheet 截圖）的內容
+填進筆記頁籤。筆記頁籤本身已經改完（見
+[Doc/完成進度.md](Doc/完成進度.md)），但這次對話中間發生過一次上下文壓縮
+（conversation compaction），壓縮只保留文字摘要、不保留圖片內容本身，
+所以到我真的要把內容寫進筆記的這一步，已經讀不到那 3 張截圖實際寫了什麼。
+
+我不打算憑摘要裡的模糊描述（「像是 Google Sheet 的規劃／checklist 截圖」）
+編內容硬填進去——那樣寫進資料庫的會是我編出來的字，不是你截圖裡真正的內容。
+
+**你要做的**：把那 3 張截圖重新傳一次，我直接讀圖把內容整理成筆記
+（標題、類型、狀態、內容都會照筆記表單的欄位填），寫入 Supabase 的
+`notes` 表，任何裝置打開網站都看得到。
 
 第 9 項的坑第 4 點寫的「別再往下縮短輪距」講的是 1.6 MB 的流量，
 跟這裡講的預算是兩件事，兩邊都要滿足才動。
