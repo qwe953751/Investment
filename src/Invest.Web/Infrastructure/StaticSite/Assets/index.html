@@ -48,6 +48,9 @@
             Google Sheet，熱度一律由排行榜的既有數字聚合，不另外算一套成交值。同一檔股票掛在幾個族群，
             每個族群就都完整計一次——這裡看的是資金流向，不是把一檔股票切成幾份。
         </p>
+        <p data-view="notes">
+            記錄功能想法、Bug 與待驗證項目。筆記只保存於目前這個瀏覽器，不會上傳 GitHub 或公開給其他裝置。
+        </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
     </header>
 
@@ -142,6 +145,78 @@
         <div class="view-switch topic-switch" id="topic-tab-options"></div>
         <section class="topic-panel" id="topic-panel"></section>
     </div>
+
+    <section class="notes-page" id="notes-page" aria-labelledby="notes-page-title" hidden>
+        <div class="notes-toolbar">
+            <div>
+                <h2 id="notes-page-title">我的筆記</h2>
+                <p class="notes-storage-note">本機保存 · 只有這個瀏覽器看得到</p>
+            </div>
+            <button type="button" class="notes-primary-button" id="notes-new">＋ 新增筆記</button>
+        </div>
+
+        <div class="notes-filter-row" aria-label="筆記篩選">
+            <div class="notes-category-switch" id="notes-category-options"></div>
+            <label class="notes-search">
+                <span>搜尋</span>
+                <input type="search" id="notes-search" placeholder="標題或內容" autocomplete="off" />
+            </label>
+        </div>
+
+        <div class="notes-layout">
+            <section class="notes-list-card" aria-labelledby="notes-list-title">
+                <div class="notes-card-heading">
+                    <h3 id="notes-list-title">筆記清單</h3>
+                    <span id="notes-count"></span>
+                </div>
+                <div class="notes-list" id="notes-list"></div>
+            </section>
+
+            <section class="notes-editor-card" aria-labelledby="notes-editor-heading">
+                <div class="notes-card-heading">
+                    <h3 id="notes-editor-heading">新增筆記</h3>
+                    <span class="notes-save-status" id="notes-save-status" role="status"></span>
+                </div>
+                <form id="notes-form">
+                    <input type="hidden" id="notes-edit-id" />
+                    <div class="notes-form-grid">
+                        <label>
+                            <span>標題</span>
+                            <input type="text" id="notes-title" maxlength="120" placeholder="例如：盤中熱絡指標待驗證" required />
+                        </label>
+                        <label>
+                            <span>類型</span>
+                            <select id="notes-category">
+                                <option value="功能">功能</option>
+                                <option value="Bug">Bug</option>
+                                <option value="待驗證">待驗證</option>
+                                <option value="完成">完成</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>狀態</span>
+                            <select id="notes-status">
+                                <option value="待處理">待處理</option>
+                                <option value="處理中">處理中</option>
+                                <option value="待確認">待確認</option>
+                                <option value="已完成">已完成</option>
+                            </select>
+                        </label>
+                    </div>
+                    <label class="notes-content-field">
+                        <span>內容</span>
+                        <textarea id="notes-content" rows="12" placeholder="記下需求、重現步驟、驗證結果或下一步…"></textarea>
+                    </label>
+                    <div class="notes-editor-actions">
+                        <button type="button" class="notes-danger-button" id="notes-delete" hidden>刪除</button>
+                        <span></span>
+                        <button type="button" class="notes-secondary-button" id="notes-cancel">取消</button>
+                        <button type="submit" class="notes-primary-button">儲存筆記</button>
+                    </div>
+                </form>
+            </section>
+        </div>
+    </section>
 </div>
 
 <div class="kline-backdrop" id="kline-backdrop" hidden></div>

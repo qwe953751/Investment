@@ -15,6 +15,7 @@ const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
 const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && new URLSearchParams(window.location.search).get('local-revenue-preview') === '1';
 const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
+const VIEW_QUERY = new URLSearchParams(window.location.search).get('view');
 const ACCESS_PATH = window.location.pathname.split('/').filter(Boolean).at(-1);
 const SITE_HOST = window.location.hostname.toLowerCase();
 const ADMIN_HOST = 'app.admin.frank-investment.com';
@@ -81,8 +82,14 @@ const VIEWS = [
     { key: 'intraday', text: '盤中', hint: '證交所的即時行情，依收集排程更新；加權、櫃買與已開啟標的的當日 K 棒同步重讀。' },
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
     { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' },
-    { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' }
+    { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' },
+    { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記只保存在目前這個瀏覽器。' }
 ];
+
+// 筆記是個人工作區，最高權限才顯示；檢視權限只保留公開行情頁。
+const availableViews = () => SITE_ACCESS === 'viewer'
+    ? VIEWS.filter(view => view.key !== 'notes')
+    : VIEWS;
 
 // 族群檢視底下的四個分頁。熱度排行是主畫面，其餘三個是它的來源與維護紀錄。
 const TOPIC_TABS = [
@@ -714,6 +721,24 @@ const columns = () => columnsForView(state.view);
 
 const VIEW_PREFERENCE_VIEWS = ['daily', 'intraday', 'custom'];
 
+const NOTES_STORAGE_KEY = 'invest.notes.v1';
+const NOTE_CATEGORIES = [
+    { key: 'all', text: '全部' },
+    { key: '功能', text: '功能' },
+    { key: 'Bug', text: 'Bug' },
+    { key: '待驗證', text: '待驗證' },
+    { key: '完成', text: '完成' }
+];
+const NOTE_STATUSES = ['待處理', '處理中', '待確認', '已完成'];
+
+let notes = readNotes();
+let notesFilter = 'all';
+let notesSearch = '';
+let selectedNoteId = null;
+let notesDraft = null;
+let notesSaveStatus = '';
+let notesControlsWired = false;
+
 function defaultViewPreferences() {
     return {
         daily: { period: DEFAULT_PERIOD.daily, sortKey: 'rank', sortDescending: false },
@@ -938,12 +963,14 @@ function applyViewVisibility() {
         element.hidden = !element.dataset.view.split(/\s+/).includes(state.view);
     }
 
-    // 排行榜那一整塊與族群頁互斥，但它們兩個都沒有 data-view：#ranking 的顯示與否
-    // 是 load() 依有沒有抓到資料決定的，掛上 data-view 會被上面這個迴圈蓋掉。
+    // 排行榜、族群與筆記是三個互斥的內容區塊；它們都沒有 data-view，
+    // 各自的顯示與否在這裡集中處理，避免被上面的通用迴圈蓋掉。
     const topics = state.view === 'topics';
+    const notesView = state.view === 'notes';
     el('topics').hidden = !topics;
+    el('notes-page').hidden = !notesView;
 
-    if (topics) {
+    if (topics || notesView) {
         el('ranking').hidden = true;
         el('notice').hidden = true;
     }
@@ -951,7 +978,8 @@ function applyViewVisibility() {
 
 const PAGE_HEADINGS = {
     custom: '自訂資料瀏覽',
-    topics: '族群分類與熱度'
+    topics: '族群分類與熱度',
+    notes: '筆記'
 };
 
 function renderFilters() {
@@ -962,13 +990,14 @@ function renderFilters() {
 
     renderOptions(
         'view-options',
-        VIEWS.map(view => ({
+        availableViews().map(view => ({
             ...view,
             disabled: view.key === 'intraday' && supabase === null
         })),
         state.view,
         view => update({ view }));
 
+    wireNotes();
     applyViewVisibility();
 
     const intraday = state.view === 'intraday';
@@ -1014,6 +1043,10 @@ function renderFilters() {
     renderThresholdInput();
     renderCustomControls();
     renderLockRow();
+
+    if (state.view === 'notes') {
+        renderNotes();
+    }
 }
 
 // 按鈕之外的任意金額。單位與按鈕一樣是平均每日成交值（億元），
@@ -1216,7 +1249,7 @@ function applyStoredSettings() {
     }
 
     // 盤中頁在沒有資料庫連線時是停用的，存著的值不能繞過這件事。
-    if (VIEWS.some(view => view.key === stored.view)
+    if (availableViews().some(view => view.key === stored.view)
         && (stored.view !== 'intraday' || supabase !== null)) {
         state.view = stored.view;
 
@@ -1327,6 +1360,301 @@ function applyStoredSettings() {
     } else {
         rememberViewPreferences();
     }
+}
+
+// 筆記是使用者自己的工作資料，不跟每日行情快照綁在一起，也不受盤後更新時間清除。
+// 第一階段刻意只放在瀏覽器 localStorage：公開 GitHub Pages 沒有可安全寫入的登入邊界，
+// 先把筆記送進公開資料庫會讓任何人都能覆寫。日後若需要跨裝置，再接真正的登入與後端保存。
+function readNotes() {
+    const categories = new Set(NOTE_CATEGORIES.filter(option => option.key !== 'all').map(option => option.key));
+    const statuses = new Set(NOTE_STATUSES);
+
+    try {
+        const stored = JSON.parse(localStorage.getItem(NOTES_STORAGE_KEY));
+
+        if (!Array.isArray(stored)) {
+            return [];
+        }
+
+        return stored
+            .filter(note => note !== null && typeof note === 'object')
+            .map(note => ({
+                id: typeof note.id === 'string' && note.id.length > 0 ? note.id : createNoteId(),
+                title: typeof note.title === 'string' ? note.title : '',
+                category: categories.has(note.category) ? note.category : '功能',
+                status: statuses.has(note.status) ? note.status : '待處理',
+                content: typeof note.content === 'string' ? note.content : '',
+                updatedAt: typeof note.updatedAt === 'string' ? note.updatedAt : new Date(0).toISOString()
+            }))
+            .filter(note => note.title.length > 0 || note.content.length > 0)
+            .sort(compareNotes);
+    } catch {
+        return [];
+    }
+}
+
+function compareNotes(left, right) {
+    return String(right.updatedAt).localeCompare(String(left.updatedAt));
+}
+
+function writeNotes() {
+    try {
+        localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
+        return true;
+    } catch {
+        // 無痕模式或瀏覽器政策可能禁止 localStorage；記憶體中的這次操作仍保留到頁面關閉。
+        return false;
+    }
+}
+
+function createNoteId() {
+    return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatNoteUpdatedAt(value) {
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime()) ? '時間不明' : toTaipeiText(date.toISOString());
+}
+
+function noteCategoryClass(category) {
+    return category === 'Bug'
+        ? 'note-category-bug'
+        : category === '待驗證'
+            ? 'note-category-verify'
+            : category === '完成'
+                ? 'note-category-done'
+                : 'note-category-feature';
+}
+
+function noteStatusClass(status) {
+    return status === '已完成'
+        ? 'note-status-done'
+        : status === '處理中'
+            ? 'note-status-active'
+            : status === '待確認'
+                ? 'note-status-review'
+                : 'note-status-pending';
+}
+
+function filteredNotes() {
+    const query = notesSearch.trim().toLocaleLowerCase();
+
+    return notes.filter(note => {
+        const categoryMatches = notesFilter === 'all' || note.category === notesFilter;
+        const textMatches = query.length === 0
+            || `${note.title}\n${note.content}`.toLocaleLowerCase().includes(query);
+
+        return categoryMatches && textMatches;
+    });
+}
+
+function makeNotePill(text, className) {
+    const pill = document.createElement('span');
+    pill.className = className;
+    pill.textContent = text;
+    return pill;
+}
+
+function renderNotes() {
+    const page = el('notes-page');
+
+    if (!page) {
+        return;
+    }
+
+    const categoryHost = el('notes-category-options');
+    categoryHost.replaceChildren();
+
+    for (const option of NOTE_CATEGORIES) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = option.key === notesFilter
+            ? 'notes-filter-button selected'
+            : 'notes-filter-button';
+        button.textContent = option.text;
+        button.addEventListener('click', () => {
+            notesFilter = option.key;
+            renderNotes();
+        });
+        categoryHost.append(button);
+    }
+
+    const search = el('notes-search');
+    if (search.value !== notesSearch) {
+        search.value = notesSearch;
+    }
+
+    const visibleNotes = filteredNotes();
+    el('notes-count').textContent = `共 ${visibleNotes.length} / ${notes.length} 筆`;
+
+    const list = el('notes-list');
+    list.replaceChildren();
+
+    if (visibleNotes.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'notes-empty';
+        empty.textContent = notes.length === 0
+            ? '目前還沒有筆記，按右上角「新增筆記」開始。'
+            : '找不到符合條件的筆記。';
+        list.append(empty);
+    } else {
+        for (const note of visibleNotes) {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = note.id === selectedNoteId
+                ? 'notes-list-item selected'
+                : 'notes-list-item';
+            item.addEventListener('click', () => {
+                selectedNoteId = note.id;
+                notesDraft = null;
+                notesSaveStatus = '';
+                renderNotes();
+            });
+
+            const head = document.createElement('span');
+            head.className = 'notes-list-item-head';
+
+            const title = document.createElement('strong');
+            title.className = 'notes-list-item-title';
+            title.textContent = note.title || '未命名筆記';
+
+            const date = document.createElement('time');
+            date.className = 'notes-list-item-date';
+            date.dateTime = note.updatedAt;
+            date.textContent = formatNoteUpdatedAt(note.updatedAt);
+
+            head.append(title, date);
+
+            const meta = document.createElement('span');
+            meta.className = 'notes-list-item-meta';
+            meta.append(
+                makeNotePill(note.category, `notes-category-pill ${noteCategoryClass(note.category)}`),
+                makeNotePill(note.status, `notes-status-pill ${noteStatusClass(note.status)}`));
+
+            const preview = document.createElement('span');
+            preview.className = 'notes-list-item-preview';
+            const oneLine = note.content.replace(/\s+/g, ' ').trim();
+            preview.textContent = oneLine.length > 110 ? `${oneLine.slice(0, 110)}…` : oneLine || '尚未填寫內容';
+
+            item.append(head, meta, preview);
+            list.append(item);
+        }
+    }
+
+    renderNoteEditor();
+}
+
+function renderNoteEditor() {
+    const note = notes.find(item => item.id === selectedNoteId) ?? null;
+    const isEditing = note !== null;
+
+    const draft = notesDraft !== null && notesDraft.id === (note?.id ?? null)
+        ? notesDraft
+        : note;
+
+    el('notes-editor-heading').textContent = isEditing ? '編輯筆記' : '新增筆記';
+    el('notes-edit-id').value = note?.id ?? '';
+    el('notes-title').value = draft?.title ?? '';
+    el('notes-category').value = draft?.category ?? '功能';
+    el('notes-status').value = draft?.status ?? '待處理';
+    el('notes-content').value = draft?.content ?? '';
+    el('notes-delete').hidden = !isEditing;
+    el('notes-save-status').textContent = notesSaveStatus;
+}
+
+function wireNotes() {
+    if (notesControlsWired) {
+        return;
+    }
+
+    notesControlsWired = true;
+
+    el('notes-new').addEventListener('click', () => {
+        selectedNoteId = null;
+        notesDraft = null;
+        notesSaveStatus = '';
+        renderNotes();
+        el('notes-title').focus();
+    });
+
+    el('notes-search').addEventListener('input', event => {
+        notesSearch = event.target.value;
+        renderNotes();
+    });
+
+    for (const id of ['notes-title', 'notes-category', 'notes-status', 'notes-content']) {
+        const rememberDraft = () => {
+            notesDraft = {
+                id: selectedNoteId,
+                title: el('notes-title').value,
+                category: el('notes-category').value,
+                status: el('notes-status').value,
+                content: el('notes-content').value
+            };
+            notesSaveStatus = '';
+        };
+        el(id).addEventListener('input', rememberDraft);
+        el(id).addEventListener('change', rememberDraft);
+    }
+
+    el('notes-form').addEventListener('submit', event => {
+        event.preventDefault();
+
+        const title = el('notes-title').value.trim();
+
+        if (title.length === 0) {
+            notesSaveStatus = '請先輸入標題';
+            renderNoteEditor();
+            el('notes-title').focus();
+            return;
+        }
+
+        const id = el('notes-edit-id').value || createNoteId();
+        const next = {
+            id,
+            title,
+            category: el('notes-category').value,
+            status: el('notes-status').value,
+            content: el('notes-content').value,
+            updatedAt: new Date().toISOString()
+        };
+        const existingIndex = notes.findIndex(note => note.id === id);
+
+        if (existingIndex >= 0) {
+            notes[existingIndex] = next;
+        } else {
+            notes.push(next);
+        }
+
+        notes.sort(compareNotes);
+        selectedNoteId = id;
+        notesDraft = null;
+        notesSaveStatus = writeNotes()
+            ? `已儲存 ${formatNoteUpdatedAt(next.updatedAt)}`
+            : '瀏覽器禁止本機儲存，離開頁面後可能遺失';
+        renderNotes();
+    });
+
+    el('notes-cancel').addEventListener('click', () => {
+        notesDraft = null;
+        notesSaveStatus = '';
+        renderNotes();
+    });
+
+    el('notes-delete').addEventListener('click', () => {
+        const note = notes.find(item => item.id === selectedNoteId);
+
+        if (!note || !window.confirm(`確定刪除「${note.title}」？`)) {
+            return;
+        }
+
+        notes = notes.filter(item => item.id !== selectedNoteId);
+        selectedNoteId = null;
+        notesDraft = null;
+        notesSaveStatus = writeNotes() ? '已刪除' : '已從本次頁面移除';
+        renderNotes();
+    });
 }
 
 // 鎖定的股號。追蹤中的標的即使掉出前 100 名也要看得到現在排第幾，進榜時整列標色。
@@ -5007,6 +5335,15 @@ function makeTopicPendingList(title, lines) {
 }
 
 async function load() {
+    if (state.view === 'notes') {
+        el('notice').hidden = true;
+        el('ranking').hidden = true;
+        el('topics').hidden = true;
+        el('notes-page').hidden = false;
+        renderNotes();
+        return;
+    }
+
     if (state.view === 'intraday') {
         await loadIntraday();
         return;
@@ -5110,6 +5447,11 @@ function renderSnapshotNote() {
         ? ''
         : `收集器在交易日 ${schedule.intradayStart} 開始、${schedule.intradayEnd} 收工，`
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
+
+    if (state.view === 'notes') {
+        el('snapshot-note').textContent = '筆記只保存於目前這個瀏覽器；清除網站資料或更換裝置後不會自動帶過去。';
+        return;
+    }
 
     if (state.view === 'topics') {
         el('snapshot-note').textContent = (state.topicTab === 'heat' || state.topicTab === 'tree')
@@ -5233,6 +5575,11 @@ async function start() {
     // 預設值都擺好之後才套上次選的，這樣驗不過的項目自然留在預設。
     applyStoredSettings();
 
+    // 本機預覽可用 ?view=notes 直接開筆記頁；檢視權限仍不能藉此繞過可用頁籤限制。
+    if (availableViews().some(view => view.key === VIEW_QUERY)) {
+        state.view = VIEW_QUERY;
+    }
+
     snapshotNote =
         `資料截至 ${manifest.latestTradingDate}，共 ${manifest.tradingDayCount} 個交易日、`
         + `${manifest.stockCount} 檔個股。本快照產生於 ${manifest.generatedAt}。`;
@@ -5247,6 +5594,11 @@ async function start() {
 
     // 鈴鐺是附加資訊，不擋第一次畫面：連不上資料庫時整頁還是要照常出來。
     refreshAlerts();
+
+    if (state.view === 'notes') {
+        renderNotes();
+        return;
+    }
 
     // 營收與族群欄都要在第一次畫表之前就位。晚一步到的話那幾欄會先顯示 — 再跳成內容，
     // 看起來像抓錯了。兩支都是小請求，擋在前面不會有感。
