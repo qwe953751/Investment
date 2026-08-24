@@ -23,7 +23,7 @@
 | 9 | [已合併的遠端分支要不要刪](#todo-9) | 🟡 等你決定 |
 | 10 | [盤中「成交比變化」疑似每列都是 +0.01%](#todo-10) | 🟡 等盤中確認 |
 | 11 | [盤中輪距要不要縮到 1 分鐘](#todo-11) | 🟡 等第 8 項換完資料來源 |
-| 12 | [自訂網域換發布網址：app.admin / view.frank-investment.com](#todo-12) | 🟡 卡在網域還沒註冊 |
+| 12 | [新網址 frank-invest.github.io 已上線，等你驗證後收掉舊網址](#todo-12) | 🟡 等你驗證 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -649,41 +649,56 @@ key 是 `invest.lockedTickers`、讀寫都包 try/catch 讓無痕模式不會炸
 ---
 
 <a id="todo-12"></a>
-## 🟡 12. 自訂網域換發布網址：app.admin / view.frank-investment.com
+## 🟡 12. 換發布網址，讓訪客查不到原始 GitHub 帳號
 
-**狀態：卡在網域還沒註冊，我不能代辦**
+**狀態：新網址已上線，過渡期新舊網址並存，等你驗證後再收掉舊的**
 
 ### 已討論（2026-08-24）
 
-你要求把最高權限網址從 `qwe953751.github.io/Investment/` 換成
-`app.admin.frank-investment.com`，檢視權限用 `view.frank-investment.com`，
-並且要求刪掉原本的網址。查了才發現：
+最早的需求是買 `frank-investment.com` 網域換掉 `qwe953751.github.io/Investment/`，
+但查到這個網域沒人註冊，你也明講不想花錢買網域，所以那條路直接放棄。
 
-```
-$ whois frank-investment.com
-No match for domain "FRANK-INVESTMENT.COM"
-```
+你把真正的目的講清楚之後（「讓使用此網站的訪客，查不到原始作者的 GitHub」），
+改用不花錢的作法：**建一個新的 GitHub 組織**裝發布內容，而不是改帳號名稱或買網域。
+你已經建好組織 `frank-invest`（https://github.com/frank-invest）。我接著做完：
 
-`frank-investment.com` 沒有被任何人註冊。這代表：
+- 建立 `frank-invest/frank-invest.github.io` repo（GitHub 的特殊命名規則：
+  repo 名稱等於帳號/組織名時發布在網址根目錄），發布出來就是
+  **`https://frank-invest.github.io/`**——不含 `qwe953751`，也不含 `/Investment`
+  路徑。檢視權限沿用既有機制，網址加 `?access=viewer` 即可，不需要另外的網址。
+- 修掉一個原本就存在、跟這次目的直接衝突的洩漏：`scripts/publish-gh-pages.sh`
+  發布用的 commit 原本吃本機 `git config` 的身分（`frank <qwe953751@gmail.com>`），
+  這個 email 在 GitHub 帳號上是已驗證的，訪客點開 repo 的 commit 紀錄，即使
+  作者名字打的是「frank」，頭像跟連結還是會指回真實帳號。已經改成固定用
+  `github-actions[bot]` 身分，不管是本機手動發布還是 CI 自動發布都一樣，
+  無論發到哪個 repo 都不會洩漏。
+- `daily-snapshot.yml` 加了一步「發佈到 frank-invest.github.io」，跟原本發布到
+  `qwe953751.github.io/Investment/` 那步並列，每天兩邊都會自動更新，不用手動同步。
+  推送用的 `FRANK_INVEST_PAT`（存在 `qwe953751/Investment` repo secret）是我本機
+  `gh` CLI 那組個人 token，因為新 repo 在別的 org 底下，CI 內建的
+  `GITHUB_TOKEN` 天生跨不過去。**這組 token 如果你之後在本機重新登入 `gh` 導致
+  舊 token 失效，這一步會開始紅燈**，到時候要重新 `gh secret set FRANK_INVEST_PAT
+  --body "$(gh auth token)" --repo qwe953751/Investment` 補一次。
+- 已實測確認沒有洩漏：組織的公開 People 頁面（GitHub 預設把成員身分設成
+  private，目前是空的）、repo 首頁、commits 頁面、org 的 repo 列表頁，直接
+  curl 抓 HTML 找不到 `qwe953751` 字樣；`gh-pages` 分支最新 commit 作者是
+  `github-actions[bot]`，不是真實帳號。
 
-- **原本的網址現在不能刪**：新網址還沒有地方可以指，刪掉舊的等於整個網站消失。
-- 我沒有網域註冊商帳號、無法幫你買網域；DNS 與 GitHub Pages 的 custom domain
-  設定也要等網域存在之後才能動手——這幾步我可以之後接著做，但第一步要你自己來。
+### 尚未做的
 
-**你要做的**：去網域註冊商（Cloudflare、Namecheap、GoDaddy 都可以）把
-`frank-investment.com` 註冊下來。註冊好之後告訴我，我接著把
-`app.admin` 與 `view` 兩個子網域的 DNS CNAME、GitHub Pages 的
-custom domain 設定、`daily-snapshot.yml` 的 `PAGES_ADMIN_CNAME` 都接上。
-
-**檢視權限現在已經有一個能用的入口**：獨立公開 repo
-`qwe953751/Investment-view`，網址
-`https://qwe953751.github.io/Investment-view/`，內嵌主站的
-`?access=viewer` 模式。網域正式生效前可以先用這個。
-
-### 尚未討論
-
-`app.admin` 與 `view` 各自要不要各自的 GitHub Pages 來源（目前是同一份
-`gh-pages` 分支靠 `?access=` 與 host 判斷切換），還是維持現在「兩個 repo
-指到同一份內容」的做法——網域到位後再一起定案。
+- **舊網址什麼時候收掉**：現在故意兩邊都發布，讓你先在手機、平板等所有裝置上
+  確認 `https://frank-invest.github.io/` 都正常（含筆記、K 線、族群等每個
+  頁籤），你說可以之後我再把 `qwe953751.github.io/Investment/` 那步從
+  workflow 移掉、repo 的 Pages 設定關掉。**在你點頭之前不會動舊網址**，
+  資料本身沒有風險，純粹是網址在雙發。
+- `qwe953751/Investment-view`（`https://qwe953751.github.io/Investment-view/`）
+  這個獨立 repo 用 iframe 內嵌 `qwe953751.github.io/Investment/?access=viewer`，
+  iframe 的 `src` 網址直接寫在頁面原始碼裡，等於還是會洩漏舊網址（進而洩漏帳號）。
+  這個 repo 的用途已經被 `frank-invest.github.io/?access=viewer` 取代，等你
+  確認新網址沒問題後，這個 repo 也應該一併收掉或改成轉址，不然它會是另一個
+  漏洞——目前還沒有動它，先留著等你一起決定。
+- `app.admin` / `view.frank-investment.com` 那組子網域規劃（含各自要不要
+  獨立的 GitHub Pages 來源）已經不需要了，除非你之後改變主意想要自訂網域
+  （例如想要更好記的名字），需要的話再重談。
 
 ---

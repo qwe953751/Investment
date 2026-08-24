@@ -202,6 +202,16 @@ jobs:
           git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
           scripts/publish-gh-pages.sh publish/site
 
+      # 新網址：frank-invest 這個 org 底下沒有帳號原名，訪客看不到 qwe953751。
+      # FRANK_INVEST_PAT 是個人 PAT（跟本機 gh CLI 用同一組），因為這個 repo
+      # 屬於另一個 org，GITHUB_TOKEN 天生跨不過去。舊網址過渡期先兩邊都發，
+      # 等確認新網址在所有裝置上都正常，再考慮收掉舊的。
+      - name: 發佈到 frank-invest.github.io（新網址，過渡期雙發）
+        if: ${{ !cancelled() }}
+        env:
+          GH_PAGES_REMOTE: https://x-access-token:${{ secrets.FRANK_INVEST_PAT }}@github.com/frank-invest/frank-invest.github.io.git
+        run: scripts/publish-gh-pages.sh publish/site
+
       # 心跳的用途是回答「到底有沒有跑」，所以前面炸掉了也要記，用 always()。
       # publish-only 不碰 Supabase 與 data 狀態，不能在這裡要求尚未套用的 migration。
       - name: 心跳與狀態

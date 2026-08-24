@@ -9,6 +9,14 @@
 #   scripts/publish-gh-pages.sh [靜態網站目錄]
 #
 # 推去哪裡預設跟著 origin 走；GitHub Actions 裡用 GH_PAGES_REMOTE 換成帶 token 的網址。
+#
+# commit 身分固定用 github-actions[bot]，不吃本機或使用者的 git config。
+# 原因：這個 commit 會躺在公開網站的 repo 歷史裡，訪客點開就看得到。如果沿用
+# 本機全域設定（例如作者本人的 email），只要那個 email 在 GitHub 帳號上是
+# 已驗證的，GitHub 就會把這個 commit 連到真實帳號的個人頁面——不管顯示名稱
+# 打的是什麼，等於在公開頁面上留了一條能一路點回真實身分的路徑。這正是這個
+# 專案要換發布網址想避免的事，所以發布用的 commit 一律用機器人身分，不管是
+# CI 自動跑還是本機手動跑。
 
 set -euo pipefail
 
@@ -47,6 +55,8 @@ fi
 
 cd "$work"
 git init -q -b gh-pages
+git config user.name 'github-actions[bot]'
+git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 git add -A
 git commit -qm "更新排行快照 $version"
 git push -qf "$remote" gh-pages
