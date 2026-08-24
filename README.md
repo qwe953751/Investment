@@ -49,7 +49,7 @@
 
 ## 最新已發布版本
 
-本次「盤中族群熱絡同步與指數今年漲跌點數」已推送至 GitHub `main`（`92e0689`，2026-08-24）；GitHub Pages 重新發布的完整快照版本為 `1787543522`（最新交易日 2026/08/21）。市場熱絡卡片的日／今年漲跌都會顯示百分比與整數點數；盤中族群資料仍需先套用 `db/013_intraday_topic_heat.sql` 才會由資料庫提供。
+本次「盤中成交額與前一交易日比較」已推送至 GitHub `main`（`07aa9d6`，2026-08-24）；GitHub Pages 重新發布的完整快照版本為 `1787560914`（最新交易日 2026/08/21）。盤中最新快照已完成 `db/014` 欄位寫入，盤後仍不顯示比較值；`db/013` 的表與 view 也已依實際 schema 修復。
 這一版已完成並驗收：
 
 - 盤中、盤後旁新增「自訂」頁；可瀏覽單一交易日的完整上市櫃資料，不建立預設排行。
@@ -66,7 +66,8 @@
 - `db/007_market_indices.sql`、`db/008_intraday_kline.sql`、`db/009_revenue_history.sql` 已套用 Supabase。
 - `db/010_market_index_ytd.sql` 已於 2026-08-21 套用 Supabase；盤中前端仍保留舊 view fallback，套不到就退回去，不以假資料代替。
 - `db/011_market_heat.sql` 已套用 Supabase；盤中與盤後使用同一個 C# 市場熱絡公式，並已回填最新盤中快照。
-- `db/014_market_heat_turnover_change.sql` 尚待套用；它會保存盤中估算成交額及其相較前一交易日正式成交額的變化，盤後不顯示這個比較。
+- `db/013_intraday_topic_heat.sql` 的 migration 紀錄曾存在但實際表／view 遺失，已重建並驗證盤中收集可寫入。
+- `db/014_market_heat_turnover_change.sql` 已套用；它保存盤中估算成交額及其相較前一交易日正式成交額的變化，盤後不顯示這個比較。
 - `db/012_site_alerts.sql` 已套用 Supabase；頁面右上角的 ⚠ 鈴鐺直接讀這張表，點開看每則異常。
   警報寫資料庫而不是快照，因為最該通知的情況就是「靜態網站沒發佈成功」——那時候線上的 manifest 還是舊的。
 - 營收彈窗已接上真實 `revenue_history`：39,448 列、1,976 檔；2330 有完整 20 個月資料。
