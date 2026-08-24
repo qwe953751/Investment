@@ -200,8 +200,9 @@ jobs:
           scripts/publish-gh-pages.sh publish/site
 
       # 心跳的用途是回答「到底有沒有跑」，所以前面炸掉了也要記，用 always()。
+      # publish-only 不碰 Supabase 與 data 狀態，不能在這裡要求尚未套用的 migration。
       - name: 心跳與狀態
-        if: always()
+        if: ${{ always() && inputs.publish-only != true }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
@@ -209,7 +210,7 @@ jobs:
               "github-actions" "$GITHUB_WORKSPACE/data/STATUS.md"
 
       - name: 保存備份與狀態
-        if: always()
+        if: ${{ always() && inputs.publish-only != true }}
         working-directory: data
         run: |
           git add -A snapshots STATUS.md
@@ -229,7 +230,7 @@ jobs:
       # 訊息寫進 Supabase 而不是快照，正是因為最該通知的情況就是發佈失敗：
       # 那時候線上的 manifest 還是舊的，寫進快照裡的字永遠送不出去。
       - name: 更新網站上的警報
-        if: always()
+        if: ${{ always() && inputs.publish-only != true }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
