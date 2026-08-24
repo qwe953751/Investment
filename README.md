@@ -28,6 +28,19 @@
 
 持倉與族群分類不在本網站範圍內。SQLite / EF Core 不在目前架構內；目前使用 Supabase PostgreSQL 與 Npgsql。
 
+### 權限樣板與網址目標
+
+目前正式網址維持 `https://qwe953751.github.io/Investment/`，不切換 DNS、CNAME 或 GitHub Pages custom domain。
+未來最高權限主機目標為 `https://app.frank-investment.com/`，檢視權限為
+`https://view.frank-investment.com/`；兩者尚未啟用。額外加路徑不等於真正的權限保護，
+因此不把「網址複雜度」當成登入授權。
+檢視模式仍可進入盤中、盤後、自訂、族群，
+但族群頁只開放「熱度排行」；這是 UI 樣板，不是登入授權。DNS、custom domain 與真正的登入／白名單
+尚未設定，正式權限仍以 `TODO.md` 為準。
+
+本機預覽：`http://127.0.0.1:5220/?access=admin`、
+`http://127.0.0.1:5220/?access=viewer`。
+
 ## 最新已發布版本
 
 本次「市場熱絡指數 YTD 與休市日盤中對照修正」已推送至 GitHub `main`（`8321f4d`，2026-08-23）；GitHub Pages 重新發布的完整快照版本為 `1787499578`（最新交易日 2026/08/21）。市場熱絡卡片在舊 manifest 缺欄位時會補算今年漲跌，盤中休市日也不會再拿同一天資料互相比對。

@@ -130,6 +130,20 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 日K顯示檢視日前三個月而不是只取三根()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const KLINE_MONTHS = 3", script, StringComparison.Ordinal);
+        Assert.Contains("date.setMonth(date.getMonth() - KLINE_MONTHS)", script, StringComparison.Ordinal);
+        Assert.Contains(
+            ".filter(bar => bar.date >= startDate && bar.date <= endDate)",
+            script,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(".slice(-3)", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 自訂頁使用單日全量資料並以一百檔分頁()
     {
         var html = ReadAsset("index.html");
@@ -261,6 +275,39 @@ public sealed class StaticKLineAssetTests
             "fetchPeriod(`${state.period}-${dates[dates.length - 1]}`)",
             script,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 檢視權限只開放族群熱度排行樣板()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const SITE_ACCESS", script, StringComparison.Ordinal);
+        Assert.Contains("const ADMIN_HOST = 'app.frank-investment.com'", script, StringComparison.Ordinal);
+        Assert.Contains("const VIEWER_HOST = 'view.frank-investment.com'", script, StringComparison.Ordinal);
+        Assert.Contains("SITE_HOST === VIEWER_HOST", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "TOPIC_TABS.filter(tab => tab.key === 'heat')",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "topicTab: SITE_ACCESS === 'viewer' ? 'heat' : 'tree'",
+            script,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 盤中排行榜在名稱後顯示族群欄()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("const INTRADAY_COLUMNS", StringComparison.Ordinal);
+        var end = script.IndexOf("const CUSTOM_COLUMNS", start, StringComparison.Ordinal);
+        var intradayColumns = script[start..end];
+
+        Assert.Contains("{ key: 'name', title: '名稱'", intradayColumns, StringComparison.Ordinal);
+        Assert.Contains("{ key: 'topic', title: '族群'", intradayColumns, StringComparison.Ordinal);
+        Assert.Contains("TOPIC_COLUMN_HINT", intradayColumns, StringComparison.Ordinal);
+        Assert.Contains("topic: attributionOf(row.ticker)", intradayColumns, StringComparison.Ordinal);
     }
 
     [Fact]

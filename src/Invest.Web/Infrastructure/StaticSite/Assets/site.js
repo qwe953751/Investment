@@ -12,6 +12,20 @@ const KLINE_DIRECTORY = 'data/kline';
 const REVENUE_HISTORY_TABLE = 'revenue_history';
 const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && new URLSearchParams(window.location.search).get('local-revenue-preview') === '1';
+const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
+const ACCESS_PATH = window.location.pathname.split('/').filter(Boolean).at(-1);
+const SITE_HOST = window.location.hostname.toLowerCase();
+const ADMIN_HOST = 'app.frank-investment.com';
+const VIEWER_HOST = 'view.frank-investment.com';
+const DEPLOYED_ACCESS = SITE_HOST === VIEWER_HOST
+    ? 'viewer'
+    : SITE_HOST === ADMIN_HOST
+        ? 'admin'
+        : null;
+const SITE_ACCESS = DEPLOYED_ACCESS
+    ?? (ACCESS_QUERY === 'viewer' || ACCESS_PATH === 'viewer' ? 'viewer' : 'admin');
+const ACCESS_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && (ACCESS_QUERY === 'admin' || ACCESS_QUERY === 'viewer');
 const KLINE_MONTHS = 3;
 const KLINE_MOVING_AVERAGES = [
     { key: 'ma5', label: 'MA5', className: 'ma5' },
@@ -75,6 +89,12 @@ const TOPIC_TABS = [
     { key: 'events', text: '催化事件', hint: '族群為什麼熱起來的事件紀錄。新聞來源還沒接上，目前放的是示範資料。' },
     { key: 'edits', text: '人工編輯', hint: '分類被改過哪些地方，以及還等著使用者拍板的合併與歧義。' }
 ];
+
+// 檢視權限保留族群入口，但只給已整理好的熱度排行；來源樹、事件與人工編輯
+// 仍屬最高權限。這是本機／靜態站的導覽樣板，不等於登入驗證或資料安全邊界。
+const availableTopicTabs = () => SITE_ACCESS === 'viewer'
+    ? TOPIC_TABS.filter(tab => tab.key === 'heat')
+    : TOPIC_TABS;
 
 // 盤中頁的更新週期與收集器共用 manifest 裡的 CollectionSchedule。
 // 舊版 manifest 沒有這欄時才退回目前的 2 分鐘，避免前端失去更新能力。
@@ -636,6 +656,7 @@ const INTRADAY_COLUMNS = [
     { key: 'change', title: '排名變化', hint: '過去觀察期間的排名 − 今日盤中排名，▲ 代表今天的名次比平常前面。名次是相對的，所以今天只走了半天也能直接比。過去期間沒有這一檔就顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單；右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
+    { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '成交值（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '今日盤中的市場成交比 − 過去觀察期間的市場成交比，單位是百分點。正值代表今天這一檔吸走的資金比過去那段期間更多。過去期間沒有這一檔就顯示 —。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
@@ -766,6 +787,21 @@ function renderOptions(containerId, options, selected, onSelect) {
     }
 }
 
+function renderAccessBadge() {
+    const badge = el('access-badge');
+
+    if (!badge || !ACCESS_PREVIEW) {
+        return;
+    }
+
+    badge.hidden = false;
+    badge.className = `access-badge access-${SITE_ACCESS}`;
+    badge.textContent = SITE_ACCESS === 'viewer' ? '樣板｜檢視權限' : '樣板｜最高權限';
+    badge.dataset.hint = SITE_ACCESS === 'viewer'
+        ? '本機樣板：可使用盤中、盤後、自訂、族群的熱度排行。族群列表、催化事件、人工編輯屬最高權限。'
+        : '本機樣板：可使用目前網站的所有頁籤與族群功能。';
+}
+
 // 盤後專用的篩選條件（期間、交易日、模式、門檻）在盤中沒有意義，直接收起來，
 // 留著反而會讓人以為切到盤中還在篩什麼。市場與鎖定兩邊都適用。
 function applyViewVisibility() {
@@ -793,6 +829,7 @@ function renderFilters() {
     const custom = state.view === 'custom';
     el('page-heading').textContent = PAGE_HEADINGS[state.view] ?? '個股成交值排行';
     document.title = el('page-heading').textContent;
+    renderAccessBadge();
 
     renderOptions(
         'view-options',
@@ -1078,6 +1115,10 @@ function applyStoredSettings() {
 
     if (TOPIC_TABS.some(tab => tab.key === stored.topicTab)) {
         state.topicTab = stored.topicTab;
+    }
+
+    if (SITE_ACCESS === 'viewer') {
+        state.topicTab = 'heat';
     }
 
     // 族群的期間清單是 topics.json 決定的，這時候還沒讀進來，
@@ -3046,7 +3087,9 @@ async function reloadIfStale() {
         return false;
     }
 
-    location.replace(`${location.pathname}?v=${latest.version}`);
+    const next = new URL(location.href);
+    next.searchParams.set('v', latest.version);
+    location.replace(next.toString());
     return true;
 }
 
@@ -3551,7 +3594,7 @@ function makeTopicLevelLabel(text) {
 /// 從排行榜跳到族群列表的某個節點。用 Id 不用名字：名字在人工編輯頁改得動。
 function focusTopic(topicId) {
     pendingTopicFocus = topicId;
-    update({ view: 'topics', topicTab: 'tree' });
+    update({ view: 'topics', topicTab: SITE_ACCESS === 'viewer' ? 'heat' : 'tree' });
 }
 
 // 排行榜那一欄要的東西很小，跟族群頁的完整資料分開抓，讓沒切過去的人不必付那 2 MB。
@@ -3632,7 +3675,13 @@ function makeTopicNotice(message, isWarning) {
 }
 
 function renderTopicTabs() {
-    renderOptions('topic-tab-options', TOPIC_TABS, state.topicTab, topicTab => {
+    const tabs = availableTopicTabs();
+
+    if (!tabs.some(tab => tab.key === state.topicTab)) {
+        state.topicTab = 'heat';
+    }
+
+    renderOptions('topic-tab-options', tabs, state.topicTab, topicTab => {
         expandedTopicId = null;
         update({ topicTab });
     });

@@ -7,6 +7,8 @@ namespace Invest.Web.Infrastructure.MarketData;
 /// </summary>
 public sealed class DailyQuoteSnapshot
 {
+    private const decimal MinimumDailyBarCoverage = 0.95m;
+
     /// <summary>
     /// 目前的快取格式版本。成交值的定義一改就要 +1。
     ///
@@ -52,8 +54,38 @@ public sealed class DailyQuoteSnapshot
 
     public int DailyBarSchemaVersion { get; init; }
 
+    /// <summary>
+    /// 版本號代表補抓流程曾經寫入過，但不能保證那次回應真的包含完整市場。
+    /// 若外部來源只回少數標的，舊邏輯會把快照永久當成完成，之後的
+    /// <c>backfill-bars</c> 就不會重試，最後匯出的每檔 K 線只剩幾根。
+    /// 以有收盤價的標的作分母，至少 95% 具備完整 OHLC 才算完成；
+    /// 少數無成交而沒有 OHLC 的標的不會阻擋整天快照通過。
+    /// </summary>
     public bool HasCompleteDailyBars
-        => DailyBarSchemaVersion >= CurrentDailyBarSchemaVersion;
+    {
+        get
+        {
+            if (DailyBarSchemaVersion < CurrentDailyBarSchemaVersion)
+            {
+                return false;
+            }
+
+            var quotesWithClose = Quotes.Count(quote => quote.ClosePrice is not null);
+
+            if (quotesWithClose == 0)
+            {
+                return false;
+            }
+
+            var quotesWithCompleteBars = Quotes.Count(quote =>
+                quote.OpenPrice is not null
+                && quote.HighPrice is not null
+                && quote.LowPrice is not null
+                && quote.ClosePrice is not null);
+
+            return quotesWithCompleteBars / (decimal)quotesWithClose >= MinimumDailyBarCoverage;
+        }
+    }
 
     public bool HasCompleteMarketIndices
         => MarketIndexSchemaVersion >= CurrentMarketIndexSchemaVersion

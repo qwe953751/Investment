@@ -168,7 +168,19 @@ public sealed class MarketDataDownloader(
                 continue;
             }
 
-            await store.SaveAsync(snapshot.WithDailyBars(dailyQuotes), cancellationToken);
+            var updated = snapshot.WithDailyBars(dailyQuotes);
+
+            // 外部端點偶爾會回 HTTP 200，但內容只有少數標的。
+            // 不能把這種殘缺回應寫成 schema 1，否則下一次 backfill 會永久跳過，
+            // StaticSiteExporter 最後只會替每檔股票輸出幾根 K 棒。
+            if (!updated.HasCompleteDailyBars)
+            {
+                report.FailedDates.Add(snapshot.TradingDate);
+                progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 日 K 回應不完整，保留原快取並下次重試");
+                continue;
+            }
+
+            await store.SaveAsync(updated, cancellationToken);
             report.UpdatedCount++;
             progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 日 K 完成（{dailyQuotes.Count} 檔）");
         }

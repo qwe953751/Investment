@@ -7,6 +7,36 @@ namespace Invest.Web.Tests;
 public sealed class DailyKLineTests
 {
     [Fact]
+    public void 日K快照只補到少數標的時不能標成已完成()
+    {
+        var quotes = Enumerable.Range(0, 100)
+            .Select(index => new DailyQuote
+            {
+                Market = Market.Twse,
+                Ticker = (2330 + index).ToString(),
+                Name = "測試標的",
+                OpenPrice = index < 3 ? 100m : null,
+                HighPrice = index < 3 ? 101m : null,
+                LowPrice = index < 3 ? 99m : null,
+                ClosePrice = 100m,
+                TradingValue = 1m
+            })
+            .ToArray();
+
+        var snapshot = new DailyQuoteSnapshot
+        {
+            SchemaVersion = DailyQuoteSnapshot.CurrentSchemaVersion,
+            TradingDate = new DateOnly(2026, 8, 21),
+            IsTradingDay = true,
+            DownloadedAt = DateTimeOffset.UtcNow,
+            DailyBarSchemaVersion = DailyQuoteSnapshot.CurrentDailyBarSchemaVersion,
+            Quotes = quotes
+        };
+
+        Assert.False(snapshot.HasCompleteDailyBars);
+    }
+
+    [Fact]
     public void 只選取指定日期前三個月且欄位完整的日K()
     {
         var endDate = new DateOnly(2026, 8, 19);

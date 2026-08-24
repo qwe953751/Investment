@@ -77,6 +77,22 @@ body {
     font-size: 13px;
 }
 
+.access-badge {
+    padding: 4px 9px;
+    border: 1px solid #9db7d8;
+    border-radius: 999px;
+    color: #24558d;
+    background: #eef6ff;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.access-badge.access-viewer {
+    border-color: #c8b4e8;
+    color: #644399;
+    background: #f7f1ff;
+}
+
 /* 自動流程的異常鈴鐺。沒有任何紀錄時整塊藏起來，
    讓「一切正常」的畫面跟現在完全一樣。 */
 .alert-bell {
