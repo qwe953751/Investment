@@ -47,6 +47,29 @@ cp -R "$site/." "$work/"
 # 不讓 GitHub Pages 拿 Jekyll 處理這份產出，否則底線開頭的檔名會被吃掉。
 touch "$work/.nojekyll"
 
+# 檢視權限給一個獨立、好記的網址（.../viewer/），不是額外複製一份全站資料，
+# 只是一個小轉址頁：進來就用相對路徑跳回上一層帶 ?access=viewer。這樣同一支
+# 腳本不管發到哪個 repo（根目錄或子路徑）都算得出正確的上一層，不用寫死網域。
+# 之前想過用 iframe 內嵌另一個網域（Investment-view 那個做法），但 iframe 的
+# src 會直接寫在頁面原始碼裡，訪客看原始碼就看得到被嵌的是哪個網址——這裡改用
+# 同網域內的轉址，不會有這個問題。
+mkdir -p "$work/viewer"
+cat > "$work/viewer/index.html" <<'HTML'
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Frank Investment｜檢視</title>
+</head>
+<body>
+  <script>location.replace('../?access=viewer');</script>
+  <p><a href="../?access=viewer">前往檢視頁面</a></p>
+</body>
+</html>
+HTML
+
 # GitHub Pages 的 branch 發布會把 CNAME 放在來源分支；本腳本每次產生 orphan
 # 快照，若不在這裡重建就會把已驗證的自訂網域洗掉。未設定時保持原有網址行為。
 if [ -n "${GH_PAGES_CNAME:-}" ]; then

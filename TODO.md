@@ -684,19 +684,55 @@ key 是 `invest.lockedTickers`、讀寫都包 try/catch 讓無痕模式不會炸
   curl 抓 HTML 找不到 `qwe953751` 字樣；`gh-pages` 分支最新 commit 作者是
   `github-actions[bot]`，不是真實帳號。
 
+### 你回報「People 那個頭像點進去是我的 GitHub」（2026-08-24 已釐清）
+
+你傳的截圖裡有「Create new repository」「Invite someone」這兩個按鈕，
+還有一個點進去是 `qwe953751` 的頭像——**這是你自己登入 GitHub 之後看到的
+org 管理畫面**，不是訪客看到的樣子。那兩個按鈕本來就只有組織的擁有者/成員
+登入後才看得到，訪客（沒登入，或登入的是別的帳號）看不到這個 People 卡片，
+也看不到你的頭像。
+
+用完全匿名的 `curl`（不帶任何 cookie）重新驗證過：`https://github.com/frank-invest`
+的原始碼裡沒有 `qwe953751` 字樣、沒有任何連到 `/qwe953751` 的連結，唯一出現的
+頭像是組織自己的 logo（`avatars.githubusercontent.com/u/320591447`，這是
+`frank-invest` 這個組織的頭像 id，不是你的帳號 id `17944469`）。**你想親眼
+確認的話，開一個無痕視窗（或先登出 GitHub）再看一次 `github.com/frank-invest`，
+應該看不到 People 卡片跟那兩個管理按鈕。**
+
+### 檢視權限的獨立網址（2026-08-24 已補上）
+
+你問「說好的兩個網址呢」——原本規劃檢視權限只用同一個網址加
+`?access=viewer` 參數，沒有另外給一個好記、能單獨分享的網址。已經補上：
+
+**`https://frank-invest.github.io/viewer/`**
+
+做法不是複製一份全站資料（那樣每次發布要多推 300+MB），而是在 `viewer/`
+資料夾放一個幾行字的轉址頁，進去就用相對路徑 `../?access=viewer` 跳回上一層、
+帶上檢視權限參數。因為是相對路徑，同一支 `publish-gh-pages.sh` 不用改就能同時
+用在根目錄發布（新網址）跟子路徑發布（舊網址 `qwe953751.github.io/Investment/`），
+兩邊都會自動有一份：
+
+- 最高權限：`https://frank-invest.github.io/`
+- 檢視權限：`https://frank-invest.github.io/viewer/`
+
+這個轉址是「同網域內跳轉」，不是 iframe：瀏覽器網址列會確實換成
+`.../?access=viewer`，原始碼裡也不會出現另一個網域的網址——跟下面提到的
+`Investment-view` 的 iframe 做法（原始碼直接寫著要嵌哪個網址）不一樣，
+不會有洩漏問題。
+
 ### 尚未做的
 
 - **舊網址什麼時候收掉**：現在故意兩邊都發布，讓你先在手機、平板等所有裝置上
-  確認 `https://frank-invest.github.io/` 都正常（含筆記、K 線、族群等每個
-  頁籤），你說可以之後我再把 `qwe953751.github.io/Investment/` 那步從
-  workflow 移掉、repo 的 Pages 設定關掉。**在你點頭之前不會動舊網址**，
-  資料本身沒有風險，純粹是網址在雙發。
+  確認 `https://frank-invest.github.io/` 跟 `https://frank-invest.github.io/viewer/`
+  都正常（含筆記、K 線、族群等每個頁籤），你說可以之後我再把
+  `qwe953751.github.io/Investment/` 那步從 workflow 移掉、repo 的 Pages 設定關掉。
+  **在你點頭之前不會動舊網址**，資料本身沒有風險，純粹是網址在雙發。
 - `qwe953751/Investment-view`（`https://qwe953751.github.io/Investment-view/`）
   這個獨立 repo 用 iframe 內嵌 `qwe953751.github.io/Investment/?access=viewer`，
   iframe 的 `src` 網址直接寫在頁面原始碼裡，等於還是會洩漏舊網址（進而洩漏帳號）。
-  這個 repo 的用途已經被 `frank-invest.github.io/?access=viewer` 取代，等你
-  確認新網址沒問題後，這個 repo 也應該一併收掉或改成轉址，不然它會是另一個
-  漏洞——目前還沒有動它，先留著等你一起決定。
+  這個 repo 的用途已經被 `frank-invest.github.io/viewer/` 取代，等你確認新網址
+  沒問題後，這個 repo 也應該一併收掉或改成轉址，不然它會是另一個漏洞——
+  目前還沒有動它，先留著等你一起決定。
 - `app.admin` / `view.frank-investment.com` 那組子網域規劃（含各自要不要
   獨立的 GitHub Pages 來源）已經不需要了，除非你之後改變主意想要自訂網域
   （例如想要更好記的名字），需要的話再重談。
