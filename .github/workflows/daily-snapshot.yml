@@ -232,8 +232,12 @@ jobs:
       # 「這一輪整體有沒有成功」——前面任何一步紅了都算沒成功。
       # 訊息寫進 Supabase 而不是快照，正是因為最該通知的情況就是發佈失敗：
       # 那時候線上的 manifest 還是舊的，寫進快照裡的字永遠送不出去。
+      #
+      # 這一步不能排除 publish-only：發現過 publish-only 成功發佈之後，
+      # 前一輪失敗留下的警報因為這一步被跳過而永遠卡在「未恢復」，
+      # 明明網站已經是最新的，鈴鐺卻一直顯示壞掉。
       - name: 更新網站上的警報
-        if: ${{ always() && inputs.publish-only != true }}
+        if: always()
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

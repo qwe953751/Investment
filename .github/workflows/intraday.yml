@@ -26,8 +26,13 @@ on:
   workflow_dispatch:
 
 # 上一場還沒收工就不要再開一場，否則同一個時間點會寫進兩輪。
+#
+# 排程跟手動觸發各自一組：兩者共用同一組的話，交易時段中手動點一次
+# workflow_dispatch 來測新功能，就得先把正在跑的排程那場手動取消才擠得進去
+# ——08/24 就是這樣把當天唯一一場自動收集攔腰砍斷，族群盤中熱度整天只有一輪資料。
+# 分開組別後，手動測試最多跟自己排隊，不會動到當天唯一一場自動收集。
 concurrency:
-  group: intraday
+  group: intraday-${{ github.event_name }}
 
 jobs:
   collect:
