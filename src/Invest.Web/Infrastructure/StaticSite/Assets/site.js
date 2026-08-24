@@ -4237,6 +4237,11 @@ async function loadCustom() {
 let topicData = null;
 let topicActive = null;
 let topicById = new Map();
+
+// 節點在 topics.json 陣列裡的位置。那個順序就是 Google Sheet F:J 由上往下的順序，
+// 而那個順序是有意義的：伺服器、PCB、散熱……最後才是傳產，照供應鏈遠近排的。
+// 依名稱排序會把它打散（傳產跑到中間、CPO 排在 IC通路 前面），所以樹一律照表格順序。
+let topicOrder = new Map();
 let topicNote = '';
 let topicLoadError = '';
 let intradayTopicPeriod = null;
@@ -4374,6 +4379,11 @@ function topicName(id) {
     return topicById.get(id)?.name ?? '';
 }
 
+/// 樹上的排序：一律照 Google Sheet 的列順序，對不到位置的（理論上不會有）才退回名稱。
+const compareTopicOrder = (left, right) =>
+    (topicOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (topicOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+        || left.name.localeCompare(right.name, 'zh-Hant');
+
 /// 族群欄那一格。上層大題材、下層當前題材，各自是一顆可以點的連結。
 function makeTopicCell(ticker, attribution) {
     const group = document.createElement('span');
@@ -4499,6 +4509,7 @@ function prepareTopics() {
         ?? null;
 
     topicById = new Map((topicActive?.topics ?? []).map(topic => [topic.id, topic]));
+    topicOrder = new Map((topicActive?.topics ?? []).map((topic, index) => [topic.id, index]));
     openAllTopicBranches();
 
     if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && supabase === null) {
@@ -5263,9 +5274,14 @@ function renderTopicTreeBody(container) {
     topicTreeVisible = filtering ? collectVisibleTopics(query) : null;
     topicTreeForceOpen = filtering;
 
+    // 頂層的判斷是「沒有上層」，不是 depth === 0。depth 取的是這個節點在所有路徑裡最淺的那一層，
+    // 而工具機、半導體設備在表格上同時是大族群與別人的子節點，depth 會是 0 卻有父節點——
+    // 用 depth 篩就會讓它們在頂層與父節點底下各出現一次。
     const roots = topicActive.topics
-        .filter(topic => topic.source === 'tree' && topic.depth === 0 && isTopicVisible(topic.id))
-        .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
+        .filter(topic => topic.source === 'tree'
+            && (topic.parentIds ?? []).length === 0
+            && isTopicVisible(topic.id))
+        .sort(compareTopicOrder);
 
     let shown = roots.length;
 
@@ -5280,7 +5296,7 @@ function renderTopicTreeBody(container) {
             .filter(topic => topic.source === 'concept'
                 && topic.category === category
                 && isTopicVisible(topic.id))
-            .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
+            .sort(compareTopicOrder);
 
         if (nodes.length === 0) {
             continue;
@@ -5437,7 +5453,7 @@ function makeTopicBranchItem(node, ancestors) {
     const children = (node.childIds ?? [])
         .map(id => topicById.get(id))
         .filter(child => child !== undefined && !ancestors.has(child.id) && isTopicVisible(child.id))
-        .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hant'));
+        .sort(compareTopicOrder);
 
     // 篩選中一律攤開。這時候的收合鈕點下去只會讓命中的節點消失，所以換成不能點的記號。
     const forced = topicTreeForceOpen && children.length > 0;
