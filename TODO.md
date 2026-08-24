@@ -23,7 +23,7 @@
 | 9 | [已合併的遠端分支要不要刪](#todo-9) | 🟡 等你決定 |
 | 10 | [盤中「成交比變化」疑似每列都是 +0.01%](#todo-10) | 🟡 等盤中確認 |
 | 11 | [盤中輪距要不要縮到 1 分鐘](#todo-11) | 🟡 等第 8 項換完資料來源 |
-| 12 | [新網址 frank-invest.github.io 已上線，等你驗證後收掉舊網址](#todo-12) | 🟡 等你驗證 |
+| 12 | [最高權限改到 admin888 子路徑，新舊網址根目錄已收掉內容，等你各裝置驗證](#todo-12) | 🟡 等你驗證 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -651,7 +651,7 @@ key 是 `invest.lockedTickers`、讀寫都包 try/catch 讓無痕模式不會炸
 <a id="todo-12"></a>
 ## 🟡 12. 換發布網址，讓訪客查不到原始 GitHub 帳號
 
-**狀態：新網址已上線，過渡期新舊網址並存，等你驗證後再收掉舊的**
+**狀態：最高權限改發到 `frank-invest.github.io/admin888/`，新舊網址根目錄都已收掉內容，只剩空白頁**
 
 ### 已討論（2026-08-24）
 
@@ -720,19 +720,47 @@ org 管理畫面**，不是訪客看到的樣子。那兩個按鈕本來就只�
 `Investment-view` 的 iframe 做法（原始碼直接寫著要嵌哪個網址）不一樣，
 不會有洩漏問題。
 
+### 最高權限改發到 admin888 子路徑、兩邊根目錄都收掉內容（2026-08-24 已完成）
+
+你進一步要求：(1) 最高權限網址從 `https://frank-invest.github.io/` 改成
+`https://frank-invest.github.io/admin888/`；(2) 舊網址
+`https://qwe953751.github.io/Investment/` 跟新網址根目錄
+`https://frank-invest.github.io/` 兩個都要看不到內容。已經做完：
+
+- `scripts/publish-gh-pages.sh` 改成**網域根目錄一律只發一頁空白頁**（`noindex`、
+  沒有任何排行資料），真正的內容改由新的 `GH_PAGES_ADMIN_SUBDIR` 環境變數指定
+  要放進哪個子路徑；沒設這個變數時，整個網域只有空白頁，什麼都不發。
+- `daily-snapshot.yml` 的兩個發布步驟分工：
+  - 舊網址（`qwe953751/Investment` 的 `gh-pages`）不設 `GH_PAGES_ADMIN_SUBDIR`，
+    只發空白頁——等於這一步已經不是「收掉」而是「留著 Pages、但打開網址
+    什麼都看不到」，不用去 repo 設定關 Pages。
+  - 新網址（`frank-invest/frank-invest.github.io`）設
+    `GH_PAGES_ADMIN_SUBDIR=admin888`，最高權限變成
+    **`https://frank-invest.github.io/admin888/`**，根目錄
+    `https://frank-invest.github.io/` 只剩空白頁；檢視權限維持獨立、好記的
+    **`https://frank-invest.github.io/viewer/`**（跟 `admin888/` 平級，不是巢狀
+    在它底下——這是你點出我第一版做錯的地方：我原本把 viewer 也搬進
+    `admin888/viewer/`，等於檢視權限網址被迫跟著改名，你要的其實是「最高權限
+    换路徑，檢視權限網址不變」），進來會轉址到 `admin888/?access=viewer`。
+- 本機用假的 bare repo 當 remote 跑過一次真的 `publish-gh-pages.sh`，確認兩種
+  模式各自產出的檔案結構符合預期（空白模式只有 `index.html` + `.nojekyll`；
+  admin888 模式根目錄空白、`admin888/` 底下有完整站台、`viewer/` 在根目錄
+  跟 `admin888/` 平級），再進 CI 實際發布一次收尾。
+- `README.md`、`AGENTS.md`、`Doc/開發環境.md` 裡引用舊網址當「正式網址」或
+  拿舊網址驗證發布結果的地方一併同步，避免其他裝置照著舊文件驗證時打到
+  已經清空的網址。
+
 ### 尚未做的
 
-- **舊網址什麼時候收掉**：現在故意兩邊都發布，讓你先在手機、平板等所有裝置上
-  確認 `https://frank-invest.github.io/` 跟 `https://frank-invest.github.io/viewer/`
-  都正常（含筆記、K 線、族群等每個頁籤），你說可以之後我再把
-  `qwe953751.github.io/Investment/` 那步從 workflow 移掉、repo 的 Pages 設定關掉。
-  **在你點頭之前不會動舊網址**，資料本身沒有風險，純粹是網址在雙發。
 - `qwe953751/Investment-view`（`https://qwe953751.github.io/Investment-view/`）
   這個獨立 repo 用 iframe 內嵌 `qwe953751.github.io/Investment/?access=viewer`，
   iframe 的 `src` 網址直接寫在頁面原始碼裡，等於還是會洩漏舊網址（進而洩漏帳號）。
-  這個 repo 的用途已經被 `frank-invest.github.io/viewer/` 取代，等你確認新網址
-  沒問題後，這個 repo 也應該一併收掉或改成轉址，不然它會是另一個漏洞——
-  目前還沒有動它，先留著等你一起決定。
+  舊網址現在只剩空白頁，所以這個 iframe 實際嵌進來的畫面也會是空的，但原始碼裡
+  那條 `src` 還是看得到——漏洞的「洩漏帳號」部分沒有解決，只是「洩漏內容」的
+  部分因為舊網址本身已清空而自然失效。這個 repo 的用途已經被
+  `frank-invest.github.io/viewer/` 取代，等你確認新網址沒問題後，這個
+  repo 也應該一併收掉或改成轉址，不然它會是另一個漏洞——目前還沒有動它，先留著
+  等你一起決定。
 - `app.admin` / `view.frank-investment.com` 那組子網域規劃（含各自要不要
   獨立的 GitHub Pages 來源）已經不需要了，除非你之後改變主意想要自訂網域
   （例如想要更好記的名字），需要的話再重談。

@@ -125,19 +125,25 @@ gh run view <RUN_ID> --json status,conclusion,headSha,url,jobs
 
 #### 4. 發布後固定驗證
 
+正式網址是 `frank-invest.github.io`，最高權限的實際內容在 `admin888/` 子路徑下；
+根目錄 `qwe953751.github.io/Investment/` 跟 `frank-invest.github.io/`（不含
+`admin888/`）都只發空白頁，驗證時**不要**拿這兩個根目錄的 `manifest.json` /
+`site.js` 來檢查，一定會 404 或抓到空白頁，不是發布失敗。
+
 先驗證遠端分支，再驗證公開檔案；不要只看到 Actions 綠燈就宣稱網站已更新：
 
 ```powershell
 git ls-remote origin main gh-pages
+gh api 'repos/frank-invest/frank-invest.github.io/git/refs/heads/gh-pages'
 
-$manifest = gh api 'repos/qwe953751/Investment/contents/manifest.json?ref=gh-pages' | ConvertFrom-Json
+$manifest = gh api 'repos/frank-invest/frank-invest.github.io/contents/admin888/manifest.json?ref=gh-pages' | ConvertFrom-Json
 $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($manifest.content -replace '\s','')))
 $data = $json | ConvertFrom-Json
 $data.version
 $data.latestTradingDate
 $data.generatedAt
 
-$response = Invoke-WebRequest -UseBasicParsing 'https://qwe953751.github.io/Investment/manifest.json?verify=YYYYMMDD'
+$response = Invoke-WebRequest -UseBasicParsing 'https://frank-invest.github.io/admin888/manifest.json?verify=YYYYMMDD'
 $online = $response.Content | ConvertFrom-Json
 $response.StatusCode
 $online.version
@@ -147,13 +153,18 @@ $online.latestTradingDate
 再檢查線上 `site.js` 確實包含這次功能的字串（例如指數今年漲跌點數與盤中族群熱絡資料）：
 
 ```powershell
-$response = Invoke-WebRequest -UseBasicParsing 'https://qwe953751.github.io/Investment/site.js?verify=YYYYMMDD'
+$response = Invoke-WebRequest -UseBasicParsing 'https://frank-invest.github.io/admin888/site.js?verify=YYYYMMDD'
 $response.StatusCode
 $response.Content -like '*yearToDatePointSuffix*'
 $response.Content -like '*intraday_topic_heat_latest*'
 ```
 
 `gh-pages` API 已有新版本但公開 URL 暫時仍是舊版時，先視為 CDN 快取延遲，等待後重試；以 `gh-pages` 的 `manifest.json` 版本與公開 URL 最終同版為完成條件。不要用舊的本機 `publish/site` 直接覆蓋網站；export 路徑錯誤或本機快取過期時，指令仍可能成功但發布錯快照。
+
+`frank-invest/frank-invest.github.io` 這個 repo 屬於另一個 GitHub 組織，`gh api` 讀取需要
+`FRANK_INVEST_PAT` 對應的那組帳號權限（本機 `gh auth status` 顯示已登入的帳號要有這個
+repo 的讀取權，否則 `gh api repos/frank-invest/...` 會 404 而不是權限錯誤，容易誤判成
+「repo 不存在」）。
 
 #### 5. 失敗時的固定判斷順序
 

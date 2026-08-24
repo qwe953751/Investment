@@ -31,14 +31,18 @@
 
 ### 權限樣板與網址目標
 
-目前正式網址維持 `https://qwe953751.github.io/Investment/`，不切換 DNS、CNAME 或 GitHub Pages custom domain。
-未來最高權限主機目標為 `https://app.admin.frank-investment.com/`，檢視權限為
-`https://view.frank-investment.com/`；自訂網域尚未啟用。檢視入口的 GitHub Pages 預設網址為
-`https://qwe953751.github.io/Investment-view/`。額外加路徑不等於真正的權限保護，
-因此不把「網址複雜度」當成登入授權。
-檢視模式仍可進入盤中、盤後、自訂、族群，
-但族群頁只開放「熱度排行」；這是 UI 樣板，不是登入授權。DNS、custom domain 與真正的登入／白名單
-尚未設定，正式權限仍以 `TODO.md` 為準。
+正式網址是 `https://frank-invest.github.io/`（`frank-invest` 是另外建的 GitHub 組織，
+不含原始帳號名稱）。但這個網域**根目錄看不到任何內容**，只有一頁空白頁：
+
+- **最高權限**：`https://frank-invest.github.io/admin888/`
+- **檢視權限**：`https://frank-invest.github.io/viewer/`（跟 `admin888/` 平級，不是巢狀在它底下）
+
+舊網址 `https://qwe953751.github.io/Investment/` 也已收掉內容，整個網域只剩空白頁，
+不再對外提供任何排行資料；repo 跟 GitHub Pages 設定本身沒有關掉，純粹是發布腳本不再
+往那邊送內容。用子路徑（而不是登入或白名單）當最高權限的門檻，額外加路徑不等於真正的
+權限保護，因此不把「網址複雜度」當成登入授權——正式權限仍以 `TODO.md` 為準。
+檢視模式仍可進入盤中、盤後、自訂、族群，但族群頁只開放「熱度排行」；這是 UI 樣板，
+不是登入授權。
 「筆記」是個人工作區，只在最高權限樣板顯示；目前內容保存於瀏覽器 `localStorage`，不會寫入公開快照、GitHub
 或 Supabase，因此尚未提供跨裝置同步。檢視權限不顯示此頁籤。
 
@@ -55,10 +59,6 @@
   不把個人筆記送進任何公開可讀的後端。
 
 清除網站資料、使用無痕視窗或更換裝置後，這些筆記不會自動出現；要跨裝置同步，必須先完成 [TODO.md](TODO.md) 的權限模型。
-
-自訂網域尚未有 DNS 紀錄時，不能先把既有正式站改成 CNAME，否則會把使用者導向不存在的網址。
-發布 workflow 預留 repository variable `PAGES_ADMIN_CNAME`；等 `app.admin.frank-investment.com`
-在 GitHub Pages 設定完成且 DNS 可解析後，將它設為該完整網域，之後每次快照發布都會保留 `CNAME`。
 
 ## 最新已發布版本
 
@@ -227,10 +227,18 @@ GitHub Pages 的快取是十分鐘且無法改標頭，靠網址變動才能讓�
 不保留歷史——一份快照就一百多 MB，累積下來會讓 clone 變成災難：
 
 ```bash
+GH_PAGES_REMOTE=https://x-access-token:$(gh auth token)@github.com/frank-invest/frank-invest.github.io.git \
+GH_PAGES_ADMIN_SUBDIR=admin888 \
 scripts/publish-gh-pages.sh publish/site
 ```
 
-網址：<https://qwe953751.github.io/Investment/>
+網址：<https://frank-invest.github.io/admin888/>（檢視權限：<https://frank-invest.github.io/viewer/>）
+
+不帶 `GH_PAGES_REMOTE` 時預設推去 `origin`（`qwe953751/Investment`）；不帶
+`GH_PAGES_ADMIN_SUBDIR` 時，整個網域只會發一頁看不到任何內容的空白頁——這是刻意
+的預設值，`qwe953751.github.io/Investment/` 就是這樣被收掉內容的。手動在其他裝置
+發布最高權限內容時，兩個環境變數都要記得帶，漏帶 `GH_PAGES_ADMIN_SUBDIR` 就會把
+新網址也發成空白頁。詳見 [Doc/開發環境.md](Doc/開發環境.md) 的「發布到新網址」。
 
 前端抓 `data/*.json` 時會帶上 `manifest.json` 裡的版本號（發佈時間的 Unix 秒數）當查詢字串，
 `manifest.json` 本身則以 `cache: 'no-store'` 讀取。重新發佈後版本號一變，所有資料檔的網址跟著變，
