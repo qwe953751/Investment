@@ -19,6 +19,10 @@ on:
       trading-days:
         description: 回補幾個交易日（從今天往回）
         default: '300'
+      publish-only:
+        description: 只用 data 分支現有快取重新輸出並發布，不等待今日行情
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -77,6 +81,7 @@ jobs:
       # 抓到有為止：官方偶爾晚公布或擋一下，一次失敗不算數，
       # 每 10 分鐘重跑一次直到今天的行情檔案落地，最晚撐到 21:00。
       - name: 回補行情
+        if: ${{ inputs.publish-only != true }}
         run: |
           today=$(date +%Y-%m-%d)
           deadline=$(date -d '21:00' +%s)
@@ -107,9 +112,11 @@ jobs:
       # 新增日 K 後，既有快取只缺開高低欄位；這一步只補最近約三個月，
       # 不重算成交值，也不重新下載整份歷史行情。之後新日期由 backfill 直接帶入。
       - name: 補抓三個月日 K
+        if: ${{ inputs.publish-only != true }}
         run: dotnet run -c Release --project src/Invest.Web -- backfill-bars 90
 
       - name: 保存行情快取
+        if: ${{ inputs.publish-only != true }}
         working-directory: data
         run: |
           git add -A imports
@@ -135,15 +142,17 @@ jobs:
       # 以下每一步都用 !cancelled()，讓它們彼此不互相拖累。
       # 串成一條的話，回補失敗就等於同步、備份、發佈全部沒跑，
       # 而且只會看到最前面那個錯誤。任何一步紅了整個 job 還是紅的。
+      # publish-only 只重建網站，不改 data、Supabase 或備份，避免盤中手動發布時
+      # 為了等今天尚未公布的行情卡住整個發布流程。
 
       - name: 同步到 Supabase
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && inputs.publish-only != true }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- sync
 
       - name: 對帳
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && inputs.publish-only != true }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- verify
@@ -155,7 +164,7 @@ jobs:
       # 裝好還不夠：`/usr/bin/pg_dump` 是 pg_wrapper，runner 上有 16 的預設 cluster，
       # 它就照那個挑 16，裝了 17 也一樣。所以直接把 17 的執行檔位置交給備份腳本。
       - name: 裝上對得上 Supabase 的 pg_dump
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && inputs.publish-only != true }}
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
@@ -172,7 +181,7 @@ jobs:
           /usr/lib/postgresql/17/bin/pg_dump --version
 
       - name: 備份原生資料
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && inputs.publish-only != true }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: scripts/backup-supabase.sh data/snapshots
