@@ -83,7 +83,7 @@ const VIEWS = [
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
     { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' },
     { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' },
-    { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記只保存在目前這個瀏覽器。' }
+    { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' }
 ];
 
 // 筆記是個人工作區，最高權限才顯示；檢視權限只保留公開行情頁。
@@ -721,7 +721,7 @@ const columns = () => columnsForView(state.view);
 
 const VIEW_PREFERENCE_VIEWS = ['daily', 'intraday', 'custom'];
 
-const NOTES_STORAGE_KEY = 'invest.notes.v1';
+const NOTES_TABLE = 'notes';
 const NOTE_CATEGORIES = [
     { key: 'all', text: '全部' },
     { key: '功能', text: '功能' },
@@ -731,7 +731,14 @@ const NOTE_CATEGORIES = [
 ];
 const NOTE_STATUSES = ['待處理', '處理中', '待確認', '已完成'];
 
-let notes = readNotes();
+// 筆記要跨裝置看得到彼此的變化，但不必到秒等級——比警報鈴鐺（5 分鐘）勤一點，
+// 一分鐘足以讓「換一台裝置補筆記」的場景感覺得到，又不會把 PostgREST 打太兇。
+const NOTES_REFRESH_MS = 60_000;
+
+let notes = [];
+let notesLoaded = false;
+let notesLoadError = null;
+let lastNotesLoadedAt = 0;
 let notesFilter = 'all';
 let notesSearch = '';
 let selectedNoteId = null;
@@ -1363,52 +1370,108 @@ function applyStoredSettings() {
 }
 
 // 筆記是使用者自己的工作資料，不跟每日行情快照綁在一起，也不受盤後更新時間清除。
-// 第一階段刻意只放在瀏覽器 localStorage：公開 GitHub Pages 沒有可安全寫入的登入邊界，
-// 先把筆記送進公開資料庫會讓任何人都能覆寫。日後若需要跨裝置，再接真正的登入與後端保存。
-function readNotes() {
+//
+// 這裡直接讀寫 Supabase 的 notes 表，而且是這個專案唯一一張 anon 角色可以寫入的表
+// （見 db/015_notes.sql 檔頭說明）：純靜態網站沒有伺服器可以擋登入邊界，
+// 要做到「任何裝置打開網站就能編輯」，只能把匿名金鑰本身當成寫入權杖使用。
+// 也就是任何知道網址與 anon key（本來就寫在 manifest.json 裡）的人都能改筆記，
+// 這是已知情、範圍鎖在這張表的取捨，不是疏忽。
+async function loadNotes() {
+    if (supabase === null) {
+        return [];
+    }
+
     const categories = new Set(NOTE_CATEGORIES.filter(option => option.key !== 'all').map(option => option.key));
     const statuses = new Set(NOTE_STATUSES);
 
+    const rows = await fetchAllRows(
+        NOTES_TABLE,
+        'id,title,category,status,content,updated_at',
+        '&order=updated_at.desc');
+
+    return rows
+        .filter(row => row !== null && typeof row === 'object')
+        .map(row => ({
+            id: String(row.id),
+            title: typeof row.title === 'string' ? row.title : '',
+            category: categories.has(row.category) ? row.category : '功能',
+            status: statuses.has(row.status) ? row.status : '待處理',
+            content: typeof row.content === 'string' ? row.content : '',
+            updatedAt: typeof row.updated_at === 'string' ? row.updated_at : new Date(0).toISOString()
+        }))
+        .sort(compareNotes);
+}
+
+// 失敗也記一次時間，否則連不上資料庫時每一格 tick 都會再試一遍。
+// 失敗時刻意保留舊的 notes 陣列：清單不該因為一次讀取失敗就整個清空。
+async function refreshNotes() {
+    lastNotesLoadedAt = Date.now();
+
     try {
-        const stored = JSON.parse(localStorage.getItem(NOTES_STORAGE_KEY));
-
-        if (!Array.isArray(stored)) {
-            return [];
-        }
-
-        return stored
-            .filter(note => note !== null && typeof note === 'object')
-            .map(note => ({
-                id: typeof note.id === 'string' && note.id.length > 0 ? note.id : createNoteId(),
-                title: typeof note.title === 'string' ? note.title : '',
-                category: categories.has(note.category) ? note.category : '功能',
-                status: statuses.has(note.status) ? note.status : '待處理',
-                content: typeof note.content === 'string' ? note.content : '',
-                updatedAt: typeof note.updatedAt === 'string' ? note.updatedAt : new Date(0).toISOString()
-            }))
-            .filter(note => note.title.length > 0 || note.content.length > 0)
-            .sort(compareNotes);
+        notes = await loadNotes();
+        notesLoadError = null;
     } catch {
-        return [];
+        notesLoadError = '讀不到筆記，可能是資料庫連線問題；稍後會自動重試。';
     }
+
+    notesLoaded = true;
+}
+
+function notesIsStale() {
+    return Date.now() - lastNotesLoadedAt >= NOTES_REFRESH_MS;
 }
 
 function compareNotes(left, right) {
     return String(right.updatedAt).localeCompare(String(left.updatedAt));
 }
 
-function writeNotes() {
-    try {
-        localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
-        return true;
-    } catch {
-        // 無痕模式或瀏覽器政策可能禁止 localStorage；記憶體中的這次操作仍保留到頁面關閉。
-        return false;
+function createNoteId() {
+    return crypto.randomUUID();
+}
+
+async function saveNoteRemote(note, isNew) {
+    const body = {
+        id: note.id,
+        title: note.title,
+        category: note.category,
+        status: note.status,
+        content: note.content,
+        updated_at: note.updatedAt
+    };
+
+    const response = isNew
+        ? await fetch(`${supabase.url}/rest/v1/${NOTES_TABLE}`, {
+            method: 'POST',
+            headers: {
+                apikey: supabase.anonKey,
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal'
+            },
+            body: JSON.stringify(body)
+        })
+        : await fetch(`${supabase.url}/rest/v1/${NOTES_TABLE}?id=eq.${encodeURIComponent(note.id)}`, {
+            method: 'PATCH',
+            headers: {
+                apikey: supabase.anonKey,
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal'
+            },
+            body: JSON.stringify(body)
+        });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
     }
 }
 
-function createNoteId() {
-    return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+async function deleteNoteRemote(id) {
+    const response = await fetch(
+        `${supabase.url}/rest/v1/${NOTES_TABLE}?id=eq.${encodeURIComponent(id)}`,
+        { method: 'DELETE', headers: { apikey: supabase.anonKey } });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
+    }
 }
 
 function formatNoteUpdatedAt(value) {
@@ -1456,12 +1519,30 @@ function makeNotePill(text, className) {
     return pill;
 }
 
+function notesStorageNoteText() {
+    if (supabase === null) {
+        return '需要資料庫連線才能讀寫筆記；離線快照看不到筆記。';
+    }
+
+    if (!notesLoaded) {
+        return '載入中…';
+    }
+
+    if (notesLoadError) {
+        return notesLoadError;
+    }
+
+    return '存在資料庫 · 任何裝置打開網站都能看到並編輯';
+}
+
 function renderNotes() {
     const page = el('notes-page');
 
     if (!page) {
         return;
     }
+
+    el('notes-storage-note').textContent = notesStorageNoteText();
 
     const categoryHost = el('notes-category-options');
     categoryHost.replaceChildren();
@@ -1494,9 +1575,13 @@ function renderNotes() {
     if (visibleNotes.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'notes-empty';
-        empty.textContent = notes.length === 0
-            ? '目前還沒有筆記，按右上角「新增筆記」開始。'
-            : '找不到符合條件的筆記。';
+        empty.textContent = notes.length > 0
+            ? '找不到符合條件的筆記。'
+            : !notesLoaded
+                ? '筆記載入中…'
+                : notesLoadError
+                    ? notesLoadError
+                    : '目前還沒有筆記，按右上角「新增筆記」開始。';
         list.append(empty);
     } else {
         for (const note of visibleNotes) {
@@ -1610,7 +1695,15 @@ function wireNotes() {
             return;
         }
 
-        const id = el('notes-edit-id').value || createNoteId();
+        if (supabase === null) {
+            notesSaveStatus = '沒有資料庫連線，無法儲存';
+            renderNoteEditor();
+            return;
+        }
+
+        const existingId = el('notes-edit-id').value;
+        const isNew = existingId.length === 0;
+        const id = existingId || createNoteId();
         const next = {
             id,
             title,
@@ -1619,21 +1712,30 @@ function wireNotes() {
             content: el('notes-content').value,
             updatedAt: new Date().toISOString()
         };
-        const existingIndex = notes.findIndex(note => note.id === id);
 
-        if (existingIndex >= 0) {
-            notes[existingIndex] = next;
-        } else {
-            notes.push(next);
-        }
+        notesSaveStatus = '儲存中…';
+        renderNoteEditor();
 
-        notes.sort(compareNotes);
-        selectedNoteId = id;
-        notesDraft = null;
-        notesSaveStatus = writeNotes()
-            ? `已儲存 ${formatNoteUpdatedAt(next.updatedAt)}`
-            : '瀏覽器禁止本機儲存，離開頁面後可能遺失';
-        renderNotes();
+        saveNoteRemote(next, isNew)
+            .then(() => {
+                const existingIndex = notes.findIndex(note => note.id === id);
+
+                if (existingIndex >= 0) {
+                    notes[existingIndex] = next;
+                } else {
+                    notes.push(next);
+                }
+
+                notes.sort(compareNotes);
+                selectedNoteId = id;
+                notesDraft = null;
+                notesSaveStatus = `已儲存 ${formatNoteUpdatedAt(next.updatedAt)}`;
+                lastNotesLoadedAt = Date.now();
+            })
+            .catch(() => {
+                notesSaveStatus = '儲存失敗，請檢查網路連線後重試';
+            })
+            .finally(renderNotes);
     });
 
     el('notes-cancel').addEventListener('click', () => {
@@ -1649,11 +1751,27 @@ function wireNotes() {
             return;
         }
 
-        notes = notes.filter(item => item.id !== selectedNoteId);
-        selectedNoteId = null;
-        notesDraft = null;
-        notesSaveStatus = writeNotes() ? '已刪除' : '已從本次頁面移除';
-        renderNotes();
+        if (supabase === null) {
+            notesSaveStatus = '沒有資料庫連線，無法刪除';
+            renderNoteEditor();
+            return;
+        }
+
+        notesSaveStatus = '刪除中…';
+        renderNoteEditor();
+
+        deleteNoteRemote(note.id)
+            .then(() => {
+                notes = notes.filter(item => item.id !== note.id);
+                selectedNoteId = null;
+                notesDraft = null;
+                notesSaveStatus = '已刪除';
+                lastNotesLoadedAt = Date.now();
+            })
+            .catch(() => {
+                notesSaveStatus = '刪除失敗，請檢查網路連線後重試';
+            })
+            .finally(renderNotes);
     });
 }
 
@@ -5341,6 +5459,12 @@ async function load() {
         el('topics').hidden = true;
         el('notes-page').hidden = false;
         renderNotes();
+        await refreshNotes();
+
+        if (state.view === 'notes') {
+            renderNotes();
+        }
+
         return;
     }
 
@@ -5449,7 +5573,9 @@ function renderSnapshotNote() {
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
 
     if (state.view === 'notes') {
-        el('snapshot-note').textContent = '筆記只保存於目前這個瀏覽器；清除網站資料或更換裝置後不會自動帶過去。';
+        el('snapshot-note').textContent = supabase === null
+            ? '筆記需要資料庫連線；離線快照看不到筆記。'
+            : `筆記存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(NOTES_REFRESH_MS / 1000)} 秒自動重讀一次。`;
         return;
     }
 
@@ -5539,6 +5665,17 @@ function startIntradayTimer() {
             refreshAlerts();
         }
 
+        // 筆記只在使用者正看著這一頁時背景重讀：不在這一頁時沒必要打資料庫，
+        // 而且正在編輯時被背景重讀蓋掉草稿——renderNoteEditor 會保留 notesDraft，
+        // 所以就算列表換新，正在打的字也不會不見。
+        if (state.view === 'notes' && !document.hidden && notesIsStale()) {
+            void refreshNotes().then(() => {
+                if (state.view === 'notes') {
+                    renderNotes();
+                }
+            });
+        }
+
         setTimeout(tickOnce, tick);
     };
 
@@ -5597,6 +5734,12 @@ async function start() {
 
     if (state.view === 'notes') {
         renderNotes();
+        await refreshNotes();
+
+        if (state.view === 'notes') {
+            renderNotes();
+        }
+
         return;
     }
 

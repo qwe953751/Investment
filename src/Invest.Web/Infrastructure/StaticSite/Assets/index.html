@@ -49,7 +49,8 @@
             每個族群就都完整計一次——這裡看的是資金流向，不是把一檔股票切成幾份。
         </p>
         <p data-view="notes">
-            記錄功能想法、Bug 與待驗證項目。筆記只保存於目前這個瀏覽器，不會上傳 GitHub 或公開給其他裝置。
+            記錄功能想法、Bug 與待驗證項目。筆記直接存在資料庫，任何裝置打開這個網址都看得到、也能編輯——
+            這代表任何知道網址的人都能改筆記，公開網站沒有登入邊界，這是刻意的取捨。
         </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
     </header>
@@ -150,7 +151,7 @@
         <div class="notes-toolbar">
             <div>
                 <h2 id="notes-page-title">我的筆記</h2>
-                <p class="notes-storage-note">本機保存 · 只有這個瀏覽器看得到</p>
+                <p class="notes-storage-note" id="notes-storage-note">載入中…</p>
             </div>
             <button type="button" class="notes-primary-button" id="notes-new">＋ 新增筆記</button>
         </div>
