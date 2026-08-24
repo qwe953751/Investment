@@ -83,6 +83,26 @@ public sealed class MarketIndexPerformanceTests
                 Market.Twse));
     }
 
+    [Fact]
+    public void 由百分比反推指數漲跌點數()
+    {
+        Assert.Equal(
+            20m,
+            MarketIndexPerformanceCalculator.PointChange(120m, 20m));
+
+        Assert.Equal(
+            -5m,
+            MarketIndexPerformanceCalculator.PointChange(95m, -5m));
+    }
+
+    [Fact]
+    public void 指數漲跌點數資料不足時回傳空值()
+    {
+        Assert.Null(MarketIndexPerformanceCalculator.PointChange(null, 20m));
+        Assert.Null(MarketIndexPerformanceCalculator.PointChange(120m, null));
+        Assert.Null(MarketIndexPerformanceCalculator.PointChange(120m, -100m));
+    }
+
     private static DailyMarketIndex Day(DateOnly date, decimal twse, decimal tpex) => new()
     {
         TradingDate = date,

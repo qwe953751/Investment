@@ -10,6 +10,8 @@ const TOP_COUNT = 100;
 const CUSTOM_PAGE_SIZE = 100;
 const KLINE_DIRECTORY = 'data/kline';
 const REVENUE_HISTORY_TABLE = 'revenue_history';
+const INTRADAY_TOPIC_PERIOD = 'intraday';
+const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
 const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && new URLSearchParams(window.location.search).get('local-revenue-preview') === '1';
 const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
@@ -161,6 +163,28 @@ const toSignedPercentText = (rate, decimals = 1) => (missing(rate)
 const toCloseText = close => (missing(close) ? '—' : toFixedText(close, 2));
 
 const toIndexText = index => (missing(index) ? '—' : toFixedText(Number(index), 2));
+
+// 盤中快照保存的是「目前指數」與「百分比」；由兩者反推前一日指數，就能在不另增欄位下
+// 顯示日漲跌點數。百分比本身來自交易所兩位小數資料，所以點數以整數呈現，避免假精確。
+function calculateIndexPointChange(value, changePercent) {
+    if (missing(value) || missing(changePercent)) {
+        return null;
+    }
+
+    const indexValue = Number(value);
+    const percent = Number(changePercent);
+    const denominator = 100 + percent;
+
+    if (!Number.isFinite(indexValue) || !Number.isFinite(percent) || denominator === 0) {
+        return null;
+    }
+
+    return indexValue * percent / denominator;
+}
+
+function toSignedIndexPointText(value) {
+    return missing(value) ? '—' : `${value > 0 ? '+' : ''}${toFixedText(value, 0)}`;
+}
 
 const toHeatScoreText = score => (missing(score) ? '—' : String(Math.round(Number(score))));
 
@@ -1123,7 +1147,9 @@ function applyStoredSettings() {
 
     // 族群的期間清單是 topics.json 決定的，這時候還沒讀進來，
     // 所以只驗「是不是排行榜有的期間」，真正對不上會在 prepareTopics 再退回第一個。
-    if (PERIODS.some(period => period.days === stored.topicPeriod)) {
+    if (stored.topicPeriod === INTRADAY_TOPIC_PERIOD && supabase !== null) {
+        state.topicPeriod = INTRADAY_TOPIC_PERIOD;
+    } else if (PERIODS.some(period => period.days === stored.topicPeriod)) {
         state.topicPeriod = stored.topicPeriod;
     }
 
@@ -2936,7 +2962,9 @@ function renderMarketHeat(heat, index) {
     historyTitle.dataset.hint = '只顯示所選日期之前的最近 5 個交易日，不把當天重複放進歷史分數；圓點內同樣只顯示四捨五入後的整數。';
     history.append(historyTitle);
 
-    for (const day of heat.previousDays ?? []) {
+    // 計算與匯出仍保存舊到新的時間序；畫面則由最近交易日往前看，
+    // 才能讓左邊第一顆直接回答「最近一次的熱絡程度」。
+    for (const day of [...(heat.previousDays ?? [])].reverse()) {
         const item = document.createElement('span');
         item.className = 'market-heat-history-item';
         item.dataset.hint = `${day.tradingDate.replaceAll('-', '/')} 的市場熱絡分數：${toHeatScoreText(day.score)}/10。`;
@@ -3025,7 +3053,7 @@ function renderMarketHeat(heat, index) {
 
         const titleRow = document.createElement('div');
         titleRow.className = 'market-heat-index-title';
-        titleRow.dataset.hint = `${label}的所選交易日收盤指數；上層顯示日漲跌幅，下層顯示今年截至該日的漲跌幅。`;
+        titleRow.dataset.hint = `${label}的所選交易日收盤指數；上層顯示日漲跌幅與變動點數，下層顯示今年截至該日的漲跌幅與變動點數。`;
         titleRow.append(label, '示意');
 
         const indexValue = document.createElement('strong');
@@ -3036,10 +3064,18 @@ function renderMarketHeat(heat, index) {
         changes.className = 'market-heat-index-changes';
         const dailyText = document.createElement('span');
         dailyText.className = `market-heat-index-daily ${toTrendClass(daily)}`;
-        dailyText.textContent = `日 ${toSignedPercentText(missing(daily) ? null : Number(daily) / 100, 2)}`;
+        const dailyPoints = calculateIndexPointChange(value, daily);
+        const dailyPointSuffix = missing(dailyPoints)
+            ? ''
+            : `（${toSignedIndexPointText(dailyPoints)}）`;
+        dailyText.textContent = `日 ${toSignedPercentText(missing(daily) ? null : Number(daily) / 100, 2)}${dailyPointSuffix}`;
         const ytdText = document.createElement('span');
         ytdText.className = `market-heat-index-year ${toTrendClass(yearToDate)}`;
-        ytdText.textContent = `今年 ${toSignedPercentText(missing(yearToDate) ? null : Number(yearToDate) / 100, 2)}`;
+        const yearToDatePoints = calculateIndexPointChange(value, yearToDate);
+        const yearToDatePointSuffix = missing(yearToDatePoints)
+            ? ''
+            : `（${toSignedIndexPointText(yearToDatePoints)}）`;
+        ytdText.textContent = `今年 ${toSignedPercentText(missing(yearToDate) ? null : Number(yearToDate) / 100, 2)}${yearToDatePointSuffix}`;
         changes.append(dailyText, ytdText);
 
         card.append(titleRow, indexValue, changes);
@@ -3109,6 +3145,19 @@ function wireRefreshButton() {
             if (state.view === 'intraday') {
                 await loadIntraday(true);
                 status.textContent = current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料';
+                button.disabled = false;
+                return;
+            }
+
+            if (state.view === 'topics'
+                && state.topicTab === 'heat'
+                && state.topicPeriod === INTRADAY_TOPIC_PERIOD) {
+                await loadIntradayTopicHeat();
+                renderSnapshotNote();
+                renderTopicPanel();
+                status.textContent = intradayTopicPeriod
+                    ? `已更新（資料時間 ${toTaipeiText(intradayTopicPeriod.capturedAt)}）`
+                    : '還沒有盤中族群熱度';
                 button.disabled = false;
                 return;
             }
@@ -3497,6 +3546,8 @@ let topicActive = null;
 let topicById = new Map();
 let topicNote = '';
 let topicLoadError = '';
+let intradayTopicPeriod = null;
+let intradayTopicLoadError = '';
 
 // 熱度排行展開中的族群（一次只開一個，開兩個以上在手機上會整頁都是明細）。
 let expandedTopicId = null;
@@ -3637,6 +3688,12 @@ async function loadTopics() {
     }
 
     renderTopicTabs();
+
+    if (state.topicTab === 'heat' && state.topicPeriod === INTRADAY_TOPIC_PERIOD) {
+        await loadIntradayTopicHeat();
+    }
+
+    renderSnapshotNote();
     renderTopicPanel();
 }
 
@@ -3651,7 +3708,10 @@ function prepareTopics() {
 
     topicById = new Map((topicActive?.topics ?? []).map(topic => [topic.id, topic]));
 
-    if (!TOPIC_PERIOD_DAYS().includes(state.topicPeriod)) {
+    if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && supabase === null) {
+        state.topicPeriod = TOPIC_PERIOD_DAYS()[0] ?? state.topicPeriod;
+    } else if (state.topicPeriod !== INTRADAY_TOPIC_PERIOD
+        && !TOPIC_PERIOD_DAYS().includes(state.topicPeriod)) {
         state.topicPeriod = TOPIC_PERIOD_DAYS()[0] ?? state.topicPeriod;
     }
 
@@ -3664,8 +3724,62 @@ function prepareTopics() {
 
 const TOPIC_PERIOD_DAYS = () => (topicData?.periods ?? []).map(period => period.periodDays);
 
-const topicPeriod = () => (topicData?.periods ?? [])
-    .find(period => period.periodDays === state.topicPeriod) ?? null;
+const topicPeriod = () => state.topicPeriod === INTRADAY_TOPIC_PERIOD
+    ? intradayTopicPeriod
+    : (topicData?.periods ?? []).find(period => period.periodDays === state.topicPeriod) ?? null;
+
+async function loadIntradayTopicHeat() {
+    if (supabase === null) {
+        intradayTopicPeriod = null;
+        intradayTopicLoadError = '盤中族群熱度需要資料庫連線，這份舊快照沒有提供。';
+        return;
+    }
+
+    try {
+        const response = await fetch(
+            `${supabase.url}/rest/v1/${INTRADAY_TOPIC_HEAT_VIEW}`
+            + '?select=trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows&limit=1',
+            { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+
+        if (!response.ok) {
+            throw new Error(String(response.status));
+        }
+
+        const [latest] = await response.json();
+        lastIntradayLoadedAt = Date.now();
+
+        if (!latest) {
+            intradayTopicPeriod = null;
+            intradayTopicLoadError = '目前還沒有與最新盤中報價同一輪的族群熱度。';
+            return;
+        }
+
+        const rows = Array.isArray(latest.rows)
+            ? latest.rows
+            : typeof latest.rows === 'string'
+                ? JSON.parse(latest.rows)
+                : null;
+
+        if (!Array.isArray(rows)) {
+            throw new TypeError('盤中族群熱度 rows 不是陣列。');
+        }
+
+        intradayTopicPeriod = {
+            hasSufficientData: latest.has_sufficient_data === true,
+            message: latest.message ?? null,
+            period: `盤中 ${String(latest.trade_date).replaceAll('-', '/')} ${toTaipeiText(latest.captured_at)}`,
+            rows,
+            isIntraday: true,
+            capturedAt: latest.captured_at,
+            mappingLabel: latest.mapping_label ?? null
+        };
+        intradayTopicLoadError = '';
+    } catch {
+        intradayTopicLoadError = intradayTopicPeriod === null
+            ? '讀不到盤中族群熱度，請確認收集器與資料表 migration。'
+            : '本次盤中族群熱度更新失敗，暫時保留上一輪與資料時間。';
+    }
+}
 
 function makeTopicNotice(message, isWarning) {
     const notice = document.createElement('section');
@@ -3683,7 +3797,12 @@ function renderTopicTabs() {
 
     renderOptions('topic-tab-options', tabs, state.topicTab, topicTab => {
         expandedTopicId = null;
-        update({ topicTab });
+        update({
+            topicTab,
+            topicPeriod: topicTab === 'heat' || state.topicPeriod !== INTRADAY_TOPIC_PERIOD
+                ? state.topicPeriod
+                : TOPIC_PERIOD_DAYS()[0] ?? 5
+        });
     });
 }
 
@@ -3756,6 +3875,14 @@ function renderTopicHeat(panel) {
 
     panel.append(makeTopicPeriodPanel());
     renderTopicPeriodOptions();
+
+    if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && intradayTopicLoadError !== '') {
+        panel.append(makeTopicNotice(intradayTopicLoadError, true));
+
+        if (period === null) {
+            return;
+        }
+    }
 
     if (period === null) {
         panel.append(makeTopicNotice('這份快照沒有算這個期間的族群熱度。', true));
@@ -4004,7 +4131,7 @@ function makeTopicPeriodPanel() {
     label.className = 'filter-label';
     label.textContent = '觀察期間';
     label.dataset.hint = '族群熱度是把這段期間的個股成交比重新加總。期間換掉，熱門的族群也會跟著換：'
-        + '一天看的是今天誰在動，六十天看的是這一季的資金落在哪裡。';
+        + '「盤中」是最新一輪 MIS 快照，其他期間則是盤後交易日資料。';
 
     const row = document.createElement('div');
     row.className = 'button-row';
@@ -4017,14 +4144,28 @@ function makeTopicPeriodPanel() {
 
 // renderOptions 是靠 id 找容器的，所以按鈕一定要等期間面板接進 DOM 之後才畫。
 function renderTopicPeriodOptions() {
+    const options = [
+        ...(state.topicTab === 'heat'
+            ? [{
+                key: INTRADAY_TOPIC_PERIOD,
+                text: '盤中',
+                disabled: supabase === null,
+                hint: supabase === null
+                    ? '這份快照沒有資料庫連線，無法讀取盤中族群熱度。'
+                    : '使用最新一輪 MIS 盤中報價，和盤中個股排行同樣每 2 分鐘更新。'
+            }]
+            : []),
+        ...PERIODS.filter(period => TOPIC_PERIOD_DAYS().includes(period.days))
+            .map(period => ({ key: period.days, text: period.text, hint: period.hint }))
+    ];
+
     renderOptions(
         'topic-period-options',
-        PERIODS.filter(period => TOPIC_PERIOD_DAYS().includes(period.days))
-            .map(period => ({ key: period.days, text: period.text, hint: period.hint })),
+        options,
         state.topicPeriod,
-        days => {
+        period => {
             expandedTopicId = null;
-            update({ topicPeriod: days });
+            update({ topicPeriod: period });
         });
 }
 
@@ -4043,7 +4184,10 @@ function makeTopicHeatSummary(period) {
             ? `資金 ${toPercentText(sample.fundWeight, 0)}、廣度 ${toPercentText(sample.breadthWeight, 0)}、`
                 + `新聞 ${toPercentText(sample.newsWeight, 0)}`
             : '—'],
-        ['分類版本', topicActive.label]
+        ['分類版本', period.mappingLabel ?? topicActive.label],
+        ...(period.isIntraday && period.capturedAt
+            ? [['資料時間', toTaipeiText(period.capturedAt)]]
+            : [])
     ];
 
     for (const [label, value] of items) {
@@ -4075,9 +4219,12 @@ function makeTopicHeatFooter(period) {
             + '不是絕對的滿分。這個作法還沒拍板。',
         '族群廣度用的是文件裡的候選公式（排行參與率 50%、上漲家數比 30%、資金分散度 20%，'
             + '再依有量檔數打折），同樣還沒拍板。',
-        `熱度算在 ${topicData.baseDate}，期間為 ${period.period ?? '—'}。`
-            + '族群分類只有「現在這一份」，拿今天的名單回頭套三個月前的行情會算出一段從來沒發生過的歷史，'
-            + '所以熱度只做最新一天。'
+        period.isIntraday
+            ? `盤中熱度取自 ${toTaipeiText(period.capturedAt)} 的最新一輪 MIS 快照；`
+                + '它與盤中個股排行使用同一輪累計成交值與即時漲跌，沒有混入盤後資料。'
+            : `熱度算在 ${topicData.baseDate}，期間為 ${period.period ?? '—'}。`
+                + '族群分類只有「現在這一份」，拿今天的名單回頭套三個月前的行情會算出一段從來沒發生過的歷史，'
+                + '所以熱度只做最新一天。'
     ];
 
     for (const line of lines) {
@@ -4693,7 +4840,11 @@ function renderSnapshotNote() {
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
 
     if (state.view === 'topics') {
-        el('snapshot-note').textContent = topicNote || snapshotNote;
+        el('snapshot-note').textContent = state.topicTab === 'heat'
+            && state.topicPeriod === INTRADAY_TOPIC_PERIOD
+            ? `盤中族群熱度直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。`
+                + collector
+            : topicNote || snapshotNote;
         return;
     }
 
@@ -4731,11 +4882,28 @@ function intradayAgeText() {
 }
 
 function refreshIntradayIfDue() {
-    if (state.view !== 'intraday' || document.hidden || !intradayIsStale()) {
+    const isIntradayView = state.view === 'intraday';
+    const isIntradayTopic = state.view === 'topics'
+        && state.topicTab === 'heat'
+        && state.topicPeriod === INTRADAY_TOPIC_PERIOD;
+
+    if ((!isIntradayView && !isIntradayTopic) || document.hidden || !intradayIsStale()) {
         return;
     }
 
-    loadIntraday(true);
+    if (isIntradayView) {
+        void loadIntraday(true);
+        return;
+    }
+
+    void loadIntradayTopicHeat().then(() => {
+        if (state.view === 'topics'
+            && state.topicTab === 'heat'
+            && state.topicPeriod === INTRADAY_TOPIC_PERIOD) {
+            renderSnapshotNote();
+            renderTopicPanel();
+        }
+    });
 }
 
 function startIntradayTimer() {

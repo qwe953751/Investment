@@ -108,6 +108,7 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         return new IntradaySaveResult
         {
             Written = true,
+            RunId = runId,
             QuoteCount = written,
             Total = total,
             PreviousTotal = previousTotal
@@ -527,6 +528,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 public sealed record IntradaySaveResult
 {
     public required bool Written { get; init; }
+
+    /// <summary>成功寫入時這一輪在 <c>intraday_runs</c> 的識別碼；被拒絕時為 null。</summary>
+    public long? RunId { get; init; }
 
     public required int QuoteCount { get; init; }
 

@@ -43,6 +43,15 @@ jobs:
       - name: 取出原始碼
         uses: actions/checkout@v4
 
+      # 廣度要比較個股前收、量能要比較最近 20 個交易日；兩者都在 data/imports。
+      # 少了這份快取時，收集器仍能寫入即時指數，卻只能得到短期趨勢分數。
+      - name: 取出盤後歷史快取
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+          fetch-depth: 1
+
       # 只是先看一眼這台 runner 通不通，方便事後看日誌時對照。
       # 連不上也照跑：開盤前兩小時的一次連線失敗不能代表整天，
       # 收集器本來就會每 2 分鐘重試到 13:35，真的整場都沒收到才會紅。

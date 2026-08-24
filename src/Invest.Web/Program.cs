@@ -1,6 +1,8 @@
 using Invest.Web.Components;
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.Revenue;
+using Invest.Web.Features.StockTopics.Models;
+using Invest.Web.Features.StockTopics.Services;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.Database;
@@ -73,6 +75,7 @@ builder.Services.AddSingleton<TurnoverAuditStore>();
 builder.Services.AddSingleton<DailyQuoteStore>();
 builder.Services.AddSingleton<IntradayQuoteStore>();
 builder.Services.AddSingleton<IntradayCurveStore>();
+builder.Services.AddSingleton<IntradayTopicHeatStore>();
 builder.Services.AddSingleton<MarketFlagStore>();
 builder.Services.AddSingleton<RevenueStore>();
 builder.Services.AddSingleton<DailyQuoteSyncStore>();
@@ -242,6 +245,8 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var rankingService = scope.ServiceProvider.GetRequiredService<TradingValueRankingQueryService>();
     var marketFlagClient = scope.ServiceProvider.GetRequiredService<MarketFlagClient>();
     var marketFlagStore = scope.ServiceProvider.GetRequiredService<MarketFlagStore>();
+    var topicClient = scope.ServiceProvider.GetRequiredService<GoogleSheetTopicClient>();
+    var topicHeatStore = scope.ServiceProvider.GetRequiredService<IntradayTopicHeatStore>();
 
     using var cts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, eventArgs) =>
@@ -264,6 +269,11 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
+
+    // 同一個交易時段分類不會隨兩分鐘快照變動；成功讀到後固定重用，避免 Google Sheet
+    // 一時連不上就讓收集器每輪都多打一個外部來源。若一開始失敗，每 15 分鐘才重試一次。
+    TopicMapping? topicMapping = null;
+    var nextTopicCatalogLoadAt = DateTimeOffset.MinValue;
 
     try
     {
@@ -347,6 +357,41 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
                     if (result.Written)
                     {
+                        if (topicMapping is null && capturedAt >= nextTopicCatalogLoadAt)
+                        {
+                            try
+                            {
+                                topicMapping = (await topicClient.GetCatalogAsync(cts.Token)).Active;
+
+                                if (topicMapping is null)
+                                {
+                                    nextTopicCatalogLoadAt = capturedAt.AddMinutes(15);
+                                    Console.WriteLine(
+                                        $"{localTime:HH:mm:ss} 讀不到可用族群分類，15 分鐘後再試；"
+                                        + "本輪原始盤中資料已保留。");
+                                }
+                            }
+                            catch (Exception exception)
+                                when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                            {
+                                nextTopicCatalogLoadAt = capturedAt.AddMinutes(15);
+                                Console.WriteLine(
+                                    $"{localTime:HH:mm:ss} 讀取族群分類失敗，15 分鐘後再試：{exception.Message}");
+                            }
+                        }
+
+                        if (topicMapping is not null && result.RunId is { } runId)
+                        {
+                            var topicHeat = IntradayTopicHeatCalculator.Calculate(topicMapping, snapshot);
+                            await topicHeatStore.SaveAsync(
+                                runId,
+                                snapshot.TradeDate,
+                                capturedAt,
+                                topicMapping,
+                                topicHeat,
+                                cts.Token);
+                        }
+
                         writtenRounds++;
 
                         Console.WriteLine(

@@ -46,6 +46,24 @@ public static class MarketIndexPerformanceCalculator
             MidpointRounding.AwayFromZero);
     }
 
+    /// <summary>
+    /// 由目前指數與百分比漲跌反推指數點數。
+    /// <paramref name="changePercent"/> 是百分比數字，例如 -0.20 代表 -0.20%，
+    /// 不是 C# 的比例小數。百分比已四捨五入時，點數也只顯示整數，避免假精確。
+    /// </summary>
+    public static decimal? PointChange(decimal? currentValue, decimal? changePercent)
+    {
+        if (currentValue is not { } value
+            || changePercent is not { } percent
+            || value <= 0m
+            || 100m + percent == 0m)
+        {
+            return null;
+        }
+
+        return value * percent / (100m + percent);
+    }
+
     /// <param name="notBefore">
     /// 往回找的下限。年初基準用得到，收盤值不需要（<paramref name="throughDate"/> 本來就是最新那天）。
     /// </param>

@@ -39,6 +39,22 @@ public static class RankingFormatter
             ? value.ToString("P" + decimals.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
             : "—";
 
+    /// <summary>
+    /// 指數漲跌點數。點數由已四捨五入的百分比反推，所以畫面只顯示整數。
+    /// </summary>
+    public static string ToSignedIndexPointText(decimal? points)
+    {
+        if (points is not { } value)
+        {
+            return "—";
+        }
+
+        var rounded = decimal.Round(value, 0, MidpointRounding.AwayFromZero);
+        var text = rounded.ToString("N0", CultureInfo.InvariantCulture);
+
+        return rounded > 0m ? "+" + text : text;
+    }
+
     public static string ToRankChangeText(int? rankChange) => rankChange switch
     {
         null => "—",

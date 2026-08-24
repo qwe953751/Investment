@@ -348,6 +348,44 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 熱絡表的指數日漲跌幅同時顯示點數()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("function calculateIndexPointChange(value, changePercent)", script, StringComparison.Ordinal);
+        Assert.Contains("function toSignedIndexPointText(value)", script, StringComparison.Ordinal);
+        Assert.Contains("calculateIndexPointChange(value, daily)", script, StringComparison.Ordinal);
+        Assert.Contains("`（${toSignedIndexPointText(dailyPoints)}）`", script, StringComparison.Ordinal);
+        Assert.Contains("calculateIndexPointChange(value, yearToDate)", script, StringComparison.Ordinal);
+        Assert.Contains("`（${toSignedIndexPointText(yearToDatePoints)}）`", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 市場熱絡歷史在畫面上由最近交易日往前顯示()
+    {
+        var script = ReadAsset("site.js");
+
+        // C# 與匯出檔仍保存由舊到新的時間序，避免改掉可追溯資料；只有呈現層反轉。
+        Assert.Contains(
+            "for (const day of [...(heat.previousDays ?? [])].reverse())",
+            script,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 族群熱度提供盤中觀察期並使用同一個兩分鐘刷新時鐘()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const INTRADAY_TOPIC_PERIOD = 'intraday'", script, StringComparison.Ordinal);
+        Assert.Contains("const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest'", script, StringComparison.Ordinal);
+        Assert.Contains("text: '盤中'", script, StringComparison.Ordinal);
+        Assert.Contains("async function loadIntradayTopicHeat()", script, StringComparison.Ordinal);
+        Assert.Contains("lastIntradayLoadedAt = Date.now()", script, StringComparison.Ordinal);
+        Assert.Contains("void loadIntradayTopicHeat().then(() =>", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 營收增減儲存格開啟四乘四比例的浮動彈窗()
     {
         var html = ReadAsset("index.html");
