@@ -61,6 +61,9 @@ public sealed class MarketHeatCalculatorTests
         Assert.Equal(0, result.FlatCount);
         Assert.Equal(2, result.ComparedStockCount);
         Assert.Equal(400m, result.MarketTurnover);
+        Assert.Equal(200m, result.PreviousMarketTurnover);
+        Assert.Equal(200m, result.MarketTurnoverChange);
+        Assert.Equal(1m, result.MarketTurnoverChangeRate);
         Assert.Equal(200m, result.AverageMarketTurnover);
         Assert.Equal(2m, result.VolumeRatio);
         Assert.Equal(5m, result.BreadthScore);
@@ -70,5 +73,48 @@ public sealed class MarketHeatCalculatorTests
         Assert.All(
             new[] { result.Score, result.ShortTrendScore, result.BreadthScore, result.VolumeScore },
             score => Assert.True(score is >= 0m and <= 10m));
+    }
+
+    [Fact]
+    public void 盤中估算成交值加總與前一交易日正式成交額比較()
+    {
+        var start = new DateOnly(2026, 1, 5);
+        var dates = Enumerable.Range(0, 2).Select(offset => start.AddDays(offset)).ToArray();
+        var trading = dates
+            .SelectMany((date, index) => new DailyStockTrading[]
+            {
+                new()
+                {
+                    TradingDate = date,
+                    Ticker = "2330",
+                    ClosePrice = 10m,
+                    TradingValue = index == 0 ? 100m : 200m
+                },
+                new()
+                {
+                    TradingDate = date,
+                    Ticker = "1101",
+                    ClosePrice = 10m,
+                    TradingValue = index == 0 ? 100m : 200m
+                }
+            })
+            .ToArray();
+        var indices = dates.Select(date => new DailyMarketIndex
+        {
+            TradingDate = date,
+            Quotes =
+            [
+                new MarketIndexQuote { Market = Market.Twse, Value = 100m },
+                new MarketIndexQuote { Market = Market.Tpex, Value = 200m }
+            ]
+        }).ToArray();
+
+        var result = MarketHeatCalculator.Calculate(trading, indices, dates[^1]);
+
+        Assert.NotNull(result);
+        Assert.Equal(400m, result.MarketTurnover);
+        Assert.Equal(200m, result.PreviousMarketTurnover);
+        Assert.Equal(200m, result.MarketTurnoverChange);
+        Assert.Equal(1m, result.MarketTurnoverChangeRate);
     }
 }

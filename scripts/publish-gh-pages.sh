@@ -39,6 +39,12 @@ cp -R "$site/." "$work/"
 # 不讓 GitHub Pages 拿 Jekyll 處理這份產出，否則底線開頭的檔名會被吃掉。
 touch "$work/.nojekyll"
 
+# GitHub Pages 的 branch 發布會把 CNAME 放在來源分支；本腳本每次產生 orphan
+# 快照，若不在這裡重建就會把已驗證的自訂網域洗掉。未設定時保持原有網址行為。
+if [ -n "${GH_PAGES_CNAME:-}" ]; then
+    printf '%s\n' "$GH_PAGES_CNAME" > "$work/CNAME"
+fi
+
 cd "$work"
 git init -q -b gh-pages
 git add -A

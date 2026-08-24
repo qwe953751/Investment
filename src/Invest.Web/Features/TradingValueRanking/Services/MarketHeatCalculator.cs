@@ -122,6 +122,16 @@ public static class MarketHeatCalculator
                 .Sum(row => row.TradingValue))
             .Where(value => value > 0m)
             .ToArray();
+        var previousMarketTurnover = priorTurnovers.LastOrDefault();
+        decimal? previousTurnover = previousMarketTurnover > 0m
+            ? previousMarketTurnover
+            : null;
+        decimal? turnoverChange = previousTurnover is { } previous
+            ? currentTurnover - previous
+            : null;
+        decimal? turnoverChangeRate = previousTurnover is { } baseline && baseline > 0m
+            ? turnoverChange / baseline
+            : null;
         decimal? averageTurnover = priorTurnovers.Length == 0
             ? null
             : priorTurnovers.Average();
@@ -159,6 +169,9 @@ public static class MarketHeatCalculator
             FlatCount = flat,
             ComparedStockCount = compared,
             MarketTurnover = currentTurnover,
+            PreviousMarketTurnover = previousTurnover,
+            MarketTurnoverChange = turnoverChange,
+            MarketTurnoverChangeRate = turnoverChangeRate,
             AverageMarketTurnover = averageTurnover,
             VolumeRatio = volumeRatio
         };

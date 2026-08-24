@@ -209,6 +209,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                 market_heat_flat_count = @marketHeatFlatCount,
                 market_heat_compared_stock_count = @marketHeatComparedStockCount,
                 market_heat_turnover = @marketHeatTurnover,
+                market_heat_previous_turnover = @marketHeatPreviousTurnover,
+                market_heat_turnover_change = @marketHeatTurnoverChange,
+                market_heat_turnover_change_rate = @marketHeatTurnoverChangeRate,
                 market_heat_average_turnover = @marketHeatAverageTurnover,
                 market_heat_volume_ratio = @marketHeatVolumeRatio
             where id = @runId
@@ -226,6 +229,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         AddNullableInt(command, "marketHeatFlatCount", heat.FlatCount);
         AddNullableInt(command, "marketHeatComparedStockCount", heat.ComparedStockCount);
         AddNullableDecimal(command, "marketHeatTurnover", heat.MarketTurnover);
+        AddNullableDecimal(command, "marketHeatPreviousTurnover", heat.PreviousMarketTurnover);
+        AddNullableDecimal(command, "marketHeatTurnoverChange", heat.MarketTurnoverChange);
+        AddNullableDecimal(command, "marketHeatTurnoverChangeRate", heat.MarketTurnoverChangeRate);
         AddNullableDecimal(command, "marketHeatAverageTurnover", heat.AverageMarketTurnover);
         AddNullableDecimal(command, "marketHeatVolumeRatio", heat.VolumeRatio);
         command.Parameters.AddWithValue("runId", runId);
@@ -294,7 +300,8 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                 market_heat_volume_score, market_heat_index_daily_change_percent,
                 market_heat_index_weekly_change_percent, market_heat_up_count,
                 market_heat_down_count, market_heat_flat_count, market_heat_compared_stock_count,
-                market_heat_turnover, market_heat_average_turnover, market_heat_volume_ratio)
+                market_heat_turnover, market_heat_previous_turnover, market_heat_turnover_change,
+                market_heat_turnover_change_rate, market_heat_average_turnover, market_heat_volume_ratio)
             values (
                 @tradeDate, @capturedAt, @source, @quoteCount,
                 @twseIndex, @twseChangePercent, @twseYearToDateChangePercent,
@@ -303,7 +310,8 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                 @marketHeatVolumeScore, @marketHeatIndexDailyChangePercent,
                 @marketHeatIndexWeeklyChangePercent, @marketHeatUpCount,
                 @marketHeatDownCount, @marketHeatFlatCount, @marketHeatComparedStockCount,
-                @marketHeatTurnover, @marketHeatAverageTurnover, @marketHeatVolumeRatio)
+                @marketHeatTurnover, @marketHeatPreviousTurnover, @marketHeatTurnoverChange,
+                @marketHeatTurnoverChangeRate, @marketHeatAverageTurnover, @marketHeatVolumeRatio)
             on conflict (trade_date, captured_at, source)
                 do update set quote_count = excluded.quote_count,
                               twse_index = excluded.twse_index,
@@ -323,6 +331,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                               market_heat_flat_count = excluded.market_heat_flat_count,
                               market_heat_compared_stock_count = excluded.market_heat_compared_stock_count,
                               market_heat_turnover = excluded.market_heat_turnover,
+                              market_heat_previous_turnover = excluded.market_heat_previous_turnover,
+                              market_heat_turnover_change = excluded.market_heat_turnover_change,
+                              market_heat_turnover_change_rate = excluded.market_heat_turnover_change_rate,
                               market_heat_average_turnover = excluded.market_heat_average_turnover,
                               market_heat_volume_ratio = excluded.market_heat_volume_ratio
             returning id
@@ -356,6 +367,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         AddNullableInt(command, "marketHeatFlatCount", heat?.FlatCount);
         AddNullableInt(command, "marketHeatComparedStockCount", heat?.ComparedStockCount);
         AddNullableDecimal(command, "marketHeatTurnover", heat?.MarketTurnover);
+        AddNullableDecimal(command, "marketHeatPreviousTurnover", heat?.PreviousMarketTurnover);
+        AddNullableDecimal(command, "marketHeatTurnoverChange", heat?.MarketTurnoverChange);
+        AddNullableDecimal(command, "marketHeatTurnoverChangeRate", heat?.MarketTurnoverChangeRate);
         AddNullableDecimal(command, "marketHeatAverageTurnover", heat?.AverageMarketTurnover);
         AddNullableDecimal(command, "marketHeatVolumeRatio", heat?.VolumeRatio);
 
@@ -544,4 +558,6 @@ public sealed record IntradaySaveResult
 /// <summary>
 /// 資料庫裡最新一輪的原始盤中快照與其 run id。
 /// </summary>
-public sealed record StoredIntradaySnapshot(long RunId, IntradaySnapshot Snapshot);
+public sealed record StoredIntradaySnapshot(
+    long RunId,
+    IntradaySnapshot Snapshot);

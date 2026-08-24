@@ -61,6 +61,108 @@
 - 進行 branch 切換、merge、rebase、reset、commit 或 push 前，先確認工作區狀態與使用者授權。
 - 不使用破壞性 Git 指令覆蓋使用者未確認的工作。
 
+### 已驗證的網站更新／發佈流程
+
+以下是已實際成功跑通的流程。執行位置一律是 repo 根目錄；網站要發布的程式碼與 workflow 必須先推到 `main`，否則 Actions 會用舊的 commit 產生網站。
+
+#### 1. 先判斷要跑哪一種流程
+
+| 情境 | Actions 參數 | 行為 |
+|---|---|---|
+| 只有程式碼／畫面／文件要更新，或收盤行情尚未公布 | `publish-only=true` | 使用 `data` branch 既有快取，跑測試、export、發布；不回補今日行情、不寫入 `data`、不同步 Supabase、不做備份／心跳 |
+| 要更新今天的行情、資料庫與網站 | `publish-only=false`（預設） | 完整執行「回補 → 保存 `data` → 同步／對帳 Supabase → 備份 → export → 發布」；收盤行情尚未公布時不要手動啟動 |
+
+不要在收盤前為了發布畫面而跑完整流程。完整流程會等今天的 `data/imports/YYYY-MM-DD.json`，最晚重試到台北時間 21:00；只改程式碼時直接用 `publish-only=true`。
+
+#### 2. 推送 `main` 前的固定檢查
+
+PowerShell 在 repo 根目錄執行：
+
+```powershell
+git status --short --branch
+git log -1 --oneline
+git diff --check
+
+# 這個專案只能用 .NET 10；若 PATH 仍指到 .NET 8/9，改用已安裝的 .NET 10 完整路徑。
+$dotnet10 = 'C:\Users\frank_chiang\AppData\Local\Microsoft\dotnet\dotnet.exe'
+& $dotnet10 --version
+& $dotnet10 test 'tests\Invest.Web.Tests\Invest.Web.Tests.csproj' -c Release --no-restore --logger 'console;verbosity=minimal'
+```
+
+確認測試通過、沒有未預期的檔案後，才在使用者已授權的前提下執行：
+
+```powershell
+git add -A
+git diff --cached --check
+git diff --cached --stat
+git diff --cached --name-only
+git commit -m "描述這次修改"
+git push origin main
+```
+
+推送前若發現 `.git` 權限錯誤，先修正目前使用者對 repo `.git` 的寫入權限，再重試原指令；不要刪除不確定來源的 `index.lock`，也不要用 `reset --hard` 覆蓋工作內容。
+
+#### 3. 觸發網站發布
+
+程式碼已在 `main` 後，使用 GitHub CLI 觸發既有 workflow；不手動改 `gh-pages`：
+
+```powershell
+# 只發布目前 main 的程式碼／畫面，使用 data branch 現有快取（最常用）
+gh workflow run daily-snapshot.yml --ref main -f trading-days=300 -f publish-only=true
+
+# 收盤後確定要完整更新今日資料時才使用
+gh workflow run daily-snapshot.yml --ref main -f trading-days=300
+```
+
+指令會回傳 workflow run URL；取出其中的 run ID 後監看：
+
+```powershell
+gh run watch <RUN_ID> --exit-status --interval 10
+gh run view <RUN_ID> --json status,conclusion,headSha,url,jobs
+```
+
+成功條件是 `conclusion` 為 `success`，且 `headSha` 是剛推到 `main` 的 commit。`publish-only=true` 的成功 run 應看到測試、輸出靜態網站、發布 Pages 成功；回補行情、同步／對帳、備份、心跳與警報步驟應為 skipped，這是預期行為，不是漏跑。
+
+#### 4. 發布後固定驗證
+
+先驗證遠端分支，再驗證公開檔案；不要只看到 Actions 綠燈就宣稱網站已更新：
+
+```powershell
+git ls-remote origin main gh-pages
+
+$manifest = gh api 'repos/qwe953751/Investment/contents/manifest.json?ref=gh-pages' | ConvertFrom-Json
+$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($manifest.content -replace '\s','')))
+$data = $json | ConvertFrom-Json
+$data.version
+$data.latestTradingDate
+$data.generatedAt
+
+$response = Invoke-WebRequest -UseBasicParsing 'https://qwe953751.github.io/Investment/manifest.json?verify=YYYYMMDD'
+$online = $response.Content | ConvertFrom-Json
+$response.StatusCode
+$online.version
+$online.latestTradingDate
+```
+
+再檢查線上 `site.js` 確實包含這次功能的字串（例如指數今年漲跌點數與盤中族群熱絡資料）：
+
+```powershell
+$response = Invoke-WebRequest -UseBasicParsing 'https://qwe953751.github.io/Investment/site.js?verify=YYYYMMDD'
+$response.StatusCode
+$response.Content -like '*yearToDatePointSuffix*'
+$response.Content -like '*intraday_topic_heat_latest*'
+```
+
+`gh-pages` API 已有新版本但公開 URL 暫時仍是舊版時，先視為 CDN 快取延遲，等待後重試；以 `gh-pages` 的 `manifest.json` 版本與公開 URL 最終同版為完成條件。不要用舊的本機 `publish/site` 直接覆蓋網站；export 路徑錯誤或本機快取過期時，指令仍可能成功但發布錯快照。
+
+#### 5. 失敗時的固定判斷順序
+
+1. 先用 `gh run view <RUN_ID> --json jobs` 找第一個失敗步驟，不要直接重跑整輪。
+2. 若是發布步驟失敗，檢查 `publish/site` 是否由本次 export 產生、以及 `scripts/publish-gh-pages.sh` 的輸出；不要手改 `gh-pages`。
+3. 若是完整流程的回補失敗，先判斷是否尚未到收盤資料公布時間、官方 API 被擋或確實是休市日；只改畫面時改用 `publish-only=true`。
+4. 若是 `心跳與狀態` 因 `db/013_intraday_topic_heat.sql` 未套用而失敗，確認 workflow 已包含 `publish-only != true` 的跳過條件，再用目前 `main` 重新觸發 publish-only；publish-only 不會偷偷套 migration。
+5. `db/013_intraday_topic_heat.sql` 必須在明確授權後，以獨立的資料庫 migration 流程套用；不可為了讓網站發布成功把 DDL 混進一般發布流程，也不可用假資料補結果。
+
 ## 驗證與除錯
 
 - 優先先重現問題，再用最小範圍修改。

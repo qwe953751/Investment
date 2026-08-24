@@ -1051,11 +1051,34 @@ body {
     font-size: 13px;
 }
 
-.market-heat-meta strong {
+.market-heat-meta-value {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    align-items: flex-end;
+}
+
+.market-heat-meta-value strong {
     color: #344054;
     font-size: 14px;
     font-variant-numeric: tabular-nums;
     text-align: right;
+}
+
+.market-heat-meta-detail {
+    margin-top: 2px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+    white-space: nowrap;
+}
+
+.market-heat-meta-detail.positive {
+    color: #b42318;
+}
+
+.market-heat-meta-detail.negative {
+    color: #067647;
 }
 
 .notice {
@@ -1086,7 +1109,7 @@ body {
 }
 
 .ranking-table.custom-table {
-    min-width: 720px;
+    min-width: 820px;
 }
 
 .pagination {
@@ -1794,7 +1817,7 @@ body {
     }
 
     .ranking-table.custom-table {
-        min-width: 680px;
+        min-width: 780px;
     }
 
     .ranking-table th,

@@ -141,7 +141,10 @@
                         <div><span>交易日</span><strong>@heat.TradingDate.ToString("yyyy/MM/dd")</strong></div>
                         <div><span>資料時間</span><strong>盤後資料</strong></div>
                         <div><span>時段進度</span><strong>已收盤</strong></div>
-                        <div><span>全市場成交額</span><strong>@HeatTurnoverText(heat.MarketTurnover) 億元</strong></div>
+                        <div>
+                            <span data-hint="全市場成交額是上市與上櫃一般交易的正式合計；盤後不與前一交易日比較。">全市場成交額</span>
+                            <strong>@HeatTurnoverText(heat.MarketTurnover) 億元</strong>
+                        </div>
                     </div>
                 </section>
             }

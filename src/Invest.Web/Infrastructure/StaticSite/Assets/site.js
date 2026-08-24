@@ -17,7 +17,7 @@ const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.locatio
 const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
 const ACCESS_PATH = window.location.pathname.split('/').filter(Boolean).at(-1);
 const SITE_HOST = window.location.hostname.toLowerCase();
-const ADMIN_HOST = 'app.frank-investment.com';
+const ADMIN_HOST = 'app.admin.frank-investment.com';
 const VIEWER_HOST = 'view.frank-investment.com';
 const DEPLOYED_ACCESS = SITE_HOST === VIEWER_HOST
     ? 'viewer'
@@ -146,6 +146,9 @@ const toFixedText = (value, decimals) => (Number(value.toFixed(decimals)) || 0)
 
 // 元轉億元。台股慣用單位，直接看元的位數太多。
 const toBillionText = value => toFixedText(value / 100_000_000, 2);
+const toSignedBillionText = value => (missing(value)
+    ? '—'
+    : `${Number(value) > 0 ? '+' : ''}${toBillionText(Number(value))}`);
 const toMoneyText = value => (missing(value) ? '—' : `${toFixedText(Number(value), 0)} 元`);
 const toSignedMoneyText = value => (missing(value)
     ? '—'
@@ -699,12 +702,25 @@ const CUSTOM_COLUMNS = [
     { key: 'close', title: '收盤價', hint: '所選交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
+    { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) },
     { key: 'value', title: '成交值（億）', hint: '所選單一交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) }
 ];
 
-const columns = () => state.view === 'intraday'
+const columnsForView = view => view === 'intraday'
     ? INTRADAY_COLUMNS
-    : state.view === 'custom' ? CUSTOM_COLUMNS : COLUMNS;
+    : view === 'custom' ? CUSTOM_COLUMNS : COLUMNS;
+
+const columns = () => columnsForView(state.view);
+
+const VIEW_PREFERENCE_VIEWS = ['daily', 'intraday', 'custom'];
+
+function defaultViewPreferences() {
+    return {
+        daily: { period: DEFAULT_PERIOD.daily, sortKey: 'rank', sortDescending: false },
+        intraday: { period: DEFAULT_PERIOD.intraday, sortKey: 'rank', sortDescending: false },
+        custom: { sortKey: 'ticker', sortDescending: false }
+    };
+}
 
 const state = {
     view: 'daily',
@@ -735,17 +751,106 @@ const state = {
     topicSortDescending: true,
 
     sortKey: 'rank',
-    sortDescending: false
+    sortDescending: false,
+
+    // 每個主頁籤各記自己的期間與排序。盤中 5 日、盤後前一交易日是不同問題，
+    // 不能在切換時硬套預設，也不能讓自訂頁的股票代號排序污染排行榜。
+    viewPreferences: defaultViewPreferences()
 };
 
 const thresholdStateKey = () => (state.view === 'custom' ? 'customThreshold' : 'threshold');
 const activeThreshold = () => state[thresholdStateKey()];
+
+function isValidSortKey(view, key) {
+    return columnsForView(view).some(column =>
+        column.key === key && column.fixed !== true && column.sortable !== false);
+}
+
+function rememberViewPreferences(view = state.view) {
+    if (!VIEW_PREFERENCE_VIEWS.includes(view)) {
+        return;
+    }
+
+    const preference = state.viewPreferences[view] ?? {};
+
+    if (view === 'custom') {
+        preference.sortKey = state.customSortKey;
+        preference.sortDescending = state.customSortDescending;
+    } else {
+        preference.period = state.period;
+        preference.sortKey = state.sortKey;
+        preference.sortDescending = state.sortDescending;
+    }
+
+    state.viewPreferences[view] = preference;
+}
+
+function restoreViewPreferences(view, changes) {
+    if (!VIEW_PREFERENCE_VIEWS.includes(view)) {
+        return;
+    }
+
+    const defaults = defaultViewPreferences()[view];
+    const preference = state.viewPreferences[view] ?? defaults;
+    const sortKey = isValidSortKey(view, preference.sortKey)
+        ? preference.sortKey
+        : defaults.sortKey;
+    const sortDescending = preference.sortDescending === true;
+
+    if (view !== 'custom' && changes.period === undefined) {
+        changes.period = PERIODS.some(period => period.days === preference.period)
+            ? preference.period
+            : defaults.period;
+    }
+
+    if (changes.sortKey === undefined) {
+        changes.sortKey = sortKey;
+    }
+
+    if (changes.sortDescending === undefined) {
+        changes.sortDescending = sortDescending;
+    }
+
+    if (view === 'custom') {
+        changes.customSortKey = sortKey;
+        changes.customSortDescending = sortDescending;
+    }
+}
+
+function restoreStoredViewPreferences(preferences) {
+    if (preferences === null || typeof preferences !== 'object') {
+        return;
+    }
+
+    for (const view of VIEW_PREFERENCE_VIEWS) {
+        const stored = preferences[view];
+
+        if (stored === null || typeof stored !== 'object') {
+            continue;
+        }
+
+        const defaults = defaultViewPreferences()[view];
+        const preference = state.viewPreferences[view];
+
+        if (view !== 'custom' && PERIODS.some(period => period.days === stored.period)) {
+            preference.period = stored.period;
+        }
+
+        preference.sortKey = isValidSortKey(view, stored.sortKey)
+            ? stored.sortKey
+            : defaults.sortKey;
+        preference.sortDescending = stored.sortDescending === true;
+    }
+}
 
 // 同一個組合切回來時不重打一次 fetch。
 const cache = new Map();
 let current = null;
 const klineData = new Map();
 const klinePromises = new Map();
+const topicIntradayKLines = new Map();
+const topicIntradayKLinePromises = new Map();
+let topicIntradayKLineCapturedAt = '';
 let klineError = '';
 let expandedTicker = null;
 let expandedKLineName = '';
@@ -1210,6 +1315,17 @@ function applyStoredSettings() {
     } else if (columns().some(column => column.key === stored.sortKey && column.fixed !== true && column.sortable !== false)) {
         state.sortKey = stored.sortKey;
         state.sortDescending = stored.sortDescending === true;
+    }
+
+    // 舊版只存目前所在頁的排序／期間；新版另存三個頁籤各自的最後設定。
+    // 先走舊欄位可相容舊使用者，再讓新版的 active view 偏好覆蓋它。
+    if (stored.viewPreferences && typeof stored.viewPreferences === 'object') {
+        restoreStoredViewPreferences(stored.viewPreferences);
+        const restored = {};
+        restoreViewPreferences(state.view, restored);
+        Object.assign(state, restored);
+    } else {
+        rememberViewPreferences();
     }
 }
 
@@ -1789,8 +1905,71 @@ async function loadKLineData(ticker) {
     }
 }
 
+function topicUsesIntradayData() {
+    return state.view === 'topics'
+        && state.topicPeriod === INTRADAY_TOPIC_PERIOD
+        && (state.topicTab === 'heat' || state.topicTab === 'tree');
+}
+
+async function loadTopicIntradayKLine(ticker) {
+    if (!topicUsesIntradayData() || supabase === null || intradayTopicPeriod?.capturedAt === undefined) {
+        return;
+    }
+
+    const capturedAt = String(intradayTopicPeriod.capturedAt);
+
+    if (topicIntradayKLineCapturedAt !== capturedAt) {
+        topicIntradayKLineCapturedAt = capturedAt;
+        topicIntradayKLines.clear();
+        topicIntradayKLinePromises.clear();
+    }
+
+    if (topicIntradayKLines.has(ticker)) {
+        return;
+    }
+
+    if (!topicIntradayKLinePromises.has(ticker)) {
+        topicIntradayKLinePromises.set(ticker, (async () => {
+            const rows = await fetchAllRows(
+                'intraday_latest',
+                'symbol,trade_date,open_price,high_price,low_price,price',
+                `&symbol=eq.${encodeURIComponent(ticker)}`);
+            const row = rows[0];
+            const values = [row?.open_price, row?.high_price, row?.low_price, row?.price].map(Number);
+
+            if (!row?.trade_date || !values.every(Number.isFinite)) {
+                return;
+            }
+
+            topicIntradayKLines.set(ticker, {
+                date: String(row.trade_date),
+                open: values[0],
+                high: values[1],
+                low: values[2],
+                close: values[3]
+            });
+        })());
+    }
+
+    try {
+        await topicIntradayKLinePromises.get(ticker);
+    } finally {
+        topicIntradayKLinePromises.delete(ticker);
+    }
+}
+
 function klineEndDate() {
-    return state.view === 'intraday' ? current?.tradeDate : state.date;
+    if (state.view === 'intraday') {
+        return current?.tradeDate;
+    }
+
+    if (state.view === 'topics') {
+        return topicUsesIntradayData()
+            ? intradayTopicPeriod?.tradeDate ?? topicData?.baseDate
+            : topicData?.baseDate ?? state.date;
+    }
+
+    return state.date;
 }
 
 function klineStartDate(endDate) {
@@ -1810,13 +1989,17 @@ function selectedKLineBars(ticker) {
     const bars = (klineData.get(ticker)?.bars ?? [])
         .filter(bar => bar.date >= startDate && bar.date <= endDate);
 
-    if (state.view !== 'intraday') {
+    // 盤中把 MIS 的當日開高低與最新現價接到歷史日 K 尾端；排行榜與族群列表
+    // 都讀各自正在呈現的同一輪盤中資料，不能拿前一次切換頁籤的排名資料湊。
+    const liveBar = state.view === 'intraday'
+        ? current?.rows.find(row => row.ticker === ticker)?.liveKLine
+        : topicUsesIntradayData()
+            ? topicIntradayKLines.get(ticker)
+            : null;
+
+    if (liveBar === null || liveBar === undefined) {
         return bars;
     }
-
-    // 盤中把 MIS 的當日開高低與最新現價接到歷史日 K 尾端；
-    // 每次 loadIntraday 重畫表格時，這一根也會跟著同一輪更新。
-    const liveBar = current?.rows.find(row => row.ticker === ticker)?.liveKLine;
 
     if (!liveBar
         || liveBar.open === null
@@ -2148,17 +2331,18 @@ function refreshKLinePopover() {
         return;
     }
 
-    const row = current?.rows.find(candidate => candidate.ticker === expandedTicker);
     const anchor = [...document.querySelectorAll('.stock-name-button[data-ticker]')]
         .find(button => button.dataset.ticker === expandedTicker);
+    const row = current?.rows.find(candidate => candidate.ticker === expandedTicker);
+    const name = row?.name ?? nameByTicker.get(expandedTicker) ?? expandedKLineName;
 
-    if (!row || !anchor) {
+    if (!name || !anchor) {
         closeKLine(false);
         return;
     }
 
     klineAnchor = anchor;
-    renderKLinePopover(row.ticker, row.name, anchor);
+    renderKLinePopover(expandedTicker, name, anchor);
     setKLineButtonStates();
 }
 
@@ -2176,14 +2360,20 @@ async function toggleKLine(ticker, name, anchor) {
     setKLineButtonStates();
     renderKLinePopover(ticker, name, anchor);
 
-    if (klineData.has(ticker)) {
-        return;
-    }
-
     try {
         await loadKLineData(ticker);
     } catch {
         klineError = '讀不到日 K 資料';
+    }
+
+    // 族群列表選「盤中」時，K 線的尾端也接最新 MIS 當日棒；抓不到時保留已驗證的
+    // 三個月盤後日 K，而不是把整張圖判成失敗。
+    if (topicUsesIntradayData()) {
+        try {
+            await loadTopicIntradayKLine(ticker);
+        } catch {
+            // 盤中輔助棒讀取失敗不影響既有還原日 K。
+        }
     }
 
     if (expandedTicker === ticker) {
@@ -2653,6 +2843,7 @@ function renderTable() {
                 state.customSortDescending = state.sortDescending;
             }
 
+            rememberViewPreferences();
             writeSettings();
             renderTable();
         });
@@ -3087,20 +3278,55 @@ function renderMarketHeat(heat, index) {
 
     const meta = document.createElement('div');
     meta.className = 'market-heat-meta';
-    const addMeta = (label, value) => {
+    const addMeta = (label, value, detail = '', detailClass = '', hint = '') => {
         const item = document.createElement('div');
         const itemLabel = document.createElement('span');
         itemLabel.textContent = label;
+        if (hint !== '') {
+            itemLabel.dataset.hint = hint;
+        }
+        const valueGroup = document.createElement('span');
+        valueGroup.className = 'market-heat-meta-value';
         const itemValue = document.createElement('strong');
         itemValue.textContent = value;
-        item.append(itemLabel, itemValue);
+        valueGroup.append(itemValue);
+
+        if (detail !== '') {
+            const detailText = document.createElement('small');
+            detailText.className = `market-heat-meta-detail ${detailClass}`.trim();
+            detailText.textContent = detail;
+            valueGroup.append(detailText);
+        }
+
+        item.append(itemLabel, valueGroup);
         meta.append(item);
     };
 
     addMeta('交易日', heat.tradingDate.replaceAll('-', '/'));
     addMeta('資料時間', state.view === 'intraday' ? (current?.capturedAt ?? '—') : '盤後資料');
     addMeta('時段進度', state.view === 'intraday' ? '盤中' : '已收盤');
-    addMeta('全市場成交額', missing(heat.marketTurnover) ? '—' : `${toBillionText(Number(heat.marketTurnover))} 億元`);
+    const isIntraday = state.view === 'intraday';
+    const displayedTurnover = missing(heat.marketTurnover) ? null : Number(heat.marketTurnover);
+    const turnoverChangeRate = isIntraday && !missing(heat.marketTurnoverChangeRate)
+        ? Number(heat.marketTurnoverChangeRate)
+        : null;
+    const turnoverChange = isIntraday && !missing(heat.marketTurnoverChange)
+        ? Number(heat.marketTurnoverChange)
+        : null;
+    const turnoverDetail = !isIntraday
+        ? ''
+        : turnoverChangeRate === null || turnoverChange === null
+            ? '較前一交易日 —'
+            : `較前一交易日 ${toSignedPercentText(turnoverChangeRate, 1)}（${toSignedBillionText(turnoverChange)} 億元）`;
+
+    addMeta(
+        isIntraday ? '全市場預估成交額' : '全市場成交額',
+        displayedTurnover === null ? '—' : `${toBillionText(displayedTurnover)} 億元`,
+        turnoverDetail,
+        toTrendClass(turnoverChangeRate),
+        isIntraday
+            ? '全市場預估成交額是本輪上市與上櫃個股的現價 × 累計成交量加總，不是預估收盤。下方與前一交易日正式成交額比較：前者是量能增減率，括號內是增減金額。'
+            : '全市場成交額是上市與上櫃一般交易的正式合計；盤後不與前一交易日比較。');
 
     panel.append(overview, indicators, indices, meta);
     return panel;
@@ -3347,30 +3573,43 @@ async function loadIntraday(silent = false) {
     renderLockRow();
 }
 
-const INTRADAY_SELECT_WITH_HEAT = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_average_turnover,market_heat_volume_ratio';
+const INTRADAY_SELECT_WITH_HEAT = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_previous_turnover,market_heat_turnover_change,market_heat_turnover_change_rate,market_heat_average_turnover,market_heat_volume_ratio';
+const INTRADAY_SELECT_WITH_HEAT_LEGACY = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_average_turnover,market_heat_volume_ratio';
 const INTRADAY_SELECT = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price';
 const INTRADAY_SELECT_LEGACY = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent,open_price,high_price,low_price';
 
 // db/010 還沒套用時，帶年初欄位的那支查詢每次都會失敗。盤中每兩分鐘刷新一次，
 // 不記住的話每一輪都要先白打一次必定失敗的請求，才輪到真正拿得到資料的那支。
 let intradayLegacySelect = false;
+let intradayHeatSelectLegacy = false;
 
 async function fetchIntradayRows() {
     if (intradayLegacySelect) {
         return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
     }
 
+    if (intradayHeatSelectLegacy) {
+        return fetchAllRows('intraday_latest', INTRADAY_SELECT_WITH_HEAT_LEGACY, '&order=turnover.desc');
+    }
+
     try {
         return await fetchAllRows('intraday_latest', INTRADAY_SELECT_WITH_HEAT, '&order=turnover.desc');
     } catch {
         try {
-            // db/011 尚未套用時，先沿用已有年初指數欄位；熱絡指標會顯示資料不足。
-            return await fetchAllRows('intraday_latest', INTRADAY_SELECT, '&order=turnover.desc');
+            // db/014 尚未套用時，保留 db/011 已有的熱絡欄位；盤中成交額比較顯示 —。
+            const rows = await fetchAllRows('intraday_latest', INTRADAY_SELECT_WITH_HEAT_LEGACY, '&order=turnover.desc');
+            intradayHeatSelectLegacy = true;
+            return rows;
         } catch {
-            // db/010 尚未套用時，沿用舊 view；年初欄位再由 manifest 基準暫算。
-            intradayLegacySelect = true;
+            try {
+                // db/011 尚未套用時，先沿用已有年初指數欄位；熱絡指標會顯示資料不足。
+                return await fetchAllRows('intraday_latest', INTRADAY_SELECT, '&order=turnover.desc');
+            } catch {
+                // db/010 尚未套用時，沿用舊 view；年初欄位再由 manifest 基準暫算。
+                intradayLegacySelect = true;
 
-            return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
+                return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
+            }
         }
     }
 }
@@ -3393,6 +3632,9 @@ function readIntradayMarketHeat(row) {
         flatCount: Number(row.market_heat_flat_count ?? 0),
         comparedStockCount: Number(row.market_heat_compared_stock_count ?? 0),
         marketTurnover: missing(row.market_heat_turnover) ? null : Number(row.market_heat_turnover),
+        previousMarketTurnover: missing(row.market_heat_previous_turnover) ? null : Number(row.market_heat_previous_turnover),
+        marketTurnoverChange: missing(row.market_heat_turnover_change) ? null : Number(row.market_heat_turnover_change),
+        marketTurnoverChangeRate: missing(row.market_heat_turnover_change_rate) ? null : Number(row.market_heat_turnover_change_rate),
         averageMarketTurnover: missing(row.market_heat_average_turnover) ? null : Number(row.market_heat_average_turnover),
         volumeRatio: missing(row.market_heat_volume_ratio) ? null : Number(row.market_heat_volume_ratio),
         previousDays: []
@@ -3555,6 +3797,7 @@ let expandedTopicId = null;
 // 族群列表：目前選中的節點，以及展開中的枝幹。
 let selectedTopicId = null;
 const openTopicBranches = new Set();
+let topicBranchesInitialized = false;
 
 // 從排行榜的族群欄點過來時要跳到的節點。畫面還沒畫出來就沒辦法捲動，
 // 所以先記著，等族群列表畫完再處理。
@@ -3689,7 +3932,8 @@ async function loadTopics() {
 
     renderTopicTabs();
 
-    if (state.topicTab === 'heat' && state.topicPeriod === INTRADAY_TOPIC_PERIOD) {
+    if ((state.topicTab === 'heat' || state.topicTab === 'tree')
+        && state.topicPeriod === INTRADAY_TOPIC_PERIOD) {
         await loadIntradayTopicHeat();
     }
 
@@ -3707,6 +3951,7 @@ function prepareTopics() {
         ?? null;
 
     topicById = new Map((topicActive?.topics ?? []).map(topic => [topic.id, topic]));
+    openAllTopicBranches();
 
     if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && supabase === null) {
         state.topicPeriod = TOPIC_PERIOD_DAYS()[0] ?? state.topicPeriod;
@@ -3720,6 +3965,21 @@ function prepareTopics() {
         : `族群熱度算在 ${topicData.baseDate} 這一天上，共 ${topicActive.treeTopicCount} 個階層節點、`
             + `${topicActive.conceptTopicCount} 個樹外概念、${topicActive.stockCount} 檔股票。`
             + `目前顯示「${topicActive.label}」。`;
+}
+
+function openAllTopicBranches() {
+    if (topicBranchesInitialized) {
+        return;
+    }
+
+    // 列表第一次開啟時，預設把可展開的枝幹全部打開；末端不需要記狀態。
+    for (const topic of topicById.values()) {
+        if ((topic.childIds ?? []).some(id => topicById.has(id))) {
+            openTopicBranches.add(topic.id);
+        }
+    }
+
+    topicBranchesInitialized = true;
 }
 
 const TOPIC_PERIOD_DAYS = () => (topicData?.periods ?? []).map(period => period.periodDays);
@@ -3764,10 +4024,19 @@ async function loadIntradayTopicHeat() {
             throw new TypeError('盤中族群熱度 rows 不是陣列。');
         }
 
+        const capturedAt = String(latest.captured_at ?? '');
+
+        if (topicIntradayKLineCapturedAt !== capturedAt) {
+            topicIntradayKLineCapturedAt = capturedAt;
+            topicIntradayKLines.clear();
+            topicIntradayKLinePromises.clear();
+        }
+
         intradayTopicPeriod = {
             hasSufficientData: latest.has_sufficient_data === true,
             message: latest.message ?? null,
             period: `盤中 ${String(latest.trade_date).replaceAll('-', '/')} ${toTaipeiText(latest.captured_at)}`,
+            tradeDate: String(latest.trade_date),
             rows,
             isIntraday: true,
             capturedAt: latest.captured_at,
@@ -3796,13 +4065,9 @@ function renderTopicTabs() {
     }
 
     renderOptions('topic-tab-options', tabs, state.topicTab, topicTab => {
+        closeKLine(false);
         expandedTopicId = null;
-        update({
-            topicTab,
-            topicPeriod: topicTab === 'heat' || state.topicPeriod !== INTRADAY_TOPIC_PERIOD
-                ? state.topicPeriod
-                : TOPIC_PERIOD_DAYS()[0] ?? 5
-        });
+        update({ topicTab });
     });
 }
 
@@ -3834,6 +4099,9 @@ function renderTopicPanel() {
     } else {
         renderTopicEdits(panel);
     }
+
+    // 盤中兩分鐘刷新會重畫族群面板；若使用者正看 K 線，換成新 DOM 後重新找到同一顆名稱按鈕。
+    refreshKLinePopover();
 }
 
 function makeTopicWarnings(warnings) {
@@ -4038,6 +4306,7 @@ function makeTopicRowButton(row, topic) {
     }
 
     button.addEventListener('click', () => {
+        closeKLine(false);
         expandedTopicId = expandedTopicId === row.topicId ? null : row.topicId;
         renderTopicPanel();
     });
@@ -4098,7 +4367,9 @@ function makeTopicMemberTable(row) {
 
         const name = document.createElement('td');
         name.className = 'stock-name';
-        name.textContent = member.name || topicData.stockNames[member.ticker] || '—';
+        const memberName = member.name || topicData?.stockNames?.[member.ticker] || '—';
+        nameByTicker.set(member.ticker, memberName);
+        name.append(makeKLineButton(member.ticker, memberName));
 
         const share = document.createElement('td');
         share.className = 'numeric';
@@ -4145,7 +4416,7 @@ function makeTopicPeriodPanel() {
 // renderOptions 是靠 id 找容器的，所以按鈕一定要等期間面板接進 DOM 之後才畫。
 function renderTopicPeriodOptions() {
     const options = [
-        ...(state.topicTab === 'heat'
+        ...((state.topicTab === 'heat' || state.topicTab === 'tree')
             ? [{
                 key: INTRADAY_TOPIC_PERIOD,
                 text: '盤中',
@@ -4164,6 +4435,7 @@ function renderTopicPeriodOptions() {
         options,
         state.topicPeriod,
         period => {
+            closeKLine(false);
             expandedTopicId = null;
             update({ topicPeriod: period });
         });
@@ -4242,6 +4514,10 @@ function renderTopicTree(panel) {
     // 節點詳情要顯示這個期間的熱度與成員，所以期間選擇器兩個分頁都要有。
     panel.append(makeTopicPeriodPanel());
     renderTopicPeriodOptions();
+
+    if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && intradayTopicLoadError !== '') {
+        panel.append(makeTopicNotice(intradayTopicLoadError, true));
+    }
 
     const layout = document.createElement('div');
     layout.className = 'topic-tree-layout';
@@ -4323,6 +4599,7 @@ function makeTopicBranchItem(node, ancestors) {
         toggle.setAttribute('aria-expanded', String(open));
         toggle.setAttribute('aria-label', `${open ? '收合' : '展開'} ${node.name}`);
         toggle.addEventListener('click', () => {
+            closeKLine(false);
             if (open) {
                 openTopicBranches.delete(node.id);
             } else {
@@ -4346,6 +4623,7 @@ function makeTopicBranchItem(node, ancestors) {
     button.dataset.topicId = node.id;
     button.textContent = node.name;
     button.addEventListener('click', () => {
+        closeKLine(false);
         selectedTopicId = node.id;
         renderTopicPanel();
     });
@@ -4796,17 +5074,10 @@ function update(changes) {
         closeRevenueDetails(false);
     }
 
-    // 三種檢視的欄位不一樣，沿用上一個檢視的排序欄位會找不到對應的欄。
-    // 自訂頁沒有名次，預設依代號排列；其餘兩頁回到名次。
+    // 三種檢視的欄位不一樣，但它們的最後設定應各自保留，不能切回去就變成預設。
     if (changes.view !== undefined && changes.view !== state.view) {
-        changes.sortKey = changes.view === 'custom' ? state.customSortKey : 'rank';
-        changes.sortDescending = changes.view === 'custom' ? state.customSortDescending : false;
-
-        // 期間在兩邊是兩件事（本期多長 vs 跟多長的期間對照），預設值也不一樣，
-        // 所以切過去要換成那一邊的預設，不要把上一個檢視的選擇帶過去。
-        if (DEFAULT_PERIOD[changes.view] !== undefined) {
-            changes.period ??= DEFAULT_PERIOD[changes.view];
-        }
+        rememberViewPreferences(state.view);
+        restoreViewPreferences(changes.view, changes);
     }
 
     const nextView = changes.view ?? state.view;
@@ -4824,6 +5095,7 @@ function update(changes) {
     }
 
     Object.assign(state, changes);
+    rememberViewPreferences();
     writeSettings();
     renderSnapshotNote();
     renderFilters();
@@ -4840,7 +5112,7 @@ function renderSnapshotNote() {
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
 
     if (state.view === 'topics') {
-        el('snapshot-note').textContent = state.topicTab === 'heat'
+        el('snapshot-note').textContent = (state.topicTab === 'heat' || state.topicTab === 'tree')
             && state.topicPeriod === INTRADAY_TOPIC_PERIOD
             ? `盤中族群熱度直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。`
                 + collector
@@ -4884,7 +5156,7 @@ function intradayAgeText() {
 function refreshIntradayIfDue() {
     const isIntradayView = state.view === 'intraday';
     const isIntradayTopic = state.view === 'topics'
-        && state.topicTab === 'heat'
+        && (state.topicTab === 'heat' || state.topicTab === 'tree')
         && state.topicPeriod === INTRADAY_TOPIC_PERIOD;
 
     if ((!isIntradayView && !isIntradayTopic) || document.hidden || !intradayIsStale()) {
@@ -4898,7 +5170,7 @@ function refreshIntradayIfDue() {
 
     void loadIntradayTopicHeat().then(() => {
         if (state.view === 'topics'
-            && state.topicTab === 'heat'
+            && (state.topicTab === 'heat' || state.topicTab === 'tree')
             && state.topicPeriod === INTRADAY_TOPIC_PERIOD) {
             renderSnapshotNote();
             renderTopicPanel();

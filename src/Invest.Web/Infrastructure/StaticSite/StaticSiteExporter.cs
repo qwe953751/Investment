@@ -487,6 +487,9 @@ public sealed class StaticSiteExporter(
                 heat.FlatCount,
                 heat.ComparedStockCount,
                 Round(heat.MarketTurnover),
+                Round(heat.PreviousMarketTurnover),
+                Round(heat.MarketTurnoverChange),
+                Round(heat.MarketTurnoverChangeRate),
                 Round(heat.AverageMarketTurnover),
                 Round(heat.VolumeRatio),
                 [.. heat.PreviousDays.Select(day => new MarketHeatHistoryExport(
@@ -846,6 +849,9 @@ public sealed class StaticSiteExporter(
         int FlatCount,
         int ComparedStockCount,
         decimal? MarketTurnover,
+        decimal? PreviousMarketTurnover,
+        decimal? MarketTurnoverChange,
+        decimal? MarketTurnoverChangeRate,
         decimal? AverageMarketTurnover,
         decimal? VolumeRatio,
         IReadOnlyList<MarketHeatHistoryExport> PreviousDays);

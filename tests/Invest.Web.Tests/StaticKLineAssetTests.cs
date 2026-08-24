@@ -154,7 +154,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const CUSTOM_COLUMNS", script, StringComparison.Ordinal);
         Assert.Contains("fetchPeriod(`1-${state.date}`)", script, StringComparison.Ordinal);
         Assert.Contains("sorted.slice(start, start + CUSTOM_PAGE_SIZE)", script, StringComparison.Ordinal);
-        Assert.Contains("changes.view === 'custom' ? state.customSortKey : 'rank'", script, StringComparison.Ordinal);
+        Assert.Contains("restoreViewPreferences(changes.view, changes)", script, StringComparison.Ordinal);
         Assert.Contains("'revenue_latest', 'ticker,month,yoy,mom", script, StringComparison.Ordinal);
         Assert.Contains("id=\"pagination\"", html, StringComparison.Ordinal);
     }
@@ -172,6 +172,74 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("?.yoy", customColumns, StringComparison.Ordinal);
         Assert.DoesNotContain("單月營收", customColumns, StringComparison.Ordinal);
         Assert.Contains("&ticker=eq.${encodeURIComponent(ticker)}&order=month.asc", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 自訂頁在營收增減旁顯示創高月數()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("const CUSTOM_COLUMNS", StringComparison.Ordinal);
+        var end = script.IndexOf("const columns =", start, StringComparison.Ordinal);
+        var customColumns = script[start..end];
+
+        Assert.Contains("key: 'revenueHigh'", customColumns, StringComparison.Ordinal);
+        Assert.Contains("title: '創高月數'", customColumns, StringComparison.Ordinal);
+        Assert.Contains("toHighMonthsCell(row.ticker)", customColumns, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 熱絡表盤後只顯示正式成交額不顯示前一交易日比較()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("function renderMarketHeat", StringComparison.Ordinal);
+        var end = script.IndexOf("function showNotice", start, StringComparison.Ordinal);
+        var marketHeat = script[start..end];
+
+        Assert.Contains("全市場成交額", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("盤後不與前一交易日比較", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("const turnoverDetail = !isIntraday", marketHeat, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 熱絡表只在盤中顯示預估成交額相較前一交易日的量能比較()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("function renderMarketHeat", StringComparison.Ordinal);
+        var end = script.IndexOf("function showNotice", start, StringComparison.Ordinal);
+        var marketHeat = script[start..end];
+
+        Assert.Contains("state.view === 'intraday'", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("marketTurnover", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("marketTurnoverChangeRate", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("全市場預估成交額", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("不是預估收盤", marketHeat, StringComparison.Ordinal);
+        Assert.DoesNotContain("estimatedMarketTurnover", marketHeat, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 族群列表也能選盤中且成員名稱會開既有K線彈窗()
+    {
+        var script = ReadAsset("site.js");
+        var treeStart = script.IndexOf("function renderTopicTree", StringComparison.Ordinal);
+        var treeEnd = script.IndexOf("function makeTopicBranchList", treeStart, StringComparison.Ordinal);
+        var topicTree = script[treeStart..treeEnd];
+
+        Assert.Contains("state.topicTab === 'tree'", script, StringComparison.Ordinal);
+        Assert.Contains("loadIntradayTopicHeat", script, StringComparison.Ordinal);
+        Assert.Contains("makeKLineButton(member.ticker", script, StringComparison.Ordinal);
+        Assert.Contains("openAllTopicBranches", script, StringComparison.Ordinal);
+        Assert.Contains("makeTopicPeriodPanel()", topicTree, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 切換主頁籤會還原各頁最後使用的期間與排序()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("viewPreferences", script, StringComparison.Ordinal);
+        Assert.Contains("rememberViewPreferences", script, StringComparison.Ordinal);
+        Assert.Contains("restoreViewPreferences", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("changes.period ??= DEFAULT_PERIOD[changes.view]", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -283,7 +351,7 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
 
         Assert.Contains("const SITE_ACCESS", script, StringComparison.Ordinal);
-        Assert.Contains("const ADMIN_HOST = 'app.frank-investment.com'", script, StringComparison.Ordinal);
+        Assert.Contains("const ADMIN_HOST = 'app.admin.frank-investment.com'", script, StringComparison.Ordinal);
         Assert.Contains("const VIEWER_HOST = 'view.frank-investment.com'", script, StringComparison.Ordinal);
         Assert.Contains("SITE_HOST === VIEWER_HOST", script, StringComparison.Ordinal);
         Assert.Contains(

@@ -696,6 +696,9 @@ static async Task UpdateMarketHeatViaManagementApiAsync(
                 market_heat_flat_count = {heat.FlatCount},
                 market_heat_compared_stock_count = {heat.ComparedStockCount},
                 market_heat_turnover = {SqlDecimal(heat.MarketTurnover)},
+                market_heat_previous_turnover = {SqlDecimal(heat.PreviousMarketTurnover)},
+                market_heat_turnover_change = {SqlDecimal(heat.MarketTurnoverChange)},
+                market_heat_turnover_change_rate = {SqlDecimal(heat.MarketTurnoverChangeRate)},
                 market_heat_average_turnover = {SqlDecimal(heat.AverageMarketTurnover)},
                 market_heat_volume_ratio = {SqlDecimal(heat.VolumeRatio)}
             where trade_date = date '{date}'

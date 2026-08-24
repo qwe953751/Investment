@@ -32,6 +32,15 @@ public sealed record MarketHeatMetrics
 
     public decimal? MarketTurnover { get; init; }
 
+    /// <summary>前一個有完整成交值的交易日全市場成交額，單位為元。</summary>
+    public decimal? PreviousMarketTurnover { get; init; }
+
+    /// <summary>本交易日全市場成交額相較前一交易日的增減金額，單位為元。</summary>
+    public decimal? MarketTurnoverChange { get; init; }
+
+    /// <summary>本交易日全市場成交額相較前一交易日的增減率。</summary>
+    public decimal? MarketTurnoverChangeRate { get; init; }
+
     public decimal? AverageMarketTurnover { get; init; }
 
     public decimal? VolumeRatio { get; init; }

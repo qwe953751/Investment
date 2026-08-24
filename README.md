@@ -32,8 +32,9 @@
 ### 權限樣板與網址目標
 
 目前正式網址維持 `https://qwe953751.github.io/Investment/`，不切換 DNS、CNAME 或 GitHub Pages custom domain。
-未來最高權限主機目標為 `https://app.frank-investment.com/`，檢視權限為
-`https://view.frank-investment.com/`；兩者尚未啟用。額外加路徑不等於真正的權限保護，
+未來最高權限主機目標為 `https://app.admin.frank-investment.com/`，檢視權限為
+`https://view.frank-investment.com/`；自訂網域尚未啟用。檢視入口的 GitHub Pages 預設網址為
+`https://qwe953751.github.io/Investment-view/`。額外加路徑不等於真正的權限保護，
 因此不把「網址複雜度」當成登入授權。
 檢視模式仍可進入盤中、盤後、自訂、族群，
 但族群頁只開放「熱度排行」；這是 UI 樣板，不是登入授權。DNS、custom domain 與真正的登入／白名單
@@ -41,6 +42,10 @@
 
 本機預覽：`http://127.0.0.1:5220/?access=admin`、
 `http://127.0.0.1:5220/?access=viewer`。
+
+自訂網域尚未有 DNS 紀錄時，不能先把既有正式站改成 CNAME，否則會把使用者導向不存在的網址。
+發布 workflow 預留 repository variable `PAGES_ADMIN_CNAME`；等 `app.admin.frank-investment.com`
+在 GitHub Pages 設定完成且 DNS 可解析後，將它設為該完整網域，之後每次快照發布都會保留 `CNAME`。
 
 ## 最新已發布版本
 
@@ -61,6 +66,7 @@
 - `db/007_market_indices.sql`、`db/008_intraday_kline.sql`、`db/009_revenue_history.sql` 已套用 Supabase。
 - `db/010_market_index_ytd.sql` 已於 2026-08-21 套用 Supabase；盤中前端仍保留舊 view fallback，套不到就退回去，不以假資料代替。
 - `db/011_market_heat.sql` 已套用 Supabase；盤中與盤後使用同一個 C# 市場熱絡公式，並已回填最新盤中快照。
+- `db/014_market_heat_turnover_change.sql` 尚待套用；它會保存盤中估算成交額及其相較前一交易日正式成交額的變化，盤後不顯示這個比較。
 - `db/012_site_alerts.sql` 已套用 Supabase；頁面右上角的 ⚠ 鈴鐺直接讀這張表，點開看每則異常。
   警報寫資料庫而不是快照，因為最該通知的情況就是「靜態網站沒發佈成功」——那時候線上的 manifest 還是舊的。
 - 營收彈窗已接上真實 `revenue_history`：39,448 列、1,976 檔；2330 有完整 20 個月資料。
