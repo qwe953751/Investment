@@ -2362,9 +2362,9 @@ body {
     font-weight: 700;
 }
 
-/* 新聞熱度整欄現在都是 —，調淡一點，免得看起來像算壞了。 */
-.topic-heat-table td.topic-empty {
-    color: #bbb;
+/* 新聞熱度是參考欄，還沒計入綜合熱度。調淡一點，讓它看起來就不是同一個層級的數字。 */
+.topic-heat-table td.topic-reference {
+    color: #98a2b3;
 }
 
 .topic-row.expanded {

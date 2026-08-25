@@ -13,13 +13,16 @@ namespace Invest.Web.Features.StockTopics.Services;
 ///
 ///   資金熱度  族群成員的市場成交比加總，再標準化成 0～100。
 ///   族群廣度  排行參與率、上漲家數比、資金分散度的加權，再乘單股折減係數（暫定公式）。
-///   新聞熱度  目前沒有任何來源，一律 null。
+///   新聞熱度  由重大訊息算出來（見 <see cref="TopicNewsHeatCalculator"/>），但只當參考欄。
 ///
-/// 綜合熱度預設是 60% / 25% / 15%，但新聞那 15% 現在沒有東西可填。
-/// 直接把新聞當 0 會讓每一個族群都憑空少掉 15 分，排序不變、絕對值卻全部失真，
-/// 畫面上寫「綜合熱度 62」其實是「滿分只有 85 的 62」。所以缺新聞時把那 15%
-/// 按比例分回資金與廣度（0.60 : 0.25 → 0.7059 : 0.2941），滿分仍然是 100，
-/// 實際用到的權重會一起寫進結果，讓畫面照實說明而不是印一組騙人的固定數字。
+/// 綜合熱度預設是 60% / 25% / 15%，那 15% 目前還是空著的。新聞熱度算得出來不等於
+/// 可以拿去加權：半衰期、飽和尺度、新鮮度折數全都是文件裡沒校正過的初始參數，
+/// 一旦計入，全站每一個族群的熱度數字與排序都會被一條沒人驗證過的公式改寫。
+/// 使用者拍板前先擺在旁邊對照，看它跟資金與廣度合不合得起來。
+///
+/// 所以缺新聞時把那 15% 按比例分回資金與廣度（0.60 : 0.25 → 0.7059 : 0.2941），
+/// 滿分仍然是 100，實際用到的權重會一起寫進結果，讓畫面照實說明而不是印一組騙人的固定數字。
+/// NewsWeight 留在 0，前端就是靠它判斷這一欄算不算數的。
 /// </summary>
 public static class TopicHeatCalculator
 {
@@ -43,9 +46,14 @@ public static class TopicHeatCalculator
 
     private const decimal DispersionWeight = 0.20m;
 
+    /// <param name="newsScores">
+    /// 族群節點 Id → 新聞熱度。只寫進結果供畫面對照，不進綜合熱度。
+    /// 沒帶就整欄留 null，盤中快照走的就是這條路——盤中沒有重大訊息可讀。
+    /// </param>
     public static TopicHeatResult Calculate(
         TopicMapping mapping,
-        TradingValueRankingResult ranking)
+        TradingValueRankingResult ranking,
+        IReadOnlyDictionary<string, decimal>? newsScores = null)
     {
         if (!ranking.HasSufficientData)
         {
@@ -79,7 +87,7 @@ public static class TopicHeatCalculator
         var maxRaw = draft.Count == 0 ? 0m : draft.Max(item => item.FundRaw);
 
         var rows = draft
-            .Select(item => ToRow(item, maxRaw))
+            .Select(item => ToRow(item, maxRaw, newsScores))
             .OrderByDescending(row => row.CompositeScore)
             .ThenByDescending(row => row.FundRawShare)
             .ThenBy(row => row.TopicId, StringComparer.Ordinal)
@@ -222,7 +230,10 @@ public static class TopicHeatCalculator
         _ => 1.00m
     };
 
-    private static TopicHeatRow ToRow(Draft draft, decimal maxRaw)
+    private static TopicHeatRow ToRow(
+        Draft draft,
+        decimal maxRaw,
+        IReadOnlyDictionary<string, decimal>? newsScores)
     {
         var fundScore = maxRaw <= 0m ? 0m : Math.Clamp(draft.FundRaw / maxRaw * 100m, 0m, 100m);
 
@@ -237,7 +248,15 @@ public static class TopicHeatCalculator
             weights.Add((BreadthWeight, breadth));
         }
 
-        // 新聞熱度目前一律缺席，這一行留著是為了之後接上來時不必改結構。
+        // 查得到就填數字，查不到就留 null。這裡的 null 是「這個族群近期沒有掛得上的重大訊息」，
+        // 不是 0 分——0 分要留給「有新聞但全是雜訊」那種情況。
+        //
+        // 而且刻意不把它加進 weights：新聞熱度現在是參考欄，公式還沒校正過。
+        // 要併入時就是在這裡多加一行 weights.Add((NewsWeight, news.Value))，其餘不必動。
+        var news = newsScores is not null && newsScores.TryGetValue(draft.Topic.Id, out var value)
+            ? value
+            : (decimal?)null;
+
         var totalWeight = weights.Sum(item => item.Weight);
         var composite = totalWeight <= 0m
             ? 0m
@@ -249,10 +268,13 @@ public static class TopicHeatCalculator
             FundRawShare = draft.FundRaw,
             FundScore = fundScore,
             BreadthScore = draft.BreadthScore,
-            NewsScore = null,
+            NewsScore = news,
             CompositeScore = composite,
             FundWeight = FundWeight / totalWeight,
             BreadthWeight = draft.BreadthScore is null ? 0m : BreadthWeight / totalWeight,
+
+            // 0 就是「這一欄沒有計入綜合熱度」。前端靠它決定那一欄要叫綜合熱度還是市場熱度，
+            // 所以有了 NewsScore 也不能順手把這裡改成 0.15，那會讓畫面報一個算不出來的口徑。
             NewsWeight = 0m,
             MemberCount = draft.MemberCount,
             QuotedCount = draft.QuotedCount,

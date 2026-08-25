@@ -4710,7 +4710,7 @@ const TOPIC_HEAT_COLUMNS = [
     { key: 'composite', value: row => row.compositeScore, cell: row => ({ text: topicScoreText(row.compositeScore), cls: 'numeric topic-composite' }) },
     { key: 'fund', title: '資金熱度', hint: '族群成員的市場成交比加總，除以這一輪最熱的族群再拉到 0～100。同一檔股票掛在幾個族群，每個族群就都完整計一次：這裡看的是資金流向，不是把一檔股票切成幾份。', value: row => row.fundScore, cell: row => ({ text: topicScoreText(row.fundScore), cls: 'numeric' }) },
     { key: 'breadth', title: '族群廣度', hint: '回答「是整個族群在動，還是只有一檔在動」。排行參與率 50%、上漲家數比 30%、資金分散度 20%，再依實際有量的檔數打折。這條公式還沒拍板，是文件裡的候選版本。', value: row => row.breadthScore, cell: row => ({ text: topicScoreText(row.breadthScore), cls: 'numeric' }) },
-    { key: 'news', title: '新聞熱度', hint: '目前沒有任何新聞來源接上來，一律顯示 —。接上之後這一欄才會有數字，綜合熱度的權重也會跟著回到 60 / 25 / 15。', value: row => row.newsScore, cell: row => ({ text: topicScoreText(row.newsScore), cls: 'numeric topic-empty' }) },
+    { key: 'news', title: '新聞熱度（參考）', hint: '由公開資訊觀測站的重大訊息算出來：材料性 × 新鮮度 × 時間衰減加總，再做指數飽和。同一家公司連發同一類公告會遞減，法說會五天半衰、擴產案九十天。顯示 — 是這個族群近期沒有掛得上的重大訊息。\n這一欄還沒計入綜合熱度，而且已知會偏袒大節點：成員多的族群本來就一定有人在發公告，253 檔的傳產拿到 99 分但資金熱度只有 38。要修得先有「這個節點平常發幾則」的基準線，那需要更長的歷史。', value: row => row.newsScore, cell: row => ({ text: topicScoreText(row.newsScore), cls: 'numeric topic-reference' }) },
     { key: 'share', title: '成交比合計', hint: '族群成員的市場成交比直接加總，也就是資金熱度標準化之前的原始數字。全市場合計會超過 100%，因為一檔股票會出現在好幾個族群裡。', value: row => row.fundRawShare, cell: row => ({ text: toPercentText(row.fundRawShare), cls: 'numeric' }) },
     { key: 'members', title: '成員', hint: '這個族群涵蓋幾檔股票（含所有子節點，同一檔只算一次）。括號內是這段期間真的有成交量的檔數。', value: row => row.memberCount, cell: row => ({ text: `${row.memberCount}（${row.quotedCount}）`, cls: 'numeric' }) },
     { key: 'participation', title: '排行參與率', hint: '族群裡有多少比例的成員進到全市場成交值前 50 名。', value: row => row.participationRate, cell: row => ({ text: toPercentText(row.participationRate, 1), cls: 'numeric' }) },
@@ -4718,9 +4718,12 @@ const TOPIC_HEAT_COLUMNS = [
     { key: 'dispersion', title: '資金分散度', hint: '成交值是平均分佈還是集中在一兩檔。1 代表完全平均，0 代表全部集中在一檔。已經對成員數做過修正，五檔的族群不會天生輸給三十檔的。', value: row => row.dispersionRate, cell: row => ({ text: toPercentText(row.dispersionRate, 1), cls: 'numeric' }) }
 ];
 
-/// 新聞還沒有來源時，這一欄實際上只由資金與廣度兩項組成。
+/// 新聞熱度還沒計入時，這一欄實際上只由資金與廣度兩項組成。
 /// 繼續叫它「綜合熱度」等於報一個做不到的口徑，所以照文件的建議改稱市場熱度，
-/// 等新聞接上、權重回到 60 / 25 / 15，名字才會變回綜合熱度。
+/// 等權重回到 60 / 25 / 15，名字才會變回綜合熱度。
+///
+/// 判斷依據是 newsWeight 不是 newsScore：新聞熱度已經算得出來了，但還沒計入，
+/// 看有沒有分數會誤判成「已經是綜合熱度」。
 function topicCompositeColumn(period) {
     const hasNews = (period?.rows?.[0]?.newsWeight ?? 0) > 0;
 
@@ -4732,8 +4735,8 @@ function topicCompositeColumn(period) {
         : {
             title: '市場熱度',
             hint: '只由資金熱度與族群廣度兩項組成（權重按比例分成約 71% 與 29%），滿分仍然是 100。'
-                + '新聞還沒有任何來源，所以這裡不叫綜合熱度：那 15% 不是 0 分，是根本還沒開始算。'
-                + '新聞接上之後這一欄會變回綜合熱度，兩個口徑的分數不能直接互相比較。'
+                + '新聞熱度那一欄已經有數字，但公式的參數還沒校正過，所以先不計入——'
+                + '這裡不叫綜合熱度就是這個意思。等它併進來之後兩個口徑的分數不能直接互相比較。'
         };
 }
 

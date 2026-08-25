@@ -222,13 +222,21 @@ public sealed class StaticSiteExporter(
         }
 
         var active = catalog.Active;
+        var rawEvents = await LoadMaterialEventsAsync(active, baseDate, cancellationToken);
+
+        // 新聞熱度只跟「基準日之前發生了什麼」有關，跟看幾天的成交值無關，
+        // 所以五個期間共用同一份，算一次就好。
+        var newsScores = active is null || baseDate is not { } newsAsOf
+            ? new Dictionary<string, decimal>(StringComparer.Ordinal)
+            : TopicNewsHeatCalculator.Calculate(rawEvents, active, newsAsOf);
+
         var periods = new List<TopicPeriodExport>();
 
         if (active is not null)
         {
             foreach (var (periodDays, ranking) in rankings.OrderBy(entry => entry.Key))
             {
-                var heat = TopicHeatCalculator.Calculate(active, ranking);
+                var heat = TopicHeatCalculator.Calculate(active, ranking, newsScores);
 
                 periods.Add(new TopicPeriodExport(
                     periodDays,
@@ -272,7 +280,15 @@ public sealed class StaticSiteExporter(
             .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.Ordinal)
             ?? [];
 
-        var catalystEvents = await LoadCatalystEventsAsync(active, catalog.StockNames, baseDate, cancellationToken);
+        var catalystEvents = active is null || baseDate is not { } today
+            ? []
+            : CatalystEventBuilder.Build(rawEvents, active, catalog.StockNames, today, MaxCatalystEvents);
+
+        logger.LogInformation(
+            "催化事件：讀到 {Raw} 則重大訊息，篩出 {Built} 則掛在族群上的事件，{Topics} 個族群有新聞熱度。",
+            rawEvents.Count,
+            catalystEvents.Count,
+            newsScores.Count);
 
         await WriteJsonAsync(
             Path.Combine(dataDirectory, "topics.json"),
@@ -893,14 +909,14 @@ public sealed class StaticSiteExporter(
         decimal? Close);
 
     /// <summary>
-    /// 催化事件。資料在 Supabase 的 material_events，由每日排程累積。
+    /// 重大訊息。資料在 Supabase 的 material_events，由每日排程累積。
+    /// 催化事件頁與新聞熱度都吃這一份，所以只讀一次。
     ///
     /// 讀不到就回空的，不讓整份排行榜發不出去——這跟族群分類抓失敗是同一個道理，
     /// 而且更常見：本機沒設 SUPABASE_DB_URL 就跑 export 是日常。
     /// </summary>
-    private async Task<IReadOnlyList<CatalystEventBuilder.TopicEvent>> LoadCatalystEventsAsync(
+    private async Task<IReadOnlyList<MaterialEvent>> LoadMaterialEventsAsync(
         TopicMapping? active,
-        IReadOnlyDictionary<string, string> stockNames,
         DateOnly? baseDate,
         CancellationToken cancellationToken)
     {
@@ -911,22 +927,13 @@ public sealed class StaticSiteExporter(
 
         try
         {
-            var raw = await materialEvents.LoadSinceAsync(
+            return await materialEvents.LoadSinceAsync(
                 today.AddDays(-CatalystEventBuilder.FadingDays),
                 cancellationToken);
-
-            var built = CatalystEventBuilder.Build(raw, active, stockNames, today, MaxCatalystEvents);
-
-            logger.LogInformation(
-                "催化事件：讀到 {Raw} 則重大訊息，篩出 {Built} 則掛在族群上的事件。",
-                raw.Count,
-                built.Count);
-
-            return built;
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "讀取重大訊息失敗，催化事件頁這次會是空的。");
+            logger.LogWarning(exception, "讀取重大訊息失敗，催化事件與新聞熱度這次會是空的。");
 
             return [];
         }
