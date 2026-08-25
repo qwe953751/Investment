@@ -248,6 +248,16 @@ public sealed class StaticSiteExporter(
                 [.. mapping.Topics.Select(ToExport)]))
             .ToArray();
 
+        // 「有出現在排行上」用的是所有期間的聯集。最長那一段就是這裡能看到的最寬視窗，
+        // 一檔股票要連這段時間都沒交易，才有資格被說成可能已經不在上市櫃了。
+        var tradedTickers = rankings.Values
+            .SelectMany(ranking => ranking.Rows.Select(row => row.Ticker))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var staleMembers = active is null
+            ? []
+            : TopicMemberAudit.Find(active, catalog.StockNames, tradedTickers);
+
         var topicIdByName = active?.Topics
             .GroupBy(topic => topic.Name, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.Ordinal)
@@ -273,6 +283,8 @@ public sealed class StaticSiteExporter(
                     item.TopicCount))],
                 [.. catalog.PendingMerges],
                 catalog.MultiNodeConcepts,
+                staleMembers,
+                TopicMemberAudit.CheckedOn,
                 [.. TopicSampleData.Events.Select(item => new TopicEventExport(
                     item.Date,
                     item.Summary,
@@ -894,6 +906,8 @@ public sealed class StaticSiteExporter(
         IReadOnlyList<TopicAttributionExport> Attributions,
         IReadOnlyList<IReadOnlyList<string>> PendingMerges,
         IReadOnlyDictionary<string, IReadOnlyList<string>> MultiNodeConcepts,
+        IReadOnlyList<TopicMemberAudit.StaleMember> StaleMembers,
+        string StaleCheckedOn,
         IReadOnlyList<TopicEventExport> SampleEvents,
         IReadOnlyList<TopicEditExport> SampleEdits,
         IReadOnlyList<TopicPeriodExport> Periods);

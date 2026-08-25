@@ -5830,6 +5830,91 @@ function renderTopicEdits(panel) {
     panel.append(container);
 
     panel.append(makeTopicPendingBlock());
+    panel.append(makeTopicStaleBlock());
+}
+
+// 狀態的輕重。已經不能交易的排前面：那幾檔是真的要去 Sheet 上動手改的，
+// 興櫃只是「本來就不在上市櫃排行裡」，看看就好。
+const TOPIC_STALE_ORDER = ['合併消滅', '下市', '停止買賣', '興櫃'];
+
+function makeTopicStaleBlock() {
+    const rows = [...(topicData.staleMembers ?? [])].sort((left, right) => {
+        const rank = value => {
+            const index = TOPIC_STALE_ORDER.indexOf(value);
+            return index < 0 ? TOPIC_STALE_ORDER.length : index;
+        };
+
+        return rank(left.status) - rank(right.status)
+            || left.ticker.localeCompare(right.ticker);
+    });
+
+    const box = document.createElement('section');
+    box.className = 'topic-pending';
+
+    const gone = rows.filter(row => row.status !== '興櫃').length;
+
+    const title = document.createElement('h2');
+    title.className = 'topic-section-title';
+    title.textContent = `概念股名單上已經失效的成員（${rows.length}，其中 ${gone} 檔不能交易了）`;
+    box.append(title);
+
+    const intro = document.createElement('p');
+    intro.className = 'topic-intro';
+    intro.textContent = rows.length === 0
+        ? '概念股分頁上的每一檔都還在上市櫃的成交值排行裡，沒有需要處理的。'
+        : '這些代號列在概念股分頁上，但它們沒有出現在排行榜的成交值資料裡。'
+            + '被併購或下市的那幾檔要回 Google Sheet 移掉，留著只會讓那個族群的成員數虛胖；'
+            + '興櫃那幾檔分類本身沒錯，只是這個站只涵蓋上市櫃，所以它們永遠不會有熱度。';
+    box.append(intro);
+
+    if (rows.length === 0) {
+        return box;
+    }
+
+    const container = document.createElement('div');
+    container.className = 'table-container';
+
+    const table = document.createElement('table');
+    table.className = 'ranking-table topic-edit-table';
+
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    for (const [text, hint] of [
+        ['代號', 'Google Sheet 概念股分頁上寫的代號。'],
+        ['名稱', 'Sheet 上的寫法。被併購的公司現名可能已經不一樣了。'],
+        ['狀態', '合併消滅與下市代表這個代號不存在了；停止買賣是還沒走完下市程序；興櫃是還在交易，只是不在上市櫃。'],
+        ['列在哪些族群', '把它移掉會影響到的節點。'],
+        ['查到的原因', `查證日 ${topicData.staleCheckedOn ?? ''}。日期與換股比例取自新聞，要寫進表格前建議再對一次公開資訊觀測站。`]
+    ]) {
+        const cell = document.createElement('th');
+        cell.className = 'unsortable';
+        cell.textContent = text;
+        cell.dataset.hint = hint;
+        headRow.append(cell);
+    }
+
+    head.append(headRow);
+
+    const body = document.createElement('tbody');
+
+    for (const row of rows) {
+        const tr = document.createElement('tr');
+        tr.className = 'topic-sample-row';
+
+        appendTextCell(tr, row.ticker, 'numeric');
+        appendTextCell(tr, row.name);
+        appendTextCell(tr, row.status || '查不到', 'topic-stale-status');
+        appendTextCell(tr, (row.conceptNames ?? []).join('、'));
+        appendTextCell(tr, row.reason || '這一檔還沒查過，只知道它沒有出現在排行裡。', 'topic-summary');
+        body.append(tr);
+    }
+
+    table.append(head, body);
+    container.append(table);
+    box.append(container);
+
+    return box;
 }
 
 function makeTopicPendingBlock() {

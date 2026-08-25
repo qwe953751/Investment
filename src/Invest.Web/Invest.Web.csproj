@@ -19,6 +19,9 @@
     <!-- 概念股歸類表（版本二）。跟頁面檔案一樣內嵌，export 才不必猜工作目錄在哪。 -->
     <EmbeddedResource Include="Features/StockTopics/ConceptMapping.json" />
 
+    <!-- 查證過的失效成員個股（下市、被併購、興櫃）。同上，內嵌才不必猜工作目錄。 -->
+    <EmbeddedResource Include="Features/StockTopics/MemberStatus.json" />
+
     <!-- 說明泡泡兩邊都要用：Blazor 頁面直接從 wwwroot 載，靜態網站則靠這裡內嵌後輸出。
          同一份檔案掛兩個身分，才不會改了一邊忘了另一邊。 -->
     <EmbeddedResource Include="wwwroot/hint.js" LogicalName="Invest.Web.Infrastructure.StaticSite.Assets.hint.js" />
