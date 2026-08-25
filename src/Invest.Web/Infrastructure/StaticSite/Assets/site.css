@@ -2739,10 +2739,6 @@ body {
     color: #92400e;
 }
 
-.topic-status.is-expired {
-    color: #98a2b3;
-}
-
 /* AI 判斷與人工決定要分得開：人工的可以蓋掉 AI 的，反過來不行。 */
 .topic-author.by-ai {
     color: #6d28d9;

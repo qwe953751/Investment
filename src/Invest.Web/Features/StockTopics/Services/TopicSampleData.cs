@@ -1,33 +1,15 @@
 namespace Invest.Web.Features.StockTopics.Services;
 
 /// <summary>
-/// 催化事件與人工編輯這兩頁的示範資料。
+/// 人工編輯那一頁的示範資料。
 ///
-/// 這不是真的資料，而且刻意不假裝是：每一列都會帶著「示範」標記送到畫面上，
-/// 熱度計算也一行都不讀它（新聞熱度目前一律 null）。放這一份的唯一理由是
-/// 版面要先做出來讓使用者看得到長相、確認欄位夠不夠，再去接真正的新聞來源——
-/// 空白的頁面沒辦法討論欄位。
+/// 這不是真的資料，而且刻意不假裝是：每一列都會帶著「示範」標記送到畫面上。
+/// 靜態網站存不了東西，所以這一頁還沒有真正的編輯功能，先把版面做出來。
 ///
-/// 新聞來源接上來之後，這個檔案整個刪掉，兩頁改讀真實資料即可。
+/// 催化事件那一頁的示範資料已經拿掉了，改讀 material_events 裡的重大訊息。
 /// </summary>
 public static class TopicSampleData
 {
-    /// <summary>
-    /// 一則催化事件。欄位照文件 §4.3 的建議清單。
-    /// </summary>
-    public sealed record SampleEvent(
-        string Date,
-        string Summary,
-        string CatalystType,
-        string Scope,
-        IReadOnlyList<string> TopicNames,
-        IReadOnlyList<string> DirectTickers,
-        string Source,
-        string Directness,
-        decimal Confidence,
-        string Status,
-        string UpdatedAt);
-
     /// <summary>
     /// 一筆人工修正紀錄。欄位照文件 §4.4 的可編輯範圍。
     /// </summary>
@@ -40,81 +22,6 @@ public static class TopicSampleData
         string Author,
         string Note,
         bool Locked);
-
-    public static IReadOnlyList<SampleEvent> Events { get; } =
-    [
-        new("2026-08-20",
-            "玻纖布供需吃緊，第四季報價調漲",
-            "漲價",
-            "族群事件",
-            ["玻纖布", "銅箔基板(CCL)"],
-            [],
-            "產業新聞、公司說明",
-            "族群直接",
-            0.86m,
-            "生效中",
-            "2026-08-23 18:30"),
-
-        new("2026-08-19",
-            "先進封裝產能持續滿載，CoWoS 擴產進度提前",
-            "擴產",
-            "族群事件",
-            ["CoWoS", "先進封裝"],
-            [],
-            "法說會、公開資訊觀測站",
-            "族群直接",
-            0.81m,
-            "生效中",
-            "2026-08-23 18:30"),
-
-        new("2026-08-18",
-            "AI 伺服器液冷滲透率上調，機櫃與熱交換器同步受惠",
-            "新技術／新產品",
-            "族群事件",
-            ["液冷", "伺服器機櫃"],
-            [],
-            "產業研究報告",
-            "市場題材聯想",
-            0.62m,
-            "生效中",
-            "2026-08-23 18:30"),
-
-        new("2026-08-12",
-            "記憶體模組廠公告單月營收創同期新高",
-            "財報／營收",
-            "公司事件",
-            ["記憶體模組"],
-            ["2344"],
-            "公開資訊觀測站",
-            "公司直接",
-            0.93m,
-            "已衰減",
-            "2026-08-23 18:30"),
-
-        new("2026-08-05",
-            "政府擴大公共工程預算，帶動營建與重電需求",
-            "政策",
-            "總體事件",
-            ["公共工程", "重電"],
-            [],
-            "官方公告",
-            "族群直接",
-            0.70m,
-            "已衰減",
-            "2026-08-23 18:30"),
-
-        new("2026-07-28",
-            "某雲端客戶調整下單節奏（僅提及客戶，非公司本身業務）",
-            "訂單",
-            "間接關聯",
-            ["伺服器代工"],
-            [],
-            "媒體轉述",
-            "客戶／生態系關聯",
-            0.35m,
-            "已失效",
-            "2026-08-23 18:30")
-    ];
 
     public static IReadOnlyList<SampleEdit> Edits { get; } =
     [

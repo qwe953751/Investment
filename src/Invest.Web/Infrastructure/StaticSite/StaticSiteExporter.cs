@@ -32,8 +32,17 @@ public sealed class StaticSiteExporter(
     TradingValueRankingQueryService ranking,
     MarketFlagClient marketFlags,
     GoogleSheetTopicClient topics,
+    MaterialEventStore materialEvents,
+    ILogger<StaticSiteExporter> logger,
     IConfiguration configuration)
 {
+    /// <summary>
+    /// 催化事件頁最多列幾則。六十天的重大訊息篩掉例行公告之後還有一千多則，
+    /// 全部寫進 topics.json 會讓每一個開族群頁的人多下載幾百 KB，
+    /// 而那一頁本來就是由新到舊看，翻到第四百則的人不存在。
+    /// </summary>
+    private const int MaxCatalystEvents = 400;
+
     /// <summary>
     /// 與排行頁上的按鈕一致。
     /// </summary>
@@ -263,6 +272,8 @@ public sealed class StaticSiteExporter(
             .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.Ordinal)
             ?? [];
 
+        var catalystEvents = await LoadCatalystEventsAsync(active, catalog.StockNames, baseDate, cancellationToken);
+
         await WriteJsonAsync(
             Path.Combine(dataDirectory, "topics.json"),
             new TopicsExport(
@@ -285,19 +296,16 @@ public sealed class StaticSiteExporter(
                 catalog.MultiNodeConcepts,
                 staleMembers,
                 TopicMemberAudit.CheckedOn,
-                [.. TopicSampleData.Events.Select(item => new TopicEventExport(
-                    item.Date,
-                    item.Summary,
+                [.. catalystEvents.Select(item => new TopicEventExport(
+                    item.Date.ToString("yyyy-MM-dd"),
+                    item.Ticker,
+                    item.StockName,
+                    item.Subject,
                     item.CatalystType,
-                    item.Scope,
+                    item.Materiality,
                     item.TopicNames,
                     [.. item.TopicNames.Select(name => topicIdByName.GetValueOrDefault(name))],
-                    item.DirectTickers,
-                    item.Source,
-                    item.Directness,
-                    item.Confidence,
-                    item.Status,
-                    item.UpdatedAt))],
+                    item.Status))],
                 [.. TopicSampleData.Edits.Select(item => new TopicEditExport(
                     item.ChangedAt,
                     item.Target,
@@ -885,6 +893,46 @@ public sealed class StaticSiteExporter(
         decimal? Close);
 
     /// <summary>
+    /// 催化事件。資料在 Supabase 的 material_events，由每日排程累積。
+    ///
+    /// 讀不到就回空的，不讓整份排行榜發不出去——這跟族群分類抓失敗是同一個道理，
+    /// 而且更常見：本機沒設 SUPABASE_DB_URL 就跑 export 是日常。
+    /// </summary>
+    private async Task<IReadOnlyList<CatalystEventBuilder.TopicEvent>> LoadCatalystEventsAsync(
+        TopicMapping? active,
+        IReadOnlyDictionary<string, string> stockNames,
+        DateOnly? baseDate,
+        CancellationToken cancellationToken)
+    {
+        if (active is null || baseDate is not { } today)
+        {
+            return [];
+        }
+
+        try
+        {
+            var raw = await materialEvents.LoadSinceAsync(
+                today.AddDays(-CatalystEventBuilder.FadingDays),
+                cancellationToken);
+
+            var built = CatalystEventBuilder.Build(raw, active, stockNames, today, MaxCatalystEvents);
+
+            logger.LogInformation(
+                "催化事件：讀到 {Raw} 則重大訊息，篩出 {Built} 則掛在族群上的事件。",
+                raw.Count,
+                built.Count);
+
+            return built;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "讀取重大訊息失敗，催化事件頁這次會是空的。");
+
+            return [];
+        }
+    }
+
+    /// <summary>
     /// topics.json 的最外層。
     ///
     /// BaseDate 是族群熱度算在哪一天上。族群分類只有「現在這一份」，
@@ -908,7 +956,7 @@ public sealed class StaticSiteExporter(
         IReadOnlyDictionary<string, IReadOnlyList<string>> MultiNodeConcepts,
         IReadOnlyList<TopicMemberAudit.StaleMember> StaleMembers,
         string StaleCheckedOn,
-        IReadOnlyList<TopicEventExport> SampleEvents,
+        IReadOnlyList<TopicEventExport> Events,
         IReadOnlyList<TopicEditExport> SampleEdits,
         IReadOnlyList<TopicPeriodExport> Periods);
 
@@ -976,17 +1024,14 @@ public sealed class StaticSiteExporter(
     /// </summary>
     private sealed record TopicEventExport(
         string Date,
+        string Ticker,
+        string StockName,
         string Summary,
         string CatalystType,
-        string Scope,
+        double Materiality,
         IReadOnlyList<string> TopicNames,
         IReadOnlyList<string?> TopicIds,
-        IReadOnlyList<string> DirectTickers,
-        string Source,
-        string Directness,
-        decimal Confidence,
-        string Status,
-        string UpdatedAt);
+        string Status);
 
     /// <summary>
     /// 人工修正紀錄。同樣是示範資料：靜態網站存不了東西，這一頁先做版面。

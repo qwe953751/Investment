@@ -95,7 +95,7 @@ const availableViews = () => SITE_ACCESS === 'viewer'
 const TOPIC_TABS = [
     { key: 'heat', text: '熱度排行', hint: '族群依熱度排序。點任何一列展開這個族群的全部成員。' },
     { key: 'tree', text: '族群列表', hint: 'Google Sheet 上那棵供應鏈樹，點節點看它涵蓋哪些股票。排行榜族群欄的連結就是跳到這裡。' },
-    { key: 'events', text: '催化事件', hint: '族群為什麼熱起來的事件紀錄。新聞來源還沒接上，目前放的是示範資料。' },
+    { key: 'events', text: '催化事件', hint: '族群為什麼熱起來的事件紀錄，來自公開資訊觀測站的重大訊息。' },
     { key: 'edits', text: '人工編輯', hint: '分類被改過哪些地方，以及還等著使用者拍板的合併與歧義。' }
 ];
 
@@ -4238,6 +4238,10 @@ let topicData = null;
 let topicActive = null;
 let topicById = new Map();
 
+// 個股代號 → 它最近一則還在生效中的催化事件。排行榜族群欄的泡泡要用，
+// 那裡只有代號沒有事件，每次都掃一遍 events 陣列會在每一列重算一次。
+let topicEventByTicker = new Map();
+
 // 節點在 topics.json 陣列裡的位置。那個順序就是 Google Sheet F:J 由上往下的順序，
 // 而那個順序是有意義的：伺服器、PCB、散熱……最後才是傳產，照供應鏈遠近排的。
 // 依名稱排序會把它打散（傳產跑到中間、CPO 排在 IC通路 前面），所以樹一律照表格順序。
@@ -4363,14 +4367,15 @@ const TOPIC_TREE_FILTERS = [
     }
 ];
 
-// 沒有新聞來源時這一格要說的話。硬寫「無」會讓人以為系統查過了、確定沒事。
-const TOPIC_NO_EVENT_TEXT = '近期有資金異動，但尚無明確催化事件。';
+// 這一檔近期沒有重大訊息時要說的話。硬寫「無」會讓人以為系統查過了、確定沒事，
+// 但實際上只是這段期間它沒發公告——沒發公告不等於沒事情發生。
+const TOPIC_NO_EVENT_TEXT = '近期沒有掛得上的重大訊息。';
 
 // 狀態直接當 class 名稱會變成中文選擇器，CSS 那邊很難讀，所以在這裡換成拉丁字。
+// 只有這兩種：超過 45 天的事件在 C# 那邊就篩掉了，不會走到前端來。
 const TOPIC_STATUS_CLASS = {
     生效中: 'is-active',
-    已衰減: 'is-fading',
-    已失效: 'is-expired'
+    已衰減: 'is-fading'
 };
 
 const topicScoreText = score => (missing(score) ? '—' : toFixedText(Number(score), 1));
@@ -4427,9 +4432,14 @@ function makeTopicLink(topicId, name, level, ticker, attribution) {
 
     // 催化事件泡泡。桌機滑過、手機點一下都會出來，靠的是 hint.js 的 data-hint，
     // 不必再自己做一套彈窗。
+    const event = topicEventByTicker.get(ticker);
+
     button.dataset.hint = `${ticker} ${nameByTicker.get(ticker) ?? ''}｜`
         + `${attribution.bigTopicName ?? '—'} → ${attribution.currentTopicName ?? '待確認'}\n`
-        + `${TOPIC_NO_EVENT_TEXT}目前共掛在 ${attribution.topicCount} 個族群節點底下。`
+        + (event
+            ? `${event.date} ${event.catalystType}：${event.summary}\n`
+            : `${TOPIC_NO_EVENT_TEXT}\n`)
+        + `目前共掛在 ${attribution.topicCount} 個族群節點底下。`
         + '點一下跳到族群列表的這個節點。';
 
     button.addEventListener('click', () => focusTopic(topicId));
@@ -4511,6 +4521,16 @@ function prepareTopics() {
     topicById = new Map((topicActive?.topics ?? []).map(topic => [topic.id, topic]));
     topicOrder = new Map((topicActive?.topics ?? []).map((topic, index) => [topic.id, index]));
     openAllTopicBranches();
+
+    // events 已經照日期由新到舊排好，所以第一次遇到某一檔就是它最新的那一則。
+    // 只收生效中的：已衰減的事件擺在泡泡裡會讓人以為現在還有事在發生。
+    topicEventByTicker = new Map();
+
+    for (const event of topicData.events ?? []) {
+        if (event.status === '生效中' && !topicEventByTicker.has(event.ticker)) {
+            topicEventByTicker.set(event.ticker, event);
+        }
+    }
 
     if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && supabase === null) {
         state.topicPeriod = TOPIC_PERIOD_DAYS()[0] ?? state.topicPeriod;
@@ -5653,14 +5673,19 @@ function applyPendingTopicFocus() {
 // ── 分頁三：催化事件／新聞資料 ──────────────────────────────
 
 function renderTopicEvents(panel) {
-    panel.append(makeSampleBanner(
-        '催化事件的新聞來源還沒接上，下面這幾則是示範資料，用來確認欄位夠不夠、版面對不對。',
-        '族群熱度一行都不讀它：新聞熱度目前一律顯示 —。真的接上新聞來源之後，這一頁改讀真實資料。'));
+    const events = topicData.events ?? [];
 
-    const events = topicData.sampleEvents ?? [];
+    const intro = document.createElement('p');
+    intro.className = 'topic-intro';
+    intro.textContent = '全部來自公開資訊觀測站的重大訊息，每天累積。這一頁只留兩種公告：'
+        + '有可能推動股價的，而且發公告的那一檔有被分到族群。'
+        + '更名、面額變更、資金貸與、董監改選這些例行公告佔了原始資料的四成，都篩掉了。';
+    panel.append(intro);
 
     if (events.length === 0) {
-        panel.append(makeTopicNotice('目前沒有任何催化事件。', false));
+        panel.append(makeTopicNotice(
+            '最近沒有任何掛得上族群的催化事件。剛開始累積時這是正常的。',
+            false));
         return;
     }
 
@@ -5671,15 +5696,13 @@ function renderTopicEvents(panel) {
     table.className = 'ranking-table topic-event-table';
 
     const headings = [
-        ['日期', '事件發生或被報導的日期。'],
-        ['事件', '一句話講完發生什麼事。'],
-        ['催化類型', '漲價、擴產、訂單、政策、財報這幾類。分類是為了之後看「哪一種事件真的帶得動資金」。'],
-        ['影響範圍', '公司事件、族群事件、總體事件，還是只是間接關聯。'],
-        ['關聯族群', '這則事件掛到哪些族群節點。點下去跳到族群列表。'],
-        ['直接程度', '公司直接、族群直接、客戶／生態系關聯、市場題材聯想。越往後越容易誤判。'],
-        ['信心', '0～1。低於 0.5 的多半是媒體轉述或題材聯想，不該拿來當進出依據。'],
-        ['狀態', '生效中、已衰減、已失效。事件會過期，不標的話舊消息會一直撐著熱度。'],
-        ['來源', '這則消息是從哪裡來的。']
+        ['日期', '公司發布這則重大訊息的日期。'],
+        ['個股', '發布公告的公司。'],
+        ['事件', '重大訊息的主旨，照公司自己寫的原文。'],
+        ['催化類型', '由主旨判斷，不是用「符合條款」——條款是法律分類，同一款裡混著蓋新廠與買定存單。'],
+        ['材料性', '0～1，這種公告有多可能推動股價。0 分的例行公告不會出現在這一頁。'],
+        ['關聯族群', '發公告的那一檔被分在哪些族群。點下去跳到族群列表。'],
+        ['狀態', '生效中（14 天內）、已衰減。超過 45 天就不再列出來，否則舊消息會一直撐著版面。']
     ];
 
     const head = document.createElement('thead');
@@ -5699,12 +5722,12 @@ function renderTopicEvents(panel) {
 
     for (const event of events) {
         const tr = document.createElement('tr');
-        tr.className = 'topic-sample-row';
 
         appendTextCell(tr, event.date, 'topic-date');
+        appendTextCell(tr, `${event.ticker} ${event.stockName}`.trim(), 'topic-stock');
         appendTextCell(tr, event.summary, 'topic-summary');
         appendTextCell(tr, event.catalystType);
-        appendTextCell(tr, event.scope);
+        appendTextCell(tr, toFixedText(Number(event.materiality), 1), 'numeric');
 
         const topics = document.createElement('td');
         topics.className = 'topic-links-cell';
@@ -5723,16 +5746,12 @@ function renderTopicEvents(panel) {
                 const plain = document.createElement('span');
                 plain.className = 'topic-link-blank';
                 plain.textContent = name;
-                plain.dataset.hint = '示範資料裡的名字，目前的分類表上找不到對應節點。';
                 topics.append(plain);
             }
         });
 
         tr.append(topics);
-        appendTextCell(tr, event.directness);
-        appendTextCell(tr, toFixedText(Number(event.confidence), 2), 'numeric');
         appendTextCell(tr, event.status, 'topic-status ' + (TOPIC_STATUS_CLASS[event.status] ?? ''));
-        appendTextCell(tr, event.source);
         body.append(tr);
     }
 
