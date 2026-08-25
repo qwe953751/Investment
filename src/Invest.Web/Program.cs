@@ -39,7 +39,7 @@ using System.Text.Json.Serialization;
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "export" or "intraday" or "backfill-intraday-heat" or "sync" or "verify"
-        or "status" or "curve" or "revenue" or "turnover-audit" or "alert" or "alert-clear";
+        or "status" or "curve" or "revenue" or "material-events" or "turnover-audit" or "alert" or "alert-clear";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -67,6 +67,7 @@ builder.Services.AddHttpClient<GoogleSheetTopicClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 
 // 暫時的：盤中成交金額準確度驗證。驗完連同 Infrastructure/TurnoverAudit 一起刪。
 builder.Services.AddHttpClient<WantgooTurnoverClient>(ConfigureQuoteClient);
@@ -78,6 +79,7 @@ builder.Services.AddSingleton<IntradayCurveStore>();
 builder.Services.AddSingleton<IntradayTopicHeatStore>();
 builder.Services.AddSingleton<MarketFlagStore>();
 builder.Services.AddSingleton<RevenueStore>();
+builder.Services.AddSingleton<MaterialEventStore>();
 builder.Services.AddSingleton<DailyQuoteSyncStore>();
 builder.Services.AddSingleton<HeartbeatStore>();
 builder.Services.AddSingleton<SiteAlertStore>();
@@ -164,6 +166,12 @@ if (command is "curve")
 if (command is "revenue")
 {
     await RunRevenueAsync(app.Services, args);
+    return;
+}
+
+if (command is "material-events")
+{
+    await RunMaterialEventAsync(app.Services, args);
     return;
 }
 
@@ -1262,6 +1270,110 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。已寫入的月份都保留在資料庫，重跑會略過。");
+    }
+}
+
+/// <summary>
+/// 重大訊息。不帶參數就是抓當日那一份，這是每日排程要跑的；
+/// <c>--backfill 天數</c> 會再往回一天一天補，只在需要歷史的時候手動跑。
+///
+/// 兩件事的先後是有意義的：當日那一份的欄位最齊（有符合條款、有說明全文），
+/// 而且明天就沒了，所以先抓它，回補失敗也不影響今天的收成。
+/// </summary>
+static async Task RunMaterialEventAsync(IServiceProvider services, string[] args)
+{
+    // 最近幾天一律重抓。觀測站當天還會陸續補進來，而且早期抓到的那幾天可能是
+    // 只有主旨的回補版本，重抓一次才有機會把條款與說明補齊。
+    const int AlwaysRefreshDays = 3;
+
+    var backfillIndex = Array.IndexOf(args, "--backfill");
+    var backfillDays = backfillIndex >= 0 && args.Length > backfillIndex + 1
+        && int.TryParse(args[backfillIndex + 1], out var parsed)
+        ? parsed
+        : 0;
+
+    using var scope = services.CreateScope();
+    var client = scope.ServiceProvider.GetRequiredService<MaterialEventClient>();
+    var store = scope.ServiceProvider.GetRequiredService<MaterialEventStore>();
+    var migrations = scope.ServiceProvider.GetRequiredService<SchemaMigrations>();
+    var options = scope.ServiceProvider.GetRequiredService<IOptions<MarketDataOptions>>().Value;
+
+    if (!SchemaMigrations.Report(await migrations.CheckAsync(), migrations.Directory))
+    {
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+    var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei).DateTime);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        var latest = await client.GetLatestAsync(cts.Token);
+
+        if (latest.Count > 0)
+        {
+            Console.WriteLine($"當日重大訊息寫入 {await store.SaveAsync(latest, cts.Token)} 則。");
+        }
+        else
+        {
+            // 抓取或解析失敗會直接丟出來，走到這裡代表對方真的回了一份空的（例如連假）。
+            Console.WriteLine("當日重大訊息是空的。");
+        }
+
+        if (backfillDays > 0)
+        {
+            var existing = await store.LoadDayCountsAsync(cts.Token);
+
+            Console.WriteLine();
+            Console.WriteLine($"回補 {backfillDays} 天，從 {today:yyyy-MM-dd} 往回。觀測站一天一個請求。");
+            Console.WriteLine();
+
+            var day = today;
+
+            for (var index = 0; index < backfillDays; index++, day = day.AddDays(-1))
+            {
+                if (index >= AlwaysRefreshDays && existing.TryGetValue(day, out var count) && count > 0)
+                {
+                    Console.WriteLine($"{day:yyyy-MM-dd} 已有 {count} 則，略過。");
+                    continue;
+                }
+
+                var rows = await client.GetDayAsync(day, cts.Token);
+
+                if (rows.Count == 0)
+                {
+                    // 假日沒有人發言。這不是錯誤。
+                    Console.WriteLine($"{day:yyyy-MM-dd} 沒有公告。");
+                }
+                else
+                {
+                    Console.WriteLine($"{day:yyyy-MM-dd} 寫入 {await store.SaveAsync(rows, cts.Token)} 則。");
+                }
+
+                await Task.Delay(options.RequestDelayMilliseconds, cts.Token);
+            }
+        }
+
+        var total = (await store.LoadDayCountsAsync(cts.Token)).ToArray();
+
+        Console.WriteLine();
+        Console.WriteLine(total.Length == 0
+            ? "資料庫裡還沒有任何重大訊息。"
+            : $"完成。資料庫裡共 {total.Sum(entry => entry.Value):N0} 則，"
+                + $"涵蓋 {total[0].Key:yyyy-MM-dd} 到 {total[^1].Key:yyyy-MM-dd}。");
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine();
+        Console.WriteLine("已中斷。已寫入的日子都保留在資料庫，重跑會略過。");
     }
 }
 

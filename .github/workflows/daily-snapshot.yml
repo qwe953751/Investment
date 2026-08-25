@@ -151,6 +151,17 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- sync
 
+      # 重大訊息跟營收不一樣，不能另外開一條流程慢慢跑：它要在下面的匯出之前進資料庫，
+      # 當天的催化事件才會出現在當天發佈的網站上。
+      #
+      # 會多帶 --backfill 5：OpenAPI 那一份給的是「最近一個發言日」，實測比今天慢一天，
+      # 所以只抓它會永遠差一天。回補的前三天一律重抓，把當天還在陸續補進來的那些收齊。
+      - name: 更新重大訊息
+        if: ${{ !cancelled() && inputs.publish-only != true }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- material-events --backfill 5
+
       - name: 對帳
         if: ${{ !cancelled() && inputs.publish-only != true }}
         env:
