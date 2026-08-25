@@ -74,6 +74,10 @@
 
 不要在收盤前為了發布畫面而跑完整流程。完整流程會等今天的 `data/imports/YYYY-MM-DD.json`，最晚重試到台北時間 21:00；只改程式碼時直接用 `publish-only=true`。
 
+`daily-snapshot.yml` 已將兩種流程分開併發鎖：完整快照使用 `daily-snapshot`，
+`publish-only=true` 使用 `daily-snapshot-publish`。因此完整流程正在回補或備份時，
+仍可安全啟動只讀 `data` 快取的畫面發布；不要為了讓發布插隊而取消正在執行的完整快照。
+
 #### 2. 推送 `main` 前的固定檢查
 
 PowerShell 在 repo 根目錄執行：

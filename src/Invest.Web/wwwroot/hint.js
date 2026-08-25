@@ -10,6 +10,14 @@
 (() => {
     const SELECTOR = '[data-hint]';
     const MARGIN = 8;
+    const viewerAccess = (() => {
+        const query = new URLSearchParams(window.location.search).get('access');
+        const path = window.location.pathname.split('/').filter(Boolean).at(-1);
+
+        return window.location.hostname.toLowerCase() === 'view.frank-investment.com'
+            || query === 'viewer'
+            || path === 'viewer';
+    })();
 
     // 有滑鼠的裝置走 hover，沒有的走點擊。兩種同時開的話，
     // 手機上點一下排序標題會同時觸發排序與泡泡，顯得很吵。
@@ -60,9 +68,18 @@
     }
 
     function targetOf(event) {
-        return event.target instanceof Element
-            ? event.target.closest(SELECTOR)
-            : null;
+        if (!(event.target instanceof Element)) {
+            return null;
+        }
+
+        // 檢視權限只讓表格／列表表頭顯示說明；資料列、按鈕與篩選控制項
+        // 即使留著 data-hint，也不在訪客連結顯示，避免把操作提示當成公開文件。
+        if (viewerAccess) {
+            const header = event.target.closest('th');
+            return header?.matches(SELECTOR) ? header : null;
+        }
+
+        return event.target.closest(SELECTOR);
     }
 
     if (canHover) {

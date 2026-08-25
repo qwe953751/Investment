@@ -31,6 +31,20 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void K線標題包含MoneyDJ個股超連結()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("function moneyDjStockUrl(ticker)", script, StringComparison.Ordinal);
+        Assert.Contains("https://www.moneydj.com/Z/ZC/ZCX/ZCX_", script, StringComparison.Ordinal);
+        Assert.Contains("className = 'kline-title-link'", script, StringComparison.Ordinal);
+        Assert.Contains("target = '_blank'", script, StringComparison.Ordinal);
+        Assert.Contains("rel = 'noopener noreferrer'", script, StringComparison.Ordinal);
+        Assert.Contains(".kline-title-link", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void K棒顏色比昨收而不是比同一根的開盤價()
     {
         // 這條規則的正本是 DailyKLineTrendCalculator（close 比 PreviousClose ?? Open）。
@@ -134,6 +148,17 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 行動版固定名稱欄不應覆蓋個股漲跌底色()
+    {
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains(
+            ".ranking-table td.stock-name:not(.stock-name-change-up):not(.stock-name-change-down)",
+            styles,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 筆記編輯器使用較大的輸入字體()
     {
         var styles = ReadAsset("site.css");
@@ -147,7 +172,7 @@ public sealed class StaticKLineAssetTests
     [Fact]
     public void 筆記類型與狀態篩選上下排列()
     {
-        var styles = ReadAsset("site.css");
+        var styles = ReadAsset("site.css").Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains(".notes-filter-groups {\n    flex-direction: column;\n    align-items: flex-start;", styles, StringComparison.Ordinal);
     }
@@ -274,6 +299,56 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("makeKLineButton(member.ticker", script, StringComparison.Ordinal);
         Assert.Contains("openAllTopicBranches", script, StringComparison.Ordinal);
         Assert.Contains("makeTopicPeriodPanel()", topicTree, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 族群熱度排行點名稱在原表內展開成員而不自動跳頁籤()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.DoesNotContain("id=\"topic-members-popover\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("topic-members-backdrop", styles, StringComparison.Ordinal);
+        Assert.Contains("rankChange", script, StringComparison.Ordinal);
+        Assert.Contains("textContent = '名次變化'", script, StringComparison.Ordinal);
+        Assert.Contains("topicHeatExpandedId", script, StringComparison.Ordinal);
+        Assert.Contains("topic-heat-members-row", script, StringComparison.Ordinal);
+        Assert.Contains("makeTopicMemberBlock(row)", script, StringComparison.Ordinal);
+        Assert.Contains("營收增減", script, StringComparison.Ordinal);
+        Assert.Contains("創高月數", script, StringComparison.Ordinal);
+        Assert.Contains("toHighMonthsCell(member.ticker, revenue)", script, StringComparison.Ordinal);
+        Assert.Contains("topicMemberSortKey", script, StringComparison.Ordinal);
+        Assert.Contains("topic-member-sort-button", styles, StringComparison.Ordinal);
+        Assert.Contains("topic-heat-members-row", styles, StringComparison.Ordinal);
+        Assert.DoesNotContain("focusTopic(row.topicId)", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("openTopicMembersPopover", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("topicMembersPopover", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 檢視權限只顯示簡短表頭泡泡且族群排行名次變化緊跟名次()
+    {
+        var hint = ReadAsset("hint.js");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("const viewerAccess", hint, StringComparison.Ordinal);
+        Assert.Contains("const header = event.target.closest('th')", hint, StringComparison.Ordinal);
+        Assert.Contains("return header?.matches(SELECTOR) ? header : null", hint, StringComparison.Ordinal);
+        Assert.Contains("function tableHeaderHint(key, fallback)", script, StringComparison.Ordinal);
+        Assert.Contains("cell.dataset.hint = tableHeaderHint(column.key, column.hint)", script, StringComparison.Ordinal);
+
+        var topicStart = script.IndexOf("function renderTopicHeat", StringComparison.Ordinal);
+        var topicEnd = script.IndexOf("function makeTopicRowButton", topicStart, StringComparison.Ordinal);
+        var topicHeat = script[topicStart..topicEnd];
+        var rankHeader = topicHeat.IndexOf("rank.className", StringComparison.Ordinal);
+        var rankChangeHeader = topicHeat.IndexOf("rankChange.className", StringComparison.Ordinal);
+        var topicHeader = topicHeat.IndexOf("name.className", StringComparison.Ordinal);
+
+        Assert.True(rankHeader >= 0 && rankHeader < rankChangeHeader && rankChangeHeader < topicHeader);
+        Assert.Contains("changeCell.className = 'numeric col-rank-change '", topicHeat, StringComparison.Ordinal);
+        Assert.Contains(".topic-heat-table th.col-topic-name", styles, StringComparison.Ordinal);
     }
 
     [Fact]

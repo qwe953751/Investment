@@ -1697,20 +1697,16 @@ td.stock-name.stock-name-change-down {
     margin-bottom: 4px;
 }
 
-/* 原本是 <strong>，改成連到 MoneyDJ 的 <a>。字重與顏色維持原樣，
-   只用底線表示可以點——彈窗裡已經有一顆「關閉」按鈕，再多一個藍字會搶掉焦點。 */
-.daily-kline-title {
+.kline-title-link {
     color: inherit;
-    font-weight: 600;
-    text-decoration: underline;
-    text-decoration-color: #cbd5e1;
-    text-underline-offset: 3px;
+    text-decoration: none;
 }
 
-.daily-kline-title:hover,
-.daily-kline-title:focus-visible {
-    color: #1d4ed8;
-    text-decoration-color: currentColor;
+.kline-title-link:hover,
+.kline-title-link:focus-visible {
+    color: #1a56db;
+    text-decoration: underline;
+    text-underline-offset: 3px;
 }
 
 .daily-kline-period {
@@ -2280,7 +2276,7 @@ td.stock-name.stock-name-change-down {
     }
 
     .ranking-table th.col-name,
-    .ranking-table td.stock-name {
+    .ranking-table td.stock-name:not(.stock-name-change-up):not(.stock-name-change-down) {
         position: sticky;
         left: 80px;
         background: #fff;
@@ -2411,6 +2407,17 @@ td.stock-name.stock-name-change-down {
     white-space: normal;
 }
 
+.topic-heat-table th.col-topic-name {
+    text-align: left;
+}
+
+.topic-heat-table th.col-rank,
+.topic-heat-table th.col-rank-change,
+.topic-heat-table td.rank,
+.topic-heat-table td.col-rank-change {
+    white-space: nowrap;
+}
+
 .topic-heat-table td.topic-composite {
     font-weight: 700;
 }
@@ -2420,8 +2427,26 @@ td.stock-name.stock-name-change-down {
     color: #98a2b3;
 }
 
-.topic-row.expanded {
-    background: #f4f8ff;
+.topic-heat-table tr.topic-heat-members-row:hover {
+    background: transparent;
+}
+
+.topic-heat-members-row > td {
+    padding: 0;
+    text-align: left;
+    white-space: normal;
+    background: #fff;
+}
+
+.topic-heat-members-row .topic-member-block {
+    margin: 0;
+    border-top: 1px solid #dbe3ef;
+    border-bottom: 1px solid #dbe3ef;
+}
+
+/* 新聞熱度整欄現在都是 —，調淡一點，免得看起來像算壞了。 */
+.topic-heat-table td.topic-empty {
+    color: #bbb;
 }
 
 .topic-name-button {
@@ -2492,13 +2517,7 @@ td.stock-name.stock-name-change-down {
     cursor: help;
 }
 
-/* ── 展開後的成員明細 ── */
-
-.topic-member-row > td {
-    padding: 0 12px 16px !important;
-    background: #f8fafc;
-    text-align: left !important;
-}
+/* ── 成員明細 ── */
 
 .topic-member-title {
     margin: 0 0 8px;
@@ -2553,6 +2572,27 @@ td.stock-name.stock-name-change-down {
     background: #f1f5f9;
     color: #475467;
     font-weight: 600;
+}
+
+.topic-member-sortable {
+    padding: 0;
+}
+
+.topic-member-sort-button {
+    width: 100%;
+    padding: 6px 10px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.topic-member-sort-button:hover,
+.topic-member-sort-button:focus-visible {
+    background: #e2e8f0;
+    color: #1d4ed8;
+    outline: none;
 }
 
 .topic-member-table tbody tr:last-child td {

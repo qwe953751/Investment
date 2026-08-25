@@ -5,10 +5,10 @@
 <div class="daily-kline-card">
     <div class="daily-kline-header">
         <div>
-            @* 與靜態站的彈窗一致：代號＋股名連到 MoneyDJ 個股基本資料頁。
-               網址只能從代號組，理由寫在 site.js 的 moneydjStockUrl。 *@
-            <a class="daily-kline-title" target="_blank" rel="noopener noreferrer"
-               href="@($"https://www.moneydj.com/z/zc/zca/zca_{Ticker}.djhtm")">@Ticker @Name</a>
+            <strong>
+                <a class="kline-title-link" href="@MoneyDjUrl" target="_blank" rel="noopener noreferrer"
+                   title="在 MoneyDJ 開啟個股頁面">@Ticker @Name</a>
+            </strong>
             <span class="daily-kline-period">還原權息日 K・@StartDateText ~ @EndDate.ToString("yyyy/MM/dd")</span>
         </div>
         <button type="button" class="daily-kline-close" @onclick="OnClose">關閉</button>
@@ -138,6 +138,9 @@
         => Candles.Count == 0
             ? EndDate.AddMonths(-3).ToString("yyyy/MM/dd")
             : Candles[0].Date.ToString("yyyy/MM/dd");
+
+    private string MoneyDjUrl
+        => $"https://www.moneydj.com/Z/ZC/ZCX/ZCX_{Uri.EscapeDataString(Ticker.Trim())}.djhtm";
 
     private double MinPrice
         => PriceValues.Count == 0 ? 0 : (double)PriceValues.Min();

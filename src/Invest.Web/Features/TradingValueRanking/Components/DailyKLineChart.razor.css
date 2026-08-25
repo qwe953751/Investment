@@ -14,18 +14,16 @@
     margin-bottom: 4px;
 }
 
-.daily-kline-title {
+.kline-title-link {
     color: inherit;
-    font-weight: 600;
-    text-decoration: underline;
-    text-decoration-color: #cbd5e1;
-    text-underline-offset: 3px;
+    text-decoration: none;
 }
 
-.daily-kline-title:hover,
-.daily-kline-title:focus-visible {
-    color: #1d4ed8;
-    text-decoration-color: currentColor;
+.kline-title-link:hover,
+.kline-title-link:focus-visible {
+    color: #1a56db;
+    text-decoration: underline;
+    text-underline-offset: 3px;
 }
 
 .daily-kline-period {
