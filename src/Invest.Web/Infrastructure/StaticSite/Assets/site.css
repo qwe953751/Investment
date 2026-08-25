@@ -420,7 +420,7 @@ body {
 }
 
 /* 筆記頁：左邊是可篩選的清單，右邊是固定編輯區。
-   內容存在瀏覽器 localStorage，不與公開行情快照或 GitHub 檔案混在一起。 */
+   資料直接讀寫 notes 表，任何裝置開啟同一站點都會看到相同內容。 */
 .notes-page {
     margin-top: 16px;
 }
@@ -497,6 +497,26 @@ body {
     border: 1px solid #ddd;
     border-radius: 8px;
     background: #fafafa;
+}
+
+.notes-filter-groups,
+.notes-filter-group {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.notes-filter-groups {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+}
+
+.notes-filter-label {
+    color: #667085;
+    font-size: 13px;
+    white-space: nowrap;
 }
 
 .notes-category-switch {
@@ -745,6 +765,23 @@ body {
     min-height: 220px;
     resize: vertical;
     line-height: 1.6;
+}
+
+/* 筆記編輯時要讀得清楚；篩選列仍維持原本大小，避免工具列變得過高。 */
+.notes-editor-card .notes-form-grid input,
+.notes-editor-card .notes-form-grid select {
+    font-size: 17px;
+}
+
+.notes-editor-card .notes-form-grid label > span,
+.notes-editor-card .notes-content-field > span {
+    font-size: 16px;
+}
+
+.notes-editor-card .notes-content-field textarea {
+    min-height: 260px;
+    font-size: 18px;
+    line-height: 1.7;
 }
 
 .notes-editor-actions {
@@ -1585,6 +1622,15 @@ body {
     font-weight: 600;
 }
 
+/* 個股名稱的淡色底只提示日漲跌，不染整列；零值或缺值維持原本底色。 */
+td.stock-name.stock-name-change-up {
+    background: #fff1f0;
+}
+
+td.stock-name.stock-name-change-down {
+    background: #effaf3;
+}
+
 .stock-name-button {
     padding: 0;
     border: none;
@@ -1919,30 +1965,21 @@ body {
     font-size: 13px;
 }
 
-/* 交易限制的標記排在股名左邊，由上往下疊。
-   標記那一格的寬度固定保留著，沒有標記的列也一樣，所以整欄的名字都從同一個位置起算。 */
-.name-cell {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    line-height: 18px;
-}
-
-/* 右邊補一塊跟標記等寬的空白。左右對稱，股名才會落在欄位正中央、跟表頭對齊；
-   只留左邊的話整欄股名會被推右 11px。 */
-.name-cell::after {
-    content: '';
-    flex: none;
-    width: 17px;
-}
-
 .badges {
     display: flex;
     flex: none;
     flex-direction: column;
     gap: 2px;
     width: 17px;
+}
+
+/* 交易限制現在跟在代號與市／櫃標記後面，不再佔用名稱左側空間。 */
+.ticker-badges {
+    display: inline-flex;
+    width: auto;
+    margin-left: 4px;
+    flex-direction: row;
+    vertical-align: middle;
 }
 
 /* 淡底彩字：標記要看得到，但不能比股名還搶眼。 */

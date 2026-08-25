@@ -157,7 +157,16 @@
         </div>
 
         <div class="notes-filter-row" aria-label="筆記篩選">
-            <div class="notes-category-switch" id="notes-category-options"></div>
+            <div class="notes-filter-groups">
+                <div class="notes-filter-group">
+                    <span class="notes-filter-label">類型</span>
+                    <div class="notes-category-switch" id="notes-category-options"></div>
+                </div>
+                <div class="notes-filter-group">
+                    <span class="notes-filter-label">狀態</span>
+                    <div class="notes-category-switch" id="notes-status-options"></div>
+                </div>
+            </div>
             <label class="notes-search">
                 <span>搜尋</span>
                 <input type="search" id="notes-search" placeholder="標題或內容" autocomplete="off" />

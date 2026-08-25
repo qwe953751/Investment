@@ -674,6 +674,15 @@
     font-weight: 600;
 }
 
+/* 個股名稱的淡色底只提示日漲跌，不染整列；零值或缺值維持原本底色。 */
+.ranking-table td.stock-name.stock-name-change-up {
+    background: #fff1f0;
+}
+
+.ranking-table td.stock-name.stock-name-change-down {
+    background: #effaf3;
+}
+
 .stock-name-button {
     padding: 0;
     border: none;

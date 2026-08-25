@@ -127,7 +127,7 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             """
             with latest as (
                 select id, trade_date,
-                       twse_index, twse_change_percent,
+                       captured_at, twse_index, twse_change_percent,
                        tpex_index, tpex_change_percent
                 from intraday_runs
                 order by trade_date desc, captured_at desc
@@ -138,7 +138,8 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                    latest.tpex_index, latest.tpex_change_percent,
                    s.symbol, s.name, s.market,
                    q.price, q.turnover, q.change_percent,
-                   q.open_price, q.high_price, q.low_price
+                   q.open_price, q.high_price, q.low_price,
+                   latest.captured_at
             from latest
             join intraday_quotes q on q.run_id = latest.id
             join securities s on s.id = q.security_id
@@ -150,12 +151,14 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         var quotes = new List<IntradayQuote>();
         long? runId = null;
         DateOnly tradeDate = default;
+        DateTimeOffset capturedAt = default;
         IReadOnlyList<MarketIndexQuote>? marketIndices = null;
 
         while (await reader.ReadAsync(cancellationToken))
         {
             runId ??= reader.GetInt64(0);
             tradeDate = reader.GetFieldValue<DateOnly>(1);
+            capturedAt = reader.GetFieldValue<DateTimeOffset>(15);
             marketIndices ??= ReadMarketIndices(reader);
 
             quotes.Add(new IntradayQuote
@@ -178,6 +181,7 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             ? null
             : new StoredIntradaySnapshot(
                 runId.Value,
+                capturedAt,
                 new IntradaySnapshot
                 {
                     TradeDate = tradeDate,
@@ -560,4 +564,5 @@ public sealed record IntradaySaveResult
 /// </summary>
 public sealed record StoredIntradaySnapshot(
     long RunId,
+    DateTimeOffset CapturedAt,
     IntradaySnapshot Snapshot);

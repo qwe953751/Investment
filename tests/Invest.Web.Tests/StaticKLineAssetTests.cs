@@ -120,6 +120,39 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 個股列表名稱依日漲跌顯示淡底色且交易限制移到代號右側()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("const stockNameChangeClass", script, StringComparison.Ordinal);
+        Assert.Contains("tickerBadges: toBadges(row.ticker)", script, StringComparison.Ordinal);
+        Assert.Contains("className = 'badges ticker-badges'", script, StringComparison.Ordinal);
+        Assert.Contains("stockNameChangeClass(member.priceChangeRate)", script, StringComparison.Ordinal);
+        Assert.Contains("td.stock-name.stock-name-change-up", styles, StringComparison.Ordinal);
+        Assert.Contains("td.stock-name.stock-name-change-down", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 筆記編輯器使用較大的輸入字體()
+    {
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains(".notes-editor-card .notes-form-grid input", styles, StringComparison.Ordinal);
+        Assert.Contains("font-size: 17px", styles, StringComparison.Ordinal);
+        Assert.Contains(".notes-editor-card .notes-content-field textarea", styles, StringComparison.Ordinal);
+        Assert.Contains("font-size: 18px", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 筆記類型與狀態篩選上下排列()
+    {
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains(".notes-filter-groups {\n    flex-direction: column;\n    align-items: flex-start;", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 日K只接受已標記為向前還原權息的每檔資料()
     {
         var script = ReadAsset("site.js");
@@ -212,8 +245,20 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("marketTurnover", marketHeat, StringComparison.Ordinal);
         Assert.Contains("marketTurnoverChangeRate", marketHeat, StringComparison.Ordinal);
         Assert.Contains("全市場預估成交額", marketHeat, StringComparison.Ordinal);
-        Assert.Contains("不是預估收盤", marketHeat, StringComparison.Ordinal);
-        Assert.DoesNotContain("estimatedMarketTurnover", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("今日預估收盤成交額", marketHeat, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 筆記可同時依類型與狀態篩選()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("id=\"notes-category-options\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"notes-status-options\"", html, StringComparison.Ordinal);
+        Assert.Contains("let notesStatusFilter = 'all'", script, StringComparison.Ordinal);
+        Assert.Contains("const statusMatches = notesStatusFilter === 'all' || note.status === notesStatusFilter;", script, StringComparison.Ordinal);
+        Assert.Contains("return categoryMatches && statusMatches && textMatches;", script, StringComparison.Ordinal);
     }
 
     [Fact]

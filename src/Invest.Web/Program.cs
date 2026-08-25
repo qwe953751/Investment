@@ -350,7 +350,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
                     snapshot = snapshot with
                     {
-                        MarketHeat = CalculateIntradayMarketHeat(historicalDataSet, snapshot)
+                        MarketHeat = CalculateIntradayMarketHeat(historicalDataSet, snapshot, capturedAt)
                     };
 
                     var result = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);
@@ -528,7 +528,9 @@ static async Task RunIntradayHeatBackfillAsync(IServiceProvider services, string
     }
 
     var historicalDataSet = await rankingService.GetDataSetAsync();
-    var heat = CalculateIntradayMarketHeat(historicalDataSet, snapshot);
+    var capturedAt = stored?.CapturedAt ?? publicSnapshot?.CapturedAt
+        ?? throw new InvalidOperationException("盤中快照缺少收集時間，無法回填預估成交額。");
+    var heat = CalculateIntradayMarketHeat(historicalDataSet, snapshot, capturedAt);
 
     if (heat?.Score is null)
     {
@@ -556,7 +558,8 @@ static async Task RunIntradayHeatBackfillAsync(IServiceProvider services, string
 /// </summary>
 static MarketHeatMetrics? CalculateIntradayMarketHeat(
     MarketDataSet historicalDataSet,
-    IntradaySnapshot snapshot)
+    IntradaySnapshot snapshot,
+    DateTimeOffset capturedAt)
 {
     var history = historicalDataSet.DailyTrading
         .Where(row => row.TradingDate < snapshot.TradeDate);
@@ -579,10 +582,17 @@ static MarketHeatMetrics? CalculateIntradayMarketHeat(
             Quotes = snapshot.MarketIndices
         });
 
+    var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+    var capturedAtTaipei = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTime(capturedAt, taipei).DateTime);
+    var projectedTurnover = IntradayTurnoverProjection.Estimate(
+        snapshot.Quotes.Sum(quote => quote.EstimatedTradingValue),
+        capturedAtTaipei);
+
     return MarketHeatCalculator.Calculate(
         [.. history, .. currentTrading],
         [.. heatIndices],
-        snapshot.TradeDate);
+        snapshot.TradeDate,
+        projectedTurnover);
 }
 
 /// <summary>
@@ -732,7 +742,9 @@ static async Task<PublishedManifest> LoadPublishedManifestAsync(
     HttpClient client,
     CancellationToken cancellationToken)
 {
-    const string ManifestUrl = "https://qwe953751.github.io/Investment/manifest.json";
+    // 舊網址根目錄已刻意收掉內容；回填必須讀實際發布資料的最高權限子路徑。
+    // 這裡只拿公開 anon key 與 schema，寫入仍強制走明確帶 --via-management-api 的受控路徑。
+    const string ManifestUrl = "https://frank-invest.github.io/admin888/manifest.json";
     var json = await client.GetStringAsync(ManifestUrl, cancellationToken);
     return JsonSerializer.Deserialize<PublishedManifest>(json, CreatePublicJsonOptions())
         ?? throw new InvalidOperationException("讀不到正式網站的 manifest.json。");
