@@ -31,6 +31,20 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void K線標題包含MoneyDJ個股超連結()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("function moneyDjStockUrl(ticker)", script, StringComparison.Ordinal);
+        Assert.Contains("https://www.moneydj.com/Z/ZC/ZCX/ZCX_", script, StringComparison.Ordinal);
+        Assert.Contains("className = 'kline-title-link'", script, StringComparison.Ordinal);
+        Assert.Contains("target = '_blank'", script, StringComparison.Ordinal);
+        Assert.Contains("rel = 'noopener noreferrer'", script, StringComparison.Ordinal);
+        Assert.Contains(".kline-title-link", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void K棒顏色比昨收而不是比同一根的開盤價()
     {
         // 這條規則的正本是 DailyKLineTrendCalculator（close 比 PreviousClose ?? Open）。

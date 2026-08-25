@@ -2679,6 +2679,10 @@ function renderKLineLegend(bars) {
     return legend;
 }
 
+function moneyDjStockUrl(ticker) {
+    return `https://www.moneydj.com/Z/ZC/ZCX/ZCX_${encodeURIComponent(String(ticker).trim())}.djhtm`;
+}
+
 function positionPopover(popoverId, anchor) {
     const popover = el(popoverId);
 
@@ -2736,7 +2740,14 @@ function renderKLinePopover(ticker, name, anchor) {
     const title = document.createElement('div');
     const strong = document.createElement('strong');
     strong.id = 'kline-title';
-    strong.textContent = `${ticker} ${name}`;
+    const titleLink = document.createElement('a');
+    titleLink.className = 'kline-title-link';
+    titleLink.href = moneyDjStockUrl(ticker);
+    titleLink.target = '_blank';
+    titleLink.rel = 'noopener noreferrer';
+    titleLink.title = '在 MoneyDJ 開啟個股頁面';
+    titleLink.textContent = `${ticker} ${name}`;
+    strong.append(titleLink);
     const period = document.createElement('span');
     period.className = 'daily-kline-period';
     const endDate = klineEndDate();
