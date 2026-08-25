@@ -147,7 +147,7 @@ public sealed class StaticKLineAssetTests
     [Fact]
     public void 筆記類型與狀態篩選上下排列()
     {
-        var styles = ReadAsset("site.css");
+        var styles = ReadAsset("site.css").Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains(".notes-filter-groups {\n    flex-direction: column;\n    align-items: flex-start;", styles, StringComparison.Ordinal);
     }
@@ -274,6 +274,31 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("makeKLineButton(member.ticker", script, StringComparison.Ordinal);
         Assert.Contains("openAllTopicBranches", script, StringComparison.Ordinal);
         Assert.Contains("makeTopicPeriodPanel()", topicTree, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 族群熱度排行點名稱在原表內展開成員而不自動跳頁籤()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.DoesNotContain("id=\"topic-members-popover\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("topic-members-backdrop", styles, StringComparison.Ordinal);
+        Assert.Contains("rankChange", script, StringComparison.Ordinal);
+        Assert.Contains("textContent = '名次變化'", script, StringComparison.Ordinal);
+        Assert.Contains("topicHeatExpandedId", script, StringComparison.Ordinal);
+        Assert.Contains("topic-heat-members-row", script, StringComparison.Ordinal);
+        Assert.Contains("makeTopicMemberBlock(row)", script, StringComparison.Ordinal);
+        Assert.Contains("營收增減", script, StringComparison.Ordinal);
+        Assert.Contains("創高月數", script, StringComparison.Ordinal);
+        Assert.Contains("toHighMonthsCell(member.ticker, revenue)", script, StringComparison.Ordinal);
+        Assert.Contains("topicMemberSortKey", script, StringComparison.Ordinal);
+        Assert.Contains("topic-member-sort-button", styles, StringComparison.Ordinal);
+        Assert.Contains("topic-heat-members-row", styles, StringComparison.Ordinal);
+        Assert.DoesNotContain("focusTopic(row.topicId)", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("openTopicMembersPopover", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("topicMembersPopover", script, StringComparison.Ordinal);
     }
 
     [Fact]

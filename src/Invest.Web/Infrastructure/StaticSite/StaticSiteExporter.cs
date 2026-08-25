@@ -196,6 +196,40 @@ public sealed class StaticSiteExporter(
         return new StaticSiteExportReport(outputDirectory, fileCount, selectableDates.Count, tradingDates.Length);
     }
 
+    private async Task<IReadOnlyDictionary<string, int>?> PreviousTopicRanksAsync(
+        TopicMapping mapping,
+        TradingValueRankingResult current,
+        int periodDays,
+        CancellationToken cancellationToken)
+    {
+        if (!current.HasSufficientData || current.PreviousPeriodEnd is not { } previousEnd)
+        {
+            return null;
+        }
+
+        var previous = await ranking.GetRankingAsync(
+            new RankingQuery
+            {
+                PeriodDays = periodDays,
+                EndDate = previousEnd,
+                Mode = RankingMode.TradingHeat,
+                Market = MarketFilter.All,
+                MinimumAverageDailyTradingValue = 0m,
+                TopCount = int.MaxValue
+            },
+            cancellationToken);
+
+        if (!previous.HasSufficientData)
+        {
+            return null;
+        }
+
+        return TopicHeatCalculator.Calculate(mapping, previous)
+            .Rows
+            .Select((row, index) => (row.TopicId, Rank: index + 1))
+            .ToDictionary(item => item.TopicId, item => item.Rank, StringComparer.Ordinal);
+    }
+
     /// <summary>
     /// 族群分類與各期間的族群熱度，全部寫成一份 data/topics.json。
     ///
@@ -238,12 +272,26 @@ public sealed class StaticSiteExporter(
             {
                 var heat = TopicHeatCalculator.Calculate(active, ranking, newsScores);
 
+                // 族群名次變化沿用個股排行的口徑：前一個相同長度的觀察區間名次 − 本期名次。
+                // 熱度結果只保留本期，所以這裡用同一個基準日再查一次前期，避免前端拿不同
+                // 長度的期間硬湊出一個看似合理、其實沒有意義的變化值。
+                var previousRanks = await PreviousTopicRanksAsync(
+                    active,
+                    ranking,
+                    periodDays,
+                    cancellationToken);
+
                 periods.Add(new TopicPeriodExport(
                     periodDays,
                     heat.HasSufficientData,
                     heat.Message,
                     RankingFormatter.ToPeriodText(heat.PeriodStart, heat.PeriodEnd),
-                    [.. heat.Rows.Select(ToExport)]));
+                    [.. heat.Rows.Select((row, index) => ToExport(
+                        row,
+                        previousRanks is not null
+                            && previousRanks.TryGetValue(row.TopicId, out var previousRank)
+                                ? previousRank - (index + 1)
+                                : null))]));
             }
         }
 
@@ -384,8 +432,9 @@ public sealed class StaticSiteExporter(
         topic.DirectTickers,
         topic.Paths);
 
-    private static TopicHeatExport ToExport(TopicHeatRow row) => new(
+    private static TopicHeatExport ToExport(TopicHeatRow row, int? rankChange = null) => new(
         row.TopicId,
+        rankChange,
         RoundSignificant(row.FundRawShare),
         Round(row.FundScore, 2),
         Round(row.BreadthScore, 2),
@@ -1073,6 +1122,7 @@ public sealed class StaticSiteExporter(
     /// </summary>
     private sealed record TopicHeatExport(
         string TopicId,
+        int? RankChange,
         decimal FundRawShare,
         decimal FundScore,
         decimal? BreadthScore,

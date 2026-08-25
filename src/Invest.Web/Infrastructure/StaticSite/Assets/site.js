@@ -93,7 +93,7 @@ const availableViews = () => SITE_ACCESS === 'viewer'
 
 // 族群檢視底下的四個分頁。熱度排行是主畫面，其餘三個是它的來源與維護紀錄。
 const TOPIC_TABS = [
-    { key: 'heat', text: '熱度排行', hint: '族群依熱度排序。點任何一列展開這個族群的全部成員。' },
+    { key: 'heat', text: '熱度排行', hint: '族群依熱度排序。點族群名稱，在目前表格內展開這個族群的全部成員。' },
     { key: 'tree', text: '族群列表', hint: 'Google Sheet 上那棵供應鏈樹，點節點看它涵蓋哪些股票。排行榜族群欄的連結就是跳到這裡。' },
     { key: 'events', text: '催化事件', hint: '族群為什麼熱起來的事件紀錄，來自公開資訊觀測站的重大訊息。' },
     { key: 'edits', text: '人工編輯', hint: '分類被改過哪些地方，以及還等著使用者拍板的合併與歧義。' }
@@ -576,8 +576,8 @@ function customSearchMatches(row) {
 }
 
 // 漲跌幅與營收增減共用同一套上下層排版；營收排序時仍只看 YOY。
-function toRevenueGrowthCell(ticker) {
-    const revenue = revenueOf(ticker);
+function toRevenueGrowthCell(ticker, fallback = null) {
+    const revenue = revenueOf(ticker) ?? fallback;
 
     return {
         cls: 'numeric metric-stack revenue-growth',
@@ -624,8 +624,8 @@ const toTickerCell = row => ({
 
 // 創幾個月新高。N+ 代表往回數到手上的資料用完都沒有更高的，
 // 也就是「至少 N 個月」——再往前的資料不在手上，不能說它是歷史新高。
-function toHighMonthsCell(ticker) {
-    const revenue = revenueOf(ticker);
+function toHighMonthsCell(ticker, fallback = null) {
+    const revenue = revenueOf(ticker) ?? fallback;
 
     if (revenue === null || missing(revenue.highMonths)) {
         return { text: '—', cls: 'numeric' };
@@ -4283,9 +4283,6 @@ let topicLoadError = '';
 let intradayTopicPeriod = null;
 let intradayTopicLoadError = '';
 
-// 熱度排行展開中的族群（一次只開一個，開兩個以上在手機上會整頁都是明細）。
-let expandedTopicId = null;
-
 // 族群列表：目前選中的節點，以及展開中的枝幹。
 let selectedTopicId = null;
 const openTopicBranches = new Set();
@@ -4367,6 +4364,10 @@ const TOPIC_MEMBER_FILTERS = [
 // 族群樹的篩選狀態。搜尋字串與篩選一律不寫進 localStorage：
 // 它們是「現在正在找什麼」，不是偏好設定，下次開啟時應該是乾淨的整棵樹。
 let topicMemberFilter = 'all';
+let topicMemberSortKey = 'marketShare';
+let topicMemberSortDescending = true;
+// 熱度排行直接在目前表格內展開成員，不切換到族群列表分頁。
+let topicHeatExpandedId = null;
 let topicTreeSearch = '';
 let topicTreeFilter = 'all';
 
@@ -4677,7 +4678,6 @@ function renderTopicTabs() {
 
     renderOptions('topic-tab-options', tabs, state.topicTab, topicTab => {
         closeKLine(false);
-        expandedTopicId = null;
         update({ topicTab });
     });
 }
@@ -4849,8 +4849,14 @@ function renderTopicHeat(panel) {
     const name = document.createElement('th');
     name.className = 'unsortable col-topic-name';
     name.textContent = '族群';
-    name.dataset.hint = '點任何一列展開這個族群的全部成員，依市場成交比由大到小，一檔都不截斷。';
+    name.dataset.hint = '點族群名稱就在目前熱度排行內展開或收合這個族群的全部成員。';
     headRow.append(name);
+
+    const rankChange = document.createElement('th');
+    rankChange.className = 'unsortable col-rank-change';
+    rankChange.textContent = '名次變化';
+    rankChange.dataset.hint = '前一個相同長度的觀察區間名次 − 本期名次；▲ 代表名次上升，▼ 代表名次下降。盤中尚未有可比較的前一輪時顯示 —。';
+    headRow.append(rankChange);
 
     for (const column of TOPIC_HEAT_COLUMNS) {
         const naming = column.key === 'composite' ? topicCompositeColumn(period) : column;
@@ -4880,12 +4886,10 @@ function renderTopicHeat(panel) {
     table.append(head);
 
     const body = document.createElement('tbody');
-    const columnCount = TOPIC_HEAT_COLUMNS.length + 2;
-
     rows.forEach((row, index) => {
         const topic = topicById.get(row.topicId);
         const tr = document.createElement('tr');
-        tr.className = expandedTopicId === row.topicId ? 'topic-row expanded' : 'topic-row';
+        tr.className = 'topic-row';
 
         const rankCell = document.createElement('td');
         rankCell.className = 'rank';
@@ -4897,6 +4901,11 @@ function renderTopicHeat(panel) {
         nameCell.append(makeTopicRowButton(row, topic));
         tr.append(nameCell);
 
+        const changeCell = document.createElement('td');
+        changeCell.className = 'numeric ' + toTrendClass(row.rankChange);
+        changeCell.textContent = toRankChangeText(row.rankChange);
+        tr.append(changeCell);
+
         for (const column of TOPIC_HEAT_COLUMNS) {
             const { text, cls } = column.cell(row);
             const td = document.createElement('td');
@@ -4907,9 +4916,15 @@ function renderTopicHeat(panel) {
 
         body.append(tr);
 
-        // 成員明細預設收起來：一百多個族群同時攤開，畫面會長到沒辦法用。
-        if (expandedTopicId === row.topicId) {
-            body.append(makeTopicMemberRow(row, columnCount));
+        if (topicHeatExpandedId === row.topicId) {
+            const membersRow = document.createElement('tr');
+            membersRow.className = 'topic-heat-members-row';
+
+            const membersCell = document.createElement('td');
+            membersCell.colSpan = headRow.children.length;
+            membersCell.append(makeTopicMemberBlock(row));
+            membersRow.append(membersCell);
+            body.append(membersRow);
         }
     });
 
@@ -4922,17 +4937,12 @@ function makeTopicRowButton(row, topic) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'topic-name-button';
-    button.setAttribute('aria-expanded', String(expandedTopicId === row.topicId));
-
-    const caret = document.createElement('span');
-    caret.className = 'topic-caret';
-    caret.textContent = expandedTopicId === row.topicId ? '▾' : '▸';
 
     const label = document.createElement('span');
     label.className = 'topic-label';
     label.textContent = topic?.name ?? row.topicId;
 
-    button.append(caret, label);
+    button.append(label);
 
     if (topic && topic.category !== 'fixed') {
         const tag = document.createElement('span');
@@ -4955,27 +4965,17 @@ function makeTopicRowButton(row, topic) {
 
     button.addEventListener('click', () => {
         closeKLine(false);
-        expandedTopicId = expandedTopicId === row.topicId ? null : row.topicId;
+        closeRevenueDetails(false);
         topicMemberFilter = 'all';
+        topicHeatExpandedId = topicHeatExpandedId === row.topicId ? null : row.topicId;
         renderTopicPanel();
     });
 
     return button;
 }
 
-function makeTopicMemberRow(row, columnCount) {
-    const tr = document.createElement('tr');
-    tr.className = 'topic-member-row';
-
-    const td = document.createElement('td');
-    td.colSpan = columnCount;
-    td.append(makeTopicMemberSection(row));
-    tr.append(td);
-    return tr;
-}
-
-/// 成員清單：篩選列、一行說明、表格。熱度排行展開與族群列表詳情共用同一段。
-function makeTopicMemberSection(row) {
+/// 成員清單：篩選列、一行說明、表格。可嵌在熱度排行展開列或族群列表右側詳情區。
+function makeTopicMemberSection(row, onFilterChanged = null, onSortChanged = null) {
     const fragment = document.createDocumentFragment();
     const direct = new Set(topicById.get(row.topicId)?.directTickers ?? []);
     const filter = TOPIC_MEMBER_FILTERS.find(item => item.key === topicMemberFilter)
@@ -4983,14 +4983,14 @@ function makeTopicMemberSection(row) {
     const members = row.members.filter(member => filter.match(member, direct));
 
     fragment.append(
-        makeTopicMemberFilters(row, direct),
+        makeTopicMemberFilters(row, direct, onFilterChanged),
         makeTopicMemberTitle(row, members, filter),
-        makeTopicMemberTable(members));
+        makeTopicMemberTable(members, onSortChanged));
 
     return fragment;
 }
 
-function makeTopicMemberFilters(row, direct) {
+function makeTopicMemberFilters(row, direct, onFilterChanged = null) {
     const wrapper = document.createElement('div');
     wrapper.className = 'topic-member-filters button-row';
 
@@ -5007,7 +5007,11 @@ function makeTopicMemberFilters(row, direct) {
         button.addEventListener('click', () => {
             closeKLine(false);
             topicMemberFilter = item.key;
-            renderTopicPanel();
+            if (onFilterChanged === null) {
+                renderTopicPanel();
+            } else {
+                onFilterChanged();
+            }
         });
         wrapper.append(button);
     }
@@ -5018,22 +5022,105 @@ function makeTopicMemberFilters(row, direct) {
 function makeTopicMemberTitle(row, members, filter) {
     const title = document.createElement('p');
     title.className = 'topic-member-title';
+    const sortText = topicMemberSortKey === 'priceChange'
+        ? `依漲跌幅由${topicMemberSortDescending ? '高到低' : '低到高'}`
+        : '依市場成交比由大到小';
     title.textContent = filter.key === 'all'
-        ? `全部 ${members.length} 檔，依市場成交比由大到小。`
-        : `${filter.text} ${members.length} 檔（整個族群共 ${row.memberCount} 檔），依市場成交比由大到小。`;
+        ? `全部 ${members.length} 檔，${sortText}。`
+        : `${filter.text} ${members.length} 檔（整個族群共 ${row.memberCount} 檔），${sortText}。`;
     return title;
 }
 
-function makeTopicMemberTable(members) {
+function topicMemberRevenue(member) {
+    const revenue = revenueOf(member.ticker);
+
+    if (revenue !== null) {
+        return revenue;
+    }
+
+    if (member.revenueYoy === undefined
+        && member.revenueMom === undefined
+        && member.revenueHighMonths === undefined) {
+        return null;
+    }
+
+    return {
+        yoy: member.revenueYoy,
+        mom: member.revenueMom,
+        highMonths: member.revenueHighMonths,
+        recordHigh: member.revenueRecordHigh
+    };
+}
+
+function topicMemberSortValue(member) {
+    if (topicMemberSortKey === 'priceChange') {
+        return member.priceChangeRate;
+    }
+
+    return member.marketShare;
+}
+
+function sortTopicMembers(members) {
+    return [...members].sort((left, right) => {
+        const leftValue = topicMemberSortValue(left);
+        const rightValue = topicMemberSortValue(right);
+        const leftMissing = missing(leftValue) || !Number.isFinite(Number(leftValue));
+        const rightMissing = missing(rightValue) || !Number.isFinite(Number(rightValue));
+
+        if (leftMissing !== rightMissing) {
+            return leftMissing ? 1 : -1;
+        }
+
+        if (!leftMissing && Number(leftValue) !== Number(rightValue)) {
+            const difference = Number(leftValue) - Number(rightValue);
+            return topicMemberSortDescending ? -difference : difference;
+        }
+
+        return String(left.ticker).localeCompare(String(right.ticker));
+    });
+}
+
+function makeTopicMemberTable(members, onSortChanged = null) {
     const table = document.createElement('table');
     table.className = 'topic-member-table';
 
     const head = document.createElement('thead');
     const headRow = document.createElement('tr');
 
-    for (const text of ['代號', '名稱', '市場成交比', '漲跌幅', '全市場名次']) {
+    for (const text of ['代號', '名稱', '市場成交比', '漲跌幅', '營收增減', '創高月數', '全市場名次']) {
         const cell = document.createElement('th');
-        cell.textContent = text;
+
+        if (text === '創高月數') {
+            cell.dataset.hint = HIGH_MONTHS_HINT;
+        }
+
+        if (text !== '漲跌幅') {
+            cell.textContent = text;
+            headRow.append(cell);
+            continue;
+        }
+
+        cell.className = 'topic-member-sortable';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'topic-member-sort-button';
+        button.textContent = `漲跌幅${topicMemberSortKey === 'priceChange' ? (topicMemberSortDescending ? ' ▼' : ' ▲') : ''}`;
+        button.dataset.hint = '點擊依日漲跌幅排序；再次點擊切換由高到低／由低到高。';
+        button.addEventListener('click', () => {
+            if (topicMemberSortKey === 'priceChange') {
+                topicMemberSortDescending = !topicMemberSortDescending;
+            } else {
+                topicMemberSortKey = 'priceChange';
+                topicMemberSortDescending = true;
+            }
+
+            if (onSortChanged === null) {
+                renderTopicPanel();
+            } else {
+                onSortChanged();
+            }
+        });
+        cell.append(button);
         headRow.append(cell);
     }
 
@@ -5041,7 +5128,7 @@ function makeTopicMemberTable(members) {
 
     const body = document.createElement('tbody');
 
-    for (const member of members) {
+    for (const member of sortTopicMembers(members)) {
         const memberRow = document.createElement('tr');
 
         const ticker = document.createElement('td');
@@ -5069,11 +5156,40 @@ function makeTopicMemberTable(members) {
         change.className = 'numeric ' + toTrendClass(member.priceChangeRate);
         change.textContent = toSignedPercentText(member.priceChangeRate);
 
+        const revenueCell = document.createElement('td');
+        const revenue = topicMemberRevenue(member);
+        revenueCell.className = 'numeric metric-stack revenue-growth';
+        for (const line of [
+            {
+                label: 'YOY',
+                text: toSignedPercentText(revenue?.yoy ?? null),
+                cls: 'metric-line metric-primary ' + toTrendClass(revenue?.yoy)
+            },
+            {
+                label: 'MOM',
+                text: toSignedPercentText(revenue?.mom ?? null),
+                cls: 'metric-line metric-secondary ' + toTrendClass(revenue?.mom)
+            }
+        ]) {
+            const span = document.createElement('span');
+            span.className = line.cls;
+            const label = document.createElement('span');
+            label.className = 'metric-label';
+            label.textContent = line.label;
+            span.append(label, line.text);
+            revenueCell.append(span);
+        }
+
+        const highMonths = toHighMonthsCell(member.ticker, revenue);
+        const highMonthsCell = document.createElement('td');
+        highMonthsCell.className = highMonths.cls;
+        highMonthsCell.textContent = highMonths.text;
+
         const rank = document.createElement('td');
         rank.className = 'numeric';
         rank.textContent = missing(member.rank) ? '—' : member.rank;
 
-        memberRow.append(ticker, name, share, change, rank);
+        memberRow.append(ticker, name, share, change, revenueCell, highMonthsCell, rank);
         body.append(memberRow);
     }
 
@@ -5135,7 +5251,6 @@ function renderTopicScopeOptions() {
         state.topicScope,
         topicScope => {
             closeKLine(false);
-            expandedTopicId = null;
             update({ topicScope });
         });
 }
@@ -5163,7 +5278,6 @@ function renderTopicPeriodOptions() {
         state.topicPeriod,
         period => {
             closeKLine(false);
-            expandedTopicId = null;
             update({ topicPeriod: period });
         });
 }

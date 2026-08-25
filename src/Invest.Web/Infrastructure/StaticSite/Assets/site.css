@@ -2395,6 +2395,10 @@ td.stock-name.stock-name-change-down {
     white-space: normal;
 }
 
+.topic-heat-table td.col-rank-change {
+    white-space: nowrap;
+}
+
 .topic-heat-table td.topic-composite {
     font-weight: 700;
 }
@@ -2404,8 +2408,26 @@ td.stock-name.stock-name-change-down {
     color: #98a2b3;
 }
 
-.topic-row.expanded {
-    background: #f4f8ff;
+.topic-heat-table tr.topic-heat-members-row:hover {
+    background: transparent;
+}
+
+.topic-heat-members-row > td {
+    padding: 0;
+    text-align: left;
+    white-space: normal;
+    background: #fff;
+}
+
+.topic-heat-members-row .topic-member-block {
+    margin: 0;
+    border-top: 1px solid #dbe3ef;
+    border-bottom: 1px solid #dbe3ef;
+}
+
+/* 新聞熱度整欄現在都是 —，調淡一點，免得看起來像算壞了。 */
+.topic-heat-table td.topic-empty {
+    color: #bbb;
 }
 
 .topic-name-button {
@@ -2476,13 +2498,7 @@ td.stock-name.stock-name-change-down {
     cursor: help;
 }
 
-/* ── 展開後的成員明細 ── */
-
-.topic-member-row > td {
-    padding: 0 12px 16px !important;
-    background: #f8fafc;
-    text-align: left !important;
-}
+/* ── 成員明細 ── */
 
 .topic-member-title {
     margin: 0 0 8px;
@@ -2537,6 +2553,27 @@ td.stock-name.stock-name-change-down {
     background: #f1f5f9;
     color: #475467;
     font-weight: 600;
+}
+
+.topic-member-sortable {
+    padding: 0;
+}
+
+.topic-member-sort-button {
+    width: 100%;
+    padding: 6px 10px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.topic-member-sort-button:hover,
+.topic-member-sort-button:focus-visible {
+    background: #e2e8f0;
+    color: #1d4ed8;
+    outline: none;
 }
 
 .topic-member-table tbody tr:last-child td {
