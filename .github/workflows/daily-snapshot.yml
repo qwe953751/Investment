@@ -197,8 +197,14 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: scripts/backup-supabase.sh data/snapshots
 
+      # export 大部分吃 data/imports 的行情快取，唯一要連資料庫的是重大訊息
+      # （material_events）——催化事件頁與族群新聞熱度都讀它。沒帶這個 secret 時
+      # 程式不會炸，只會記一行「讀取重大訊息失敗」然後把那兩塊發成空的，
+      # 網站看起來一切正常但催化事件是空白頁，所以這行漏掉不會有人發現。
       - name: 輸出靜態網站
         if: ${{ !cancelled() }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- export "$GITHUB_WORKSPACE/publish/site"
 
       # 舊網址（qwe953751.github.io/Investment/）已收掉內容：不帶 GH_PAGES_ADMIN_SUBDIR，
