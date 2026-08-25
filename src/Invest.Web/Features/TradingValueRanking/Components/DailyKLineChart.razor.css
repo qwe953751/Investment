@@ -14,6 +14,20 @@
     margin-bottom: 4px;
 }
 
+.daily-kline-title {
+    color: inherit;
+    font-weight: 600;
+    text-decoration: underline;
+    text-decoration-color: #cbd5e1;
+    text-underline-offset: 3px;
+}
+
+.daily-kline-title:hover,
+.daily-kline-title:focus-visible {
+    color: #1d4ed8;
+    text-decoration-color: currentColor;
+}
+
 .daily-kline-period {
     margin-left: 8px;
     color: #667085;

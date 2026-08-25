@@ -2723,6 +2723,19 @@ function positionPopover(popoverId, anchor) {
 const positionKLinePopover = anchor => positionPopover('kline-popover', anchor);
 const positionRevenuePopover = anchor => positionPopover('revenue-popover', anchor);
 
+/**
+ * MoneyDJ 個股基本資料頁。
+ *
+ * 為什麼是這個網址而不是使用者給的那種百科頁：百科頁（wikiviewer.aspx?keyid=…）的
+ * keyid 是每家公司一組 GUID，站上沒有任何「代號換 GUID」的查詢入口，唯一的取得方式
+ * 是把整個百科爬一遍——而 MoneyDJ 使用條款明文禁止自動程式擷取（研究文件 §5.1 記過），
+ * 所以那條路不能走。zca_代號.djhtm 是同一個站上唯一能從代號直接組出來的個股頁。
+ *
+ * 代價要講清楚：除了 2330 這種示範標的，MoneyDJ 會先把人導到自家登入頁，
+ * 登完會照網址裡帶的 referrer 轉回這一頁，所以終點還是對的。
+ */
+const moneydjStockUrl = ticker => `https://www.moneydj.com/z/zc/zca/zca_${encodeURIComponent(ticker)}.djhtm`;
+
 function renderKLinePopover(ticker, name, anchor) {
     const popover = el('kline-popover');
     popover.replaceChildren();
@@ -2734,8 +2747,15 @@ function renderKLinePopover(ticker, name, anchor) {
     header.className = 'daily-kline-header';
 
     const title = document.createElement('div');
-    const strong = document.createElement('strong');
+
+    // id 留著：index.html 的 aria-labelledby 指著它，換成 <a> 也還是這個彈窗的標題。
+    const strong = document.createElement('a');
     strong.id = 'kline-title';
+    strong.className = 'daily-kline-title';
+    strong.href = moneydjStockUrl(ticker);
+    strong.target = '_blank';
+    strong.rel = 'noopener noreferrer';
+    strong.title = `在 MoneyDJ 查看 ${ticker} ${name}`;
     strong.textContent = `${ticker} ${name}`;
     const period = document.createElement('span');
     period.className = 'daily-kline-period';
@@ -5707,6 +5727,17 @@ function applyPendingTopicFocus() {
 
 // ── 分頁三：催化事件／新聞資料 ──────────────────────────────
 
+/**
+ * 公開資訊觀測站的「歷史重大訊息」，公司代號先填好。
+ *
+ * 為什麼連到查詢頁而不是那一則公告本身：觀測站 2025 年改版後是個 Vue 單頁程式，
+ * 公告內容一律走 POST（api/t05st01），單一則公告沒有自己的網址可以連。
+ * 它的查詢頁會從網址的 companyId 把代號帶進表單（bundle 裡的 U_ 讀 location.hash 的 query），
+ * 所以這是能從代號直接組出來、又真的落在正確公司上的最短路徑——
+ * 使用者只要再挑年度按查詢。年度是觀測站的必填欄位，這一步沒辦法替他省掉。
+ */
+const mopsEventUrl = ticker => `https://mops.twse.com.tw/mops/#/web/t05st01?companyId=${encodeURIComponent(ticker)}`;
+
 function renderTopicEvents(panel) {
     const events = topicData.events ?? [];
 
@@ -5714,7 +5745,8 @@ function renderTopicEvents(panel) {
     intro.className = 'topic-intro';
     intro.textContent = '全部來自公開資訊觀測站的重大訊息，每天累積。這一頁只留兩種公告：'
         + '有可能推動股價的，而且發公告的那一檔有被分到族群。'
-        + '更名、面額變更、資金貸與、董監改選這些例行公告佔了原始資料的四成，都篩掉了。';
+        + '更名、面額變更、資金貸與、董監改選這些例行公告佔了原始資料的四成，都篩掉了。'
+        + '事件主旨可以點，會開到觀測站對應公司的重大訊息查詢頁。';
     panel.append(intro);
 
     if (events.length === 0) {
@@ -5733,7 +5765,7 @@ function renderTopicEvents(panel) {
     const headings = [
         ['日期', '公司發布這則重大訊息的日期。'],
         ['個股', '發布公告的公司。'],
-        ['事件', '重大訊息的主旨，照公司自己寫的原文。'],
+        ['事件', '重大訊息的主旨，照公司自己寫的原文。點下去開公開資訊觀測站的歷史重大訊息，公司代號已經帶好，挑年度就能看到公告全文。'],
         ['催化類型', '由主旨判斷，不是用「符合條款」——條款是法律分類，同一款裡混著蓋新廠與買定存單。'],
         ['材料性', '0～1，這種公告有多可能推動股價。0 分的例行公告不會出現在這一頁。'],
         ['關聯族群', '發公告的那一檔被分在哪些族群。點下去跳到族群列表。'],
@@ -5760,7 +5792,18 @@ function renderTopicEvents(panel) {
 
         appendTextCell(tr, event.date, 'topic-date');
         appendTextCell(tr, `${event.ticker} ${event.stockName}`.trim(), 'topic-stock');
-        appendTextCell(tr, event.summary, 'topic-summary');
+        const summary = document.createElement('td');
+        summary.className = 'topic-summary';
+        const source = document.createElement('a');
+        source.className = 'topic-source-link';
+        source.href = mopsEventUrl(event.ticker);
+        source.target = '_blank';
+        source.rel = 'noopener noreferrer';
+        source.title = `到公開資訊觀測站查 ${event.ticker} ${event.stockName} 的重大訊息原文`;
+        source.textContent = event.summary ?? '—';
+        summary.append(source);
+        tr.append(summary);
+
         appendTextCell(tr, event.catalystType);
         appendTextCell(tr, toFixedText(Number(event.materiality), 1), 'numeric');
 

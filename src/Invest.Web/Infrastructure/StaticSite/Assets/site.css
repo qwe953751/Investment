@@ -1697,6 +1697,22 @@ td.stock-name.stock-name-change-down {
     margin-bottom: 4px;
 }
 
+/* 原本是 <strong>，改成連到 MoneyDJ 的 <a>。字重與顏色維持原樣，
+   只用底線表示可以點——彈窗裡已經有一顆「關閉」按鈕，再多一個藍字會搶掉焦點。 */
+.daily-kline-title {
+    color: inherit;
+    font-weight: 600;
+    text-decoration: underline;
+    text-decoration-color: #cbd5e1;
+    text-underline-offset: 3px;
+}
+
+.daily-kline-title:hover,
+.daily-kline-title:focus-visible {
+    color: #1d4ed8;
+    text-decoration-color: currentColor;
+}
+
 .daily-kline-period {
     margin-left: 8px;
     color: #667085;
@@ -2746,6 +2762,21 @@ td.stock-name.stock-name-change-down {
     max-width: 280px;
     text-align: left;
     white-space: normal;
+}
+
+/* 事件主旨連到觀測站。整欄都是連結，全部塗成藍色會讓表格變成一片藍，
+   所以平常維持內文色，只用淡底線示意可以點。 */
+.topic-source-link {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: #cbd5e1;
+    text-underline-offset: 3px;
+}
+
+.topic-source-link:hover,
+.topic-source-link:focus-visible {
+    color: #1a56db;
+    text-decoration-color: currentColor;
 }
 
 .topic-date {

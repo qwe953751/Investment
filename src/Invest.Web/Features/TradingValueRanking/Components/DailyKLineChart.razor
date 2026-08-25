@@ -5,7 +5,10 @@
 <div class="daily-kline-card">
     <div class="daily-kline-header">
         <div>
-            <strong>@Ticker @Name</strong>
+            @* 與靜態站的彈窗一致：代號＋股名連到 MoneyDJ 個股基本資料頁。
+               網址只能從代號組，理由寫在 site.js 的 moneydjStockUrl。 *@
+            <a class="daily-kline-title" target="_blank" rel="noopener noreferrer"
+               href="@($"https://www.moneydj.com/z/zc/zca/zca_{Ticker}.djhtm")">@Ticker @Name</a>
             <span class="daily-kline-period">還原權息日 K・@StartDateText ~ @EndDate.ToString("yyyy/MM/dd")</span>
         </div>
         <button type="button" class="daily-kline-close" @onclick="OnClose">關閉</button>

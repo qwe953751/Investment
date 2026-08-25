@@ -238,6 +238,10 @@ public static class TopicCatalogBuilder
                 + "版本二暫時收不到它們的成員，請更新 ConceptMapping.json。");
         }
 
+        // 使用者拍板的結構調整最後才套：移除要先知道節點有沒有成員，
+        // 而成員是上面那一圈掛概念的時候才進來的。
+        graph.ApplyOverrides(TopicTreeOverrideLoader.Load(), warnings);
+
         var topics = graph.ToTopics(new Dictionary<string, string>(StringComparer.Ordinal));
 
         topics.AddRange(outsideTree);
@@ -327,6 +331,236 @@ public static class TopicCatalogBuilder
             return parent!;
         }
 
+        /// <summary>
+        /// 套用使用者拍板過的結構調整，並在最後把整棵樹的路徑與層級重算一次。
+        /// 重算是必要的：節點換了父節點以後，它跟它底下每一個子孫的顯示路徑都不一樣了。
+        /// </summary>
+        public void ApplyOverrides(
+            IReadOnlyList<TopicTreeOverrideLoader.TreeOverride> overrides,
+            List<string> warnings)
+        {
+            if (overrides.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var item in overrides)
+            {
+                switch (item.Action)
+                {
+                    case TopicTreeOverrideLoader.MoveAction:
+                        Move(item, warnings);
+                        break;
+
+                    case TopicTreeOverrideLoader.RemoveAction:
+                        Remove(item, warnings);
+                        break;
+
+                    case TopicTreeOverrideLoader.AliasAction:
+                        AddAliases(item, warnings);
+                        break;
+
+                    default:
+                        warnings.Add($"族群樹調整：不認得的動作「{item.Action}」（節點 {item.Node}），這一筆沒有套用。");
+                        break;
+                }
+            }
+
+            RecomputePaths();
+        }
+
+        private void Move(TopicTreeOverrideLoader.TreeOverride item, List<string> warnings)
+        {
+            if (FindByName(item.Node) is not { } node)
+            {
+                warnings.Add($"族群樹調整：樹上找不到節點「{item.Node}」，這一筆「移到」沒有套用。");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(item.Parent))
+            {
+                warnings.Add($"族群樹調整：節點「{item.Node}」的「移到」沒有寫父節點，這一筆沒有套用。");
+                return;
+            }
+
+            var parent = Ensure([item.Parent]);
+
+            // 把節點掛到自己的子孫底下會生出一個接不回根的環，之後算路徑就再也走不出來。
+            if (parent.Id == node.Id || IsDescendant(parent, node))
+            {
+                warnings.Add($"族群樹調整：「{item.Node}」不能掛到自己或自己的子節點「{item.Parent}」底下，這一筆沒有套用。");
+                return;
+            }
+
+            // 「移到」是搬家不是加掛：舊的父節點關係要全部解掉，否則同一個節點會在兩個大類底下各出現一次。
+            foreach (var oldParentId in node.ParentIds)
+            {
+                if (_nodes.TryGetValue(oldParentId, out var oldParent))
+                {
+                    oldParent.ChildIds.Remove(node.Id);
+                }
+            }
+
+            node.ParentIds.Clear();
+            node.ParentIds.Add(parent.Id);
+            parent.ChildIds.Add(node.Id);
+
+            if (item.Note.Length > 0)
+            {
+                node.MappingNotes.Add(item.Note);
+            }
+        }
+
+        private void Remove(TopicTreeOverrideLoader.TreeOverride item, List<string> warnings)
+        {
+            if (FindByName(item.Node) is not { } node)
+            {
+                warnings.Add($"族群樹調整：樹上找不到節點「{item.Node}」，這一筆「移除」沒有套用。");
+                return;
+            }
+
+            // 有成員或有子節點就不刪。刪掉等於讓那些股票安靜地從族群系統裡消失，
+            // 而那正是這整套東西最難發現的一種錯。
+            if (node.Tickers.Count > 0 || node.ChildIds.Count > 0)
+            {
+                warnings.Add(
+                    $"族群樹調整：節點「{item.Node}」還有 {node.Tickers.Count} 檔成員與 "
+                    + $"{node.ChildIds.Count} 個子節點，不能直接移除，這一筆沒有套用。");
+                return;
+            }
+
+            foreach (var parentId in node.ParentIds)
+            {
+                if (_nodes.TryGetValue(parentId, out var parent))
+                {
+                    parent.ChildIds.Remove(node.Id);
+                }
+            }
+
+            _nodes.Remove(node.Id);
+            _order.Remove(node.Id);
+
+            foreach (var alias in node.Aliases)
+            {
+                var key = TopicIdFactory.Normalize(alias);
+
+                if (_byName.TryGetValue(key, out var mapped) && mapped == node.Id)
+                {
+                    _byName.Remove(key);
+                }
+            }
+        }
+
+        private void AddAliases(TopicTreeOverrideLoader.TreeOverride item, List<string> warnings)
+        {
+            if (FindByName(item.Node) is not { } node)
+            {
+                warnings.Add($"族群樹調整：樹上找不到節點「{item.Node}」，這一筆「別名」沒有套用。");
+                return;
+            }
+
+            foreach (var alias in item.Aliases)
+            {
+                node.Aliases.Add(alias);
+
+                // 別名也要能反查回節點，否則補了等於沒補。
+                _byName.TryAdd(TopicIdFactory.Normalize(alias), node.Id);
+            }
+
+            if (item.Note.Length > 0)
+            {
+                node.MappingNotes.Add(item.Note);
+            }
+        }
+
+        private bool IsDescendant(TreeNode candidate, TreeNode ancestor)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var queue = new Queue<string>(ancestor.ChildIds);
+
+            while (queue.Count > 0)
+            {
+                var id = queue.Dequeue();
+
+                if (!seen.Add(id))
+                {
+                    continue;
+                }
+
+                if (id == candidate.Id)
+                {
+                    return true;
+                }
+
+                if (_nodes.TryGetValue(id, out var child))
+                {
+                    foreach (var grandchild in child.ChildIds)
+                    {
+                        queue.Enqueue(grandchild);
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 從父節點關係重算每個節點的顯示路徑與層級。
+        /// 建樹的時候路徑是照試算表一列一列累積的，調整過以後那些路徑就過期了；
+        /// 與其去修每一條，不如整棵重算——多重父節點（FOPLP 同時在低軌衛星與面板級封裝底下）
+        /// 本來就會走出好幾條路徑，重算的結果跟原本一樣。
+        /// </summary>
+        private void RecomputePaths()
+        {
+            foreach (var id in _order)
+            {
+                _nodes[id].ClearPaths();
+            }
+
+            foreach (var id in _order)
+            {
+                var node = _nodes[id];
+
+                foreach (var path in PathsTo(node, []))
+                {
+                    node.AddPath(path);
+                }
+
+                node.Depth = node.Paths.Count == 0 ? 0 : node.Paths.Min(path => path.Length) - 1;
+            }
+        }
+
+        private IEnumerable<string[]> PathsTo(TreeNode node, HashSet<string> visiting)
+        {
+            // visiting 是防環用的：真的接成環的時候寧可少一條路徑，也不要在這裡轉不出去。
+            if (!visiting.Add(node.Id))
+            {
+                yield break;
+            }
+
+            if (node.ParentIds.Count == 0)
+            {
+                yield return [node.Name];
+            }
+            else
+            {
+                foreach (var parentId in node.ParentIds)
+                {
+                    if (!_nodes.TryGetValue(parentId, out var parent))
+                    {
+                        continue;
+                    }
+
+                    foreach (var prefix in PathsTo(parent, visiting))
+                    {
+                        yield return [.. prefix, node.Name];
+                    }
+                }
+            }
+
+            visiting.Remove(node.Id);
+        }
+
         public List<Topic> ToTopics(IReadOnlyDictionary<string, string> linkedConceptByTreeId)
         {
             var topics = new List<Topic>();
@@ -391,6 +625,12 @@ public static class TopicCatalogBuilder
             {
                 Paths.Add(path);
             }
+        }
+
+        public void ClearPaths()
+        {
+            Paths.Clear();
+            _pathKeys.Clear();
         }
     }
 }

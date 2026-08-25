@@ -131,8 +131,8 @@
     {
       "concept": "DRAM",
       "type": "B",
-      "target": "儲存>記憶體>DRAM（需把 DRAM/HBM 拆成 DRAM 與 HBM）",
-      "note": ""
+      "target": "儲存>記憶體>DRAM",
+      "note": "使用者 2026-08-25 裁示拆成兩類：DRAM 走這裡，HBM 走既有的 高頻寬記憶體 節點，原本那個合併的 DRAM/HBM 節點已在 TopicTreeOverrides.json 移除。"
     },
     {
       "concept": "NAND",
@@ -377,8 +377,8 @@
     {
       "concept": "手機",
       "type": "B",
-      "target": "電腦/週邊設備>手機 或 另立大類",
-      "note": ""
+      "target": "手機",
+      "note": "使用者 2026-08-25 裁示獨立成新的大類：手機已改掛在 消費性電子 底下，搬家記在 TopicTreeOverrides.json。"
     },
     {
       "concept": "板卡",
@@ -587,8 +587,8 @@
     {
       "concept": "綠能(環保)",
       "type": "B",
-      "target": "傳產>廢棄物處理 附近",
-      "note": ""
+      "target": "廢棄物處理",
+      "note": "使用者 2026-08-25 裁示統一收在綠能內再分子類：廢棄物處理 已從 傳產 改掛到新的 綠能 大類，搬家記在 TopicTreeOverrides.json。"
     },
     {
       "concept": "儲能",
