@@ -27,9 +27,10 @@ on:
 permissions:
   contents: write
 
-# 兩次執行重疊的話會同時寫 data 分支，一定有一邊 push 失敗。
+# 完整快照會寫入 data 分支，彼此不能重疊；publish-only 只讀 data 並發布網站，
+# 可以和完整快照並行，避免備份或回補卡住時連純畫面發布也被排隊。
 concurrency:
-  group: daily-snapshot
+  group: ${{ inputs.publish-only == true && 'daily-snapshot-publish' || 'daily-snapshot' }}
 
 jobs:
   snapshot:
