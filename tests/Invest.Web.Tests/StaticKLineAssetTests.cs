@@ -327,6 +327,31 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 檢視權限只顯示簡短表頭泡泡且族群排行名次變化緊跟名次()
+    {
+        var hint = ReadAsset("hint.js");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("const viewerAccess", hint, StringComparison.Ordinal);
+        Assert.Contains("const header = event.target.closest('th')", hint, StringComparison.Ordinal);
+        Assert.Contains("return header?.matches(SELECTOR) ? header : null", hint, StringComparison.Ordinal);
+        Assert.Contains("function tableHeaderHint(key, fallback)", script, StringComparison.Ordinal);
+        Assert.Contains("cell.dataset.hint = tableHeaderHint(column.key, column.hint)", script, StringComparison.Ordinal);
+
+        var topicStart = script.IndexOf("function renderTopicHeat", StringComparison.Ordinal);
+        var topicEnd = script.IndexOf("function makeTopicRowButton", topicStart, StringComparison.Ordinal);
+        var topicHeat = script[topicStart..topicEnd];
+        var rankHeader = topicHeat.IndexOf("rank.className", StringComparison.Ordinal);
+        var rankChangeHeader = topicHeat.IndexOf("rankChange.className", StringComparison.Ordinal);
+        var topicHeader = topicHeat.IndexOf("name.className", StringComparison.Ordinal);
+
+        Assert.True(rankHeader >= 0 && rankHeader < rankChangeHeader && rankChangeHeader < topicHeader);
+        Assert.Contains("changeCell.className = 'numeric col-rank-change '", topicHeat, StringComparison.Ordinal);
+        Assert.Contains(".topic-heat-table th.col-topic-name", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 切換主頁籤會還原各頁最後使用的期間與排序()
     {
         var script = ReadAsset("site.js");

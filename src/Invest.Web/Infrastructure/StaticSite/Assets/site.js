@@ -29,6 +29,42 @@ const SITE_ACCESS = DEPLOYED_ACCESS
     ?? (ACCESS_QUERY === 'viewer' || ACCESS_PATH === 'viewer' ? 'viewer' : 'admin');
 const ACCESS_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && (ACCESS_QUERY === 'admin' || ACCESS_QUERY === 'viewer');
+
+// 檢視權限的泡泡只開放表格／列表表頭，而且只說明「這欄怎麼看」。
+// 公式與資料來源細節留在最高權限，避免訪客在每個欄位上看到過長、容易誤讀的說明。
+const VIEWER_TABLE_HEADER_HINTS = {
+    rank: '顯示目前排序後的名次。',
+    change: '顯示相較前期的名次變化。',
+    rankChange: '顯示族群相較前期的名次變化。',
+    ticker: '顯示股票代號與上市／上櫃標記。',
+    name: '顯示股票名稱；名稱底色代表日漲跌，點擊可開啟 K 線。',
+    topic: '顯示股票所屬的族群。',
+    topicName: '顯示族群名稱；點擊可展開成員。',
+    value: '顯示成交值。',
+    rate: '顯示相較前期的變化。',
+    share: '顯示個股占市場成交值的比例。',
+    shareChange: '顯示成交比相較前期的變化。',
+    price: '上層顯示日漲跌幅，下層顯示週漲跌幅。',
+    close: '顯示收盤價或最新價格。',
+    revenue: '上層顯示 YOY，下層顯示 MOM。',
+    revenueHigh: '顯示營收創高月數。',
+    estimate: '顯示盤中預估成交值，僅供參考。',
+    composite: '顯示族群市場熱度分數。',
+    fund: '顯示族群資金熱度分數。',
+    breadth: '顯示族群廣度分數。',
+    news: '顯示族群新聞熱度參考分數。',
+    members: '顯示族群成員數與有成交數。',
+    participation: '顯示族群排行參與率。',
+    rising: '顯示族群上漲家數比。',
+    dispersion: '顯示族群資金分散度。'
+};
+
+function tableHeaderHint(key, fallback) {
+    return SITE_ACCESS === 'viewer'
+        ? (VIEWER_TABLE_HEADER_HINTS[key] ?? '顯示這一欄的資料。')
+        : fallback;
+}
+
 const KLINE_MONTHS = 3;
 const KLINE_MOVING_AVERAGES = [
     { key: 'ma5', label: 'MA5', className: 'ma5' },
@@ -3288,7 +3324,7 @@ function renderTable() {
 
     for (const column of columns()) {
         const cell = document.createElement('th');
-        cell.dataset.hint = column.hint;
+        cell.dataset.hint = tableHeaderHint(column.key, column.hint);
 
         // 表頭掛上自己的欄位名，對齊與釘選才有辦法用 class 指定。
         // 盤後與盤中的欄位不完全一樣，用 nth-child 指定的話兩邊會各指到不同欄位。
@@ -4854,25 +4890,31 @@ function renderTopicHeat(panel) {
     const rank = document.createElement('th');
     rank.className = 'unsortable col-rank';
     rank.textContent = '名次';
-    rank.dataset.hint = `依目前排序欄位的名次。預設是${topicCompositeColumn(period).title}。`;
+    rank.dataset.hint = tableHeaderHint(
+        'rank',
+        `依目前排序欄位的名次。預設是${topicCompositeColumn(period).title}。`);
     headRow.append(rank);
-
-    const name = document.createElement('th');
-    name.className = 'unsortable col-topic-name';
-    name.textContent = '族群';
-    name.dataset.hint = '點族群名稱就在目前熱度排行內展開或收合這個族群的全部成員。';
-    headRow.append(name);
 
     const rankChange = document.createElement('th');
     rankChange.className = 'unsortable col-rank-change';
     rankChange.textContent = '名次變化';
-    rankChange.dataset.hint = '前一個相同長度的觀察區間名次 − 本期名次；▲ 代表名次上升，▼ 代表名次下降。盤中尚未有可比較的前一輪時顯示 —。';
+    rankChange.dataset.hint = tableHeaderHint(
+        'rankChange',
+        '前一個相同長度的觀察區間名次 − 本期名次；▲ 代表名次上升，▼ 代表名次下降。盤中尚未有可比較的前一輪時顯示 —。');
     headRow.append(rankChange);
+
+    const name = document.createElement('th');
+    name.className = 'unsortable col-topic-name';
+    name.textContent = '族群';
+    name.dataset.hint = tableHeaderHint(
+        'topicName',
+        '點族群名稱就在目前熱度排行內展開或收合這個族群的全部成員。');
+    headRow.append(name);
 
     for (const column of TOPIC_HEAT_COLUMNS) {
         const naming = column.key === 'composite' ? topicCompositeColumn(period) : column;
         const cell = document.createElement('th');
-        cell.dataset.hint = naming.hint;
+        cell.dataset.hint = tableHeaderHint(column.key, naming.hint);
         cell.className = (state.topicSortKey === column.key ? 'sortable sorted' : 'sortable')
             + ' col-' + column.key;
         cell.textContent = naming.title
@@ -4907,15 +4949,15 @@ function renderTopicHeat(panel) {
         rankCell.textContent = index + 1;
         tr.append(rankCell);
 
+        const changeCell = document.createElement('td');
+        changeCell.className = 'numeric col-rank-change ' + toTrendClass(row.rankChange);
+        changeCell.textContent = toRankChangeText(row.rankChange);
+        tr.append(changeCell);
+
         const nameCell = document.createElement('td');
         nameCell.className = 'topic-name-cell';
         nameCell.append(makeTopicRowButton(row, topic));
         tr.append(nameCell);
-
-        const changeCell = document.createElement('td');
-        changeCell.className = 'numeric ' + toTrendClass(row.rankChange);
-        changeCell.textContent = toRankChangeText(row.rankChange);
-        tr.append(changeCell);
 
         for (const column of TOPIC_HEAT_COLUMNS) {
             const { text, cls } = column.cell(row);
@@ -5098,12 +5140,19 @@ function makeTopicMemberTable(members, onSortChanged = null) {
     const head = document.createElement('thead');
     const headRow = document.createElement('tr');
 
-    for (const text of ['代號', '名稱', '市場成交比', '漲跌幅', '營收增減', '創高月數', '全市場名次']) {
-        const cell = document.createElement('th');
+    const headings = [
+        ['ticker', '代號', '股票代號與市場標記。'],
+        ['name', '名稱', '點擊名稱開啟這檔標的的 K 線。'],
+        ['share', '市場成交比', '顯示個股在族群裡的成交比。'],
+        ['price', '漲跌幅', '顯示個股日漲跌幅；點擊可排序。'],
+        ['revenue', '營收增減', '上層顯示 YOY，下層顯示 MOM。'],
+        ['revenueHigh', '創高月數', HIGH_MONTHS_HINT],
+        ['rank', '全市場名次', '顯示個股在全市場成交值排行的名次。']
+    ];
 
-        if (text === '創高月數') {
-            cell.dataset.hint = HIGH_MONTHS_HINT;
-        }
+    for (const [key, text, fallback] of headings) {
+        const cell = document.createElement('th');
+        cell.dataset.hint = tableHeaderHint(key, fallback);
 
         if (text !== '漲跌幅') {
             cell.textContent = text;

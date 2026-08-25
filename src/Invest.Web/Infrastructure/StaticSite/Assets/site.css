@@ -2407,6 +2407,13 @@ td.stock-name.stock-name-change-down {
     white-space: normal;
 }
 
+.topic-heat-table th.col-topic-name {
+    text-align: left;
+}
+
+.topic-heat-table th.col-rank,
+.topic-heat-table th.col-rank-change,
+.topic-heat-table td.rank,
 .topic-heat-table td.col-rank-change {
     white-space: nowrap;
 }
