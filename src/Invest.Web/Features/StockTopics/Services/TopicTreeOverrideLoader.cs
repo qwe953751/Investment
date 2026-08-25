@@ -4,46 +4,63 @@ using System.Text.Json;
 namespace Invest.Web.Features.StockTopics.Services;
 
 /// <summary>
-/// 讀 TopicTreeOverrides.json：族群樹上使用者拍板過的結構調整。
+/// 讀族群樹上的兩份人工調整：結構調整（TopicTreeOverrides.json）與補分類（TopicMemberOverrides.json）。
 ///
 /// 為什麼要有這一層：F:J 那棵樹每次匯出都從 Google Sheet 重新讀，程式不會回頭去改試算表
 /// （那是使用者自己的檔案）。可是「綠能收成一大類」「DRAM/HBM 拆兩類」「手機獨立出去」
 /// 這種裁示改的正是樹的形狀，不是概念的歸屬，ConceptMapping.json 表達不了——
 /// 它只能把概念掛到節點上，沒辦法把節點從舊的父節點底下拔下來。
 ///
+/// 兩份檔案分開放，是因為它們的權威來源不同：結構調整是使用者親口拍板的，
+/// 補分類是研究後填的、整份都等著使用者複判。混在一起會分不出哪些能改哪些不能動。
+///
 /// 所以調整記在這裡，每次重建樹之後再套一次。順序是固定的：先照試算表建樹、
-/// 再照歸類表掛概念、最後才套這些調整，因為「移除」要先知道節點到底有沒有成員。
+/// 再照歸類表掛概念、接著套結構調整（「移除」要先知道節點到底有沒有成員），
+/// 最後才補分類——補完才不會把剛加進去的成員擋住「移除」。
 /// </summary>
 public static class TopicTreeOverrideLoader
 {
-    private const string ResourceName = "Invest.Web.Features.StockTopics.TopicTreeOverrides.json";
+    private const string StructureResourceName = "Invest.Web.Features.StockTopics.TopicTreeOverrides.json";
+    private const string MemberResourceName = "Invest.Web.Features.StockTopics.TopicMemberOverrides.json";
 
     /// <summary>
-    /// 一筆調整。<paramref name="Parent"/> 只有「移到」用得到，
-    /// <paramref name="Aliases"/> 只有「別名」用得到，其餘留空。
+    /// 一筆調整。每個動作只用得到其中幾個欄位：
+    /// <paramref name="Parent"/> 只有「移到」用，<paramref name="Aliases"/> 只有「別名」用，
+    /// <paramref name="Tickers"/> 與 <paramref name="NeedsReview"/> 只有「加入」用，其餘留空。
     /// </summary>
     public sealed record TreeOverride(
         string Action,
         string Node,
         string? Parent,
         IReadOnlyList<string> Aliases,
+        IReadOnlyList<string> Tickers,
+        bool NeedsReview,
         string Note);
 
     public const string MoveAction = "移到";
     public const string RemoveAction = "移除";
     public const string AliasAction = "別名";
+    public const string JoinAction = "加入";
 
-    private static IReadOnlyList<TreeOverride>? _cached;
+    private static IReadOnlyList<TreeOverride>? _structure;
+    private static IReadOnlyList<TreeOverride>? _members;
 
+    /// <summary>
+    /// 結構調整：搬節點、刪節點、補別名。使用者拍板過的，程式不會自己改。
+    /// </summary>
     public static IReadOnlyList<TreeOverride> Load()
-    {
-        if (_cached is not null)
-        {
-            return _cached;
-        }
+        => _structure ??= Read(StructureResourceName);
 
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(ResourceName)
-            ?? throw new InvalidOperationException($"組件裡找不到 {ResourceName}。");
+    /// <summary>
+    /// 補分類：把個股加進節點的直接成員。研究後填的，整份都標著待複判。
+    /// </summary>
+    public static IReadOnlyList<TreeOverride> LoadMembers()
+        => _members ??= Read(MemberResourceName);
+
+    private static IReadOnlyList<TreeOverride> Read(string resourceName)
+    {
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"組件裡找不到 {resourceName}。");
 
         using var document = JsonDocument.Parse(stream);
         var result = new List<TreeOverride>();
@@ -52,26 +69,29 @@ public static class TopicTreeOverrideLoader
         {
             foreach (var item in items.EnumerateArray())
             {
-                var aliases = new List<string>();
-
-                if (item.TryGetProperty("別名", out var list) && list.ValueKind == JsonValueKind.Array)
-                {
-                    aliases.AddRange(list.EnumerateArray()
-                        .Select(alias => alias.GetString() ?? string.Empty)
-                        .Where(alias => alias.Length > 0));
-                }
-
                 result.Add(new TreeOverride(
                     item.TryGetProperty("動作", out var action) ? action.GetString() ?? string.Empty : string.Empty,
                     item.TryGetProperty("節點", out var node) ? node.GetString() ?? string.Empty : string.Empty,
                     item.TryGetProperty("父節點", out var parent) ? parent.GetString() : null,
-                    aliases,
+                    ReadStrings(item, "別名"),
+                    ReadStrings(item, "個股"),
+                    item.TryGetProperty("待複判", out var review) && review.ValueKind == JsonValueKind.True,
                     item.TryGetProperty("說明", out var note) ? note.GetString() ?? string.Empty : string.Empty));
             }
         }
 
-        _cached = result;
+        return result;
+    }
 
-        return _cached;
+    private static IReadOnlyList<string> ReadStrings(JsonElement item, string property)
+    {
+        if (!item.TryGetProperty(property, out var list) || list.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return [.. list.EnumerateArray()
+            .Select(value => value.GetString() ?? string.Empty)
+            .Where(value => value.Length > 0)];
     }
 }

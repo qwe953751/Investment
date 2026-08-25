@@ -271,9 +271,22 @@ public sealed class StaticSiteExporter(
             .SelectMany(ranking => ranking.Rows.Select(row => row.Ticker))
             .ToHashSet(StringComparer.Ordinal);
 
+        // 族群成員的名字原本只從概念股分頁來，因為當初的成員也只有那裡有。
+        // 補分類加進來的成員沒有出現在那份分頁上，名字得從排行資料補，
+        // 否則畫面上那幾百檔只會剩一串代號，複判的時候根本看不出是哪家公司。
+        var stockNames = new Dictionary<string, string>(catalog.StockNames, StringComparer.Ordinal);
+
+        foreach (var row in rankings.Values.SelectMany(ranking => ranking.Rows))
+        {
+            if (row.Name.Length > 0)
+            {
+                stockNames.TryAdd(row.Ticker, row.Name);
+            }
+        }
+
         var staleMembers = active is null
             ? []
-            : TopicMemberAudit.Find(active, catalog.StockNames, tradedTickers);
+            : TopicMemberAudit.Find(active, stockNames, tradedTickers);
 
         var topicIdByName = active?.Topics
             .GroupBy(topic => topic.Name, StringComparer.Ordinal)
@@ -282,7 +295,7 @@ public sealed class StaticSiteExporter(
 
         var catalystEvents = active is null || baseDate is not { } today
             ? []
-            : CatalystEventBuilder.Build(rawEvents, active, catalog.StockNames, today, MaxCatalystEvents);
+            : CatalystEventBuilder.Build(rawEvents, active, stockNames, today, MaxCatalystEvents);
 
         logger.LogInformation(
             "催化事件：讀到 {Raw} 則重大訊息，篩出 {Built} 則掛在族群上的事件，{Topics} 個族群有新聞熱度。",
@@ -300,7 +313,7 @@ public sealed class StaticSiteExporter(
                 TopicHeatCalculator.NewsWeight,
                 catalog.Warnings,
                 mappings,
-                catalog.StockNames,
+                stockNames,
                 [.. attributions.Select(item => new TopicAttributionExport(
                     item.Ticker,
                     item.BigTopicId,

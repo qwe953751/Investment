@@ -240,7 +240,11 @@ public static class TopicCatalogBuilder
 
         // 使用者拍板的結構調整最後才套：移除要先知道節點有沒有成員，
         // 而成員是上面那一圈掛概念的時候才進來的。
-        graph.ApplyOverrides(TopicTreeOverrideLoader.Load(), warnings);
+        graph.ApplyOverrides(TopicTreeOverrideLoader.Load(), links, warnings);
+
+        // 補分類要排在結構調整之後：這兩份檔案講的是同一棵樹，而搬過家、改過名的節點
+        // 要等結構調整套完才找得到。反過來先補成員的話，「移除」會因為節點突然有了成員而拒絕動作。
+        graph.ApplyOverrides(TopicTreeOverrideLoader.LoadMembers(), links, warnings);
 
         var topics = graph.ToTopics(new Dictionary<string, string>(StringComparer.Ordinal));
 
@@ -337,6 +341,7 @@ public static class TopicCatalogBuilder
         /// </summary>
         public void ApplyOverrides(
             IReadOnlyList<TopicTreeOverrideLoader.TreeOverride> overrides,
+            List<StockTopicLink> links,
             List<string> warnings)
         {
             if (overrides.Count == 0)
@@ -358,6 +363,10 @@ public static class TopicCatalogBuilder
 
                     case TopicTreeOverrideLoader.AliasAction:
                         AddAliases(item, warnings);
+                        break;
+
+                    case TopicTreeOverrideLoader.JoinAction:
+                        Join(item, links, warnings);
                         break;
 
                     default:
@@ -466,6 +475,43 @@ public static class TopicCatalogBuilder
                 // 別名也要能反查回節點，否則補了等於沒補。
                 _byName.TryAdd(TopicIdFactory.Normalize(alias), node.Id);
             }
+
+            if (item.Note.Length > 0)
+            {
+                node.MappingNotes.Add(item.Note);
+            }
+        }
+
+        /// <summary>
+        /// 把個股加進節點的直接成員。這是補分類用的：F:J 樹上八成的節點一檔股票都沒有，
+        /// 概念股分頁又只涵蓋一部分，剩下的只能一個節點一個節點填回去。
+        /// </summary>
+        private void Join(
+            TopicTreeOverrideLoader.TreeOverride item,
+            List<StockTopicLink> links,
+            List<string> warnings)
+        {
+            // 這裡刻意不呼叫 Ensure：節點名稱打錯的話，補出來的會是一個沒有父節點、
+            // 底下卻掛著股票的孤兒大類，而且在畫面上跟真的族群長得一模一樣。
+            // 對不上就出聲，讓人去改檔案。
+            if (FindByName(item.Node) is not { } node)
+            {
+                warnings.Add($"補分類：樹上找不到節點「{item.Node}」，這一筆的 {item.Tickers.Count} 檔個股沒有掛上去。");
+                return;
+            }
+
+            foreach (var ticker in item.Tickers)
+            {
+                // 已經是成員的就跳過。重複掛一次不會多出成員，但會讓關聯數字虛胖。
+                if (node.Tickers.Add(ticker))
+                {
+                    links.Add(new StockTopicLink(node.Id, ticker));
+                }
+            }
+
+            // 待複判要往節點上傳：這些歸類是研究出來的不是使用者拍板的，
+            // 人工編輯頁靠這個旗標把它們挑出來給人複判。
+            node.NeedsReview |= item.NeedsReview;
 
             if (item.Note.Length > 0)
             {
