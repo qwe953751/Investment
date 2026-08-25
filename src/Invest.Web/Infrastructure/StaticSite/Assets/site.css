@@ -2264,7 +2264,7 @@ td.stock-name.stock-name-change-down {
     }
 
     .ranking-table th.col-name,
-    .ranking-table td.stock-name {
+    .ranking-table td.stock-name:not(.stock-name-change-up):not(.stock-name-change-down) {
         position: sticky;
         left: 80px;
         background: #fff;

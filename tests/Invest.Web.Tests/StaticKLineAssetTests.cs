@@ -134,6 +134,17 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 行動版固定名稱欄不應覆蓋個股漲跌底色()
+    {
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains(
+            ".ranking-table td.stock-name:not(.stock-name-change-up):not(.stock-name-change-down)",
+            styles,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 筆記編輯器使用較大的輸入字體()
     {
         var styles = ReadAsset("site.css");
