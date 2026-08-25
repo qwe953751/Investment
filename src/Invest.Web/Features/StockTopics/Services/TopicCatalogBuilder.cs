@@ -28,7 +28,8 @@ public static class TopicCatalogBuilder
         IReadOnlyList<string[]> treePaths,
         ConceptSheetParser.Result concepts,
         IReadOnlyList<string> warnings,
-        IReadOnlyDictionary<string, string>? industryByTicker = null)
+        IReadOnlyDictionary<string, string>? industryByTicker = null,
+        IReadOnlyList<TopicTreeOverrideLoader.TreeOverride>? userEdits = null)
     {
         var stockNames = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -49,7 +50,14 @@ public static class TopicCatalogBuilder
             Mappings =
             [
                 BuildOriginal(treePaths, concepts),
-                BuildClassified(treePaths, concepts, document, industryByTicker ?? EmptyIndustries, provisional, extra)
+                BuildClassified(
+                    treePaths,
+                    concepts,
+                    document,
+                    industryByTicker ?? EmptyIndustries,
+                    userEdits ?? [],
+                    provisional,
+                    extra)
             ],
             ActiveVersion = 2,
             StockNames = stockNames,
@@ -126,6 +134,7 @@ public static class TopicCatalogBuilder
         ConceptSheetParser.Result concepts,
         ConceptMappingLoader.Document document,
         IReadOnlyDictionary<string, string> industryByTicker,
+        IReadOnlyList<TopicTreeOverrideLoader.TreeOverride> userEdits,
         List<ProvisionalMember> provisional,
         List<string> warnings)
     {
@@ -257,6 +266,14 @@ public static class TopicCatalogBuilder
         // 排在最後是因為它的判斷條件就是「前面全部都沒收到它」。
         provisional.AddRange(graph.ApplyIndustryFallback(industryByTicker, links, warnings));
 
+        // 使用者在網站上改的排最後：他的決定要蓋得過上面每一層。
+        // 排在產業別兜底之後也是為了這個——反過來的話，他把某檔股票移出「其他」，
+        // 兜底會立刻照產業別再把它掛回「其他」，看起來就像剛剛那一下沒存進去。
+        graph.ApplyOverrides(userEdits, links, warnings);
+
+        // 使用者已經搬走的就不該還列在待複判裡。
+        provisional.RemoveAll(member => !graph.Contains(member.TopicId, member.Ticker));
+
         var topics = graph.ToTopics(new Dictionary<string, string>(StringComparer.Ordinal));
 
         topics.AddRange(outsideTree);
@@ -380,6 +397,10 @@ public static class TopicCatalogBuilder
                         Join(item, links, warnings);
                         break;
 
+                    case TopicTreeOverrideLoader.LeaveAction:
+                        Leave(item, links, warnings);
+                        break;
+
                     default:
                         warnings.Add($"族群樹調整：不認得的動作「{item.Action}」（節點 {item.Node}），這一筆沒有套用。");
                         break;
@@ -397,9 +418,24 @@ public static class TopicCatalogBuilder
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(item.Parent))
+            // 「沒有這個欄位」（null）跟「欄位留白」（空字串）不是同一件事：
+            // 前者是這一筆漏寫了，後者是使用者在人工編輯頁刻意把父節點清空，
+            // 意思是「把這一支從別人底下拉出來，自己當一個頂層大類」。
+            if (item.Parent is null)
             {
                 warnings.Add($"族群樹調整：節點「{item.Node}」的「移到」沒有寫父節點，這一筆沒有套用。");
+                return;
+            }
+
+            if (item.Parent.Trim().Length == 0)
+            {
+                Detach(node);
+
+                if (item.Note.Length > 0)
+                {
+                    node.MappingNotes.Add(item.Note);
+                }
+
                 return;
             }
 
@@ -413,15 +449,7 @@ public static class TopicCatalogBuilder
             }
 
             // 「移到」是搬家不是加掛：舊的父節點關係要全部解掉，否則同一個節點會在兩個大類底下各出現一次。
-            foreach (var oldParentId in node.ParentIds)
-            {
-                if (_nodes.TryGetValue(oldParentId, out var oldParent))
-                {
-                    oldParent.ChildIds.Remove(node.Id);
-                }
-            }
-
-            node.ParentIds.Clear();
+            Detach(node);
             node.ParentIds.Add(parent.Id);
             parent.ChildIds.Add(node.Id);
 
@@ -429,6 +457,23 @@ public static class TopicCatalogBuilder
             {
                 node.MappingNotes.Add(item.Note);
             }
+        }
+
+        /// <summary>
+        /// 把節點從所有父節點底下拆下來。拆完它就是一個頂層大類——
+        /// 節點本身、成員、子節點都還在，只是不再掛在別人底下。
+        /// </summary>
+        private void Detach(TreeNode node)
+        {
+            foreach (var parentId in node.ParentIds)
+            {
+                if (_nodes.TryGetValue(parentId, out var parent))
+                {
+                    parent.ChildIds.Remove(node.Id);
+                }
+            }
+
+            node.ParentIds.Clear();
         }
 
         private void Remove(TopicTreeOverrideLoader.TreeOverride item, List<string> warnings)
@@ -529,6 +574,50 @@ public static class TopicCatalogBuilder
                 node.MappingNotes.Add(item.Note);
             }
         }
+
+        /// <summary>
+        /// 把個股從節點的直接成員裡拿掉。使用者在人工編輯頁按「移出」時走這裡。
+        /// </summary>
+        private void Leave(
+            TopicTreeOverrideLoader.TreeOverride item,
+            List<StockTopicLink> links,
+            List<string> warnings)
+        {
+            if (FindByName(item.Node) is not { } node)
+            {
+                warnings.Add($"人工編輯：樹上找不到節點「{item.Node}」，這一筆「退出」沒有套用。");
+                return;
+            }
+
+            var removed = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var ticker in item.Tickers)
+            {
+                if (node.Tickers.Remove(ticker))
+                {
+                    removed.Add(ticker);
+                }
+            }
+
+            // 關聯也要一起收掉，否則熱度照樣把這幾檔算進這個族群，
+            // 畫面上卻已經看不到它們了——這種不一致最難查。
+            if (removed.Count > 0)
+            {
+                links.RemoveAll(link => link.TopicId == node.Id && removed.Contains(link.Ticker));
+            }
+
+            if (item.Note.Length > 0)
+            {
+                node.MappingNotes.Add(item.Note);
+            }
+        }
+
+        /// <summary>
+        /// 這個節點現在還算不算這檔股票的成員。用來把「依產業別暫掛」的名單，
+        /// 跟使用者後來的編輯對齊：他已經搬走的就不該還列在待複判裡。
+        /// </summary>
+        public bool Contains(string topicId, string ticker)
+            => _nodes.TryGetValue(topicId, out var node) && node.Tickers.Contains(ticker);
 
         /// <summary>
         /// 照交易所登記的產業別，把還沒進任何節點的股票暫掛上去。

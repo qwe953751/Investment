@@ -96,7 +96,7 @@ const TOPIC_TABS = [
     { key: 'heat', text: '熱度排行', hint: '族群依熱度排序。點任何一列展開這個族群的全部成員。' },
     { key: 'tree', text: '族群列表', hint: 'Google Sheet 上那棵供應鏈樹，點節點看它涵蓋哪些股票。排行榜族群欄的連結就是跳到這裡。' },
     { key: 'events', text: '催化事件', hint: '族群為什麼熱起來的事件紀錄，來自公開資訊觀測站的重大訊息。' },
-    { key: 'edits', text: '人工編輯', hint: '分類被改過哪些地方，以及還等著使用者拍板的合併與歧義。' }
+    { key: 'edits', text: '人工編輯', hint: '直接改族群與個股的分類，改的東西下一次更新時套用；也列出還等著你拍板的合併、歧義與暫掛。' }
 ];
 
 // 檢視權限保留族群入口，但只給已整理好的熱度排行；來源樹、事件與人工編輯
@@ -5850,30 +5850,684 @@ function appendTextCell(row, text, cls) {
     return cell;
 }
 
-function makeSampleBanner(...lines) {
-    const box = document.createElement('section');
-    box.className = 'notice topic-sample-banner';
+// ── 分頁四：人工編輯 ────────────────────────────────────────
+//
+// 這一頁把改動寫進 Supabase 的 topic_edits（見 db/017_topic_edits.sql），
+// 那是全站第二張 anon 角色可以寫的表。理由跟筆記那張一樣：純靜態網站沒有伺服器
+// 可以擋登入邊界，要做到「任何裝置打開網站就能改分類」，只能把匿名金鑰當成寫入權杖。
+//
+// 存檔不會馬上改變畫面上的樹。族群樹是匯出當下算好寫進 topics.json 的靜態檔，
+// 這些編輯要等下一次更新讀出來、照跟 repo 裡那兩份 JSON 一樣的規則套上去才生效。
+// 所以每存一筆都要講清楚「下次更新才看得到」——不然使用者會以為沒存進去，
+// 回頭把同一件事再改一次，最後疊出兩筆互相打架的編輯。
 
-    const tag = document.createElement('span');
-    tag.className = 'topic-sample-tag';
-    tag.textContent = '示範資料';
-    box.append(tag);
+const TOPIC_EDITS_TABLE = 'topic_edits';
+const TOPIC_EDIT_COLUMNS = 'id,action,node,parent,tickers,aliases,note,enabled,created_at';
 
-    for (const line of lines) {
-        const item = document.createElement('p');
-        item.textContent = line;
-        box.append(item);
+// 選單的 id 要固定：兩張表單的族群欄共用同一份 datalist，
+// 一千個節點沒必要在同一頁裡建兩次。
+const TOPIC_NODE_LIST_ID = 'topic-edit-node-options';
+const TOPIC_STOCK_LIST_ID = 'topic-edit-stock-options';
+
+// 動作的字彙跟資料表、跟 repo 裡的兩份 JSON 完全一樣：三個地方講同一種話，
+// 之後要把某一筆編輯定案成 JSON 才不用翻譯。
+const TOPIC_NODE_ACTIONS = [
+    {
+        key: '移到',
+        text: '移到別的大類底下',
+        hint: '換父節點。父節點留白代表把它從別人底下拉出來，自己當一個頂層大類。'
+    },
+    {
+        key: '別名',
+        text: '加一個別名',
+        hint: '同一個族群的另一種寫法。加了以後搜尋與概念對應都認得這個名字。'
+    },
+    {
+        key: '移除',
+        text: '移除這個族群',
+        hint: '只有空節點刪得掉：底下還有成員或子節點時這一筆不會生效，'
+            + '免得那些股票安靜地從族群系統裡消失。'
     }
+];
+
+let topicEdits = [];
+let topicEditsLoaded = false;
+let topicEditsLoading = false;
+let topicEditsError = '';
+
+// 兩張表單各自的暫存。存檔或重新載入都會把整個面板重畫，
+// 不記著的話使用者打到一半的字會被清掉。
+let topicNodeDraft = { action: '移到', node: '', parent: '', aliases: '', note: '' };
+let topicMemberDraft = { stock: '', node: '', note: '' };
+let topicNodeStatus = '';
+let topicMemberStatus = '';
+
+function renderTopicEdits(panel) {
+    if (supabase === null) {
+        panel.append(makeTopicNotice(
+            '這份匯出沒有帶資料庫連線資訊，所以編輯存不進去。底下幾段仍然是這份分類真實的狀態。',
+            true));
+    } else {
+        if (!topicEditsLoaded && !topicEditsLoading) {
+            refreshTopicEdits();
+        }
+
+        panel.append(makeTopicEditIntro());
+        panel.append(makeTopicEditDatalists());
+        panel.append(makeTopicNodeEditor());
+        panel.append(makeTopicMemberEditor());
+        panel.append(makeTopicEditLog());
+    }
+
+    panel.append(makeTopicPendingBlock());
+    panel.append(makeTopicProvisionalBlock());
+    panel.append(makeTopicStaleBlock());
+}
+
+// 讀失敗刻意保留上一輪的清單：紀錄不該因為一次連線失敗就整個消失，
+// 那會看起來像剛剛存的東西全不見了。
+async function refreshTopicEdits(force = false) {
+    if (supabase === null || topicEditsLoading || (topicEditsLoaded && !force)) {
+        return;
+    }
+
+    topicEditsLoading = true;
+
+    try {
+        const rows = await fetchAllRows(TOPIC_EDITS_TABLE, TOPIC_EDIT_COLUMNS, '&order=created_at.desc');
+
+        topicEdits = rows
+            .filter(row => row !== null && typeof row === 'object')
+            .map(row => ({
+                id: String(row.id),
+                action: typeof row.action === 'string' ? row.action : '',
+                node: typeof row.node === 'string' ? row.node : '',
+                parent: typeof row.parent === 'string' ? row.parent : '',
+                tickers: Array.isArray(row.tickers) ? row.tickers.map(String) : [],
+                aliases: Array.isArray(row.aliases) ? row.aliases.map(String) : [],
+                note: typeof row.note === 'string' ? row.note : '',
+                enabled: row.enabled !== false,
+                createdAt: typeof row.created_at === 'string' ? row.created_at : ''
+            }));
+        topicEditsError = '';
+    } catch {
+        topicEditsError = '讀不到已經存起來的編輯紀錄，可能是資料庫連線問題。'
+            + '已經存進去的不會不見，重新整理再試一次。';
+    }
+
+    topicEditsLoaded = true;
+    topicEditsLoading = false;
+
+    // 只在人還停在這一頁的時候重畫：讀完的時候他可能已經切去別的分頁了。
+    if (state.view === 'topics' && state.topicTab === 'edits') {
+        renderTopicPanel();
+    }
+}
+
+async function saveTopicEdit(row) {
+    const response = await fetch(`${supabase.url}/rest/v1/${TOPIC_EDITS_TABLE}`, {
+        method: 'POST',
+        headers: {
+            apikey: supabase.anonKey,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal'
+        },
+        body: JSON.stringify(row)
+    });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
+    }
+}
+
+// 停用而不是刪除，理由寫在 db/017_topic_edits.sql：改錯了要看得到
+// 「曾經這樣改過又收回」，直接刪掉的話下次再看到同樣的怪現象，會想不起來自己試過了。
+async function setTopicEditEnabled(id, enabled) {
+    const response = await fetch(
+        `${supabase.url}/rest/v1/${TOPIC_EDITS_TABLE}?id=eq.${encodeURIComponent(id)}`,
+        {
+            method: 'PATCH',
+            headers: {
+                apikey: supabase.anonKey,
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal'
+            },
+            body: JSON.stringify({ enabled, updated_at: new Date().toISOString() })
+        });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
+    }
+}
+
+function makeTopicEditIntro() {
+    const box = document.createElement('section');
+    box.className = 'notice topic-edit-intro';
+
+    const title = document.createElement('strong');
+    title.textContent = '這一頁改的是「下一次更新之後的分類」。';
+    box.append(title);
+
+    const body = document.createElement('p');
+    body.textContent = '畫面上的族群樹是每天更新時一次算好的，所以存檔後這一頁的樹不會立刻變，'
+        + '要等下一次更新把這些編輯套上去才看得到。每一筆都留著紀錄，'
+        + '改錯了到最下面按「停用」收回來就好。';
+    box.append(body);
 
     return box;
 }
 
-// ── 分頁四：人工編輯 ────────────────────────────────────────
+// 兩份選單。族群只列樹上的節點：市場敘事、集團、客戶生態系那幾類是概念股名單帶進來的，
+// 它們的成員來自 Google Sheet，不歸這裡管，列出來只會讓人選了以後發現沒有效果。
+function makeTopicEditDatalists() {
+    const host = document.createElement('div');
+    host.hidden = true;
 
-function renderTopicEdits(panel) {
-    panel.append(makeSampleBanner(
-        '編輯紀錄本身還沒有寫入的地方，下面這幾筆是示範資料，用來確認要記哪些欄位。',
-        '底下的「等著拍板」與「歸類還有疑義」則是真的：那些是這一份分類目前真實的狀態。'));
+    const nodes = document.createElement('datalist');
+    nodes.id = TOPIC_NODE_LIST_ID;
+
+    for (const topic of topicEditableNodes()) {
+        const option = document.createElement('option');
+        option.value = topic.name;
+        option.label = topicParentPathText(topic);
+        nodes.append(option);
+    }
+
+    // 個股選項刻意寫成「2330 台積電」：datalist 是拿使用者打的字去比對 value 的，
+    // 只放代號的話打「台積」一檔都篩不出來，而人記得住的通常是名字不是代號。
+    const stocks = document.createElement('datalist');
+    stocks.id = TOPIC_STOCK_LIST_ID;
+
+    for (const [ticker, name] of Object.entries(topicData?.stockNames ?? {}).sort()) {
+        const option = document.createElement('option');
+        option.value = `${ticker} ${name}`;
+        stocks.append(option);
+    }
+
+    host.append(nodes, stocks);
+    return host;
+}
+
+function topicEditableNodes() {
+    return topicActive.topics
+        .filter(topic => topic.source === 'tree')
+        .sort(compareTopicOrder);
+}
+
+// 節點在樹上掛在哪裡。選單只顯示名稱看不出層級，
+// 而「電池」在綠能底下跟在傳產底下是完全不同的兩件事。
+function topicParentPathText(topic) {
+    const path = (topic.paths ?? [])[0] ?? [];
+
+    return path.length > 1 ? path.slice(0, -1).join(' › ') : '頂層大類';
+}
+
+// 使用者可能打了代號、打了名字，或從選單挑了「2330 台積電」。
+// 對不到就回空字串，交給呼叫端說話——猜錯一檔比擋下來難發現得多。
+function parseTopicStockInput(value) {
+    const names = topicData?.stockNames ?? {};
+    const text = String(value).trim();
+
+    if (text === '') {
+        return '';
+    }
+
+    const ticker = text.split(/\s+/)[0];
+
+    if (names[ticker] !== undefined) {
+        return ticker;
+    }
+
+    const matched = Object.keys(names).filter(key => names[key] === text);
+
+    return matched.length === 1 ? matched[0] : '';
+}
+
+function makeTopicEditField(labelText, control, hint) {
+    const field = document.createElement('label');
+    field.className = 'topic-edit-field';
+
+    const text = document.createElement('span');
+    text.textContent = labelText;
+
+    if (hint) {
+        text.dataset.hint = hint;
+    }
+
+    field.append(text, control);
+    return field;
+}
+
+function makeTopicEditInput(value, placeholder, listId) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = value;
+    input.placeholder = placeholder;
+    input.autocomplete = 'off';
+
+    if (listId) {
+        input.setAttribute('list', listId);
+    }
+
+    return input;
+}
+
+function makeTopicEditButton(text, className = 'notes-primary-button') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.textContent = text;
+    return button;
+}
+
+// ── 表單一：族群本身 ──
+function makeTopicNodeEditor() {
+    const box = document.createElement('section');
+    box.className = 'topic-pending';
+
+    const title = document.createElement('h2');
+    title.className = 'topic-section-title';
+    title.textContent = '編輯族群';
+    box.append(title);
+
+    const intro = document.createElement('p');
+    intro.className = 'topic-intro';
+    intro.textContent = '把一個族群搬到別的大類底下、幫它加一個別名，或把用不到的空族群收起來。'
+        + '族群欄可以直接打字，也可以按右邊的箭頭從目前樹上的節點裡挑，選單第二行是它現在掛在哪。';
+    box.append(intro);
+
+    const form = document.createElement('form');
+    form.className = 'topic-edit-form';
+
+    const action = document.createElement('select');
+
+    for (const option of TOPIC_NODE_ACTIONS) {
+        const item = document.createElement('option');
+        item.value = option.key;
+        item.textContent = option.text;
+        action.append(item);
+    }
+
+    action.value = topicNodeDraft.action;
+
+    const node = makeTopicEditInput(topicNodeDraft.node, '打字或從選單挑一個族群', TOPIC_NODE_LIST_ID);
+    const parent = makeTopicEditInput(topicNodeDraft.parent, '留白＝變成頂層大類', TOPIC_NODE_LIST_ID);
+    const aliases = makeTopicEditInput(topicNodeDraft.aliases, '多個別名用頓號或逗號分開');
+    const note = makeTopicEditInput(topicNodeDraft.note, '為什麼這樣改，會留在紀錄裡');
+
+    const actionField = makeTopicEditField(
+        '要做什麼',
+        action,
+        TOPIC_NODE_ACTIONS.map(option => `${option.text}：${option.hint}`).join('\n'));
+    const nodeField = makeTopicEditField('哪一個族群', node, '被改的節點。名稱要跟樹上的一模一樣。');
+    const parentField = makeTopicEditField(
+        '搬到誰底下',
+        parent,
+        '新的父節點。留白代表把它拉出來自己當一個頂層大類。');
+    const aliasField = makeTopicEditField('別名', aliases, '這個族群的其他寫法，例如「砷化鎵」與「GaAs」。');
+    const noteField = makeTopicEditField('說明', note, '寫給以後的自己看的。');
+
+    const actions = document.createElement('div');
+    actions.className = 'topic-edit-actions';
+
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'notes-primary-button';
+    submit.textContent = '存下這一筆';
+
+    const status = document.createElement('span');
+    status.className = 'topic-edit-status';
+    status.textContent = topicNodeStatus;
+
+    actions.append(submit, status);
+    form.append(actionField, nodeField, parentField, aliasField, noteField, actions);
+
+    // 用不到的欄位直接收起來，不是變灰：三個動作各自只用得到其中一欄，
+    // 全部攤開的話每次都得先想「這次要填哪幾格」。
+    const syncFields = () => {
+        parentField.hidden = action.value !== '移到';
+        aliasField.hidden = action.value !== '別名';
+    };
+
+    const rememberDraft = () => {
+        topicNodeDraft = {
+            action: action.value,
+            node: node.value,
+            parent: parent.value,
+            aliases: aliases.value,
+            note: note.value
+        };
+    };
+
+    action.addEventListener('change', () => {
+        syncFields();
+        rememberDraft();
+    });
+
+    for (const input of [node, parent, aliases, note]) {
+        input.addEventListener('input', rememberDraft);
+    }
+
+    syncFields();
+
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+
+        const names = new Set(topicEditableNodes().map(topic => topic.name));
+        const nodeName = node.value.trim();
+
+        if (!names.has(nodeName)) {
+            status.textContent = nodeName === ''
+                ? '請先挑一個族群。'
+                : `樹上沒有「${nodeName}」這個族群，請從選單裡挑一個。`;
+            node.focus();
+            return;
+        }
+
+        const parentName = parent.value.trim();
+
+        if (action.value === '移到' && parentName !== '' && !names.has(parentName)) {
+            status.textContent = `樹上沒有「${parentName}」這個族群，請從選單裡挑一個，或留白讓它變成頂層大類。`;
+            parent.focus();
+            return;
+        }
+
+        if (action.value === '移到' && parentName === nodeName) {
+            status.textContent = '不能把一個族群搬到它自己底下。';
+            parent.focus();
+            return;
+        }
+
+        const aliasList = action.value === '別名' ? splitTopicList(aliases.value) : [];
+
+        if (action.value === '別名' && aliasList.length === 0) {
+            status.textContent = '請先寫一個別名。';
+            aliases.focus();
+            return;
+        }
+
+        submit.disabled = true;
+        status.textContent = '儲存中…';
+
+        saveTopicEdit({
+            action: action.value,
+            node: nodeName,
+            parent: action.value === '移到' ? parentName : '',
+            tickers: [],
+            aliases: aliasList,
+            note: note.value.trim()
+        })
+            .then(() => {
+                topicNodeStatus = `已存下「${nodeName}　${action.value}」，下一次更新後生效。`;
+                topicNodeDraft = { action: action.value, node: '', parent: '', aliases: '', note: '' };
+                return refreshTopicEdits(true);
+            })
+            .catch(() => {
+                submit.disabled = false;
+                status.textContent = '存不進去，可能是資料庫連線問題，稍後再試一次。';
+            });
+    });
+
+    box.append(form);
+    return box;
+}
+
+// 頓號、逗號、空白都當分隔：使用者不會記得這一格要用哪一種。
+function splitTopicList(value) {
+    return String(value)
+        .split(/[、,，\s]+/)
+        .map(item => item.trim())
+        .filter(item => item.length > 0);
+}
+
+// ── 表單二：個股對應的族群 ──
+function makeTopicMemberEditor() {
+    const box = document.createElement('section');
+    box.className = 'topic-pending';
+
+    const title = document.createElement('h2');
+    title.className = 'topic-section-title';
+    title.textContent = '編輯個股對應的族群';
+    box.append(title);
+
+    const intro = document.createElement('p');
+    intro.className = 'topic-intro';
+    intro.textContent = '先挑一檔股票，下面會列出它現在直接掛在哪些族群底下，'
+        + '掛錯的按「移出」，漏掉的用底下那一格加進去。'
+        + '從子族群繼承上來的成員不列在這裡——那要去改它真正掛著的那個節點。';
+    box.append(intro);
+
+    // 一次建好代號到節點的對照。逐格重算的話每打一個字就要掃過全樹的成員名單。
+    const nodesByTicker = new Map();
+
+    for (const topic of topicActive.topics) {
+        for (const ticker of topic.directTickers ?? []) {
+            const list = nodesByTicker.get(ticker);
+
+            if (list === undefined) {
+                nodesByTicker.set(ticker, [topic]);
+            } else {
+                list.push(topic);
+            }
+        }
+    }
+
+    const form = document.createElement('form');
+    form.className = 'topic-edit-form';
+
+    const stock = makeTopicEditInput(topicMemberDraft.stock, '打代號或名字，例如 2303 或 聯電', TOPIC_STOCK_LIST_ID);
+    const node = makeTopicEditInput(topicMemberDraft.node, '要加進哪一個族群', TOPIC_NODE_LIST_ID);
+    const note = makeTopicEditInput(topicMemberDraft.note, '為什麼這樣分，會留在紀錄裡');
+
+    const actions = document.createElement('div');
+    actions.className = 'topic-edit-actions';
+
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'notes-primary-button';
+    submit.textContent = '加進這個族群';
+
+    const status = document.createElement('span');
+    status.className = 'topic-edit-status';
+    status.textContent = topicMemberStatus;
+
+    actions.append(submit, status);
+
+    const current = document.createElement('div');
+    current.className = 'topic-edit-current';
+
+    const rememberDraft = () => {
+        topicMemberDraft = { stock: stock.value, node: node.value, note: note.value };
+    };
+
+    // 存一筆就重畫整個面板，畫面上的族群樹卻要等下次更新才會變，
+    // 所以這裡要自己把「已經存了但還沒生效」那幾筆也畫出來，
+    // 否則使用者按完「移出」會看到那個族群還在，只能再按一次。
+    const renderCurrent = () => {
+        current.replaceChildren();
+
+        const ticker = parseTopicStockInput(stock.value);
+
+        if (ticker === '') {
+            const empty = document.createElement('p');
+            empty.className = 'topic-intro';
+            empty.textContent = stock.value.trim() === ''
+                ? '還沒挑股票。'
+                : `對不到「${stock.value.trim()}」這一檔，請從選單裡挑。`;
+            current.append(empty);
+            return;
+        }
+
+        const name = (topicData?.stockNames ?? {})[ticker] ?? '';
+        const heading = document.createElement('p');
+        heading.className = 'topic-intro';
+
+        const nodes = (nodesByTicker.get(ticker) ?? []).slice().sort(compareTopicOrder);
+
+        heading.textContent = nodes.length === 0
+            ? `${ticker} ${name} 目前沒有直接掛在任何族群底下。`
+            : `${ticker} ${name} 目前直接掛在這 ${nodes.length} 個族群底下：`;
+        current.append(heading);
+
+        const chips = document.createElement('div');
+        chips.className = 'topic-edit-chips';
+
+        for (const topic of nodes) {
+            const chip = document.createElement('span');
+            chip.className = 'topic-edit-chip';
+
+            const label = document.createElement('span');
+            label.textContent = topic.name;
+            label.dataset.hint = topic.source === 'tree'
+                ? topicParentPathText(topic)
+                : '這是概念股名單帶進來的分類，成員在 Google Sheet 上，不在這裡改。';
+            chip.append(label);
+
+            if (topic.source === 'tree') {
+                const remove = makeTopicEditButton('移出', 'topic-edit-chip-remove');
+                remove.dataset.hint = `把 ${ticker} ${name} 從「${topic.name}」的成員裡拿掉。`;
+                remove.addEventListener('click', () => {
+                    remove.disabled = true;
+                    status.textContent = '儲存中…';
+
+                    saveTopicEdit({
+                        action: '退出',
+                        node: topic.name,
+                        parent: '',
+                        tickers: [ticker],
+                        aliases: [],
+                        note: note.value.trim()
+                    })
+                        .then(() => {
+                            topicMemberStatus = `已存下「${ticker} ${name} 移出 ${topic.name}」，下一次更新後生效。`;
+                            topicMemberDraft = { stock: stock.value, node: '', note: '' };
+                            return refreshTopicEdits(true);
+                        })
+                        .catch(() => {
+                            remove.disabled = false;
+                            status.textContent = '存不進去，可能是資料庫連線問題，稍後再試一次。';
+                        });
+                });
+                chip.append(remove);
+            }
+
+            chips.append(chip);
+        }
+
+        current.append(chips);
+
+        const pending = topicEdits.filter(edit =>
+            edit.enabled
+            && (edit.action === '加入' || edit.action === '退出')
+            && edit.tickers.includes(ticker));
+
+        if (pending.length > 0) {
+            const waiting = document.createElement('p');
+            waiting.className = 'topic-intro topic-edit-waiting';
+            waiting.textContent = '已經存下、等下次更新才生效的：'
+                + pending.map(edit => `${edit.action === '加入' ? '加進' : '移出'} ${edit.node}`).join('、');
+            current.append(waiting);
+        }
+    };
+
+    stock.addEventListener('input', () => {
+        rememberDraft();
+        renderCurrent();
+    });
+
+    stock.addEventListener('change', renderCurrent);
+
+    for (const input of [node, note]) {
+        input.addEventListener('input', rememberDraft);
+    }
+
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+
+        const ticker = parseTopicStockInput(stock.value);
+
+        if (ticker === '') {
+            status.textContent = '請先挑一檔股票。';
+            stock.focus();
+            return;
+        }
+
+        const names = new Set(topicEditableNodes().map(topic => topic.name));
+        const nodeName = node.value.trim();
+
+        if (!names.has(nodeName)) {
+            status.textContent = nodeName === ''
+                ? '請挑一個要加進去的族群。'
+                : `樹上沒有「${nodeName}」這個族群，請從選單裡挑一個。`;
+            node.focus();
+            return;
+        }
+
+        const name = (topicData?.stockNames ?? {})[ticker] ?? '';
+
+        submit.disabled = true;
+        status.textContent = '儲存中…';
+
+        saveTopicEdit({
+            action: '加入',
+            node: nodeName,
+            parent: '',
+            tickers: [ticker],
+            aliases: [],
+            note: note.value.trim()
+        })
+            .then(() => {
+                topicMemberStatus = `已存下「${ticker} ${name} 加進 ${nodeName}」，下一次更新後生效。`;
+                topicMemberDraft = { stock: stock.value, node: '', note: '' };
+                return refreshTopicEdits(true);
+            })
+            .catch(() => {
+                submit.disabled = false;
+                status.textContent = '存不進去，可能是資料庫連線問題，稍後再試一次。';
+            });
+    });
+
+    form.append(
+        makeTopicEditField('哪一檔股票', stock, '打代號或名字都行，選單裡是排行榜上的每一檔。'),
+        makeTopicEditField('加進哪一個族群', node, '只列供應鏈樹上的節點。'),
+        makeTopicEditField('說明', note, '寫給以後的自己看的。移出時也會一起記下來。'),
+        actions);
+
+    box.append(current, form);
+    renderCurrent();
+    return box;
+}
+
+// ── 已經存下的編輯 ──
+function makeTopicEditLog() {
+    const box = document.createElement('section');
+    box.className = 'topic-pending';
+
+    const active = topicEdits.filter(edit => edit.enabled).length;
+
+    const title = document.createElement('h2');
+    title.className = 'topic-section-title';
+    title.textContent = `已經存下的編輯（${topicEdits.length}，其中 ${active} 筆生效中）`;
+    box.append(title);
+
+    const intro = document.createElement('p');
+    intro.className = 'topic-intro';
+    intro.textContent = '下一次更新時會照存下的先後順序由上往下套到族群樹上：'
+        + '後面存的蓋前面存的，跟人一路改過來的直覺一樣。'
+        + '停用只是把那一筆收回來，紀錄還在——這樣下次再看到同樣的怪現象，才想得起來自己試過了。';
+    box.append(intro);
+
+    if (topicEditsError !== '') {
+        box.append(makeTopicNotice(topicEditsError, true));
+    }
+
+    if (topicEdits.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'topic-intro';
+        empty.textContent = topicEditsLoaded ? '還沒有任何編輯。' : '載入中…';
+        box.append(empty);
+        return box;
+    }
 
     const container = document.createElement('div');
     container.className = 'table-container';
@@ -5881,21 +6535,17 @@ function renderTopicEdits(panel) {
     const table = document.createElement('table');
     table.className = 'ranking-table topic-edit-table';
 
-    const headings = [
-        ['時間', '這筆修改是什麼時候發生的。'],
-        ['對象', '被改的族群或概念。'],
-        ['欄位', '改的是名稱、別名、父子關係、顯示狀態還是催化事件。'],
-        ['改前', '原本的值。'],
-        ['改後', '改成什麼。'],
-        ['修改者', '人工還是 AI。AI 改的可以被人工覆蓋，反過來不行。'],
-        ['鎖定', '打勾代表這一筆是人工決定，之後 AI 重新分類時不會被蓋掉。'],
-        ['說明', '為什麼這樣改。']
-    ];
-
     const head = document.createElement('thead');
     const headRow = document.createElement('tr');
 
-    for (const [text, hint] of headings) {
+    for (const [text, hint] of [
+        ['存下的時間', '套用的順序就是這個順序，由舊到新。'],
+        ['動作', '移到、別名、移除動的是樹的形狀；加入、退出動的是某個族群的成員。'],
+        ['族群', '被改的節點。'],
+        ['內容', '搬到哪、加了什麼別名、動到哪幾檔股票。'],
+        ['說明', '存的時候寫的理由。'],
+        ['狀態', '生效中的才會在下次更新時套用。按下按鈕可以收回或重新啟用。']
+    ]) {
         const cell = document.createElement('th');
         cell.className = 'unsortable';
         cell.textContent = text;
@@ -5907,28 +6557,75 @@ function renderTopicEdits(panel) {
 
     const body = document.createElement('tbody');
 
-    for (const edit of topicData.sampleEdits ?? []) {
+    for (const edit of topicEdits) {
         const tr = document.createElement('tr');
-        tr.className = 'topic-sample-row';
+        tr.className = 'topic-compact-row' + (edit.enabled ? '' : ' topic-edit-disabled');
 
-        appendTextCell(tr, edit.changedAt, 'topic-date');
-        appendTextCell(tr, edit.target);
-        appendTextCell(tr, edit.field);
-        appendTextCell(tr, edit.before);
-        appendTextCell(tr, edit.after);
-        appendTextCell(tr, edit.author, 'topic-author ' + (edit.author === 'AI' ? 'by-ai' : 'by-human'));
-        appendTextCell(tr, edit.locked ? '✓' : '—', 'numeric');
-        appendTextCell(tr, edit.note, 'topic-summary');
+        appendTextCell(tr, formatTopicEditTime(edit.createdAt), 'topic-date');
+        appendTextCell(tr, edit.action);
+        appendTextCell(tr, edit.node);
+        appendTextCell(tr, topicEditDetailText(edit), 'topic-summary');
+        appendTextCell(tr, edit.note || '—', 'topic-summary');
+
+        const stateCell = document.createElement('td');
+        const toggle = makeTopicEditButton(
+            edit.enabled ? '停用' : '啟用',
+            edit.enabled ? 'notes-danger-button topic-edit-toggle' : 'notes-secondary-button topic-edit-toggle');
+
+        toggle.dataset.hint = edit.enabled
+            ? '把這一筆收回來。下次更新就不會再套用它，紀錄仍然留著。'
+            : '重新讓這一筆生效。';
+
+        toggle.addEventListener('click', () => {
+            toggle.disabled = true;
+            toggle.textContent = '處理中…';
+
+            setTopicEditEnabled(edit.id, !edit.enabled)
+                .then(() => refreshTopicEdits(true))
+                .catch(() => {
+                    toggle.disabled = false;
+                    toggle.textContent = edit.enabled ? '停用' : '啟用';
+                });
+        });
+
+        stateCell.append(toggle);
+        tr.append(stateCell);
         body.append(tr);
     }
 
     table.append(head, body);
     container.append(table);
-    panel.append(container);
+    box.append(container);
 
-    panel.append(makeTopicPendingBlock());
-    panel.append(makeTopicProvisionalBlock());
-    panel.append(makeTopicStaleBlock());
+    return box;
+}
+
+function topicEditDetailText(edit) {
+    if (edit.action === '移到') {
+        return edit.parent === '' ? '拉出來當頂層大類' : `掛到「${edit.parent}」底下`;
+    }
+
+    if (edit.action === '別名') {
+        return edit.aliases.join('、') || '—';
+    }
+
+    if (edit.tickers.length === 0) {
+        return '—';
+    }
+
+    const names = topicData?.stockNames ?? {};
+
+    return edit.tickers.map(ticker => `${ticker} ${names[ticker] ?? ''}`.trim()).join('、');
+}
+
+function formatTopicEditTime(value) {
+    if (value === '') {
+        return '—';
+    }
+
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime()) ? '—' : toTaipeiText(date.toISOString());
 }
 
 // 依產業別暫掛的成員。這一段是「每一檔股票都要有分類」的代價：
@@ -6002,7 +6699,7 @@ function makeTopicProvisionalBlock() {
 
     for (const row of sorted) {
         const tr = document.createElement('tr');
-        tr.className = 'topic-sample-row';
+        tr.className = 'topic-compact-row';
 
         appendTextCell(tr, row.ticker, 'numeric');
         appendTextCell(tr, row.name || '—');
@@ -6086,7 +6783,7 @@ function makeTopicStaleBlock() {
 
     for (const row of rows) {
         const tr = document.createElement('tr');
-        tr.className = 'topic-sample-row';
+        tr.className = 'topic-compact-row';
 
         appendTextCell(tr, row.ticker, 'numeric');
         appendTextCell(tr, row.name);

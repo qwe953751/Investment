@@ -42,6 +42,13 @@ public static class TopicTreeOverrideLoader
     public const string AliasAction = "別名";
     public const string JoinAction = "加入";
 
+    /// <summary>
+    /// 只有資料表上的人工編輯用得到（db/017_topic_edits.sql）。
+    /// 這兩份 JSON 是我寫的，寫錯直接改檔案就好，沒必要記一筆「把某檔股票拿掉」；
+    /// 使用者不一樣，他只能疊上一筆新的編輯來推翻前面那一筆。
+    /// </summary>
+    public const string LeaveAction = "退出";
+
     private static IReadOnlyList<TreeOverride>? _structure;
     private static IReadOnlyList<TreeOverride>? _members;
 

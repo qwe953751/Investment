@@ -2729,32 +2729,133 @@ td.stock-name.stock-name-change-down {
 
 /* ── 催化事件與人工編輯 ── */
 
-/* 示範資料一定要一眼看得出來，否則會有人拿去當真的看。 */
-.topic-sample-banner {
+/* 這幾張表一列一檔、動輒好幾百列，字級比排行榜再小一號才看得完。 */
+.topic-compact-row td {
+    font-size: 13px;
+}
+
+/* 「存了要等下次更新才生效」這件事一定要講在最前面，
+   不然使用者會以為沒存進去，回頭把同一件事再改一次。 */
+.topic-edit-intro {
     margin-bottom: 16px;
     border-color: #c7d2fe;
     background: #eef2ff;
     color: #3730a3;
 }
 
-.topic-sample-banner p {
+.topic-edit-intro p {
     margin: 8px 0 0;
     font-size: 14px;
     line-height: 1.7;
 }
 
-.topic-sample-tag {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 999px;
-    background: #4338ca;
-    color: white;
-    font-size: 12px;
+/* 欄位自己排隊：手機上會自動疊成一欄，不必為了這一頁多寫一組斷點。 */
+.topic-edit-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 12px;
+    align-items: end;
+    margin-bottom: 16px;
+}
+
+.topic-edit-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 13px;
+    color: #667085;
+}
+
+/* 新版瀏覽器給 hidden 的 display: none 帶 !important，上面那個 display: flex 蓋不掉；
+   舊的 Safari 沒帶，蓋得掉，用不到的欄位就收不起來。差別只在舊版上看得出來，
+   所以這一行照寫回去，別因為手邊的瀏覽器看起來正常就刪掉。 */
+.topic-edit-field[hidden] {
+    display: none;
+}
+
+.topic-edit-field > span {
     font-weight: 600;
 }
 
-.topic-sample-row td {
+.topic-edit-field input,
+.topic-edit-field select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 10px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: #1a1a1a;
+    font: inherit;
+}
+
+.topic-edit-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.topic-edit-status {
+    color: #667085;
     font-size: 13px;
+}
+
+.topic-edit-current {
+    margin-bottom: 4px;
+}
+
+.topic-edit-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 4px;
+}
+
+.topic-edit-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 6px 5px 12px;
+    border-radius: 999px;
+    background: #eef2ff;
+    color: #3730a3;
+    font-size: 13px;
+}
+
+.topic-edit-chip-remove {
+    padding: 2px 9px;
+    border: 1px solid #c7d2fe;
+    border-radius: 999px;
+    background: white;
+    color: #b42318;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.topic-edit-chip-remove:hover:not(:disabled),
+.topic-edit-chip-remove:focus-visible:not(:disabled) {
+    background: #fff2f2;
+}
+
+.topic-edit-waiting {
+    color: #92400e;
+}
+
+.topic-edit-toggle {
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+/* 停用的那幾筆要看得出來還在，只是不算數。 */
+.topic-edit-disabled td {
+    color: #98a2b3;
+    text-decoration: line-through;
+}
+
+.topic-edit-disabled td:last-child {
+    text-decoration: none;
 }
 
 .topic-event-table td.topic-summary,
@@ -2805,16 +2906,6 @@ td.stock-name.stock-name-change-down {
 
 .topic-status.is-fading {
     color: #92400e;
-}
-
-/* AI 判斷與人工決定要分得開：人工的可以蓋掉 AI 的，反過來不行。 */
-.topic-author.by-ai {
-    color: #6d28d9;
-}
-
-.topic-author.by-human {
-    color: #1a1a1a;
-    font-weight: 600;
 }
 
 .topic-pending {

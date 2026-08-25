@@ -20,6 +20,7 @@ namespace Invest.Web.Infrastructure.StockTopics;
 public sealed class GoogleSheetTopicClient(
     HttpClient client,
     CompanyIndustryClient industries,
+    TopicEditStore edits,
     IConfiguration configuration,
     ILogger<GoogleSheetTopicClient> logger)
 {
@@ -56,7 +57,11 @@ public sealed class GoogleSheetTopicClient(
         // 那幾檔會維持沒有題材，但整份分類照樣出得來。
         var industryByTicker = await industries.GetIndustriesAsync(cancellationToken);
 
-        return TopicCatalogBuilder.Build(treePaths, concepts, warnings, industryByTicker);
+        // 使用者在網站上改過的分類。讀不到就當作沒人改過，理由同上：
+        // 族群是附加功能，不該讓排行榜跟著發不出去。
+        var userEdits = await edits.LoadAsync(cancellationToken);
+
+        return TopicCatalogBuilder.Build(treePaths, concepts, warnings, industryByTicker, userEdits);
     }
 
     private async Task<IReadOnlyList<string[]>> ReadTreeAsync(

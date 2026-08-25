@@ -67,6 +67,9 @@ builder.Services.AddHttpClient<GoogleSheetTopicClient>(ConfigureQuoteClient);
 // 分類的最後兜底：交易所登記的產業別。
 builder.Services.AddHttpClient<CompanyIndustryClient>(ConfigureQuoteClient);
 
+// 使用者在人工編輯頁改過的族群分類，匯出時要套回樹上。
+builder.Services.AddSingleton<TopicEditStore>();
+
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);

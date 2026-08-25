@@ -342,15 +342,6 @@ public sealed class StaticSiteExporter(
                     item.TopicNames,
                     [.. item.TopicNames.Select(name => topicIdByName.GetValueOrDefault(name))],
                     item.Status))],
-                [.. TopicSampleData.Edits.Select(item => new TopicEditExport(
-                    item.ChangedAt,
-                    item.Target,
-                    item.Field,
-                    item.Before,
-                    item.After,
-                    item.Author,
-                    item.Note,
-                    item.Locked))],
                 periods),
             cancellationToken);
 
@@ -985,7 +976,6 @@ public sealed class StaticSiteExporter(
         string StaleCheckedOn,
         IReadOnlyList<TopicProvisionalExport> ProvisionalMembers,
         IReadOnlyList<TopicEventExport> Events,
-        IReadOnlyList<TopicEditExport> SampleEdits,
         IReadOnlyList<TopicPeriodExport> Periods);
 
     /// <summary>
@@ -1072,19 +1062,6 @@ public sealed class StaticSiteExporter(
         IReadOnlyList<string> TopicNames,
         IReadOnlyList<string?> TopicIds,
         string Status);
-
-    /// <summary>
-    /// 人工修正紀錄。同樣是示範資料：靜態網站存不了東西，這一頁先做版面。
-    /// </summary>
-    private sealed record TopicEditExport(
-        string ChangedAt,
-        string Target,
-        string Field,
-        string Before,
-        string After,
-        string Author,
-        string Note,
-        bool Locked);
 
     /// <summary>
     /// 單一期間的族群熱度。結構刻意跟 RankingExport 一致：
