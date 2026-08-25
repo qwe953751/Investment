@@ -64,6 +64,9 @@ builder.Services.AddHttpClient<TwseHolidayCalendar>(ConfigureQuoteClient);
 // 族群分類讀的是公開的 Google Sheet，一樣要帶 User-Agent 才不會被擋。
 builder.Services.AddHttpClient<GoogleSheetTopicClient>(ConfigureQuoteClient);
 
+// 分類的最後兜底：交易所登記的產業別。
+builder.Services.AddHttpClient<CompanyIndustryClient>(ConfigureQuoteClient);
+
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);

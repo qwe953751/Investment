@@ -5927,7 +5927,96 @@ function renderTopicEdits(panel) {
     panel.append(container);
 
     panel.append(makeTopicPendingBlock());
+    panel.append(makeTopicProvisionalBlock());
     panel.append(makeTopicStaleBlock());
+}
+
+// 依產業別暫掛的成員。這一段是「每一檔股票都要有分類」的代價：
+// 查不到題材的那幾百檔先用交易所登記的行業頂著，但頂著不等於分對了，
+// 所以整批列在這裡等使用者一列一列複判。
+function makeTopicProvisionalBlock() {
+    const rows = topicData.provisionalMembers ?? [];
+
+    const box = document.createElement('section');
+    box.className = 'topic-pending';
+
+    const title = document.createElement('h2');
+    title.className = 'topic-section-title';
+    title.textContent = `依產業別暫掛的個股（${rows.length}），等著複判`;
+    box.append(title);
+
+    const intro = document.createElement('p');
+    intro.className = 'topic-intro';
+    intro.textContent = rows.length === 0
+        ? '目前每一檔股票都是靠概念股名單或人工補分類進到族群的，沒有靠產業別頂著的。'
+        : '這些股票概念股分頁沒收、人工補分類也沒填到，所以照它們在交易所登記的產業別先掛上去，'
+            + '排行榜的大題材才不會是空白。要注意產業別講的是這家公司做什麼生意，'
+            + '族群樹講的是它站在哪一段供應鏈上——鴻海登記的是電子零組件，題材卻是 AI 伺服器。'
+            + '底下每一列都可以改，改過的就不再算暫掛。';
+    box.append(intro);
+
+    if (rows.length === 0) {
+        return box;
+    }
+
+    // 一列一檔，不把同族群的擠成一格：複判的動作是「這一檔該搬到哪」，
+    // 一格塞九十個代號只能用看的，改不動也搜不到。同族群的排在一起，
+    // 大群排前面，因為錯得最兇的通常就是那幾群。
+    const counts = new Map();
+
+    for (const row of rows) {
+        counts.set(row.topicName, (counts.get(row.topicName) ?? 0) + 1);
+    }
+
+    const sorted = [...rows].sort((left, right) =>
+        counts.get(right.topicName) - counts.get(left.topicName)
+        || left.topicName.localeCompare(right.topicName, 'zh-Hant')
+        || left.ticker.localeCompare(right.ticker));
+
+    const container = document.createElement('div');
+    container.className = 'table-container';
+
+    const table = document.createElement('table');
+    table.className = 'ranking-table topic-edit-table';
+
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    for (const [text, hint] of [
+        ['代號', '上市櫃代號。'],
+        ['名稱', '排行榜上的股名。'],
+        ['產業別', '交易所公司基本資料裡登記的行業，暫掛的依據就是它。'],
+        ['暫掛到的族群', '目前被算進哪一個節點的成員，熱度也是照這個算的。'],
+        ['同群檔數', '這個族群底下總共有幾檔是暫掛的。整群都不對的話從這裡看得出規模。']
+    ]) {
+        const cell = document.createElement('th');
+        cell.className = 'unsortable';
+        cell.textContent = text;
+        cell.dataset.hint = hint;
+        headRow.append(cell);
+    }
+
+    head.append(headRow);
+
+    const body = document.createElement('tbody');
+
+    for (const row of sorted) {
+        const tr = document.createElement('tr');
+        tr.className = 'topic-sample-row';
+
+        appendTextCell(tr, row.ticker, 'numeric');
+        appendTextCell(tr, row.name || '—');
+        appendTextCell(tr, row.industry);
+        appendTextCell(tr, row.topicName);
+        appendTextCell(tr, String(counts.get(row.topicName)), 'numeric');
+        body.append(tr);
+    }
+
+    table.append(head, body);
+    container.append(table);
+    box.append(container);
+
+    return box;
 }
 
 // 狀態的輕重。已經不能交易的排前面：那幾檔是真的要去 Sheet 上動手改的，

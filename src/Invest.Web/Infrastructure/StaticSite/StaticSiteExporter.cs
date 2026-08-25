@@ -325,6 +325,13 @@ public sealed class StaticSiteExporter(
                 catalog.MultiNodeConcepts,
                 staleMembers,
                 TopicMemberAudit.CheckedOn,
+                [.. catalog.ProvisionalMembers.Select(item => new TopicProvisionalExport(
+                    item.Ticker,
+                    stockNames.GetValueOrDefault(item.Ticker, string.Empty),
+                    item.TopicId,
+                    item.TopicName,
+                    item.IndustryCode,
+                    item.Industry))],
                 [.. catalystEvents.Select(item => new TopicEventExport(
                     item.Date.ToString("yyyy-MM-dd"),
                     item.Ticker,
@@ -976,9 +983,22 @@ public sealed class StaticSiteExporter(
         IReadOnlyDictionary<string, IReadOnlyList<string>> MultiNodeConcepts,
         IReadOnlyList<TopicMemberAudit.StaleMember> StaleMembers,
         string StaleCheckedOn,
+        IReadOnlyList<TopicProvisionalExport> ProvisionalMembers,
         IReadOnlyList<TopicEventExport> Events,
         IReadOnlyList<TopicEditExport> SampleEdits,
         IReadOnlyList<TopicPeriodExport> Periods);
+
+    /// <summary>
+    /// 一筆照產業別暫掛的成員。名字在這裡重複寫一次而不是查 StockNames：
+    /// 這一份是拿去給人一列一列複判的，少一個欄位就得多繞一次查表。
+    /// </summary>
+    private sealed record TopicProvisionalExport(
+        string Ticker,
+        string Name,
+        string TopicId,
+        string TopicName,
+        string IndustryCode,
+        string Industry);
 
     /// <summary>
     /// topic-attributions.json：排行榜族群欄的專用檔案，只有大題材／當前題材。

@@ -44,6 +44,12 @@ public sealed class TopicCatalog
         = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
 
     /// <summary>
+    /// 照產業別暫掛上去的成員。這些不是誰決定的分類，是「查不到題材，先用它登記的行業頂著」，
+    /// 所以要單獨列出來給使用者複判，而不是混在正式成員裡看不出差別。
+    /// </summary>
+    public IReadOnlyList<ProvisionalMember> ProvisionalMembers { get; init; } = [];
+
+    /// <summary>
     /// 讀取時發生但不足以中止的問題，例如某一頁抓不到、某些儲存格解不出代號。
     /// 直接寫進 topics.json，讓畫面上看得到「這份資料哪裡不完整」。
     /// </summary>
@@ -75,3 +81,14 @@ public sealed class TopicMapping
 /// 一筆「這檔股票屬於這個族群」。
 /// </summary>
 public sealed record StockTopicLink(string TopicId, string Ticker);
+
+/// <summary>
+/// 一筆照產業別暫掛的成員。<paramref name="Industry"/> 是交易所登記的行業名稱，
+/// 留著是為了讓使用者複判時看得到「這個猜測是根據什麼」。
+/// </summary>
+public sealed record ProvisionalMember(
+    string Ticker,
+    string TopicId,
+    string TopicName,
+    string IndustryCode,
+    string Industry);

@@ -19,6 +19,7 @@ namespace Invest.Web.Infrastructure.StockTopics;
 /// </summary>
 public sealed class GoogleSheetTopicClient(
     HttpClient client,
+    CompanyIndustryClient industries,
     IConfiguration configuration,
     ILogger<GoogleSheetTopicClient> logger)
 {
@@ -51,7 +52,11 @@ public sealed class GoogleSheetTopicClient(
             return new TopicCatalog { Warnings = [.. warnings, .. concepts.Warnings] };
         }
 
-        return TopicCatalogBuilder.Build(treePaths, concepts, warnings);
+        // 產業別是分類的最後兜底，只有版本二用得到。抓不到就空著，
+        // 那幾檔會維持沒有題材，但整份分類照樣出得來。
+        var industryByTicker = await industries.GetIndustriesAsync(cancellationToken);
+
+        return TopicCatalogBuilder.Build(treePaths, concepts, warnings, industryByTicker);
     }
 
     private async Task<IReadOnlyList<string[]>> ReadTreeAsync(

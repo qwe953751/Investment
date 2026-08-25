@@ -22,10 +22,13 @@ namespace Invest.Web.Features.StockTopics.Services;
 /// </summary>
 public static class TopicCatalogBuilder
 {
+    private static readonly Dictionary<string, string> EmptyIndustries = new(StringComparer.Ordinal);
+
     public static TopicCatalog Build(
         IReadOnlyList<string[]> treePaths,
         ConceptSheetParser.Result concepts,
-        IReadOnlyList<string> warnings)
+        IReadOnlyList<string> warnings,
+        IReadOnlyDictionary<string, string>? industryByTicker = null)
     {
         var stockNames = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -38,6 +41,7 @@ public static class TopicCatalogBuilder
         }
 
         var extra = new List<string>();
+        var provisional = new List<ProvisionalMember>();
         var document = ConceptMappingLoader.Load();
 
         return new TopicCatalog
@@ -45,12 +49,13 @@ public static class TopicCatalogBuilder
             Mappings =
             [
                 BuildOriginal(treePaths, concepts),
-                BuildClassified(treePaths, concepts, document, extra)
+                BuildClassified(treePaths, concepts, document, industryByTicker ?? EmptyIndustries, provisional, extra)
             ],
             ActiveVersion = 2,
             StockNames = stockNames,
             PendingMerges = document.PendingMerges,
             MultiNodeConcepts = document.MultiNodeConcepts,
+            ProvisionalMembers = provisional,
             Warnings = [.. warnings, .. concepts.Warnings, .. extra]
         };
     }
@@ -120,6 +125,8 @@ public static class TopicCatalogBuilder
         IReadOnlyList<string[]> treePaths,
         ConceptSheetParser.Result concepts,
         ConceptMappingLoader.Document document,
+        IReadOnlyDictionary<string, string> industryByTicker,
+        List<ProvisionalMember> provisional,
         List<string> warnings)
     {
         var graph = TopicGraph.FromPaths(treePaths);
@@ -245,6 +252,10 @@ public static class TopicCatalogBuilder
         // 補分類要排在結構調整之後：這兩份檔案講的是同一棵樹，而搬過家、改過名的節點
         // 要等結構調整套完才找得到。反過來先補成員的話，「移除」會因為節點突然有了成員而拒絕動作。
         graph.ApplyOverrides(TopicTreeOverrideLoader.LoadMembers(), links, warnings);
+
+        // 最後一道兜底：到這裡還沒進任何節點的股票，照它在交易所登記的產業別暫掛。
+        // 排在最後是因為它的判斷條件就是「前面全部都沒收到它」。
+        provisional.AddRange(graph.ApplyIndustryFallback(industryByTicker, links, warnings));
 
         var topics = graph.ToTopics(new Dictionary<string, string>(StringComparer.Ordinal));
 
@@ -517,6 +528,69 @@ public static class TopicCatalogBuilder
             {
                 node.MappingNotes.Add(item.Note);
             }
+        }
+
+        /// <summary>
+        /// 照交易所登記的產業別，把還沒進任何節點的股票暫掛上去。
+        ///
+        /// 這是使用者「所有個股都必須分類」的底線做法。產業別跟族群不是同一件事——
+        /// 鴻海登記的是電子零組件，題材卻是 AI 伺服器——所以每一筆都回傳出去列進待複判，
+        /// 不是當成已經確定的歸類。
+        /// </summary>
+        public IReadOnlyList<ProvisionalMember> ApplyIndustryFallback(
+            IReadOnlyDictionary<string, string> industryByTicker,
+            List<StockTopicLink> links,
+            List<string> warnings)
+        {
+            if (industryByTicker.Count == 0)
+            {
+                return [];
+            }
+
+            var map = IndustryTopicMapLoader.Load();
+            var classified = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var id in _order)
+            {
+                classified.UnionWith(_nodes[id].Tickers);
+            }
+
+            var result = new List<ProvisionalMember>();
+            var unknown = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            // 照代號排序才有固定的輸出順序：同一份資料重跑兩次，匯出的檔案要一模一樣，
+            // 否則 git 上每天都是一整份看不出差別的變更。
+            foreach (var (ticker, code) in industryByTicker.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                if (classified.Contains(ticker))
+                {
+                    continue;
+                }
+
+                if (!map.TryGetValue(code, out var target))
+                {
+                    unknown[code] = unknown.GetValueOrDefault(code) + 1;
+                    continue;
+                }
+
+                var node = Ensure(target.Path);
+
+                if (node.Tickers.Add(ticker))
+                {
+                    links.Add(new StockTopicLink(node.Id, ticker));
+                }
+
+                result.Add(new ProvisionalMember(ticker, node.Id, node.Name, code, target.Industry));
+            }
+
+            foreach (var (code, count) in unknown.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                // 交易所新增產業別時會走到這裡。這幾檔會維持沒有分類，
+                // 所以一定要出聲，讓人回去補 IndustryTopicMap.json。
+                warnings.Add($"產業別暫掛：IndustryTopicMap.json 沒有代碼「{code}」的去處，{count} 檔股票仍然沒有族群。");
+            }
+
+            return result;
         }
 
         private bool IsDescendant(TreeNode candidate, TreeNode ancestor)
