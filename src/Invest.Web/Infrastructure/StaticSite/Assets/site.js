@@ -231,6 +231,12 @@ const toTaipeiText = iso => TAIPEI_TIME.format(new Date(iso));
 // 依正負決定顏色。null 與 0 都視為持平。
 const toTrendClass = value => (value > 0 ? 'positive' : value < 0 ? 'negative' : 'unchanged');
 
+// 個股名稱用很淡的底色提示日漲跌；沒有日漲跌資料或持平時不染色。
+// 只套名稱儲存格，不整列染色，避免干擾鎖定、交易限制與其他欄位。
+const stockNameChangeClass = value => value > 0
+    ? 'stock-name-change-up'
+    : value < 0 ? 'stock-name-change-down' : '';
+
 // 會壓低成交機會的交易限制。manifest 給的是「現在」誰被限制，兩個交易所都沒有歷史查詢。
 // 處置是撮合被改成人工分盤，全額交割是買賣都要先付足款券——兩者都讓成交值不是自由競價的結果，
 // 所以這一列的名次不能照字面讀。不標注意股：它既不改撮合方式，也不改交割條件。
@@ -612,7 +618,8 @@ function toPriceChangeCell(daily, weekly) {
 const toTickerCell = row => ({
     text: row.ticker,
     cls: 'ticker',
-    marketMark: MARKET_MARK[row.market]
+    marketMark: MARKET_MARK[row.market],
+    tickerBadges: toBadges(row.ticker)
 });
 
 // 創幾個月新高。N+ 代表往回數到手上的資料用完都沒有更高的，
@@ -669,8 +676,8 @@ function topicColumnText(ticker) {
 const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
-    { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
-    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
+    { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。右側「市／櫃」標記代表上市或上櫃；再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
@@ -688,8 +695,8 @@ const COLUMNS = [
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '過去觀察期間的排名 − 今日盤中排名，▲ 代表今天的名次比平常前面。名次是相對的，所以今天只走了半天也能直接比。過去期間沒有這一檔就顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
-    { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單；右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
-    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
+    { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單；右側「市／櫃」標記代表上市或上櫃，再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '成交值（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
@@ -704,8 +711,8 @@ const INTRADAY_COLUMNS = [
 ];
 
 const CUSTOM_COLUMNS = [
-    { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列；右側「市／櫃」標記代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
-    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱左邊的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name', badges: toBadges(row.ticker), kline: true }) },
+    { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列；右側「市／櫃」標記代表上市或上櫃，再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'close', title: '收盤價', hint: '所選交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
@@ -740,6 +747,7 @@ let notesLoaded = false;
 let notesLoadError = null;
 let lastNotesLoadedAt = 0;
 let notesFilter = 'all';
+let notesStatusFilter = 'all';
 let notesSearch = '';
 let selectedNoteId = null;
 let notesDraft = null;
@@ -1510,10 +1518,11 @@ function filteredNotes() {
 
     return notes.filter(note => {
         const categoryMatches = notesFilter === 'all' || note.category === notesFilter;
+        const statusMatches = notesStatusFilter === 'all' || note.status === notesStatusFilter;
         const textMatches = query.length === 0
             || `${note.title}\n${note.content}`.toLocaleLowerCase().includes(query);
 
-        return categoryMatches && textMatches;
+        return categoryMatches && statusMatches && textMatches;
     });
 }
 
@@ -1564,6 +1573,23 @@ function renderNotes() {
             renderNotes();
         });
         categoryHost.append(button);
+    }
+
+    const statusHost = el('notes-status-options');
+    statusHost.replaceChildren();
+
+    for (const status of ['all', ...NOTE_STATUSES]) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = status === notesStatusFilter
+            ? 'notes-filter-button selected'
+            : 'notes-filter-button';
+        button.textContent = status === 'all' ? '全部' : status;
+        button.addEventListener('click', () => {
+            notesStatusFilter = status;
+            renderNotes();
+        });
+        statusHost.append(button);
     }
 
     const search = el('notes-search');
@@ -3316,9 +3342,42 @@ function renderTable() {
         }
 
         for (const column of columns()) {
-            const { text, cls, badges, lines, kline, marketMark, revenueDetails, topic } = column.cell(row);
+            const { text, cls, lines, kline, marketMark, revenueDetails, topic, tickerBadges } = column.cell(row);
             const td = document.createElement('td');
             td.className = cls;
+
+            // 交易限制移到代號右側，讓名稱儲存格可以安全使用漲跌底色。
+            if (tickerBadges !== undefined) {
+                td.append(String(text));
+
+                if (marketMark) {
+                    const mark = document.createElement('span');
+                    mark.className = 'market-mark';
+                    mark.textContent = marketMark;
+                    mark.dataset.hint = marketMark === '市'
+                        ? '上市（證交所）'
+                        : '上櫃（櫃買中心）';
+                    td.append(mark);
+                }
+
+                if (tickerBadges.length > 0) {
+                    const badges = document.createElement('span');
+                    badges.className = 'badges ticker-badges';
+
+                    for (const badge of tickerBadges) {
+                        const mark = document.createElement('span');
+                        mark.className = 'badge ' + badge.cls;
+                        mark.textContent = badge.text;
+                        mark.dataset.hint = badge.hint;
+                        badges.append(mark);
+                    }
+
+                    td.append(badges);
+                }
+
+                tr.append(td);
+                continue;
+            }
 
             // 族群欄：上下兩層各自是一顆連結，點下去跳到族群列表的那個節點。
             // 一定要用 Topic Id 帶過去，不能用中文名字——名字在人工編輯頁改得動，
@@ -3369,34 +3428,7 @@ function renderTable() {
                 continue;
             }
 
-            // 標記排在股名左邊，由上往下疊。左邊那一格的寬度固定保留著，沒有標記的列也一樣，
-            // 所以整欄的名字都從同一個位置起算，不會被標記推歪。
-            if (badges) {
-                const gutter = document.createElement('span');
-                gutter.className = 'badges';
-
-                for (const badge of badges) {
-                    const mark = document.createElement('span');
-                    mark.className = 'badge ' + badge.cls;
-                    mark.textContent = badge.text;
-                    mark.dataset.hint = badge.hint;
-                    gutter.append(mark);
-                }
-
-                const label = kline
-                    ? makeKLineButton(row.ticker, String(text))
-                    : document.createElement('span');
-
-                if (!kline) {
-                    label.textContent = String(text);
-                }
-
-                const group = document.createElement('span');
-                group.className = 'name-cell';
-                group.append(gutter, label);
-
-                td.append(group);
-            } else if (kline) {
+            if (kline) {
                 td.append(makeKLineButton(row.ticker, String(text)));
             } else {
                 td.append(String(text));
@@ -3776,7 +3808,7 @@ function renderMarketHeat(heat, index) {
         turnoverDetail,
         toTrendClass(turnoverChangeRate),
         isIntraday
-            ? '全市場預估成交額是本輪上市與上櫃個股的現價 × 累計成交量加總，不是預估收盤。下方與前一交易日正式成交額比較：前者是量能增減率，括號內是增減金額。'
+            ? '全市場預估成交額是同一輪上市與上櫃個股的現價 × 累計成交量加總，再依交易時段進度線性推估至 13:30。量能分數與下方較前一交易日的比較，都使用同一個今日預估收盤成交額；09:27 前不顯示。'
             : '全市場成交額是上市與上櫃一般交易的正式合計；盤後不與前一交易日比較。');
 
     panel.append(overview, indicators, indices, meta);
@@ -5024,7 +5056,7 @@ function makeTopicMemberTable(members) {
         }
 
         const name = document.createElement('td');
-        name.className = 'stock-name';
+        name.className = 'stock-name ' + stockNameChangeClass(member.priceChangeRate);
         const memberName = member.name || topicData?.stockNames?.[member.ticker] || '—';
         nameByTicker.set(member.ticker, memberName);
         name.append(makeKLineButton(member.ticker, memberName));

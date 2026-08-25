@@ -307,7 +307,7 @@
                             <td class="ticker">
                                 @row.Ticker<span class="market-mark" data-hint="@RankingFormatter.ToMarketText(row.Market)">@RankingFormatter.ToMarketMark(row.Market)</span>
                             </td>
-                            <td class="stock-name">
+                            <td class="stock-name @StockNameChangeClass(row.DailyPriceChangeRate)">
                                 <button type="button" class="stock-name-button"
                                         aria-expanded="@(_expandedTicker == row.Ticker)"
                                         data-hint="點擊開啟這檔標的最近三個月還原權息日 K"
@@ -631,6 +631,14 @@
             ? string.Empty
             : $"（{RankingFormatter.ToSignedIndexPointText(points)}）";
     }
+
+    private static string StockNameChangeClass(decimal? rate)
+        => rate switch
+        {
+            > 0m => "stock-name-change-up",
+            < 0m => "stock-name-change-down",
+            _ => string.Empty
+        };
 
     private decimal? IndexYearToDateRate(MarketIndexQuote? index)
     {

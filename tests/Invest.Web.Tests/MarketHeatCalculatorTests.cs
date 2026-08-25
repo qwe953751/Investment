@@ -117,4 +117,58 @@ public sealed class MarketHeatCalculatorTests
         Assert.Equal(200m, result.MarketTurnoverChange);
         Assert.Equal(1m, result.MarketTurnoverChangeRate);
     }
+
+    [Fact]
+    public void 盤中預估總成交額同時決定量能與前一日比較()
+    {
+        var start = new DateOnly(2026, 1, 5);
+        var dates = Enumerable.Range(0, 21).Select(offset => start.AddDays(offset)).ToArray();
+        var trading = dates
+            .SelectMany((date, index) => new DailyStockTrading[]
+            {
+                new()
+                {
+                    TradingDate = date,
+                    Ticker = "2330",
+                    ClosePrice = 10m,
+                    TradingValue = index == dates.Length - 1 ? 10m : 50m
+                },
+                new()
+                {
+                    TradingDate = date,
+                    Ticker = "1101",
+                    ClosePrice = 10m,
+                    TradingValue = index == dates.Length - 1 ? 10m : 50m
+                }
+            })
+            .ToArray();
+        var indices = dates.Select(date => new DailyMarketIndex
+        {
+            TradingDate = date,
+            Quotes =
+            [
+                new MarketIndexQuote { Market = Market.Twse, Value = 100m },
+                new MarketIndexQuote { Market = Market.Tpex, Value = 200m }
+            ]
+        }).ToArray();
+
+        // 本輪實際累計只有 20；10:30 的預估全日成交額應為 20 ÷ (90 / 270) = 60。
+        // 這個值要同時驅動量能與「較前一交易日」比較，不能一邊用累計、一邊用預估。
+        var projectedTurnover = IntradayTurnoverProjection.Estimate(20m, new TimeOnly(10, 30));
+        var result = MarketHeatCalculator.Calculate(trading, indices, dates[^1], projectedTurnover);
+
+        Assert.NotNull(result);
+        Assert.Equal(60m, projectedTurnover);
+        Assert.Equal(60m, result.MarketTurnover);
+        Assert.Equal(100m, result.PreviousMarketTurnover);
+        Assert.Equal(-40m, result.MarketTurnoverChange);
+        Assert.Equal(-0.4m, result.MarketTurnoverChangeRate);
+        Assert.Equal(0.6m, result.VolumeRatio);
+    }
+
+    [Fact]
+    public void 盤中預估總成交額在早盤門檻前不造值()
+    {
+        Assert.Null(IntradayTurnoverProjection.Estimate(20m, new TimeOnly(9, 20)));
+    }
 }

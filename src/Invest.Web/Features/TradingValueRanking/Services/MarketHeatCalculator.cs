@@ -25,6 +25,26 @@ public static class MarketHeatCalculator
         IReadOnlyList<DailyStockTrading> trading,
         IReadOnlyList<DailyMarketIndex> marketIndices,
         DateOnly endDate)
+        => CalculateCore(trading, marketIndices, endDate, useCurrentMarketTurnoverOverride: false, null);
+
+    /// <summary>
+    /// 以指定的當日全市場成交額計算最新一天的量能與前一交易日比較。
+    /// 盤中會傳入同一輪資料推估到收盤的成交額；盤後則使用不帶 override 的多載，
+    /// 保持交易所正式成交額。
+    /// </summary>
+    public static MarketHeatMetrics? Calculate(
+        IReadOnlyList<DailyStockTrading> trading,
+        IReadOnlyList<DailyMarketIndex> marketIndices,
+        DateOnly endDate,
+        decimal? currentMarketTurnover)
+        => CalculateCore(trading, marketIndices, endDate, useCurrentMarketTurnoverOverride: true, currentMarketTurnover);
+
+    private static MarketHeatMetrics? CalculateCore(
+        IReadOnlyList<DailyStockTrading> trading,
+        IReadOnlyList<DailyMarketIndex> marketIndices,
+        DateOnly endDate,
+        bool useCurrentMarketTurnoverOverride,
+        decimal? currentMarketTurnover)
     {
         var dates = trading
             .Select(row => row.TradingDate)
@@ -48,12 +68,26 @@ public static class MarketHeatCalculator
             .ToDictionary(group => group.Key, group => group.ToArray());
 
         var currentDate = dates[^1];
-        var current = CalculateForDate(rowsByDate, trading, marketIndices, dates, currentDate);
+        var current = CalculateForDate(
+            rowsByDate,
+            trading,
+            marketIndices,
+            dates,
+            currentDate,
+            useCurrentMarketTurnoverOverride,
+            currentMarketTurnover);
 
         var history = dates
             .Take(dates.Length - 1)
             .TakeLast(HistoryDays)
-            .Select(date => CalculateForDate(rowsByDate, trading, marketIndices, dates, date))
+            .Select(date => CalculateForDate(
+                rowsByDate,
+                trading,
+                marketIndices,
+                dates,
+                date,
+                useCurrentMarketTurnoverOverride: false,
+                currentMarketTurnover: null))
             .Where(metrics => metrics.Score is not null)
             .Select(metrics => new MarketHeatHistoryPoint(metrics.TradingDate, metrics.Score!.Value))
             .ToArray();
@@ -66,7 +100,9 @@ public static class MarketHeatCalculator
         IReadOnlyList<DailyStockTrading> trading,
         IReadOnlyList<DailyMarketIndex> marketIndices,
         IReadOnlyList<DateOnly> dates,
-        DateOnly date)
+        DateOnly date,
+        bool useCurrentMarketTurnoverOverride,
+        decimal? currentMarketTurnover)
     {
         var currentRows = rowsByDate.GetValueOrDefault(date, [])
             .GroupBy(row => row.Ticker, StringComparer.Ordinal)
@@ -112,7 +148,10 @@ public static class MarketHeatCalculator
             ? null
             : 5m + (decimal)(up - down) / compared * 5m;
 
-        var currentTurnover = currentRows.Sum(row => row.TradingValue);
+        decimal? observedTurnover = currentRows.Sum(row => row.TradingValue);
+        var currentTurnover = useCurrentMarketTurnoverOverride
+            ? currentMarketTurnover
+            : observedTurnover;
         var priorDates = dates
             .Where(candidate => candidate < date)
             .TakeLast(VolumeAverageDays)
@@ -126,8 +165,8 @@ public static class MarketHeatCalculator
         decimal? previousTurnover = previousMarketTurnover > 0m
             ? previousMarketTurnover
             : null;
-        decimal? turnoverChange = previousTurnover is { } previous
-            ? currentTurnover - previous
+        decimal? turnoverChange = currentTurnover is { } currentValue && previousTurnover is { } previous
+            ? currentValue - previous
             : null;
         decimal? turnoverChangeRate = previousTurnover is { } baseline && baseline > 0m
             ? turnoverChange / baseline
