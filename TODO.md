@@ -754,6 +754,33 @@ org 管理畫面**，不是訪客看到的樣子。那兩個按鈕本來就只�
   拿舊網址驗證發布結果的地方一併同步，避免其他裝置照著舊文件驗證時打到
   已經清空的網址。
 
+### 檢視網址改用 iframe，不再用整頁轉址（2026-08-25 已完成）
+
+你用筆記回報一個 Bug（`[權限]分網址`）：分享「訪客網址」
+`https://frank-invest.github.io/viewer/` 出去，對方打開後網址列會變成
+`https://frank-invest.github.io/admin888/?access=viewer`——把本來要藏的最高
+權限路徑洩漏出去了，違背當初設 `admin888` 這個路徑的目的（「不讓人有機會去
+操作開發者權限的東西」）。原因是 `viewer/index.html` 原本用
+`location.replace('../admin888/?access=viewer')` 做**整頁轉址**，網址列本來就
+會確實換成目標網址。
+
+改法：`scripts/publish-gh-pages.sh` 的 `viewer/index.html` 改成用 **iframe**
+內嵌 `admin888/?access=viewer`，網址列全程停在 `.../viewer/`，不會再換成
+`admin888/...`。也考慮過整份複製一份內容到 `viewer/`（讓 `site.js` 內建的
+`ACCESS_PATH === 'viewer'` 判斷直接鎖死，不靠網址參數），但 `admin888/`
+底下光 `data/` 就有三百多 MB，兩份會逼近 GitHub Pages 每個網站 1GB 的軟
+上限、還會隨交易日持續變大，放棄。iframe 的 `src` 刻意用 JS 在頁面載入後
+才設定、不寫死在靜態 HTML 裡，所以 view-source（看原始碼、不執行 JS）也
+看不到 `admin888` 字樣，只有主動開 F12 開發者工具才挖得到。
+
+仍要說清楚：這**不是**真正的存取控制，只是不讓「分享網址」這個動作本身
+洩漏路徑。`admin888/?access=viewer` 這個網址一旦被挖出來（例如開發者工具
+或原始碼查得夠仔細），拿掉 `?access=viewer` 一樣能看到最高權限畫面——這個
+專案從一開始就沒有登入機制，跟其他地方（`GH_PAGES_ADMIN_SUBDIR`、
+`?access=viewer`）的風險等級一致。本機用假的 bare repo 重跑過
+`publish-gh-pages.sh`，確認 `viewer/index.html` 產出的 iframe `src` 正確
+帶出 `../admin888/?access=viewer`。
+
 ### 尚未做的
 
 - `qwe953751/Investment-view`（`https://qwe953751.github.io/Investment-view/`）

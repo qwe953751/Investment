@@ -75,11 +75,25 @@ if [ -n "$admin_subdir" ]; then
     cp -R "$site/." "$content/"
 
     # 檢視權限給一個獨立、好記的網址（.../viewer/，跟 $admin_subdir 平級，不是
-    # 巢狀在它底下），不是額外複製一份全站資料，只是一個小轉址頁：進來就用相對
-    # 路徑跳回同一層的 $admin_subdir/ 帶 ?access=viewer。之前想過用 iframe 內嵌
-    # 另一個網域（Investment-view 那個做法），但 iframe 的 src 會直接寫在頁面
-    # 原始碼裡，訪客看原始碼就看得到被嵌的是哪個網址——這裡改用同網域內的轉址，
-    # 不會有這個問題。
+    # 巢狀在它底下）。內容不整份複製一份——$admin_subdir 底下光 data/ 就有三百多
+    # MB，複製兩份會逼近 GitHub Pages 每個網站 1GB 的軟上限，而且會隨交易日累積
+    # 越滾越大——改成同網域內用 iframe 內嵌 $admin_subdir/?access=viewer。
+    #
+    # 原本第一版用 location.replace 做整頁轉址，網址列會確實換成
+    # .../$admin_subdir/?access=viewer；使用者回報這正是問題所在：分享「檢視
+    # 網址」出去，對方複製網址列貼出來就會帶出 $admin_subdir 這個本來要藏的
+    # 最高權限路徑。改用 iframe 後網址列全程停在 .../viewer/，不會再被複製走。
+    # iframe 的 src 刻意用 JS 在頁面載入後才設定、不寫死在 HTML 裡，這樣連
+    # view-source（純看原始碼、不執行 JS）都看不到 $admin_subdir 字樣，只有
+    # 主動按 F12 開發者工具（Elements／Network）才挖得到。之前評估過 iframe 內嵌
+    # 別的網域會在原始碼裡直接暴露目標網址（Investment-view 那次），但這裡是
+    # 同網域內嵌、且 src 是執行期才寫入，不會有那個問題。
+    #
+    # 這仍然不是真正的存取控制：$admin_subdir/?access=viewer 這個網址一旦被挖
+    # 出來，拿掉 ?access=viewer 還是能看到最高權限畫面（沒有登入機制）。這裡要
+    # 擋的是「分享檢視網址時，網址列本身就洩漏最高權限路徑」這件事，不是防堵
+    # 刻意打開開發者工具去找的人——跟這個專案其他地方的作法一致（見上面
+    # GH_PAGES_ADMIN_SUBDIR 那段說明）。
     mkdir -p "$work/viewer"
     cat > "$work/viewer/index.html" <<HTML
 <!doctype html>
@@ -89,10 +103,16 @@ if [ -n "$admin_subdir" ]; then
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
   <title>Frank Investment｜檢視</title>
+  <style>
+    html, body { margin: 0; height: 100%; }
+    iframe { display: block; width: 100%; height: 100%; border: 0; }
+  </style>
 </head>
 <body>
-  <script>location.replace('../$admin_subdir/?access=viewer');</script>
-  <p><a href="../$admin_subdir/?access=viewer">前往檢視頁面</a></p>
+  <iframe id="viewer-frame" title="Frank Investment 檢視頁面"></iframe>
+  <script>
+    document.getElementById('viewer-frame').src = '../$admin_subdir/?access=viewer';
+  </script>
 </body>
 </html>
 HTML
