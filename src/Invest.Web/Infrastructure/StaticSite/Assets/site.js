@@ -131,8 +131,8 @@ const MARKETS = [
 const VIEWS = [
     { key: 'intraday', text: '盤中', hint: '證交所的即時行情，依收集排程更新；加權、櫃買與已開啟標的的當日 K 棒同步重讀。' },
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
-    { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' },
     { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' },
+    { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' },
     { key: 'assets', text: '資產', hint: '資產 Dashboard：目前是瀏覽器內樣板；不讀取或寫入真實帳戶。' },
     { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' }
 ];
@@ -563,8 +563,19 @@ function eligibleMonthKey() {
         : `${year}-${String(month - 1).padStart(2, '0')}`;
 }
 
-async function loadRevenue() {
+// 兩千檔的月營收未壓縮將近 300 KB、要兩趟分頁。以前盤中每刷新一輪就跟著重抓一次，
+// 但營收是「每月 10 日前申報」的東西，公告期內也只是幾小時多幾家，
+// 跟兩分鐘一輪的報價完全不同步。改成十五分鐘才重抓，把它移出盤中的關鍵路徑。
+const REVENUE_REFRESH_MS = 15 * 60_000;
+
+let lastRevenueLoadedAt = 0;
+
+async function loadRevenue(force = false) {
     if (supabase === null) {
+        return;
+    }
+
+    if (!force && revenueByTicker.size > 0 && Date.now() - lastRevenueLoadedAt < REVENUE_REFRESH_MS) {
         return;
     }
 
@@ -586,8 +597,11 @@ async function loadRevenue() {
                 highMonths: row.high_months,
                 recordHigh: row.record_high
             }]));
+
+        lastRevenueLoadedAt = Date.now();
     } catch {
         // 營收讀不到就讓那兩欄顯示 —，不影響排行本身。
+        // 這裡不記時間：下一次進來要立刻重試，不能被節流擋住。
         revenueByTicker = new Map();
     }
 }
@@ -3583,15 +3597,38 @@ function renderKLineLegend(bars) {
 }
 
 /**
- * MoneyDJ 個股頁。K 線彈窗與 Blazor 端的 DailyKLineChart 共用同一個網址格式。
+ * 股名先正規化成百科查得到的樣子。
  *
- * 為什麼不是使用者當初給的那種百科頁：百科頁（wikiviewer.aspx?keyid=…）的 keyid
- * 是每家公司一組 GUID，站上沒有任何「代號換 GUID」的查詢入口，唯一的取得方式是把
- * 整個百科爬一遍——而 MoneyDJ 使用條款明文禁止自動程式擷取，所以那條路不能走。
- * 底下這個是能直接從代號組出來的個股頁，不必查表。
+ * 處分股的「*」與海外註冊的「-KY」「-DR」尾綴只有台股行情端在用，百科條目沒有：
+ * 直接拿「立凱-KY」去查是零筆，去掉尾綴查「立凱」才會出現
+ * 「英屬蓋曼群島商立凱電能科技股份有限公司」。
  */
-function moneyDjStockUrl(ticker) {
-    return `https://www.moneydj.com/Z/ZC/ZCX/ZCX_${encodeURIComponent(String(ticker).trim())}.djhtm`;
+function moneyDjSearchKeyword(name) {
+    return String(name ?? '')
+        .replaceAll('*', '')
+        .replaceAll('＊', '')
+        .replace(/\s*[-－](KY|DR)$/i, '')
+        .trim();
+}
+
+/**
+ * MoneyDJ 財經百科的公司條目搜尋頁。K 線彈窗與 Blazor 端的 DailyKLineChart 共用同一個網址格式。
+ *
+ * 使用者要的是有「一、公司簡介／二、產品與競爭條件／三、市場銷售及競爭」的那份百科條目，
+ * 而不是原本連的個股頁（ZCX_xxxx.djhtm）——那頁只有新聞列表，一個章節都沒有。
+ *
+ * 百科條目本身的網址是 wikiviewer.aspx?keyid=<GUID>，GUID 每家公司一組，站上沒有
+ * 「代號換 GUID」的查詢入口，唯一的取得方式是把整個百科爬一遍，而 MoneyDJ 使用條款
+ * 明文禁止自動程式擷取，所以不能預先建表。退一步用百科自己的搜尋頁：帶股名進去，
+ * 實測 25 檔抽樣有 24 檔第一頁就列出「○○股份有限公司」條目（多數只有一筆），點一下就到。
+ *
+ * 不用 wikiviewer.aspx?Title=<股名>（看起來比較直接）的原因：那條路對簡稱幾乎都落在
+ * 「您是不是要找…」的建議頁，同樣要多點一下，而且同名多筆時會轉到用 %uXXXX 編碼的
+ * 搜尋網址，MoneyDJ 自己解不回來，結果是零筆。
+ */
+function moneyDjStockUrl(ticker, name) {
+    const keyword = moneyDjSearchKeyword(name) || String(ticker ?? '').trim();
+    return `https://www.moneydj.com/kmdj/wiki/wikisubjectlist.aspx?op=3&b=${encodeURIComponent(keyword)}`;
 }
 
 function positionPopover(popoverId, anchor) {
@@ -3656,10 +3693,10 @@ function renderKLinePopover(ticker, name, anchor) {
     strong.id = 'kline-title';
     const titleLink = document.createElement('a');
     titleLink.className = 'kline-title-link';
-    titleLink.href = moneyDjStockUrl(ticker);
+    titleLink.href = moneyDjStockUrl(ticker, name);
     titleLink.target = '_blank';
     titleLink.rel = 'noopener noreferrer';
-    titleLink.title = '在 MoneyDJ 開啟個股頁面';
+    titleLink.title = '在 MoneyDJ 財經百科查這家公司（公司簡介、產品與競爭條件、市場銷售及競爭）';
     titleLink.textContent = `${ticker} ${name}`;
     strong.append(titleLink);
     const period = document.createElement('span');
@@ -4784,7 +4821,8 @@ function wireRefreshButton() {
         try {
             // 盤中頁的「新資料」是資料庫裡的下一輪，不是重新發佈的網站。
             if (state.view === 'intraday') {
-                await loadIntraday(true);
+                // 使用者親手按的「檢查更新」要跳過新鮮度判斷，真的去問一次資料庫。
+                await loadIntraday(true, true);
                 status.textContent = current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料';
                 button.disabled = false;
                 return;
@@ -4810,7 +4848,8 @@ function wireRefreshButton() {
 
             // 快照沒變不代表營收沒變：公告期內每隔兩小時就有幾十家補進來，
             // 那是寫在資料庫裡的，跟這份快照的版本號無關。
-            await loadRevenue();
+            // 這是使用者親手按的「檢查更新」，一定要真的去問一次，不能被節流擋掉。
+            await loadRevenue(true);
 
             if (current) {
                 renderTable();
@@ -4830,35 +4869,59 @@ function wireRefreshButton() {
 //
 // 這一頁不走靜態 JSON：盤中每 2 分鐘就變一次，重新匯出再發佈追不上。
 // 用的是只有讀取權限的公開金鑰，寫入一律走另一組連線字串。
-async function loadIntraday(silent = false) {
-    if (!silent) {
-        showNotice('盤中行情載入中…', false);
-    }
+//
+// 抓回來的原始資料留在這裡，切頁籤回來時可以直接重畫。存原始資料而不是存畫好的
+// 結果，是因為市場篩選與排序模式隨時會變，存了結果就得跟著失效。
+let intradayRaw = null;
+let intradaySummary = null;
+let intradayRawLoadedAt = 0;
 
-    let raw;
+async function loadIntraday(silent = false, force = false) {
+    // 切回盤中頁時最常見的情況是「幾十秒前才剛看過」。上一輪的原始資料還在手上、
+    // 而且還沒到下一輪收集時間的話就直接重畫，不要把表格藏起來換成「載入中…」
+    // 再等一次網路來回——使用者說的「切換頁籤時卡很久才跳出內容」就是這個。
+    // 篩選條件（市場、模式）是在下面才套用的，所以沿用原始資料不會漏掉篩選。
+    const fresh = !force
+        && intradayRaw !== null
+        && Date.now() - intradayRawLoadedAt < intradayRefreshMs;
 
-    try {
-        // 整張表都要：市場成交比的分母是全市場加總，少一檔分母就小一點、
-        // 每一檔的比例就全部偏高。上市＋上櫃有兩千檔，一定會超過單頁上限。
-        [raw] = await Promise.all([
-            fetchIntradayRows(),
-            loadMarketFlags(),
-            loadRevenue()
-        ]);
-    } catch {
-        // 靜默更新失敗就讓畫面停在上一輪的數字，總比把整張表換成錯誤訊息好。
+    if (!fresh) {
         if (!silent) {
-            showNotice('連不上盤中資料，稍後再試。', true);
+            showNotice('盤中行情載入中…', false);
         }
 
-        return;
+        try {
+            // 逐列的部分整張表都要：市場成交比的分母是全市場加總，少一檔分母就小一點、
+            // 每一檔的比例就全部偏高。上市＋上櫃有兩千檔，一定會超過單頁上限。
+            // 全市場共用的那一份（交易日、指數、熱絡指標）只抓一列就夠。
+            const [rows, summary] = await Promise.all([
+                fetchIntradayRows(),
+                fetchIntradaySummary(),
+                loadMarketFlags(),
+                loadRevenue()
+            ]);
+
+            intradayRaw = rows;
+            intradaySummary = summary;
+            intradayRawLoadedAt = Date.now();
+        } catch {
+            // 靜默更新失敗就讓畫面停在上一輪的數字，總比把整張表換成錯誤訊息好。
+            if (!silent) {
+                showNotice('連不上盤中資料，稍後再試。', true);
+            }
+
+            return;
+        }
+
+        // 抓成功就記時間，包含「今天還沒有資料」那種空的成功：
+        // 那也是一次有效的問答，不重試才不會每十幾秒就再問一次資料庫。
+        lastIntradayLoadedAt = Date.now();
     }
 
-    // 抓成功就記時間，包含「今天還沒有資料」那種空的成功：
-    // 那也是一次有效的問答，不重試才不會每十幾秒就再問一次資料庫。
-    lastIntradayLoadedAt = Date.now();
+    const raw = intradayRaw;
+    const summary = intradaySummary;
 
-    if (raw.length === 0) {
+    if (raw.length === 0 || summary === null) {
         showNotice(
             '今天還沒有盤中資料。'
             + (schedule === null ? '' : `收集器在交易日 ${schedule.intradayStart} 開始。`),
@@ -4868,7 +4931,7 @@ async function loadIntraday(silent = false) {
 
     // change_percent 存的是百分比（-0.39 就是 -0.39%），
     // 顯示用的函式吃的是比率，這裡除掉一次，兩種檢視才會是同一套格式。
-    const progress = sessionProgress(raw[0].captured_at);
+    const progress = sessionProgress(summary.captured_at);
     const estimable = progress >= MIN_PROGRESS_FOR_ESTIMATE;
 
     const rows = raw.map(row => ({
@@ -4880,7 +4943,7 @@ async function loadIntraday(silent = false) {
         priceChange: missing(row.change_percent) ? null : Number(row.change_percent) / 100,
         close: missing(row.price) ? null : Number(row.price),
         liveKLine: {
-            date: row.trade_date,
+            date: summary.trade_date,
             open: missing(row.open_price) ? null : Number(row.open_price),
             high: missing(row.high_price) ? null : Number(row.high_price),
             low: missing(row.low_price) ? null : Number(row.low_price),
@@ -4892,22 +4955,22 @@ async function loadIntraday(silent = false) {
 
     // 分母是全市場，不隨市場篩選改變——與盤後那一欄同一個定義，兩邊的比例才對得起來。
     const marketTotal = rows.reduce((total, row) => total + row.value, 0);
-    const marketHeat = readIntradayMarketHeat(raw[0]);
+    const marketHeat = readIntradayMarketHeat(summary);
 
     if (marketHeat) {
-        marketHeat.previousDays = await loadMarketHeatHistory(raw[0].trade_date);
+        marketHeat.previousDays = await loadMarketHeatHistory(summary.trade_date);
     }
 
     // 對照日必須嚴格早於盤中快照的交易日。
     // 正常交易日的快照日期是今天，這會自然取到昨天；休市日的快照仍停在上一個交易日，
     // 若仍固定取 dates 最後一天，就會把快照自己的收盤資料拿來當對照，整欄變成跟自己比。
-    const referenceDate = dates.filter(date => date < raw[0].trade_date).at(-1);
+    const referenceDate = dates.filter(date => date < summary.trade_date).at(-1);
     const reference = referenceDate
         ? await fetchPeriod(`${state.period}-${referenceDate}`)
         : null;
     const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
     const sameWeekAsReference = referenceDate !== undefined
-        && weekStartKey(raw[0].trade_date) === weekStartKey(referenceDate);
+        && weekStartKey(summary.trade_date) === weekStartKey(referenceDate);
 
     if (state.mode === 'accel' && referenceByTicker.size === 0) {
         showNotice(`讀不到過去 ${state.period} 個交易日的對照資料，資金加速排不出來，請改用成交熱度。`, true);
@@ -4948,19 +5011,19 @@ async function loadIntraday(silent = false) {
         .map((row, index) => [row.ticker, index + 1]));
 
     current = {
-        tradeDate: raw[0].trade_date,
-        capturedAt: toTaipeiText(raw[0].captured_at),
-        capturedAtIso: raw[0].captured_at,
+        tradeDate: summary.trade_date,
+        capturedAt: toTaipeiText(summary.captured_at),
+        capturedAtIso: summary.captured_at,
         progress,
         marketTotal,
         marketHeat,
         marketIndices: {
-            twseIndex: missing(raw[0].twse_index) ? null : Number(raw[0].twse_index),
-            twseChangePercent: missing(raw[0].twse_change_percent) ? null : Number(raw[0].twse_change_percent),
-            twseYearToDateChangePercent: intradayYearToDatePercent(raw[0], 'twse'),
-            tpexIndex: missing(raw[0].tpex_index) ? null : Number(raw[0].tpex_index),
-            tpexChangePercent: missing(raw[0].tpex_change_percent) ? null : Number(raw[0].tpex_change_percent),
-            tpexYearToDateChangePercent: intradayYearToDatePercent(raw[0], 'tpex')
+            twseIndex: missing(summary.twse_index) ? null : Number(summary.twse_index),
+            twseChangePercent: missing(summary.twse_change_percent) ? null : Number(summary.twse_change_percent),
+            twseYearToDateChangePercent: intradayYearToDatePercent(summary, 'twse'),
+            tpexIndex: missing(summary.tpex_index) ? null : Number(summary.tpex_index),
+            tpexChangePercent: missing(summary.tpex_change_percent) ? null : Number(summary.tpex_change_percent),
+            tpexYearToDateChangePercent: intradayYearToDatePercent(summary, 'tpex')
         },
         referencePeriod: reference?.currentPeriod ?? '資料不足',
         rankedStockCount: candidates.length,
@@ -4988,42 +5051,72 @@ async function loadIntraday(silent = false) {
     renderLockRow();
 }
 
-const INTRADAY_SELECT_WITH_HEAT = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_previous_turnover,market_heat_turnover_change,market_heat_turnover_change_rate,market_heat_average_turnover,market_heat_volume_ratio';
-const INTRADAY_SELECT_WITH_HEAT_LEGACY = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_average_turnover,market_heat_volume_ratio';
-const INTRADAY_SELECT = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,open_price,high_price,low_price';
-const INTRADAY_SELECT_LEGACY = 'symbol,name,market,price,turnover,change_percent,trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent,open_price,high_price,low_price';
+// intraday_latest 的欄位分成兩種：
+//
+//   1. 每檔各自不同的報價（symbol、price、turnover…）——兩千列都要。
+//   2. 全市場共用的那一份（交易日、收集時間、加權與櫃買指數、市場熱絡指標）——
+//      view 把同一份值複製貼在每一列上，但程式只讀第一列。
+//
+// 以前兩種一起抓，第 2 類的 24 個欄位就被複製了 1,973 份：實測未壓縮 2.1 MB，
+// 其中 1.76 MB 是重複的。手機解析這 2 MB 才是盤中頁「卡很久」的主因之一。
+// 拆成「兩千列 × 9 欄」＋「一列 × 全部欄位」之後剩 339 KB，少了 84%。
+const INTRADAY_ROW_SELECT = 'symbol,name,market,price,turnover,change_percent,open_price,high_price,low_price';
+
+// 這 9 個欄位從 db/009 的第一版 view 起就在，所以逐列查詢不需要退版備援；
+// 底下那串備援只留給「一列」的市場摘要，就算全部打錯也只是幾 KB 的往返。
+const INTRADAY_SUMMARY_WITH_HEAT = 'trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_previous_turnover,market_heat_turnover_change,market_heat_turnover_change_rate,market_heat_average_turnover,market_heat_volume_ratio';
+const INTRADAY_SUMMARY_WITH_HEAT_LEGACY = 'trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_average_turnover,market_heat_volume_ratio';
+const INTRADAY_SUMMARY = 'trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent';
+const INTRADAY_SUMMARY_LEGACY = 'trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent';
 
 // db/010 還沒套用時，帶年初欄位的那支查詢每次都會失敗。盤中每兩分鐘刷新一次，
 // 不記住的話每一輪都要先白打一次必定失敗的請求，才輪到真正拿得到資料的那支。
 let intradayLegacySelect = false;
 let intradayHeatSelectLegacy = false;
 
-async function fetchIntradayRows() {
+function fetchIntradayRows() {
+    return fetchAllRows('intraday_latest', INTRADAY_ROW_SELECT, '&order=turnover.desc');
+}
+
+async function fetchIntradaySummaryRow(select) {
+    const response = await fetch(
+        `${supabase.url}/rest/v1/intraday_latest?select=${select}&order=turnover.desc&limit=1`,
+        { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
+    }
+
+    const [row] = await response.json();
+    return row ?? null;
+}
+
+async function fetchIntradaySummary() {
     if (intradayLegacySelect) {
-        return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
+        return fetchIntradaySummaryRow(INTRADAY_SUMMARY_LEGACY);
     }
 
     if (intradayHeatSelectLegacy) {
-        return fetchAllRows('intraday_latest', INTRADAY_SELECT_WITH_HEAT_LEGACY, '&order=turnover.desc');
+        return fetchIntradaySummaryRow(INTRADAY_SUMMARY_WITH_HEAT_LEGACY);
     }
 
     try {
-        return await fetchAllRows('intraday_latest', INTRADAY_SELECT_WITH_HEAT, '&order=turnover.desc');
+        return await fetchIntradaySummaryRow(INTRADAY_SUMMARY_WITH_HEAT);
     } catch {
         try {
             // db/014 尚未套用時，保留 db/011 已有的熱絡欄位；盤中成交額比較顯示 —。
-            const rows = await fetchAllRows('intraday_latest', INTRADAY_SELECT_WITH_HEAT_LEGACY, '&order=turnover.desc');
+            const row = await fetchIntradaySummaryRow(INTRADAY_SUMMARY_WITH_HEAT_LEGACY);
             intradayHeatSelectLegacy = true;
-            return rows;
+            return row;
         } catch {
             try {
                 // db/011 尚未套用時，先沿用已有年初指數欄位；熱絡指標會顯示資料不足。
-                return await fetchAllRows('intraday_latest', INTRADAY_SELECT, '&order=turnover.desc');
+                return await fetchIntradaySummaryRow(INTRADAY_SUMMARY);
             } catch {
                 // db/010 尚未套用時，沿用舊 view；年初欄位再由 manifest 基準暫算。
                 intradayLegacySelect = true;
 
-                return fetchAllRows('intraday_latest', INTRADAY_SELECT_LEGACY, '&order=turnover.desc');
+                return fetchIntradaySummaryRow(INTRADAY_SUMMARY_LEGACY);
             }
         }
     }

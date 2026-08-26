@@ -7,7 +7,7 @@
         <div>
             <strong>
                 <a class="kline-title-link" href="@MoneyDjUrl" target="_blank" rel="noopener noreferrer"
-                   title="在 MoneyDJ 開啟個股頁面">@Ticker @Name</a>
+                   title="在 MoneyDJ 財經百科查這家公司（公司簡介、產品與競爭條件、市場銷售及競爭）">@Ticker @Name</a>
             </strong>
             <span class="daily-kline-period">還原權息日 K・@StartDateText ~ @EndDate.ToString("yyyy/MM/dd")</span>
         </div>
@@ -150,8 +150,33 @@
     private bool HasIncompleteHistory
         => Candles.Count > 0 && Candles[0].Date > RequestedStartDate.AddDays(7);
 
+    // 連百科條目的搜尋頁，不連個股行情頁（ZCX_xxxx.djhtm）——使用者要的是
+    // 「一、公司簡介／二、產品與競爭條件／三、市場銷售及競爭」那份，個股頁沒有這些章節。
+    // 完整理由寫在靜態站 site.js 的 moneyDjStockUrl()，兩邊要一起改。
     private string MoneyDjUrl
-        => $"https://www.moneydj.com/Z/ZC/ZCX/ZCX_{Uri.EscapeDataString(Ticker.Trim())}.djhtm";
+        => $"https://www.moneydj.com/kmdj/wiki/wikisubjectlist.aspx?op=3&b={Uri.EscapeDataString(MoneyDjKeyword)}";
+
+    // 處分股的「*」與海外註冊的「-KY」「-DR」尾綴百科查不到，要先去掉。
+    private string MoneyDjKeyword
+    {
+        get
+        {
+            var keyword = Name.Replace("*", string.Empty, StringComparison.Ordinal)
+                .Replace("＊", string.Empty, StringComparison.Ordinal)
+                .Trim();
+
+            foreach (var suffix in new[] { "-KY", "－KY", "-DR", "－DR" })
+            {
+                if (keyword.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    keyword = keyword[..^suffix.Length].Trim();
+                    break;
+                }
+            }
+
+            return keyword.Length == 0 ? Ticker.Trim() : keyword;
+        }
+    }
 
     private double MinPrice
         => PriceValues.Count == 0 ? 0 : (double)PriceValues.Min();

@@ -31,13 +31,35 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void K線標題包含MoneyDJ個股超連結()
+    public void K線標題連到MoneyDJ財經百科的公司條目()
     {
+        // 使用者要的是有「公司簡介／產品與競爭條件／市場銷售及競爭」的百科條目，
+        // 不是個股行情頁 ZCX_xxxx.djhtm——那頁只有新聞，一個章節都沒有。
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
-        Assert.Contains("function moneyDjStockUrl(ticker)", script, StringComparison.Ordinal);
-        Assert.Contains("https://www.moneydj.com/Z/ZC/ZCX/ZCX_", script, StringComparison.Ordinal);
+        Assert.Contains("function moneyDjStockUrl(ticker, name)", script, StringComparison.Ordinal);
+        Assert.Contains("https://www.moneydj.com/kmdj/wiki/wikisubjectlist.aspx?op=3&b=", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("ZCX/ZCX_", script, StringComparison.Ordinal);
+        Assert.Contains("moneyDjStockUrl(ticker, name)", script, StringComparison.Ordinal);
+
+        // 「立凱-KY」「國巨*」這種尾綴百科查不到，送出去前要先削掉。
+        Assert.Contains("function moneyDjSearchKeyword(name)", script, StringComparison.Ordinal);
+        Assert.Contains("/\\s*[-－](KY|DR)$/i", script, StringComparison.Ordinal);
+
+        // Blazor 端是同一條連結的第二份實作，忘了一起改就會兩邊連到不同地方。
+        var razor = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "Invest.Web",
+            "Features",
+            "TradingValueRanking",
+            "Components",
+            "DailyKLineChart.razor"));
+
+        Assert.Contains("https://www.moneydj.com/kmdj/wiki/wikisubjectlist.aspx?op=3&b=", razor, StringComparison.Ordinal);
+        Assert.DoesNotContain("ZCX/ZCX_", razor, StringComparison.Ordinal);
+        Assert.Contains("MoneyDjKeyword", razor, StringComparison.Ordinal);
         Assert.Contains("className = 'kline-title-link'", script, StringComparison.Ordinal);
         Assert.Contains("target = '_blank'", script, StringComparison.Ordinal);
         Assert.Contains("rel = 'noopener noreferrer'", script, StringComparison.Ordinal);
@@ -493,7 +515,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("marketIndexYearStarts", script, StringComparison.Ordinal);
         Assert.Contains("['今年', yearToDatePercent, 'metric-secondary']", script, StringComparison.Ordinal);
         Assert.DoesNotContain("['年初', yearToDatePercent, 'metric-secondary']", script, StringComparison.Ordinal);
-        Assert.Contains("INTRADAY_SELECT_LEGACY", script, StringComparison.Ordinal);
+        Assert.Contains("INTRADAY_SUMMARY_LEGACY", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -525,7 +547,7 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
 
         Assert.Contains(
-            "const referenceDate = dates.filter(date => date < raw[0].trade_date).at(-1)",
+            "const referenceDate = dates.filter(date => date < summary.trade_date).at(-1)",
             script,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -536,6 +558,59 @@ public sealed class StaticKLineAssetTests
             "fetchPeriod(`${state.period}-${dates[dates.length - 1]}`)",
             script,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 盤中逐列查詢不重複拿全市場共用欄位()
+    {
+        // intraday_latest 把交易日、指數與市場熱絡指標複製在每一列上，程式卻只讀第一列。
+        // 兩者一起抓等於把 24 個欄位複製 1,973 份：實測未壓縮 2.1 MB，其中 1.76 MB 是重複的，
+        // 手機解析這份 JSON 就是盤中頁「卡很久才跳出內容」的主因之一。
+        var script = ReadAsset("site.js");
+
+        Assert.Contains(
+            "const INTRADAY_ROW_SELECT = 'symbol,name,market,price,turnover,change_percent,open_price,high_price,low_price';",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains("async function fetchIntradaySummary()", script, StringComparison.Ordinal);
+        Assert.Contains("&order=turnover.desc&limit=1", script, StringComparison.Ordinal);
+
+        // 逐列查詢不可以再帶市場層級的欄位。
+        var rowSelectStart = script.IndexOf("const INTRADAY_ROW_SELECT", StringComparison.Ordinal);
+        var rowSelect = script[rowSelectStart..script.IndexOf('\n', rowSelectStart)];
+        Assert.DoesNotContain("market_heat", rowSelect, StringComparison.Ordinal);
+        Assert.DoesNotContain("twse_index", rowSelect, StringComparison.Ordinal);
+        Assert.DoesNotContain("captured_at", rowSelect, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 切回盤中頁沿用上一輪資料不重新清空畫面()
+    {
+        // 以前每次切到盤中都無條件重抓，畫面先被 showNotice 藏起來再等網路來回。
+        // 存的是原始資料而不是畫好的結果，市場篩選與排序模式才不會被凍住。
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("let intradayRaw = null;", script, StringComparison.Ordinal);
+        Assert.Contains("let intradayRawLoadedAt = 0;", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "const fresh = !force\n        && intradayRaw !== null\n        && Date.now() - intradayRawLoadedAt < intradayRefreshMs;",
+            script.Replace("\r\n", "\n", StringComparison.Ordinal),
+            StringComparison.Ordinal);
+
+        // 使用者親手按「檢查更新」時要跳過新鮮度判斷。
+        Assert.Contains("await loadIntraday(true, true);", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 月營收不跟著盤中每輪重抓()
+    {
+        // 兩千檔月營收未壓縮將近 300 KB、要兩趟分頁，但它是每月申報的東西，
+        // 沒有理由跟兩分鐘一輪的報價綁在同一條關鍵路徑上。
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const REVENUE_REFRESH_MS = 15 * 60_000;", script, StringComparison.Ordinal);
+        Assert.Contains("async function loadRevenue(force = false)", script, StringComparison.Ordinal);
+        Assert.Contains("await loadRevenue(true);", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -714,6 +789,19 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("'visibilitychange', 'focus', 'pageshow', 'online'", script, StringComparison.Ordinal);
         Assert.Contains("function intradayAgeText()", script, StringComparison.Ordinal);
         Assert.DoesNotContain("setInterval(", script, StringComparison.Ordinal);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Invest.sln")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        throw new InvalidOperationException("找不到 Invest.sln，無法比對 Blazor 端的 K 線元件。");
     }
 
     private static string ReadAsset(string fileName)
