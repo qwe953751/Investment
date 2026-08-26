@@ -69,7 +69,7 @@
 
 ## 最新已發布版本
 
-本次「其他裝置更新整合、族群排行內嵌個股明細與發布流程修正」的發布基準為 GitHub `main`（`4c9ce0f`，功能提交 `6fa5218`，2026-08-25）；publish-only Action `32836447341` 成功，GitHub Pages manifest 版本為 `1787653106`。最高權限網站已更新至 `https://frank-invest.github.io/admin888/`，檢視網址為 `https://frank-invest.github.io/viewer/`。
+本次「暫存功能整合、資產樣板底色校正與發布」的發布基準為 GitHub `main`（`7b61f16`，2026-08-26）；publish-only Action `32951532513` 成功，GitHub Pages manifest 版本為 `1787735460`。最高權限網站已更新至 `https://frank-invest.github.io/admin888/`，檢視網址為 `https://frank-invest.github.io/viewer/`。
 這一版已完成並驗收：
 
 - 盤中、盤後旁新增「自訂」頁；可瀏覽單一交易日的完整上市櫃資料，不建立預設排行。
