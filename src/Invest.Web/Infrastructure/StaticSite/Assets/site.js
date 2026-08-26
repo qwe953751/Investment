@@ -133,8 +133,8 @@ const VIEWS = [
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
     { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' },
     { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' },
-    { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' },
-    { key: 'assets', text: '資產', hint: '資產 Dashboard：目前是瀏覽器內樣板；不讀取或寫入真實帳戶。' }
+    { key: 'assets', text: '資產', hint: '資產 Dashboard：目前是瀏覽器內樣板；不讀取或寫入真實帳戶。' },
+    { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' }
 ];
 
 // 筆記與資產都是個人工作區，最高權限才顯示；檢視權限只保留公開行情頁。
@@ -4724,17 +4724,15 @@ function renderMarketHeat(heat, index) {
     addMeta('時段進度', state.view === 'intraday' ? '盤中' : '已收盤');
     const isIntraday = state.view === 'intraday';
     const displayedTurnover = missing(heat.marketTurnover) ? null : Number(heat.marketTurnover);
-    const turnoverChangeRate = isIntraday && !missing(heat.marketTurnoverChangeRate)
+    const turnoverChangeRate = !missing(heat.marketTurnoverChangeRate)
         ? Number(heat.marketTurnoverChangeRate)
         : null;
-    const turnoverChange = isIntraday && !missing(heat.marketTurnoverChange)
+    const turnoverChange = !missing(heat.marketTurnoverChange)
         ? Number(heat.marketTurnoverChange)
         : null;
-    const turnoverDetail = !isIntraday
-        ? ''
-        : turnoverChangeRate === null || turnoverChange === null
-            ? '較前一交易日 —'
-            : `較前一交易日 ${toSignedPercentText(turnoverChangeRate, 1)}（${toSignedBillionText(turnoverChange)} 億元）`;
+    const turnoverDetail = turnoverChangeRate === null || turnoverChange === null
+        ? '較前一交易日 —'
+        : `較前一交易日 ${toSignedPercentText(turnoverChangeRate, 1)}（${toSignedBillionText(turnoverChange)} 億元）`;
 
     addMeta(
         isIntraday ? '全市場預估成交額' : '全市場成交額',
@@ -4743,7 +4741,7 @@ function renderMarketHeat(heat, index) {
         toTrendClass(turnoverChangeRate),
         isIntraday
             ? '全市場預估成交額是同一輪上市與上櫃個股的現價 × 累計成交量加總，再依交易時段進度線性推估至 13:30。量能分數與下方較前一交易日的比較，都使用同一個今日預估收盤成交額；09:27 前不顯示。'
-            : '全市場成交額是上市與上櫃一般交易的正式合計；盤後不與前一交易日比較。');
+            : '全市場成交額是上市與上櫃一般交易的正式合計；下方比較正式成交額相較前一交易日的增減率與增減金額。');
 
     panel.append(overview, indicators, indices, meta);
     return panel;
@@ -5964,7 +5962,7 @@ function makeTopicMemberTitle(row, members, filter) {
     title.className = 'topic-member-title';
     const sortText = topicMemberSortKey === 'priceChange'
         ? `依漲跌幅由${topicMemberSortDescending ? '高到低' : '低到高'}`
-        : '依市場成交比由大到小';
+        : `依市場成交比由${topicMemberSortDescending ? '大到小' : '小到大'}`;
     title.textContent = filter.key === 'all'
         ? `全部 ${members.length} 檔，${sortText}。`
         : `${filter.text} ${members.length} 檔（整個族群共 ${row.memberCount} 檔），${sortText}。`;
@@ -6041,7 +6039,19 @@ function makeTopicMemberTable(members, onSortChanged = null) {
         const cell = document.createElement('th');
         cell.dataset.hint = tableHeaderHint(key, fallback);
 
-        if (text !== '漲跌幅') {
+        const sort = key === 'share'
+            ? {
+                key: 'marketShare',
+                hint: '點擊依市場成交比排序；再次點擊切換由大到小／由小到大。'
+            }
+            : key === 'price'
+                ? {
+                    key: 'priceChange',
+                    hint: '點擊依日漲跌幅排序；再次點擊切換由高到低／由低到高。'
+                }
+                : null;
+
+        if (sort === null) {
             cell.textContent = text;
             headRow.append(cell);
             continue;
@@ -6051,13 +6061,13 @@ function makeTopicMemberTable(members, onSortChanged = null) {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'topic-member-sort-button';
-        button.textContent = `漲跌幅${topicMemberSortKey === 'priceChange' ? (topicMemberSortDescending ? ' ▼' : ' ▲') : ''}`;
-        button.dataset.hint = '點擊依日漲跌幅排序；再次點擊切換由高到低／由低到高。';
+        button.textContent = `${text}${topicMemberSortKey === sort.key ? (topicMemberSortDescending ? ' ▼' : ' ▲') : ''}`;
+        button.dataset.hint = sort.hint;
         button.addEventListener('click', () => {
-            if (topicMemberSortKey === 'priceChange') {
+            if (topicMemberSortKey === sort.key) {
                 topicMemberSortDescending = !topicMemberSortDescending;
             } else {
-                topicMemberSortKey = 'priceChange';
+                topicMemberSortKey = sort.key;
                 topicMemberSortDescending = true;
             }
 

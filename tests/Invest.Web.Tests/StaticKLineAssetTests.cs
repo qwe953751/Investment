@@ -280,7 +280,7 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 熱絡表盤後只顯示正式成交額不顯示前一交易日比較()
+    public void 熱絡表盤後顯示正式成交額相較前一交易日比較()
     {
         var script = ReadAsset("site.js");
         var start = script.IndexOf("function renderMarketHeat", StringComparison.Ordinal);
@@ -288,12 +288,13 @@ public sealed class StaticKLineAssetTests
         var marketHeat = script[start..end];
 
         Assert.Contains("全市場成交額", marketHeat, StringComparison.Ordinal);
-        Assert.Contains("盤後不與前一交易日比較", marketHeat, StringComparison.Ordinal);
-        Assert.Contains("const turnoverDetail = !isIntraday", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("較前一交易日", marketHeat, StringComparison.Ordinal);
+        Assert.DoesNotContain("盤後不與前一交易日比較", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("const turnoverDetail = turnoverChangeRate", marketHeat, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void 熱絡表只在盤中顯示預估成交額相較前一交易日的量能比較()
+    public void 熱絡表盤中與盤後都顯示成交額相較前一交易日的量能比較()
     {
         var script = ReadAsset("site.js");
         var start = script.IndexOf("function renderMarketHeat", StringComparison.Ordinal);
@@ -304,6 +305,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("marketTurnover", marketHeat, StringComparison.Ordinal);
         Assert.Contains("marketTurnoverChangeRate", marketHeat, StringComparison.Ordinal);
         Assert.Contains("全市場預估成交額", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("全市場成交額是上市與上櫃一般交易的正式合計；下方比較正式成交額相較前一交易日的增減率與增減金額。", marketHeat, StringComparison.Ordinal);
         Assert.Contains("今日預估收盤成交額", marketHeat, StringComparison.Ordinal);
     }
 
@@ -367,6 +369,9 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("創高月數", script, StringComparison.Ordinal);
         Assert.Contains("toHighMonthsCell(member.ticker, revenue)", script, StringComparison.Ordinal);
         Assert.Contains("topicMemberSortKey", script, StringComparison.Ordinal);
+        Assert.Contains("key === 'share'", script, StringComparison.Ordinal);
+        Assert.Contains("key: 'marketShare'", script, StringComparison.Ordinal);
+        Assert.Contains("依市場成交比排序", script, StringComparison.Ordinal);
         Assert.Contains("topic-member-sort-button", styles, StringComparison.Ordinal);
         Assert.Contains("topic-heat-members-row", styles, StringComparison.Ordinal);
         Assert.DoesNotContain("focusTopic(row.topicId)", script, StringComparison.Ordinal);
@@ -408,6 +413,16 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("rememberViewPreferences", script, StringComparison.Ordinal);
         Assert.Contains("restoreViewPreferences", script, StringComparison.Ordinal);
         Assert.DoesNotContain("changes.period ??= DEFAULT_PERIOD[changes.view]", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 筆記主頁籤固定排在所有工作區頁籤最後()
+    {
+        var script = ReadAsset("site.js");
+        var assets = script.IndexOf("{ key: 'assets'", StringComparison.Ordinal);
+        var notes = script.IndexOf("{ key: 'notes'", StringComparison.Ordinal);
+
+        Assert.True(assets >= 0 && notes >= 0 && assets < notes);
     }
 
     [Fact]
