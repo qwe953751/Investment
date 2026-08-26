@@ -3,6 +3,10 @@
 -- 編號由資料庫 sequence 配發，不由瀏覽器排序或計算；刪除後不回收，
 -- 多裝置同時新增也不會拿到相同編號。既有筆記依目前可用的時間欄位
 -- （updated_at）補號，之後只由 sequence 往後累加。
+--
+-- 註：這個檔案漏了 grant sequence，下面的 setval 在空表重跑時也會把編號退回 #1。
+--     兩者都在 db/020_notes_number_fix.sql 補上，這裡保留原樣不動，
+--     免得跑過的檔案內容和實際跑的東西對不起來。
 
 alter table notes
     add column if not exists note_number bigint;

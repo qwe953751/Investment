@@ -26,20 +26,38 @@ public sealed class IntradayWorkflowTests
     [Fact]
     public void 動態Razor市場熱絡歷史也以最近交易日開頭()
     {
-        var razor = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "src",
-            "Invest.Web",
-            "Features",
-            "TradingValueRanking",
-            "Pages",
-            "TradingValueRanking.razor"));
+        var razor = ReadRankingRazor();
 
         Assert.Contains(
             "heat.PreviousDays.OrderByDescending(day => day.TradingDate)",
             razor,
             StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// 「較前一交易日」的成交額增減，資料一直都在 MarketHeatMetrics 裡，
+    /// 靜態站的 site.js 也早就在畫。動態頁卻停在「盤後不與前一交易日比較」，
+    /// 同一份資料在兩個畫面講不一樣的話。這裡釘住，別再漂回去。
+    /// </summary>
+    [Fact]
+    public void 動態Razor盤後也顯示成交額相較前一交易日的增減()
+    {
+        var razor = ReadRankingRazor();
+
+        Assert.Contains("HeatTurnoverChangeText(heat)", razor, StringComparison.Ordinal);
+        Assert.Contains("heat.MarketTurnoverChangeRate", razor, StringComparison.Ordinal);
+        Assert.Contains("heat.MarketTurnoverChange", razor, StringComparison.Ordinal);
+        Assert.DoesNotContain("盤後不與前一交易日比較", razor, StringComparison.Ordinal);
+    }
+
+    private static string ReadRankingRazor() => File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        "src",
+        "Invest.Web",
+        "Features",
+        "TradingValueRanking",
+        "Pages",
+        "TradingValueRanking.razor"));
 
     private static string FindRepositoryRoot()
     {

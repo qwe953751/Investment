@@ -814,8 +814,8 @@ body {
     font-size: 12px !important;
 }
 
-/* 資產 Dashboard 是指定 localhost 預覽網址才會出現的離線樣板。
-   它不會把使用者、帳戶、金額或截圖交給公開網站。 */
+/* 資產頁只在最高權限網址出現（見 site.js 的 ASSET_DASHBOARD_ENABLED）。
+   金額存在 Supabase，原始截圖只在瀏覽器裡跑辨識、不上傳也不保存。 */
 .assets-page {
     margin-top: 0;
 }
@@ -833,7 +833,6 @@ body {
 }
 
 .asset-dashboard-donut-card,
-.asset-dashboard-change-card,
 .asset-dashboard-config-card,
 .asset-account-holdings,
 .asset-screenshot-flow {
@@ -922,11 +921,6 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
-.asset-dashboard-change-card {
-    padding: 20px 16px 12px;
-}
-
-.asset-dashboard-change-card h2,
 .asset-dashboard-config-card h2,
 .asset-account-holdings h2 {
     margin: 0;
@@ -934,56 +928,12 @@ body {
     font-size: 18px;
 }
 
-.asset-dashboard-change-card > p,
 .asset-screenshot-flow > p,
 .asset-account-heading p {
     margin: 6px 0 0;
     color: #667085;
     font-size: 13px;
     line-height: 1.55;
-}
-
-.asset-dashboard-bars {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(42px, 1fr));
-    align-items: end;
-    gap: 18px;
-    height: 214px;
-    padding: 12px 10px 0;
-    margin-top: 12px;
-    border-bottom: 1px solid #d6deea;
-    background: linear-gradient(to bottom, transparent 49.5%, #eff3f8 50%, transparent 50.5%);
-}
-
-.asset-dashboard-bar-item {
-    display: grid;
-    height: 100%;
-    grid-template-rows: 1fr auto;
-    align-items: end;
-    justify-items: center;
-    gap: 8px;
-    color: #667085;
-}
-
-.asset-dashboard-bar-item > span {
-    display: block;
-    width: min(34px, 100%);
-    height: var(--asset-bar-height);
-    align-self: end;
-    border-radius: 5px 5px 0 0;
-}
-
-.asset-dashboard-bar-item > span.positive {
-    background: #f0b1b3;
-}
-
-.asset-dashboard-bar-item > span.negative {
-    background: #a8d8bf;
-}
-
-.asset-dashboard-bar-item small {
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
 }
 
 .asset-dashboard-config-card {
@@ -1176,6 +1126,11 @@ body {
     gap: 12px;
 }
 
+.asset-dashboard-overview .asset-preview-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+}
+
 .asset-preview-metric {
     display: flex;
     min-width: 0;
@@ -1256,9 +1211,49 @@ body {
     font-size: 12px !important;
 }
 
+/* 辨識進度。第一次跑要載三 MB 的引擎與字庫，沒有這行字會像當掉。 */
+.asset-ocr-status {
+    margin: 0 !important;
+    padding: 8px 10px;
+    border: 1px solid #d0d5dd;
+    border-radius: 8px;
+    background: #f9fafb;
+    color: #344054;
+    font-size: 13px !important;
+    font-variant-numeric: tabular-nums;
+}
+
 .asset-screenshot-review {
     display: grid;
     gap: 10px;
+}
+
+/* 持倉欄位一列排開；窄畫面時自己折行，不要橫向捲。 */
+.asset-holding-form {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    align-items: end;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid #e4e9f1;
+}
+
+.asset-holding-form input {
+    min-height: 38px;
+    padding: 7px 10px;
+    border: 1px solid #b7c0ce;
+    border-radius: 6px;
+    background: #fff;
+    color: #1d2939;
+    font: inherit;
+}
+
+.asset-review-table td {
+    padding: 4px;
+}
+
+.asset-review-table input {
+    width: 100%;
+    min-width: 0;
 }
 
 .checkbox-row {

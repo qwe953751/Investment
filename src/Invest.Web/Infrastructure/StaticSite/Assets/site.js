@@ -13,12 +13,9 @@ const REVENUE_HISTORY_TABLE = 'revenue_history';
 const INTRADAY_TOPIC_PERIOD = 'intraday';
 const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
 const PREVIEW_QUERY = new URLSearchParams(window.location.search).get('preview');
-// 本機 preview 只用來驗證筆記假資料與版面；資產 Dashboard 本身由最高權限樣板提供。
-const ASSET_DASHBOARD_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
-    && PREVIEW_QUERY === 'review-20260826-assets-v1';
-// 資產設計稿刻意只保存在這台瀏覽器：目前沒有登入、RLS 或券商資料來源，
-// 不應把使用者、帳戶或金融截圖送到公開站的任何後端。
-const ASSET_PREVIEW_STORAGE_KEY = 'invest.assetDashboard.preview.v2';
+// 本機專用：不連資料庫也能檢查筆記的永久編號與版面。只影響筆記頁，資產頁一律讀寫資料庫。
+const NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && PREVIEW_QUERY === 'review-20260826-notes-v1';
 let assetDashboardScreen = 'dashboard';
 let assetSelectedAccountId = '';
 let assetEditorMode = '';
@@ -39,7 +36,7 @@ const DEPLOYED_ACCESS = SITE_HOST === VIEWER_HOST
         : null;
 const SITE_ACCESS = DEPLOYED_ACCESS
     ?? (ACCESS_QUERY === 'viewer' || ACCESS_PATH === 'viewer' ? 'viewer' : 'admin');
-// 資產頁是瀏覽器內的樣板，不讀寫真實帳戶；檢視權限不顯示個人資產工作區。
+// 資產是個人資料工作區，只在最高權限網址出現；檢視權限連頁籤都不給。
 const ASSET_DASHBOARD_ENABLED = SITE_ACCESS !== 'viewer';
 const ACCESS_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && (ACCESS_QUERY === 'admin' || ACCESS_QUERY === 'viewer');
@@ -133,19 +130,19 @@ const VIEWS = [
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
     { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' },
     { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' },
-    { key: 'assets', text: '資產', hint: '資產 Dashboard：目前是瀏覽器內樣板；不讀取或寫入真實帳戶。' },
+    { key: 'assets', text: '資產', hint: '自己維護的帳戶與持倉：使用者、帳戶、現金與持倉存在資料庫，任何裝置打開都看得到；可上傳券商截圖辨識後套用。' },
     { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' }
 ];
 
 // 筆記與資產都是個人工作區，最高權限才顯示；檢視權限只保留公開行情頁。
 const availableViews = () => {
-    const prototypeViews = ASSET_DASHBOARD_ENABLED
+    const workspaceViews = ASSET_DASHBOARD_ENABLED
         ? VIEWS
         : VIEWS.filter(view => view.key !== 'assets');
 
     return SITE_ACCESS === 'viewer'
-        ? prototypeViews.filter(view => view.key !== 'notes' && view.key !== 'assets')
-        : prototypeViews;
+        ? workspaceViews.filter(view => view.key !== 'notes' && view.key !== 'assets')
+        : workspaceViews;
 };
 
 // 族群檢視底下的四個分頁。熱度排行是主畫面，其餘三個是它的來源與維護紀錄。
@@ -157,7 +154,7 @@ const TOPIC_TABS = [
 ];
 
 // 檢視權限保留族群入口，但只給已整理好的熱度排行；來源樹、事件與人工編輯
-// 仍屬最高權限。這是本機／靜態站的導覽樣板，不等於登入驗證或資料安全邊界。
+// 仍屬最高權限。這是靜態站的導覽切換，不等於登入驗證或資料安全邊界。
 const availableTopicTabs = () => SITE_ACCESS === 'viewer'
     ? TOPIC_TABS.filter(tab => tab.key === 'heat')
     : TOPIC_TABS;
@@ -809,15 +806,15 @@ const NOTE_CATEGORIES = [
 ];
 const NOTE_STATUSES = ['待處理', '處理中', '待確認', '已完成'];
 
-// 僅供 review-20260826-assets-v1 本機樣板閱讀。這些不是券商資料，也不會在瀏覽器端寫入。
-const ASSET_PREVIEW_NOTES = [
+// 僅供 review-20260826-notes-v1 本機預覽閱讀，不會寫入資料庫。
+const NOTES_LOCAL_PREVIEW_ITEMS = [
     {
         id: 'preview-note-24',
         noteNumber: 24,
         title: '【資產】多一個頁籤',
         category: '功能',
         status: '待確認',
-        content: '離線樣板：確認資產 Dashboard 的資訊架構、帳戶切換與截圖辨識後必須人工確認的流程。',
+        content: '確認資產頁的資訊架構、帳戶切換，以及截圖辨識後必須人工核對的流程。',
         updatedAt: '2026-08-26T09:30:00+08:00'
     },
     {
@@ -837,63 +834,6 @@ const ASSET_PREVIEW_NOTES = [
         status: '待確認',
         content: '切換盤中、盤後、族群時，K 線要重新取得該頁籤目前的交易日，不能沿用上一頁日期。',
         updatedAt: '2026-08-26T08:20:00+08:00'
-    }
-];
-
-const ASSET_PREVIEW_ACCOUNTS = [
-    {
-        id: 'tw-trading',
-        key: 'tw-trading',
-        name: '台股操作帳戶',
-        market: '台股',
-        broker: '券商 A',
-        cost: 1_142_000,
-        marketValue: 1_288_000,
-        cash: 201_400,
-        realized: 45_620,
-        dayChange: 12_800,
-        updatedAt: '2026/08/26 13:30',
-        holdings: [
-            { ticker: '2330', name: '台積電', weight: 36, profit: 10.8 },
-            { ticker: '2454', name: '聯發科', weight: 22, profit: 6.4 },
-            { ticker: 'AI ETF', name: '主題 ETF', weight: 18, profit: -1.9 }
-        ]
-    },
-    {
-        id: 'tw-saving',
-        key: 'tw-saving',
-        name: '台股存股帳戶',
-        market: '台股',
-        broker: '券商 B',
-        cost: 1_754_000,
-        marketValue: 2_107_000,
-        cash: 125_000,
-        realized: 10_300,
-        dayChange: 6_620,
-        updatedAt: '2026/08/26 13:30',
-        holdings: [
-            { ticker: '0050', name: '元大台灣50', weight: 42, profit: 15.2 },
-            { ticker: '2308', name: '台達電', weight: 20, profit: 11.7 },
-            { ticker: '2881', name: '富邦金', weight: 16, profit: 4.2 }
-        ]
-    },
-    {
-        id: 'us-firsttrade',
-        key: 'us-firsttrade',
-        name: '美股 FirstTrade 帳戶',
-        market: '美股',
-        broker: 'FirstTrade',
-        cost: 740_000,
-        marketValue: 880_000,
-        cash: 86_000,
-        realized: -8_400,
-        dayChange: -10_480,
-        updatedAt: '2026/08/26 04:00',
-        holdings: [
-            { ticker: 'NVDA', name: 'NVIDIA', weight: 38, profit: 22.3 },
-            { ticker: 'MSFT', name: 'Microsoft', weight: 24, profit: 8.1 },
-            { ticker: 'VOO', name: 'Vanguard S&P 500 ETF', weight: 20, profit: 5.6 }
-        ]
     }
 ];
 
@@ -1125,10 +1065,10 @@ function renderAccessBadge() {
 
     badge.hidden = false;
     badge.className = `access-badge access-${SITE_ACCESS}`;
-    badge.textContent = SITE_ACCESS === 'viewer' ? '樣板｜檢視權限' : '樣板｜最高權限';
+    badge.textContent = SITE_ACCESS === 'viewer' ? '預覽｜檢視權限' : '預覽｜最高權限';
     badge.dataset.hint = SITE_ACCESS === 'viewer'
-        ? '本機樣板：可使用盤中、盤後、自訂、族群的熱度排行。族群列表、催化事件、人工編輯屬最高權限。'
-        : '本機樣板：可使用目前網站的所有頁籤與族群功能。';
+        ? '本機預覽：可使用盤中、盤後、自訂、族群的熱度排行。族群列表、催化事件、人工編輯屬最高權限。'
+        : '本機預覽：可使用目前網站的所有頁籤與族群功能。';
 }
 
 // 盤後專用的篩選條件（期間、交易日、模式、門檻）在盤中沒有意義，直接收起來，
@@ -1138,11 +1078,17 @@ function applyViewVisibility() {
         element.hidden = !element.dataset.view.split(/\s+/).includes(state.view);
     }
 
-    // 排行榜、族群、筆記與離線資產樣板是互斥的內容區塊；它們都沒有 data-view，
+    // 排行榜、族群、筆記與資產是互斥的內容區塊；它們都沒有 data-view，
     // 各自的顯示與否在這裡集中處理，避免被上面的通用迴圈蓋掉。
     const topics = state.view === 'topics';
     const notesView = state.view === 'notes';
     const assetsView = state.view === 'assets';
+
+    // 離開資產頁就把暫存截圖收掉：createObjectURL 的 blob 不會自己消失，
+    // 留著等於在記憶體裡放一張沒人看的金融截圖直到重新整理。
+    if (!assetsView) {
+        discardAssetScreenshotDraft();
+    }
     el('topics').hidden = !topics;
     el('notes-page').hidden = !notesView;
     el('assets-page').hidden = !assetsView;
@@ -1157,7 +1103,7 @@ const PAGE_HEADINGS = {
     custom: '自訂資料瀏覽',
     topics: '族群分類與熱度',
     notes: '筆記',
-    assets: '資產 Dashboard（瀏覽器樣板）'
+    assets: '資產總覽'
 };
 
 function renderFilters() {
@@ -1583,8 +1529,8 @@ async function loadNotes() {
 async function refreshNotes() {
     lastNotesLoadedAt = Date.now();
 
-    if (ASSET_DASHBOARD_PREVIEW) {
-        notes = ASSET_PREVIEW_NOTES.map(note => ({ ...note }));
+    if (NOTES_LOCAL_PREVIEW) {
+        notes = NOTES_LOCAL_PREVIEW_ITEMS.map(note => ({ ...note }));
         notesLoadError = null;
         notesLoaded = true;
 
@@ -1652,15 +1598,15 @@ async function saveNoteRemote(note, isNew) {
     const payload = await response.text();
 
     if (payload.length === 0) {
-        return note.noteNumber;
+        return note.noteNumber ?? null;
     }
 
     try {
         const parsed = JSON.parse(payload);
         const saved = Array.isArray(parsed) ? parsed[0] : parsed;
-        return readNoteNumber(saved?.note_number) ?? note.noteNumber;
+        return readNoteNumber(saved?.note_number) ?? note.noteNumber ?? null;
     } catch {
-        return note.noteNumber;
+        return note.noteNumber ?? null;
     }
 }
 
@@ -1721,8 +1667,8 @@ function makeNotePill(text, className) {
 }
 
 function notesStorageNoteText() {
-    if (ASSET_DASHBOARD_PREVIEW) {
-        return '離線樣板資料 · #編號僅用於確認版面；新增、編輯與刪除都不會寫入資料庫';
+    if (NOTES_LOCAL_PREVIEW) {
+        return '本機預覽資料 · #編號僅用於確認版面；新增、編輯與刪除都不會寫入資料庫';
     }
 
     if (supabase === null) {
@@ -1925,8 +1871,8 @@ function wireNotes() {
             return;
         }
 
-        if (ASSET_DASHBOARD_PREVIEW) {
-            notesSaveStatus = '離線樣板不會寫入資料庫';
+        if (NOTES_LOCAL_PREVIEW) {
+            notesSaveStatus = '本機預覽不會寫入資料庫';
             renderNoteEditor();
             return;
         }
@@ -1940,12 +1886,17 @@ function wireNotes() {
         const existingId = el('notes-edit-id').value;
         const isNew = existingId.length === 0;
         const id = existingId || createNoteId();
+        // 編輯既有筆記時要把原本的永久編號一起帶著：saveNoteRemote 在回應是空的
+        // 或解析失敗時會退回 note.noteNumber，沒帶就是 undefined，畫面會出現
+        // 「#undefined」——因為顯示端只檢查 === null。
+        const existingNote = notes.find(note => note.id === id);
         const next = {
             id,
             title,
             category: el('notes-category').value,
             status: el('notes-status').value,
             content: el('notes-content').value,
+            noteNumber: existingNote?.noteNumber ?? null,
             updatedAt: new Date().toISOString()
         };
 
@@ -1954,7 +1905,7 @@ function wireNotes() {
 
         saveNoteRemote(next, isNew)
             .then(noteNumber => {
-                const persisted = { ...next, noteNumber };
+                const persisted = { ...next, noteNumber: noteNumber ?? null };
                 const existingIndex = notes.findIndex(note => note.id === id);
 
                 if (existingIndex >= 0) {
@@ -1988,8 +1939,8 @@ function wireNotes() {
             return;
         }
 
-        if (ASSET_DASHBOARD_PREVIEW) {
-            notesSaveStatus = '離線樣板不會刪除資料庫筆記';
+        if (NOTES_LOCAL_PREVIEW) {
+            notesSaveStatus = '本機預覽不會刪除資料庫筆記';
             renderNoteEditor();
             return;
         }
@@ -2018,113 +1969,285 @@ function wireNotes() {
     });
 }
 
-function assetPreviewCurrency(value) {
-    const amount = Number.isFinite(Number(value)) ? Number(value) : 0;
-    return `NT$${new Intl.NumberFormat('zh-TW', {
-        maximumFractionDigits: 0
-    }).format(amount)}`;
+// 資產。使用者、帳戶與持倉都存在資料庫（db/019_assets.sql），不放瀏覽器 localStorage：
+// 存在瀏覽器換一台裝置就看不到，清一次瀏覽器資料就全沒了。
+//
+// 權限沿用筆記那個已知情的取捨（見 db/015_notes.sql 檔頭）：純靜態站沒有伺服器可以擋
+// 登入邊界，要做到「任何裝置打開網站就能編輯」，只能把匿名金鑰本身當成寫入權杖。
+// 所以這裡只存使用者自己填、或從截圖辨識出來的數字，不存券商帳號、密碼，也不存原始截圖。
+//
+// 帳戶的成本、市值與未實現損益一律由持倉加總而來，資料庫沒有另一份帳戶層的加總欄位：
+// 只有現金與累計已實現是帳戶自己的欄位，因為那兩個在券商的未實現損益畫面上看不到。
+const ASSET_OWNERS_TABLE = 'asset_owners';
+const ASSET_ACCOUNTS_TABLE = 'asset_accounts';
+const ASSET_HOLDINGS_TABLE = 'asset_holdings';
+const ASSET_MARKETS = ['台股', '美股', '其他'];
+
+// 資產不像盤中報價那樣一直變，但兩台裝置各填一半時要看得到對方寫進去的東西。
+const ASSETS_REFRESH_MS = 60_000;
+
+let assetOwners = [];
+let assetAccountRows = [];
+let assetHoldingRows = [];
+let assetsLoaded = false;
+let assetsLoadError = null;
+let assetsBusy = false;
+let lastAssetsLoadedAt = 0;
+let assetSelectedOwnerId = '';
+
+function assetNumber(value) {
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
+
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
 }
 
-function assetPreviewSignedCurrency(value) {
-    const amount = Number.isFinite(Number(value)) ? Number(value) : 0;
-    return `${amount >= 0 ? '+' : '−'}${assetPreviewCurrency(Math.abs(amount))}`;
+// 沒有值就顯示「—」，不要顯示 0：截圖辨識不到那一欄，跟那一欄真的是零是兩回事。
+function assetCurrency(value) {
+    const amount = assetNumber(value);
+
+    return amount === null
+        ? '—'
+        : `NT$${new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(amount)}`;
 }
 
-function assetPreviewNow() {
-    return new Intl.DateTimeFormat('zh-TW', {
-        timeZone: 'Asia/Taipei',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-    }).format(new Date()).replace(',', '');
+function assetSignedCurrency(value) {
+    const amount = assetNumber(value);
+
+    return amount === null
+        ? '—'
+        : `${amount >= 0 ? '+' : '−'}${assetCurrency(Math.abs(amount))}`;
 }
 
-function cloneAssetPreviewAccount(account) {
+function assetQuantityText(value) {
+    const amount = assetNumber(value);
+
+    return amount === null
+        ? '—'
+        : new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 4 }).format(amount);
+}
+
+function assetSignClass(value) {
+    const amount = assetNumber(value);
+
+    return amount === null ? '' : amount >= 0 ? 'positive' : 'negative';
+}
+
+function assetTimeText(value) {
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime()) ? '時間不明' : toTaipeiText(date.toISOString());
+}
+
+async function loadAssets() {
+    const [owners, accounts, holdings] = await Promise.all([
+        fetchAllRows(
+            ASSET_OWNERS_TABLE,
+            'id,name,sort_order,updated_at',
+            '&order=sort_order.asc,name.asc'),
+        fetchAllRows(
+            ASSET_ACCOUNTS_TABLE,
+            'id,owner_id,name,market,broker,cash,realized,sort_order,updated_at',
+            '&order=sort_order.asc,name.asc'),
+        fetchAllRows(
+            ASSET_HOLDINGS_TABLE,
+            'id,account_id,ticker,name,quantity,cost,market_value,unrealized,source,sort_order,updated_at',
+            '&order=sort_order.asc,ticker.asc')
+    ]);
+
+    return {
+        owners: owners.map(row => ({
+            id: String(row.id),
+            name: typeof row.name === 'string' ? row.name : '',
+            sortOrder: assetNumber(row.sort_order) ?? 0,
+            updatedAt: String(row.updated_at ?? '')
+        })),
+        accounts: accounts.map(row => ({
+            id: String(row.id),
+            ownerId: String(row.owner_id),
+            name: typeof row.name === 'string' ? row.name : '',
+            market: typeof row.market === 'string' ? row.market : '',
+            broker: typeof row.broker === 'string' ? row.broker : '',
+            cash: assetNumber(row.cash) ?? 0,
+            realized: assetNumber(row.realized) ?? 0,
+            sortOrder: assetNumber(row.sort_order) ?? 0,
+            updatedAt: String(row.updated_at ?? '')
+        })),
+        holdings: holdings.map(row => ({
+            id: String(row.id),
+            accountId: String(row.account_id),
+            ticker: typeof row.ticker === 'string' ? row.ticker : '',
+            name: typeof row.name === 'string' ? row.name : '',
+            quantity: assetNumber(row.quantity),
+            cost: assetNumber(row.cost),
+            marketValue: assetNumber(row.market_value),
+            unrealized: assetNumber(row.unrealized),
+            source: row.source === 'ocr' ? 'ocr' : 'manual',
+            sortOrder: assetNumber(row.sort_order) ?? 0,
+            updatedAt: String(row.updated_at ?? '')
+        }))
+    };
+}
+
+// 失敗也記一次時間，否則連不上資料庫時每一格 tick 都會再試一遍。
+// 失敗時刻意保留上一次讀到的東西：畫面不該因為一次讀取失敗就整個清空。
+async function refreshAssets() {
+    lastAssetsLoadedAt = Date.now();
+
+    if (supabase === null) {
+        assetsLoadError = '資產需要資料庫連線；離線快照看不到資產。';
+        assetsLoaded = true;
+        return;
+    }
+
+    try {
+        const data = await loadAssets();
+        assetOwners = data.owners;
+        assetAccountRows = data.accounts;
+        assetHoldingRows = data.holdings;
+        assetsLoadError = null;
+    } catch {
+        assetsLoadError = '讀不到資產資料，可能是資料庫連線問題；稍後會自動重試。';
+    }
+
+    assetsLoaded = true;
+}
+
+function assetsAreStale() {
+    return Date.now() - lastAssetsLoadedAt >= ASSETS_REFRESH_MS;
+}
+
+// 背景重讀會整頁重畫，正在打字的表單就被清掉了。有東西開著就先別動。
+function assetsAreEditing() {
+    return assetsBusy || assetEditorMode !== '' || assetScreenshotDraft !== null;
+}
+
+function assetActiveOwner() {
+    return assetOwners.find(owner => owner.id === assetSelectedOwnerId) ?? assetOwners[0] ?? null;
+}
+
+function assetAccountsOf(ownerId) {
+    return assetAccountRows.filter(account => account.ownerId === ownerId);
+}
+
+function assetHoldingsOf(accountId) {
+    return assetHoldingRows.filter(holding => holding.accountId === accountId);
+}
+
+function assetFindAccount(accountId) {
+    return assetAccountRows.find(account => account.id === accountId) ?? null;
+}
+
+// 全部持倉的這一欄都是空的才回 null（顯示「—」）；只要有一筆填了就把有值的加起來。
+// 半套的截圖不該讓整個帳戶的數字消失，但空欄也不該被當成 0 混進總和。
+function assetSum(rows, pick) {
+    let total = 0;
+    let seen = false;
+
+    for (const row of rows) {
+        const value = pick(row);
+
+        if (value !== null) {
+            total += value;
+            seen = true;
+        }
+    }
+
+    return seen ? total : null;
+}
+
+function assetAccountView(account) {
+    const holdings = assetHoldingsOf(account.id);
+    const cost = assetSum(holdings, holding => holding.cost);
+    const marketValue = assetSum(holdings, holding => holding.marketValue);
+    const unrealized = assetSum(holdings, holding => holding.unrealized);
+
     return {
         ...account,
-        id: account.id ?? account.key,
-        holdings: account.holdings.map(holding => ({ ...holding }))
+        holdings,
+        cost,
+        marketValue,
+        // 券商截圖多半直接給未實現損益；沒有那一欄的時候才用市值減成本補。
+        unrealized: unrealized ?? (marketValue !== null && cost !== null ? marketValue - cost : null),
+        totalValue: (marketValue ?? 0) + account.cash
     };
 }
 
-function defaultAssetPrototypeData() {
+function assetPortfolioSummary(views) {
     return {
-        selectedUserId: 'preview-frank',
-        users: [
-            {
-                id: 'preview-frank',
-                name: 'Frank',
-                accounts: ASSET_PREVIEW_ACCOUNTS.map(cloneAssetPreviewAccount)
-            }
-        ]
+        marketValue: assetSum(views, view => view.marketValue),
+        cost: assetSum(views, view => view.cost),
+        unrealized: assetSum(views, view => view.unrealized),
+        cash: views.reduce((sum, view) => sum + view.cash, 0),
+        realized: views.reduce((sum, view) => sum + view.realized, 0),
+        totalValue: views.reduce((sum, view) => sum + view.totalValue, 0)
     };
 }
 
-function readAssetPrototypeData() {
-    try {
-        const stored = JSON.parse(localStorage.getItem(ASSET_PREVIEW_STORAGE_KEY));
-        if (Array.isArray(stored?.users) && stored.users.length > 0) {
-            return stored;
-        }
-    } catch {
-        // localStorage 被封鎖或舊格式壞掉時，回到固定樣本仍可讓人檢查版面。
+async function assetWrite(table, method, body, query = '') {
+    if (supabase === null) {
+        throw new Error('offline');
     }
 
-    return defaultAssetPrototypeData();
+    const response = await fetch(`${supabase.url}/rest/v1/${table}${query}`, {
+        method,
+        headers: {
+            apikey: supabase.anonKey,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal'
+        },
+        body: body === null ? undefined : JSON.stringify(body),
+        cache: 'no-store'
+    });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
+    }
 }
 
-let assetPrototypeData = ASSET_DASHBOARD_ENABLED ? readAssetPrototypeData() : null;
+function assetInsert(table, body) {
+    return assetWrite(table, 'POST', body);
+}
 
-function persistAssetPrototypeData() {
-    try {
-        localStorage.setItem(ASSET_PREVIEW_STORAGE_KEY, JSON.stringify(assetPrototypeData));
-        return true;
-    } catch {
-        assetActionNotice = '瀏覽器無法保存此樣板資料；本次畫面仍可確認，但重新整理後會回到預設樣本。';
+function assetUpdate(table, id, body) {
+    return assetWrite(
+        table,
+        'PATCH',
+        { ...body, updated_at: new Date().toISOString() },
+        `?id=eq.${encodeURIComponent(id)}`);
+}
+
+function assetRemove(table, query) {
+    return assetWrite(table, 'DELETE', null, query);
+}
+
+// 一律「先寫資料庫，成功再重讀重畫」。樂觀更新在多裝置下會讓畫面顯示一個資料庫
+// 其實沒吃下去的數字，資產頁不值得冒這個險。
+async function runAssetAction(pendingText, action, doneText) {
+    if (assetsBusy) {
         return false;
     }
-}
 
-function assetActiveUser() {
-    const users = assetPrototypeData?.users ?? [];
-    const active = users.find(user => user.id === assetPrototypeData.selectedUserId) ?? users[0] ?? null;
+    assetsBusy = true;
+    assetActionNotice = pendingText;
+    renderAssetsDashboard();
 
-    if (active !== null && assetPrototypeData.selectedUserId !== active.id) {
-        assetPrototypeData.selectedUserId = active.id;
+    let done = false;
+
+    try {
+        await action();
+        await refreshAssets();
+        assetActionNotice = doneText;
+        done = true;
+    } catch {
+        assetActionNotice = '寫入資料庫失敗，資料沒有變動；請檢查網路連線後重試。';
     }
 
-    return active;
-}
-
-function assetAccounts(user = assetActiveUser()) {
-    return Array.isArray(user?.accounts) ? user.accounts : [];
-}
-
-function assetFindAccount(accountId, user = assetActiveUser()) {
-    return assetAccounts(user).find(account => account.id === accountId) ?? null;
-}
-
-function assetAccountTotal(account) {
-    return Number(account.marketValue ?? 0) + Number(account.cash ?? 0);
-}
-
-function assetPreviewSummary(accounts) {
-    const marketValue = accounts.reduce((sum, account) => sum + account.marketValue, 0);
-    const cash = accounts.reduce((sum, account) => sum + account.cash, 0);
-    const cost = accounts.reduce((sum, account) => sum + account.cost, 0);
-
-    return {
-        marketValue,
-        cash,
-        cost,
-        totalValue: marketValue + cash,
-        unrealized: marketValue - cost,
-        realized: accounts.reduce((sum, account) => sum + account.realized, 0),
-        dayChange: accounts.reduce((sum, account) => sum + account.dayChange, 0)
-    };
+    assetsBusy = false;
+    renderAssetsDashboard();
+    return done;
 }
 
 function assetButton(text, className = '', onClick = null) {
@@ -2132,22 +2255,57 @@ function assetButton(text, className = '', onClick = null) {
     button.type = 'button';
     button.className = `asset-button ${className}`.trim();
     button.textContent = text;
+
     if (onClick !== null) {
         button.addEventListener('click', onClick);
     }
+
     return button;
 }
 
-function assetPreviewDelta(value, label = '') {
+function assetDelta(value, label = '') {
     const delta = document.createElement('span');
-    delta.className = value >= 0
-        ? 'asset-preview-delta positive'
-        : 'asset-preview-delta negative';
-    delta.textContent = `${label}${assetPreviewSignedCurrency(value)}`;
+    const amount = assetNumber(value);
+    delta.className = `asset-preview-delta ${assetSignClass(value)}`.trim();
+    delta.textContent = amount === null ? `${label}—` : `${label}${assetSignedCurrency(amount)}`;
     return delta;
 }
 
-function makeAssetPreviewMetric(label, value, detail, valueClass = '') {
+function assetField(form, type, text, value, options = {}) {
+    const label = document.createElement('label');
+    label.textContent = text;
+    const input = document.createElement('input');
+    input.type = type;
+    input.required = options.required === true;
+    input.value = value === null || value === undefined ? '' : String(value);
+
+    if (type === 'number') {
+        input.step = options.step ?? 'any';
+    } else {
+        input.maxLength = options.maxLength ?? 60;
+    }
+
+    if (options.placeholder !== undefined) {
+        input.placeholder = options.placeholder;
+    }
+
+    label.append(input);
+    form.append(label);
+    return input;
+}
+
+function assetActions(form, submitText, onCancel) {
+    const actions = document.createElement('div');
+    actions.className = 'asset-editor-actions';
+    const submit = assetButton(submitText, 'asset-primary-button');
+    submit.type = 'submit';
+    submit.disabled = assetsBusy;
+    actions.append(assetButton('取消', 'asset-secondary-button', onCancel), submit);
+    form.append(actions);
+    return actions;
+}
+
+function assetMetric(label, value, detail, valueClass = '') {
     const card = document.createElement('article');
     card.className = 'asset-preview-metric';
 
@@ -2167,22 +2325,30 @@ function makeAssetPreviewMetric(label, value, detail, valueClass = '') {
     return card;
 }
 
-function makeAssetPreviewMetrics(summary) {
-    const metrics = document.createElement('section');
-    metrics.className = 'asset-preview-metrics';
-    metrics.append(
-        makeAssetPreviewMetric('資產總值', assetPreviewCurrency(summary.totalValue),
-            document.createTextNode(`持倉 ${assetPreviewCurrency(summary.marketValue)} ＋ 現金 ${assetPreviewCurrency(summary.cash)}`)),
-        makeAssetPreviewMetric('投入成本', assetPreviewCurrency(summary.cost),
-            document.createTextNode('僅作為樣板欄位，不代表真實成本')),
-        makeAssetPreviewMetric('未實現損益', assetPreviewSignedCurrency(summary.unrealized),
-            assetPreviewDelta(summary.unrealized), summary.unrealized >= 0 ? 'positive' : 'negative'),
-        makeAssetPreviewMetric('今日資產變化', assetPreviewSignedCurrency(summary.dayChange),
-            assetPreviewDelta(summary.dayChange), summary.dayChange >= 0 ? 'positive' : 'negative'));
-    return metrics;
+function assetTableHead(titles) {
+    const head = document.createElement('thead');
+    const row = document.createElement('tr');
+
+    for (const title of titles) {
+        const cell = document.createElement('th');
+        cell.textContent = title;
+        row.append(cell);
+    }
+
+    head.append(row);
+    return head;
 }
 
-function makeAssetPreviewDonut(accounts, summary) {
+function assetEmptyRow(columns, text) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = columns;
+    cell.textContent = text;
+    row.append(cell);
+    return row;
+}
+
+function makeAssetDonut(views, summary) {
     const section = document.createElement('section');
     section.className = 'asset-dashboard-donut-card';
     const donut = document.createElement('div');
@@ -2190,14 +2356,14 @@ function makeAssetPreviewDonut(accounts, summary) {
     const total = summary.totalValue;
     const colors = ['#3b82b9', '#63a8d6', '#8fc8e4', '#b8dced', '#d5eaf5'];
     let start = 0;
-    const slices = accounts.map((account, index) => {
-        const share = total > 0 ? assetAccountTotal(account) / total * 100 : 0;
+    const slices = views.map((view, index) => {
+        const share = total > 0 ? view.totalValue / total * 100 : 0;
         const end = start + share;
         const slice = `${colors[index % colors.length]} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
         start = end;
         return slice;
     });
-    donut.style.background = slices.length > 0
+    donut.style.background = slices.length > 0 && total > 0
         ? `conic-gradient(${slices.join(', ')})`
         : 'conic-gradient(#d7dee8 0 100%)';
 
@@ -2206,74 +2372,63 @@ function makeAssetPreviewDonut(accounts, summary) {
     const label = document.createElement('span');
     label.textContent = '總資產';
     const amount = document.createElement('strong');
-    amount.textContent = assetPreviewCurrency(total);
-    inside.append(label, amount, assetPreviewDelta(summary.unrealized));
+    amount.textContent = assetCurrency(total);
+    inside.append(label, amount, assetDelta(summary.unrealized));
     donut.append(inside);
 
     const legend = document.createElement('div');
     legend.className = 'asset-dashboard-legend';
-    for (const [index, account] of accounts.entries()) {
+
+    for (const [index, view] of views.entries()) {
         const item = document.createElement('div');
         const dot = document.createElement('i');
         dot.style.background = colors[index % colors.length];
         const name = document.createElement('span');
-        name.textContent = account.name;
+        name.textContent = view.name || '（未命名帳戶）';
         const share = document.createElement('strong');
-        share.textContent = total > 0 ? `${(assetAccountTotal(account) / total * 100).toFixed(1)}%` : '—';
+        share.textContent = total > 0 ? `${(view.totalValue / total * 100).toFixed(1)}%` : '—';
         item.append(dot, name, share);
         legend.append(item);
+    }
+
+    if (views.length === 0) {
+        // 刻意用 <p>：圖例的 div 是「色塊／名稱／占比」三欄格線，
+        // 空狀態只有一句話，塞進去會被擠成 10px 寬的直排字。
+        const empty = document.createElement('p');
+        empty.className = 'asset-local-only-note';
+        empty.textContent = '尚未建立帳戶';
+        legend.append(empty);
     }
 
     section.append(donut, legend);
     return section;
 }
 
-function makeAssetPreviewChangeChart(title, description) {
-    const section = document.createElement('section');
-    section.className = 'asset-dashboard-change-card';
-    const heading = document.createElement('h2');
-    heading.textContent = title;
-    const copy = document.createElement('p');
-    copy.textContent = description;
-    const bars = document.createElement('div');
-    bars.className = 'asset-dashboard-bars';
-    const series = [
-        { day: '08/19', ratio: 46, value: -0.7 },
-        { day: '08/20', ratio: 53, value: -0.4 },
-        { day: '08/21', ratio: 49, value: 0.3 },
-        { day: '08/24', ratio: 58, value: -0.5 },
-        { day: '08/25', ratio: 62, value: -0.2 },
-        { day: '08/26', ratio: 68, value: -0.4 }
-    ];
-
-    for (const point of series) {
-        const item = document.createElement('div');
-        item.className = 'asset-dashboard-bar-item';
-        const bar = document.createElement('span');
-        bar.className = point.value >= 0 ? 'positive' : 'negative';
-        bar.style.setProperty('--asset-bar-height', `${point.ratio}%`);
-        bar.title = `${point.day} ${point.value >= 0 ? '+' : ''}${point.value.toFixed(1)}%`;
-        const label = document.createElement('small');
-        label.textContent = point.day;
-        item.append(bar, label);
-        bars.append(item);
-    }
-
-    section.append(heading, copy, bars);
-    return section;
-}
-
-function assetCreateId(prefix) {
-    return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+function makeAssetSummaryMetrics(summary) {
+    const metrics = document.createElement('section');
+    metrics.className = 'asset-preview-metrics';
+    metrics.append(
+        assetMetric('資產總值', assetCurrency(summary.totalValue),
+            document.createTextNode(
+                `持倉 ${assetCurrency(summary.marketValue)} ＋ 現金 ${assetCurrency(summary.cash)}`)),
+        assetMetric('投入成本', assetCurrency(summary.cost),
+            document.createTextNode('由每一筆持倉的成本加總')),
+        assetMetric('未實現損益', assetSignedCurrency(summary.unrealized),
+            assetDelta(summary.unrealized), assetSignClass(summary.unrealized)),
+        assetMetric('累計已實現', assetSignedCurrency(summary.realized),
+            assetDelta(summary.realized), assetSignClass(summary.realized)));
+    return metrics;
 }
 
 function discardAssetScreenshotDraft() {
-    // ponytail: 原始截圖不保存；在沒有登入與 RLS 前，保留金融影像只會增加風險，
-    // 正式接 OCR 時再隨權限、確認紀錄與保存期限一起設計。
+    // 原始截圖不保存：在沒有登入與 RLS 前，把金融影像留下來只會增加風險。
+    // 辨識完該留下的是使用者確認過的數字，不是那張圖。
     if (assetScreenshotDraft?.previewUrl) {
         URL.revokeObjectURL(assetScreenshotDraft.previewUrl);
     }
+
     assetScreenshotDraft = null;
+    assetOcrStatus = '';
 }
 
 function openAssetAccount(accountId) {
@@ -2281,6 +2436,7 @@ function openAssetAccount(accountId) {
         return;
     }
 
+    discardAssetScreenshotDraft();
     assetSelectedAccountId = accountId;
     assetDashboardScreen = 'account';
     assetEditorMode = '';
@@ -2297,392 +2453,1179 @@ function returnToAssetDashboard() {
     renderAssetsDashboard();
 }
 
-function makeAssetDashboardUserControls(user) {
+function openAssetEditor(mode) {
+    assetEditorMode = mode;
+    assetActionNotice = '';
+    renderAssetsDashboard();
+}
+
+async function removeAssetOwner(owner) {
+    const accounts = assetAccountsOf(owner.id);
+    const question = accounts.length === 0
+        ? `確定刪除使用者「${owner.name}」？`
+        : `確定刪除使用者「${owner.name}」？底下 ${accounts.length} 個帳戶與其持倉會一起刪除。`;
+
+    if (!window.confirm(question)) {
+        return;
+    }
+
+    const done = await runAssetAction(
+        '刪除中…',
+        () => assetRemove(ASSET_OWNERS_TABLE, `?id=eq.${encodeURIComponent(owner.id)}`),
+        `已刪除使用者「${owner.name}」。`);
+
+    if (done) {
+        assetSelectedOwnerId = '';
+        assetSelectedAccountId = '';
+        assetDashboardScreen = 'dashboard';
+        renderAssetsDashboard();
+    }
+}
+
+async function removeAssetAccount(account) {
+    const holdings = assetHoldingsOf(account.id);
+    const question = holdings.length === 0
+        ? `確定刪除帳戶「${account.name}」？`
+        : `確定刪除帳戶「${account.name}」？底下 ${holdings.length} 筆持倉會一起刪除。`;
+
+    if (!window.confirm(question)) {
+        return;
+    }
+
+    const done = await runAssetAction(
+        '刪除中…',
+        () => assetRemove(ASSET_ACCOUNTS_TABLE, `?id=eq.${encodeURIComponent(account.id)}`),
+        `已刪除帳戶「${account.name}」。`);
+
+    if (done) {
+        assetSelectedAccountId = '';
+        assetDashboardScreen = 'dashboard';
+        renderAssetsDashboard();
+    }
+}
+
+function makeAssetOwnerControls(owner) {
     const controls = document.createElement('div');
     controls.className = 'asset-dashboard-user-controls';
     const label = document.createElement('label');
     label.textContent = '使用者';
     const select = document.createElement('select');
     select.setAttribute('aria-label', '目前使用者');
-    for (const item of assetPrototypeData.users) {
+    select.disabled = assetsBusy;
+
+    for (const item of assetOwners) {
         const option = document.createElement('option');
         option.value = item.id;
-        option.textContent = item.name;
+        option.textContent = item.name || '（未命名）';
         select.append(option);
     }
-    select.value = user.id;
+
+    select.value = owner.id;
     select.addEventListener('change', () => {
         discardAssetScreenshotDraft();
-        assetPrototypeData.selectedUserId = select.value;
+        assetSelectedOwnerId = select.value;
         assetEditorMode = '';
         assetActionNotice = '';
-        persistAssetPrototypeData();
         renderAssetsDashboard();
     });
 
-    controls.append(label, select,
-        assetButton('＋ 新增使用者', 'asset-secondary-button', () => {
-            assetEditorMode = 'user';
-            assetActionNotice = '';
-            renderAssetsDashboard();
-        }),
-        assetButton('＋ 新增帳戶', 'asset-primary-button', () => {
-            assetEditorMode = 'account';
-            assetActionNotice = '';
-            renderAssetsDashboard();
-        }));
+    controls.append(
+        label,
+        select,
+        assetButton('＋ 新增使用者', 'asset-secondary-button', () => openAssetEditor('owner')),
+        assetButton('＋ 新增帳戶', 'asset-primary-button', () => openAssetEditor('account')),
+        assetButton('刪除使用者', 'asset-secondary-button', () => void removeAssetOwner(owner)));
     return controls;
 }
 
-function makeAssetEditor(user) {
-    if (assetEditorMode === '') {
-        return null;
-    }
-
+function makeAssetOwnerEditor() {
     const panel = document.createElement('section');
     panel.className = 'asset-editor-panel';
     const heading = document.createElement('h3');
+    heading.textContent = '新增使用者';
     const form = document.createElement('form');
     form.className = 'asset-editor-form';
-
-    if (assetEditorMode === 'user') {
-        heading.textContent = '新增使用者（僅保存在此瀏覽器）';
-        const label = document.createElement('label');
-        label.textContent = '使用者名稱';
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.required = true;
-        input.maxLength = 40;
-        input.placeholder = '例如：Frank';
-        label.append(input);
-        form.append(label);
-        form.addEventListener('submit', event => {
-            event.preventDefault();
-            const name = input.value.trim();
-            if (name === '') {
-                input.focus();
-                return;
-            }
-
-            const newUser = { id: assetCreateId('user'), name, accounts: [] };
-            assetPrototypeData.users.push(newUser);
-            assetPrototypeData.selectedUserId = newUser.id;
-            persistAssetPrototypeData();
-            assetEditorMode = '';
-            assetActionNotice = `已新增使用者「${name}」。`;
-            renderAssetsDashboard();
-        });
-    } else {
-        heading.textContent = `新增帳戶至「${user.name}」`;
-        const nameLabel = document.createElement('label');
-        nameLabel.textContent = '帳戶名稱';
-        const nameInput = document.createElement('input');
-        nameInput.type = 'text';
-        nameInput.required = true;
-        nameInput.maxLength = 60;
-        nameInput.placeholder = '例如：台股操作帳戶';
-        nameLabel.append(nameInput);
-
-        const marketLabel = document.createElement('label');
-        marketLabel.textContent = '市場';
-        const marketSelect = document.createElement('select');
-        for (const market of ['台股', '美股', '其他']) {
-            const option = document.createElement('option');
-            option.value = market;
-            option.textContent = market;
-            marketSelect.append(option);
-        }
-        marketLabel.append(marketSelect);
-
-        const brokerLabel = document.createElement('label');
-        brokerLabel.textContent = '券商／帳戶來源';
-        const brokerInput = document.createElement('input');
-        brokerInput.type = 'text';
-        brokerInput.required = true;
-        brokerInput.maxLength = 60;
-        brokerInput.placeholder = '例如：FirstTrade';
-        brokerLabel.append(brokerInput);
-        form.append(nameLabel, marketLabel, brokerLabel);
-        form.addEventListener('submit', event => {
-            event.preventDefault();
-            const name = nameInput.value.trim();
-            const broker = brokerInput.value.trim();
-            if (name === '' || broker === '') {
-                (name === '' ? nameInput : brokerInput).focus();
-                return;
-            }
-
-            const account = {
-                id: assetCreateId('account'),
-                name,
-                market: marketSelect.value,
-                broker,
-                cost: 0,
-                marketValue: 0,
-                cash: 0,
-                realized: 0,
-                dayChange: 0,
-                updatedAt: assetPreviewNow(),
-                holdings: []
-            };
-            user.accounts.push(account);
-            persistAssetPrototypeData();
-            assetEditorMode = '';
-            assetActionNotice = `已新增帳戶「${name}」。可點帳戶名稱進入明細並上傳截圖。`;
-            renderAssetsDashboard();
-        });
-    }
-
-    const actions = document.createElement('div');
-    actions.className = 'asset-editor-actions';
-    const cancel = assetButton('取消', 'asset-secondary-button', () => {
-        assetEditorMode = '';
-        renderAssetsDashboard();
+    const input = assetField(form, 'text', '使用者名稱', '', {
+        required: true,
+        maxLength: 40,
+        placeholder: '例如：Frank'
     });
-    const submit = assetButton(assetEditorMode === 'user' ? '新增使用者' : '新增帳戶', 'asset-primary-button');
-    submit.type = 'submit';
-    actions.append(cancel, submit);
-    form.append(actions);
+    assetActions(form, '新增使用者', () => openAssetEditor(''));
+
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        const name = input.value.trim();
+
+        if (name === '') {
+            input.focus();
+            return;
+        }
+
+        const id = crypto.randomUUID();
+        const done = await runAssetAction(
+            '新增中…',
+            () => assetInsert(ASSET_OWNERS_TABLE, { id, name, sort_order: assetOwners.length }),
+            `已新增使用者「${name}」。`);
+
+        if (done) {
+            assetSelectedOwnerId = id;
+            assetEditorMode = '';
+            renderAssetsDashboard();
+        }
+    });
+
     panel.append(heading, form);
     return panel;
 }
 
-function makeAssetPreviewAllocation(user, accounts) {
+function makeAssetAccountEditor(owner) {
+    const panel = document.createElement('section');
+    panel.className = 'asset-editor-panel';
+    const heading = document.createElement('h3');
+    heading.textContent = `新增帳戶至「${owner.name}」`;
+    const form = document.createElement('form');
+    form.className = 'asset-editor-form';
+    const nameInput = assetField(form, 'text', '帳戶名稱', '', {
+        required: true,
+        placeholder: '例如：台股操作帳戶'
+    });
+
+    const marketLabel = document.createElement('label');
+    marketLabel.textContent = '市場';
+    const marketSelect = document.createElement('select');
+
+    for (const market of ASSET_MARKETS) {
+        const option = document.createElement('option');
+        option.value = market;
+        option.textContent = market;
+        marketSelect.append(option);
+    }
+
+    marketLabel.append(marketSelect);
+    form.append(marketLabel);
+    const brokerInput = assetField(form, 'text', '券商（可留空）', '', { placeholder: '例如：FirstTrade' });
+    assetActions(form, '新增帳戶', () => openAssetEditor(''));
+
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        const name = nameInput.value.trim();
+
+        if (name === '') {
+            nameInput.focus();
+            return;
+        }
+
+        const id = crypto.randomUUID();
+        const done = await runAssetAction(
+            '新增中…',
+            () => assetInsert(ASSET_ACCOUNTS_TABLE, {
+                id,
+                owner_id: owner.id,
+                name,
+                market: marketSelect.value,
+                broker: brokerInput.value.trim(),
+                sort_order: assetAccountsOf(owner.id).length
+            }),
+            `已新增帳戶「${name}」。點帳戶名稱進入明細，就能上傳截圖更新持倉。`);
+
+        if (done) {
+            assetEditorMode = '';
+            renderAssetsDashboard();
+        }
+    });
+
+    panel.append(heading, form);
+    return panel;
+}
+
+function makeAssetEditor(owner) {
+    if (assetEditorMode === 'owner') {
+        return makeAssetOwnerEditor();
+    }
+
+    if (assetEditorMode === 'account') {
+        return makeAssetAccountEditor(owner);
+    }
+
+    return null;
+}
+
+function makeAssetNotice() {
+    if (assetActionNotice === '') {
+        return null;
+    }
+
+    const notice = document.createElement('p');
+    notice.className = 'asset-action-notice';
+    notice.textContent = assetActionNotice;
+    return notice;
+}
+
+function makeAssetAccountTable(owner, views) {
     const section = document.createElement('section');
     section.className = 'asset-dashboard-config-card';
     const headingRow = document.createElement('div');
     headingRow.className = 'asset-dashboard-config-heading';
     const heading = document.createElement('h2');
     heading.textContent = '帳戶配置與資料時間';
-    headingRow.append(heading, makeAssetDashboardUserControls(user));
+    headingRow.append(heading, makeAssetOwnerControls(owner));
     section.append(headingRow);
 
-    if (assetActionNotice !== '') {
-        const notice = document.createElement('p');
-        notice.className = 'asset-action-notice';
-        notice.textContent = assetActionNotice;
+    const notice = makeAssetNotice();
+
+    if (notice !== null) {
         section.append(notice);
     }
 
     const table = document.createElement('table');
     table.className = 'asset-preview-table';
-    const head = document.createElement('thead');
-    const headRow = document.createElement('tr');
-    for (const text of ['帳戶', '資產總值', '未實現損益', '現金', '資料時間']) {
-        const cell = document.createElement('th');
-        cell.textContent = text;
-        headRow.append(cell);
-    }
-    head.append(headRow);
-
     const body = document.createElement('tbody');
-    for (const account of accounts) {
+
+    for (const view of views) {
         const row = document.createElement('tr');
         const accountCell = document.createElement('td');
-        const accountButton = assetButton(account.name, 'asset-account-link', () => openAssetAccount(account.id));
-        accountCell.append(accountButton);
+        accountCell.append(assetButton(
+            view.name || '（未命名帳戶）',
+            'asset-account-link',
+            () => openAssetAccount(view.id)));
         row.append(accountCell);
-        const values = [
-            assetPreviewCurrency(account.marketValue + account.cash),
-            assetPreviewSignedCurrency(account.marketValue - account.cost),
-            assetPreviewCurrency(account.cash),
-            account.updatedAt
+
+        const cells = [
+            { text: [view.market, view.broker].filter(text => text !== '').join('／') || '—' },
+            { text: assetCurrency(view.totalValue) },
+            { text: assetSignedCurrency(view.unrealized), className: assetSignClass(view.unrealized) },
+            { text: assetCurrency(view.cash) },
+            { text: assetSignedCurrency(view.realized), className: assetSignClass(view.realized) },
+            { text: assetTimeText(view.updatedAt) }
         ];
-        values.forEach((value, index) => {
-            const cell = document.createElement('td');
-            cell.textContent = value;
-            if (index === 1) {
-                cell.className = account.marketValue >= account.cost ? 'positive' : 'negative';
+
+        for (const cell of cells) {
+            const element = document.createElement('td');
+            element.textContent = cell.text;
+
+            if (cell.className) {
+                element.className = cell.className;
             }
-            row.append(cell);
-        });
+
+            row.append(element);
+        }
+
         body.append(row);
     }
 
-    table.append(head, body);
+    if (views.length === 0) {
+        body.append(assetEmptyRow(7, '這位使用者還沒有帳戶。按「＋ 新增帳戶」建立第一個。'));
+    }
+
+    table.append(
+        assetTableHead(['帳戶', '市場／券商', '資產總值', '未實現損益', '現金', '累計已實現', '資料時間']),
+        body);
     section.append(table);
-    const editor = makeAssetEditor(user);
+
+    const editor = makeAssetEditor(owner);
+
     if (editor !== null) {
         section.append(editor);
     }
+
     return section;
 }
 
-function makeAssetScreenshotFlow(account) {
+function makeAssetDashboard(owner, views, summary) {
+    const content = document.createElement('div');
+    content.className = 'asset-dashboard-content';
+    const overview = document.createElement('div');
+    overview.className = 'asset-dashboard-overview';
+    overview.append(makeAssetDonut(views, summary), makeAssetSummaryMetrics(summary));
+    const note = document.createElement('p');
+    note.className = 'asset-local-only-note';
+    note.textContent = '使用者、帳戶、現金與持倉存在資料庫，換一台裝置打開網站就看得到；'
+        + '這裡只存你自己填或截圖辨識出來的數字，不連券商、不存帳號密碼，也不保留原始截圖。';
+    content.append(overview, makeAssetAccountTable(owner, views), note);
+    return content;
+}
+
+function makeAssetAccountSettings(view) {
+    const panel = document.createElement('section');
+    panel.className = 'asset-editor-panel';
+    const heading = document.createElement('h3');
+    heading.textContent = '帳戶資料';
+    const note = document.createElement('p');
+    note.className = 'asset-local-only-note';
+    note.textContent = '現金與累計已實現要自己填：券商的未實現損益畫面看不到這兩個數字，截圖也辨識不出來。';
+    const form = document.createElement('form');
+    form.className = 'asset-editor-form';
+    const nameInput = assetField(form, 'text', '帳戶名稱', view.name, { required: true });
+    const brokerInput = assetField(form, 'text', '券商（可留空）', view.broker);
+    const cashInput = assetField(form, 'number', '現金餘額（NT$）', view.cash, { step: '1' });
+    const realizedInput = assetField(form, 'number', '累計已實現損益（NT$）', view.realized, { step: '1' });
+    const actions = assetActions(form, '儲存帳戶資料', returnToAssetDashboard);
+    actions.prepend(assetButton('刪除帳戶', 'asset-secondary-button', () => void removeAssetAccount(view)));
+
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        const name = nameInput.value.trim();
+
+        if (name === '') {
+            nameInput.focus();
+            return;
+        }
+
+        await runAssetAction(
+            '儲存中…',
+            () => assetUpdate(ASSET_ACCOUNTS_TABLE, view.id, {
+                name,
+                broker: brokerInput.value.trim(),
+                cash: assetNumber(cashInput.value) ?? 0,
+                realized: assetNumber(realizedInput.value) ?? 0
+            }),
+            '已儲存帳戶資料。');
+    });
+
+    panel.append(heading, note, form);
+    return panel;
+}
+
+function makeAssetHoldings(view) {
+    const section = document.createElement('section');
+    section.className = 'asset-account-holdings';
+    const heading = document.createElement('h2');
+    heading.textContent = '持倉';
+    section.append(heading);
+
+    const table = document.createElement('table');
+    table.className = 'asset-preview-table';
+    const body = document.createElement('tbody');
+
+    for (const holding of view.holdings) {
+        const row = document.createElement('tr');
+        const cells = [
+            { text: holding.ticker || '—' },
+            { text: holding.name || '—' },
+            { text: assetQuantityText(holding.quantity) },
+            { text: assetCurrency(holding.cost) },
+            { text: assetCurrency(holding.marketValue) },
+            { text: assetSignedCurrency(holding.unrealized), className: assetSignClass(holding.unrealized) },
+            { text: holding.source === 'ocr' ? '截圖辨識' : '手動' }
+        ];
+
+        for (const cell of cells) {
+            const element = document.createElement('td');
+            element.textContent = cell.text;
+
+            if (cell.className) {
+                element.className = cell.className;
+            }
+
+            row.append(element);
+        }
+
+        const actionCell = document.createElement('td');
+        actionCell.append(assetButton('刪除', 'asset-secondary-button', () => void runAssetAction(
+            '刪除中…',
+            () => assetRemove(ASSET_HOLDINGS_TABLE, `?id=eq.${encodeURIComponent(holding.id)}`),
+            `已刪除持倉「${holding.ticker || holding.name || '未命名'}」。`)));
+        row.append(actionCell);
+        body.append(row);
+    }
+
+    if (view.holdings.length === 0) {
+        body.append(assetEmptyRow(8, '這個帳戶還沒有持倉。上傳券商截圖辨識，或用下面的表單手動加一筆。'));
+    }
+
+    table.append(
+        assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益', '來源', '']),
+        body);
+    section.append(table, makeAssetHoldingEditor(view));
+    return section;
+}
+
+function makeAssetHoldingEditor(view) {
+    const panel = document.createElement('form');
+    panel.className = 'asset-editor-form asset-holding-form';
+    const tickerInput = assetField(panel, 'text', '代號', '', { required: true, maxLength: 20, placeholder: '2330' });
+    const nameInput = assetField(panel, 'text', '名稱', '', { maxLength: 40, placeholder: '台積電' });
+    const quantityInput = assetField(panel, 'number', '股數', '');
+    const costInput = assetField(panel, 'number', '成本', '', { step: '1' });
+    const marketValueInput = assetField(panel, 'number', '市值', '', { step: '1' });
+    const unrealizedInput = assetField(panel, 'number', '未實現損益', '', { step: '1' });
+    const actions = document.createElement('div');
+    actions.className = 'asset-editor-actions';
+    const submit = assetButton('＋ 新增持倉', 'asset-primary-button');
+    submit.type = 'submit';
+    submit.disabled = assetsBusy;
+    actions.append(submit);
+    panel.append(actions);
+
+    panel.addEventListener('submit', async event => {
+        event.preventDefault();
+        const ticker = tickerInput.value.trim();
+
+        if (ticker === '') {
+            tickerInput.focus();
+            return;
+        }
+
+        await runAssetAction(
+            '新增中…',
+            () => assetInsert(ASSET_HOLDINGS_TABLE, {
+                id: crypto.randomUUID(),
+                account_id: view.id,
+                ticker,
+                name: nameInput.value.trim(),
+                quantity: assetNumber(quantityInput.value),
+                cost: assetNumber(costInput.value),
+                market_value: assetNumber(marketValueInput.value),
+                unrealized: assetNumber(unrealizedInput.value),
+                source: 'manual',
+                sort_order: view.holdings.length
+            }),
+            `已新增持倉「${ticker}」。`);
+    });
+
+    return panel;
+}
+
+// 截圖流程。截圖本身只在瀏覽器裡跑，辨識完就丟；留下來的是使用者在下面那張表
+// 校對過的數字。「套用」會以這張表取代帳戶目前的全部持倉——券商的未實現損益畫面
+// 是一份完整清單，逐列合併只會把已經賣掉的股票永遠留在表上。
+const ASSET_DRAFT_FIELDS = ['ticker', 'name', 'quantity', 'cost', 'marketValue', 'unrealized'];
+
+function assetDraftRowFrom(holding) {
+    return {
+        ticker: holding.ticker ?? '',
+        name: holding.name ?? '',
+        quantity: holding.quantity ?? '',
+        cost: holding.cost ?? '',
+        marketValue: holding.marketValue ?? '',
+        unrealized: holding.unrealized ?? ''
+    };
+}
+
+function readAssetDraftRows(body) {
+    return [...body.querySelectorAll('tr')].map(row => {
+        const draft = {};
+
+        for (const field of ASSET_DRAFT_FIELDS) {
+            draft[field] = row.querySelector(`input[data-field="${field}"]`)?.value.trim() ?? '';
+        }
+
+        return draft;
+    });
+}
+
+function makeAssetDraftRow(draft) {
+    const row = document.createElement('tr');
+
+    for (const field of ASSET_DRAFT_FIELDS) {
+        const cell = document.createElement('td');
+        const input = document.createElement('input');
+        input.type = field === 'ticker' || field === 'name' ? 'text' : 'number';
+        input.step = 'any';
+        input.dataset.field = field;
+        input.value = draft[field] === null || draft[field] === undefined ? '' : String(draft[field]);
+        cell.append(input);
+        row.append(cell);
+    }
+
+    return row;
+}
+
+// 截圖辨識。辨識程式（tesseract.js）與繁體中文字庫都放在本站自己的檔案裡，不從 CDN 載。
+// 這一頁對使用者的承諾是「截圖只在瀏覽器裡辨識，不會上傳」——辨識程式一旦是第三方
+// 即時送來的，這句話就降級成「相信那個第三方」，而截圖正是這頁最敏感的東西。
+// 多五 MB 換這句話真的成立。
+//
+// 核心只帶 SIMD ＋ LSTM-only 版，省下另外約六 MB。沒有 SIMD 的舊瀏覽器會去找我們沒放的
+// 檔案而載入失敗，那時畫面上會說載入失敗，手動填的路還在。
+//
+// 用的是把 wasm 內嵌進 js 的 .wasm.js 版本，不是 js＋wasm 分開的那種。分開版會讓
+// emscripten 從 worker 自己的位置去推 wasm 的網址，而 tesseract.js 的 worker 是
+// blob URL，推出來的路徑不存在，然後就停在「準備辨識」不動也不報錯。
+// 分開版小一 MB，不值得換一個查半天的當機。
+const ASSET_OCR_LANGUAGE = 'chi_tra';
+
+// 欄位標題的說法各家券商不同，這裡列見得到的。比對時取「最長的那個關鍵字」，
+// 免得「成本」先把「成本市值」吃掉、或「商品」先把「商品名稱」吃掉。
+// costPrice／marketPrice 是每股單價，不是這一檔的總額，所以另外分一欄：
+// 抄成 cost 會讓帳戶的「投入成本」變成幾百塊。要乘上股數才是同一件事。
+const ASSET_OCR_HEADERS = [
+    { field: 'ticker', words: ['股票代號', '商品代號', '代號', '股號'] },
+    { field: 'name', words: ['股票名稱', '商品名稱', '名稱', '商品', '股票'] },
+    { field: 'quantity', words: ['庫存股數', '集保庫存', '持有股數', '股數', '庫存', '現股', '數量'] },
+    { field: 'cost', words: ['投入成本', '成本金額', '總成本', '成本'] },
+    { field: 'costPrice', words: ['買進均價', '平均成本', '成本價', '均價'] },
+    { field: 'marketValue', words: ['參考市值', '市價金額', '總市值', '市值', '現值'] },
+    { field: 'marketPrice', words: ['參考價', '成交價', '市價', '現價'] },
+    { field: 'unrealized', words: ['未實現損益', '損益金額', '損益試算', '未實現', '損益'] }
+];
+
+// 只有這幾欄是每股單價，其餘都是金額。
+const ASSET_OCR_UNIT_PRICES = { costPrice: 'cost', marketPrice: 'marketValue' };
+
+const ASSET_OCR_TICKER = /\d{4,6}[A-Za-z]?/;
+
+let assetOcrEngineLoading = null;
+let assetOcrStatus = '';
+
+function assetSiteUrl(name) {
+    // 網站可能被放在 /admin888/ 這種子目錄底下，所以要相對目前這一頁去解，
+    // 不能寫成 '/tesseract.min.js'。
+    return new URL(name, window.location.href).href;
+}
+
+function loadAssetOcrEngine() {
+    if (window.Tesseract !== undefined) {
+        return Promise.resolve(window.Tesseract);
+    }
+
+    if (assetOcrEngineLoading === null) {
+        assetOcrEngineLoading = new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = assetSiteUrl('tesseract.min.js');
+            script.addEventListener('load', () => {
+                if (window.Tesseract === undefined) {
+                    reject(new Error('辨識程式載入了卻沒有掛上來'));
+                    return;
+                }
+
+                resolve(window.Tesseract);
+            });
+            script.addEventListener('error', () => {
+                // 失敗的 promise 要丟掉，不然之後每次重試都拿到同一個壞掉的結果。
+                assetOcrEngineLoading = null;
+                reject(new Error('載入辨識程式失敗'));
+            });
+            document.head.append(script);
+        });
+    }
+
+    return assetOcrEngineLoading;
+}
+
+function setAssetOcrStatus(text) {
+    assetOcrStatus = text;
+    const node = document.getElementById('asset-ocr-status');
+
+    // 辨識過程每秒會回報好幾次，整頁重畫太浪費，直接改那一行字就好。
+    if (node !== null) {
+        node.textContent = text;
+    }
+}
+
+function assetOcrProgressText(message) {
+    const percent = Math.round((message.progress ?? 0) * 100);
+
+    switch (message.status) {
+        case 'loading tesseract core':
+            return '載入辨識引擎…';
+        case 'loading language traineddata':
+        case 'loading language traineddata (from cache)':
+            return '載入繁體中文字庫…';
+        case 'initializing tesseract':
+        case 'initializing api':
+            return '準備辨識…';
+        case 'recognizing text':
+            return `辨識中 ${percent}%`;
+        default:
+            return '辨識中…';
+    }
+}
+
+// 手機截圖的表格字很小，原尺寸丟進去常常整列漏掉；先放大再轉高對比灰階，
+// 數字的辨識率差很多。上限是怕大螢幕截圖放大之後把記憶體吃光。
+const ASSET_OCR_MIN_WIDTH = 1400;
+const ASSET_OCR_MAX_PIXELS = 4_000_000;
+
+function assetOcrCanvas(bitmap) {
+    const enlarge = Math.max(1, ASSET_OCR_MIN_WIDTH / bitmap.width);
+    const budget = Math.sqrt(ASSET_OCR_MAX_PIXELS / (bitmap.width * bitmap.height));
+    const scale = Math.min(enlarge, Math.max(1, budget));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+
+    const image = context.getImageData(0, 0, canvas.width, canvas.height);
+    const pixels = image.data;
+    let darkest = 255;
+    let brightest = 0;
+    let total = 0;
+
+    for (let i = 0; i < pixels.length; i += 4) {
+        const gray = (pixels[i] * 299 + pixels[i + 1] * 587 + pixels[i + 2] * 114) / 1000;
+        pixels[i] = gray;
+        darkest = Math.min(darkest, gray);
+        brightest = Math.max(brightest, gray);
+        total += gray;
+    }
+
+    const average = total / (pixels.length / 4);
+    const span = Math.max(1, brightest - darkest);
+
+    // 券商 App 幾乎都是深色底白字，而 Tesseract 吃的是深色字淺色底。整體偏暗就反相。
+    const invert = average < 110;
+
+    for (let i = 0; i < pixels.length; i += 4) {
+        const stretched = ((pixels[i] - darkest) / span) * 255;
+        const value = invert ? 255 - stretched : stretched;
+        pixels[i] = value;
+        pixels[i + 1] = value;
+        pixels[i + 2] = value;
+        pixels[i + 3] = 255;
+    }
+
+    context.putImageData(image, 0, 0);
+    return canvas;
+}
+
+function assetOcrWordText(word) {
+    return String(word.text ?? '').replace(/\s+/g, '');
+}
+
+// 只認「整串看起來就是數字」的字，其餘一律當文字。寧可留空讓使用者自己補，
+// 也不要塞一個猜出來的金額進資料庫——那比空白更難發現。
+function assetOcrNumber(text) {
+    const normalized = text
+        .replace(/[０-９]/g, character => String.fromCharCode(character.charCodeAt(0) - 0xFEE0))
+        .replace(/[，]/g, ',')
+        .replace(/[$＄元股]/g, '')
+        .trim();
+
+    let digits = normalized;
+    let sign = 1;
+
+    // 括號代表負數：不少券商用 (1,234) 表示虧損。
+    if (/^[（(].+[）)]$/.test(digits)) {
+        sign = -1;
+        digits = digits.slice(1, -1);
+    }
+
+    // 小字截圖的負號很容易被看成 ~ 或 一，有時前面還會多噴一個符號（實測出現過
+    // 「~-42,000」）。這一串符號後面必須直接接數字才處理，所以 2330~2340 這種
+    // 範圍寫法不會被翻成負數；只要那串不是單純的加號就當負數。
+    const leading = /^[-−–—~～一ー_ˉ+]+(?=\d)/.exec(digits);
+
+    if (leading !== null) {
+        if (/[^+]/.test(leading[0])) {
+            sign = -1;
+        }
+
+        digits = digits.slice(leading[0].length);
+    }
+
+    if (!/^[\d.,]+$/.test(digits) || !/\d/.test(digits)) {
+        return null;
+    }
+
+    // OCR 常把千分位逗號看成句點。分隔號後面剛好三位、而且整串都是這個規律時，
+    // 一律當千分位；1.23 這種才是小數。
+    const value = /^\d{1,3}([.,]\d{3})+$/.test(digits)
+        ? Number(digits.replaceAll('.', '').replaceAll(',', ''))
+        : Number(digits.replaceAll(',', ''));
+
+    return Number.isFinite(value) ? sign * value : null;
+}
+
+function assetOcrLines(data) {
+    const lines = data?.lines ?? [];
+
+    return lines
+        .map(line => (line.words ?? [])
+            .map(word => ({
+                text: assetOcrWordText(word),
+                left: word.bbox?.x0 ?? 0,
+                right: word.bbox?.x1 ?? 0,
+                center: ((word.bbox?.x0 ?? 0) + (word.bbox?.x1 ?? 0)) / 2
+            }))
+            .filter(word => word.text !== '')
+            .sort((left, right) => left.center - right.center))
+        .filter(words => words.length > 0);
+}
+
+// 中文標題常被一個字切成一段（「成本價」變成「成」「本」「價」三段），
+// 拿整段去比對關鍵字什麼都對不到。這裡攤平成單字加位置，比對完再從字的位置回推欄位。
+function assetOcrCharacters(words) {
+    const characters = [];
+
+    for (const word of words) {
+        const letters = [...word.text];
+        const width = Math.max(1, word.right - word.left);
+
+        for (let index = 0; index < letters.length; index += 1) {
+            characters.push({
+                text: letters[index],
+                center: word.left + (width * (index + 0.5)) / letters.length
+            });
+        }
+    }
+
+    return characters;
+}
+
+function assetOcrHeaderFields(words) {
+    const characters = assetOcrCharacters(words);
+    const text = characters.map(character => character.text).join('');
+    const claimed = characters.map(() => false);
+    const found = new Map();
+
+    // 長的關鍵字先搶，「成本價」才不會先被「成本」切走一半，
+    // 也才不會把「參考市值」認成「市值」而漏掉真正的市價欄。
+    const candidates = ASSET_OCR_HEADERS
+        .flatMap(header => header.words.map(keyword => ({ field: header.field, keyword })))
+        .sort((left, right) => right.keyword.length - left.keyword.length);
+
+    for (const candidate of candidates) {
+        if (found.has(candidate.field)) {
+            continue;
+        }
+
+        const length = candidate.keyword.length;
+
+        for (let at = text.indexOf(candidate.keyword); at >= 0; at = text.indexOf(candidate.keyword, at + 1)) {
+            const overlaps = claimed.slice(at, at + length).some(taken => taken);
+
+            if (overlaps) {
+                continue;
+            }
+
+            let total = 0;
+
+            for (let index = at; index < at + length; index += 1) {
+                claimed[index] = true;
+                total += characters[index].center;
+            }
+
+            found.set(candidate.field, total / length);
+            break;
+        }
+    }
+
+    return found;
+}
+
+// 找出欄位標題那一列，並記下每個欄位的水平位置。認不出來就回 null——
+// 那時寧可只填代號與名稱，也不要照順序硬猜哪個數字是成本、哪個是市值。
+function assetOcrColumns(lines) {
+    for (let index = 0; index < lines.length; index += 1) {
+        const found = assetOcrHeaderFields(lines[index]);
+
+        // 要兩個以上才算標題列：只中一個多半是內文剛好出現「損益」這種字。
+        if (found.size >= 2) {
+            return {
+                headerIndex: index,
+                columns: [...found]
+                    .map(([field, center]) => ({ field, center }))
+                    .sort((left, right) => left.center - right.center)
+            };
+        }
+    }
+
+    return null;
+}
+
+function assetOcrFieldAt(columns, center) {
+    let best = columns[0];
+
+    for (const column of columns) {
+        if (Math.abs(column.center - center) < Math.abs(best.center - center)) {
+            best = column;
+        }
+    }
+
+    return best.field;
+}
+
+function assetOcrRow(words, columns) {
+    const draft = assetDraftRowFrom({});
+    const prices = { costPrice: null, marketPrice: null };
+    const names = [];
+
+    for (let index = 0; index < words.length; index += 1) {
+        const word = words[index];
+        const field = columns === null ? null : assetOcrFieldAt(columns, word.center);
+
+        // 代號常和名稱擠在同一格（「2330 台積電」），所以先認代號再談欄位。
+        // 沒有標題可靠時只看最前面兩段，免得把「20000 股」的股數當成代號。
+        const couldBeTicker = columns === null
+            ? index < 2
+            : field === 'ticker' || field === 'name';
+
+        if (draft.ticker === '' && couldBeTicker && /^\d/.test(word.text)) {
+            const ticker = ASSET_OCR_TICKER.exec(word.text);
+
+            if (ticker !== null) {
+                draft.ticker = ticker[0];
+                const rest = word.text.slice(ticker[0].length);
+
+                if (rest !== '') {
+                    names.push(rest);
+                }
+
+                continue;
+            }
+        }
+
+        const number = assetOcrNumber(word.text);
+
+        if (number === null) {
+            // 認不出來的數字別掉進名稱裡：那會變成「國泰永續3000」這種名字。
+            if (field === null || field === 'ticker' || field === 'name') {
+                names.push(word.text);
+            }
+
+            continue;
+        }
+
+        if (field !== null && field in ASSET_OCR_UNIT_PRICES) {
+            prices[field] ??= number;
+            continue;
+        }
+
+        if (field !== null && field !== 'ticker' && field !== 'name' && draft[field] === '') {
+            draft[field] = number;
+        }
+    }
+
+    const quantity = draft.quantity === '' ? null : Number(draft.quantity);
+
+    for (const [price, total] of Object.entries(ASSET_OCR_UNIT_PRICES)) {
+        if (draft[total] === '' && prices[price] !== null && quantity !== null) {
+            draft[total] = Math.round(prices[price] * quantity * 100) / 100;
+        }
+    }
+
+    // 名稱只收中文與英數，把 OCR 常噴出來的框線符號濾掉。
+    draft.name = names
+        .join('')
+        .replace(/[^\u4e00-\u9fffA-Za-z0-9&．.-]/g, '')
+        .slice(0, 20);
+
+    return draft;
+}
+
+function assetDraftRowsFromOcr(data) {
+    const lines = assetOcrLines(data);
+    const header = assetOcrColumns(lines);
+    const columns = header?.columns ?? null;
+    const startIndex = header === null ? 0 : header.headerIndex + 1;
+    const rows = [];
+
+    for (let index = startIndex; index < lines.length; index += 1) {
+        const draft = assetOcrRow(lines[index], columns);
+
+        // 沒有代號的列多半是小計、頁尾或按鈕文字，不要塞進表裡讓使用者一列列刪。
+        if (draft.ticker === '') {
+            continue;
+        }
+
+        rows.push(draft);
+    }
+
+    return { rows, matchedHeader: header !== null };
+}
+
+async function recognizeAssetScreenshot(file) {
+    const Tesseract = await loadAssetOcrEngine();
+    const bitmap = await createImageBitmap(file);
+    let canvas;
+
+    try {
+        canvas = assetOcrCanvas(bitmap);
+    } finally {
+        bitmap.close();
+    }
+
+    const worker = await Tesseract.createWorker(ASSET_OCR_LANGUAGE, 1, {
+        workerPath: assetSiteUrl('tesseract-worker.min.js'),
+        corePath: assetSiteUrl('tesseract-core-simd-lstm.wasm.js'),
+        langPath: assetSiteUrl('.'),
+
+        // 我們存的是沒壓縮的 traineddata：GitHub Pages 本來就會 gzip 傳輸，
+        // 存一份 .gz 只是讓瀏覽器多解一次。
+        gzip: false,
+        logger: message => setAssetOcrStatus(assetOcrProgressText(message))
+    });
+
+    try {
+        const { data } = await worker.recognize(canvas);
+        return assetDraftRowsFromOcr(data);
+    } finally {
+        await worker.terminate();
+    }
+}
+
+async function scanAssetScreenshot(file, accountId, holdings) {
+    discardAssetScreenshotDraft();
+    assetScreenshotDraft = {
+        accountId,
+        fileName: file.name,
+        capturedAt: new Date().toISOString(),
+        previewUrl: URL.createObjectURL(file),
+        scanning: true,
+        rows: []
+    };
+    assetActionNotice = '';
+    setAssetOcrStatus('準備辨識…');
+    renderAssetsDashboard();
+
+    let result = null;
+    let failure = '';
+
+    try {
+        result = await recognizeAssetScreenshot(file);
+    } catch (error) {
+        failure = String(error?.message ?? error);
+    }
+
+    // 辨識期間使用者可能已經換帳戶或按了取消，那就別把結果硬塞回去。
+    if (assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
+        setAssetOcrStatus('');
+        return;
+    }
+
+    assetScreenshotDraft.scanning = false;
+    setAssetOcrStatus('');
+
+    if (result === null) {
+        // 辨識掛掉不代表這次上傳白費：表格照樣開著，只是要自己填。
+        assetScreenshotDraft.rows = holdings.length > 0
+            ? holdings.map(assetDraftRowFrom)
+            : [assetDraftRowFrom({})];
+        assetActionNotice = `截圖辨識失敗（${failure}），下面這張表請自己填或修改。`;
+        renderAssetsDashboard();
+        return;
+    }
+
+    if (result.rows.length === 0) {
+        assetScreenshotDraft.rows = holdings.length > 0
+            ? holdings.map(assetDraftRowFrom)
+            : [assetDraftRowFrom({})];
+        assetActionNotice = '這張截圖沒有認出任何一檔股票，請改用清楚一點的截圖，或直接在下面填。';
+        renderAssetsDashboard();
+        return;
+    }
+
+    assetScreenshotDraft.rows = result.rows;
+    assetActionNotice = result.matchedHeader
+        ? `辨識出 ${result.rows.length} 檔股票，請逐列核對再套用。`
+        : `辨識出 ${result.rows.length} 檔股票，但沒認出欄位標題，金額多半是空的，`
+            + '請自己補。下次截圖記得把「股數／成本／市值／損益」那一行標題一起截進來。';
+    renderAssetsDashboard();
+}
+
+function makeAssetScreenshotFlow(view) {
     const section = document.createElement('section');
     section.className = 'asset-screenshot-flow';
     const heading = document.createElement('h3');
-    heading.textContent = '上傳截圖更新未實現損益';
+    heading.textContent = '上傳截圖更新持倉';
     const description = document.createElement('p');
-    description.textContent = '截圖只留在目前頁面的暫存預覽，不會上傳或保存。OCR 尚未接入，請輸入／校對未實現損益後再套用。';
+    description.textContent = '截圖只在這個瀏覽器裡辨識，不會上傳、也不會保存。'
+        + '請把欄位標題那一行一起截進來，辨識才知道哪個數字是成本、哪個是市值。'
+        + '辨識結果一定要自己核對過再套用；套用後會以下面這張表取代帳戶目前的全部持倉。';
     const inputLabel = document.createElement('label');
     inputLabel.className = 'asset-file-input';
     const inputText = document.createElement('span');
-    inputText.textContent = '選擇帳戶截圖';
+    inputText.textContent = '選擇券商未實現損益截圖';
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
+    input.disabled = assetsBusy || assetScreenshotDraft?.scanning === true;
     input.addEventListener('change', () => {
         const file = input.files?.[0];
+
         if (file === undefined) {
             return;
         }
+
         if (!file.type.startsWith('image/')) {
             assetActionNotice = '請選擇圖片格式的帳戶截圖。';
             renderAssetsDashboard();
             return;
         }
 
-        discardAssetScreenshotDraft();
-        assetScreenshotDraft = {
-            accountId: account.id,
-            fileName: file.name,
-            capturedAt: assetPreviewNow(),
-            previewUrl: URL.createObjectURL(file)
-        };
-        assetActionNotice = `已在本機選擇「${file.name}」，請確認未實現損益。`;
-        renderAssetsDashboard();
+        void scanAssetScreenshot(file, view.id, view.holdings);
     });
     inputLabel.append(inputText, input);
     section.append(heading, description, inputLabel);
 
-    if (assetScreenshotDraft?.accountId === account.id) {
-        const preview = document.createElement('img');
-        preview.className = 'asset-screenshot-preview';
-        preview.src = assetScreenshotDraft.previewUrl;
-        preview.alt = `帳戶截圖預覽：${assetScreenshotDraft.fileName}`;
-        const caption = document.createElement('p');
-        caption.className = 'asset-screenshot-caption';
-        caption.textContent = `${assetScreenshotDraft.fileName} · ${assetScreenshotDraft.capturedAt} · 尚未上傳`;
-
-        const review = document.createElement('form');
-        review.className = 'asset-screenshot-review';
-        const valueLabel = document.createElement('label');
-        valueLabel.textContent = '未實現損益（NT$，需確認）';
-        const valueInput = document.createElement('input');
-        valueInput.type = 'number';
-        valueInput.step = '1';
-        valueInput.required = true;
-        valueInput.value = String(Math.round(account.marketValue - account.cost));
-        valueLabel.append(valueInput);
-        const apply = assetButton('套用未實現損益', 'asset-primary-button');
-        apply.type = 'submit';
-        const cancel = assetButton('取消截圖', 'asset-secondary-button', () => {
-            discardAssetScreenshotDraft();
-            assetActionNotice = '已取消本機截圖暫存，資產表沒有變動。';
-            renderAssetsDashboard();
-        });
-        review.addEventListener('submit', event => {
-            event.preventDefault();
-            const unrealized = Number(valueInput.value);
-            if (!Number.isFinite(unrealized)) {
-                valueInput.focus();
-                return;
-            }
-
-            account.marketValue = Math.max(0, Number(account.cost ?? 0) + unrealized);
-            account.updatedAt = assetPreviewNow();
-            account.lastScreenshotName = assetScreenshotDraft.fileName;
-            account.lastScreenshotAt = assetScreenshotDraft.capturedAt;
-            persistAssetPrototypeData();
-            discardAssetScreenshotDraft();
-            assetActionNotice = `已套用 ${assetPreviewSignedCurrency(unrealized)} 未實現損益；Dashboard 表格已更新。`;
-            renderAssetsDashboard();
-        });
-        review.append(valueLabel, apply, cancel);
-        section.append(preview, caption, review);
+    if (assetScreenshotDraft?.accountId !== view.id) {
+        return section;
     }
 
-    return section;
-}
+    const preview = document.createElement('img');
+    preview.className = 'asset-screenshot-preview';
+    preview.src = assetScreenshotDraft.previewUrl;
+    preview.alt = `帳戶截圖預覽：${assetScreenshotDraft.fileName}`;
+    const caption = document.createElement('p');
+    caption.className = 'asset-screenshot-caption';
+    caption.textContent = `${assetScreenshotDraft.fileName} · ${assetTimeText(assetScreenshotDraft.capturedAt)} · 圖片不會上傳`;
 
-function makeAssetPreviewHoldings(account) {
-    const section = document.createElement('section');
-    section.className = 'asset-account-holdings';
-    const heading = document.createElement('h2');
-    heading.textContent = '主要持倉（樣板）';
-    section.append(heading);
+    if (assetScreenshotDraft.scanning) {
+        // 辨識期間先不要給校對表：進度每秒跳好幾次，表格會一直被重建，
+        // 使用者剛打的字會被吃掉。
+        const status = document.createElement('p');
+        status.className = 'asset-ocr-status';
+        status.id = 'asset-ocr-status';
+        status.textContent = assetOcrStatus === '' ? '辨識中…' : assetOcrStatus;
+        section.append(preview, caption, status);
+        return section;
+    }
+
+    const review = document.createElement('form');
+    review.className = 'asset-screenshot-review';
     const table = document.createElement('table');
-    table.className = 'asset-preview-table';
-    const head = document.createElement('thead');
-    const headRow = document.createElement('tr');
-    for (const text of ['代號', '名稱', '帳戶占比', '未實現報酬']) {
-        const cell = document.createElement('th');
-        cell.textContent = text;
-        headRow.append(cell);
-    }
-    head.append(headRow);
+    table.className = 'asset-preview-table asset-review-table';
     const body = document.createElement('tbody');
-    for (const holding of account.holdings) {
-        const row = document.createElement('tr');
-        for (const value of [holding.ticker, holding.name, `${holding.weight}%`, `${holding.profit >= 0 ? '+' : ''}${holding.profit.toFixed(1)}%`]) {
-            const cell = document.createElement('td');
-            cell.textContent = value;
-            row.append(cell);
+
+    for (const draft of assetScreenshotDraft.rows) {
+        body.append(makeAssetDraftRow(draft));
+    }
+
+    table.append(assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益']), body);
+
+    const actions = document.createElement('div');
+    actions.className = 'asset-editor-actions';
+    const apply = assetButton('套用到持倉', 'asset-primary-button');
+    apply.type = 'submit';
+    apply.disabled = assetsBusy;
+    actions.append(
+        assetButton('＋ 一列', 'asset-secondary-button', () => {
+            assetScreenshotDraft.rows = [...readAssetDraftRows(body), assetDraftRowFrom({})];
+            renderAssetsDashboard();
+        }),
+        assetButton('取消', 'asset-secondary-button', () => {
+            discardAssetScreenshotDraft();
+            assetActionNotice = '已取消這次截圖，持倉沒有變動。';
+            renderAssetsDashboard();
+        }),
+        apply);
+
+    review.addEventListener('submit', async event => {
+        event.preventDefault();
+        const rows = readAssetDraftRows(body).filter(row => row.ticker !== '' || row.name !== '');
+
+        if (rows.length === 0) {
+            assetActionNotice = '這張表沒有任何一列填了代號或名稱，沒有東西可以套用。';
+            renderAssetsDashboard();
+            return;
         }
-        row.lastElementChild.className = holding.profit >= 0 ? 'positive' : 'negative';
-        body.append(row);
-    }
-    if (account.holdings.length === 0) {
-        const row = document.createElement('tr');
-        const cell = document.createElement('td');
-        cell.colSpan = 4;
-        cell.textContent = '尚未建立持倉樣板；新增帳戶後可先用截圖流程確認未實現損益。';
-        row.append(cell);
-        body.append(row);
-    }
-    table.append(head, body);
-    section.append(table);
+
+        if (!window.confirm(`確定以這 ${rows.length} 列取代「${view.name}」目前的全部持倉？`)) {
+            return;
+        }
+
+        const accountId = view.id;
+        const done = await runAssetAction(
+            '寫入中…',
+            async () => {
+                await assetRemove(ASSET_HOLDINGS_TABLE, `?account_id=eq.${encodeURIComponent(accountId)}`);
+                await assetInsert(ASSET_HOLDINGS_TABLE, rows.map((row, index) => ({
+                    id: crypto.randomUUID(),
+                    account_id: accountId,
+                    ticker: row.ticker,
+                    name: row.name,
+                    quantity: assetNumber(row.quantity),
+                    cost: assetNumber(row.cost),
+                    market_value: assetNumber(row.marketValue),
+                    unrealized: assetNumber(row.unrealized),
+                    source: 'ocr',
+                    sort_order: index
+                })));
+                await assetUpdate(ASSET_ACCOUNTS_TABLE, accountId, {});
+            },
+            `已套用 ${rows.length} 筆持倉，資產表格同步更新。`);
+
+        if (done) {
+            discardAssetScreenshotDraft();
+            renderAssetsDashboard();
+        }
+    });
+
+    review.append(table, actions);
+    section.append(preview, caption, review);
     return section;
 }
 
-function makeAssetDashboard(user, accounts, summary) {
-    const content = document.createElement('div');
-    content.className = 'asset-dashboard-content';
-    const overview = document.createElement('div');
-    overview.className = 'asset-dashboard-overview';
-    overview.append(
-        makeAssetPreviewDonut(accounts, summary),
-        makeAssetPreviewChangeChart('資產總值變化（樣板）', '正式版應以每次確認寫入後的資料作為版本點，避免暫存截圖直接變成歷史。'));
-    const localNote = document.createElement('p');
-    localNote.className = 'asset-local-only-note';
-    localNote.textContent = '離線樣板：使用者、帳戶與已確認金額只保存在這個瀏覽器；不連券商、不把截圖上傳，也不寫入資料庫。';
-    content.append(overview, makeAssetPreviewAllocation(user, accounts), localNote);
-    return content;
-}
-
-function makeAssetAccountDetails(user, account) {
+function makeAssetAccountDetails(owner, view) {
     const content = document.createElement('div');
     content.className = 'asset-account-content';
     const heading = document.createElement('div');
     heading.className = 'asset-account-heading';
-    const returnButton = assetButton('← 返回 Dashboard', 'asset-secondary-button', returnToAssetDashboard);
     const copy = document.createElement('div');
     const title = document.createElement('h1');
-    title.textContent = account.name;
+    title.textContent = view.name || '（未命名帳戶）';
     const subtitle = document.createElement('p');
-    subtitle.textContent = `${user.name} · ${account.market} · ${account.broker} · 資料時間 ${account.updatedAt}`;
+    subtitle.textContent = [
+        owner.name,
+        view.market || '未填市場',
+        view.broker || '未填券商',
+        `資料時間 ${assetTimeText(view.updatedAt)}`
+    ].join(' · ');
     copy.append(title, subtitle);
-    heading.append(returnButton, copy);
+    heading.append(assetButton('← 返回 Dashboard', 'asset-secondary-button', returnToAssetDashboard), copy);
 
-    const summary = assetPreviewSummary([account]);
     const metrics = document.createElement('section');
     metrics.className = 'asset-preview-metrics asset-account-metrics';
     metrics.append(
-        makeAssetPreviewMetric('資產總值', assetPreviewCurrency(assetAccountTotal(account)), assetPreviewDelta(account.dayChange, '今日 ')),
-        makeAssetPreviewMetric('投入成本', assetPreviewCurrency(account.cost), document.createTextNode('樣板欄位，不代表成本基準')),
-        makeAssetPreviewMetric('未實現損益', assetPreviewSignedCurrency(summary.unrealized), assetPreviewDelta(summary.unrealized), summary.unrealized >= 0 ? 'positive' : 'negative'),
-        makeAssetPreviewMetric('累計已實現', assetPreviewSignedCurrency(account.realized), assetPreviewDelta(account.realized), account.realized >= 0 ? 'positive' : 'negative'));
+        assetMetric('資產總值', assetCurrency(view.totalValue),
+            document.createTextNode(
+                `持倉 ${assetCurrency(view.marketValue)} ＋ 現金 ${assetCurrency(view.cash)}`)),
+        assetMetric('投入成本', assetCurrency(view.cost),
+            document.createTextNode(`共 ${view.holdings.length} 筆持倉`)),
+        assetMetric('未實現損益', assetSignedCurrency(view.unrealized),
+            assetDelta(view.unrealized), assetSignClass(view.unrealized)),
+        assetMetric('累計已實現', assetSignedCurrency(view.realized),
+            assetDelta(view.realized), assetSignClass(view.realized)));
 
+    const notice = makeAssetNotice();
     const lower = document.createElement('div');
     lower.className = 'asset-account-lower';
-    lower.append(makeAssetPreviewHoldings(account), makeAssetScreenshotFlow(account));
-    content.append(
-        heading,
-        makeAssetPreviewChangeChart(`${account.name}：資產總值變化（樣板）`, '固定樣板柱狀資料僅供確認版面；正式版需由確認寫入的歷史版本產生。'),
-        metrics,
-        lower);
+    lower.append(makeAssetHoldings(view), makeAssetScreenshotFlow(view));
+    content.append(heading, metrics);
+
+    if (notice !== null) {
+        content.append(notice);
+    }
+
+    content.append(makeAssetAccountSettings(view), lower);
     return content;
+}
+
+function makeAssetMessage(text) {
+    const block = document.createElement('div');
+    block.className = 'asset-dashboard-content';
+    const card = document.createElement('section');
+    card.className = 'asset-dashboard-config-card';
+    const heading = document.createElement('h2');
+    heading.textContent = '資產';
+    const copy = document.createElement('p');
+    copy.className = 'asset-local-only-note';
+    copy.textContent = text;
+    card.append(heading, copy);
+
+    if (supabase !== null && assetsLoadError === null) {
+        const actions = document.createElement('div');
+        actions.className = 'asset-editor-actions';
+        actions.append(assetButton('＋ 新增使用者', 'asset-primary-button', () => openAssetEditor('owner')));
+        card.append(actions);
+
+        const notice = makeAssetNotice();
+
+        if (notice !== null) {
+            card.append(notice);
+        }
+
+        if (assetEditorMode === 'owner') {
+            card.append(makeAssetOwnerEditor());
+        }
+    }
+
+    block.append(card);
+    return block;
 }
 
 function renderAssetsDashboard() {
@@ -2692,23 +3635,39 @@ function renderAssetsDashboard() {
         return;
     }
 
-    const user = assetActiveUser();
-    if (user === null) {
+    if (assetsLoadError !== null) {
+        page.replaceChildren(makeAssetMessage(assetsLoadError));
         return;
     }
 
+    if (!assetsLoaded) {
+        page.replaceChildren(makeAssetMessage('資產載入中…'));
+        return;
+    }
+
+    const owner = assetActiveOwner();
+
+    if (owner === null) {
+        page.replaceChildren(makeAssetMessage('還沒有任何使用者。先建立一位，再幫他新增帳戶與持倉。'));
+        return;
+    }
+
+    assetSelectedOwnerId = owner.id;
+
     if (assetDashboardScreen === 'account') {
-        const account = assetFindAccount(assetSelectedAccountId, user);
+        const account = assetFindAccount(assetSelectedAccountId);
+
         if (account !== null) {
-            page.replaceChildren(makeAssetAccountDetails(user, account));
+            page.replaceChildren(makeAssetAccountDetails(owner, assetAccountView(account)));
             return;
         }
+
         assetDashboardScreen = 'dashboard';
         assetSelectedAccountId = '';
     }
 
-    const accounts = assetAccounts(user);
-    page.replaceChildren(makeAssetDashboard(user, accounts, assetPreviewSummary(accounts)));
+    const views = assetAccountsOf(owner.id).map(assetAccountView);
+    page.replaceChildren(makeAssetDashboard(owner, views, assetPortfolioSummary(views)));
 }
 
 // 鎖定的股號。追蹤中的標的即使掉出前 100 名也要看得到現在排第幾，進榜時整列標色。
@@ -3356,7 +4315,17 @@ function klineEndDate() {
 
 function klineStartDate(endDate) {
     const date = toDate(endDate);
+    const day = date.getDate();
+
+    // 先退到當月 1 號再退月份，最後才把日期夾回那個月真正有的最後一天。
+    // 直接 setMonth(getMonth() - 3) 會溢位：5/31 減三個月變成 3/3（3 月沒有 31 號，
+    // 多出來的天數往後推），而 C# 的 AddMonths(-3) 是夾成 2/28。兩邊的起算日差三天，
+    // 「資料不足」的提示就會該叫的時候不叫、或資料齊全卻亂叫。
+    date.setDate(1);
     date.setMonth(date.getMonth() - KLINE_MONTHS);
+
+    const lastDayOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    date.setDate(Math.min(day, lastDayOfMonth));
     return toKey(date);
 }
 
@@ -4112,7 +5081,7 @@ function renderRevenuePopover(ticker, name, anchor) {
     strong.textContent = `${ticker} ${name}`;
     const period = document.createElement('span');
     period.className = 'revenue-period';
-    period.textContent = LOCAL_REVENUE_PREVIEW ? '20 個月營收（本機樣板）' : '20 個月營收';
+    period.textContent = LOCAL_REVENUE_PREVIEW ? '20 個月營收（本機預覽）' : '20 個月營收';
     title.append(strong, period);
     const close = document.createElement('button');
     close.type = 'button';
@@ -4824,6 +5793,14 @@ function wireRefreshButton() {
                 // 使用者親手按的「檢查更新」要跳過新鮮度判斷，真的去問一次資料庫。
                 await loadIntraday(true, true);
                 status.textContent = current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料';
+                button.disabled = false;
+                return;
+            }
+
+            if (state.view === 'assets') {
+                await refreshAssets();
+                renderAssetsDashboard();
+                status.textContent = assetsLoadError ?? '已是最新';
                 button.disabled = false;
                 return;
             }
@@ -8014,6 +8991,12 @@ async function load() {
         el('notes-page').hidden = true;
         el('assets-page').hidden = false;
         renderAssetsDashboard();
+        await refreshAssets();
+
+        if (state.view === 'assets') {
+            renderAssetsDashboard();
+        }
+
         return;
     }
 
@@ -8138,13 +9121,16 @@ function renderSnapshotNote() {
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
 
     if (state.view === 'assets') {
-        el('snapshot-note').textContent = '瀏覽器樣板資料：不讀取真實帳戶、不上傳截圖，也不會寫入資產資料。';
+        el('snapshot-note').textContent = supabase === null
+            ? '資產需要資料庫連線；離線快照看不到資產。'
+            : `使用者、帳戶、現金與持倉存在資料庫，任何裝置打開網站都看得到並能編輯；`
+                + `這一頁停留時每 ${Math.round(ASSETS_REFRESH_MS / 1000)} 秒自動重讀一次。截圖只在瀏覽器內辨識，不會上傳保存。`;
         return;
     }
 
     if (state.view === 'notes') {
-        el('snapshot-note').textContent = ASSET_DASHBOARD_PREVIEW
-            ? '離線筆記樣本：用來確認永久編號版面，不會讀寫資料庫。'
+        el('snapshot-note').textContent = NOTES_LOCAL_PREVIEW
+            ? '本機預覽筆記：用來確認永久編號版面，不會讀寫資料庫。'
             : supabase === null
                 ? '筆記需要資料庫連線；離線快照看不到筆記。'
                 : `筆記存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(NOTES_REFRESH_MS / 1000)} 秒自動重讀一次。`;
@@ -8248,6 +9234,16 @@ function startIntradayTimer() {
             });
         }
 
+        // 資產同理，另外多一個條件：有表單開著就先不要重讀。
+        // 資產的表單沒有像筆記那樣的草稿機制，背景重畫會把正在打的數字清掉。
+        if (state.view === 'assets' && !document.hidden && assetsAreStale() && !assetsAreEditing()) {
+            void refreshAssets().then(() => {
+                if (state.view === 'assets') {
+                    renderAssetsDashboard();
+                }
+            });
+        }
+
         setTimeout(tickOnce, tick);
     };
 
@@ -8317,6 +9313,12 @@ async function start() {
 
     if (state.view === 'assets') {
         renderAssetsDashboard();
+        await refreshAssets();
+
+        if (state.view === 'assets') {
+            renderAssetsDashboard();
+        }
+
         return;
     }
 

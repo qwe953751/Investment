@@ -19,6 +19,22 @@ public static class RankingFormatter
             "N" + decimals.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
 
     /// <summary>
+    /// 帶正負號的億元。給「較前一交易日」這種增減金額用；
+    /// null 代表沒有可比的前一交易日，顯示破折號而不是 0。
+    /// </summary>
+    public static string ToSignedBillionText(decimal? valueInDollars, int decimals = 2)
+    {
+        if (valueInDollars is not { } value)
+        {
+            return "—";
+        }
+
+        var text = ToBillionText(value, decimals);
+
+        return value > 0m ? "+" + text : text;
+    }
+
+    /// <summary>
     /// 帶正負號的百分比。null 代表無法計算（例如前期為 0），顯示破折號而不是 0%。
     /// </summary>
     public static string ToSignedPercentText(decimal? rate, int decimals = 1)

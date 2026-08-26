@@ -206,7 +206,6 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
-        Assert.Contains("review-20260826-assets-v1", script, StringComparison.Ordinal);
         Assert.Contains("assetDashboardScreen = 'account'", script, StringComparison.Ordinal);
         Assert.Contains("← 返回 Dashboard", script, StringComparison.Ordinal);
         Assert.DoesNotContain("el('page-header').hidden = assetsView", script, StringComparison.Ordinal);
@@ -354,8 +353,56 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("function readNoteNumber(value)", script, StringComparison.Ordinal);
         Assert.Contains("number.textContent = note.noteNumber === null ? '#—' : `#${note.noteNumber}`", script, StringComparison.Ordinal);
         Assert.Contains("Prefer: 'return=representation'", script, StringComparison.Ordinal);
-        Assert.Contains("const persisted = { ...next, noteNumber }", script, StringComparison.Ordinal);
+        Assert.Contains("const persisted = { ...next, noteNumber: noteNumber ?? null }", script, StringComparison.Ordinal);
         Assert.Contains(".notes-list-item-number", styles, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 編號只認 null 當「還沒配到號」；一旦寫進 undefined，清單就會印出「#undefined」。
+    /// 儲存時要把既有編號帶進 next（回應是空的就退回它），最後再把 undefined 收成 null。
+    /// </summary>
+    [Fact]
+    public void 筆記儲存拿不到編號時退回null而不是undefined()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const existingNote = notes.find(note => note.id === id);", script, StringComparison.Ordinal);
+        Assert.Contains("noteNumber: existingNote?.noteNumber ?? null,", script, StringComparison.Ordinal);
+        Assert.Contains("return note.noteNumber ?? null;", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "return readNoteNumber(saved?.note_number) ?? note.noteNumber ?? null;",
+            script,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 日 K 的三個月起算日，兩邊要算出同一天。JS 的 setMonth 遇到 5/31 會溢位成 3/3，
+    /// C# 的 AddMonths(-3) 是夾成 2/28——差三天，「資料不足」的提示就會亂。
+    /// </summary>
+    [Fact]
+    public void 日K起算日跟著月底夾而不是讓月份溢位()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("function klineStartDate", StringComparison.Ordinal);
+        var end = script.IndexOf("function hasIncompleteKLineHistory", start, StringComparison.Ordinal);
+        var klineStart = script[start..end];
+
+        Assert.Contains("date.setDate(1);", klineStart, StringComparison.Ordinal);
+        Assert.Contains("date.setDate(Math.min(day, lastDayOfMonth));", klineStart, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 018 的 setval 在空表重跑時會退回 #1，和它自己寫的「刪除後不回收」打架；
+    /// 而且沒 grant 這條 sequence，新增筆記能配到號是靠 Supabase 的預設值。
+    /// </summary>
+    [Fact]
+    public void 筆記編號的sequence有明確授權且不會退回一號()
+    {
+        var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "020_notes_number_fix.sql"));
+
+        Assert.Contains("grant usage, select on sequence notes_note_number_seq to anon;", migration, StringComparison.Ordinal);
+        Assert.Contains("last_issued > 0", migration, StringComparison.Ordinal);
+        Assert.Contains("case when is_called then last_value else last_value - 1 end", migration, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -478,32 +525,92 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange)", customColumns, StringComparison.Ordinal);
     }
 
-    // 持倉管理仍不在正式靜態站的功能範圍。資產 Dashboard 只在最高權限樣板顯示，
-    // 資料只存這台瀏覽器、截圖不會上傳；檢視權限不能透過 view 參數開啟。
+    // 資產頁只在最高權限網址出現，檢視權限不能透過 view 參數開啟。
+    // 金額存資料庫，但原始截圖不存：辨識在瀏覽器裡跑完就把 blob 收掉。
     [Fact]
-    public void 資產Dashboard只在最高權限出現且資料留在瀏覽器()
+    public void 資產頁只在最高權限出現且不保存原始截圖()
     {
         var html = ReadAsset("index.html");
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
         Assert.Contains("const ASSET_DASHBOARD_ENABLED = SITE_ACCESS !== 'viewer';", script, StringComparison.Ordinal);
-        Assert.Contains("const prototypeViews = ASSET_DASHBOARD_ENABLED", script, StringComparison.Ordinal);
-        Assert.Contains("review-20260826-assets-v1", script, StringComparison.Ordinal);
-        Assert.Contains("['localhost', '127.0.0.1']", script, StringComparison.Ordinal);
+        Assert.Contains("const workspaceViews = ASSET_DASHBOARD_ENABLED", script, StringComparison.Ordinal);
         Assert.Contains("VIEWS.filter(view => view.key !== 'assets')", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("const prototypeViews = ASSET_DASHBOARD_PREVIEW", script, StringComparison.Ordinal);
-        Assert.Contains("ASSET_PREVIEW_STORAGE_KEY", script, StringComparison.Ordinal);
-        Assert.Contains("localStorage.setItem(ASSET_PREVIEW_STORAGE_KEY", script, StringComparison.Ordinal);
         Assert.Contains("＋ 新增使用者", script, StringComparison.Ordinal);
         Assert.Contains("＋ 新增帳戶", script, StringComparison.Ordinal);
         Assert.Contains("input.type = 'file'", script, StringComparison.Ordinal);
-        Assert.Contains("套用未實現損益", script, StringComparison.Ordinal);
-        Assert.Contains("不會上傳或保存", script, StringComparison.Ordinal);
+        Assert.Contains("套用到持倉", script, StringComparison.Ordinal);
+        Assert.Contains("不會上傳、也不會保存", script, StringComparison.Ordinal);
+
+        // 離開資產頁一定要 revoke，否則 blob 會一路留到重新整理。
+        Assert.Contains("URL.revokeObjectURL(assetScreenshotDraft.previewUrl)", script, StringComparison.Ordinal);
+        Assert.Contains("if (!assetsView) {\n        discardAssetScreenshotDraft();", NormalizeNewlines(script), StringComparison.Ordinal);
+
         Assert.Contains("id=\"assets-page\"", html, StringComparison.Ordinal);
-        Assert.Contains("資產 Dashboard 瀏覽器樣板", html, StringComparison.Ordinal);
+        Assert.Contains("aria-label=\"資產總覽\"", html, StringComparison.Ordinal);
         Assert.Contains(".assets-page", styles, StringComparison.Ordinal);
     }
+
+    // 資產從 localStorage 搬到 Supabase 的驗收條件：三張表都要讀、都要能寫，
+    // 而且不能再有任何一條路徑把使用者或帳戶留在瀏覽器裡。
+    [Fact]
+    public void 資產讀寫Supabase三張表而不是瀏覽器儲存()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const ASSET_OWNERS_TABLE = 'asset_owners';", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_ACCOUNTS_TABLE = 'asset_accounts';", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_HOLDINGS_TABLE = 'asset_holdings';", script, StringComparison.Ordinal);
+        Assert.Contains("fetchAllRows(\n            ASSET_OWNERS_TABLE", NormalizeNewlines(script), StringComparison.Ordinal);
+        Assert.Contains("assetInsert(ASSET_OWNERS_TABLE", script, StringComparison.Ordinal);
+        Assert.Contains("assetInsert(ASSET_ACCOUNTS_TABLE", script, StringComparison.Ordinal);
+        Assert.Contains("assetInsert(ASSET_HOLDINGS_TABLE", script, StringComparison.Ordinal);
+        Assert.Contains("assetUpdate(ASSET_ACCOUNTS_TABLE", script, StringComparison.Ordinal);
+        Assert.Contains("assetRemove(ASSET_HOLDINGS_TABLE", script, StringComparison.Ordinal);
+
+        // 瀏覽器儲存只留給鎖定股號與檢視偏好，資產一個字都不能碰。
+        Assert.DoesNotContain("assetPrototypeData", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("ASSET_PREVIEW_STORAGE_KEY", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("ASSET_PREVIEW_ACCOUNTS", script, StringComparison.Ordinal);
+    }
+
+    // 帳戶層不存加總欄位（見 db/019_assets.sql 檔頭）：市值與未實現只能從持倉算，
+    // 否則截圖更新了持倉、帳戶那份卻沒跟著改，兩個數字就對不起來。
+    [Fact]
+    public void 資產頁的帳戶金額一律由持倉加總而不是另存一份()
+    {
+        var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "019_assets.sql"));
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("references asset_accounts (id) on delete cascade", migration, StringComparison.Ordinal);
+        Assert.Contains("references asset_owners (id) on delete cascade", migration, StringComparison.Ordinal);
+        var accountsStart = migration.IndexOf("create table if not exists asset_accounts", StringComparison.Ordinal);
+        var accountsTable = migration[accountsStart..migration.IndexOf(");", accountsStart, StringComparison.Ordinal)];
+        Assert.DoesNotContain("market_value", accountsTable, StringComparison.Ordinal);
+        Assert.DoesNotContain("unrealized", accountsTable, StringComparison.Ordinal);
+
+        Assert.Contains("const cost = assetSum(holdings, holding => holding.cost);", script, StringComparison.Ordinal);
+        Assert.Contains("const marketValue = assetSum(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
+        Assert.Contains("totalValue: (marketValue ?? 0) + account.cash", script, StringComparison.Ordinal);
+    }
+
+    // 大標題不再叫「資產 Dashboard（瀏覽器樣板）」，整個靜態站也不該再有樣板字眼。
+    [Fact]
+    public void 資產頁不再自稱樣板()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("assets: '資產總覽'", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("樣板", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("樣板", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("樣板", styles, StringComparison.Ordinal);
+    }
+
+    private static string NormalizeNewlines(string text)
+        => text.Replace("\r\n", "\n", StringComparison.Ordinal);
 
     [Fact]
     public void 指數摘要同時顯示日與今年漲跌幅且支援舊盤中欄位()
@@ -789,6 +896,77 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("'visibilitychange', 'focus', 'pageshow', 'online'", script, StringComparison.Ordinal);
         Assert.Contains("function intradayAgeText()", script, StringComparison.Ordinal);
         Assert.DoesNotContain("setInterval(", script, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 辨識程式與繁中字庫都得跟著組件內嵌出去，靜態站才自己夠用。
+    /// 少了任何一個，資產頁按下上傳之後只會停在「載入辨識引擎」。
+    /// </summary>
+    [Fact]
+    public void 截圖辨識需要的檔案都會跟著靜態站匯出()
+    {
+        var assembly = typeof(StaticSiteExporter).Assembly;
+        var resources = assembly.GetManifestResourceNames();
+
+        foreach (var fileName in new[]
+                 {
+                     "tesseract.min.js",
+                     "tesseract-worker.min.js",
+                     "tesseract-core-simd-lstm.wasm.js",
+                     "chi_tra.traineddata"
+                 })
+        {
+            Assert.Contains($"Invest.Web.Infrastructure.StaticSite.Assets.{fileName}", resources);
+        }
+    }
+
+    /// <summary>
+    /// 這一頁對使用者的承諾是「截圖只在瀏覽器裡辨識，不會上傳」。辨識程式一旦改成
+    /// 從 CDN 即時拉，那句話就降級成「相信那個 CDN」——截圖正是這頁最敏感的東西。
+    /// </summary>
+    [Fact]
+    public void 截圖辨識一律用站內自己的檔案不連外部CDN()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("assetSiteUrl('tesseract.min.js')", script, StringComparison.Ordinal);
+        Assert.Contains("workerPath: assetSiteUrl('tesseract-worker.min.js')", script, StringComparison.Ordinal);
+        Assert.Contains("corePath: assetSiteUrl('tesseract-core-simd-lstm.wasm.js')", script, StringComparison.Ordinal);
+        Assert.Contains("langPath: assetSiteUrl('.')", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("cdn.jsdelivr.net", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("unpkg.com", script, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 「成本價／均價」是每股單價，資料庫的 cost 是總投入成本。直接抄過去，
+    /// 帳戶的投入成本會變成幾百塊，而且比對不出來——所以要乘上股數。
+    /// </summary>
+    [Fact]
+    public void 截圖辨識把每股單價乘上股數才當成本與市值()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const ASSET_OCR_UNIT_PRICES = { costPrice: 'cost', marketPrice: 'marketValue' };", script, StringComparison.Ordinal);
+        Assert.Contains("draft[total] = Math.round(prices[price] * quantity * 100) / 100;", script, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 認不出欄位標題就只填代號與名稱。照數字出現順序硬猜哪個是成本、哪個是市值，
+    /// 會把一個看起來很正常卻是錯的金額寫進資料庫——那比空白難發現得多。
+    /// </summary>
+    [Fact]
+    public void 截圖辨識認不出欄位標題時不硬猜金額()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("matchedHeader", script, StringComparison.Ordinal);
+        Assert.Contains("沒認出欄位標題", script, StringComparison.Ordinal);
+
+        // 沒有欄位時 field 是 null，最後那個「填進 draft」的判斷就進不去。
+        Assert.Contains(
+            "if (field !== null && field !== 'ticker' && field !== 'name' && draft[field] === '') {",
+            script,
+            StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()

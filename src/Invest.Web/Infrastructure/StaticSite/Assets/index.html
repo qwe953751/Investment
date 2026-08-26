@@ -10,7 +10,7 @@
 </head>
 <body>
 <div class="ranking-page">
-    <header class="page-header" id="page-header">
+    <header class="page-header">
         <div class="page-title">
             <h1 id="page-heading">個股成交值排行</h1>
             <button type="button" class="refresh-button" id="refresh"
@@ -53,7 +53,8 @@
             這代表任何知道網址的人都能改筆記，公開網站沒有登入邊界，這是刻意的取捨。
         </p>
         <p data-view="assets">
-            瀏覽器樣板：使用者與帳戶資料只保存在目前瀏覽器；截圖不會上傳，未實現損益須先由你確認才會更新樣板表格。
+            自己維護的帳戶與持倉。使用者、帳戶、現金與持倉存在資料庫，換一台裝置打開這個網址就看得到；
+            券商截圖只在瀏覽器內辨識，不會上傳保存，辨識結果要你核對過才會寫進持倉。
         </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
     </header>
@@ -150,8 +151,8 @@
         <section class="topic-panel" id="topic-panel"></section>
     </div>
 
-    <!-- 資產頁只在最高權限樣板顯示；資料仍只保存在目前瀏覽器，不接真實帳戶。 -->
-    <section class="assets-page" id="assets-page" aria-label="資產 Dashboard 瀏覽器樣板" hidden></section>
+    <!-- 資產頁只在最高權限網址顯示；資料存在 Supabase，不接券商、不存帳號密碼與原始截圖。 -->
+    <section class="assets-page" id="assets-page" aria-label="資產總覽" hidden></section>
 
     <section class="notes-page" id="notes-page" aria-labelledby="notes-page-title" hidden>
         <div class="notes-toolbar">

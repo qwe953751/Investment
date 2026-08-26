@@ -138,12 +138,17 @@
                     </div>
 
                     <div class="market-heat-meta">
-                        <div><span>交易日</span><strong>@heat.TradingDate.ToString("yyyy/MM/dd")</strong></div>
-                        <div><span>資料時間</span><strong>盤後資料</strong></div>
-                        <div><span>時段進度</span><strong>已收盤</strong></div>
+                        <div><span>交易日</span><span class="market-heat-meta-value"><strong>@heat.TradingDate.ToString("yyyy/MM/dd")</strong></span></div>
+                        <div><span>資料時間</span><span class="market-heat-meta-value"><strong>盤後資料</strong></span></div>
+                        <div><span>時段進度</span><span class="market-heat-meta-value"><strong>已收盤</strong></span></div>
                         <div>
-                            <span data-hint="全市場成交額是上市與上櫃一般交易的正式合計；盤後不與前一交易日比較。">全市場成交額</span>
-                            <strong>@HeatTurnoverText(heat.MarketTurnover) 億元</strong>
+                            <span data-hint="全市場成交額是上市與上櫃一般交易的正式合計；下方比較正式成交額相較前一交易日的增減率與增減金額。">全市場成交額</span>
+                            <span class="market-heat-meta-value">
+                                <strong>@HeatTurnoverText(heat.MarketTurnover) 億元</strong>
+                                <small class="market-heat-meta-detail @RankingFormatter.ToTrendCssClass(heat.MarketTurnoverChangeRate)">
+                                    @HeatTurnoverChangeText(heat)
+                                </small>
+                            </span>
                         </div>
                     </div>
                 </section>
@@ -617,6 +622,16 @@
 
     private static string HeatTurnoverText(decimal? turnover)
         => turnover is { } value ? RankingFormatter.ToBillionText(value, 2) : "—";
+
+    /// <summary>
+    /// 全市場成交額「較前一交易日」的增減。靜態站 site.js 的 addMeta 也印同一句話，
+    /// 兩邊要一起改，不然同一份資料在兩個畫面會講不一樣的內容。
+    /// </summary>
+    private static string HeatTurnoverChangeText(MarketHeatMetrics heat)
+        => (heat.MarketTurnoverChangeRate, heat.MarketTurnoverChange) is ({ } rate, { } change)
+            ? $"較前一交易日 {RankingFormatter.ToSignedPercentText(rate, 1)}"
+                + $"（{RankingFormatter.ToSignedBillionText(change)} 億元）"
+            : "較前一交易日 —";
 
     private static decimal? IndexChangeRate(MarketIndexQuote? index)
         => index?.ChangePercent is { } changePercent ? changePercent / 100m : null;
