@@ -12,6 +12,7 @@
 
 create table if not exists notes (
     id          uuid primary key default gen_random_uuid(),
+    note_number bigint,
     title       text not null default '',
     category    text not null default '功能' check (category in ('功能', 'Bug', '待驗證', '完成')),
     status      text not null default '待處理' check (status in ('待處理', '處理中', '待確認', '已完成')),

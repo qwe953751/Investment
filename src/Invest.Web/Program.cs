@@ -1113,7 +1113,9 @@ static async Task RunBackfillAsync(IServiceProvider services, string[] args)
 
 static async Task RunDailyBarBackfillAsync(IServiceProvider services, string[] args)
 {
-    var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 90;
+    // 靜態站可往回看 120 個基準日；日 K 還要再往前取三個月，
+    // 所以預設跟行情資料窗一致保留 300 個交易日，不能只補最近 90 天。
+    var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 300;
     var startFrom = args.Length > 2 && DateOnly.TryParse(args[2], out var parsedDate)
         ? parsedDate
         : DateOnly.FromDateTime(DateTime.Today);

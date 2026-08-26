@@ -16,10 +16,15 @@
 
     @if (Candles.Count == 0)
     {
-        <p class="daily-kline-empty">目前沒有完整的三個月日 K，請先執行 <code>backfill-bars 90</code>。</p>
+        <p class="daily-kline-empty">目前沒有完整的三個月日 K，請先執行 <code>backfill-bars 300</code>。</p>
     }
     else
     {
+        @if (HasIncompleteHistory)
+        {
+            <p class="daily-kline-coverage">此檔日 K 資料目前從 @StartDateText 起，尚不足所選交易日前三個月；圖表只顯示可用區間。</p>
+        }
+
         <div class="daily-kline-legend" aria-label="移動平均線圖例">
             <span class="ma5">MA5</span>
             <span class="ma10">MA10</span>
@@ -136,8 +141,14 @@
 
     private string StartDateText
         => Candles.Count == 0
-            ? EndDate.AddMonths(-3).ToString("yyyy/MM/dd")
+            ? RequestedStartDate.ToString("yyyy/MM/dd")
             : Candles[0].Date.ToString("yyyy/MM/dd");
+
+    private DateOnly RequestedStartDate => EndDate.AddMonths(-3);
+
+    // 起算日的週末與連假不算缺漏；超過一週才顯示「可用日 K 不足」提示。
+    private bool HasIncompleteHistory
+        => Candles.Count > 0 && Candles[0].Date > RequestedStartDate.AddDays(7);
 
     private string MoneyDjUrl
         => $"https://www.moneydj.com/Z/ZC/ZCX/ZCX_{Uri.EscapeDataString(Ticker.Trim())}.djhtm";

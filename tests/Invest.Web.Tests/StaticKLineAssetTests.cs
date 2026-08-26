@@ -178,6 +178,26 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 資產Dashboard離線樣板沒有上方選單且帳戶名稱切換明細()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("review-20260826-assets-v1", script, StringComparison.Ordinal);
+        Assert.Contains("assetDashboardScreen = 'account'", script, StringComparison.Ordinal);
+        Assert.Contains("← 返回 Dashboard", script, StringComparison.Ordinal);
+        Assert.Contains("el('page-header').hidden = assetsView", script, StringComparison.Ordinal);
+        Assert.Contains("asset-account-link", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("ASSET_DASHBOARD_VARIANTS", script, StringComparison.Ordinal);
+        Assert.Contains("id=\"assets-page\"", html, StringComparison.Ordinal);
+        Assert.Contains(".asset-dashboard-overview", styles, StringComparison.Ordinal);
+        Assert.Contains(".asset-account-content", styles, StringComparison.Ordinal);
+        Assert.Contains("background: #ffffff", styles, StringComparison.Ordinal);
+        Assert.Contains(".asset-dashboard-donut-inside", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 日K只接受已標記為向前還原權息的每檔資料()
     {
         var script = ReadAsset("site.js");
@@ -199,6 +219,19 @@ public sealed class StaticKLineAssetTests
             script,
             StringComparison.Ordinal);
         Assert.DoesNotContain(".slice(-3)", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 日K資料不足時標題顯示實際起日並明確提示()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("function hasIncompleteKLineHistory", script, StringComparison.Ordinal);
+        Assert.Contains("const actualStartDate = bars[0]?.date ?? requestedStartDate;", script, StringComparison.Ordinal);
+        Assert.Contains("此檔日 K 資料目前從", script, StringComparison.Ordinal);
+        Assert.Contains("圖表只顯示可用區間", script, StringComparison.Ordinal);
+        Assert.Contains(".daily-kline-coverage", styles, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -284,6 +317,20 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("let notesStatusFilter = 'all'", script, StringComparison.Ordinal);
         Assert.Contains("const statusMatches = notesStatusFilter === 'all' || note.status === notesStatusFilter;", script, StringComparison.Ordinal);
         Assert.Contains("return categoryMatches && statusMatches && textMatches;", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 筆記清單顯示資料庫永久編號且新增不由前端配號()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("note_number", script, StringComparison.Ordinal);
+        Assert.Contains("function readNoteNumber(value)", script, StringComparison.Ordinal);
+        Assert.Contains("number.textContent = note.noteNumber === null ? '#—' : `#${note.noteNumber}`", script, StringComparison.Ordinal);
+        Assert.Contains("Prefer: 'return=representation'", script, StringComparison.Ordinal);
+        Assert.Contains("const persisted = { ...next, noteNumber }", script, StringComparison.Ordinal);
+        Assert.Contains(".notes-list-item-number", styles, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -393,21 +440,28 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange)", customColumns, StringComparison.Ordinal);
     }
 
-    // 原本這裡還擋「Google Sheet」這幾個字，因為當初的持倉樣板是唯一提到它的地方，
-    // 拿字串當代號比較省事。族群分類上線之後，族群樹與概念股成員真的是從 Google Sheet
-    // 讀進來的，說明文字非提不可，那個代號就失效了——改回只擋持倉樣板本身。
+    // 持倉管理仍不在正式靜態站的功能範圍。唯一例外是指定 localhost 預覽網址上的
+    // 離線設計稿：資料只存這台瀏覽器、截圖不會上傳，不能在正式網址透過 view 參數開啟。
     [Fact]
-    public void 靜態站不再包含持倉樣板()
+    public void 資產設計樣板只在指定本機預覽出現()
     {
         var html = ReadAsset("index.html");
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
-        Assert.DoesNotContain("持倉", html, StringComparison.Ordinal);
-        Assert.DoesNotContain("portfolio", html, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("持倉", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("portfolio", script, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("portfolio", styles, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ASSET_DASHBOARD_PREVIEW", script, StringComparison.Ordinal);
+        Assert.Contains("review-20260826-assets-v1", script, StringComparison.Ordinal);
+        Assert.Contains("['localhost', '127.0.0.1']", script, StringComparison.Ordinal);
+        Assert.Contains("VIEWS.filter(view => view.key !== 'assets')", script, StringComparison.Ordinal);
+        Assert.Contains("ASSET_PREVIEW_STORAGE_KEY", script, StringComparison.Ordinal);
+        Assert.Contains("localStorage.setItem(ASSET_PREVIEW_STORAGE_KEY", script, StringComparison.Ordinal);
+        Assert.Contains("＋ 新增使用者", script, StringComparison.Ordinal);
+        Assert.Contains("＋ 新增帳戶", script, StringComparison.Ordinal);
+        Assert.Contains("input.type = 'file'", script, StringComparison.Ordinal);
+        Assert.Contains("套用未實現損益", script, StringComparison.Ordinal);
+        Assert.Contains("不會上傳或保存", script, StringComparison.Ordinal);
+        Assert.Contains("id=\"assets-page\"", html, StringComparison.Ordinal);
+        Assert.Contains(".assets-page", styles, StringComparison.Ordinal);
     }
 
     [Fact]

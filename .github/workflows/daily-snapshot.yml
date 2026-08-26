@@ -110,11 +110,12 @@ jobs:
               sleep 600
           done
 
-      # 新增日 K 後，既有快取只缺開高低欄位；這一步只補最近約三個月，
-      # 不重算成交值，也不重新下載整份歷史行情。之後新日期由 backfill 直接帶入。
-      - name: 補抓三個月日 K
+      # 靜態站可選最近 120 個交易日，任一檢視日都要再向前畫三個月日 K。
+      # 因此回補範圍要與本輪行情資料窗相同（預設 300），不能只補最近 90 天；
+      # 已完整的日期會略過，不重算成交值，也不重新下載整份歷史行情。
+      - name: 補抓完整資料窗日 K
         if: ${{ inputs.publish-only != true }}
-        run: dotnet run -c Release --project src/Invest.Web -- backfill-bars 90
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-bars "$TRADING_DAYS"
 
       - name: 保存行情快取
         if: ${{ inputs.publish-only != true }}

@@ -648,10 +648,27 @@ body {
     justify-content: space-between;
 }
 
+.notes-list-item-identity {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.notes-list-item-number {
+    flex: 0 0 auto;
+    min-width: 32px;
+    color: #667085;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+
 .notes-list-item-title {
     overflow: hidden;
     color: #344054;
     font-size: 15px;
+    flex: 1 1 auto;
+    min-width: 0;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -795,6 +812,453 @@ body {
 .notes-save-status {
     color: #067647 !important;
     font-size: 12px !important;
+}
+
+/* 資產 Dashboard 是指定 localhost 預覽網址才會出現的離線樣板。
+   它不會把使用者、帳戶、金額或截圖交給公開網站。 */
+.assets-page {
+    margin-top: 0;
+}
+
+.asset-dashboard-content,
+.asset-account-content {
+    display: grid;
+    gap: 14px;
+}
+
+.asset-dashboard-overview {
+    display: grid;
+    grid-template-columns: minmax(420px, .78fr) minmax(0, 1.82fr);
+    gap: 18px;
+}
+
+.asset-dashboard-donut-card,
+.asset-dashboard-change-card,
+.asset-dashboard-config-card,
+.asset-account-holdings,
+.asset-screenshot-flow {
+    min-width: 0;
+    border: 1px solid #d6deea;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.asset-dashboard-donut-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    min-height: 280px;
+    padding: 22px;
+    background: #ffffff;
+}
+
+.asset-dashboard-donut {
+    position: relative;
+    display: grid;
+    width: min(170px, 52vw);
+    height: min(170px, 52vw);
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%);
+}
+
+.asset-dashboard-donut-inside {
+    display: grid;
+    width: 58%;
+    height: 58%;
+    align-content: center;
+    justify-items: center;
+    gap: 5px;
+    border-radius: 50%;
+    background: #ffffff;
+    color: #1d2939;
+    text-align: center;
+}
+
+.asset-dashboard-donut-inside span:first-child {
+    color: #667085;
+    font-size: 13px;
+}
+
+.asset-dashboard-donut-inside strong {
+    font-size: 18px;
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-dashboard-donut-inside .asset-preview-delta {
+    font-size: 12px;
+}
+
+.asset-dashboard-legend {
+    display: grid;
+    min-width: 185px;
+    gap: 10px;
+    color: #1d2939;
+    font-size: 13px;
+}
+
+.asset-dashboard-legend div {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+}
+
+.asset-dashboard-legend i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+}
+
+.asset-dashboard-legend span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-dashboard-legend strong {
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-dashboard-change-card {
+    padding: 20px 16px 12px;
+}
+
+.asset-dashboard-change-card h2,
+.asset-dashboard-config-card h2,
+.asset-account-holdings h2 {
+    margin: 0;
+    color: #1d2939;
+    font-size: 18px;
+}
+
+.asset-dashboard-change-card > p,
+.asset-screenshot-flow > p,
+.asset-account-heading p {
+    margin: 6px 0 0;
+    color: #667085;
+    font-size: 13px;
+    line-height: 1.55;
+}
+
+.asset-dashboard-bars {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(42px, 1fr));
+    align-items: end;
+    gap: 18px;
+    height: 214px;
+    padding: 12px 10px 0;
+    margin-top: 12px;
+    border-bottom: 1px solid #d6deea;
+    background: linear-gradient(to bottom, transparent 49.5%, #eff3f8 50%, transparent 50.5%);
+}
+
+.asset-dashboard-bar-item {
+    display: grid;
+    height: 100%;
+    grid-template-rows: 1fr auto;
+    align-items: end;
+    justify-items: center;
+    gap: 8px;
+    color: #667085;
+}
+
+.asset-dashboard-bar-item > span {
+    display: block;
+    width: min(34px, 100%);
+    height: var(--asset-bar-height);
+    align-self: end;
+    border-radius: 5px 5px 0 0;
+}
+
+.asset-dashboard-bar-item > span.positive {
+    background: #f0b1b3;
+}
+
+.asset-dashboard-bar-item > span.negative {
+    background: #a8d8bf;
+}
+
+.asset-dashboard-bar-item small {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-dashboard-config-card {
+    padding: 22px 28px 26px;
+}
+
+.asset-dashboard-config-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+}
+
+.asset-dashboard-user-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.asset-dashboard-user-controls label {
+    color: #667085;
+    font-size: 13px;
+}
+
+.asset-dashboard-user-controls select,
+.asset-editor-form input,
+.asset-editor-form select,
+.asset-screenshot-review input {
+    min-height: 38px;
+    padding: 7px 10px;
+    border: 1px solid #b7c0ce;
+    border-radius: 6px;
+    background: #fff;
+    color: #1d2939;
+    font: inherit;
+}
+
+.asset-button {
+    min-height: 38px;
+    padding: 7px 12px;
+    border: 1px solid #aeb8c8;
+    border-radius: 7px;
+    background: #fff;
+    color: #344054;
+    font: inherit;
+    cursor: pointer;
+}
+
+.asset-button:hover,
+.asset-button:focus-visible {
+    border-color: #5c8ed9;
+    background: #f4f8ff;
+}
+
+.asset-primary-button {
+    border-color: #242424;
+    background: #242424;
+    color: #fff;
+}
+
+.asset-primary-button:hover,
+.asset-primary-button:focus-visible {
+    border-color: #0d0d0d;
+    background: #0d0d0d;
+}
+
+.asset-secondary-button {
+    background: #fff;
+}
+
+.asset-account-link {
+    min-height: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: #1d2939;
+    font-weight: 700;
+    text-align: left;
+}
+
+.asset-account-link:hover,
+.asset-account-link:focus-visible {
+    background: transparent;
+    color: #175cd3;
+    text-decoration: underline;
+}
+
+.asset-action-notice {
+    margin: 13px 0 0;
+    color: #067647;
+    font-size: 13px;
+}
+
+.asset-preview-table {
+    width: 100%;
+    margin-top: 16px;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.asset-preview-table th,
+.asset-preview-table td {
+    padding: 12px 14px;
+    border-bottom: 1px solid #e4e9f0;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.asset-preview-table th {
+    background: #f2f5f9;
+    color: #475467;
+    font-weight: 600;
+}
+
+.asset-preview-table th:first-child,
+.asset-preview-table td:first-child,
+.asset-preview-table th:nth-child(2),
+.asset-preview-table td:nth-child(2) {
+    text-align: left;
+}
+
+.asset-editor-panel {
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px dashed #98a2b3;
+    border-radius: 8px;
+    background: #f8fafc;
+}
+
+.asset-editor-panel h3,
+.asset-screenshot-flow h3 {
+    margin: 0;
+    color: #1d2939;
+    font-size: 16px;
+}
+
+.asset-editor-form {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.asset-editor-form label,
+.asset-screenshot-review label {
+    display: grid;
+    gap: 6px;
+    color: #475467;
+    font-size: 13px;
+}
+
+.asset-editor-actions {
+    display: flex;
+    align-items: end;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.asset-local-only-note {
+    margin: 0;
+    color: #667085;
+    font-size: 13px;
+    line-height: 1.55;
+}
+
+.asset-account-heading {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.asset-account-heading h1 {
+    margin: 0;
+    color: #1d2939;
+    font-size: 26px;
+}
+
+.asset-account-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.asset-preview-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.asset-preview-metric {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 7px;
+    padding: 14px;
+    border: 1px solid #d9dee8;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.asset-preview-metric-label,
+.asset-preview-metric-detail {
+    color: #667085;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.asset-preview-metric-value {
+    overflow: hidden;
+    color: #1d2939;
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-preview-delta {
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-account-lower {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr);
+    gap: 18px;
+}
+
+.asset-account-holdings,
+.asset-screenshot-flow {
+    padding: 20px;
+}
+
+.asset-screenshot-flow {
+    display: grid;
+    align-content: start;
+    gap: 12px;
+    background: #fbfcfe;
+}
+
+.asset-file-input {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px dashed #98a2b3;
+    border-radius: 8px;
+    background: #fff;
+    color: #344054;
+    cursor: pointer;
+}
+
+.asset-file-input input {
+    width: 100%;
+    font: inherit;
+}
+
+.asset-screenshot-preview {
+    width: 100%;
+    max-height: 260px;
+    object-fit: contain;
+    border: 1px solid #d6deea;
+    border-radius: 8px;
+    background: #fff;
+}
+
+.asset-screenshot-caption {
+    margin: 0 !important;
+    color: #667085;
+    font-size: 12px !important;
+}
+
+.asset-screenshot-review {
+    display: grid;
+    gap: 10px;
 }
 
 .checkbox-row {
@@ -1836,6 +2300,12 @@ td.stock-name.stock-name-change-down {
     font-size: 13px;
 }
 
+.daily-kline-coverage {
+    margin: 8px 0 3px;
+    color: #8a5a00;
+    font-size: 12px;
+}
+
 .revenue-card {
     padding: 12px 14px;
     background: white;
@@ -2110,6 +2580,19 @@ td.stock-name.stock-name-change-down {
 /* 手機版：整頁縮排收窄，篩選改成上下堆疊，表格靠左右滑動看。
    代號與名稱兩欄釘在左邊，橫向捲動時才知道現在看的是哪一檔。 */
 @media (max-width: 1100px) {
+    .asset-dashboard-overview {
+        grid-template-columns: minmax(320px, .9fr) minmax(0, 1.1fr);
+    }
+
+    .asset-preview-metrics,
+    .asset-account-metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .asset-account-lower {
+        grid-template-columns: 1fr;
+    }
+
     .market-heat-panel {
         grid-template-columns: minmax(240px, 1.15fr) minmax(175px, .85fr) minmax(175px, .85fr);
     }
@@ -2126,6 +2609,49 @@ td.stock-name.stock-name-change-down {
 @media (max-width: 720px) {
     .ranking-page {
         padding: 16px 12px 32px;
+    }
+
+    .asset-dashboard-overview,
+    .asset-dashboard-config-heading,
+    .asset-account-heading {
+        grid-template-columns: 1fr;
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .asset-dashboard-donut-card {
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .asset-dashboard-legend {
+        width: 100%;
+    }
+
+    .asset-dashboard-user-controls {
+        justify-content: flex-start;
+    }
+
+    .asset-dashboard-config-card,
+    .asset-account-holdings,
+    .asset-screenshot-flow {
+        padding: 16px;
+    }
+
+    .asset-editor-form,
+    .asset-preview-metrics,
+    .asset-account-metrics {
+        grid-template-columns: 1fr;
+    }
+
+    .asset-editor-actions {
+        justify-content: flex-start;
+    }
+
+    .asset-preview-table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
     }
 
     .page-header h1 {

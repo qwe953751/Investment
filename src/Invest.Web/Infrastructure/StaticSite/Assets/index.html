@@ -10,7 +10,7 @@
 </head>
 <body>
 <div class="ranking-page">
-    <header class="page-header">
+    <header class="page-header" id="page-header">
         <div class="page-title">
             <h1 id="page-heading">個股成交值排行</h1>
             <button type="button" class="refresh-button" id="refresh"
@@ -51,6 +51,9 @@
         <p data-view="notes">
             記錄功能想法、Bug 與待驗證項目。筆記直接存在資料庫，任何裝置打開這個網址都看得到、也能編輯——
             這代表任何知道網址的人都能改筆記，公開網站沒有登入邊界，這是刻意的取捨。
+        </p>
+        <p data-view="assets">
+            離線樣板：使用者與帳戶資料只保存在目前瀏覽器；截圖不會上傳，未實現損益須先由你確認才會更新樣板表格。
         </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
     </header>
@@ -146,6 +149,9 @@
         <div class="view-switch topic-switch" id="topic-tab-options"></div>
         <section class="topic-panel" id="topic-panel"></section>
     </div>
+
+    <!-- 資產功能尚在設計確認階段。只有指定的本機 preview 才會由 site.js 顯示內容。 -->
+    <section class="assets-page" id="assets-page" aria-label="資產 Dashboard 離線設計樣板" hidden></section>
 
     <section class="notes-page" id="notes-page" aria-labelledby="notes-page-title" hidden>
         <div class="notes-toolbar">
