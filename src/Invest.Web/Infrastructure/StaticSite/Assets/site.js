@@ -1132,7 +1132,6 @@ function applyViewVisibility() {
     el('topics').hidden = !topics;
     el('notes-page').hidden = !notesView;
     el('assets-page').hidden = !assetsView;
-    el('page-header').hidden = assetsView;
 
     if (topics || notesView || assetsView) {
         el('ranking').hidden = true;

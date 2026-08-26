@@ -178,7 +178,7 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 資產Dashboard離線樣板沒有上方選單且帳戶名稱切換明細()
+    public void 資產Dashboard保留上方頁籤且帳戶名稱切換明細()
     {
         var html = ReadAsset("index.html");
         var script = ReadAsset("site.js");
@@ -187,10 +187,11 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("review-20260826-assets-v1", script, StringComparison.Ordinal);
         Assert.Contains("assetDashboardScreen = 'account'", script, StringComparison.Ordinal);
         Assert.Contains("← 返回 Dashboard", script, StringComparison.Ordinal);
-        Assert.Contains("el('page-header').hidden = assetsView", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("el('page-header').hidden = assetsView", script, StringComparison.Ordinal);
         Assert.Contains("asset-account-link", script, StringComparison.Ordinal);
         Assert.DoesNotContain("ASSET_DASHBOARD_VARIANTS", script, StringComparison.Ordinal);
         Assert.Contains("id=\"assets-page\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"view-options\"", html, StringComparison.Ordinal);
         Assert.Contains(".asset-dashboard-overview", styles, StringComparison.Ordinal);
         Assert.Contains(".asset-account-content", styles, StringComparison.Ordinal);
         Assert.Contains("background: #ffffff", styles, StringComparison.Ordinal);
