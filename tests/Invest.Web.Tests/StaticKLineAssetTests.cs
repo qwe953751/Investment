@@ -440,19 +440,21 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange)", customColumns, StringComparison.Ordinal);
     }
 
-    // 持倉管理仍不在正式靜態站的功能範圍。唯一例外是指定 localhost 預覽網址上的
-    // 離線設計稿：資料只存這台瀏覽器、截圖不會上傳，不能在正式網址透過 view 參數開啟。
+    // 持倉管理仍不在正式靜態站的功能範圍。資產 Dashboard 只在最高權限樣板顯示，
+    // 資料只存這台瀏覽器、截圖不會上傳；檢視權限不能透過 view 參數開啟。
     [Fact]
-    public void 資產設計樣板只在指定本機預覽出現()
+    public void 資產Dashboard只在最高權限出現且資料留在瀏覽器()
     {
         var html = ReadAsset("index.html");
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
-        Assert.Contains("ASSET_DASHBOARD_PREVIEW", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_DASHBOARD_ENABLED = SITE_ACCESS !== 'viewer';", script, StringComparison.Ordinal);
+        Assert.Contains("const prototypeViews = ASSET_DASHBOARD_ENABLED", script, StringComparison.Ordinal);
         Assert.Contains("review-20260826-assets-v1", script, StringComparison.Ordinal);
         Assert.Contains("['localhost', '127.0.0.1']", script, StringComparison.Ordinal);
         Assert.Contains("VIEWS.filter(view => view.key !== 'assets')", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("const prototypeViews = ASSET_DASHBOARD_PREVIEW", script, StringComparison.Ordinal);
         Assert.Contains("ASSET_PREVIEW_STORAGE_KEY", script, StringComparison.Ordinal);
         Assert.Contains("localStorage.setItem(ASSET_PREVIEW_STORAGE_KEY", script, StringComparison.Ordinal);
         Assert.Contains("＋ 新增使用者", script, StringComparison.Ordinal);
@@ -461,6 +463,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("套用未實現損益", script, StringComparison.Ordinal);
         Assert.Contains("不會上傳或保存", script, StringComparison.Ordinal);
         Assert.Contains("id=\"assets-page\"", html, StringComparison.Ordinal);
+        Assert.Contains("資產 Dashboard 瀏覽器樣板", html, StringComparison.Ordinal);
         Assert.Contains(".assets-page", styles, StringComparison.Ordinal);
     }
 

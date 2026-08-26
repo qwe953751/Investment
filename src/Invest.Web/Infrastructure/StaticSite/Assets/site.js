@@ -13,8 +13,7 @@ const REVENUE_HISTORY_TABLE = 'revenue_history';
 const INTRADAY_TOPIC_PERIOD = 'intraday';
 const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
 const PREVIEW_QUERY = new URLSearchParams(window.location.search).get('preview');
-// 資產功能還沒有資料來源、帳戶登入與確認寫入規格；先只在本機的指定預覽網址展示。
-// 這個開關避免尚未確認的帳戶／損益介面意外出現在正式靜態站。
+// 本機 preview 只用來驗證筆記假資料與版面；資產 Dashboard 本身由最高權限樣板提供。
 const ASSET_DASHBOARD_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'review-20260826-assets-v1';
 // 資產設計稿刻意只保存在這台瀏覽器：目前沒有登入、RLS 或券商資料來源，
@@ -40,6 +39,8 @@ const DEPLOYED_ACCESS = SITE_HOST === VIEWER_HOST
         : null;
 const SITE_ACCESS = DEPLOYED_ACCESS
     ?? (ACCESS_QUERY === 'viewer' || ACCESS_PATH === 'viewer' ? 'viewer' : 'admin');
+// 資產頁是瀏覽器內的樣板，不讀寫真實帳戶；檢視權限不顯示個人資產工作區。
+const ASSET_DASHBOARD_ENABLED = SITE_ACCESS !== 'viewer';
 const ACCESS_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && (ACCESS_QUERY === 'admin' || ACCESS_QUERY === 'viewer');
 
@@ -133,12 +134,12 @@ const VIEWS = [
     { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' },
     { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' },
     { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' },
-    { key: 'assets', text: '資產', hint: '離線設計樣板：比較資產總覽、帳戶導覽與資產變化三種版型；不讀取或寫入真實帳戶。' }
+    { key: 'assets', text: '資產', hint: '資產 Dashboard：目前是瀏覽器內樣板；不讀取或寫入真實帳戶。' }
 ];
 
-// 筆記是個人工作區，最高權限才顯示；檢視權限只保留公開行情頁。
+// 筆記與資產都是個人工作區，最高權限才顯示；檢視權限只保留公開行情頁。
 const availableViews = () => {
-    const prototypeViews = ASSET_DASHBOARD_PREVIEW
+    const prototypeViews = ASSET_DASHBOARD_ENABLED
         ? VIEWS
         : VIEWS.filter(view => view.key !== 'assets');
 
@@ -1143,7 +1144,7 @@ const PAGE_HEADINGS = {
     custom: '自訂資料瀏覽',
     topics: '族群分類與熱度',
     notes: '筆記',
-    assets: '資產 Dashboard（離線樣板）'
+    assets: '資產 Dashboard（瀏覽器樣板）'
 };
 
 function renderFilters() {
@@ -2062,7 +2063,7 @@ function readAssetPrototypeData() {
     return defaultAssetPrototypeData();
 }
 
-let assetPrototypeData = ASSET_DASHBOARD_PREVIEW ? readAssetPrototypeData() : null;
+let assetPrototypeData = ASSET_DASHBOARD_ENABLED ? readAssetPrototypeData() : null;
 
 function persistAssetPrototypeData() {
     try {
@@ -2674,7 +2675,7 @@ function makeAssetAccountDetails(user, account) {
 function renderAssetsDashboard() {
     const page = el('assets-page');
 
-    if (!page || !ASSET_DASHBOARD_PREVIEW) {
+    if (!page || !ASSET_DASHBOARD_ENABLED) {
         return;
     }
 
@@ -8035,7 +8036,7 @@ function renderSnapshotNote() {
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
 
     if (state.view === 'assets') {
-        el('snapshot-note').textContent = '本機樣板資料：不讀取真實帳戶、不上傳截圖，也不會寫入資產資料。';
+        el('snapshot-note').textContent = '瀏覽器樣板資料：不讀取真實帳戶、不上傳截圖，也不會寫入資產資料。';
         return;
     }
 
