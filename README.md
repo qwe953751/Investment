@@ -73,7 +73,7 @@
 
 ## 最新已發布版本
 
-本次「暫存功能整合、資產樣板底色校正與發布」的發布基準為 GitHub `main`（`7b61f16`，2026-08-26）；publish-only Action `32951532513` 成功，GitHub Pages manifest 版本為 `1787735460`。最高權限網站已更新至 `https://frank-invest.github.io/admin888/`，檢視網址為 `https://frank-invest.github.io/viewer/`。
+本次「資產 Dashboard 最高權限發布」的程式基準為 GitHub `main`（`ff7019a`，2026-08-26）；publish-only Action `32953783327` 成功，GitHub Pages manifest 版本為 `1787736993`。最高權限網站已更新至 `https://frank-invest.github.io/admin888/`，檢視網址為 `https://frank-invest.github.io/viewer/`。
 這一版已完成並驗收：
 
 - 盤中、盤後旁新增「自訂」頁；可瀏覽單一交易日的完整上市櫃資料，不建立預設排行。
