@@ -261,12 +261,28 @@ public sealed class StaticKLineAssetTests
     {
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
+        var exporter = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "Invest.Web",
+            "Infrastructure",
+            "StaticSite",
+            "StaticSiteExporter.cs"));
         var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "021_market_index_kline.sql"));
 
         Assert.Contains("market-indexes.json", script, StringComparison.Ordinal);
         Assert.Contains("function toggleIndexKLine", script, StringComparison.Ordinal);
         Assert.Contains("function renderIndexKLineSvg", script, StringComparison.Ordinal);
         Assert.Contains("INDEX_KLINE_LOCAL_PREVIEW", script, StringComparison.Ordinal);
+        Assert.Contains("const INDEX_KLINE_MOVING_AVERAGES = KLINE_MOVING_AVERAGES;", script, StringComparison.Ordinal);
+        Assert.Contains("const INDEX_KLINE_PRICE_SCALE_AVERAGES = KLINE_PRICE_SCALE_AVERAGES;", script, StringComparison.Ordinal);
+        Assert.Contains("for (const period of [5, 10, 20, 60, 240])", script, StringComparison.Ordinal);
+        Assert.Contains("renderIndexKLineLegend(bars)", script, StringComparison.Ordinal);
+        Assert.Contains("...INDEX_KLINE_PRICE_SCALE_AVERAGES.map", script, StringComparison.Ordinal);
+        Assert.Contains("包含 MA5、MA10、MA20、MA60、MA240", script, StringComparison.Ordinal);
+        Assert.Contains("var marketIndexStartDate = dataSet.MarketIndices.Count > 0", exporter, StringComparison.Ordinal);
+        Assert.Contains("dataSet.MarketIndices.Min(day => day.TradingDate)", exporter, StringComparison.Ordinal);
+        Assert.Contains("RoundKLine(point.Ma240)", exporter, StringComparison.Ordinal);
         Assert.Contains("twse_index_open", script, StringComparison.Ordinal);
         Assert.Contains("data-index-market", script, StringComparison.Ordinal);
         Assert.Contains("上層：指數 K 棒", script, StringComparison.Ordinal);
@@ -275,6 +291,21 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("index-kline-turnover-bar", styles, StringComparison.Ordinal);
         Assert.Contains("twse_index_open", migration, StringComparison.Ordinal);
         Assert.Contains("tpex_index_low", migration, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 盤中指數K線缺少OHLC時不應把空值轉成零()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("function intradayIndexKLineBar", StringComparison.Ordinal);
+        var end = script.IndexOf("function selectedIndexKLineBars", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start, "找不到盤中指數 K 線資料轉換函式。");
+
+        var function = script[start..end];
+
+        // 缺少 db/021 欄位時值會是 null；Number(null) 會變成 0，不能只檢查 finite。
+        Assert.Contains("values.every(value => Number.isFinite(value) && value > 0)", function, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -92,12 +92,13 @@ const KLINE_MOVING_AVERAGES = [
     { key: 'ma60', label: 'MA60', className: 'ma60' },
     { key: 'ma240', label: 'MA240', className: 'ma240' }
 ];
-const INDEX_KLINE_MOVING_AVERAGES = KLINE_MOVING_AVERAGES.filter(line => line.key !== 'ma240');
+const INDEX_KLINE_MOVING_AVERAGES = KLINE_MOVING_AVERAGES;
 
 // 年線離現價很遠時若硬塞進同一個 Y 軸，會把近期 K 棒壓成一條線。
 // 主要尺度只看 K 棒與短中期均線；MA240 落在範圍內仍照常顯示，否則在圖例標成圖外。
 const KLINE_PRICE_SCALE_AVERAGES = KLINE_MOVING_AVERAGES
     .filter(line => line.key !== 'ma240');
+const INDEX_KLINE_PRICE_SCALE_AVERAGES = KLINE_PRICE_SCALE_AVERAGES;
 
 // 同一組期間按鈕在兩種檢視是兩件事：盤後是「本期多長」，盤中是「今天要跟過去多長的期間對照」。
 const PERIODS = [
@@ -4345,7 +4346,7 @@ function buildIndexMovingAverages(bars) {
     return bars.map((bar, index) => {
         const next = { ...bar };
 
-        for (const period of [5, 10, 20, 60]) {
+        for (const period of [5, 10, 20, 60, 240]) {
             next[`ma${period}`] = index + 1 >= period
                 ? bars.slice(index + 1 - period, index + 1)
                     .reduce((sum, item) => sum + Number(item.close), 0) / period
@@ -4466,7 +4467,7 @@ function intradayIndexKLineBar(market) {
         index[`${prefix}Index`]
     ].map(Number);
 
-    if (!values.every(Number.isFinite)) {
+    if (!values.every(value => Number.isFinite(value) && value > 0)) {
         return null;
     }
 
@@ -4498,21 +4499,48 @@ function selectedIndexKLineBars(market) {
         return bars;
     }
 
-    const historicalBars = bars.filter(bar => bar.date !== endDate);
+    const historicalBars = (data.bars ?? [])
+        .filter(bar => bar.date !== endDate)
+        .sort((left, right) => left.date.localeCompare(right.date));
     return buildIndexMovingAverages([
         ...historicalBars,
         { ...liveBar, previousClose: historicalBars.at(-1)?.close ?? null }
-    ].sort((left, right) => left.date.localeCompare(right.date)));
+    ].sort((left, right) => left.date.localeCompare(right.date)))
+        .filter(bar => bar.date >= startDate && bar.date <= endDate);
 }
 
-function renderIndexKLineLegend() {
+function indexKLinePriceRange(bars) {
+    const prices = bars.flatMap(bar => [
+        bar.low,
+        bar.high,
+        ...INDEX_KLINE_PRICE_SCALE_AVERAGES.map(line => bar[line.key])
+    ]).filter(value => !missing(value)).map(Number).filter(Number.isFinite);
+    const dataMin = Math.min(...prices);
+    const dataMax = Math.max(...prices);
+    const dataRange = dataMax > dataMin ? dataMax - dataMin : Math.max(dataMax * 0.02, 1);
+    const padding = dataRange * 0.05;
+
+    return {
+        min: dataMin - padding,
+        max: dataMax + padding
+    };
+}
+
+function renderIndexKLineLegend(bars) {
     const legend = document.createElement('div');
     legend.className = 'daily-kline-legend index-kline-legend';
+    const { min, max } = indexKLinePriceRange(bars);
 
     for (const line of INDEX_KLINE_MOVING_AVERAGES) {
         const item = document.createElement('span');
         item.className = line.className;
-        item.textContent = line.label;
+        const values = bars
+            .map(bar => bar[line.key])
+            .filter(value => !missing(value))
+            .map(Number)
+            .filter(Number.isFinite);
+        const visible = values.some(value => value >= min && value <= max);
+        item.textContent = line.label + (values.length > 0 && !visible ? '（圖外）' : '');
         legend.append(item);
     }
 
@@ -4533,17 +4561,7 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars) {
     const priceBottom = 254;
     const volumeTop = 294;
     const volumeBottom = 382;
-    const prices = bars.flatMap(bar => [
-        bar.low,
-        bar.high,
-        ...INDEX_KLINE_MOVING_AVERAGES.map(line => bar[line.key])
-    ]).filter(value => !missing(value)).map(Number).filter(Number.isFinite);
-    const dataMin = Math.min(...prices);
-    const dataMax = Math.max(...prices);
-    const dataRange = dataMax > dataMin ? dataMax - dataMin : Math.max(dataMax * 0.02, 1);
-    const padding = dataRange * 0.05;
-    const min = dataMin - padding;
-    const max = dataMax + padding;
+    const { min, max } = indexKLinePriceRange(bars);
     const y = price => top + (max - Number(price)) / (max - min) * (priceBottom - top);
     const step = (right - left) / Math.max(bars.length, 1);
     const bodyWidth = Math.min(9, Math.max(2.5, step * 0.64));
@@ -4556,7 +4574,7 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars) {
         class: 'daily-kline-svg index-kline-svg',
         viewBox: `0 0 ${width} ${height}`,
         role: 'img',
-        'aria-label': `${label}三個月指數日 K 圖，包含 MA5、MA10、MA20、MA60 與${turnoverLabel}`
+        'aria-label': `${label}三個月指數日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與${turnoverLabel}`
     });
 
     svg.append(svgElement('text', {
@@ -4726,7 +4744,7 @@ function renderIndexKLinePopover(market, anchor) {
         }
 
         card.append(
-            renderIndexKLineLegend(),
+            renderIndexKLineLegend(bars),
             renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars));
     }
 
@@ -6230,7 +6248,7 @@ function renderMarketHeat(heat, index) {
 
         const titleRow = document.createElement('div');
         titleRow.className = 'market-heat-index-title';
-        titleRow.dataset.hint = `${label}的所選交易日指數；點擊可看上層 K 棒、MA5/10/20/60 與下層成交金額。`;
+        titleRow.dataset.hint = `${label}的所選交易日指數；點擊可看上層 K 棒、MA5/10/20/60/240 與下層成交金額。`;
         titleRow.append(label, '點擊看 K 線');
 
         const indexValue = document.createElement('strong');

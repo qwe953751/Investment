@@ -51,8 +51,47 @@ public sealed class MarketIndexKLineCalculatorTests
 
         Assert.Equal(5, points.Count);
         Assert.Null(points[0].Ma5);
+        Assert.Null(points[^1].Ma240);
         Assert.Equal(102m, points[^1].Ma5);
         Assert.Equal(103m, points[^1].PreviousClose);
         Assert.Equal(5_000m, points[^1].TradingValue);
+    }
+
+    [Fact]
+    public void 指數K線會計算MA240()
+    {
+        var start = new DateOnly(2025, 1, 1);
+        var indices = Enumerable.Range(0, 240)
+            .Select(offset =>
+            {
+                var close = 100m + offset;
+                return new DailyMarketIndex
+                {
+                    TradingDate = start.AddDays(offset),
+                    Quotes =
+                    [
+                        new MarketIndexQuote
+                        {
+                            Market = Market.Twse,
+                            Value = close,
+                            OpenPrice = close - 1m,
+                            HighPrice = close + 2m,
+                            LowPrice = close - 2m
+                        }
+                    ]
+                };
+            })
+            .ToArray();
+
+        var points = MarketIndexKLineCalculator.Calculate(
+            indices,
+            [],
+            new Dictionary<string, Market>(),
+            Market.Twse,
+            start,
+            start.AddDays(239));
+
+        Assert.Null(points[238].Ma240);
+        Assert.Equal(219.5m, points[^1].Ma240);
     }
 }

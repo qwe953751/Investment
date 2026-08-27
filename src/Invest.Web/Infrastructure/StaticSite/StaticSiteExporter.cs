@@ -101,10 +101,16 @@ public sealed class StaticSiteExporter(
                 tradingDates[^1],
                 cancellationToken);
 
+            // 指數檔保留完整可用歷史；前端仍只畫三個月，盤中替換當日棒時
+            // 才能用足夠的前序收盤重算 MA240。
+            var marketIndexStartDate = dataSet.MarketIndices.Count > 0
+                ? dataSet.MarketIndices.Min(day => day.TradingDate)
+                : selectableDates[0].AddMonths(-DailyKLineSelector.DefaultMonths);
+
             marketIndexKLineWritten = await WriteMarketIndexKLineExportAsync(
                 Path.Combine(dataDirectory, "kline", "market-indexes.json"),
                 dataSet,
-                selectableDates[0].AddMonths(-DailyKLineSelector.DefaultMonths),
+                marketIndexStartDate,
                 selectableDates[^1],
                 cancellationToken);
         }
@@ -855,6 +861,7 @@ public sealed class StaticSiteExporter(
                     RoundKLine(point.Ma10),
                     RoundKLine(point.Ma20),
                     RoundKLine(point.Ma60),
+                    RoundKLine(point.Ma240),
                     RoundKLine(point.TradingValue)))]);
         }).ToArray();
 
@@ -999,6 +1006,7 @@ public sealed class StaticSiteExporter(
         decimal? Ma10,
         decimal? Ma20,
         decimal? Ma60,
+        decimal? Ma240,
         decimal? TradingValue);
 
     private sealed record ScheduleExport(

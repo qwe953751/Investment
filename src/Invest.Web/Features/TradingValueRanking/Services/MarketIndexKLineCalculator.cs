@@ -80,6 +80,7 @@ public static class MarketIndexKLineCalculator
                 MovingAverage(closeSums, 10),
                 MovingAverage(closeSums, 20),
                 MovingAverage(closeSums, 60),
+                MovingAverage(closeSums, 240),
                 turnoverByDate.TryGetValue(row.Date, out var tradingValue)
                     ? tradingValue
                     : null));
@@ -115,4 +116,5 @@ public sealed record MarketIndexKLinePoint(
     decimal? Ma10,
     decimal? Ma20,
     decimal? Ma60,
+    decimal? Ma240,
     decimal? TradingValue);
