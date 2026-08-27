@@ -256,7 +256,6 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
     var store = scope.ServiceProvider.GetRequiredService<IntradayQuoteStore>();
     var dailyQuoteStore = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
-    var rankingService = scope.ServiceProvider.GetRequiredService<TradingValueRankingQueryService>();
     var marketFlagClient = scope.ServiceProvider.GetRequiredService<MarketFlagClient>();
     var marketFlagStore = scope.ServiceProvider.GetRequiredService<MarketFlagStore>();
     var topicClient = scope.ServiceProvider.GetRequiredService<GoogleSheetTopicClient>();
@@ -278,8 +277,9 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     // 年初基準只需指數欄位，所以走只讀指數的入口，不要為了兩三個數字
     // 把三百多天的全市場個股報價全部反序列化。
     var dailyIndexHistory = await dailyQuoteStore.LoadMarketIndicesAsync(cts.Token);
-    // 市場熱絡需要個股前收與成交值歷史；沿用排行榜快取入口，與盤後共用同一份資料。
-    var historicalDataSet = await rankingService.GetDataSetAsync(cts.Token);
+    // 市場熱絡只用前收、成交值與指數，與權息還原無關。不能經由排行榜資料集載入，
+    // 否則 TPEx 除權息來源暫時失敗會讓一整場即時報價根本無法開始收集。
+    var historicalDataSet = await LoadMarketHeatHistoryAsync(dailyQuoteStore, cts.Token);
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
@@ -521,7 +521,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 /// </summary>
 static async Task RunIntradayHeatBackfillAsync(IServiceProvider services, string[] args)
 {
-    var rankingService = services.GetRequiredService<TradingValueRankingQueryService>();
+    var dailyQuoteStore = services.GetRequiredService<DailyQuoteStore>();
     var viaManagementApi = args.Any(argument =>
         string.Equals(argument, "--via-management-api", StringComparison.OrdinalIgnoreCase));
     var store = viaManagementApi
@@ -541,7 +541,7 @@ static async Task RunIntradayHeatBackfillAsync(IServiceProvider services, string
         return;
     }
 
-    var historicalDataSet = await rankingService.GetDataSetAsync();
+    var historicalDataSet = await LoadMarketHeatHistoryAsync(dailyQuoteStore);
     var capturedAt = stored?.CapturedAt ?? publicSnapshot?.CapturedAt
         ?? throw new InvalidOperationException("盤中快照缺少收集時間，無法回填預估成交額。");
     var heat = CalculateIntradayMarketHeat(historicalDataSet, snapshot, capturedAt);
@@ -564,6 +564,41 @@ static async Task RunIntradayHeatBackfillAsync(IServiceProvider services, string
     Console.WriteLine(
         $"已回填 {snapshot.TradeDate:yyyy-MM-dd} 盤中熱絡：{heat.Score:0.##}/10，"
         + $"上漲 {heat.UpCount} 檔、下跌 {heat.DownCount} 檔。");
+}
+
+/// <summary>
+/// 盤中市場熱絡的歷史只需要盤後快取的原始前收、成交值與指數。
+/// 除權息還原只影響排行／日 K 的價格基準，不能讓其外部來源失敗時阻斷即時快照。
+/// </summary>
+static async Task<MarketDataSet> LoadMarketHeatHistoryAsync(
+    DailyQuoteStore store,
+    CancellationToken cancellationToken = default)
+{
+    var snapshots = await store.LoadAllAsync(cancellationToken);
+
+    return new MarketDataSet
+    {
+        Stocks = [],
+        DailyTrading = snapshots
+            .SelectMany(snapshot => snapshot.Quotes.Select(quote => new DailyStockTrading
+            {
+                TradingDate = snapshot.TradingDate,
+                Ticker = quote.Ticker,
+                OpenPrice = quote.OpenPrice,
+                HighPrice = quote.HighPrice,
+                LowPrice = quote.LowPrice,
+                ClosePrice = quote.ClosePrice,
+                TradingValue = quote.TradingValue
+            }))
+            .ToArray(),
+        MarketIndices = snapshots
+            .Select(snapshot => new DailyMarketIndex
+            {
+                TradingDate = snapshot.TradingDate,
+                Quotes = snapshot.MarketIndices
+            })
+            .ToArray()
+    };
 }
 
 /// <summary>

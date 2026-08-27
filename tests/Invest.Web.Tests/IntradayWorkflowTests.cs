@@ -30,6 +30,20 @@ public sealed class IntradayWorkflowTests
     }
 
     [Fact]
+    public void 盤中收集的市場熱絡歷史不依賴除權息來源()
+    {
+        // TPEx 的除權息端點暫時回 403 時，盤後排行／日 K 應維持嚴格失敗，
+        // 但盤中熱絡只需要前收、成交值與指數，不能因此整場沒有即時快照。
+        var program = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "src", "Invest.Web", "Program.cs"));
+        var start = program.IndexOf("static async Task RunIntradayAsync", StringComparison.Ordinal);
+        var end = program.IndexOf("static async Task RunIntradayHeatBackfillAsync", start, StringComparison.Ordinal);
+        var intraday = program[start..end];
+
+        Assert.Contains("LoadMarketHeatHistoryAsync(dailyQuoteStore, cts.Token)", intraday, StringComparison.Ordinal);
+        Assert.DoesNotContain("rankingService.GetDataSetAsync", intraday, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 盤中族群熱度有可追溯快照且會隨原始盤中輪次刪除()
     {
         var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "013_intraday_topic_heat.sql"));
