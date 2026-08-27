@@ -297,13 +297,23 @@ public sealed class MarketDataDownloader(
 
         await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
 
+        var twseIndexWithBars = await WithRetryAsync(
+            async () => (await twseClient.GetMarketIndexWithBarsAsync(date, cancellationToken))!,
+            $"TWSE 指數日 K {date:yyyy-MM-dd}",
+            progress,
+            cancellationToken);
+
         var tpexIndex = await WithRetryAsync(
             async () => (await tpexIndexClient.GetAsync(date, cancellationToken))!,
             $"TPEx 指數 {date:yyyy-MM-dd}",
             progress,
             cancellationToken);
 
-        if (twseData.MarketIndex is not { } twseIndex || tpexIndex is not { } validTpexIndex)
+        // MI_INDEX 的價格指數表仍保留給首頁摘要使用；若新的 OHLC 端點暫時失敗，
+        // 至少保留收盤指數，下一次回補會因 HasCompleteMarketIndices 為 false 再試一次。
+        var twseIndex = twseIndexWithBars ?? twseData.MarketIndex;
+
+        if (twseIndex is not { } validTwseIndex || tpexIndex is not { } validTpexIndex)
         {
             progress?.Report($"{date:yyyy-MM-dd} 找不到完整的上市／上櫃指數，這天不寫入");
             return null;
@@ -317,7 +327,7 @@ public sealed class MarketDataDownloader(
             DownloadedAt = DateTimeOffset.Now,
             MarketIndexSchemaVersion = DailyQuoteSnapshot.CurrentMarketIndexSchemaVersion,
             DailyBarSchemaVersion = DailyQuoteSnapshot.CurrentDailyBarSchemaVersion,
-            MarketIndices = [twseIndex, validTpexIndex],
+            MarketIndices = [validTwseIndex, validTpexIndex],
             Quotes =
             [
                 .. ToRegularTradingOnly(twse, twseNonRegular),
@@ -332,8 +342,8 @@ public sealed class MarketDataDownloader(
         CancellationToken cancellationToken)
     {
         var twseIndex = await WithRetryAsync(
-            async () => (await twseClient.GetMarketIndexAsync(date, cancellationToken))!,
-            $"TWSE 指數 {date:yyyy-MM-dd}",
+            async () => (await twseClient.GetMarketIndexWithBarsAsync(date, cancellationToken))!,
+            $"TWSE 指數日 K {date:yyyy-MM-dd}",
             progress,
             cancellationToken);
 

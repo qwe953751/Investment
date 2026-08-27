@@ -21,7 +21,7 @@ public sealed class DailyQuoteSnapshot
     /// 市場指數欄位的格式版本。指數加入快照不改變個股成交值定義，
     /// 所以與 <see cref="CurrentSchemaVersion"/> 分開，舊快照可以只補抓指數。
     /// </summary>
-    public const int CurrentMarketIndexSchemaVersion = 1;
+    public const int CurrentMarketIndexSchemaVersion = 2;
 
     /// <summary>
     /// 日 K 開高低收欄位的格式版本。與成交值定義及市場指數分開，
@@ -89,8 +89,15 @@ public sealed class DailyQuoteSnapshot
 
     public bool HasCompleteMarketIndices
         => MarketIndexSchemaVersion >= CurrentMarketIndexSchemaVersion
-            && MarketIndices.Any(index => index.Market == Market.Twse)
-            && MarketIndices.Any(index => index.Market == Market.Tpex);
+            && MarketIndices.Any(index => index.Market == Market.Twse && HasCompleteMarketIndex(index))
+            && MarketIndices.Any(index => index.Market == Market.Tpex && HasCompleteMarketIndex(index));
+
+    private static bool HasCompleteMarketIndex(MarketIndexQuote index)
+        => index.Market is Market.Twse or Market.Tpex
+            && index.Value > 0m
+            && index.OpenPrice is > 0m
+            && index.HighPrice is > 0m
+            && index.LowPrice is > 0m;
 
     /// <summary>
     /// 在不重新計算個股成交值的情況下，補上同一交易日的市場指數。

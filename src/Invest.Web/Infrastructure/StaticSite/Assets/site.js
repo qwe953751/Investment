@@ -13,6 +13,10 @@ const REVENUE_HISTORY_TABLE = 'revenue_history';
 const INTRADAY_TOPIC_PERIOD = 'intraday';
 const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
 const PREVIEW_QUERY = new URLSearchParams(window.location.search).get('preview');
+// 本機專用：讓指數 K 線的排版在沒有新快照／尚未套用盤中 migration 時也能檢查。
+// 這個開關只接受 localhost，正式網址不會進入假資料分支。
+const INDEX_KLINE_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && PREVIEW_QUERY === 'index-kline-v1';
 // 本機專用：不連資料庫也能檢查筆記的永久編號與版面。只影響筆記頁，資產頁一律讀寫資料庫。
 const NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'review-20260826-notes-v1';
@@ -84,6 +88,7 @@ const KLINE_MOVING_AVERAGES = [
     { key: 'ma60', label: 'MA60', className: 'ma60' },
     { key: 'ma240', label: 'MA240', className: 'ma240' }
 ];
+const INDEX_KLINE_MOVING_AVERAGES = KLINE_MOVING_AVERAGES.filter(line => line.key !== 'ma240');
 
 // 年線離現價很遠時若硬塞進同一個 Y 軸，會把近期 K 棒壓成一條線。
 // 主要尺度只看 K 棒與短中期均線；MA240 落在範圍內仍照常顯示，否則在圖例標成圖外。
@@ -882,13 +887,12 @@ const state = {
     customSortKey: 'ticker',
     customSortDescending: false,
 
-    // 族群頁。期間預設 5 日而不是 1 日：族群熱度看的是「一段資金流向」，
-    // 只看一天很容易被單日的除權息或一檔大單帶走整個族群的分數。
+    // 族群頁預設看最新一輪盤中資料，先聚焦市場當下正在交易的主流方向。
     topicTab: 'heat',
-    topicPeriod: 5,
+    topicPeriod: INTRADAY_TOPIC_PERIOD,
     topicSortKey: 'composite',
     topicSortDescending: true,
-    topicScope: 'all',
+    topicScope: 'major',
 
     sortKey: 'rank',
     sortDescending: false,
@@ -988,6 +992,9 @@ const cache = new Map();
 let current = null;
 const klineData = new Map();
 const klinePromises = new Map();
+const indexKLineData = new Map();
+let indexKLinePromise = null;
+let indexKLineError = '';
 const topicIntradayKLines = new Map();
 const topicIntradayKLinePromises = new Map();
 let topicIntradayKLineCapturedAt = '';
@@ -995,6 +1002,8 @@ let klineError = '';
 let expandedTicker = null;
 let expandedKLineName = '';
 let klineAnchor = null;
+let expandedIndexMarket = null;
+let indexKLineAnchor = null;
 const revenueHistoryData = new Map();
 const revenueHistoryPromises = new Map();
 
@@ -4246,6 +4255,401 @@ async function loadKLineData(ticker) {
     }
 }
 
+function buildIndexMovingAverages(bars) {
+    return bars.map((bar, index) => {
+        const next = { ...bar };
+
+        for (const period of [5, 10, 20, 60]) {
+            next[`ma${period}`] = index + 1 >= period
+                ? bars.slice(index + 1 - period, index + 1)
+                    .reduce((sum, item) => sum + Number(item.close), 0) / period
+                : null;
+        }
+
+        return next;
+    });
+}
+
+function buildLocalIndexKLinePreview() {
+    const endDate = klineEndDate() || dates.at(-1) || '';
+    let previewDates = dates.filter(date => !endDate || date <= endDate).slice(-90);
+
+    if (endDate && previewDates.at(-1) !== endDate) {
+        previewDates = [...previewDates, endDate];
+    }
+
+    if (previewDates.length === 0) {
+        return;
+    }
+
+    for (const [market, label, turnoverLabel, fallbackValue, fallbackTurnover] of [
+        ['twse', '加權指數', '上市成交金額', 22_000, 230_000_000_000],
+        ['tpex', '櫃買指數', '上櫃成交金額', 250, 80_000_000_000]
+    ]) {
+        const source = state.view === 'intraday'
+            ? current?.marketIndices
+            : marketIndices.get(endDate) ?? marketIndices.get(state.date);
+        const value = Number(source?.[`${market}Index`]);
+        const base = Number.isFinite(value) && value > 0 ? value : fallbackValue;
+        const rawBars = [];
+        let previousClose = base * 0.91;
+
+        previewDates.forEach((date, index) => {
+            const progress = previewDates.length <= 1 ? 1 : index / (previewDates.length - 1);
+            const trend = 0.91 + progress * 0.09;
+            const open = previousClose * (1 + Math.sin(index * 1.37) * 0.006);
+            const close = index === previewDates.length - 1
+                ? base
+                : base * trend * (1 + Math.sin(index * 0.83) * 0.014 + Math.cos(index * 0.31) * 0.008);
+            const high = Math.max(open, close) * (1 + 0.004 + Math.abs(Math.sin(index * 0.71)) * 0.006);
+            const low = Math.min(open, close) * (1 - 0.004 - Math.abs(Math.cos(index * 0.59)) * 0.006);
+
+            rawBars.push({
+                date,
+                open,
+                high,
+                low,
+                close,
+                previousClose: index === 0 ? null : previousClose,
+                tradingValue: fallbackTurnover * (0.72 + progress * 0.28 + Math.sin(index * 0.47) * 0.12)
+            });
+            previousClose = close;
+        });
+
+        indexKLineData.set(market, {
+            market,
+            label,
+            turnoverLabel,
+            bars: buildIndexMovingAverages(rawBars),
+            local: true
+        });
+    }
+}
+
+async function loadIndexKLineData() {
+    if (indexKLineData.size > 0) {
+        return;
+    }
+
+    if (INDEX_KLINE_LOCAL_PREVIEW) {
+        buildLocalIndexKLinePreview();
+        return;
+    }
+
+    if (indexKLinePromise === null) {
+        indexKLinePromise = (async () => {
+            const response = await fetch(`${KLINE_DIRECTORY}/market-indexes.json?v=${version}`);
+
+            if (!response.ok) {
+                throw new Error(String(response.status));
+            }
+
+            const payload = await response.json();
+
+            if (!Array.isArray(payload?.markets)) {
+                throw new Error('invalid market index K-line payload');
+            }
+
+            for (const market of payload.markets) {
+                if (typeof market.market === 'string' && Array.isArray(market.bars)) {
+                    indexKLineData.set(market.market, market);
+                }
+            }
+        })();
+    }
+
+    try {
+        await indexKLinePromise;
+    } finally {
+        indexKLinePromise = null;
+    }
+}
+
+function intradayIndexKLineBar(market) {
+    const index = current?.marketIndices;
+
+    if (!index || !current.tradeDate) {
+        return null;
+    }
+
+    const prefix = market === 'twse' ? 'twse' : 'tpex';
+    const values = [
+        index[`${prefix}OpenPrice`],
+        index[`${prefix}HighPrice`],
+        index[`${prefix}LowPrice`],
+        index[`${prefix}Index`]
+    ].map(Number);
+
+    if (!values.every(Number.isFinite)) {
+        return null;
+    }
+
+    return {
+        date: current.tradeDate,
+        open: values[0],
+        high: values[1],
+        low: values[2],
+        close: values[3],
+        previousClose: null,
+        tradingValue: current.marketTurnovers?.[market] ?? null
+    };
+}
+
+function selectedIndexKLineBars(market) {
+    const data = indexKLineData.get(market);
+    const endDate = klineEndDate();
+
+    if (!data || !endDate) {
+        return [];
+    }
+
+    const startDate = klineStartDate(endDate);
+    const bars = (data.bars ?? [])
+        .filter(bar => bar.date >= startDate && bar.date <= endDate);
+    const liveBar = state.view === 'intraday' ? intradayIndexKLineBar(market) : null;
+
+    if (!liveBar) {
+        return bars;
+    }
+
+    const historicalBars = bars.filter(bar => bar.date !== endDate);
+    return buildIndexMovingAverages([
+        ...historicalBars,
+        { ...liveBar, previousClose: historicalBars.at(-1)?.close ?? null }
+    ].sort((left, right) => left.date.localeCompare(right.date)));
+}
+
+function renderIndexKLineLegend() {
+    const legend = document.createElement('div');
+    legend.className = 'daily-kline-legend index-kline-legend';
+
+    for (const line of INDEX_KLINE_MOVING_AVERAGES) {
+        const item = document.createElement('span');
+        item.className = line.className;
+        item.textContent = line.label;
+        legend.append(item);
+    }
+
+    const turnover = document.createElement('span');
+    turnover.className = 'index-kline-volume-legend';
+    turnover.textContent = '成交金額';
+    legend.append(turnover);
+
+    return legend;
+}
+
+function renderIndexKLineSvg(market, label, turnoverLabel, bars) {
+    const width = 680;
+    const height = 440;
+    const left = 62;
+    const right = 666;
+    const top = 22;
+    const priceBottom = 254;
+    const volumeTop = 294;
+    const volumeBottom = 382;
+    const prices = bars.flatMap(bar => [
+        bar.low,
+        bar.high,
+        ...INDEX_KLINE_MOVING_AVERAGES.map(line => bar[line.key])
+    ]).filter(value => !missing(value)).map(Number).filter(Number.isFinite);
+    const dataMin = Math.min(...prices);
+    const dataMax = Math.max(...prices);
+    const dataRange = dataMax > dataMin ? dataMax - dataMin : Math.max(dataMax * 0.02, 1);
+    const padding = dataRange * 0.05;
+    const min = dataMin - padding;
+    const max = dataMax + padding;
+    const y = price => top + (max - Number(price)) / (max - min) * (priceBottom - top);
+    const step = (right - left) / Math.max(bars.length, 1);
+    const bodyWidth = Math.min(9, Math.max(2.5, step * 0.64));
+    const x = index => left + step * (index + 0.5);
+    const volumes = bars.map(bar => Number(bar.tradingValue))
+        .filter(value => Number.isFinite(value) && value >= 0);
+    const maxVolume = Math.max(...volumes, 1);
+    const volumeY = value => volumeBottom - Number(value) / maxVolume * (volumeBottom - volumeTop);
+    const svg = svgElement('svg', {
+        class: 'daily-kline-svg index-kline-svg',
+        viewBox: `0 0 ${width} ${height}`,
+        role: 'img',
+        'aria-label': `${label}三個月指數日 K 圖，包含 MA5、MA10、MA20、MA60 與${turnoverLabel}`
+    });
+
+    svg.append(svgElement('text', {
+        class: 'index-kline-section-title', x: left, y: 13
+    }, '上層：指數 K 棒'));
+
+    for (const price of [max, (max + min) / 2, min]) {
+        const lineY = y(price);
+        svg.append(
+            svgElement('line', { class: 'daily-kline-grid-line', x1: left, x2: right, y1: lineY, y2: lineY }),
+            svgElement('text', {
+                class: 'daily-kline-axis', x: left - 8, y: lineY + 4, 'text-anchor': 'end'
+            }, toFixedText(price, 2)));
+    }
+
+    bars.forEach((bar, index) => {
+        const open = Number(bar.open);
+        const close = Number(bar.close);
+        const candleX = x(index);
+        const bodyTop = Math.min(y(open), y(close));
+        const bodyHeight = Math.max(Math.abs(y(open) - y(close)), 1.5);
+        const trend = klineTrendClass(bar);
+
+        svg.append(
+            svgElement('line', {
+                class: `daily-kline-wick ${trend}`,
+                x1: candleX, x2: candleX, y1: y(bar.high), y2: y(bar.low)
+            }),
+            svgElement('rect', {
+                class: `daily-kline-body ${trend}`,
+                x: candleX - bodyWidth / 2,
+                y: bodyTop,
+                width: bodyWidth,
+                height: bodyHeight
+            }));
+    });
+
+    for (const line of INDEX_KLINE_MOVING_AVERAGES) {
+        const commands = [];
+        let drawing = false;
+
+        bars.forEach((bar, index) => {
+            const value = bar[line.key];
+
+            if (missing(value) || !Number.isFinite(Number(value))) {
+                drawing = false;
+                return;
+            }
+
+            commands.push(`${drawing ? 'L' : 'M'} ${x(index)} ${y(value)}`);
+            drawing = true;
+        });
+
+        if (commands.length > 1) {
+            svg.append(svgElement('path', {
+                class: `daily-kline-ma ${line.className}`,
+                d: commands.join(' ')
+            }));
+        }
+    }
+
+    svg.append(
+        svgElement('line', {
+            class: 'index-kline-divider', x1: left, x2: right, y1: 274, y2: 274
+        }),
+        svgElement('text', {
+            class: 'index-kline-section-title', x: left, y: 288
+        }, `下層：${turnoverLabel}`));
+
+    bars.forEach((bar, index) => {
+        const value = Number(bar.tradingValue);
+
+        if (!Number.isFinite(value) || value < 0) {
+            return;
+        }
+
+        svg.append(svgElement('rect', {
+            class: `index-kline-turnover-bar ${market}`,
+            x: x(index) - bodyWidth / 2,
+            y: volumeY(value),
+            width: bodyWidth,
+            height: Math.max(volumeBottom - volumeY(value), 1)
+        }));
+    });
+
+    svg.append(
+        svgElement('line', {
+            class: 'daily-kline-grid-line', x1: left, x2: right, y1: volumeBottom, y2: volumeBottom
+        }),
+        svgElement('text', {
+            class: 'daily-kline-axis', x: left - 8, y: volumeTop + 4, 'text-anchor': 'end'
+        }, `${toBillionText(maxVolume)} 億`));
+
+    const labels = bars.length <= 3
+        ? bars.map((bar, index) => [bar, index])
+        : [[bars[0], 0], [bars[Math.floor(bars.length / 2)], Math.floor(bars.length / 2)], [bars.at(-1), bars.length - 1]];
+    labels.forEach(([bar, index]) => {
+        svg.append(svgElement('text', {
+            class: 'daily-kline-date', x: x(index), y: 420, 'text-anchor': 'middle'
+        }, bar.date.slice(5).replace('-', '/')));
+    });
+
+    return svg;
+}
+
+function renderIndexKLinePopover(market, anchor) {
+    const popover = el('kline-popover');
+    popover.setAttribute('aria-labelledby', 'kline-title');
+    popover.replaceChildren();
+
+    const data = indexKLineData.get(market);
+    const bars = data ? selectedIndexKLineBars(market) : [];
+    const card = document.createElement('div');
+    card.className = 'daily-kline-card index-kline-card';
+    const header = document.createElement('div');
+    header.className = 'daily-kline-header';
+    const title = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.id = 'kline-title';
+    strong.textContent = data?.label ?? (market === 'twse' ? '加權指數' : '櫃買指數');
+    const endDate = klineEndDate();
+    const requestedStartDate = endDate ? klineStartDate(endDate) : '';
+    const actualStartDate = bars[0]?.date ?? requestedStartDate;
+    const period = document.createElement('span');
+    period.className = 'daily-kline-period';
+    period.textContent = endDate
+        ? `日 K・${actualStartDate.replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
+        : '日 K';
+    title.append(strong, period);
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'daily-kline-close';
+    close.textContent = '關閉';
+    close.addEventListener('click', closeKLine);
+    header.append(title, close);
+    card.append(header);
+
+    if (INDEX_KLINE_LOCAL_PREVIEW) {
+        const localNote = document.createElement('p');
+        localNote.className = 'index-kline-local-note';
+        localNote.textContent = '本機預覽：以下 K 棒與成交金額僅供排版確認，不代表正式行情。';
+        card.append(localNote);
+    }
+
+    if (indexKLineError) {
+        const message = document.createElement('p');
+        message.className = 'daily-kline-empty';
+        message.textContent = '讀不到已驗證的指數 K 線，請重新產生靜態網站。';
+        card.append(message);
+    } else if (!data) {
+        const message = document.createElement('p');
+        message.className = 'daily-kline-empty';
+        message.textContent = '指數 K 線載入中…';
+        card.append(message);
+    } else if (bars.length === 0) {
+        const message = document.createElement('p');
+        message.className = 'daily-kline-empty';
+        message.textContent = '這個期間沒有完整的指數 OHLC 資料。';
+        card.append(message);
+    } else {
+        if (state.view === 'intraday' && !INDEX_KLINE_LOCAL_PREVIEW && !intradayIndexKLineBar(market)) {
+            const note = document.createElement('p');
+            note.className = 'daily-kline-coverage';
+            note.textContent = '目前盤中快照尚未提供完整指數開高低，先顯示最近完整日 K；資料庫 migration 完成後會接上當日棒。';
+            card.append(note);
+        }
+
+        card.append(
+            renderIndexKLineLegend(),
+            renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars));
+    }
+
+    popover.append(card);
+    popover.hidden = false;
+    el('kline-backdrop').hidden = false;
+    positionKLinePopover(anchor);
+}
+
 function topicUsesIntradayData() {
     return state.view === 'topics'
         && state.topicPeriod === INTRADAY_TOPIC_PERIOD
@@ -4646,6 +5050,7 @@ const positionRevenuePopover = anchor => positionPopover('revenue-popover', anch
 
 function renderKLinePopover(ticker, name, anchor) {
     const popover = el('kline-popover');
+    popover.setAttribute('aria-labelledby', 'kline-title');
     popover.replaceChildren();
 
     const card = document.createElement('div');
@@ -4726,14 +5131,20 @@ function setKLineButtonStates() {
     document.querySelectorAll('.stock-name-button[data-ticker]').forEach(button => {
         button.setAttribute('aria-expanded', String(button.dataset.ticker === expandedTicker));
     });
+    document.querySelectorAll('[data-index-market]').forEach(button => {
+        button.setAttribute('aria-expanded', String(button.dataset.indexMarket === expandedIndexMarket));
+    });
 }
 
 function closeKLine(restoreFocus = true) {
-    const previousAnchor = klineAnchor;
+    const previousAnchor = klineAnchor ?? indexKLineAnchor;
     expandedTicker = null;
     expandedKLineName = '';
     klineAnchor = null;
     klineError = '';
+    expandedIndexMarket = null;
+    indexKLineAnchor = null;
+    indexKLineError = '';
     el('kline-popover').hidden = true;
     el('kline-backdrop').hidden = true;
     setKLineButtonStates();
@@ -4744,6 +5155,21 @@ function closeKLine(restoreFocus = true) {
 }
 
 function refreshKLinePopover() {
+    if (expandedIndexMarket !== null) {
+        const anchor = [...document.querySelectorAll('[data-index-market]')]
+            .find(button => button.dataset.indexMarket === expandedIndexMarket);
+
+        if (!anchor) {
+            closeKLine(false);
+            return;
+        }
+
+        indexKLineAnchor = anchor;
+        renderIndexKLinePopover(expandedIndexMarket, anchor);
+        setKLineButtonStates();
+        return;
+    }
+
     if (expandedTicker === null) {
         return;
     }
@@ -4767,6 +5193,10 @@ async function toggleKLine(ticker, name, anchor) {
     if (expandedTicker === ticker) {
         closeKLine();
         return;
+    }
+
+    if (expandedIndexMarket !== null) {
+        closeKLine(false);
     }
 
     closeRevenueDetails(false);
@@ -4801,15 +5231,44 @@ async function toggleKLine(ticker, name, anchor) {
     }
 }
 
+async function toggleIndexKLine(market, anchor) {
+    if (expandedIndexMarket === market) {
+        closeKLine();
+        return;
+    }
+
+    if (expandedTicker !== null) {
+        closeKLine(false);
+    }
+
+    closeRevenueDetails(false);
+    expandedIndexMarket = market;
+    indexKLineAnchor = anchor;
+    indexKLineError = '';
+    setKLineButtonStates();
+    renderIndexKLinePopover(market, anchor);
+
+    try {
+        await loadIndexKLineData();
+    } catch {
+        indexKLineError = '讀不到指數 K 線資料';
+    }
+
+    if (expandedIndexMarket === market) {
+        renderIndexKLinePopover(market, indexKLineAnchor);
+        setKLineButtonStates();
+    }
+}
+
 function configureKLinePopover() {
     el('kline-backdrop').addEventListener('click', () => closeKLine(false));
     document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && expandedTicker !== null) {
+        if (event.key === 'Escape' && (expandedTicker !== null || expandedIndexMarket !== null)) {
             closeKLine();
         }
     });
-    window.addEventListener('resize', () => positionKLinePopover(klineAnchor));
-    window.addEventListener('scroll', () => positionKLinePopover(klineAnchor), true);
+    window.addEventListener('resize', () => positionKLinePopover(klineAnchor ?? indexKLineAnchor));
+    window.addEventListener('scroll', () => positionKLinePopover(klineAnchor ?? indexKLineAnchor), true);
 }
 
 function buildLocalRevenuePreview(ticker) {
@@ -5472,15 +5931,20 @@ function renderSummary() {
     }
 
     const indexItems = [
-        ['加權指數', displayIndex?.twseIndex, displayIndex?.twseChangePercent, displayIndex?.twseYearToDateChangePercent],
-        ['櫃買指數', displayIndex?.tpexIndex, displayIndex?.tpexChangePercent, displayIndex?.tpexYearToDateChangePercent]
+        ['twse', '加權指數', displayIndex?.twseIndex, displayIndex?.twseChangePercent, displayIndex?.twseYearToDateChangePercent],
+        ['tpex', '櫃買指數', displayIndex?.tpexIndex, displayIndex?.tpexChangePercent, displayIndex?.tpexYearToDateChangePercent]
     ];
     const indexRow = document.createElement('div');
     indexRow.className = 'summary-row summary-index-row';
 
-    for (const [label, indexValue, dailyPercent, yearToDatePercent] of indexItems) {
-        const item = document.createElement('div');
-        item.className = 'summary-index';
+    for (const [market, label, indexValue, dailyPercent, yearToDatePercent] of indexItems) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'summary-index summary-index-button';
+        item.dataset.indexMarket = market;
+        item.setAttribute('aria-expanded', String(expandedIndexMarket === market));
+        item.dataset.hint = '點擊開啟這個指數的日 K 與成交金額';
+        item.addEventListener('click', () => toggleIndexKLine(market, item));
         const tag = document.createElement('span');
         tag.className = 'summary-label';
         tag.textContent = label;
@@ -5661,14 +6125,19 @@ function renderMarketHeat(heat, index) {
     const indices = document.createElement('div');
     indices.className = 'market-heat-indices';
 
-    const addIndexCard = (label, value, daily, yearToDate) => {
-        const card = document.createElement('div');
+    const addIndexCard = (market, label, value, daily, yearToDate) => {
+        const card = document.createElement('button');
+        card.type = 'button';
         card.className = 'market-heat-index-card';
+        card.dataset.indexMarket = market;
+        card.setAttribute('aria-expanded', String(expandedIndexMarket === market));
+        card.dataset.hint = '點擊開啟這個指數的日 K 與成交金額';
+        card.addEventListener('click', () => toggleIndexKLine(market, card));
 
         const titleRow = document.createElement('div');
         titleRow.className = 'market-heat-index-title';
-        titleRow.dataset.hint = `${label}的所選交易日收盤指數；上層顯示日漲跌幅與變動點數，下層顯示今年截至該日的漲跌幅與變動點數。`;
-        titleRow.append(label, '示意');
+        titleRow.dataset.hint = `${label}的所選交易日指數；點擊可看上層 K 棒、MA5/10/20/60 與下層成交金額。`;
+        titleRow.append(label, '點擊看 K 線');
 
         const indexValue = document.createElement('strong');
         indexValue.className = 'market-heat-index-value';
@@ -5696,8 +6165,8 @@ function renderMarketHeat(heat, index) {
         indices.append(card);
     };
 
-    addIndexCard('加權指數', index?.twseIndex, index?.twseChangePercent, index?.twseYearToDateChangePercent);
-    addIndexCard('櫃買指數', index?.tpexIndex, index?.tpexChangePercent, index?.tpexYearToDateChangePercent);
+    addIndexCard('twse', '加權指數', index?.twseIndex, index?.twseChangePercent, index?.twseYearToDateChangePercent);
+    addIndexCard('tpex', '櫃買指數', index?.tpexIndex, index?.tpexChangePercent, index?.tpexYearToDateChangePercent);
 
     const meta = document.createElement('div');
     meta.className = 'market-heat-meta';
@@ -5968,6 +6437,12 @@ async function loadIntraday(silent = false, force = false) {
     }
 
     const candidates = rows.filter(row => state.market === 'all' || row.market === state.market);
+    const marketTurnovers = {
+        twse: rows.filter(row => row.market === 'twse')
+            .reduce((total, row) => total + row.value, 0),
+        tpex: rows.filter(row => row.market === 'tpex')
+            .reduce((total, row) => total + row.value, 0)
+    };
 
     // 資金加速看的是成交比變化，不是預估值：分子分母同一輪，早盤也不會失真。
     const ranked = [...candidates].sort(
@@ -5998,10 +6473,17 @@ async function loadIntraday(silent = false, force = false) {
             twseIndex: missing(summary.twse_index) ? null : Number(summary.twse_index),
             twseChangePercent: missing(summary.twse_change_percent) ? null : Number(summary.twse_change_percent),
             twseYearToDateChangePercent: intradayYearToDatePercent(summary, 'twse'),
+            twseOpenPrice: missing(summary.twse_index_open) ? null : Number(summary.twse_index_open),
+            twseHighPrice: missing(summary.twse_index_high) ? null : Number(summary.twse_index_high),
+            twseLowPrice: missing(summary.twse_index_low) ? null : Number(summary.twse_index_low),
             tpexIndex: missing(summary.tpex_index) ? null : Number(summary.tpex_index),
             tpexChangePercent: missing(summary.tpex_change_percent) ? null : Number(summary.tpex_change_percent),
-            tpexYearToDateChangePercent: intradayYearToDatePercent(summary, 'tpex')
+            tpexYearToDateChangePercent: intradayYearToDatePercent(summary, 'tpex'),
+            tpexOpenPrice: missing(summary.tpex_index_open) ? null : Number(summary.tpex_index_open),
+            tpexHighPrice: missing(summary.tpex_index_high) ? null : Number(summary.tpex_index_high),
+            tpexLowPrice: missing(summary.tpex_index_low) ? null : Number(summary.tpex_index_low)
         },
+        marketTurnovers,
         referencePeriod: reference?.currentPeriod ?? '資料不足',
         rankedStockCount: candidates.length,
         rows: ranked.slice(0, TOP_COUNT).map((row, index) => {
@@ -6041,7 +6523,7 @@ const INTRADAY_ROW_SELECT = 'symbol,name,market,price,turnover,change_percent,op
 
 // 這 9 個欄位從 db/009 的第一版 view 起就在，所以逐列查詢不需要退版備援；
 // 底下那串備援只留給「一列」的市場摘要，就算全部打錯也只是幾 KB 的往返。
-const INTRADAY_SUMMARY_WITH_HEAT = 'trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_previous_turnover,market_heat_turnover_change,market_heat_turnover_change_rate,market_heat_average_turnover,market_heat_volume_ratio';
+const INTRADAY_SUMMARY_WITH_HEAT = 'trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_previous_turnover,market_heat_turnover_change,market_heat_turnover_change_rate,market_heat_average_turnover,market_heat_volume_ratio,twse_index_open,twse_index_high,twse_index_low,tpex_index_open,tpex_index_high,tpex_index_low';
 const INTRADAY_SUMMARY_WITH_HEAT_LEGACY = 'trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent,market_heat_score,market_heat_short_trend_score,market_heat_breadth_score,market_heat_volume_score,market_heat_index_daily_change_percent,market_heat_index_weekly_change_percent,market_heat_up_count,market_heat_down_count,market_heat_flat_count,market_heat_compared_stock_count,market_heat_turnover,market_heat_average_turnover,market_heat_volume_ratio';
 const INTRADAY_SUMMARY = 'trade_date,captured_at,twse_index,twse_change_percent,twse_year_to_date_change_percent,tpex_index,tpex_change_percent,tpex_year_to_date_change_percent';
 const INTRADAY_SUMMARY_LEGACY = 'trade_date,captured_at,twse_index,twse_change_percent,tpex_index,tpex_change_percent';
@@ -6303,8 +6785,8 @@ const TOPIC_CATEGORY_TEXT = {
 
 // 熱度排行的層級切換。成員是由子節點往上繼承的，所以「儲存」與「記憶體」、
 // 「IC載板」與「ABF」常常是同一批股票、同一個分數——這不是公式錯，
-// 是不同層級本來就不該擠在同一張榜上比。預設仍然是全部節點：
-// 任何一種篩選都會讓人以為被濾掉的族群不見了，要換成哪一種是使用者的事。
+// 是不同層級本來就不該擠在同一張榜上比。預設先看大族群：
+// 需要查看其他層級時，再由排行範圍切換。
 const TOPIC_SCOPES = [
     {
         key: 'all',

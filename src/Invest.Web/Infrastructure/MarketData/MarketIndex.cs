@@ -9,7 +9,17 @@ public sealed record MarketIndexQuote
 {
     public required Market Market { get; init; }
 
+    /// <summary>收盤指數。盤中則是目前指數。</summary>
     public required decimal Value { get; init; }
+
+    /// <summary>官方日 K 開盤指數；盤中由 MIS 的開盤欄位帶入。</summary>
+    public decimal? OpenPrice { get; init; }
+
+    /// <summary>官方日 K 最高指數；盤中由 MIS 的最高欄位帶入。</summary>
+    public decimal? HighPrice { get; init; }
+
+    /// <summary>官方日 K 最低指數；盤中由 MIS 的最低欄位帶入。</summary>
+    public decimal? LowPrice { get; init; }
 
     public decimal? ChangePercent { get; init; }
 

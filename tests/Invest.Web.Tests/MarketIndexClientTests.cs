@@ -73,6 +73,29 @@ public sealed class MarketIndexClientTests
     }
 
     [Fact]
+    public async Task TWSE指數日K會讀取開高低收與前日漲跌()
+    {
+        var client = new TwseDailyQuoteClient(
+            new HttpClient(new CannedResponseHandler("""
+                {"fields":["日期","開盤指數","最高指數","最低指數","收盤指數"],
+                 "data":[
+                    ["115/08/18","22300.00","22500.00","22100.00","22400.00"],
+                    ["115/08/15","22000.00","22300.00","21900.00","22200.00"]
+                 ]}
+                """)),
+            NullLogger<TwseDailyQuoteClient>.Instance);
+
+        var index = await client.GetMarketIndexWithBarsAsync(new DateOnly(2026, 8, 18));
+
+        Assert.NotNull(index);
+        Assert.Equal(22400m, index.Value);
+        Assert.Equal(22300m, index.OpenPrice);
+        Assert.Equal(22500m, index.HighPrice);
+        Assert.Equal(22100m, index.LowPrice);
+        Assert.Equal(decimal.Round(200m / 22200m * 100m, 2), index.ChangePercent);
+    }
+
+    [Fact]
     public async Task TPEx會以收市與漲跌點數計算櫃買漲跌幅()
     {
         var client = new TpexMarketIndexClient(
@@ -89,6 +112,9 @@ public sealed class MarketIndexClientTests
         Assert.NotNull(index);
         Assert.Equal(Market.Tpex, index.Market);
         Assert.Equal(245.12m, index.Value);
+        Assert.Equal(243m, index.OpenPrice);
+        Assert.Equal(246m, index.HighPrice);
+        Assert.Equal(242m, index.LowPrice);
         Assert.Equal(decimal.Round(2.34m / (245.12m - 2.34m) * 100m, 2), index.ChangePercent);
     }
 

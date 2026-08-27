@@ -1590,6 +1590,23 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+.summary-index-button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.summary-index-button:hover,
+.summary-index-button:focus-visible {
+    color: #1a56db;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
 .summary-index-changes {
     display: inline-flex;
     flex-direction: column;
@@ -1827,6 +1844,18 @@ body {
     border: 1px solid #e4e8ef;
     border-radius: 8px;
     background: #fff;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.market-heat-index-card:hover,
+.market-heat-index-card:focus-visible {
+    border-color: #9dbcf5;
+    box-shadow: 0 2px 8px #1a56db14;
+    outline: none;
 }
 
 .market-heat-index-title {
@@ -2129,7 +2158,7 @@ td.stock-name.stock-name-change-down {
 }
 
 .kline-popover {
-    width: min(600px, calc(100vw - 24px));
+    width: min(680px, calc(100vw - 24px));
 }
 
 .revenue-popover {
@@ -2297,6 +2326,56 @@ td.stock-name.stock-name-change-down {
 
 .daily-kline-coverage {
     margin: 8px 0 3px;
+    color: #8a5a00;
+    font-size: 12px;
+}
+
+.index-kline-card {
+    padding-bottom: 12px;
+}
+
+.index-kline-svg {
+    min-height: 300px;
+}
+
+.index-kline-section-title {
+    fill: #475467;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.index-kline-divider {
+    stroke: #cbd5e1;
+    stroke-width: 1;
+}
+
+.index-kline-turnover-bar {
+    opacity: .72;
+}
+
+.index-kline-turnover-bar.twse {
+    fill: #5b9bea;
+}
+
+.index-kline-turnover-bar.tpex {
+    fill: #8c7ee8;
+}
+
+.index-kline-volume-legend {
+    color: #5b9bea;
+}
+
+.index-kline-volume-legend::before {
+    height: 8px;
+    border-top: 0;
+    background: currentColor;
+}
+
+.index-kline-local-note {
+    margin: 7px 0 3px;
+    padding: 6px 8px;
+    border-radius: 5px;
+    background: #fff8e6;
     color: #8a5a00;
     font-size: 12px;
 }

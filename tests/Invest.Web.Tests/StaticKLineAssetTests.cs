@@ -257,6 +257,27 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 指數K線包含上下圖與本機樣板入口()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+        var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "021_market_index_kline.sql"));
+
+        Assert.Contains("market-indexes.json", script, StringComparison.Ordinal);
+        Assert.Contains("function toggleIndexKLine", script, StringComparison.Ordinal);
+        Assert.Contains("function renderIndexKLineSvg", script, StringComparison.Ordinal);
+        Assert.Contains("INDEX_KLINE_LOCAL_PREVIEW", script, StringComparison.Ordinal);
+        Assert.Contains("twse_index_open", script, StringComparison.Ordinal);
+        Assert.Contains("data-index-market", script, StringComparison.Ordinal);
+        Assert.Contains("上層：指數 K 棒", script, StringComparison.Ordinal);
+        Assert.Contains("下層：", script, StringComparison.Ordinal);
+        Assert.Contains("index-kline-section-title", styles, StringComparison.Ordinal);
+        Assert.Contains("index-kline-turnover-bar", styles, StringComparison.Ordinal);
+        Assert.Contains("twse_index_open", migration, StringComparison.Ordinal);
+        Assert.Contains("tpex_index_low", migration, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 自訂頁使用單日全量資料並以一百檔分頁()
     {
         var html = ReadAsset("index.html");

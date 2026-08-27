@@ -86,6 +86,7 @@ public sealed class StaticSiteExporter(
         var latestRankings = new Dictionary<int, TradingValueRankingResult>();
 
         var kLineFileCount = 0;
+        var marketIndexKLineWritten = false;
 
         if (tradingDates.Length > 0 && selectableDates.Count > 0)
         {
@@ -99,9 +100,18 @@ public sealed class StaticSiteExporter(
                 dataSet.PriceAdjustments,
                 tradingDates[^1],
                 cancellationToken);
+
+            marketIndexKLineWritten = await WriteMarketIndexKLineExportAsync(
+                Path.Combine(dataDirectory, "kline", "market-indexes.json"),
+                dataSet,
+                selectableDates[0].AddMonths(-DailyKLineSelector.DefaultMonths),
+                selectableDates[^1],
+                cancellationToken);
         }
 
-        progress?.Report($"已寫出 {kLineFileCount} 檔最近三個月還原權息日 K 資料");
+        progress?.Report(
+            $"已寫出 {kLineFileCount} 檔最近三個月還原權息日 K 資料"
+            + (marketIndexKLineWritten ? "，以及指數 K 線資料" : string.Empty));
 
         // 一律換算成台北時間，不要用這台機器的時區。
         // 這個值同時決定畫面上的「本快照產生於」與下面查交易限制用的日期；
@@ -800,6 +810,62 @@ public sealed class StaticSiteExporter(
         return count;
     }
 
+    /// <summary>
+    /// 指數共用一份檔案，前端點擊哪個指數才挑哪個市場；下層成交金額則在 C# 依市場加總。
+    /// </summary>
+    private static async Task<bool> WriteMarketIndexKLineExportAsync(
+        string path,
+        MarketDataSet dataSet,
+        DateOnly startDate,
+        DateOnly endDate,
+        CancellationToken cancellationToken)
+    {
+        var stockMarkets = dataSet.Stocks.ToDictionary(
+            stock => stock.Ticker,
+            stock => stock.Market,
+            StringComparer.Ordinal);
+        var markets = new[]
+        {
+            (Market: Domain.Stocks.Market.Twse, Key: "twse", Label: "加權指數", TurnoverLabel: "上市成交金額"),
+            (Market: Domain.Stocks.Market.Tpex, Key: "tpex", Label: "櫃買指數", TurnoverLabel: "上櫃成交金額")
+        };
+
+        var exports = markets.Select(definition =>
+        {
+            var points = MarketIndexKLineCalculator.Calculate(
+                dataSet.MarketIndices,
+                dataSet.DailyTrading,
+                stockMarkets,
+                definition.Market,
+                startDate,
+                endDate);
+
+            return new MarketIndexKLineExport(
+                definition.Key,
+                definition.Label,
+                definition.TurnoverLabel,
+                [.. points.Select(point => new MarketIndexKLineBarExport(
+                    point.TradingDate.ToString("yyyy-MM-dd"),
+                    RoundKLine(point.Open),
+                    RoundKLine(point.High),
+                    RoundKLine(point.Low),
+                    RoundKLine(point.Close),
+                    RoundKLine(point.PreviousClose),
+                    RoundKLine(point.Ma5),
+                    RoundKLine(point.Ma10),
+                    RoundKLine(point.Ma20),
+                    RoundKLine(point.Ma60),
+                    RoundKLine(point.TradingValue)))]);
+        }).ToArray();
+
+        await WriteJsonAsync(
+            path,
+            new MarketIndexKLineFileExport(exports),
+            cancellationToken);
+
+        return exports.Any(export => export.Bars.Count > 0);
+    }
+
     private static decimal RoundKLine(decimal value) => Math.Round(value, 4);
 
     private static decimal? RoundKLine(decimal? value)
@@ -912,6 +978,28 @@ public sealed class StaticSiteExporter(
         decimal? Ma20,
         decimal? Ma60,
         decimal? Ma240);
+
+    private sealed record MarketIndexKLineFileExport(
+        IReadOnlyList<MarketIndexKLineExport> Markets);
+
+    private sealed record MarketIndexKLineExport(
+        string Market,
+        string Label,
+        string TurnoverLabel,
+        IReadOnlyList<MarketIndexKLineBarExport> Bars);
+
+    private sealed record MarketIndexKLineBarExport(
+        string Date,
+        decimal Open,
+        decimal High,
+        decimal Low,
+        decimal Close,
+        decimal? PreviousClose,
+        decimal? Ma5,
+        decimal? Ma10,
+        decimal? Ma20,
+        decimal? Ma60,
+        decimal? TradingValue);
 
     private sealed record ScheduleExport(
         string IntradayStart,

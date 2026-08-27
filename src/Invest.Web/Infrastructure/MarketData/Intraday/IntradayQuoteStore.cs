@@ -139,7 +139,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                    s.symbol, s.name, s.market,
                    q.price, q.turnover, q.change_percent,
                    q.open_price, q.high_price, q.low_price,
-                   latest.captured_at
+                   latest.captured_at,
+                   latest.twse_index_open, latest.twse_index_high, latest.twse_index_low,
+                   latest.tpex_index_open, latest.tpex_index_high, latest.tpex_index_low
             from latest
             join intraday_quotes q on q.run_id = latest.id
             join securities s on s.id = q.security_id
@@ -300,6 +302,8 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                 trade_date, captured_at, source, quote_count,
                 twse_index, twse_change_percent, twse_year_to_date_change_percent,
                 tpex_index, tpex_change_percent, tpex_year_to_date_change_percent,
+                twse_index_open, twse_index_high, twse_index_low,
+                tpex_index_open, tpex_index_high, tpex_index_low,
                 market_heat_score, market_heat_short_trend_score, market_heat_breadth_score,
                 market_heat_volume_score, market_heat_index_daily_change_percent,
                 market_heat_index_weekly_change_percent, market_heat_up_count,
@@ -310,6 +314,8 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                 @tradeDate, @capturedAt, @source, @quoteCount,
                 @twseIndex, @twseChangePercent, @twseYearToDateChangePercent,
                 @tpexIndex, @tpexChangePercent, @tpexYearToDateChangePercent,
+                @twseIndexOpen, @twseIndexHigh, @twseIndexLow,
+                @tpexIndexOpen, @tpexIndexHigh, @tpexIndexLow,
                 @marketHeatScore, @marketHeatShortTrendScore, @marketHeatBreadthScore,
                 @marketHeatVolumeScore, @marketHeatIndexDailyChangePercent,
                 @marketHeatIndexWeeklyChangePercent, @marketHeatUpCount,
@@ -324,6 +330,12 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                               tpex_index = excluded.tpex_index,
                               tpex_change_percent = excluded.tpex_change_percent,
                               tpex_year_to_date_change_percent = excluded.tpex_year_to_date_change_percent,
+                              twse_index_open = excluded.twse_index_open,
+                              twse_index_high = excluded.twse_index_high,
+                              twse_index_low = excluded.twse_index_low,
+                              tpex_index_open = excluded.tpex_index_open,
+                              tpex_index_high = excluded.tpex_index_high,
+                              tpex_index_low = excluded.tpex_index_low,
                               market_heat_score = excluded.market_heat_score,
                               market_heat_short_trend_score = excluded.market_heat_short_trend_score,
                               market_heat_breadth_score = excluded.market_heat_breadth_score,
@@ -358,6 +370,12 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         AddNullableDecimal(command, "tpexIndex", tpex?.Value);
         AddNullableDecimal(command, "tpexChangePercent", tpex?.ChangePercent);
         AddNullableDecimal(command, "tpexYearToDateChangePercent", tpex?.YearToDateChangePercent);
+        AddNullableDecimal(command, "twseIndexOpen", twse?.OpenPrice);
+        AddNullableDecimal(command, "twseIndexHigh", twse?.HighPrice);
+        AddNullableDecimal(command, "twseIndexLow", twse?.LowPrice);
+        AddNullableDecimal(command, "tpexIndexOpen", tpex?.OpenPrice);
+        AddNullableDecimal(command, "tpexIndexHigh", tpex?.HighPrice);
+        AddNullableDecimal(command, "tpexIndexLow", tpex?.LowPrice);
 
         var heat = snapshot.MarketHeat;
         AddNullableDecimal(command, "marketHeatScore", heat?.Score);
@@ -413,8 +431,22 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
     {
         var indices = new List<MarketIndexQuote>(2);
 
-        AddMarketIndex(indices, Market.Twse, ReadNullableDecimal(reader, 2), ReadNullableDecimal(reader, 3));
-        AddMarketIndex(indices, Market.Tpex, ReadNullableDecimal(reader, 4), ReadNullableDecimal(reader, 5));
+        AddMarketIndex(
+            indices,
+            Market.Twse,
+            ReadNullableDecimal(reader, 2),
+            ReadNullableDecimal(reader, 3),
+            ReadNullableDecimal(reader, 16),
+            ReadNullableDecimal(reader, 17),
+            ReadNullableDecimal(reader, 18));
+        AddMarketIndex(
+            indices,
+            Market.Tpex,
+            ReadNullableDecimal(reader, 4),
+            ReadNullableDecimal(reader, 5),
+            ReadNullableDecimal(reader, 19),
+            ReadNullableDecimal(reader, 20),
+            ReadNullableDecimal(reader, 21));
 
         return indices;
     }
@@ -423,7 +455,10 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         ICollection<MarketIndexQuote> indices,
         Market market,
         decimal? value,
-        decimal? changePercent)
+        decimal? changePercent,
+        decimal? openPrice,
+        decimal? highPrice,
+        decimal? lowPrice)
     {
         if (value is not { } indexValue)
         {
@@ -434,6 +469,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         {
             Market = market,
             Value = indexValue,
+            OpenPrice = openPrice,
+            HighPrice = highPrice,
+            LowPrice = lowPrice,
             ChangePercent = changePercent
         });
     }

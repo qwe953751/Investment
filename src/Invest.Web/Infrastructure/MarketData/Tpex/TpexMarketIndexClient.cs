@@ -70,6 +70,9 @@ public sealed class TpexMarketIndexClient(
             : [];
 
         var dateIndex = FindField(fields, "日期") ?? 0;
+        var openIndex = FindField(fields, "開市", "開盤", "開盤指數") ?? 1;
+        var highIndex = FindField(fields, "最高", "最高指數") ?? 2;
+        var lowIndex = FindField(fields, "最低", "最低指數") ?? 3;
         var valueIndex = FindField(fields, "收市", "收盤", "收盤指數") ?? 4;
         var pointsIndex = FindField(fields, "漲/跌", "漲跌", "漲跌點數") ?? 5;
         var percentIndex = FindField(fields, "漲跌百分比(%)", "漲跌百分比");
@@ -110,6 +113,12 @@ public sealed class TpexMarketIndexClient(
             {
                 Market = Market.Tpex,
                 Value = indexValue,
+                OpenPrice = QuoteFieldParser.ParseNullableDecimal(
+                    QuoteFieldParser.ReadCell(row, openIndex)),
+                HighPrice = QuoteFieldParser.ParseNullableDecimal(
+                    QuoteFieldParser.ReadCell(row, highIndex)),
+                LowPrice = QuoteFieldParser.ParseNullableDecimal(
+                    QuoteFieldParser.ReadCell(row, lowIndex)),
                 ChangePercent = changePercent
             };
         }

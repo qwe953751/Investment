@@ -282,6 +282,9 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         {
             Market = validMarket,
             Value = indexValue,
+            OpenPrice = QuoteFieldParser.ParseNullableDecimal(ReadString(item, "o")),
+            HighPrice = QuoteFieldParser.ParseNullableDecimal(ReadString(item, "h")),
+            LowPrice = QuoteFieldParser.ParseNullableDecimal(ReadString(item, "l")),
             ChangePercent = indexValue is { } current
                 && previousClose is { } baseline
                 && baseline > 0

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Invest.Web.Domain.Stocks;
 
@@ -85,6 +86,28 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
 
         return ParseMarketSummaryIndex(document.RootElement, tradingDate);
+    }
+
+    /// <summary>
+    /// 讀取臺灣證券交易所的指數日 K。MI_INDEX 只有收盤指數，不能拿來畫 K 棒；
+    /// MI_5MINS_HIST 雖然名稱帶有 5 分鐘，但官方回應同時提供每個交易日的開高低收，
+    /// 因此這裡用月份查詢後挑出指定日期。
+    /// </summary>
+    public async Task<MarketIndexQuote?> GetMarketIndexWithBarsAsync(
+        DateOnly tradingDate,
+        CancellationToken cancellationToken = default)
+    {
+        var monthStart = new DateOnly(tradingDate.Year, tradingDate.Month, 1);
+        var url = "https://www.twse.com.tw/indicesReport/MI_5MINS_HIST"
+            + $"?date={monthStart:yyyyMMdd}&response=json";
+
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+        return ParseMarketIndexBar(document.RootElement, tradingDate);
     }
 
     /// <summary>
@@ -258,6 +281,118 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
 
         return null;
     }
+
+    private static MarketIndexQuote? ParseMarketIndexBar(JsonElement root, DateOnly tradingDate)
+    {
+        if (!root.TryGetProperty("fields", out var fieldArray)
+            || fieldArray.ValueKind != JsonValueKind.Array
+            || !root.TryGetProperty("data", out var rows)
+            || rows.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var fields = fieldArray.EnumerateArray()
+            .Select(field => field.ValueKind == JsonValueKind.String ? field.GetString() : null)
+            .ToArray();
+        var dateIndex = FindField(fields, "日期");
+        var openIndex = FindField(fields, "開盤指數", "開盤", "開市");
+        var highIndex = FindField(fields, "最高指數", "最高");
+        var lowIndex = FindField(fields, "最低指數", "最低");
+        var closeIndex = FindField(fields, "收盤指數", "收盤", "收市");
+
+        if (dateIndex is not { } dateColumn
+            || openIndex is not { } openColumn
+            || highIndex is not { } highColumn
+            || lowIndex is not { } lowColumn
+            || closeIndex is not { } closeColumn)
+        {
+            return null;
+        }
+
+        var bars = rows.EnumerateArray()
+            .Select(row =>
+            {
+                var date = ParseDate(QuoteFieldParser.ReadCell(row, dateColumn));
+                var open = QuoteFieldParser.ParseNullableDecimal(QuoteFieldParser.ReadCell(row, openColumn));
+                var high = QuoteFieldParser.ParseNullableDecimal(QuoteFieldParser.ReadCell(row, highColumn));
+                var low = QuoteFieldParser.ParseNullableDecimal(QuoteFieldParser.ReadCell(row, lowColumn));
+                var close = QuoteFieldParser.ParseNullableDecimal(QuoteFieldParser.ReadCell(row, closeColumn));
+
+                return date is { } validDate
+                    && open is > 0m
+                    && high is > 0m
+                    && low is > 0m
+                    && close is > 0m
+                    ? new MarketIndexBar(validDate, open.Value, high.Value, low.Value, close.Value)
+                    : null;
+            })
+            .OfType<MarketIndexBar>()
+            .OrderBy(bar => bar.Date)
+            .ToArray();
+
+        var current = bars.FirstOrDefault(bar => bar.Date == tradingDate);
+
+        if (current is null)
+        {
+            return null;
+        }
+
+        var previous = bars.LastOrDefault(bar => bar.Date < tradingDate);
+
+        return new MarketIndexQuote
+        {
+            Market = Market.Twse,
+            Value = current.Close,
+            OpenPrice = current.Open,
+            HighPrice = current.High,
+            LowPrice = current.Low,
+            ChangePercent = previous is { Close: > 0m }
+                ? decimal.Round((current.Close - previous.Close) / previous.Close * 100m, 2)
+                : null
+        };
+    }
+
+    private static DateOnly? ParseDate(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var parts = raw.Trim().Replace('-', '/').Split('/');
+
+        if (parts.Length == 3
+            && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var year)
+            && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var month)
+            && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var day))
+        {
+            if (year < 1911)
+            {
+                year += 1911;
+            }
+
+            return DateOnly.TryParseExact(
+                $"{year:0000}/{month:00}/{day:00}",
+                "yyyy/MM/dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var date)
+                ? date
+                : null;
+        }
+
+        return DateOnly.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private sealed record MarketIndexBar(
+        DateOnly Date,
+        decimal Open,
+        decimal High,
+        decimal Low,
+        decimal Close);
 
     private static int? FindField(IReadOnlyList<string?> fields, params string[] names)
     {

@@ -151,8 +151,8 @@ public class MisIntradayPriceTests
     {
         var snapshot = await ReadAsync("""
             {"msgArray":[
-                {"c":"t00","ex":"tse","d":"20260818","z":"22345.67","y":"22200.00"},
-                {"c":"o00","ex":"otc","d":"20260818","z":"245.12","y":"242.78"},
+                {"c":"t00","ex":"tse","d":"20260818","z":"22345.67","y":"22200.00","o":"22250.00","h":"22400.00","l":"22150.00"},
+                {"c":"o00","ex":"otc","d":"20260818","z":"245.12","y":"242.78","o":"243.00","h":"246.00","l":"242.00"},
                 {"c":"2330","n":"台積電","ex":"tse","d":"20260818","z":"2390.0000","y":"2400.0000","v":"1"}
             ],"rtcode":"0000"}
             """);
@@ -161,8 +161,14 @@ public class MisIntradayPriceTests
         var tpex = Assert.Single(snapshot.MarketIndices, index => index.Market == Market.Tpex);
 
         Assert.Equal(22345.67m, twse.Value);
+        Assert.Equal(22250m, twse.OpenPrice);
+        Assert.Equal(22400m, twse.HighPrice);
+        Assert.Equal(22150m, twse.LowPrice);
         Assert.Equal(decimal.Round((22345.67m - 22200m) / 22200m * 100m, 2), twse.ChangePercent);
         Assert.Equal(245.12m, tpex.Value);
+        Assert.Equal(243m, tpex.OpenPrice);
+        Assert.Equal(246m, tpex.HighPrice);
+        Assert.Equal(242m, tpex.LowPrice);
         Assert.Equal(decimal.Round((245.12m - 242.78m) / 242.78m * 100m, 2), tpex.ChangePercent);
     }
 
