@@ -403,7 +403,10 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
         var separator = raw.IndexOf('_');
 
-        return QuoteFieldParser.ParseNullableDecimal(separator < 0 ? raw : raw[..separator]);
+        var price = QuoteFieldParser.ParseNullableDecimal(separator < 0 ? raw : raw[..separator]);
+
+        // MIS 會用 0.0000 代表該側沒有有效掛單；不能把它當成零元現價。
+        return price is > 0m ? price : null;
     }
 
     private static DateOnly? ParseTradeDate(JsonElement item)

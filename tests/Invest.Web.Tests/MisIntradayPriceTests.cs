@@ -81,6 +81,37 @@ public class MisIntradayPriceTests
         Assert.Equal(2375m, quote.Price);
     }
 
+    [Theory]
+    [InlineData("8046", "南電", "1295.0000", "1175.0000", "1180.0000", "6918", 1235)]
+    [InlineData("6933", "AMAX-KY", "236.5000", "236.5000", "215.0000", "487", 236.5)]
+    public async Task 零價最佳買價不會被當成現價(
+        string ticker,
+        string name,
+        string high,
+        string low,
+        string previousClose,
+        string volume,
+        decimal expectedPrice)
+    {
+        var snapshot = await ReadAsync($$"""
+            {"msgArray":[{
+                "c":"{{ticker}}","n":"{{name}}","ex":"tse","d":"20260827",
+                "z":"-","pz":"-","a":"-",
+                "b":"0.0000_{{high}}_{{low}}_",
+                "o":"{{high}}","h":"{{high}}","l":"{{low}}","y":"{{previousClose}}",
+                "v":"{{volume}}"
+            }],"rtcode":"0000"}
+            """);
+
+        var quote = Assert.Single(snapshot.Quotes);
+
+        Assert.Equal(IntradayPriceSource.HighLowMid, quote.PriceSource);
+        Assert.Equal(expectedPrice, quote.Price);
+        Assert.True(quote.TradingVolume > 0);
+        Assert.True(quote.EstimatedTradingValue > 0);
+        Assert.NotEqual(-100m, quote.ChangePercent);
+    }
+
     [Fact]
     public async Task 完全沒有五檔時退到當日高低中價()
     {
