@@ -4576,6 +4576,17 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars) {
         role: 'img',
         'aria-label': `${label}三個月指數日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與${turnoverLabel}`
     });
+    const priceClipId = `index-kline-price-clip-${market}`;
+    const priceClip = svgElement('clipPath', { id: priceClipId });
+    priceClip.append(svgElement('rect', {
+        x: left,
+        y: top,
+        width: right - left,
+        height: priceBottom - top
+    }));
+    const defs = svgElement('defs');
+    defs.append(priceClip);
+    svg.append(defs);
 
     svg.append(svgElement('text', {
         class: 'index-kline-section-title', x: left, y: 13
@@ -4631,6 +4642,7 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars) {
         if (commands.length > 1) {
             svg.append(svgElement('path', {
                 class: `daily-kline-ma ${line.className}`,
+                'clip-path': `url(#${priceClipId})`,
                 d: commands.join(' ')
             }));
         }

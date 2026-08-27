@@ -309,6 +309,23 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 指數均線必須裁切在上層K線區()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("function renderIndexKLineSvg", StringComparison.Ordinal);
+        var end = script.IndexOf("function renderIndexKLinePopover", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start, "找不到指數 K 線 SVG 繪圖函式。");
+
+        var function = script[start..end];
+
+        Assert.Contains("const priceClipId = `index-kline-price-clip-${market}`", function, StringComparison.Ordinal);
+        Assert.Contains("svgElement('clipPath'", function, StringComparison.Ordinal);
+        Assert.Contains("height: priceBottom - top", function, StringComparison.Ordinal);
+        Assert.Contains("'clip-path': `url(#${priceClipId})`", function, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 自訂頁使用單日全量資料並以一百檔分頁()
     {
         var html = ReadAsset("index.html");
