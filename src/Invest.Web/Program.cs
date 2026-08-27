@@ -285,8 +285,10 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
 
     // 同一個交易時段分類不會隨兩分鐘快照變動；成功讀到後固定重用，避免 Google Sheet
-    // 一時連不上就讓收集器每輪都多打一個外部來源。若一開始失敗，每 15 分鐘才重試一次。
+    // 一時連不上就讓收集器每輪都多打一個外部來源。分類是附加資料，必須在背景讀取；
+    // 不能讓一份慢的 xlsx 或產業分類來源卡住原始 MIS 快照。若一開始失敗，每 15 分鐘才重試一次。
     TopicMapping? topicMapping = null;
+    Task<TopicMapping?>? topicMappingTask = null;
     var nextTopicCatalogLoadAt = DateTimeOffset.MinValue;
 
     try
@@ -371,27 +373,25 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
                     if (result.Written)
                     {
-                        if (topicMapping is null && capturedAt >= nextTopicCatalogLoadAt)
+                        if (topicMapping is null && topicMappingTask is { IsCompleted: true })
                         {
-                            try
-                            {
-                                topicMapping = (await topicClient.GetCatalogAsync(cts.Token)).Active;
+                            topicMapping = await topicMappingTask;
+                            topicMappingTask = null;
 
-                                if (topicMapping is null)
-                                {
-                                    nextTopicCatalogLoadAt = capturedAt.AddMinutes(15);
-                                    Console.WriteLine(
-                                        $"{localTime:HH:mm:ss} 讀不到可用族群分類，15 分鐘後再試；"
-                                        + "本輪原始盤中資料已保留。");
-                                }
-                            }
-                            catch (Exception exception)
-                                when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                            if (topicMapping is null)
                             {
                                 nextTopicCatalogLoadAt = capturedAt.AddMinutes(15);
                                 Console.WriteLine(
-                                    $"{localTime:HH:mm:ss} 讀取族群分類失敗，15 分鐘後再試：{exception.Message}");
+                                    $"{localTime:HH:mm:ss} 讀不到可用族群分類，15 分鐘後再試；"
+                                    + "本輪原始盤中資料已保留。");
                             }
+                        }
+
+                        if (topicMapping is null
+                            && topicMappingTask is null
+                            && capturedAt >= nextTopicCatalogLoadAt)
+                        {
+                            topicMappingTask = LoadIntradayTopicMappingAsync(topicClient, cts.Token);
                         }
 
                         if (topicMapping is not null && result.RunId is { } runId)
@@ -511,6 +511,34 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     }
 
     Console.WriteLine("整場 MIS 都正常回應、但日期一直不是今天，判定為休市。");
+}
+
+/// <summary>
+/// 族群分類是盤中原始快照的附加資料，外部來源慢或暫時失敗時不可阻塞下一輪 MIS。
+/// 任務在背景執行，最長 30 秒；呼叫端只在已完成時讀取結果，失敗後再依 15 分鐘節流重試。
+/// </summary>
+static async Task<TopicMapping?> LoadIntradayTopicMappingAsync(
+    GoogleSheetTopicClient topicClient,
+    CancellationToken cancellationToken)
+{
+    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    timeout.CancelAfter(TimeSpan.FromSeconds(30));
+
+    try
+    {
+        return (await topicClient.GetCatalogAsync(timeout.Token)).Active;
+    }
+    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+    {
+        Console.WriteLine("族群分類讀取超過 30 秒，原始盤中報價不中斷；15 分鐘後再試。");
+        return null;
+    }
+    catch (Exception exception)
+        when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+    {
+        Console.WriteLine($"族群分類讀取失敗，原始盤中報價不中斷；15 分鐘後再試：{exception.Message}");
+        return null;
+    }
 }
 
 /// <summary>
