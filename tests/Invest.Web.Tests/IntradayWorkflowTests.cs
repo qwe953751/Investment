@@ -14,6 +14,22 @@ public sealed class IntradayWorkflowTests
     }
 
     [Fact]
+    public void 盤中收集有錯開的排程備援且共用排程併發鎖()
+    {
+        // GitHub 的 schedule 是盡力而為，單一 cron 曾在交易日完全沒有產生 run。
+        // 三個啟動時機可以互相補位；因為同屬 schedule event，既有的併發鎖會讓
+        // 正常先啟動的收集器繼續跑完，晚到的備援不會平行寫入同一批盤中資料。
+        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "intraday.yml"));
+
+        Assert.Contains("- cron: '33 23 * * 0-4'", workflow, StringComparison.Ordinal);
+        Assert.Contains("- cron: '17 0 * * 1-5'", workflow, StringComparison.Ordinal);
+        Assert.Contains("- cron: '1 1 * * 1-5'", workflow, StringComparison.Ordinal);
+        Assert.Contains("group: intraday-${{ github.event_name }}", workflow, StringComparison.Ordinal);
+        Assert.Contains("needs: preflight", workflow, StringComparison.Ordinal);
+        Assert.Contains("needs.preflight.outputs.should_collect == 'true'", workflow, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 盤中族群熱度有可追溯快照且會隨原始盤中輪次刪除()
     {
         var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "013_intraday_topic_heat.sql"));

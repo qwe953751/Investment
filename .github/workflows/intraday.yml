@@ -8,7 +8,12 @@ name: 盤中報價收集
 
 on:
   schedule:
-    # 台北時間 07:33（= UTC 週日到週四 23:33），開盤前一個半小時卡住 runner。
+    # GitHub 的 schedule 是盡力而為；2026-08-27 曾在交易日完全漏送 07:33 的事件。
+    # 所以在三個非尖峰分鐘建立同一個收集器的啟動機會：台北 07:33、08:17、09:01。
+    # 正常時最早的一場會先拿到同一個 schedule 併發鎖；其餘只會排隊，收盤後由
+    # preflight 略過。第一場漏送時，後面的場次才會補上，不會同時寫兩輪資料。
+    #
+    # 07:33（= UTC 週日到週四 23:33）會在開盤前一個半小時卡住 runner。
     #
     # **不能再更早。** GitHub 對單一 job 有六小時硬上限，時間到直接 cancel，
     # timeout-minutes 設多大都沒用。原本排 07:03、實際 07:30 開跑，
@@ -23,6 +28,9 @@ on:
     # 提早開跑不會寫進盤前髒資料：MIS 在開盤前給的是上一個交易日，收集器認得出來。
     # 收工時間定義在 CollectionSchedule（前端也讀同一份），cron 讀不到，改那邊要順手看這裡。
     - cron: '33 23 * * 0-4'
+    # 台北週一至週五 08:17、09:01；UTC 跨日規則和第一場不同。
+    - cron: '17 0 * * 1-5'
+    - cron: '1 1 * * 1-5'
   workflow_dispatch:
 
 # 上一場還沒收工就不要再開一場，否則同一個時間點會寫進兩輪。
@@ -35,7 +43,30 @@ concurrency:
   group: intraday-${{ github.event_name }}
 
 jobs:
+  # 正常首場已經收工後，排隊中的備援不能再補寫一輪收盤後資料。
+  # `concurrency` 在 workflow 層，因此這一關只會在輪到該 run 時才執行。
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      should_collect: ${{ steps.window.outputs.should_collect }}
+    steps:
+      - id: window
+        name: 確認仍在盤中收集時段
+        env:
+          TZ: Asia/Taipei
+        run: |
+          now=$(date +%H%M)
+          if [ "$now" -ge 700 ] && [ "$now" -lt 1335 ]; then
+            echo "should_collect=true" >> "$GITHUB_OUTPUT"
+            echo "台北時間 $(date '+%F %T')，開始收集。"
+          else
+            echo "should_collect=false" >> "$GITHUB_OUTPUT"
+            echo "台北時間 $(date '+%F %T')，已不在收集時段，略過晚到的備援。"
+          fi
+
   collect:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.should_collect == 'true' }}
     runs-on: ubuntu-latest
     # 07:03 開始跑到 13:35 收工是六個半小時，留一點餘裕。
     timeout-minutes: 420
