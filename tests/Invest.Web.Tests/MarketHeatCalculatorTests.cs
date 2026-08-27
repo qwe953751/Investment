@@ -167,6 +167,53 @@ public sealed class MarketHeatCalculatorTests
     }
 
     [Fact]
+    public void 各分項先限制在十分再做熱絡加權()
+    {
+        var dates = new[]
+        {
+            new DateOnly(2026, 1, 5),
+            new DateOnly(2026, 1, 6)
+        };
+        var trading = dates
+            .SelectMany((date, index) => new DailyStockTrading[]
+            {
+                new()
+                {
+                    TradingDate = date,
+                    Ticker = "2330",
+                    ClosePrice = index == 0 ? 10m : 12m,
+                    TradingValue = index == 0 ? 100m : 200m
+                },
+                new()
+                {
+                    TradingDate = date,
+                    Ticker = "1101",
+                    ClosePrice = index == 0 ? 10m : 8m,
+                    TradingValue = index == 0 ? 100m : 200m
+                }
+            })
+            .ToArray();
+        var indices = dates.Select((date, index) => new DailyMarketIndex
+        {
+            TradingDate = date,
+            Quotes =
+            [
+                new MarketIndexQuote { Market = Market.Twse, Value = 100m + index },
+                new MarketIndexQuote { Market = Market.Tpex, Value = 200m + index * 2m }
+            ]
+        }).ToArray();
+
+        var result = MarketHeatCalculator.Calculate(trading, indices, dates[^1]);
+
+        Assert.NotNull(result);
+        Assert.Equal(7m, result.ShortTrendScore);
+        Assert.Equal(5m, result.BreadthScore);
+        Assert.Equal(2m, result.VolumeRatio);
+        Assert.Equal(10m, result.VolumeScore);
+        Assert.Equal(7.2m, result.Score);
+    }
+
+    [Fact]
     public void 盤中預估總成交額在早盤門檻前不造值()
     {
         Assert.Null(IntradayTurnoverProjection.Estimate(20m, new TimeOnly(9, 20)));

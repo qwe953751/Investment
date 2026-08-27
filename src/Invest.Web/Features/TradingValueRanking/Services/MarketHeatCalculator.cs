@@ -190,9 +190,9 @@ public static class MarketHeatCalculator
             : null;
 
         var score = WeightedAverage(
-            (trendScore, 0.35m),
-            (breadthScore, 0.35m),
-            (volumeScore, 0.30m));
+            (ClampScore(trendScore), 0.35m),
+            (ClampScore(breadthScore), 0.35m),
+            (ClampScore(volumeScore), 0.30m));
 
         return new MarketHeatMetrics
         {
