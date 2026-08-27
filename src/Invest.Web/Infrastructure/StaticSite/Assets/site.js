@@ -17,6 +17,10 @@ const PREVIEW_QUERY = new URLSearchParams(window.location.search).get('preview')
 // 這個開關只接受 localhost，正式網址不會進入假資料分支。
 const INDEX_KLINE_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'index-kline-v1';
+// 本機專用：用既有盤後快照組一份明確標示的盤中樣本，讓版面在休市時也能確認。
+// 正式網址不會進入這個分支，正式盤中一律讀資料庫的最新輪次。
+const CUSTOM_INTRADAY_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && PREVIEW_QUERY === 'custom-intraday-v1';
 // 本機專用：不連資料庫也能檢查筆記的永久編號與版面。只影響筆記頁，資產頁一律讀寫資料庫。
 const NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'review-20260826-notes-v1';
@@ -134,9 +138,14 @@ const VIEWS = [
     { key: 'intraday', text: '盤中', hint: '證交所的即時行情，依收集排程更新；加權、櫃買與已開啟標的的當日 K 棒同步重讀。' },
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
     { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' },
-    { key: 'custom', text: '自訂', hint: '瀏覽單一交易日的全部上市櫃個股，可選日期與成交值下限；不建立預設排行。' },
+    { key: 'custom', text: '自訂', hint: '瀏覽指定交易日的全部上市櫃收盤資料，或最新一輪的全市場盤中資料；不建立預設排行。' },
     { key: 'assets', text: '資產', hint: '自己維護的帳戶與持倉：使用者、帳戶、現金與持倉存在資料庫，任何裝置打開都看得到；可上傳券商截圖辨識後套用。' },
     { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' }
+];
+
+const CUSTOM_DATA_SOURCES = [
+    { key: 'intraday', text: '盤中', hint: '瀏覽最新一輪全市場盤中資料；交易日選擇器會停用。' },
+    { key: 'daily', text: '盤後', hint: '瀏覽指定交易日的收盤資料；可以使用交易日選擇器。' }
 ];
 
 // 筆記與資產都是個人工作區，最高權限才顯示；檢視權限只保留公開行情頁。
@@ -313,7 +322,7 @@ let intradayAlteredTrading = new Set();
 
 function toBadges(ticker) {
     const badges = [];
-    const isIntraday = state.view === 'intraday';
+    const isIntraday = isIntradayDataView();
     const entry = (isIntraday ? intradayDispositions : dispositions).get(ticker);
 
     if (entry) {
@@ -633,8 +642,11 @@ function customStatusMatches(ticker) {
         return true;
     }
 
-    return (filters.disposition && dispositions.has(ticker))
-        || (filters.fullDelivery && alteredTrading.has(ticker));
+    const activeDispositions = isCustomIntradayView() ? intradayDispositions : dispositions;
+    const activeAlteredTrading = isCustomIntradayView() ? intradayAlteredTrading : alteredTrading;
+
+    return (filters.disposition && activeDispositions.has(ticker))
+        || (filters.fullDelivery && activeAlteredTrading.has(ticker));
 }
 
 function customSearchMatches(row) {
@@ -793,9 +805,29 @@ const CUSTOM_COLUMNS = [
     { key: 'value', title: '成交值（億）', hint: '所選單一交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) }
 ];
 
+// 自訂頁的盤中欄位沿用同一組個股欄位，只改成即時資料的語意。
+// 這樣盤後與盤中的排序、搜尋、營收與 K 線互動不會各自長一套。
+const CUSTOM_INTRADAY_COLUMNS = CUSTOM_COLUMNS.map(column => {
+    if (column.key === 'close') {
+        return { ...column, title: '現價', hint: '盤中最新一筆成交價；尚未成交時顯示 —。'};
+    }
+
+    if (column.key === 'price') {
+        return { ...column, hint: '上層「日」是現價相對昨日收盤價；下層「週」是現價相對本週開始前最後有效收盤價。'};
+    }
+
+    if (column.key === 'value') {
+        return { ...column, hint: '自開盤起累計的成交值，用現價 × 累計成交量推算；這裡顯示全市場盤中資料，不只排行前 100 檔。'};
+    }
+
+    return column;
+});
+
 const columnsForView = view => view === 'intraday'
     ? INTRADAY_COLUMNS
-    : view === 'custom' ? CUSTOM_COLUMNS : COLUMNS;
+    : view === 'custom'
+        ? (state.customSource === 'intraday' ? CUSTOM_INTRADAY_COLUMNS : CUSTOM_COLUMNS)
+        : COLUMNS;
 
 const columns = () => columnsForView(state.view);
 
@@ -870,6 +902,7 @@ const state = {
     view: 'daily',
     period: DEFAULT_PERIOD.daily,
     date: '',      // 交易日，start() 從 manifest 取最新的一天。
+    customSource: 'daily',
     mode: 'heat',
     market: 'all',
 
@@ -901,6 +934,14 @@ const state = {
     // 不能在切換時硬套預設，也不能讓自訂頁的股票代號排序污染排行榜。
     viewPreferences: defaultViewPreferences()
 };
+
+function isCustomIntradayView() {
+    return state.view === 'custom' && state.customSource === 'intraday';
+}
+
+function isIntradayDataView() {
+    return state.view === 'intraday' || isCustomIntradayView();
+}
 
 const thresholdStateKey = () => (state.view === 'custom' ? 'customThreshold' : 'threshold');
 const activeThreshold = () => state[thresholdStateKey()];
@@ -1084,7 +1125,12 @@ function renderAccessBadge() {
 // 留著反而會讓人以為切到盤中還在篩什麼。市場與鎖定兩邊都適用。
 function applyViewVisibility() {
     for (const element of document.querySelectorAll('[data-view]')) {
-        element.hidden = !element.dataset.view.split(/\s+/).includes(state.view);
+        const matchesView = element.dataset.view.split(/\s+/).includes(state.view);
+        const requiredCustomSource = element.dataset.customSource;
+        const matchesCustomSource = state.view !== 'custom'
+            || requiredCustomSource === undefined
+            || requiredCustomSource === state.customSource;
+        element.hidden = !(matchesView && matchesCustomSource);
     }
 
     // 排行榜、族群、筆記與資產是互斥的內容區塊；它們都沒有 data-view，
@@ -1117,6 +1163,7 @@ const PAGE_HEADINGS = {
 
 function renderFilters() {
     const custom = state.view === 'custom';
+    const customIntraday = isCustomIntradayView();
     el('page-heading').textContent = PAGE_HEADINGS[state.view] ?? '個股成交值排行';
     document.title = el('page-heading').textContent;
     renderAccessBadge();
@@ -1132,6 +1179,7 @@ function renderFilters() {
 
     wireNotes();
     applyViewVisibility();
+    renderCustomSourceOptions();
 
     const intraday = state.view === 'intraday';
 
@@ -1161,7 +1209,7 @@ function renderFilters() {
             key: threshold.key * 10_000,
             text: threshold.text,
             hint: threshold.key > 0
-                ? `${custom ? '當日' : '平均每日'}成交值 ${threshold.text} 以上`
+                ? `${custom ? (customIntraday ? '盤中累計' : '當日') : '平均每日'}成交值 ${threshold.text} 以上`
                 : '不過濾'
         })),
         activeThreshold(),
@@ -1170,7 +1218,9 @@ function renderFilters() {
     const thresholdLabel = el('threshold-label');
     thresholdLabel.textContent = custom ? '成交值下限' : '成交門檻';
     thresholdLabel.dataset.hint = custom
-        ? '所選單一交易日的成交值下限。預設不限，所有符合資料定義的上市櫃個股都可透過分頁瀏覽。'
+        ? (customIntraday
+            ? '目前盤中累計成交值的下限。預設不限，所有盤中資料中的上市櫃個股都可透過分頁瀏覽。'
+            : '所選單一交易日的成交值下限。預設不限，所有符合資料定義的上市櫃個股都可透過分頁瀏覽。')
         : '「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。';
 
     renderThresholdInput();
@@ -1180,6 +1230,35 @@ function renderFilters() {
     if (state.view === 'notes') {
         renderNotes();
     }
+}
+
+function renderCustomSourceOptions() {
+    const host = el('custom-source-options');
+
+    if (!host) {
+        return;
+    }
+
+    renderOptions(
+        'custom-source-options',
+        CUSTOM_DATA_SOURCES.map(source => ({
+            ...source,
+            disabled: source.key === 'intraday' && supabase === null
+        })),
+        state.customSource,
+        source => update({ customSource: source, customPage: 1 }));
+
+    const note = el('custom-source-note');
+
+    if (!note) {
+        return;
+    }
+
+    note.textContent = isCustomIntradayView()
+        ? supabase === null
+            ? '盤中需要資料庫連線。'
+            : '最新一輪全市場資料；交易日選擇已停用。'
+        : '指定交易日的盤後收盤資料；切換盤中後交易日會停用。';
 }
 
 // 按鈕之外的任意金額。單位與按鈕一樣是平均每日成交值（億元），
@@ -1194,9 +1273,11 @@ function renderThresholdInput() {
     input.min = '0';
     input.step = '0.1';
     input.placeholder = '自訂';
-    input.dataset.hint = state.view === 'custom'
-        ? '自己輸入所選交易日的成交值下限，單位為億元'
-        : '自己輸入金額，單位與按鈕相同：平均每日成交值（億元）';
+    input.dataset.hint = isCustomIntradayView()
+        ? '自己輸入目前盤中累計成交值下限，單位為億元'
+        : state.view === 'custom'
+            ? '自己輸入所選交易日的成交值下限，單位為億元'
+            : '自己輸入金額，單位與按鈕相同：平均每日成交值（億元）';
 
     const thresholdInBillions = activeThreshold() / 100_000_000;
     input.value = thresholdInBillions > 0
@@ -1390,6 +1471,11 @@ function applyStoredSettings() {
             state.sortKey = state.customSortKey;
             state.sortDescending = state.customSortDescending;
         }
+    }
+
+    if (CUSTOM_DATA_SOURCES.some(source => source.key === stored.customSource)
+        && (stored.customSource !== 'intraday' || supabase !== null)) {
+        state.customSource = stored.customSource;
     }
 
     if (PERIODS.some(period => period.days === stored.period)) {
@@ -3883,7 +3969,7 @@ const weekStartKey = key => {
 const monthIndex = date => date.getFullYear() * 12 + date.getMonth();
 
 function renderDatePicker() {
-    const host = el('date-picker');
+    const host = el(state.view === 'custom' ? 'custom-date-picker' : 'date-picker');
     host.replaceChildren();
 
     // 前後交易日各一顆按鈕，看連續幾天的變化不必每次開月曆。
@@ -4286,7 +4372,7 @@ function buildLocalIndexKLinePreview() {
         ['twse', '加權指數', '上市成交金額', 22_000, 230_000_000_000],
         ['tpex', '櫃買指數', '上櫃成交金額', 250, 80_000_000_000]
     ]) {
-        const source = state.view === 'intraday'
+        const source = isIntradayDataView()
             ? current?.marketIndices
             : marketIndices.get(endDate) ?? marketIndices.get(state.date);
         const value = Number(source?.[`${market}Index`]);
@@ -4406,7 +4492,7 @@ function selectedIndexKLineBars(market) {
     const startDate = klineStartDate(endDate);
     const bars = (data.bars ?? [])
         .filter(bar => bar.date >= startDate && bar.date <= endDate);
-    const liveBar = state.view === 'intraday' ? intradayIndexKLineBar(market) : null;
+    const liveBar = isIntradayDataView() ? intradayIndexKLineBar(market) : null;
 
     if (!liveBar) {
         return bars;
@@ -4632,7 +4718,7 @@ function renderIndexKLinePopover(market, anchor) {
         message.textContent = '這個期間沒有完整的指數 OHLC 資料。';
         card.append(message);
     } else {
-        if (state.view === 'intraday' && !INDEX_KLINE_LOCAL_PREVIEW && !intradayIndexKLineBar(market)) {
+        if (isIntradayDataView() && !INDEX_KLINE_LOCAL_PREVIEW && !intradayIndexKLineBar(market)) {
             const note = document.createElement('p');
             note.className = 'daily-kline-coverage';
             note.textContent = '目前盤中快照尚未提供完整指數開高低，先顯示最近完整日 K；資料庫 migration 完成後會接上當日棒。';
@@ -4704,7 +4790,7 @@ async function loadTopicIntradayKLine(ticker) {
 }
 
 function klineEndDate() {
-    if (state.view === 'intraday') {
+    if (isIntradayDataView()) {
         return current?.tradeDate;
     }
 
@@ -4758,7 +4844,7 @@ function selectedKLineBars(ticker) {
 
     // 盤中把 MIS 的當日開高低與最新現價接到歷史日 K 尾端；排行榜與族群列表
     // 都讀各自正在呈現的同一輪盤中資料，不能拿前一次切換頁籤的排名資料湊。
-    const liveBar = state.view === 'intraday'
+    const liveBar = isIntradayDataView()
         ? current?.rows.find(row => row.ticker === ticker)?.liveKLine
         : topicUsesIntradayData()
             ? topicIntradayKLines.get(ticker)
@@ -5857,12 +5943,20 @@ function renderTable() {
 function renderSummary() {
     if (state.view === 'custom') {
         const threshold = activeThreshold();
-        const items = [
-            ['交易日', state.date.replaceAll('-', '/')],
-            ['全市場資料', `${current.totalStockCount} 檔`],
-            ['成交值下限', threshold === 0 ? '不限' : `${toBillionText(threshold)} 億元`],
-            ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
-        ];
+        const items = isCustomIntradayView()
+            ? [
+                ['資料日', current.tradeDate.replaceAll('-', '/')],
+                ['資料時間', current.capturedAt + intradayAgeText()],
+                ['全市場資料', `${current.totalStockCount} 檔`],
+                ['成交值下限', threshold === 0 ? '不限' : `${toBillionText(threshold)} 億元`],
+                ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
+            ]
+            : [
+                ['交易日', state.date.replaceAll('-', '/')],
+                ['全市場資料', `${current.totalStockCount} 檔`],
+                ['成交值下限', threshold === 0 ? '不限' : `${toBillionText(threshold)} 億元`],
+                ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
+            ];
 
         const summary = el('summary');
         summary.replaceChildren();
@@ -6257,10 +6351,14 @@ function wireRefreshButton() {
         status.textContent = '檢查中…';
 
         try {
-            // 盤中頁的「新資料」是資料庫裡的下一輪，不是重新發佈的網站。
-            if (state.view === 'intraday') {
+            // 盤中資料的「新資料」是資料庫裡的下一輪，不是重新發佈的網站。
+            if (isIntradayDataView()) {
                 // 使用者親手按的「檢查更新」要跳過新鮮度判斷，真的去問一次資料庫。
-                await loadIntraday(true, true);
+                if (state.view === 'intraday') {
+                    await loadIntraday(true, true);
+                } else {
+                    await loadCustom(true, true);
+                }
                 status.textContent = current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料';
                 button.disabled = false;
                 return;
@@ -6322,11 +6420,10 @@ let intradayRaw = null;
 let intradaySummary = null;
 let intradayRawLoadedAt = 0;
 
-async function loadIntraday(silent = false, force = false) {
+async function ensureIntradaySnapshot(silent = false, force = false) {
     // 切回盤中頁時最常見的情況是「幾十秒前才剛看過」。上一輪的原始資料還在手上、
     // 而且還沒到下一輪收集時間的話就直接重畫，不要把表格藏起來換成「載入中…」
     // 再等一次網路來回——使用者說的「切換頁籤時卡很久才跳出內容」就是這個。
-    // 篩選條件（市場、模式）是在下面才套用的，所以沿用原始資料不會漏掉篩選。
     const fresh = !force
         && intradayRaw !== null
         && Date.now() - intradayRawLoadedAt < intradayRefreshMs;
@@ -6364,28 +6461,19 @@ async function loadIntraday(silent = false, force = false) {
         lastIntradayLoadedAt = Date.now();
     }
 
-    const raw = intradayRaw;
-    const summary = intradaySummary;
+    return true;
+}
 
-    if (raw.length === 0 || summary === null) {
-        showNotice(
-            '今天還沒有盤中資料。'
-            + (schedule === null ? '' : `收集器在交易日 ${schedule.intradayStart} 開始。`),
-            true);
-        return;
-    }
-
-    // change_percent 存的是百分比（-0.39 就是 -0.39%），
-    // 顯示用的函式吃的是比率，這裡除掉一次，兩種檢視才會是同一套格式。
+function mapIntradayRows(raw, summary, includeEstimate = false) {
     const progress = sessionProgress(summary.captured_at);
     const estimable = progress >= MIN_PROGRESS_FOR_ESTIMATE;
 
-    const rows = raw.map(row => ({
+    return raw.map(row => ({
         ticker: row.symbol,
         name: row.name,
         market: row.market.toLowerCase(),
         value: Number(row.turnover),
-        estimate: estimable ? Number(row.turnover) / progress : null,
+        estimate: includeEstimate && estimable ? Number(row.turnover) / progress : null,
         priceChange: missing(row.change_percent) ? null : Number(row.change_percent) / 100,
         close: missing(row.price) ? null : Number(row.price),
         liveKLine: {
@@ -6396,6 +6484,28 @@ async function loadIntraday(silent = false, force = false) {
             close: missing(row.price) ? null : Number(row.price)
         }
     }));
+}
+
+async function loadIntraday(silent = false, force = false) {
+    if (!await ensureIntradaySnapshot(silent, force)) {
+        return;
+    }
+
+    const raw = intradayRaw;
+    const summary = intradaySummary;
+
+    if (raw === null || raw.length === 0 || summary === null) {
+        showNotice(
+            '今天還沒有盤中資料。'
+            + (schedule === null ? '' : `收集器在交易日 ${schedule.intradayStart} 開始。`),
+            true);
+        return;
+    }
+
+    // change_percent 存的是百分比（-0.39 就是 -0.39%），
+    // 顯示用的函式吃的是比率，這裡除掉一次，兩種檢視才會是同一套格式。
+    const progress = sessionProgress(summary.captured_at);
+    const rows = mapIntradayRows(raw, summary, true);
 
     nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
 
@@ -6688,10 +6798,138 @@ async function fetchPeriod(key) {
     return cache.get(key);
 }
 
-async function loadCustom() {
+async function buildLocalCustomIntradayPreview() {
+    const data = await fetchPeriod(`1-${state.date}`);
+
+    if (!data) {
+        return null;
+    }
+
+    const raw = data.rows.map(row => {
+        const close = missing(row.close) ? null : Number(row.close);
+        const change = missing(row.priceChange) ? 0 : Number(row.priceChange);
+        const open = close === null ? null : close * (1 - change * 0.4);
+
+        return {
+            symbol: row.ticker,
+            name: row.name,
+            market: row.market,
+            price: close,
+            turnover: row.value,
+            change_percent: missing(row.priceChange) ? null : change * 100,
+            open_price: open,
+            high_price: close === null ? null : Math.max(open, close) * 1.003,
+            low_price: close === null ? null : Math.min(open, close) * 0.997
+        };
+    });
+
+    return {
+        raw,
+        summary: {
+            trade_date: state.date,
+            captured_at: `${state.date}T11:00:00+08:00`
+        }
+    };
+}
+
+async function loadCustomIntraday(silent = false, force = false) {
+    let raw;
+    let summary;
+
+    if (CUSTOM_INTRADAY_LOCAL_PREVIEW) {
+        const preview = await buildLocalCustomIntradayPreview();
+
+        if (!preview) {
+            showNotice(`讀不到 ${state.date} 的本機樣本，請先產生靜態網站。`, true);
+            return;
+        }
+
+        raw = preview.raw;
+        summary = preview.summary;
+        lastIntradayLoadedAt = Date.now();
+    } else {
+        if (supabase === null) {
+            showNotice('盤中自訂需要資料庫連線。', true);
+            return;
+        }
+
+        if (!await ensureIntradaySnapshot(silent, force)) {
+            return;
+        }
+
+        raw = intradayRaw;
+        summary = intradaySummary;
+    }
+
+    if (raw === null || raw.length === 0 || summary === null) {
+        showNotice(
+            '今天還沒有盤中資料。'
+            + (schedule === null ? '' : `收集器在交易日 ${schedule.intradayStart} 開始。`),
+            true);
+        return;
+    }
+
+    const liveRows = mapIntradayRows(raw, summary);
+    const referenceDate = dates.filter(date => date < summary.trade_date).at(-1);
+    const reference = referenceDate
+        ? await fetchPeriod(`1-${referenceDate}`)
+        : null;
+    const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
+    const sameWeekAsReference = referenceDate !== undefined
+        && weekStartKey(summary.trade_date) === weekStartKey(referenceDate);
+
+    for (const row of liveRows) {
+        const past = referenceByTicker.get(row.ticker);
+        const weeklyBaseline = sameWeekAsReference
+            ? past?.weeklyBaselineClose
+            : past?.close;
+
+        row.weeklyPriceChange = !missing(row.close) && Number(weeklyBaseline) > 0
+            ? (row.close - Number(weeklyBaseline)) / Number(weeklyBaseline)
+            : null;
+    }
+
+    nameByTicker = new Map(liveRows.map(row => [row.ticker, row.name]));
+
+    const rows = liveRows.filter(row =>
+        row.value >= state.customThreshold
+        && customStatusMatches(row.ticker)
+        && customSearchMatches(row));
+    const marketTotal = liveRows.reduce((total, row) => total + row.value, 0);
+    const progress = sessionProgress(summary.captured_at);
+
+    current = {
+        tradeDate: summary.trade_date,
+        capturedAt: toTaipeiText(summary.captured_at),
+        capturedAtIso: summary.captured_at,
+        progress,
+        marketTotal,
+        rows,
+        totalStockCount: liveRows.length,
+        rankedStockCount: rows.length,
+        rankByTicker: new Map()
+    };
+
+    const pageCount = Math.max(1, Math.ceil(rows.length / CUSTOM_PAGE_SIZE));
+    state.customPage = Math.min(state.customPage, pageCount);
+
+    el('notice').hidden = true;
+    el('ranking').hidden = false;
+
+    renderSummary();
+    renderTable();
+    renderLockRow();
+}
+
+async function loadCustom(silent = false, force = false) {
+    if (isCustomIntradayView()) {
+        await loadCustomIntraday(silent, force);
+        return;
+    }
+
     const key = `1-${state.date}`;
 
-    if (!cache.has(key)) {
+    if (!cache.has(key) && !silent) {
         showNotice('單日資料載入中…', false);
     }
 
@@ -9560,9 +9798,12 @@ async function load() {
 }
 
 function update(changes) {
-    if (changes.view !== undefined || changes.date !== undefined) {
+    if (changes.view !== undefined
+        || changes.date !== undefined
+        || changes.customSource !== undefined) {
         closeKLine(false);
         closeRevenueDetails(false);
+        calendarOpen = false;
     }
 
     // 三種檢視的欄位不一樣，但它們的最後設定應各自保留，不能切回去就變成預設。
@@ -9628,6 +9869,13 @@ function renderSnapshotNote() {
         return;
     }
 
+    if (isCustomIntradayView()) {
+        el('snapshot-note').textContent = CUSTOM_INTRADAY_LOCAL_PREVIEW
+            ? '本機盤中樣本：沿用既有快照資料確認版面，不代表即時行情。'
+            : `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector;
+        return;
+    }
+
     el('snapshot-note').textContent = state.view === 'intraday'
         ? `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
         : snapshotNote;
@@ -9662,7 +9910,7 @@ function intradayAgeText() {
 }
 
 function refreshIntradayIfDue() {
-    const isIntradayView = state.view === 'intraday';
+    const isIntradayView = isIntradayDataView();
     const isIntradayTopic = state.view === 'topics'
         && (state.topicTab === 'heat' || state.topicTab === 'tree')
         && state.topicPeriod === INTRADAY_TOPIC_PERIOD;
@@ -9672,7 +9920,9 @@ function refreshIntradayIfDue() {
     }
 
     if (isIntradayView) {
-        void loadIntraday(true);
+        void (state.view === 'intraday'
+            ? loadIntraday(true)
+            : loadCustom(true));
         return;
     }
 
@@ -9696,7 +9946,7 @@ function startIntradayTimer() {
 
         // 「幾分鐘前」要自己走，不能等下一次抓資料才更新——
         // 抓不到的時候正是最需要看到它一直往上加的時候。
-        if (state.view === 'intraday' && !document.hidden && current !== null) {
+        if (isIntradayDataView() && !document.hidden && current !== null) {
             renderSummary();
         }
 
@@ -9765,6 +10015,10 @@ async function start() {
     // 本機預覽可用 ?view=notes 直接開筆記頁；檢視權限仍不能藉此繞過可用頁籤限制。
     if (availableViews().some(view => view.key === VIEW_QUERY)) {
         state.view = VIEW_QUERY;
+    }
+
+    if (CUSTOM_INTRADAY_LOCAL_PREVIEW && state.view === 'custom') {
+        state.customSource = 'intraday';
     }
 
     snapshotNote =

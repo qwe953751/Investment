@@ -39,9 +39,13 @@
             資料來源為證交所盤中即時行情，依頁面顯示的排程收集。成交額是用現價乘上累計成交量推算的，
             不是官方數字；摘要的加權與櫃買指數及漲跌幅則直接取盤中指數頻道。收盤後一律以盤後行情為準。
         </p>
-        <p data-view="custom">
+        <p data-view="custom" data-custom-source="daily">
             瀏覽單一交易日的全部上市櫃個股，不建立預設排行；可選日期與成交值下限，
             表格預設依股票代號排列，超過 100 檔時分頁顯示。
+        </p>
+        <p data-view="custom" data-custom-source="intraday">
+            瀏覽最新一輪的全部上市櫃盤中資料，不建立預設排行；資料會即時更新，
+            交易日選擇器會停用，表格預設依股票代號排列，超過 100 檔時分頁顯示。
         </p>
         <p data-view="topics">
             把個股的市場成交比依族群重新加總，回答「錢正在往哪一段供應鏈流」。族群樹與概念股成員都來自
@@ -65,12 +69,25 @@
         <section class="summary" id="summary"></section>
 
         <section class="filter-panel">
+            <div class="custom-time-row" data-view="custom">
+                <div class="filter-group custom-source-group">
+                    <span class="filter-label" data-hint="自訂頁只能選一種資料時間：盤後可以選交易日，盤中固定顯示最新一輪全市場資料。">資料時間</span>
+                    <div class="button-row" id="custom-source-options"></div>
+                    <span class="custom-source-note" id="custom-source-note"></span>
+                </div>
+
+                <div class="filter-group custom-date-group" data-view="custom" data-custom-source="daily">
+                    <span class="filter-label" data-hint="盤後資料的最後一天；切換到盤中時這個設定會停用。">交易日</span>
+                    <div class="date-picker" id="custom-date-picker"></div>
+                </div>
+            </div>
+
             <div class="filter-group" data-view="daily intraday">
                 <span class="filter-label" data-hint="盤後：本期的長度，前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。盤中：今天要拿來對照的過去期間長度。">觀察期間</span>
                 <div class="button-row" id="period-options"></div>
             </div>
 
-            <div class="filter-group" data-view="daily custom">
+            <div class="filter-group" data-view="daily">
                 <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
                 <div class="date-picker" id="date-picker"></div>
             </div>
@@ -139,8 +156,10 @@
                 但比例可以：分子與分母都取自同一輪，時段進度會自己約掉，所以這一欄不必等到收盤、也不依賴預估值。</p>
             <p data-view="intraday">這一頁直接讀資料庫，依 manifest 的同一個更新間隔自動重讀，不必按檢查更新；
                 加權、櫃買與已開啟標的的當日 K 棒會在同一輪同步更新。</p>
-            <p data-view="custom">成交值為所選交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。</p>
-            <p data-view="custom">營收增減顯示上個月的 YOY 與 MOM；點擊儲存格可查看 20 個月圖表與最近 5 個月列表。交易限制可複選，搜尋股號或名稱會只留下符合內容並跳到第一筆。</p>
+            <p data-view="custom" data-custom-source="daily">成交值為所選交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。</p>
+            <p data-view="custom" data-custom-source="daily">營收增減顯示上個月的 YOY 與 MOM；點擊儲存格可查看 20 個月圖表與最近 5 個月列表。交易限制可複選，搜尋股號或名稱會只留下符合內容並跳到第一筆。</p>
+            <p data-view="custom" data-custom-source="intraday">盤中資料直接來自資料庫最新一輪，全市場個股都會列出；切換到盤後才可選交易日。</p>
+            <p data-view="custom" data-custom-source="intraday">成交值是自開盤起的累計值，盤中資料依目前收集輪次更新；交易限制可複選，搜尋股號或名稱會只留下符合內容並跳到第一筆。</p>
         </footer>
     </div>
 

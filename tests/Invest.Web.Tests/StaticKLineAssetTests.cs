@@ -294,6 +294,49 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 自訂頁可切換盤後與盤中且盤中停用交易日()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("資料時間", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"custom-source-options\"", html, StringComparison.Ordinal);
+        Assert.Contains("class=\"custom-time-row\"", html, StringComparison.Ordinal);
+        Assert.Contains("class=\"filter-group custom-date-group\" data-view=\"custom\" data-custom-source=\"daily\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"custom-date-picker\"", html, StringComparison.Ordinal);
+        Assert.Contains("state.view === 'custom' ? 'custom-date-picker' : 'date-picker'", script, StringComparison.Ordinal);
+        Assert.Contains("data-custom-source=\"daily\"", html, StringComparison.Ordinal);
+        Assert.Contains("data-custom-source=\"intraday\"", html, StringComparison.Ordinal);
+        Assert.Contains("const CUSTOM_DATA_SOURCES", script, StringComparison.Ordinal);
+        var sourceStart = script.IndexOf("const CUSTOM_DATA_SOURCES", StringComparison.Ordinal);
+        var sourceEnd = script.IndexOf("];", sourceStart, StringComparison.Ordinal);
+        var sources = script[sourceStart..sourceEnd];
+        Assert.True(
+            sources.IndexOf("key: 'intraday'", StringComparison.Ordinal)
+                < sources.IndexOf("key: 'daily'", StringComparison.Ordinal),
+            "自訂頁的資料時間選項應先顯示盤中，再顯示盤後。");
+        Assert.Contains("customSource: 'daily'", script, StringComparison.Ordinal);
+        Assert.Contains("function isCustomIntradayView()", script, StringComparison.Ordinal);
+        Assert.Contains("requiredCustomSource === state.customSource", script, StringComparison.Ordinal);
+        Assert.Contains("交易日選擇已停用", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 自訂盤中使用全市場資料而不是排行榜前一百檔()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("async function loadCustomIntraday", StringComparison.Ordinal);
+        var end = script.IndexOf("async function loadCustom(", start, StringComparison.Ordinal);
+        var customIntraday = script[start..end];
+
+        Assert.Contains("ensureIntradaySnapshot(silent, force)", customIntraday, StringComparison.Ordinal);
+        Assert.Contains("mapIntradayRows(raw, summary)", customIntraday, StringComparison.Ordinal);
+        Assert.Contains("totalStockCount: liveRows.length", customIntraday, StringComparison.Ordinal);
+        Assert.Contains("rows,", customIntraday, StringComparison.Ordinal);
+        Assert.DoesNotContain("slice(0, TOP_COUNT)", customIntraday, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 自訂頁顯示營收增減而非單月營收金額()
     {
         var script = ReadAsset("site.js");
