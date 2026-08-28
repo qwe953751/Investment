@@ -13,20 +13,113 @@ public sealed class IntradayWorkflowTests
         Assert.Contains("path: data", workflow, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 2026-08-27、08-28 連兩天 GitHub 的 schedule 事件晚到 6～13 小時或整天沒送達，
+    /// 開盤了網站還停在昨天，只能靠人手動補跑。加更多 cron 沒有用——那天三個 cron 全都晚到。
+    ///
+    /// 改用自走鏈：每一棒開跑就先用 GITHUB_TOKEN 把下一棒 dispatch 起來排隊。
+    /// 這幾個約定少一個，鏈子就會斷在某個環節，而且要等到某天早上沒更新才會發現。
+    /// </summary>
     [Fact]
-    public void 盤中收集有錯開的排程備援且共用排程併發鎖()
+    public void 盤中收集靠自走鏈啟動而不是靠GitHub的排程準時()
     {
-        // GitHub 的 schedule 是盡力而為，單一 cron 曾在交易日完全沒有產生 run。
-        // 三個啟動時機可以互相補位；因為同屬 schedule event，既有的併發鎖會讓
-        // 正常先啟動的收集器繼續跑完，晚到的備援不會平行寫入同一批盤中資料。
-        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "intraday.yml"));
+        var workflow = ReadIntradayWorkflow();
+
+        // 沒有 actions: write 就叫不動下一棒，整條鏈第一棒就斷。
+        Assert.Contains("actions: write", workflow, StringComparison.Ordinal);
+
+        // 自我接力靠 workflow_dispatch：文件把它列為遞迴保護的例外，
+        // GITHUB_TOKEN 觸發得動（實測 run 33177347324 → 33177357163 → 33177365236）。
+        Assert.Contains("workflow_dispatch:", workflow, StringComparison.Ordinal);
+        Assert.Contains(
+            "\"repos/$GITHUB_REPOSITORY/actions/workflows/intraday.yml/dispatches\"",
+            workflow,
+            StringComparison.Ordinal);
+        Assert.Contains("-f \"inputs[hop]=$next\"", workflow, StringComparison.Ordinal);
+
+        // 排程與手動必須共用同一組併發鎖。分開就等於允許兩個收集器並行寫入同一輪。
+        Assert.Contains("group: intraday-daemon", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("group: intraday-${{ github.event_name }}", workflow, StringComparison.Ordinal);
+
+        // preflight 會把晚到的排程事件丟掉——正是 8/28 沒收到資料的原因之一。
+        // 自走鏈的每一棒都自己重算下一次開盤，晚到多久都能接回來，不該再有這個 job。
+        Assert.DoesNotContain("needs: preflight", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("should_collect", workflow, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 「叫下一棒」必須是第一個步驟。這一棒可能被 6 小時硬上限砍掉、可能 runner 掛掉、
+    /// 可能被 cancel，那些情況都輪不到最後一步執行——放到後面就等於鏈子隨時會斷。
+    /// </summary>
+    [Fact]
+    public void 先叫下一棒再做事否則這一棒被砍掉就沒有下一棒()
+    {
+        var workflow = ReadIntradayWorkflow();
+
+        var dispatch = workflow.IndexOf("actions/workflows/intraday.yml/dispatches", StringComparison.Ordinal);
+        var checkout = workflow.IndexOf("uses: actions/checkout@v4", StringComparison.Ordinal);
+        var wait = workflow.IndexOf("id: wait", StringComparison.Ordinal);
+        var collect = workflow.IndexOf("dotnet run -c Release --project src/Invest.Web -- intraday --loop", StringComparison.Ordinal);
+
+        Assert.True(dispatch >= 0, "找不到自我接力的 dispatch。");
+        Assert.True(dispatch < checkout, "叫下一棒必須排在 checkout 之前。");
+        Assert.True(dispatch < wait, "叫下一棒必須排在等待開盤之前，否則睡到一半被砍就沒有下一棒。");
+        Assert.True(dispatch < collect, "叫下一棒必須排在收集之前。");
+    }
+
+    /// <summary>
+    /// 自走鏈最危險的失敗模式是「每一棒都在幾秒內失敗」，那會變成一天上千個 run。
+    /// 另一個是「這一棒撐不到收盤還硬收」，會留下半場資料。這兩道防線都要在。
+    /// </summary>
+    [Fact]
+    public void 自走鏈有防暴衝下限也不會讓撐不完整場的那一棒硬收()
+    {
+        var workflow = ReadIntradayWorkflow();
+
+        // 一棒 5h30m，離 6 小時硬上限留 30 分鐘收尾。
+        Assert.Contains("HOP_BUDGET_SECONDS: '19800'", workflow, StringComparison.Ordinal);
+        // 08:40 開跑到 13:35 收工是 4 小時 55 分；剩餘不到這個數就交棒，不收半場。
+        Assert.Contains("COLLECT_NEEDS_SECONDS: '17700'", workflow, StringComparison.Ordinal);
+        // 撐不完的那一棒提早 10 分鐘退場，把 checkout 與 setup-dotnet 的暖機時間讓給下一棒。
+        Assert.Contains("HANDOFF_LEAD_SECONDS: '600'", workflow, StringComparison.Ordinal);
+
+        // 每一棒至少活 3 分鐘，最壞情況一小時 20 棒，留得下時間讓人看到並停掉。
+        Assert.Contains("floor=180", workflow, StringComparison.Ordinal);
+        Assert.Contains("hop-started-at", workflow, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 鏈子唯一會斷的情況是連 dispatch 的 API 都打不到。cron 因此保留，
+    /// 但角色從「主要啟動方式」降級成復原火種——晚到多久都沒關係，
+    /// 新的一棒會自己算出下一次開盤再睡過去。週末也要有，否則週五盤後斷鏈就撐到週一沒人接。
+    /// </summary>
+    [Fact]
+    public void 保留cron當復原火種且週末也有一發()
+    {
+        var workflow = ReadIntradayWorkflow();
 
         Assert.Contains("- cron: '33 23 * * 0-4'", workflow, StringComparison.Ordinal);
         Assert.Contains("- cron: '17 0 * * 1-5'", workflow, StringComparison.Ordinal);
         Assert.Contains("- cron: '1 1 * * 1-5'", workflow, StringComparison.Ordinal);
-        Assert.Contains("group: intraday-${{ github.event_name }}", workflow, StringComparison.Ordinal);
-        Assert.Contains("needs: preflight", workflow, StringComparison.Ordinal);
-        Assert.Contains("needs.preflight.outputs.should_collect == 'true'", workflow, StringComparison.Ordinal);
+        Assert.Contains("- cron: '23 14 * * *'", workflow, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 每日快照原本也只靠 cron，8/28 同樣整天沒送達。既然自走鏈本來就 24 小時醒著，
+    /// 就讓它兼任整個 repo 的鬧鐘：過了 18:00 而今天還沒有成功的快照就把它叫起來。
+    /// </summary>
+    [Fact]
+    public void 自走鏈順便當每日快照的鬧鐘()
+    {
+        var workflow = ReadIntradayWorkflow();
+
+        Assert.Contains(
+            "\"repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/dispatches\"",
+            workflow,
+            StringComparison.Ordinal);
+        // 只在今天沒有成功快照時才叫，而且一棒最多叫一次。
+        Assert.Contains("select(.conclusion == \\\"success\\\")", workflow, StringComparison.Ordinal);
+        Assert.Contains("snapshot_kicked=1", workflow, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -125,6 +218,12 @@ public sealed class IntradayWorkflowTests
         Assert.Contains("heat.MarketTurnoverChange", razor, StringComparison.Ordinal);
         Assert.DoesNotContain("盤後不與前一交易日比較", razor, StringComparison.Ordinal);
     }
+
+    private static string ReadIntradayWorkflow() => File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        ".github",
+        "workflows",
+        "intraday.yml"));
 
     private static string ReadRankingRazor() => File.ReadAllText(Path.Combine(
         FindRepositoryRoot(),
