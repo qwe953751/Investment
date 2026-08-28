@@ -18,6 +18,8 @@ namespace Invest.Web.Infrastructure.MarketData.Intraday;
 /// </summary>
 public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 {
+    private bool indexKlineSchemaWarningLogged;
+
     /// <summary>
     /// 全市場累計成交金額只能往上走，這是這份資料最硬的一條性質：
     /// 09:06 的數字不可能比 09:04 小。
@@ -76,6 +78,14 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             };
         }
 
+        var hasIndexKlineColumns = await HasIndexKlineColumnsAsync(connection, cancellationToken);
+        if (!hasIndexKlineColumns && !indexKlineSchemaWarningLogged)
+        {
+            indexKlineSchemaWarningLogged = true;
+            logger.LogWarning(
+                "資料庫尚未套用 db/021_market_index_kline.sql；先寫入盤中基本資料，指數當日 OHLC 暫不保存。");
+        }
+
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
         var securityIds = await SecurityCatalog.UpsertAsync(
@@ -83,7 +93,13 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             [.. snapshot.Quotes.Select(quote => (quote.Market, quote.Ticker, quote.Name))],
             cancellationToken);
 
-        var runId = await InsertRunAsync(connection, snapshot, capturedAt, source, cancellationToken);
+        var runId = await InsertRunAsync(
+            connection,
+            snapshot,
+            capturedAt,
+            source,
+            hasIndexKlineColumns,
+            cancellationToken);
         var written = await InsertQuotesAsync(connection, runId, snapshot.Quotes, securityIds, cancellationToken);
 
         await InsertCurveAsync(connection, runId, snapshot.TradeDate, capturedAt, cancellationToken);
@@ -123,8 +139,14 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         CancellationToken cancellationToken = default)
     {
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        var hasIndexKlineColumns = await HasIndexKlineColumnsAsync(connection, cancellationToken);
+        var indexKlineColumns = hasIndexKlineColumns
+            ? "latest.twse_index_open, latest.twse_index_high, latest.twse_index_low,\n"
+                + "       latest.tpex_index_open, latest.tpex_index_high, latest.tpex_index_low"
+            : "null::numeric, null::numeric, null::numeric,\n"
+                + "       null::numeric, null::numeric, null::numeric";
         await using var command = new NpgsqlCommand(
-            """
+            $"""
             with latest as (
                 select id, trade_date,
                        captured_at, twse_index, twse_change_percent,
@@ -140,8 +162,7 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                    q.price, q.turnover, q.change_percent,
                    q.open_price, q.high_price, q.low_price,
                    latest.captured_at,
-                   latest.twse_index_open, latest.twse_index_high, latest.twse_index_low,
-                   latest.tpex_index_open, latest.tpex_index_high, latest.tpex_index_low
+                   {indexKlineColumns}
             from latest
             join intraday_quotes q on q.run_id = latest.id
             join securities s on s.id = q.security_id
@@ -286,6 +307,59 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    private static async Task<bool> HasIndexKlineColumnsAsync(
+        NpgsqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            select count(*) = 6
+            from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'intraday_runs'
+              and column_name in (
+                  'twse_index_open', 'twse_index_high', 'twse_index_low',
+                  'tpex_index_open', 'tpex_index_high', 'tpex_index_low')
+            """,
+            connection);
+
+        return (bool)(await command.ExecuteScalarAsync(cancellationToken))!;
+    }
+
+    private static async Task UpdateIndexKlineAsync(
+        NpgsqlConnection connection,
+        long runId,
+        MarketIndexQuote? twse,
+        MarketIndexQuote? tpex,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            update intraday_runs
+            set twse_index_open = @twseIndexOpen,
+                twse_index_high = @twseIndexHigh,
+                twse_index_low = @twseIndexLow,
+                tpex_index_open = @tpexIndexOpen,
+                tpex_index_high = @tpexIndexHigh,
+                tpex_index_low = @tpexIndexLow
+            where id = @runId
+            """,
+            connection);
+
+        AddNullableDecimal(command, "twseIndexOpen", twse?.OpenPrice);
+        AddNullableDecimal(command, "twseIndexHigh", twse?.HighPrice);
+        AddNullableDecimal(command, "twseIndexLow", twse?.LowPrice);
+        AddNullableDecimal(command, "tpexIndexOpen", tpex?.OpenPrice);
+        AddNullableDecimal(command, "tpexIndexHigh", tpex?.HighPrice);
+        AddNullableDecimal(command, "tpexIndexLow", tpex?.LowPrice);
+        command.Parameters.AddWithValue("runId", runId);
+
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+        {
+            throw new InvalidOperationException($"找不到要更新指數 K 線的盤中快照 run {runId}。");
+        }
+    }
+
     /// <summary>
     /// 同一個時間戳重跑時覆寫，不會留下半套資料。
     /// </summary>
@@ -294,6 +368,7 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         IntradaySnapshot snapshot,
         DateTimeOffset capturedAt,
         string source,
+        bool hasIndexKlineColumns,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
@@ -302,8 +377,6 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                 trade_date, captured_at, source, quote_count,
                 twse_index, twse_change_percent, twse_year_to_date_change_percent,
                 tpex_index, tpex_change_percent, tpex_year_to_date_change_percent,
-                twse_index_open, twse_index_high, twse_index_low,
-                tpex_index_open, tpex_index_high, tpex_index_low,
                 market_heat_score, market_heat_short_trend_score, market_heat_breadth_score,
                 market_heat_volume_score, market_heat_index_daily_change_percent,
                 market_heat_index_weekly_change_percent, market_heat_up_count,
@@ -314,8 +387,6 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                 @tradeDate, @capturedAt, @source, @quoteCount,
                 @twseIndex, @twseChangePercent, @twseYearToDateChangePercent,
                 @tpexIndex, @tpexChangePercent, @tpexYearToDateChangePercent,
-                @twseIndexOpen, @twseIndexHigh, @twseIndexLow,
-                @tpexIndexOpen, @tpexIndexHigh, @tpexIndexLow,
                 @marketHeatScore, @marketHeatShortTrendScore, @marketHeatBreadthScore,
                 @marketHeatVolumeScore, @marketHeatIndexDailyChangePercent,
                 @marketHeatIndexWeeklyChangePercent, @marketHeatUpCount,
@@ -330,12 +401,6 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                               tpex_index = excluded.tpex_index,
                               tpex_change_percent = excluded.tpex_change_percent,
                               tpex_year_to_date_change_percent = excluded.tpex_year_to_date_change_percent,
-                              twse_index_open = excluded.twse_index_open,
-                              twse_index_high = excluded.twse_index_high,
-                              twse_index_low = excluded.twse_index_low,
-                              tpex_index_open = excluded.tpex_index_open,
-                              tpex_index_high = excluded.tpex_index_high,
-                              tpex_index_low = excluded.tpex_index_low,
                               market_heat_score = excluded.market_heat_score,
                               market_heat_short_trend_score = excluded.market_heat_short_trend_score,
                               market_heat_breadth_score = excluded.market_heat_breadth_score,
@@ -370,12 +435,6 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         AddNullableDecimal(command, "tpexIndex", tpex?.Value);
         AddNullableDecimal(command, "tpexChangePercent", tpex?.ChangePercent);
         AddNullableDecimal(command, "tpexYearToDateChangePercent", tpex?.YearToDateChangePercent);
-        AddNullableDecimal(command, "twseIndexOpen", twse?.OpenPrice);
-        AddNullableDecimal(command, "twseIndexHigh", twse?.HighPrice);
-        AddNullableDecimal(command, "twseIndexLow", twse?.LowPrice);
-        AddNullableDecimal(command, "tpexIndexOpen", tpex?.OpenPrice);
-        AddNullableDecimal(command, "tpexIndexHigh", tpex?.HighPrice);
-        AddNullableDecimal(command, "tpexIndexLow", tpex?.LowPrice);
 
         var heat = snapshot.MarketHeat;
         AddNullableDecimal(command, "marketHeatScore", heat?.Score);
@@ -396,6 +455,11 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         AddNullableDecimal(command, "marketHeatVolumeRatio", heat?.VolumeRatio);
 
         var runId = (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+
+        if (hasIndexKlineColumns)
+        {
+            await UpdateIndexKlineAsync(connection, runId, twse, tpex, cancellationToken);
+        }
 
         await using var cleanup = new NpgsqlCommand(
             "delete from intraday_quotes where run_id = @runId",

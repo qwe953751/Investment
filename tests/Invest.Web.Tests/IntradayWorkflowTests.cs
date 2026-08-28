@@ -64,6 +64,32 @@ public sealed class IntradayWorkflowTests
     }
 
     [Fact]
+    public void 尚未套用指數K線migration時仍可寫入盤中基本資料()
+    {
+        var store = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "Invest.Web",
+            "Infrastructure",
+            "MarketData",
+            "Intraday",
+            "IntradayQuoteStore.cs"));
+
+        Assert.Contains("HasIndexKlineColumnsAsync", store, StringComparison.Ordinal);
+        Assert.Contains("information_schema.columns", store, StringComparison.Ordinal);
+        Assert.Contains("先寫入盤中基本資料，指數當日 OHLC 暫不保存", store, StringComparison.Ordinal);
+        Assert.Contains("UpdateIndexKlineAsync", store, StringComparison.Ordinal);
+
+        var insertStart = store.IndexOf("private static async Task<long> InsertRunAsync", StringComparison.Ordinal);
+        var insertEnd = store.IndexOf("private static void AddNullableDecimal", insertStart, StringComparison.Ordinal);
+        Assert.True(insertStart >= 0 && insertEnd > insertStart, "找不到盤中快照寫入區段。");
+
+        var insert = store[insertStart..insertEnd];
+        Assert.DoesNotContain("twse_index_open", insert, StringComparison.Ordinal);
+        Assert.DoesNotContain("tpex_index_open", insert, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 盤中族群熱度有可追溯快照且會隨原始盤中輪次刪除()
     {
         var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "013_intraday_topic_heat.sql"));
