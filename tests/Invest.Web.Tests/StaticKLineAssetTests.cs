@@ -326,6 +326,108 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 個股K線保留原本上層高度並帶入下層成交量()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+        var exporter = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "Invest.Web",
+            "Infrastructure",
+            "StaticSite",
+            "StaticSiteExporter.cs"));
+        var start = script.IndexOf("function renderKLineSvg", StringComparison.Ordinal);
+        var end = script.IndexOf("function renderKLineLegend", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start, "找不到個股 K 線 SVG 繪圖函式。");
+
+        var function = script[start..end];
+
+        Assert.Contains("const height = 440;", function, StringComparison.Ordinal);
+        Assert.Contains("const priceBottom = 258;", function, StringComparison.Ordinal);
+        Assert.Contains("const volumeTop = 294;", function, StringComparison.Ordinal);
+        Assert.Contains("下層：成交量", function, StringComparison.Ordinal);
+        Assert.Contains("bar.tradingVolume", function, StringComparison.Ordinal);
+        Assert.Contains("daily-kline-volume-bar", function, StringComparison.Ordinal);
+        Assert.Contains("RoundKLine(point.TradingVolume)", exporter, StringComparison.Ordinal);
+        Assert.Contains(".daily-kline-volume-bar", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void K線可用查價線檢視游標所在日的數值()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("function renderKLineReferenceControls", script, StringComparison.Ordinal);
+        Assert.Contains("let klineReferenceLines = { price: true, volume: true, turnover: true };", script, StringComparison.Ordinal);
+        Assert.Contains("查價線", script, StringComparison.Ordinal);
+        Assert.Contains("function attachKLineInteractions", script, StringComparison.Ordinal);
+        Assert.Contains("daily-kline-reference-line", script, StringComparison.Ordinal);
+        Assert.Contains(".daily-kline-reference-line", styles, StringComparison.Ordinal);
+        Assert.DoesNotContain("daily-kline-tooltip", script, StringComparison.Ordinal);
+        Assert.DoesNotContain(".daily-kline-tooltip", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 查價線標籤顯示交易日與數值()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("function attachKLineInteractions", StringComparison.Ordinal);
+        var end = script.IndexOf("// 紅綠一律比", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start, "找不到 K 線互動函式。");
+
+        var function = script[start..end];
+
+        Assert.Contains("const referenceDate = String(bar.date ?? '').replaceAll('-', '/').slice(-5);", function, StringComparison.Ordinal);
+        Assert.Contains("`${referenceDate} 收", function, StringComparison.Ordinal);
+        Assert.Contains("`${referenceDate} ${layout.lowerLabel}", function, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 查價線數值移到控制區且虛線本身不顯示文字()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+        var start = script.IndexOf("function attachKLineInteractions", StringComparison.Ordinal);
+        var end = script.IndexOf("// 紅綠一律比", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start, "找不到 K 線互動函式。");
+
+        var function = script[start..end];
+
+        Assert.Contains("referenceSummary", function, StringComparison.Ordinal);
+        Assert.Contains("referenceSummary.textContent", function, StringComparison.Ordinal);
+        Assert.DoesNotContain("daily-kline-reference-label", function, StringComparison.Ordinal);
+        Assert.DoesNotContain("svgElement('text'", function, StringComparison.Ordinal);
+        Assert.Contains("className = 'kline-reference-status'", script, StringComparison.Ordinal);
+        Assert.Contains("referenceControls.status", script, StringComparison.Ordinal);
+        Assert.Contains(".kline-reference-status", styles, StringComparison.Ordinal);
+        Assert.DoesNotContain(".daily-kline-reference-label", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 查價線切換後立即以最新K棒為基準且可同時顯示上下圖層()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("function attachKLineInteractions", StringComparison.Ordinal);
+        var end = script.IndexOf("// 紅綠一律比", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start, "找不到 K 線互動函式。");
+
+        var function = script[start..end];
+
+        Assert.Contains("const referenceIndex = bars.length - 1;", function, StringComparison.Ordinal);
+        Assert.Contains("const renderReferenceLines =", function, StringComparison.Ordinal);
+        Assert.Contains("klineReferenceLines.price", function, StringComparison.Ordinal);
+        Assert.Contains("klineReferenceLines[layout.lowerReferenceKey]", function, StringComparison.Ordinal);
+        Assert.Contains("renderReferenceLines(referenceIndex)", function, StringComparison.Ordinal);
+        Assert.Contains("hitArea.addEventListener('pointerleave', () => renderReferenceLines(referenceIndex))", function, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 自訂頁使用單日全量資料並以一百檔分頁()
     {
         var html = ReadAsset("index.html");
@@ -485,6 +587,24 @@ public sealed class StaticKLineAssetTests
             "return readNoteNumber(saved?.note_number) ?? note.noteNumber ?? null;",
             script,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 筆記儲存成功後過期讀取不得覆蓋本機清單()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("async function refreshNotes", StringComparison.Ordinal);
+        var end = script.IndexOf("function notesIsStale", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start, "找不到筆記重新讀取函式。");
+
+        var refreshNotes = script[start..end];
+        Assert.Contains("let notesRevision = 0;", script, StringComparison.Ordinal);
+        Assert.Contains("const revision = notesRevision;", refreshNotes, StringComparison.Ordinal);
+        Assert.Contains("const loaded = await loadNotes();", refreshNotes, StringComparison.Ordinal);
+        Assert.Contains("if (revision !== notesRevision)", refreshNotes, StringComparison.Ordinal);
+        Assert.Contains("notes = loaded;", refreshNotes, StringComparison.Ordinal);
+        Assert.Contains("notesRevision += 1;", script, StringComparison.Ordinal);
     }
 
     /// <summary>

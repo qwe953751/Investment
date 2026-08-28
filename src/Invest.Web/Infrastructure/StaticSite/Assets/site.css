@@ -2238,6 +2238,50 @@ td.stock-name.stock-name-change-down {
     content: "";
 }
 
+.kline-reference-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    margin: 5px 0 4px;
+    color: #475467;
+    font-size: 12px;
+}
+
+.kline-reference-controls-label {
+    margin-right: 2px;
+    font-weight: 600;
+}
+
+.kline-reference-toggle {
+    padding: 2px 7px;
+    border: 1px solid #98a2b3;
+    border-radius: 4px;
+    background: white;
+    color: #344054;
+    font: inherit;
+    cursor: pointer;
+}
+
+.kline-reference-toggle[aria-pressed="true"] {
+    border-color: #1d2939;
+    background: #1d2939;
+    color: white;
+}
+
+.kline-reference-toggle:focus-visible {
+    outline: 2px solid #5b9bea;
+    outline-offset: 1px;
+}
+
+.kline-reference-status {
+    flex: 1 1 220px;
+    min-width: 0;
+    color: #475467;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
 .daily-kline-close {
     padding: 4px 9px;
     border: 1px solid #aaa;
@@ -2307,6 +2351,32 @@ td.stock-name.stock-name-change-down {
     stroke-width: 1.6;
     stroke-linecap: round;
     stroke-linejoin: round;
+}
+
+.daily-kline-divider {
+    stroke: #cbd5e1;
+    stroke-width: 1;
+}
+
+.daily-kline-section-title {
+    fill: #475467;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.daily-kline-volume-bar {
+    fill: #5b9bea;
+    opacity: .72;
+}
+
+.daily-kline-hover-zone {
+    cursor: crosshair;
+}
+
+.daily-kline-reference-line {
+    stroke: #111827;
+    stroke-width: 1;
+    stroke-dasharray: 4 3;
 }
 
 /* 與常用 APP 色票一致；MA10 使用較淡的薄荷綠，和下跌 K 棒的鮮綠分開。 */

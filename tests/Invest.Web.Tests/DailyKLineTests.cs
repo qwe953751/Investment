@@ -205,6 +205,32 @@ public sealed class DailyKLineTests
         Assert.True(updated.HasCompleteDailyBars);
     }
 
+    [Fact]
+    public void 日K會帶出官方成交量供靜態圖表匯出()
+    {
+        var tradingDate = new DateOnly(2026, 8, 21);
+        var selected = DailyKLineSelector.Select(
+            [new DailyStockTrading
+            {
+                TradingDate = tradingDate,
+                Ticker = "2330",
+                OpenPrice = 100m,
+                HighPrice = 102m,
+                LowPrice = 99m,
+                ClosePrice = 101m,
+                TradingValue = 1m,
+                TradingVolume = 12_345_000m
+            }],
+            [],
+            "2330",
+            tradingDate,
+            tradingDate,
+            months: 1);
+
+        var point = Assert.Single(selected);
+        Assert.Equal(12_345_000m, point.TradingVolume);
+    }
+
     private static DailyStockTrading Bar(DateOnly date, decimal close, bool complete = true)
         => new()
         {

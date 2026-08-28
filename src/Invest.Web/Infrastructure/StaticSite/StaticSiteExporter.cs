@@ -804,7 +804,8 @@ public sealed class StaticSiteExporter(
                     RoundKLine(point.Ma10),
                     RoundKLine(point.Ma20),
                     RoundKLine(point.Ma60),
-                    RoundKLine(point.Ma240)))]);
+                    RoundKLine(point.Ma240),
+                    RoundKLine(point.TradingVolume)))]);
 
             await WriteJsonAsync(
                 Path.Combine(directory, ticker + ".json"),
@@ -984,7 +985,8 @@ public sealed class StaticSiteExporter(
         decimal? Ma10,
         decimal? Ma20,
         decimal? Ma60,
-        decimal? Ma240);
+        decimal? Ma240,
+        decimal? TradingVolume);
 
     private sealed record MarketIndexKLineFileExport(
         IReadOnlyList<MarketIndexKLineExport> Markets);

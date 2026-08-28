@@ -222,6 +222,15 @@ const toFixedText = (value, decimals) => (Number(value.toFixed(decimals)) || 0)
 
 // 元轉億元。台股慣用單位，直接看元的位數太多。
 const toBillionText = value => toFixedText(value / 100_000_000, 2);
+const toLotText = value => {
+    const lots = Number(value) / 1_000;
+
+    if (!Number.isFinite(lots)) {
+        return '—';
+    }
+
+    return `${toFixedText(lots, lots >= 100 ? 0 : lots >= 10 ? 1 : 2)} 張`;
+};
 const toSignedBillionText = value => (missing(value)
     ? '—'
     : `${Number(value) > 0 ? '+' : ''}${toBillionText(Number(value))}`);
@@ -883,6 +892,8 @@ let notes = [];
 let notesLoaded = false;
 let notesLoadError = null;
 let lastNotesLoadedAt = 0;
+// 遠端讀取開始後若本機成功儲存／刪除，舊回應不能把較新的清單覆蓋掉。
+let notesRevision = 0;
 let notesFilter = 'all';
 let notesStatusFilter = 'all';
 let notesSearch = '';
@@ -1046,6 +1057,7 @@ let expandedKLineName = '';
 let klineAnchor = null;
 let expandedIndexMarket = null;
 let indexKLineAnchor = null;
+let klineReferenceLines = { price: true, volume: true, turnover: true };
 const revenueHistoryData = new Map();
 const revenueHistoryPromises = new Map();
 
@@ -1637,10 +1649,22 @@ async function refreshNotes() {
         return;
     }
 
+    const revision = notesRevision;
+
     try {
-        notes = await loadNotes();
+        const loaded = await loadNotes();
+
+        if (revision !== notesRevision) {
+            return;
+        }
+
+        notes = loaded;
         notesLoadError = null;
     } catch {
+        if (revision !== notesRevision) {
+            return;
+        }
+
         notesLoadError = '讀不到筆記，可能是資料庫連線問題；稍後會自動重試。';
     }
 
@@ -2004,6 +2028,8 @@ function wireNotes() {
                 const persisted = { ...next, noteNumber: noteNumber ?? null };
                 const existingIndex = notes.findIndex(note => note.id === id);
 
+                notesRevision += 1;
+
                 if (existingIndex >= 0) {
                     notes[existingIndex] = persisted;
                 } else {
@@ -2014,6 +2040,8 @@ function wireNotes() {
                 selectedNoteId = id;
                 notesDraft = null;
                 notesSaveStatus = `已儲存 ${formatNoteUpdatedAt(persisted.updatedAt)}`;
+                notesLoadError = null;
+                notesLoaded = true;
                 lastNotesLoadedAt = Date.now();
             })
             .catch(() => {
@@ -2052,10 +2080,13 @@ function wireNotes() {
 
         deleteNoteRemote(note.id)
             .then(() => {
+                notesRevision += 1;
                 notes = notes.filter(item => item.id !== note.id);
                 selectedNoteId = null;
                 notesDraft = null;
                 notesSaveStatus = '已刪除';
+                notesLoadError = null;
+                notesLoaded = true;
                 lastNotesLoadedAt = Date.now();
             })
             .catch(() => {
@@ -4552,7 +4583,7 @@ function renderIndexKLineLegend(bars) {
     return legend;
 }
 
-function renderIndexKLineSvg(market, label, turnoverLabel, bars) {
+function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummary) {
     const width = 680;
     const height = 440;
     const left = 62;
@@ -4689,6 +4720,25 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars) {
         }, bar.date.slice(5).replace('-', '/')));
     });
 
+    attachKLineInteractions(svg, bars, {
+        width,
+        height,
+        left,
+        right,
+        top,
+        priceBottom,
+        lowerTop: volumeTop,
+        lowerBottom: volumeBottom,
+        step,
+        x,
+        priceY: y,
+        lowerY: volumeY,
+        lowerValue: bar => bar.tradingValue,
+        lowerReferenceKey: 'turnover',
+        lowerLabel: turnoverLabel,
+        formatLower: value => `${toBillionText(value)} 億`
+    }, referenceSummary);
+
     return svg;
 }
 
@@ -4755,9 +4805,14 @@ function renderIndexKLinePopover(market, anchor) {
             card.append(note);
         }
 
+        const referenceControls = renderKLineReferenceControls([
+                { key: 'price', label: 'K棒' },
+                { key: 'turnover', label: '成交金額' }
+            ]);
         card.append(
             renderIndexKLineLegend(bars),
-            renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars));
+            referenceControls.element,
+            renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars, referenceControls.status));
     }
 
     popover.append(card);
@@ -4793,7 +4848,7 @@ async function loadTopicIntradayKLine(ticker) {
         topicIntradayKLinePromises.set(ticker, (async () => {
             const rows = await fetchAllRows(
                 'intraday_latest',
-                'symbol,trade_date,open_price,high_price,low_price,price',
+                'symbol,trade_date,open_price,high_price,low_price,price,turnover',
                 `&symbol=eq.${encodeURIComponent(ticker)}`);
             const row = rows[0];
             const values = [row?.open_price, row?.high_price, row?.low_price, row?.price].map(Number);
@@ -4807,7 +4862,8 @@ async function loadTopicIntradayKLine(ticker) {
                 open: values[0],
                 high: values[1],
                 low: values[2],
-                close: values[3]
+                close: values[3],
+                tradingVolume: intradayTradingVolume(row.price, row.turnover)
             });
         })());
     }
@@ -4917,6 +4973,133 @@ function svgElement(name, attributes = {}, text = null) {
     return element;
 }
 
+function renderKLineReferenceControls(options) {
+    const controls = document.createElement('div');
+    controls.className = 'kline-reference-controls';
+    const label = document.createElement('span');
+    label.className = 'kline-reference-controls-label';
+    label.textContent = '查價線';
+    controls.append(label);
+
+    for (const option of options) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'kline-reference-toggle';
+        toggle.textContent = option.label;
+        toggle.setAttribute('aria-pressed', String(klineReferenceLines[option.key]));
+        toggle.addEventListener('click', () => {
+            klineReferenceLines[option.key] = !klineReferenceLines[option.key];
+            refreshKLinePopover();
+        });
+        controls.append(toggle);
+    }
+
+    const status = document.createElement('span');
+    status.className = 'kline-reference-status';
+    status.setAttribute('aria-live', 'polite');
+    controls.append(status);
+
+    return { element: controls, status };
+}
+
+function attachKLineInteractions(svg, bars, layout, referenceSummary) {
+    const hoverLayer = svgElement('g', {
+        class: 'daily-kline-hover-layer',
+        'pointer-events': 'none'
+    });
+    const hitArea = svgElement('rect', {
+        class: 'daily-kline-hover-zone',
+        x: layout.left,
+        y: layout.top,
+        width: layout.right - layout.left,
+        height: layout.lowerBottom - layout.top,
+        fill: 'transparent',
+        'pointer-events': 'all'
+    });
+    const clear = () => hoverLayer.replaceChildren();
+    const referenceIndex = bars.length - 1;
+
+    const renderReferenceLines = index => {
+        const bar = bars[index];
+
+        clear();
+
+        if (referenceSummary) {
+            referenceSummary.textContent = '';
+        }
+
+        if (!bar) {
+            return;
+        }
+
+        const referenceDate = String(bar.date ?? '').replaceAll('-', '/').slice(-5);
+        const referenceValues = [];
+
+        const appendReferenceLine = referenceY => {
+            hoverLayer.append(svgElement('line', {
+                class: 'daily-kline-reference-line',
+                x1: layout.left,
+                x2: layout.right,
+                y1: referenceY,
+                y2: referenceY
+            }));
+        };
+
+        const priceValue = missing(bar.close) ? null : Number(bar.close);
+        const priceY = Number.isFinite(priceValue) ? layout.priceY(priceValue) : null;
+
+        if (klineReferenceLines.price
+            && Number.isFinite(priceY)
+            && priceY >= layout.top
+            && priceY <= layout.priceBottom) {
+            appendReferenceLine(priceY);
+            referenceValues.push(`${referenceDate} 收 ${toFixedText(priceValue, 2)}`);
+        }
+
+        const lowerValue = missing(layout.lowerValue(bar))
+            ? null
+            : Number(layout.lowerValue(bar));
+        const lowerY = Number.isFinite(lowerValue) ? layout.lowerY(lowerValue) : null;
+
+        if (klineReferenceLines[layout.lowerReferenceKey]
+            && Number.isFinite(lowerY)
+            && lowerY >= layout.lowerTop
+            && lowerY <= layout.lowerBottom) {
+            appendReferenceLine(lowerY);
+            referenceValues.push(`${referenceDate} ${layout.lowerLabel} ${layout.formatLower(lowerValue)}`);
+        }
+
+        if (referenceSummary) {
+            referenceSummary.textContent = referenceValues.join(' ｜ ');
+        }
+    };
+
+    const show = event => {
+        const bounds = svg.getBoundingClientRect();
+
+        if (bounds.width <= 0 || bounds.height <= 0) {
+            return;
+        }
+
+        const pointerX = (event.clientX - bounds.left) / bounds.width * layout.width;
+        const index = Math.max(
+            0,
+            Math.min(bars.length - 1, Math.floor((pointerX - layout.left) / layout.step)));
+        const bar = bars[index];
+
+        if (!bar) {
+            return;
+        }
+
+        renderReferenceLines(index);
+    };
+
+    hitArea.addEventListener('pointermove', show);
+    svg.append(hoverLayer, hitArea);
+    renderReferenceLines(referenceIndex);
+    hitArea.addEventListener('pointerleave', () => renderReferenceLines(referenceIndex));
+}
+
 // 紅綠一律比「昨收」，沒有昨收才退回開盤價。
 // 這條規則的正本是 C# 的 DailyKLineTrendCalculator，兩邊必須一模一樣：
 // 跳空開高、收在開盤價之下但仍高於昨收的那種 K 棒，
@@ -4945,13 +5128,16 @@ function klineTrendClass(bar) {
             : 'daily-kline-flat';
 }
 
-function renderKLineSvg(ticker, name, bars) {
+function renderKLineSvg(ticker, name, bars, referenceSummary) {
     const width = 600;
-    const height = 318;
+    const height = 440;
     const left = 56;
     const right = 586;
     const top = 16;
-    const bottom = 258;
+    // 上層刻意沿用原本的 bottom=258；成交量往下長，不縮小既有 K 棒比例。
+    const priceBottom = 258;
+    const volumeTop = 294;
+    const volumeBottom = 382;
     const prices = bars.flatMap(bar => [
         bar.low,
         bar.high,
@@ -4963,15 +5149,21 @@ function renderKLineSvg(ticker, name, bars) {
     const padding = dataRange * 0.04;
     const min = dataMin - padding;
     const max = dataMax + padding;
-    const y = price => top + (max - Number(price)) / (max - min) * (bottom - top);
+    const y = price => top + (max - Number(price)) / (max - min) * (priceBottom - top);
     const step = (right - left) / Math.max(bars.length, 1);
     const bodyWidth = Math.min(8, Math.max(2.5, step * 0.62));
     const x = index => left + step * (index + 0.5);
+    const volumes = bars.map(bar => Number(bar.tradingVolume))
+        .filter(value => Number.isFinite(value) && value >= 0);
+    const maxVolume = Math.max(...volumes, 0);
+    const volumeY = value => maxVolume > 0
+        ? volumeBottom - Number(value) / maxVolume * (volumeBottom - volumeTop)
+        : volumeBottom;
     const svg = svgElement('svg', {
         class: 'daily-kline-svg',
         viewBox: `0 0 ${width} ${height}`,
         role: 'img',
-        'aria-label': `${ticker} ${name} 三個月還原權息日 K 圖，包含 MA5、MA10、MA20、MA60、MA240`
+        'aria-label': `${ticker} ${name} 三個月還原權息日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與成交量`
     });
 
     for (const price of [max, (max + min) / 2, min]) {
@@ -5033,6 +5225,38 @@ function renderKLineSvg(ticker, name, bars) {
         }
     }
 
+    svg.append(
+        svgElement('line', {
+            class: 'daily-kline-divider', x1: left, x2: right, y1: 274, y2: 274
+        }),
+        svgElement('text', {
+            class: 'daily-kline-section-title', x: left, y: 288
+        }, '下層：成交量'));
+
+    bars.forEach((bar, index) => {
+        const value = Number(bar.tradingVolume);
+
+        if (!Number.isFinite(value) || value < 0) {
+            return;
+        }
+
+        svg.append(svgElement('rect', {
+            class: 'daily-kline-volume-bar',
+            x: x(index) - bodyWidth / 2,
+            y: volumeY(value),
+            width: bodyWidth,
+            height: Math.max(volumeBottom - volumeY(value), 1)
+        }));
+    });
+
+    svg.append(
+        svgElement('line', {
+            class: 'daily-kline-grid-line', x1: left, x2: right, y1: volumeBottom, y2: volumeBottom
+        }),
+        svgElement('text', {
+            class: 'daily-kline-axis', x: left - 8, y: volumeTop + 4, 'text-anchor': 'end'
+        }, toLotText(maxVolume)));
+
     const labels = [bars[0], bars[Math.floor(bars.length / 2)], bars[bars.length - 1]];
     labels.forEach((bar, index) => {
         const labelIndex = index === 0 ? 0 : index === 1 ? Math.floor(bars.length / 2) : bars.length - 1;
@@ -5040,10 +5264,29 @@ function renderKLineSvg(ticker, name, bars) {
         svg.append(svgElement('text', {
             class: 'daily-kline-date',
             x,
-            y: 292,
+            y: 420,
             'text-anchor': 'middle'
         }, bar.date.slice(5).replace('-', '/')));
     });
+
+    attachKLineInteractions(svg, bars, {
+        width,
+        height,
+        left,
+        right,
+        top,
+        priceBottom,
+        lowerTop: volumeTop,
+        lowerBottom: volumeBottom,
+        step,
+        x,
+        priceY: y,
+        lowerY: volumeY,
+        lowerValue: bar => bar.tradingVolume,
+        lowerReferenceKey: 'volume',
+        lowerLabel: '成交量',
+        formatLower: toLotText
+    }, referenceSummary);
 
     return svg;
 }
@@ -5233,7 +5476,14 @@ function renderKLinePopover(ticker, name, anchor) {
                 card.append(coverage);
             }
 
-            card.append(renderKLineLegend(bars), renderKLineSvg(ticker, name, bars));
+            const referenceControls = renderKLineReferenceControls([
+                    { key: 'price', label: 'K棒' },
+                    { key: 'volume', label: '量' }
+                ]);
+            card.append(
+                renderKLineLegend(bars),
+                referenceControls.element,
+                renderKLineSvg(ticker, name, bars, referenceControls.status));
         }
     }
 
@@ -6511,9 +6761,29 @@ function mapIntradayRows(raw, summary, includeEstimate = false) {
             open: missing(row.open_price) ? null : Number(row.open_price),
             high: missing(row.high_price) ? null : Number(row.high_price),
             low: missing(row.low_price) ? null : Number(row.low_price),
-            close: missing(row.price) ? null : Number(row.price)
+            close: missing(row.price) ? null : Number(row.price),
+            tradingVolume: intradayTradingVolume(row.price, row.turnover)
         }
     }));
+}
+
+// intraday_latest 現在保存的是「現價 × MIS 累計成交量」的估計成交額；資料庫尚未有獨立
+// 的累計量欄位時，可以精確還原這輪 MIS 的成交量。若未來改成交易所直接提供成交金額，
+// 要同步改為保存原始成交量，不能再用這個關係式推導。
+function intradayTradingVolume(price, turnover) {
+    if (missing(price) || missing(turnover)) {
+        return null;
+    }
+
+    const latestPrice = Number(price);
+    const estimatedTurnover = Number(turnover);
+
+    return Number.isFinite(latestPrice)
+        && latestPrice > 0
+        && Number.isFinite(estimatedTurnover)
+        && estimatedTurnover >= 0
+        ? estimatedTurnover / latestPrice
+        : null;
 }
 
 async function loadIntraday(silent = false, force = false) {

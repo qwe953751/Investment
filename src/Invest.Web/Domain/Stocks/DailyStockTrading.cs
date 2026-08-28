@@ -27,6 +27,11 @@ public sealed class DailyStockTrading
     public required decimal TradingValue { get; init; }
 
     /// <summary>
+    /// 當日成交股數。個股日 K 下層以張數顯示，保留原始股數避免精度流失。
+    /// </summary>
+    public decimal? TradingVolume { get; init; }
+
+    /// <summary>
     /// 當日是否有實際成交。停牌或無成交的日子不應計入有效成分股。
     /// </summary>
     public bool HasTrading => TradingValue > 0;

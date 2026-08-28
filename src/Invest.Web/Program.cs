@@ -616,7 +616,8 @@ static async Task<MarketDataSet> LoadMarketHeatHistoryAsync(
                 HighPrice = quote.HighPrice,
                 LowPrice = quote.LowPrice,
                 ClosePrice = quote.ClosePrice,
-                TradingValue = quote.TradingValue
+                TradingValue = quote.TradingValue,
+                TradingVolume = quote.TradingVolume
             }))
             .ToArray(),
         MarketIndices = snapshots
@@ -649,7 +650,8 @@ static MarketHeatMetrics? CalculateIntradayMarketHeat(
             HighPrice = quote.HighPrice,
             LowPrice = quote.LowPrice,
             ClosePrice = quote.Price,
-            TradingValue = quote.EstimatedTradingValue
+            TradingValue = quote.EstimatedTradingValue,
+            TradingVolume = quote.TradingVolume
         });
     var heatIndices = historicalDataSet.MarketIndices
         .Where(day => day.TradingDate < snapshot.TradeDate)

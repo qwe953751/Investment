@@ -62,7 +62,8 @@ public static class DailyKLineCalculator
                 MovingAverage(prefixCloseSums, 10),
                 MovingAverage(prefixCloseSums, 20),
                 MovingAverage(prefixCloseSums, 60),
-                MovingAverage(prefixCloseSums, 240)));
+                MovingAverage(prefixCloseSums, 240),
+                row.TradingVolume));
         }
 
         return result;
@@ -88,7 +89,8 @@ public sealed record DailyKLinePoint(
     decimal? Ma10,
     decimal? Ma20,
     decimal? Ma60,
-    decimal? Ma240);
+    decimal? Ma240,
+    decimal? TradingVolume = null);
 
 public enum DailyKLineTrend
 {

@@ -135,7 +135,8 @@ public sealed class TradingValueRankingQueryService(
                     HighPrice = quote.HighPrice,
                     LowPrice = quote.LowPrice,
                     ClosePrice = quote.ClosePrice,
-                    TradingValue = quote.TradingValue
+                    TradingValue = quote.TradingValue,
+                    TradingVolume = quote.TradingVolume
                 });
             }
         }
