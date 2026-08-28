@@ -1978,6 +1978,20 @@ body {
     color: #7a5b00;
 }
 
+/* 「這不是今天的資料」的橫幅。左邊界比 .notice.warning 重：
+   它跟排行榜並存，不像 .notice 是整片取代表格，不夠顯眼就會被整張表蓋過去。 */
+.stale-banner {
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border: 1px solid #f0c36d;
+    border-left: 4px solid #d99100;
+    border-radius: 8px;
+    background: #fdf6e3;
+    color: #7a5b00;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
 .table-container {
     overflow-x: auto;
     border: 1px solid #ddd;

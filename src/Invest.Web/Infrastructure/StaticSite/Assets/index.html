@@ -66,6 +66,10 @@
     <section class="notice" id="notice">行情載入中…</section>
 
     <div id="ranking" hidden>
+        <!-- 盤中資料停在別的交易日時的警告。放在排行上方而不是取代排行：
+             資料本身仍然讀得出來、也仍然有參考價值，只是不是今天的。 -->
+        <section class="stale-banner" id="stale-banner" hidden></section>
+
         <section class="summary" id="summary"></section>
 
         <section class="filter-panel">

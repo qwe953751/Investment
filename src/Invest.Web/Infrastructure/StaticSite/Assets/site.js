@@ -6221,6 +6221,10 @@ function renderTable() {
 }
 
 function renderSummary() {
+    // 掛在這裡而不是各個 load*()：摘要重畫的時機就是資料換過的時機，
+    // 兩者綁在一起才不會有「資料換了、警告還留在上一輪」的空窗。
+    renderStaleBanner();
+
     if (state.view === 'custom') {
         const threshold = activeThreshold();
         const items = isCustomIntradayView()
@@ -6953,11 +6957,24 @@ async function fetchIntradaySummaryRow(select) {
         { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
 
     if (!response.ok) {
-        throw new Error(String(response.status));
+        // 把資料庫講的原因一起帶出去。底下的退版鏈只認得「失敗了」，
+        // 於是 db/021 漏套用的那兩天，畫面只是安靜地少掉幾個欄位
+        // （盤中熱絡的「較前一交易日」變成 —），沒有任何地方說得出為什麼。
+        throw new Error(`${response.status} ${(await response.text()).slice(0, 200)}`);
     }
 
     const [row] = await response.json();
     return row ?? null;
+}
+
+// 退版只該發生在「migration 還沒套用」這種一次性的部署狀態，不是常態。
+// 每一次退版都留一行 console，下一個人打開開發者工具就看得到是哪一支沒套用，
+// 不必像這次一樣從「資料好像少了一欄」倒推兩天。
+function warnIntradaySchemaFallback(migration, error) {
+    console.warn(
+        `[盤中] intraday_latest 少了 ${migration} 的欄位，先退版查詢。`
+        + '這是暫時狀態，套用該 migration 後就會恢復完整欄位。原因：',
+        error?.message ?? error);
 }
 
 async function fetchIntradaySummary() {
@@ -6971,19 +6988,24 @@ async function fetchIntradaySummary() {
 
     try {
         return await fetchIntradaySummaryRow(INTRADAY_SUMMARY_WITH_HEAT);
-    } catch {
+    } catch (error) {
         try {
-            // db/014 尚未套用時，保留 db/011 已有的熱絡欄位；盤中成交額比較顯示 —。
+            // db/014 或 db/021 尚未套用時，保留 db/011 已有的熱絡欄位；
+            // 盤中成交額的「較前一交易日」與指數當日開高低都會顯示 —。
             const row = await fetchIntradaySummaryRow(INTRADAY_SUMMARY_WITH_HEAT_LEGACY);
             intradayHeatSelectLegacy = true;
+            warnIntradaySchemaFallback('db/014 或 db/021', error);
             return row;
-        } catch {
+        } catch (heatError) {
             try {
                 // db/011 尚未套用時，先沿用已有年初指數欄位；熱絡指標會顯示資料不足。
-                return await fetchIntradaySummaryRow(INTRADAY_SUMMARY);
-            } catch {
+                const row = await fetchIntradaySummaryRow(INTRADAY_SUMMARY);
+                warnIntradaySchemaFallback('db/011', heatError);
+                return row;
+            } catch (yearError) {
                 // db/010 尚未套用時，沿用舊 view；年初欄位再由 manifest 基準暫算。
                 intradayLegacySelect = true;
+                warnIntradaySchemaFallback('db/010', yearError);
 
                 return fetchIntradaySummaryRow(INTRADAY_SUMMARY_LEGACY);
             }
@@ -10193,10 +10215,18 @@ function intradayIsStale() {
     return Date.now() - lastIntradayLoadedAt >= intradayRefreshMs;
 }
 
-// 資料時間旁邊那句「幾分鐘前」。手機上最難判斷的就是「這個數字是現在的嗎」，
-// 收盤後不顯示：那時候不再更新是正常的，寫「三小時前」只會嚇人。
+// 資料時間旁邊那句「幾分鐘前」。手機上最難判斷的就是「這個數字是現在的嗎」。
+//
+// 收盤後不顯示：那時候不再更新是正常的，寫「三小時前」只會嚇人。但這一關要先確認
+// 快照真的是今天的——2026-08-27、08-28 盤中停在前一天的那兩天，前一天最後一輪的
+// progress 正好是 1，於是這行在最該講話的時候閉了嘴，畫面上找不到任何「這是舊資料」
+// 的線索，使用者連著兩天以為自己在看今天的盤中。
 function intradayAgeText() {
-    if (current === null || current.progress >= 1) {
+    if (current === null) {
+        return '';
+    }
+
+    if (current.progress >= 1 && current.tradeDate === TAIPEI_DATE.format(new Date())) {
         return '';
     }
 
@@ -10206,7 +10236,73 @@ function intradayAgeText() {
         return '（剛剛）';
     }
 
-    return `（${minutes} 分鐘前）`;
+    // 停在前一個交易日時分鐘數會是四位數，「（1876 分鐘前）」要自己心算才知道是昨天。
+    if (minutes < 90) {
+        return `（${minutes} 分鐘前）`;
+    }
+
+    const hours = Math.floor(minutes / 60);
+
+    return hours < 24 ? `（${hours} 小時前）` : `（${Math.floor(hours / 24)} 天前）`;
+}
+
+// 盤中快照停在別的交易日時，畫面上要有一句話講出來。
+//
+// 2026-08-27、08-28 連兩天：GitHub 的排程事件晚了 6～13 小時才送到
+// （三支 workflow 全都一樣，不是單一支的問題），收集器整個早上沒開跑，
+// intraday_latest 於是一路回傳前一個交易日的最後一輪。畫面照樣畫出一張完整的
+// 排行榜，「時段進度」還寫著「已收盤」——看起來就像今天已經收完盤了。
+//
+// 這裡不敢直接斷言「收集器壞了」：今天也可能只是休市。靜態站手上沒有休市日曆
+// （manifest 給的 dates 是交易日清單，而那要等當天盤後才會多出一天，
+// 正好在需要判斷的時候還沒有），所以兩種可能都寫出來讓人自己判斷。
+// 週末例外——那是唯一能確定不開盤、又不需要日曆就知道的日子，不必每個週末都喊一次。
+const INTRADAY_STALE_AFTER = '09:15';
+
+function intradayStaleText(tradeDate, capturedAtIso) {
+    if (typeof tradeDate !== 'string' || tradeDate === '') {
+        return '';
+    }
+
+    const today = TAIPEI_DATE.format(new Date());
+
+    if (tradeDate >= today) {
+        return '';
+    }
+
+    // 用台北日期字串重建一個 UTC 當天零點，取星期幾。直接 new Date() 取的是
+    // 瀏覽器所在時區的星期幾，人在美洲時會差一天。
+    const weekday = new Date(`${today}T00:00:00Z`).getUTCDay();
+
+    if (weekday === 0 || weekday === 6) {
+        return '';
+    }
+
+    // 開盤前本來就還停在上一個交易日，那是正常狀態不是故障。
+    // 多留十五分鐘給誤點的收集器寫進第一輪，免得每天開盤那一下都閃一次警告。
+    if (TAIPEI_CLOCK.format(new Date()) < INTRADAY_STALE_AFTER) {
+        return '';
+    }
+
+    return `這裡顯示的是 ${tradeDate.replaceAll('-', '/')} 的盤中資料，不是今天的。`
+        + `最後一輪收集時間 ${toTaipeiText(capturedAtIso)}。`
+        + '如果今天是交易日，代表盤中收集器沒有在跑（通常是 GitHub 排程誤點或漏送）；'
+        + '如果今天休市，那就是正常的。';
+}
+
+function renderStaleBanner() {
+    const banner = el('stale-banner');
+
+    if (banner === null) {
+        return;
+    }
+
+    const text = state.view === 'intraday' && current !== null
+        ? intradayStaleText(current.tradeDate, current.capturedAtIso)
+        : '';
+
+    banner.textContent = text;
+    banner.hidden = text === '';
 }
 
 function refreshIntradayIfDue() {
