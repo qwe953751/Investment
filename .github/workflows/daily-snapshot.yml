@@ -12,6 +12,10 @@ on:
     # GitHub 的排程是盡力而為，實測誤點過 31 分鐘，直接排 18:00 就會變成 18:31 才動。
     # 分鐘避開整點與半點，那是所有人排程的尖峰、誤點最嚴重。
     - cron: '7 8 * * 1-5'
+    # 如果第一場完全漏送或晚到隔日，收盤後再給兩次接手機會。
+    # 它們和第一場共用併發鎖；preflight 會在前一場已發布時略過，不重跑整輪。
+    - cron: '17 10 * * 1-5'
+    - cron: '47 10 * * 1-5'
 
   # 想立刻更新時可以手動觸發，也可以指定要回補幾個交易日。
   workflow_dispatch:
@@ -26,6 +30,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 # 完整快照會寫入 data 分支，彼此不能重疊；publish-only 只讀 data 並發布網站，
 # 可以和完整快照並行，避免備份或回補卡住時連純畫面發布也被排隊。
@@ -33,9 +38,72 @@ concurrency:
   group: ${{ inputs.publish-only == true && 'daily-snapshot-publish' || 'daily-snapshot' }}
 
 jobs:
-  snapshot:
+  # GitHub schedule 是盡力而為，事件可能晚到隔日。早到太久的事件不能照原本的
+  # sleep 等 18:00，否則會在 runner 六小時硬上限前被取消，連發布都走不到。
+  # 收盤後的備援要先確認同一天是否已有正式發布步驟成功，避免正常第一場完成後重跑。
+  preflight:
     runs-on: ubuntu-latest
-    # 16:07 進場、睡到 18:00、最晚重試到 21:00，再加上發佈，七小時夠用。
+    outputs:
+      should_run: ${{ steps.window.outputs.should_run }}
+    env:
+      TZ: Asia/Taipei
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - id: window
+        name: 判斷排程是否仍可執行
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "手動觸發，直接執行。"
+              exit 0
+          fi
+
+          today=$(date +%F)
+          now=$(date +%s)
+          target=$(date -d '18:00' +%s)
+          wait=$(( target - now ))
+
+          # 正常排程最多只需等三小時；若已晚到隔日，讓收盤後備援接手。
+          if [ "$wait" -gt 10800 ]; then
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "排程晚到台北 $(date +%F' '%T)，距離 18:00 還有 $(( wait / 60 )) 分鐘；略過，交給收盤後備援。"
+              exit 0
+          fi
+
+          # 同日只要已有正式網址的發布步驟成功，就不用再跑第二輪。
+          # 整體 run 可能因備份等非發布步驟標紅，所以不能只看 run conclusion。
+          day_start=$(date -d "$today 00:00" +%s)
+          while IFS=$'\t' read -r run_id updated_at; do
+              [ -n "$run_id" ] || continue
+              [ "$run_id" = "$GITHUB_RUN_ID" ] && continue
+
+              updated=$(date -d "$updated_at" +%s 2>/dev/null || echo 0)
+              [ "$updated" -ge "$day_start" ] || continue
+
+              if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
+                  --jq '.jobs[].steps[]? | select(.name == "發佈到 frank-invest.github.io（新網址，最高權限在 admin888/）" and .conclusion == "success") | .name' \
+                  | grep -q .; then
+                  echo "should_run=false" >> "$GITHUB_OUTPUT"
+                  echo "同日 run $run_id 已成功發布正式網址，略過這場備援。"
+                  exit 0
+              fi
+          done < <(
+              gh api --paginate \
+                  "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/runs?event=schedule&per_page=50" \
+                  --jq '.workflow_runs[] | [.id, .updated_at] | @tsv'
+          )
+
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+          echo "沒有找到同日成功發布的 run，執行這場快照。"
+
+  snapshot:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    # 16:07 進場、睡到 18:00、最晚重試到 21:00，再加上發佈，七小時夠用；
+    # 遲到隔日的事件已由 preflight 略過，不會再把時間浪費在跨日 sleep。
     timeout-minutes: 420
 
     env:
