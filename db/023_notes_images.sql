@@ -18,7 +18,6 @@ values (
 )
 on conflict (id) do update set
     name = excluded.name,
-    public = excluded.public,
     file_size_limit = excluded.file_size_limit,
     allowed_mime_types = excluded.allowed_mime_types;
 
@@ -53,5 +52,5 @@ using (
     and (storage.foldername(name))[1] = 'notes'
 );
 
-insert into schema_migrations (filename) values ('022_notes_images.sql')
+insert into schema_migrations (filename) values ('023_notes_images.sql')
 on conflict (filename) do nothing;

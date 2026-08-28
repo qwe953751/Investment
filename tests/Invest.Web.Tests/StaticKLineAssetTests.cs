@@ -645,7 +645,7 @@ public sealed class StaticKLineAssetTests
         var html = ReadAsset("index.html");
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
-        var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "022_notes_images.sql"));
+        var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "023_notes_images.sql"));
 
         Assert.Contains("id=\"notes-images\"", html, StringComparison.Ordinal);
         Assert.Contains("accept=\"image/jpeg,image/png,image/gif,image/webp\"", html, StringComparison.Ordinal);
