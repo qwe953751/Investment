@@ -33,5 +33,9 @@ jobs:
 
           next=$(( DEPTH + 1 ))
           echo "用 GITHUB_TOKEN 叫第 $next 棒……"
-          gh workflow run dispatch-probe.yml --ref main -f depth="$next"
+
+          # 沒有 checkout 就沒有 .git，gh workflow run 找不到 repo；直接打 API。
+          gh api --method POST \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/dispatch-probe.yml/dispatches" \
+              -f ref=main -f "inputs[depth]=$next"
           echo "已送出。"
