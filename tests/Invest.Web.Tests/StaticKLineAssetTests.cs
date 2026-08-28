@@ -382,8 +382,10 @@ public sealed class StaticKLineAssetTests
         var function = script[start..end];
 
         Assert.Contains("const referenceDate = String(bar.date ?? '').replaceAll('-', '/').slice(-5);", function, StringComparison.Ordinal);
-        Assert.Contains("`${referenceDate} 收", function, StringComparison.Ordinal);
-        Assert.Contains("`${referenceDate} ${layout.lowerLabel}", function, StringComparison.Ordinal);
+        Assert.Contains("referenceValues.push(`收", function, StringComparison.Ordinal);
+        Assert.Contains("referenceValues.push(`${layout.lowerLabel}", function, StringComparison.Ordinal);
+        Assert.Contains("referenceSummary.textContent = referenceValues.length > 0", function, StringComparison.Ordinal);
+        Assert.Contains("`${referenceDate} ${referenceValues.join(' ｜ ')}`", function, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -425,6 +427,36 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("klineReferenceLines[layout.lowerReferenceKey]", function, StringComparison.Ordinal);
         Assert.Contains("renderReferenceLines(referenceIndex)", function, StringComparison.Ordinal);
         Assert.Contains("hitArea.addEventListener('pointerleave', () => renderReferenceLines(referenceIndex))", function, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 人工編輯單一標的以樹狀族群圖勾選()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+        var start = script.IndexOf("function makeTopicMemberEditor", StringComparison.Ordinal);
+        var end = script.IndexOf("// ── 已經存下的編輯 ──", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start, "找不到單一標的族群編輯函式。");
+
+        var function = script[start..end];
+
+        Assert.Contains("function topicEditPathText", script, StringComparison.Ordinal);
+        Assert.Contains("function makeTopicMemberEditTree", script, StringComparison.Ordinal);
+        Assert.Contains("topic-edit-tree", function, StringComparison.Ordinal);
+        Assert.Contains("topic-edit-tree-branch", script, StringComparison.Ordinal);
+        Assert.Contains("topic-edit-tree-leaf", script, StringComparison.Ordinal);
+        Assert.Contains("topicEditPathText(topic)", script, StringComparison.Ordinal);
+        Assert.Contains("action: checked ? '加入' : '退出'", function, StringComparison.Ordinal);
+        Assert.Contains("加進哪一個族群", function, StringComparison.Ordinal);
+        Assert.Contains("submit.textContent = '加進這個族群'", function, StringComparison.Ordinal);
+        Assert.Contains("makeTopicMemberEditTree(tree, treeNodes, effectiveNames, saveTreeChange)", function, StringComparison.Ordinal);
+        Assert.DoesNotContain("topic-edit-chip-remove", function, StringComparison.Ordinal);
+        Assert.DoesNotContain("topic-edit-topic-list", function, StringComparison.Ordinal);
+        Assert.DoesNotContain(".topic-edit-topic-list", styles, StringComparison.Ordinal);
+        Assert.Contains(".topic-edit-tree", styles, StringComparison.Ordinal);
+        Assert.Contains(".topic-edit-tree-branch", styles, StringComparison.Ordinal);
+        Assert.Contains(".topic-edit-tree-leaf", styles, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -606,6 +638,32 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("notes = loaded;", refreshNotes, StringComparison.Ordinal);
         Assert.Contains("notesRevision += 1;", script, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void 筆記支援圖片附件並限制Storage範圍()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+        var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "022_notes_images.sql"));
+
+        Assert.Contains("id=\"notes-images\"", html, StringComparison.Ordinal);
+        Assert.Contains("accept=\"image/jpeg,image/png,image/gif,image/webp\"", html, StringComparison.Ordinal);
+        Assert.Contains("const NOTE_IMAGES_BUCKET = 'note-images';", script, StringComparison.Ordinal);
+        Assert.Contains("const NOTE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;", script, StringComparison.Ordinal);
+        Assert.Contains("async function uploadNoteImage(noteId, image)", script, StringComparison.Ordinal);
+    Assert.Contains("async function removeNoteImages(paths)", script, StringComparison.Ordinal);
+    Assert.Contains("attachments: note.attachments", script, StringComparison.Ordinal);
+    Assert.Contains("body.attachments.length === 0", script, StringComparison.Ordinal);
+    Assert.Contains("renderNoteImages(draft);", script, StringComparison.Ordinal);
+        Assert.Contains(".notes-images-preview", styles, StringComparison.Ordinal);
+        Assert.Contains("alter table notes", migration, StringComparison.Ordinal);
+        Assert.Contains("add column if not exists attachments jsonb", migration, StringComparison.Ordinal);
+        Assert.Contains("note-images", migration, StringComparison.Ordinal);
+    Assert.Contains("note images anonymous upload", migration, StringComparison.Ordinal);
+    Assert.Contains("storage.object.delete_many", migration, StringComparison.Ordinal);
+    Assert.Contains("storage.object.delete'])", migration, StringComparison.Ordinal);
+}
 
     /// <summary>
     /// 日 K 的三個月起算日，兩邊要算出同一天。JS 的 setMonth 遇到 5/31 會溢位成 3/3，

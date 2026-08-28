@@ -243,6 +243,18 @@
                         <span>內容</span>
                         <textarea id="notes-content" rows="12" placeholder="記下需求、重現步驟、驗證結果或下一步…"></textarea>
                     </label>
+                    <section class="notes-images-field" aria-labelledby="notes-images-title">
+                        <div class="notes-images-heading">
+                            <span id="notes-images-title">圖片</span>
+                            <small>可選多張，單張上限 5 MB</small>
+                        </div>
+                        <label class="notes-image-picker">
+                            <span>選擇圖片</span>
+                            <input type="file" id="notes-images" accept="image/jpeg,image/png,image/gif,image/webp" multiple />
+                        </label>
+                        <div class="notes-images-preview" id="notes-images-preview"></div>
+                        <p class="notes-images-status" id="notes-images-status" role="status"></p>
+                    </section>
                     <div class="notes-editor-actions">
                         <button type="button" class="notes-danger-button" id="notes-delete" hidden>刪除</button>
                         <span></span>

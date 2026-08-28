@@ -24,6 +24,17 @@ const CUSTOM_INTRADAY_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window
 // 本機專用：不連資料庫也能檢查筆記的永久編號與版面。只影響筆記頁，資產頁一律讀寫資料庫。
 const NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'review-20260826-notes-v1';
+// 本機專用 UI 原型：回答「一檔股票目前掛在哪些族群，怎麼分層編輯」；
+// 只在 localhost 顯示，不讀寫正式分類，也不帶進正式網站。
+const TOPIC_EDITOR_PROTOTYPE_V1 = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && PREVIEW_QUERY === 'topic-editor-prototype-v1';
+const TOPIC_EDITOR_PROTOTYPE_V2 = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && PREVIEW_QUERY === 'topic-editor-prototype-v2';
+const TOPIC_EDITOR_PROTOTYPE_V3 = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && PREVIEW_QUERY === 'topic-editor-prototype-v3';
+const TOPIC_EDITOR_PROTOTYPE = TOPIC_EDITOR_PROTOTYPE_V1
+    || TOPIC_EDITOR_PROTOTYPE_V2
+    || TOPIC_EDITOR_PROTOTYPE_V3;
 let assetDashboardScreen = 'dashboard';
 let assetSelectedAccountId = '';
 let assetEditorMode = '';
@@ -852,6 +863,16 @@ const NOTE_CATEGORIES = [
     { key: '完成', text: '完成' }
 ];
 const NOTE_STATUSES = ['待處理', '處理中', '待確認', '已完成'];
+const NOTE_IMAGES_BUCKET = 'note-images';
+const NOTE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const NOTE_IMAGE_MAX_COUNT = 6;
+const NOTE_IMAGE_EXTENSIONS = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp'
+};
+const NOTE_IMAGE_TYPES = new Set(Object.keys(NOTE_IMAGE_EXTENSIONS));
 
 // 僅供 review-20260826-notes-v1 本機預覽閱讀，不會寫入資料庫。
 const NOTES_LOCAL_PREVIEW_ITEMS = [
@@ -862,6 +883,7 @@ const NOTES_LOCAL_PREVIEW_ITEMS = [
         category: '功能',
         status: '待確認',
         content: '確認資產頁的資訊架構、帳戶切換，以及截圖辨識後必須人工核對的流程。',
+        attachments: [],
         updatedAt: '2026-08-26T09:30:00+08:00'
     },
     {
@@ -871,6 +893,7 @@ const NOTES_LOCAL_PREVIEW_ITEMS = [
         category: '功能',
         status: '已完成',
         content: '資料庫 sequence 配號；刪除不回收，新增由資料庫回傳新號，避免多裝置重複。',
+        attachments: [],
         updatedAt: '2026-08-26T08:50:00+08:00'
     },
     {
@@ -880,6 +903,7 @@ const NOTES_LOCAL_PREVIEW_ITEMS = [
         category: 'Bug',
         status: '待確認',
         content: '切換盤中、盤後、族群時，K 線要重新取得該頁籤目前的交易日，不能沿用上一頁日期。',
+        attachments: [],
         updatedAt: '2026-08-26T08:20:00+08:00'
     }
 ];
@@ -900,6 +924,7 @@ let notesSearch = '';
 let selectedNoteId = null;
 let notesDraft = null;
 let notesSaveStatus = '';
+let notesImagesStatus = '';
 let notesControlsWired = false;
 
 function defaultViewPreferences() {
@@ -1613,10 +1638,25 @@ async function loadNotes() {
     const categories = new Set(NOTE_CATEGORIES.filter(option => option.key !== 'all').map(option => option.key));
     const statuses = new Set(NOTE_STATUSES);
 
-    const rows = await fetchAllRows(
-        NOTES_TABLE,
-        'id,note_number,title,category,status,content,updated_at',
-        '&order=updated_at.desc');
+    let rows;
+
+    try {
+        rows = await fetchAllRows(
+            NOTES_TABLE,
+            'id,note_number,title,category,status,content,attachments,updated_at',
+            '&order=updated_at.desc');
+    } catch (error) {
+        // 舊版正式站若先發布前端、尚未套用 migration，文字筆記仍要能讀取。
+        // 其他錯誤照原樣拋出，避免把網路故障誤報成沒有圖片欄位。
+        if (String(error.message) !== '400') {
+            throw error;
+        }
+
+        rows = await fetchAllRows(
+            NOTES_TABLE,
+            'id,note_number,title,category,status,content,updated_at',
+            '&order=updated_at.desc');
+    }
 
     return rows
         .filter(row => row !== null && typeof row === 'object')
@@ -1627,6 +1667,7 @@ async function loadNotes() {
             category: categories.has(row.category) ? row.category : '功能',
             status: statuses.has(row.status) ? row.status : '待處理',
             content: typeof row.content === 'string' ? row.content : '',
+            attachments: normalizeNoteAttachments(row.attachments),
             updatedAt: typeof row.updated_at === 'string' ? row.updated_at : new Date(0).toISOString()
         }))
         .sort(compareNotes);
@@ -1688,6 +1729,125 @@ function createNoteId() {
     return crypto.randomUUID();
 }
 
+function normalizeNoteAttachments(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value
+        .filter(item => {
+            if (!item || typeof item.path !== 'string') {
+                return false;
+            }
+
+            const parts = item.path.split('/');
+            return parts[0] === 'notes'
+                && parts.length >= 3
+                && parts.every(part => part.length > 0 && part !== '.' && part !== '..');
+        })
+        .slice(0, NOTE_IMAGE_MAX_COUNT)
+        .map(item => ({
+            path: item.path,
+            name: typeof item.name === 'string' && item.name.trim().length > 0 ? item.name : '圖片',
+            mimeType: typeof item.mimeType === 'string' ? item.mimeType : '',
+            size: Number.isSafeInteger(item.size) && item.size >= 0 ? item.size : null
+        }));
+}
+
+function encodeStoragePath(path) {
+    return path.split('/').map(encodeURIComponent).join('/');
+}
+
+function noteImagePublicUrl(path) {
+    if (supabase === null) {
+        return '';
+    }
+
+    return `${supabase.url}/storage/v1/object/public/${NOTE_IMAGES_BUCKET}/${encodeStoragePath(path)}`;
+}
+
+async function uploadNoteImage(noteId, image) {
+    const extension = NOTE_IMAGE_EXTENSIONS[image.file.type];
+    const path = `notes/${noteId}/${crypto.randomUUID()}.${extension}`;
+    const response = await fetch(
+        `${supabase.url}/storage/v1/object/${NOTE_IMAGES_BUCKET}/${encodeStoragePath(path)}`,
+        {
+            method: 'POST',
+            headers: {
+                apikey: supabase.anonKey,
+                Authorization: `Bearer ${supabase.anonKey}`,
+                'Content-Type': image.file.type,
+                'x-upsert': 'false'
+            },
+            body: image.file
+        });
+
+    if (!response.ok) {
+        throw new Error(`圖片上傳失敗（${response.status}）`);
+    }
+
+    return {
+        path,
+        name: image.file.name,
+        mimeType: image.file.type,
+        size: image.file.size
+    };
+}
+
+async function removeNoteImages(paths) {
+    const cleanPaths = paths.filter(path => typeof path === 'string' && path.startsWith('notes/'));
+
+    if (supabase === null || cleanPaths.length === 0) {
+        return;
+    }
+
+    const response = await fetch(
+        `${supabase.url}/storage/v1/object/${NOTE_IMAGES_BUCKET}`,
+        {
+            method: 'DELETE',
+            headers: {
+                apikey: supabase.anonKey,
+                Authorization: `Bearer ${supabase.anonKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ prefixes: cleanPaths })
+        });
+
+    if (!response.ok) {
+        throw new Error(`圖片清理失敗（${response.status}）`);
+    }
+}
+
+function releaseNoteDraftImages(draft = notesDraft) {
+    for (const image of draft?.newImages ?? []) {
+        if (image.previewUrl) {
+            URL.revokeObjectURL(image.previewUrl);
+        }
+    }
+}
+
+function ensureNotesDraft() {
+    const note = notes.find(item => item.id === selectedNoteId) ?? null;
+    const noteId = note?.id ?? null;
+
+    if (notesDraft?.id === noteId) {
+        notesDraft.attachments ??= [...(note?.attachments ?? [])];
+        notesDraft.newImages ??= [];
+        return notesDraft;
+    }
+
+    notesDraft = {
+        id: noteId,
+        title: note?.title ?? '',
+        category: note?.category ?? '功能',
+        status: note?.status ?? '待處理',
+        content: note?.content ?? '',
+        attachments: [...(note?.attachments ?? [])],
+        newImages: []
+    };
+    return notesDraft;
+}
+
 async function saveNoteRemote(note, isNew) {
     const body = {
         id: note.id,
@@ -1695,21 +1855,32 @@ async function saveNoteRemote(note, isNew) {
         category: note.category,
         status: note.status,
         content: note.content,
+        attachments: note.attachments,
         updated_at: note.updatedAt
     };
     const endpoint = isNew
         ? `${supabase.url}/rest/v1/${NOTES_TABLE}?select=id,note_number`
         : `${supabase.url}/rest/v1/${NOTES_TABLE}?id=eq.${encodeURIComponent(note.id)}&select=id,note_number`;
 
-    const response = await fetch(endpoint, {
+    const send = payload => fetch(endpoint, {
         method: isNew ? 'POST' : 'PATCH',
         headers: {
             apikey: supabase.anonKey,
             'Content-Type': 'application/json',
             Prefer: 'return=representation'
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(payload)
     });
+
+    let response = await send(body);
+
+    // Allow text-only edits during the short window before db/022 is applied.
+    // Do not hide a schema error when the user is actually saving images.
+    if (!response.ok && response.status === 400 && body.attachments.length === 0) {
+        const legacyBody = { ...body };
+        delete legacyBody.attachments;
+        response = await send(legacyBody);
+    }
 
     if (!response.ok) {
         throw new Error(String(response.status));
@@ -1730,14 +1901,24 @@ async function saveNoteRemote(note, isNew) {
     }
 }
 
-async function deleteNoteRemote(id) {
+async function deleteNoteRemote(note) {
     const response = await fetch(
-        `${supabase.url}/rest/v1/${NOTES_TABLE}?id=eq.${encodeURIComponent(id)}`,
+        `${supabase.url}/rest/v1/${NOTES_TABLE}?id=eq.${encodeURIComponent(note.id)}`,
         { method: 'DELETE', headers: { apikey: supabase.anonKey } });
 
     if (!response.ok) {
         throw new Error(String(response.status));
     }
+
+    let imageCleanupFailed = false;
+
+    try {
+        await removeNoteImages((note.attachments ?? []).map(image => image.path));
+    } catch {
+        imageCleanupFailed = true;
+    }
+
+    return { imageCleanupFailed };
 }
 
 function formatNoteUpdatedAt(value) {
@@ -1879,9 +2060,11 @@ function renderNotes() {
                 ? 'notes-list-item selected'
                 : 'notes-list-item';
             item.addEventListener('click', () => {
+                releaseNoteDraftImages();
                 selectedNoteId = note.id;
                 notesDraft = null;
                 notesSaveStatus = '';
+                notesImagesStatus = '';
                 renderNotes();
             });
 
@@ -1913,6 +2096,10 @@ function renderNotes() {
                 makeNotePill(note.category, `notes-category-pill ${noteCategoryClass(note.category)}`),
                 makeNotePill(note.status, `notes-status-pill ${noteStatusClass(note.status)}`));
 
+            if (note.attachments.length > 0) {
+                meta.append(makeNotePill(`附圖 ${note.attachments.length}`, 'notes-images-pill'));
+            }
+
             const preview = document.createElement('span');
             preview.className = 'notes-list-item-preview';
             const oneLine = note.content.replace(/\s+/g, ' ').trim();
@@ -1924,6 +2111,73 @@ function renderNotes() {
     }
 
     renderNoteEditor();
+}
+
+function renderNoteImages(draft) {
+    const host = el('notes-images-preview');
+
+    if (!host) {
+        return;
+    }
+
+    host.replaceChildren();
+
+    const attachments = Array.isArray(draft?.attachments) ? draft.attachments : [];
+    const newImages = Array.isArray(draft?.newImages) ? draft.newImages : [];
+
+    if (attachments.length === 0 && newImages.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'notes-images-empty';
+        empty.textContent = '尚未加入圖片。';
+        host.append(empty);
+        return;
+    }
+
+    const appendCard = (imageInfo, previewUrl, remove) => {
+        const figure = document.createElement('figure');
+        figure.className = 'notes-image-card';
+
+        const image = document.createElement('img');
+        image.src = previewUrl || noteImagePublicUrl(imageInfo.path);
+        image.alt = imageInfo.name || '筆記圖片';
+        image.loading = 'lazy';
+
+        const caption = document.createElement('figcaption');
+        caption.textContent = imageInfo.name || '圖片';
+
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.className = 'notes-image-remove';
+        removeButton.textContent = '×';
+        removeButton.setAttribute('aria-label', `移除${imageInfo.name || '圖片'}`);
+        removeButton.addEventListener('click', remove);
+
+        figure.append(image, caption, removeButton);
+        host.append(figure);
+    };
+
+    attachments.forEach((imageInfo, index) => appendCard(
+        imageInfo,
+        '',
+        () => {
+            const current = ensureNotesDraft();
+            current.attachments.splice(index, 1);
+            notesImagesStatus = '已標記移除，儲存筆記後生效。';
+            renderNoteEditor();
+        }));
+
+    newImages.forEach((imageInfo, index) => appendCard(
+        imageInfo,
+        imageInfo.previewUrl,
+        () => {
+            const current = ensureNotesDraft();
+            const [removed] = current.newImages.splice(index, 1);
+            if (removed?.previewUrl) {
+                URL.revokeObjectURL(removed.previewUrl);
+            }
+            notesImagesStatus = '已取消加入這張圖片。';
+            renderNoteEditor();
+        }));
 }
 
 function renderNoteEditor() {
@@ -1942,6 +2196,8 @@ function renderNoteEditor() {
     el('notes-content').value = draft?.content ?? '';
     el('notes-delete').hidden = !isEditing;
     el('notes-save-status').textContent = notesSaveStatus;
+    el('notes-images-status').textContent = notesImagesStatus;
+    renderNoteImages(draft);
 }
 
 function wireNotes() {
@@ -1952,9 +2208,11 @@ function wireNotes() {
     notesControlsWired = true;
 
     el('notes-new').addEventListener('click', () => {
+        releaseNoteDraftImages();
         selectedNoteId = null;
         notesDraft = null;
         notesSaveStatus = '';
+        notesImagesStatus = '';
         renderNotes();
         el('notes-title').focus();
     });
@@ -1966,18 +2224,55 @@ function wireNotes() {
 
     for (const id of ['notes-title', 'notes-category', 'notes-status', 'notes-content']) {
         const rememberDraft = () => {
-            notesDraft = {
-                id: selectedNoteId,
-                title: el('notes-title').value,
-                category: el('notes-category').value,
-                status: el('notes-status').value,
-                content: el('notes-content').value
-            };
+            const draft = ensureNotesDraft();
+            draft.title = el('notes-title').value;
+            draft.category = el('notes-category').value;
+            draft.status = el('notes-status').value;
+            draft.content = el('notes-content').value;
             notesSaveStatus = '';
         };
         el(id).addEventListener('input', rememberDraft);
         el(id).addEventListener('change', rememberDraft);
     }
+
+    el('notes-images').addEventListener('change', event => {
+        const draft = ensureNotesDraft();
+        const selected = Array.from(event.target.files ?? []);
+        const rejected = [];
+        let accepted = 0;
+
+        for (const file of selected) {
+            if (draft.attachments.length + draft.newImages.length >= NOTE_IMAGE_MAX_COUNT) {
+                rejected.push(`最多 ${NOTE_IMAGE_MAX_COUNT} 張`);
+                break;
+            }
+
+            if (!NOTE_IMAGE_TYPES.has(file.type)) {
+                rejected.push(`${file.name}：格式不支援`);
+                continue;
+            }
+
+            if (file.size > NOTE_IMAGE_MAX_BYTES) {
+                rejected.push(`${file.name}：超過 5 MB`);
+                continue;
+            }
+
+            draft.newImages.push({
+                file,
+                name: file.name,
+                previewUrl: URL.createObjectURL(file)
+            });
+            accepted += 1;
+        }
+
+        event.target.value = '';
+        notesImagesStatus = accepted > 0
+            ? `已加入 ${accepted} 張圖片。${rejected.length > 0 ? ` 略過：${rejected.join('、')}` : ''}`
+            : rejected.length > 0
+                ? `沒有加入圖片：${rejected.join('、')}`
+                : '';
+        renderNoteEditor();
+    });
 
     el('notes-form').addEventListener('submit', event => {
         event.preventDefault();
@@ -2010,21 +2305,47 @@ function wireNotes() {
         // 或解析失敗時會退回 note.noteNumber，沒帶就是 undefined，畫面會出現
         // 「#undefined」——因為顯示端只檢查 === null。
         const existingNote = notes.find(note => note.id === id);
+        const draft = ensureNotesDraft();
+        const keptAttachments = normalizeNoteAttachments(draft.attachments);
+        const newImages = [...draft.newImages];
         const next = {
             id,
             title,
             category: el('notes-category').value,
             status: el('notes-status').value,
             content: el('notes-content').value,
+            attachments: keptAttachments,
             noteNumber: existingNote?.noteNumber ?? null,
             updatedAt: new Date().toISOString()
         };
+        const removedPaths = (existingNote?.attachments ?? [])
+            .map(image => image.path)
+            .filter(path => !keptAttachments.some(image => image.path === path));
 
-        notesSaveStatus = '儲存中…';
+        notesSaveStatus = newImages.length > 0 ? '圖片上傳中…' : '儲存中…';
         renderNoteEditor();
 
-        saveNoteRemote(next, isNew)
-            .then(noteNumber => {
+        (async () => {
+            const uploaded = [];
+
+            try {
+                for (const image of newImages) {
+                    uploaded.push(await uploadNoteImage(id, image));
+                }
+
+                next.attachments.push(...uploaded);
+                notesSaveStatus = '儲存中…';
+                renderNoteEditor();
+
+                const noteNumber = await saveNoteRemote(next, isNew);
+                let imageCleanupFailed = false;
+
+                try {
+                    await removeNoteImages(removedPaths);
+                } catch {
+                    imageCleanupFailed = true;
+                }
+
                 const persisted = { ...next, noteNumber: noteNumber ?? null };
                 const existingIndex = notes.findIndex(note => note.id === id);
 
@@ -2038,21 +2359,36 @@ function wireNotes() {
 
                 notes.sort(compareNotes);
                 selectedNoteId = id;
+                releaseNoteDraftImages(draft);
                 notesDraft = null;
-                notesSaveStatus = `已儲存 ${formatNoteUpdatedAt(persisted.updatedAt)}`;
+                notesSaveStatus = imageCleanupFailed
+                    ? `已儲存 ${formatNoteUpdatedAt(persisted.updatedAt)}，部分舊圖片未清理`
+                    : `已儲存 ${formatNoteUpdatedAt(persisted.updatedAt)}`;
+                notesImagesStatus = '';
                 notesLoadError = null;
                 notesLoaded = true;
                 lastNotesLoadedAt = Date.now();
-            })
-            .catch(() => {
-                notesSaveStatus = '儲存失敗，請檢查網路連線後重試';
-            })
-            .finally(renderNotes);
+            } catch (error) {
+                try {
+                    await removeNoteImages(uploaded.map(image => image.path));
+                } catch {
+                    // 上傳失敗時盡力清掉已成功上傳的檔案，不能覆蓋原始錯誤訊息。
+                }
+
+                notesSaveStatus = error instanceof Error && error.message.includes('圖片')
+                    ? error.message
+                    : '儲存失敗，請檢查網路連線後重試';
+            } finally {
+                renderNotes();
+            }
+        })();
     });
 
     el('notes-cancel').addEventListener('click', () => {
+        releaseNoteDraftImages();
         notesDraft = null;
         notesSaveStatus = '';
+        notesImagesStatus = '';
         renderNotes();
     });
 
@@ -2078,13 +2414,17 @@ function wireNotes() {
         notesSaveStatus = '刪除中…';
         renderNoteEditor();
 
-        deleteNoteRemote(note.id)
-            .then(() => {
+        deleteNoteRemote(note)
+            .then(result => {
                 notesRevision += 1;
                 notes = notes.filter(item => item.id !== note.id);
                 selectedNoteId = null;
+                releaseNoteDraftImages();
                 notesDraft = null;
-                notesSaveStatus = '已刪除';
+                notesSaveStatus = result.imageCleanupFailed
+                    ? '已刪除，但部分圖片未清理'
+                    : '已刪除';
+                notesImagesStatus = '';
                 notesLoadError = null;
                 notesLoaded = true;
                 lastNotesLoadedAt = Date.now();
@@ -5053,7 +5393,7 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
             && priceY >= layout.top
             && priceY <= layout.priceBottom) {
             appendReferenceLine(priceY);
-            referenceValues.push(`${referenceDate} 收 ${toFixedText(priceValue, 2)}`);
+            referenceValues.push(`收 ${toFixedText(priceValue, 2)}`);
         }
 
         const lowerValue = missing(layout.lowerValue(bar))
@@ -5066,11 +5406,13 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
             && lowerY >= layout.lowerTop
             && lowerY <= layout.lowerBottom) {
             appendReferenceLine(lowerY);
-            referenceValues.push(`${referenceDate} ${layout.lowerLabel} ${layout.formatLower(lowerValue)}`);
+            referenceValues.push(`${layout.lowerLabel} ${layout.formatLower(lowerValue)}`);
         }
 
         if (referenceSummary) {
-            referenceSummary.textContent = referenceValues.join(' ｜ ');
+            referenceSummary.textContent = referenceValues.length > 0
+                ? `${referenceDate} ${referenceValues.join(' ｜ ')}`
+                : '';
         }
     };
 
@@ -7533,6 +7875,10 @@ async function loadAttributions() {
 async function loadTopics() {
     const panel = el('topic-panel');
 
+    if (TOPIC_EDITOR_PROTOTYPE) {
+        state.topicTab = 'edits';
+    }
+
     if (topicData === null && topicLoadError === '') {
         panel.replaceChildren(makeTopicNotice('族群資料載入中…', false));
 
@@ -7708,6 +8054,11 @@ function renderTopicPanel() {
     const panel = el('topic-panel');
     panel.replaceChildren();
 
+    if (TOPIC_EDITOR_PROTOTYPE && state.topicTab === 'edits') {
+        renderTopicEditorPrototype(panel);
+        return;
+    }
+
     if (topicLoadError !== '') {
         panel.append(makeTopicNotice(topicLoadError, true));
         return;
@@ -7754,6 +8105,1202 @@ function makeTopicWarnings(warnings) {
 
     box.append(list);
     return box;
+}
+
+// ── UI 原型：以單一標的檢視族群關聯 ─────────────────────────
+// 問題：使用者要先看懂「這檔現在在哪些族群」，再決定要加入或移出哪一層。
+// 這是只在 localhost 啟用的三種版型，不讀寫 topic_edits，也不代表正式資料。
+const TOPIC_EDITOR_PROTOTYPE_VARIANTS = [
+    { key: 'a', label: 'A｜樹狀對照', hint: '左邊看目前歸屬，右邊在完整層級樹編輯。' },
+    { key: 'b', label: 'B｜路徑分組', hint: '先列目前關聯，再依第一層族群收合編輯。' },
+    { key: 'c', label: 'C｜層級矩陣', hint: '用欄位對齊每一層，快速比較所有路徑。' }
+];
+
+const TOPIC_EDITOR_PROTOTYPE_GROUPS = [
+    { id: 'foundry', path: ['電子', '半導體', '晶圓代工'] },
+    { id: 'advanced-process', path: ['電子', '半導體', '先進製程'] },
+    { id: 'memory', path: ['電子', '半導體', '記憶體'] },
+    { id: 'packaging', path: ['電子', '半導體', '封裝測試'] },
+    { id: 'equipment', path: ['電子', '半導體設備', '晶圓製程設備'] },
+    { id: 'ai-chip', path: ['電子', 'AI 伺服器', 'AI 晶片'] },
+    { id: 'server-odm', path: ['電子', 'AI 伺服器', '伺服器 ODM'] },
+    { id: 'fabless', path: ['電子', 'IC 設計', '手機晶片'] },
+    { id: 'mobile', path: ['電子', 'IC 設計', '手機零組件'] },
+    { id: 'pcb', path: ['電子', 'PCB', '載板'] },
+    { id: 'cloud', path: ['資訊服務', '雲端運算', 'AI 應用'] },
+    { id: 'solar', path: ['綠能', '再生能源', '太陽能'] }
+];
+
+const TOPIC_EDITOR_PROTOTYPE_STOCKS = [
+    { ticker: '2330', name: '台積電', directGroups: ['foundry', 'advanced-process', 'ai-chip'] },
+    { ticker: '2303', name: '聯電', directGroups: ['foundry'] },
+    { ticker: '2454', name: '聯發科', directGroups: ['fabless', 'mobile', 'ai-chip'] }
+];
+
+const topicEditorPrototypeState = {
+    ticker: '2330',
+    selectedByTicker: new Map(TOPIC_EDITOR_PROTOTYPE_STOCKS.map(stock => [
+        stock.ticker,
+        new Set(stock.directGroups)
+    ])),
+    notice: ''
+};
+
+let topicEditorPrototypeKeyboardWired = false;
+
+function prototypeMakeElement(tag, className, text) {
+    const element = document.createElement(tag);
+
+    if (className) {
+        element.className = className;
+    }
+
+    if (text !== undefined) {
+        element.textContent = text;
+    }
+
+    return element;
+}
+
+function prototypeMakeButton(text, className, onClick) {
+    const button = prototypeMakeElement('button', className, text);
+    button.type = 'button';
+    button.addEventListener('click', onClick);
+    return button;
+}
+
+function topicEditorPrototypeStock() {
+    return TOPIC_EDITOR_PROTOTYPE_STOCKS.find(stock => stock.ticker === topicEditorPrototypeState.ticker)
+        ?? TOPIC_EDITOR_PROTOTYPE_STOCKS[0];
+}
+
+function topicEditorPrototypeSelected(stock = topicEditorPrototypeStock()) {
+    let selected = topicEditorPrototypeState.selectedByTicker.get(stock.ticker);
+
+    if (selected === undefined) {
+        selected = new Set(stock.directGroups);
+        topicEditorPrototypeState.selectedByTicker.set(stock.ticker, selected);
+    }
+
+    return selected;
+}
+
+function topicEditorPrototypeGroup(id) {
+    return TOPIC_EDITOR_PROTOTYPE_GROUPS.find(group => group.id === id) ?? null;
+}
+
+function topicEditorPrototypePathText(path) {
+    return path.join(' › ');
+}
+
+function topicEditorPrototypeInheritedPaths(selected) {
+    const paths = new Set();
+
+    for (const groupId of selected) {
+        const group = topicEditorPrototypeGroup(groupId);
+
+        if (!group) {
+            continue;
+        }
+
+        for (let length = 1; length < group.path.length; length += 1) {
+            paths.add(topicEditorPrototypePathText(group.path.slice(0, length)));
+        }
+    }
+
+    return [...paths].sort((left, right) => left.localeCompare(right));
+}
+
+function topicEditorPrototypeChange(groupId, checked) {
+    const selected = topicEditorPrototypeSelected();
+
+    if (checked) {
+        selected.add(groupId);
+    } else {
+        selected.delete(groupId);
+    }
+
+    const group = topicEditorPrototypeGroup(groupId);
+    topicEditorPrototypeState.notice = checked
+        ? `已在這個原型中加入「${topicEditorPrototypePathText(group.path)}」。`
+        : `已在這個原型中移除「${topicEditorPrototypePathText(group.path)}」。`;
+    renderTopicPanel();
+}
+
+function makeTopicEditorPrototypeHeader() {
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-banner');
+    box.append(
+        prototypeMakeElement('strong', '', '版型提案：先看一檔，再編輯它的完整族群關聯'),
+        prototypeMakeElement(
+            'p',
+            '',
+            '示意資料只存在目前頁面記憶體；勾選或取消會即時更新下方關聯，但不會寫入正式分類。'));
+    return box;
+}
+
+function makeTopicEditorPrototypeTargetBar() {
+    const stock = topicEditorPrototypeStock();
+    const selected = topicEditorPrototypeSelected(stock);
+    const inherited = topicEditorPrototypeInheritedPaths(selected);
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-target');
+
+    const title = prototypeMakeElement('div', 'topic-editor-prototype-target-title');
+    title.append(
+        prototypeMakeElement('span', 'topic-editor-prototype-eyebrow', '目前標的'),
+        prototypeMakeElement('strong', '', `${stock.ticker} ${stock.name}`));
+
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', '選擇示意標的');
+
+    for (const optionStock of TOPIC_EDITOR_PROTOTYPE_STOCKS) {
+        const option = document.createElement('option');
+        option.value = optionStock.ticker;
+        option.textContent = `${optionStock.ticker} ${optionStock.name}`;
+        option.selected = optionStock.ticker === stock.ticker;
+        select.append(option);
+    }
+
+    select.addEventListener('change', () => {
+        topicEditorPrototypeState.ticker = select.value;
+        topicEditorPrototypeState.notice = '';
+        renderTopicPanel();
+    });
+
+    const counts = prototypeMakeElement('div', 'topic-editor-prototype-counts');
+    counts.append(
+        prototypeMakeElement('span', 'topic-editor-prototype-count is-direct', `直接掛入 ${selected.size}`),
+        prototypeMakeElement('span', 'topic-editor-prototype-count is-inherited', `上層帶入 ${inherited.length}`),
+        select);
+
+    box.append(title, counts);
+
+    if (topicEditorPrototypeState.notice) {
+        const notice = prototypeMakeElement('p', 'topic-editor-prototype-notice', topicEditorPrototypeState.notice);
+        notice.setAttribute('aria-live', 'polite');
+        box.append(notice);
+    }
+
+    return box;
+}
+
+function makeTopicEditorPrototypeActionBar() {
+    const stock = topicEditorPrototypeStock();
+    const selected = topicEditorPrototypeSelected(stock);
+    const bar = prototypeMakeElement('div', 'topic-editor-prototype-action-bar');
+    const text = prototypeMakeElement(
+        'span',
+        '',
+        `這個原型目前保留 ${selected.size} 個「直接掛入」族群；上層路徑會自動顯示為關聯。`);
+    const reset = prototypeMakeButton('恢復示意原始分類', 'topic-editor-prototype-reset', () => {
+        topicEditorPrototypeState.selectedByTicker.set(stock.ticker, new Set(stock.directGroups));
+        topicEditorPrototypeState.notice = '已恢復這檔示意標的的原始分類。';
+        renderTopicPanel();
+    });
+
+    bar.append(text, reset);
+    return bar;
+}
+
+function makeTopicEditorPrototypePath(path, className = '') {
+    const container = prototypeMakeElement('div', `topic-editor-prototype-path ${className}`.trim());
+
+    path.forEach((segment, index) => {
+        if (index > 0) {
+            container.append(prototypeMakeElement('span', 'topic-editor-prototype-chevron', '›'));
+        }
+
+        container.append(prototypeMakeElement(
+            'span',
+            index === path.length - 1
+                ? 'topic-editor-prototype-path-segment is-leaf'
+                : 'topic-editor-prototype-path-segment',
+            segment));
+    });
+
+    return container;
+}
+
+function makeTopicEditorPrototypeMembershipSummary() {
+    const stock = topicEditorPrototypeStock();
+    const selected = topicEditorPrototypeSelected(stock);
+    const directGroups = TOPIC_EDITOR_PROTOTYPE_GROUPS
+        .filter(group => selected.has(group.id));
+    const inheritedPaths = topicEditorPrototypeInheritedPaths(selected);
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-membership');
+
+    box.append(
+        prototypeMakeElement('h3', '', '這檔目前存在於哪些族群？'),
+        prototypeMakeElement(
+            'p',
+            'topic-editor-prototype-subtitle',
+            `${stock.ticker} ${stock.name} 目前有 ${directGroups.length} 個直接關聯；下面列出完整路徑。`));
+
+    const directTitle = prototypeMakeElement('h4', 'topic-editor-prototype-mini-title', '直接掛入');
+    box.append(directTitle);
+
+    if (directGroups.length === 0) {
+        box.append(prototypeMakeElement('p', 'topic-editor-prototype-empty', '目前沒有直接掛入任何族群。'));
+    } else {
+        const list = prototypeMakeElement('div', 'topic-editor-prototype-current-list');
+
+        for (const group of directGroups) {
+            const row = prototypeMakeElement('div', 'topic-editor-prototype-current-row');
+            row.append(
+                makeTopicEditorPrototypePath(group.path),
+                prototypeMakeElement('span', 'topic-editor-prototype-state-pill is-direct', '直接掛入'));
+            list.append(row);
+        }
+
+        box.append(list);
+    }
+
+    const inheritedTitle = prototypeMakeElement('h4', 'topic-editor-prototype-mini-title', '由下層自動帶入的上層');
+    box.append(inheritedTitle);
+
+    if (inheritedPaths.length === 0) {
+        box.append(prototypeMakeElement('p', 'topic-editor-prototype-empty', '沒有上層路徑。'));
+    } else {
+        const list = prototypeMakeElement('div', 'topic-editor-prototype-inherited-list');
+
+        for (const path of inheritedPaths) {
+            const row = prototypeMakeElement('div', 'topic-editor-prototype-inherited-row');
+            row.append(
+                prototypeMakeElement('span', 'topic-editor-prototype-inherited-arrow', '↑'),
+                prototypeMakeElement('span', '', path),
+                prototypeMakeElement('span', 'topic-editor-prototype-state-pill is-inherited', '上層關聯'));
+            list.append(row);
+        }
+
+        box.append(list);
+    }
+
+    return box;
+}
+
+function topicEditorPrototypeTree() {
+    const root = { label: '', path: [], children: [], group: null };
+
+    for (const group of TOPIC_EDITOR_PROTOTYPE_GROUPS) {
+        let parent = root;
+
+        group.path.forEach(label => {
+            let child = parent.children.find(node => node.label === label);
+
+            if (!child) {
+                child = {
+                    label,
+                    path: [...parent.path, label],
+                    children: [],
+                    group: null
+                };
+                parent.children.push(child);
+            }
+
+            parent = child;
+        });
+
+        parent.group = group;
+    }
+
+    return root;
+}
+
+function topicEditorPrototypeHasSelectedDescendant(node, selected) {
+    return node.children.some(child =>
+        (child.group !== null && selected.has(child.group.id))
+        || topicEditorPrototypeHasSelectedDescendant(child, selected));
+}
+
+function renderTopicEditorPrototypeTree(container, selected) {
+    const root = topicEditorPrototypeTree();
+    const inheritedPaths = new Set(topicEditorPrototypeInheritedPaths(selected));
+
+    const renderNode = (node, depth) => {
+        const row = prototypeMakeElement('div', 'topic-editor-prototype-tree-row');
+        row.style.setProperty('--topic-editor-depth', String(depth));
+
+        const isDirect = node.group !== null && selected.has(node.group.id);
+        const hasSelectedDescendant = topicEditorPrototypeHasSelectedDescendant(node, selected);
+        const isInherited = inheritedPaths.has(topicEditorPrototypePathText(node.path));
+        const label = prototypeMakeElement('span', 'topic-editor-prototype-tree-label');
+
+        if (node.group !== null) {
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = isDirect;
+            checkbox.setAttribute('aria-label', `${topicEditorPrototypePathText(node.path)} 直接掛入`);
+            checkbox.addEventListener('change', () => topicEditorPrototypeChange(node.group.id, checkbox.checked));
+            label.append(checkbox);
+        } else {
+            label.append(prototypeMakeElement('span', 'topic-editor-prototype-tree-dot', '•'));
+        }
+
+        label.append(prototypeMakeElement('span', '', node.label));
+        row.append(label);
+
+        if (node.group !== null) {
+            row.append(prototypeMakeElement(
+                'span',
+                isDirect ? 'topic-editor-prototype-tree-state is-direct' : 'topic-editor-prototype-tree-state',
+                isDirect ? '目前直掛' : '可加入'));
+        } else if (hasSelectedDescendant || isInherited) {
+            row.append(prototypeMakeElement(
+                'span',
+                'topic-editor-prototype-tree-state is-inherited',
+                '下層已關聯'));
+        } else {
+            row.append(prototypeMakeElement('span', 'topic-editor-prototype-tree-state', ''));
+        }
+
+        container.append(row);
+
+        for (const child of node.children) {
+            renderNode(child, depth + 1);
+        }
+    };
+
+    for (const child of root.children) {
+        renderNode(child, 0);
+    }
+}
+
+function renderTopicEditorPrototypeA() {
+    const layout = prototypeMakeElement('div', 'topic-editor-prototype-layout prototype-variant-a');
+    const current = makeTopicEditorPrototypeMembershipSummary();
+    const editor = prototypeMakeElement('section', 'topic-editor-prototype-tree-editor');
+    const tree = prototypeMakeElement('div', 'topic-editor-prototype-tree');
+
+    editor.append(
+        prototypeMakeElement('h3', '', '可編輯族群樹'),
+        prototypeMakeElement(
+            'p',
+            'topic-editor-prototype-subtitle',
+            '勾選＝直接掛入；未勾選的父層仍會因下層關聯顯示，層次不會被壓扁。'),
+        tree);
+    renderTopicEditorPrototypeTree(tree, topicEditorPrototypeSelected());
+    layout.append(current, editor);
+    return layout;
+}
+
+function renderTopicEditorPrototypeB() {
+    const stock = topicEditorPrototypeStock();
+    const selected = topicEditorPrototypeSelected(stock);
+    const layout = prototypeMakeElement('div', 'topic-editor-prototype-flow prototype-variant-b');
+    const current = prototypeMakeElement('section', 'topic-editor-prototype-b-current');
+    const currentList = prototypeMakeElement('div', 'topic-editor-prototype-b-current-list');
+
+    current.append(
+        prototypeMakeElement('h3', '', '目前關聯路徑'),
+        prototypeMakeElement('p', 'topic-editor-prototype-subtitle', '先看清楚這檔已經在哪裡，再往下調整。'));
+
+    for (const group of TOPIC_EDITOR_PROTOTYPE_GROUPS.filter(item => selected.has(item.id))) {
+        const card = prototypeMakeElement('article', 'topic-editor-prototype-b-path-card');
+        card.append(
+            makeTopicEditorPrototypePath(group.path),
+            prototypeMakeElement('small', '', `最後一層「${group.path.at(-1)}」是直接掛入`),
+            prototypeMakeElement('span', 'topic-editor-prototype-state-pill is-direct', '目前存在'));
+        currentList.append(card);
+    }
+
+    if (currentList.children.length === 0) {
+        currentList.append(prototypeMakeElement('p', 'topic-editor-prototype-empty', '目前沒有直接關聯。'));
+    }
+
+    current.append(currentList);
+
+    const editor = prototypeMakeElement('section', 'topic-editor-prototype-b-editor');
+    const filter = document.createElement('input');
+    filter.type = 'search';
+    filter.placeholder = '搜尋族群或路徑';
+    filter.setAttribute('aria-label', '搜尋示意族群');
+    const groups = prototypeMakeElement('div', 'topic-editor-prototype-b-groups');
+
+    const renderGroups = () => {
+        const query = filter.value.trim().toLocaleLowerCase();
+        groups.replaceChildren();
+        const roots = [...new Set(TOPIC_EDITOR_PROTOTYPE_GROUPS.map(group => group.path[0]))];
+
+        for (const root of roots) {
+            const matching = TOPIC_EDITOR_PROTOTYPE_GROUPS.filter(group =>
+                group.path[0] === root
+                && (query === '' || topicEditorPrototypePathText(group.path).toLocaleLowerCase().includes(query)));
+
+            if (matching.length === 0) {
+                continue;
+            }
+
+            const details = document.createElement('details');
+            details.className = 'topic-editor-prototype-b-group';
+            details.open = true;
+            const summary = prototypeMakeElement('summary', '', `${root}（${matching.length} 個可編輯族群）`);
+            details.append(summary);
+
+            const list = prototypeMakeElement('div', 'topic-editor-prototype-b-list');
+
+            for (const group of matching) {
+                const row = prototypeMakeElement('label', 'topic-editor-prototype-b-row');
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = selected.has(group.id);
+                checkbox.addEventListener('change', () => topicEditorPrototypeChange(group.id, checkbox.checked));
+
+                row.append(
+                    checkbox,
+                    makeTopicEditorPrototypePath(group.path),
+                    prototypeMakeElement(
+                        'span',
+                        checkbox.checked ? 'topic-editor-prototype-b-status is-direct' : 'topic-editor-prototype-b-status',
+                        checkbox.checked ? '直接掛入' : '未掛入'));
+                list.append(row);
+            }
+
+            details.append(list);
+            groups.append(details);
+        }
+
+        if (groups.children.length === 0) {
+            groups.append(prototypeMakeElement('p', 'topic-editor-prototype-empty', '找不到符合的族群。'));
+        }
+    };
+
+    filter.addEventListener('input', renderGroups);
+    editor.append(
+        prototypeMakeElement('h3', '', '依第一層分組編輯'),
+        prototypeMakeElement('p', 'topic-editor-prototype-subtitle', '每一列保留完整路徑；收合後只留下你正在處理的主題。'),
+        filter,
+        groups);
+    renderGroups();
+
+    layout.append(current, editor);
+    return layout;
+}
+
+function renderTopicEditorPrototypeC() {
+    const stock = topicEditorPrototypeStock();
+    const selected = topicEditorPrototypeSelected(stock);
+    const layout = prototypeMakeElement('div', 'topic-editor-prototype-matrix prototype-variant-c');
+    const side = prototypeMakeElement('section', 'topic-editor-prototype-c-side');
+    const tableBox = prototypeMakeElement('section', 'topic-editor-prototype-c-table-box');
+    const table = document.createElement('table');
+    table.className = 'topic-editor-prototype-c-table';
+
+    side.append(
+        prototypeMakeElement('h3', '', '目前歸屬摘要'),
+        prototypeMakeElement(
+            'p',
+            'topic-editor-prototype-subtitle',
+            `${stock.ticker} ${stock.name} 的直接關聯固定在左側，右側逐層對齊所有可編輯路徑。`));
+
+    const selectedList = prototypeMakeElement('div', 'topic-editor-prototype-c-selected');
+
+    for (const group of TOPIC_EDITOR_PROTOTYPE_GROUPS.filter(item => selected.has(item.id))) {
+        const item = prototypeMakeElement('div', 'topic-editor-prototype-c-selected-item');
+        item.append(
+            prototypeMakeElement('span', 'topic-editor-prototype-state-pill is-direct', '直掛'),
+            prototypeMakeElement('span', '', topicEditorPrototypePathText(group.path)));
+        selectedList.append(item);
+    }
+
+    if (selectedList.children.length === 0) {
+        selectedList.append(prototypeMakeElement('p', 'topic-editor-prototype-empty', '目前沒有直接關聯。'));
+    }
+
+    side.append(selectedList);
+
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const label of ['第一層', '第二層', '第三層', '編輯', '狀態']) {
+        headRow.append(prototypeMakeElement('th', '', label));
+    }
+    head.append(headRow);
+    table.append(head);
+
+    const body = document.createElement('tbody');
+    for (const group of TOPIC_EDITOR_PROTOTYPE_GROUPS) {
+        const row = document.createElement('tr');
+        for (const segment of group.path) {
+            row.append(prototypeMakeElement('td', '', segment));
+        }
+
+        const editCell = document.createElement('td');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = selected.has(group.id);
+        checkbox.setAttribute('aria-label', `${topicEditorPrototypePathText(group.path)} 直接掛入`);
+        checkbox.addEventListener('change', () => topicEditorPrototypeChange(group.id, checkbox.checked));
+        editCell.append(checkbox);
+        row.append(editCell);
+        row.append(prototypeMakeElement(
+            'td',
+            checkbox.checked ? 'is-direct' : '',
+            checkbox.checked ? '目前直掛' : '可加入'));
+        body.append(row);
+    }
+
+    table.append(body);
+    const scroll = prototypeMakeElement('div', 'topic-editor-prototype-table-scroll');
+    scroll.append(table);
+    tableBox.append(
+        prototypeMakeElement('h3', '', '完整族群路徑矩陣'),
+        prototypeMakeElement('p', 'topic-editor-prototype-subtitle', '不必展開樹；每一層固定在自己的欄位，直接比對哪一段不同。'),
+        scroll);
+    layout.append(side, tableBox);
+    return layout;
+}
+
+function topicEditorPrototypeVariantKey() {
+    const requested = new URLSearchParams(window.location.search).get('variant');
+    return TOPIC_EDITOR_PROTOTYPE_VARIANTS.some(variant => variant.key === requested) ? requested : 'a';
+}
+
+function cycleTopicEditorPrototypeVariant(step) {
+    const variants = TOPIC_EDITOR_PROTOTYPE_VARIANTS;
+    const currentKey = topicEditorPrototypeVariantKey();
+    const currentIndex = variants.findIndex(variant => variant.key === currentKey);
+    const nextIndex = (currentIndex + step + variants.length) % variants.length;
+    const url = new URL(window.location.href);
+    url.searchParams.set('variant', variants[nextIndex].key);
+    window.history.replaceState(null, '', url);
+    renderTopicPanel();
+}
+
+function makeTopicEditorPrototypeSwitcher(activeKey) {
+    const active = TOPIC_EDITOR_PROTOTYPE_VARIANTS.find(variant => variant.key === activeKey);
+    const bar = prototypeMakeElement('nav', 'topic-editor-prototype-switcher');
+    const previous = prototypeMakeButton('‹', 'topic-editor-prototype-switcher-button', () => cycleTopicEditorPrototypeVariant(-1));
+    const next = prototypeMakeButton('›', 'topic-editor-prototype-switcher-button', () => cycleTopicEditorPrototypeVariant(1));
+    previous.setAttribute('aria-label', '上一個版型');
+    next.setAttribute('aria-label', '下一個版型');
+    bar.append(
+        previous,
+        prototypeMakeElement('span', 'topic-editor-prototype-switcher-label', `${active.label}　${active.hint}`),
+        next);
+    return bar;
+}
+
+function wireTopicEditorPrototypeKeyboard() {
+    if (topicEditorPrototypeKeyboardWired) {
+        return;
+    }
+
+    topicEditorPrototypeKeyboardWired = true;
+    document.addEventListener('keydown', event => {
+        if (!TOPIC_EDITOR_PROTOTYPE || state.view !== 'topics' || state.topicTab !== 'edits') {
+            return;
+        }
+
+        const target = event.target;
+        const tag = target?.tagName?.toLowerCase();
+
+        if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) {
+            return;
+        }
+
+        if (TOPIC_EDITOR_PROTOTYPE_V3) {
+            return;
+        }
+
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+            event.preventDefault();
+            const step = event.key === 'ArrowRight' ? 1 : -1;
+            if (TOPIC_EDITOR_PROTOTYPE_V2) {
+                cycleTopicEditorPrototypeV2Variant(step);
+            } else {
+                cycleTopicEditorPrototypeVariant(step);
+            }
+        }
+    });
+}
+
+function renderTopicEditorPrototype(panel) {
+    if (TOPIC_EDITOR_PROTOTYPE_V3) {
+        renderTopicEditorPrototypeV3(panel);
+        return;
+    }
+
+    if (TOPIC_EDITOR_PROTOTYPE_V2) {
+        renderTopicEditorPrototypeV2(panel);
+        return;
+    }
+
+    wireTopicEditorPrototypeKeyboard();
+    const activeKey = topicEditorPrototypeVariantKey();
+    const root = prototypeMakeElement('div', 'topic-editor-prototype');
+    root.append(makeTopicEditorPrototypeHeader(), makeTopicEditorPrototypeTargetBar());
+
+    if (activeKey === 'b') {
+        root.append(renderTopicEditorPrototypeB());
+    } else if (activeKey === 'c') {
+        root.append(renderTopicEditorPrototypeC());
+    } else {
+        root.append(renderTopicEditorPrototypeA());
+    }
+
+    root.append(makeTopicEditorPrototypeActionBar(), makeTopicEditorPrototypeSwitcher(activeKey));
+    panel.append(root);
+}
+
+// ── UI 原型 v2：保留原本加入欄位，改用分層清單 ─────────────────
+// 問題：使用者要維持「哪一檔股票／加進哪一個族群／說明／加進這個族群」的操作，
+// 但目前關聯不能再用一整張表攤開。這三種版型只在 localhost 使用，不讀寫正式分類。
+const TOPIC_EDITOR_PROTOTYPE_V2_VARIANTS = [
+    { key: 'a', label: 'A｜目前關聯清單', hint: '保留原加入方式，下方只列這檔目前的族群。' },
+    { key: 'b', label: 'B｜分層收合清單', hint: '依第一層族群收合，展開後查看完整路徑。' },
+    { key: 'c', label: 'C｜路徑卡片', hint: '每張卡片連起直接族群與自動帶入的上層。' }
+];
+
+const topicEditorPrototypeV2State = {
+    ticker: '2330',
+    form: { stock: '2330', group: '', note: '' },
+    selectedByTicker: new Map(TOPIC_EDITOR_PROTOTYPE_STOCKS.map(stock => [
+        stock.ticker,
+        new Set(stock.directGroups)
+    ])),
+    notice: ''
+};
+
+function topicEditorPrototypeV2Stock() {
+    return TOPIC_EDITOR_PROTOTYPE_STOCKS.find(stock => stock.ticker === topicEditorPrototypeV2State.ticker)
+        ?? TOPIC_EDITOR_PROTOTYPE_STOCKS[0];
+}
+
+function topicEditorPrototypeV2Selected(stock = topicEditorPrototypeV2Stock()) {
+    let selected = topicEditorPrototypeV2State.selectedByTicker.get(stock.ticker);
+
+    if (selected === undefined) {
+        selected = new Set(stock.directGroups);
+        topicEditorPrototypeV2State.selectedByTicker.set(stock.ticker, selected);
+    }
+
+    return selected;
+}
+
+function topicEditorPrototypeV2FindStock(value) {
+    const text = String(value).trim();
+    const ticker = text.split(/\s+/)[0];
+
+    return TOPIC_EDITOR_PROTOTYPE_STOCKS.find(stock =>
+        stock.ticker === ticker || stock.name === text) ?? null;
+}
+
+function topicEditorPrototypeV2FindGroup(value) {
+    const text = String(value).trim();
+    const lower = text.toLocaleLowerCase();
+
+    return TOPIC_EDITOR_PROTOTYPE_GROUPS.find(group =>
+        group.id === text
+        || topicEditorPrototypePathText(group.path).toLocaleLowerCase() === lower
+        || group.path.at(-1).toLocaleLowerCase() === lower) ?? null;
+}
+
+function topicEditorPrototypeV2DirectGroups(stock = topicEditorPrototypeV2Stock()) {
+    const selected = topicEditorPrototypeV2Selected(stock);
+    return TOPIC_EDITOR_PROTOTYPE_GROUPS.filter(group => selected.has(group.id));
+}
+
+function makeTopicEditorPrototypeV2Header() {
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-banner');
+    box.append(
+        prototypeMakeElement('strong', '', '版型提案：保留原本加入方式，改用分層清單'),
+        prototypeMakeElement(
+            'p',
+            '',
+            '哪一檔股票、加進哪一個族群、說明、加進這個族群維持原樣；下方不再攤開一整張大表格。'));
+    return box;
+}
+
+function makeTopicEditorPrototypeV2Target() {
+    const stock = topicEditorPrototypeV2Stock();
+    const selected = topicEditorPrototypeV2Selected(stock);
+    const inherited = topicEditorPrototypeInheritedPaths(selected);
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-target');
+    const title = prototypeMakeElement('div', 'topic-editor-prototype-target-title');
+
+    title.append(
+        prototypeMakeElement('span', 'topic-editor-prototype-eyebrow', '目前標的'),
+        prototypeMakeElement('strong', '', `${stock.ticker} ${stock.name}`));
+
+    const counts = prototypeMakeElement('div', 'topic-editor-prototype-counts');
+    counts.append(
+        prototypeMakeElement('span', 'topic-editor-prototype-count is-direct', `直接掛入 ${selected.size}`),
+        prototypeMakeElement('span', 'topic-editor-prototype-count is-inherited', `上層帶入 ${inherited.length}`));
+    box.append(title, counts);
+
+    if (topicEditorPrototypeV2State.notice) {
+        const notice = prototypeMakeElement(
+            'p',
+            'topic-editor-prototype-notice',
+            topicEditorPrototypeV2State.notice);
+        notice.setAttribute('aria-live', 'polite');
+        box.append(notice);
+    }
+
+    return box;
+}
+
+function makeTopicEditorPrototypeV2Datalists() {
+    const host = document.createElement('div');
+    host.hidden = true;
+
+    const stocks = document.createElement('datalist');
+    stocks.id = 'topic-editor-prototype-v2-stocks';
+    for (const stock of TOPIC_EDITOR_PROTOTYPE_STOCKS) {
+        const option = document.createElement('option');
+        option.value = stock.ticker;
+        option.label = stock.name;
+        stocks.append(option);
+    }
+
+    const groups = document.createElement('datalist');
+    groups.id = 'topic-editor-prototype-v2-groups';
+    for (const group of TOPIC_EDITOR_PROTOTYPE_GROUPS) {
+        const option = document.createElement('option');
+        option.value = group.path.at(-1);
+        option.label = topicEditorPrototypePathText(group.path);
+        groups.append(option);
+    }
+
+    host.append(stocks, groups);
+    return host;
+}
+
+function makeTopicEditorPrototypeV2AddForm() {
+    const stateForm = topicEditorPrototypeV2State.form;
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-v2-add-box');
+    box.append(
+        prototypeMakeElement('h3', '', '加入族群'),
+        prototypeMakeElement(
+            'p',
+            'topic-editor-prototype-subtitle',
+            '加入方式維持原樣；族群輸入框可打末層名稱，也可從選單看到完整路徑。'));
+
+    const form = document.createElement('form');
+    form.className = 'topic-edit-form topic-editor-prototype-v2-add-form';
+    const stock = makeTopicEditInput(stateForm.stock, '例如 2330', 'topic-editor-prototype-v2-stocks');
+    const group = makeTopicEditInput(stateForm.group, '輸入族群名稱或完整路徑', 'topic-editor-prototype-v2-groups');
+    const note = makeTopicEditInput(stateForm.note, '為什麼這樣分，會留在紀錄裡');
+    const submit = makeTopicEditButton('加進這個族群');
+    submit.type = 'submit';
+    const status = prototypeMakeElement('span', 'topic-edit-status');
+    const actions = prototypeMakeElement('div', 'topic-edit-actions');
+    actions.append(submit, status);
+
+    const remember = () => {
+        stateForm.stock = stock.value;
+        stateForm.group = group.value;
+        stateForm.note = note.value;
+    };
+
+    const switchStock = () => {
+        const matched = topicEditorPrototypeV2FindStock(stock.value);
+
+        if (!matched) {
+            return;
+        }
+
+        topicEditorPrototypeV2State.ticker = matched.ticker;
+        topicEditorPrototypeV2State.form = { stock: matched.ticker, group: '', note: '' };
+        topicEditorPrototypeV2State.notice = '';
+        renderTopicPanel();
+    };
+
+    stock.addEventListener('input', remember);
+    stock.addEventListener('change', switchStock);
+    group.addEventListener('input', remember);
+    note.addEventListener('input', remember);
+
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        remember();
+
+        const matchedStock = topicEditorPrototypeV2FindStock(stock.value);
+        if (!matchedStock) {
+            status.textContent = '請輸入示意清單中的股票代號。';
+            stock.focus();
+            return;
+        }
+
+        const matchedGroup = topicEditorPrototypeV2FindGroup(group.value);
+        if (!matchedGroup) {
+            status.textContent = '請輸入示意清單中的族群名稱或完整路徑。';
+            group.focus();
+            return;
+        }
+
+        topicEditorPrototypeV2State.ticker = matchedStock.ticker;
+        const selected = topicEditorPrototypeV2Selected(matchedStock);
+        if (selected.has(matchedGroup.id)) {
+            status.textContent = '這檔股票已經在這個族群裡。';
+            return;
+        }
+
+        selected.add(matchedGroup.id);
+        topicEditorPrototypeV2State.form = { stock: matchedStock.ticker, group: '', note: '' };
+        topicEditorPrototypeV2State.notice = `已加入「${topicEditorPrototypePathText(matchedGroup.path)}」。`;
+        renderTopicPanel();
+    });
+
+    form.append(
+        makeTopicEditField('哪一檔股票', stock, '打代號或名字都行。'),
+        makeTopicEditField('加進哪一個族群', group, '可輸入末層名稱，完整路徑會顯示在選單提示。'),
+        makeTopicEditField('說明', note, '這次加入的理由。'),
+        actions);
+    box.append(form);
+    return box;
+}
+
+function makeTopicEditorPrototypeV2DirectList(titleText = '目前已加入族群') {
+    const stock = topicEditorPrototypeV2Stock();
+    const directGroups = topicEditorPrototypeV2DirectGroups(stock);
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-v2-list-box');
+    box.append(
+        prototypeMakeElement('h3', '', titleText),
+        prototypeMakeElement(
+            'p',
+            'topic-editor-prototype-subtitle',
+            `${stock.ticker} ${stock.name} 目前直接掛入 ${directGroups.length} 個族群；每筆都保留完整路徑。`));
+
+    const list = prototypeMakeElement('ul', 'topic-editor-prototype-v2-list');
+    for (const [index, group] of directGroups.entries()) {
+        const row = prototypeMakeElement('li', 'topic-editor-prototype-v2-list-row');
+        const text = prototypeMakeElement('div', 'topic-editor-prototype-v2-list-text');
+        text.append(
+            prototypeMakeElement('span', 'topic-editor-prototype-v2-index', String(index + 1).padStart(2, '0')),
+            makeTopicEditorPrototypePath(group.path));
+        const remove = makeTopicEditButton('移除', 'topic-editor-prototype-v2-remove', () => {
+            topicEditorPrototypeV2Selected(stock).delete(group.id);
+            topicEditorPrototypeV2State.notice = `已在這個原型中移除「${topicEditorPrototypePathText(group.path)}」。`;
+            renderTopicPanel();
+        });
+        row.append(text, remove);
+        list.append(row);
+    }
+
+    if (directGroups.length === 0) {
+        list.append(prototypeMakeElement('li', 'topic-editor-prototype-empty', '目前沒有直接掛入的族群。'));
+    }
+
+    box.append(list);
+    return box;
+}
+
+function makeTopicEditorPrototypeV2InheritedList() {
+    const selected = topicEditorPrototypeV2Selected();
+    const inherited = topicEditorPrototypeInheritedPaths(selected);
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-v2-list-box is-inherited');
+    box.append(
+        prototypeMakeElement('h3', '', '自動帶入的上層族群'),
+        prototypeMakeElement('p', 'topic-editor-prototype-subtitle', '上層只由下方直接族群自動產生，不需要重複加入。'));
+
+    const list = prototypeMakeElement('ul', 'topic-editor-prototype-v2-inherited-list');
+    for (const path of inherited) {
+        const row = prototypeMakeElement('li', 'topic-editor-prototype-v2-inherited-row');
+        row.append(
+            prototypeMakeElement('span', 'topic-editor-prototype-inherited-arrow', '↑'),
+            prototypeMakeElement('span', '', path),
+            prototypeMakeElement('span', 'topic-editor-prototype-state-pill is-inherited', '上層關聯'));
+        list.append(row);
+    }
+
+    if (inherited.length === 0) {
+        list.append(prototypeMakeElement('li', 'topic-editor-prototype-empty', '沒有自動帶入的上層族群。'));
+    }
+
+    box.append(list);
+    return box;
+}
+
+function renderTopicEditorPrototypeV2A() {
+    const layout = prototypeMakeElement('div', 'topic-editor-prototype-v2-layout prototype-variant-a');
+    const columns = prototypeMakeElement('div', 'topic-editor-prototype-v2-a-columns');
+    columns.append(
+        makeTopicEditorPrototypeV2DirectList(),
+        makeTopicEditorPrototypeV2InheritedList());
+    layout.append(makeTopicEditorPrototypeV2AddForm(), columns);
+    return layout;
+}
+
+function renderTopicEditorPrototypeV2B() {
+    const selected = topicEditorPrototypeV2Selected();
+    const layout = prototypeMakeElement('div', 'topic-editor-prototype-v2-layout prototype-variant-b');
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-v2-layered-box');
+    box.append(
+        prototypeMakeElement('h3', '', '依第一層族群收合檢視'),
+        prototypeMakeElement(
+            'p',
+            'topic-editor-prototype-subtitle',
+            '只展開正在看的大類；每筆仍顯示完整路徑，未掛入的族群請用上方原本的加入欄位處理。'));
+
+    const roots = [...new Set(TOPIC_EDITOR_PROTOTYPE_GROUPS.map(group => group.path[0]))];
+    const rootList = prototypeMakeElement('div', 'topic-editor-prototype-v2-root-list');
+    for (const root of roots) {
+        const groups = TOPIC_EDITOR_PROTOTYPE_GROUPS.filter(group => group.path[0] === root);
+        const directCount = groups.filter(group => selected.has(group.id)).length;
+        const details = document.createElement('details');
+        details.className = 'topic-editor-prototype-v2-root';
+        details.open = directCount > 0 && root === '電子';
+        details.append(prototypeMakeElement('summary', '', `${root}（${directCount}/${groups.length} 個直掛）`));
+
+        const list = prototypeMakeElement('ul', 'topic-editor-prototype-v2-layered-list');
+        for (const group of groups) {
+            const isDirect = selected.has(group.id);
+            const row = prototypeMakeElement('li', 'topic-editor-prototype-v2-layered-row');
+            const text = prototypeMakeElement('div', 'topic-editor-prototype-v2-list-text');
+            text.append(
+                makeTopicEditorPrototypePath(group.path),
+                prototypeMakeElement(
+                    'small',
+                    isDirect ? 'topic-editor-prototype-v2-direct' : 'topic-editor-prototype-v2-not-direct',
+                    isDirect ? '目前直掛' : '尚未掛入'));
+            row.append(text);
+
+            if (isDirect) {
+                row.append(makeTopicEditButton('移除', 'topic-editor-prototype-v2-remove', () => {
+                    selected.delete(group.id);
+                    topicEditorPrototypeV2State.notice = `已在這個原型中移除「${topicEditorPrototypePathText(group.path)}」。`;
+                    renderTopicPanel();
+                }));
+            }
+
+            list.append(row);
+        }
+
+        details.append(list);
+        rootList.append(details);
+    }
+
+    box.append(rootList);
+    layout.append(makeTopicEditorPrototypeV2AddForm(), box, makeTopicEditorPrototypeV2InheritedList());
+    return layout;
+}
+
+function renderTopicEditorPrototypeV2C() {
+    const stock = topicEditorPrototypeV2Stock();
+    const directGroups = topicEditorPrototypeV2DirectGroups(stock);
+    const inherited = topicEditorPrototypeInheritedPaths(topicEditorPrototypeV2Selected(stock));
+    const layout = prototypeMakeElement('div', 'topic-editor-prototype-v2-layout prototype-variant-c');
+    const stage = prototypeMakeElement('div', 'topic-editor-prototype-v2-c-stage');
+    const cards = prototypeMakeElement('section', 'topic-editor-prototype-v2-c-cards');
+    cards.append(
+        prototypeMakeElement('h3', '', '目前族群路徑'),
+        prototypeMakeElement('p', 'topic-editor-prototype-subtitle', '每張卡片都把末層直掛與自動帶入的上層放在同一條路徑裡。'));
+
+    for (const [index, group] of directGroups.entries()) {
+        const card = prototypeMakeElement('article', 'topic-editor-prototype-v2-path-card');
+        const chain = prototypeMakeElement('div', 'topic-editor-prototype-v2-path-chain');
+        chain.append(
+            prototypeMakeElement('span', 'topic-editor-prototype-v2-index', `路徑 ${index + 1}`),
+            makeTopicEditorPrototypePath(group.path));
+        const parents = prototypeMakeElement('small', '', `上層自動帶入：${group.path.slice(0, -1).join(' › ')}`);
+        const remove = makeTopicEditButton('移除這條路徑', 'topic-editor-prototype-v2-remove', () => {
+            topicEditorPrototypeV2Selected(stock).delete(group.id);
+            topicEditorPrototypeV2State.notice = `已在這個原型中移除「${topicEditorPrototypePathText(group.path)}」。`;
+            renderTopicPanel();
+        });
+        card.append(chain, parents, remove);
+        cards.append(card);
+    }
+
+    if (directGroups.length === 0) {
+        cards.append(prototypeMakeElement('p', 'topic-editor-prototype-empty', '目前沒有直接掛入的族群。'));
+    }
+
+    const side = prototypeMakeElement('section', 'topic-editor-prototype-v2-c-side');
+    side.append(
+        prototypeMakeElement('h3', '', '關聯摘要'),
+        prototypeMakeElement('p', 'topic-editor-prototype-subtitle', `${stock.ticker} ${stock.name} 的上層關聯會隨著下方路徑自動整理。`));
+    const inheritedList = prototypeMakeElement('ul', 'topic-editor-prototype-v2-inherited-list');
+    for (const path of inherited) {
+        inheritedList.append(prototypeMakeElement('li', 'topic-editor-prototype-v2-inherited-row', `↑ ${path}`));
+    }
+    if (inherited.length === 0) {
+        inheritedList.append(prototypeMakeElement('li', 'topic-editor-prototype-empty', '沒有上層關聯。'));
+    }
+    side.append(inheritedList);
+
+    stage.append(cards, side);
+    layout.append(makeTopicEditorPrototypeV2AddForm(), stage);
+    return layout;
+}
+
+function makeTopicEditorPrototypeV2ActionBar() {
+    const stock = topicEditorPrototypeV2Stock();
+    const selected = topicEditorPrototypeV2Selected(stock);
+    const bar = prototypeMakeElement('div', 'topic-editor-prototype-action-bar');
+    bar.append(
+        prototypeMakeElement('span', '', `這個原型目前保留 ${selected.size} 個直接掛入；上層關聯會自動顯示。`),
+        prototypeMakeButton('恢復示意原始分類', 'topic-editor-prototype-reset', () => {
+            topicEditorPrototypeV2State.selectedByTicker.set(stock.ticker, new Set(stock.directGroups));
+            topicEditorPrototypeV2State.form = { stock: stock.ticker, group: '', note: '' };
+            topicEditorPrototypeV2State.notice = '已恢復這檔示意標的的原始分類。';
+            renderTopicPanel();
+        }));
+    return bar;
+}
+
+function topicEditorPrototypeV2VariantKey() {
+    const requested = new URLSearchParams(window.location.search).get('variant');
+    return TOPIC_EDITOR_PROTOTYPE_V2_VARIANTS.some(variant => variant.key === requested) ? requested : 'a';
+}
+
+function cycleTopicEditorPrototypeV2Variant(step) {
+    const variants = TOPIC_EDITOR_PROTOTYPE_V2_VARIANTS;
+    const currentKey = topicEditorPrototypeV2VariantKey();
+    const currentIndex = variants.findIndex(variant => variant.key === currentKey);
+    const nextIndex = (currentIndex + step + variants.length) % variants.length;
+    const url = new URL(window.location.href);
+    url.searchParams.set('variant', variants[nextIndex].key);
+    window.history.replaceState(null, '', url);
+    renderTopicPanel();
+}
+
+function makeTopicEditorPrototypeV2Switcher(activeKey) {
+    const active = TOPIC_EDITOR_PROTOTYPE_V2_VARIANTS.find(variant => variant.key === activeKey);
+    const bar = prototypeMakeElement('nav', 'topic-editor-prototype-switcher');
+    const previous = prototypeMakeButton('‹', 'topic-editor-prototype-switcher-button', () => cycleTopicEditorPrototypeV2Variant(-1));
+    const next = prototypeMakeButton('›', 'topic-editor-prototype-switcher-button', () => cycleTopicEditorPrototypeV2Variant(1));
+    previous.setAttribute('aria-label', '上一個版型');
+    next.setAttribute('aria-label', '下一個版型');
+    bar.append(
+        previous,
+        prototypeMakeElement('span', 'topic-editor-prototype-switcher-label', `${active.label}　${active.hint}`),
+        next);
+    return bar;
+}
+
+function renderTopicEditorPrototypeV2(panel) {
+    wireTopicEditorPrototypeKeyboard();
+    const activeKey = topicEditorPrototypeV2VariantKey();
+    const root = prototypeMakeElement('div', 'topic-editor-prototype topic-editor-prototype-v2');
+    root.append(
+        makeTopicEditorPrototypeV2Header(),
+        makeTopicEditorPrototypeV2Target(),
+        makeTopicEditorPrototypeV2Datalists());
+
+    if (activeKey === 'b') {
+        root.append(renderTopicEditorPrototypeV2B());
+    } else if (activeKey === 'c') {
+        root.append(renderTopicEditorPrototypeV2C());
+    } else {
+        root.append(renderTopicEditorPrototypeV2A());
+    }
+
+    root.append(makeTopicEditorPrototypeV2ActionBar(), makeTopicEditorPrototypeV2Switcher(activeKey));
+    panel.append(root);
+}
+
+// ── UI 原型 v3：使用者已選定樹狀圖方向 ─────────────────────────
+// 保留 v2 的原本加入欄位，這裡只把下方關聯換成可收合的階層樹，不再提供另一組版型切換。
+function topicEditorPrototypeV3Change(groupId, checked) {
+    const selected = topicEditorPrototypeV2Selected();
+    const group = topicEditorPrototypeGroup(groupId);
+
+    if (checked) {
+        selected.add(groupId);
+    } else {
+        selected.delete(groupId);
+    }
+
+    topicEditorPrototypeV2State.notice = checked
+        ? `已加入「${topicEditorPrototypePathText(group.path)}」。`
+        : `已移除「${topicEditorPrototypePathText(group.path)}」。`;
+    renderTopicPanel();
+}
+
+function renderTopicEditorPrototypeV3Tree(container, selected) {
+    const root = topicEditorPrototypeTree();
+    const inheritedPaths = new Set(topicEditorPrototypeInheritedPaths(selected));
+
+    const renderNode = (node, depth) => {
+        const isDirect = node.group !== null && selected.has(node.group.id);
+        const hasSelectedDescendant = topicEditorPrototypeHasSelectedDescendant(node, selected);
+        const isInherited = inheritedPaths.has(topicEditorPrototypePathText(node.path));
+
+        if (node.children.length > 0) {
+            const details = document.createElement('details');
+            details.className = 'topic-editor-prototype-v3-branch';
+            details.open = hasSelectedDescendant;
+
+            const summary = document.createElement('summary');
+            summary.className = 'topic-editor-prototype-v3-branch-summary';
+            summary.style.setProperty('--topic-editor-depth', String(depth));
+            summary.append(prototypeMakeElement('span', '', node.label));
+
+            if (hasSelectedDescendant || isInherited) {
+                summary.append(prototypeMakeElement(
+                    'span',
+                    'topic-editor-prototype-tree-state is-inherited',
+                    '下層已關聯'));
+            }
+
+            details.append(summary);
+            const children = prototypeMakeElement('div', 'topic-editor-prototype-v3-children');
+            for (const child of node.children) {
+                children.append(renderNode(child, depth + 1));
+            }
+            details.append(children);
+            return details;
+        }
+
+        const row = prototypeMakeElement('label', 'topic-editor-prototype-v3-leaf');
+        row.style.setProperty('--topic-editor-depth', String(depth));
+
+        if (node.group !== null) {
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = isDirect;
+            checkbox.setAttribute('aria-label', `${topicEditorPrototypePathText(node.path)} 直接掛入`);
+            checkbox.addEventListener('change', () => topicEditorPrototypeV3Change(node.group.id, checkbox.checked));
+            row.append(checkbox);
+        }
+
+        row.append(prototypeMakeElement('span', '', node.label));
+        row.append(prototypeMakeElement(
+            'span',
+            isDirect ? 'topic-editor-prototype-tree-state is-direct' : 'topic-editor-prototype-tree-state',
+            isDirect ? '目前直掛' : '可加入'));
+        return row;
+    };
+
+    for (const child of root.children) {
+        container.append(renderNode(child, 0));
+    }
+}
+
+function makeTopicEditorPrototypeV3Header() {
+    const box = prototypeMakeElement('section', 'topic-editor-prototype-banner');
+    box.append(
+        prototypeMakeElement('strong', '', '樹狀圖版型：用最少版面看懂族群關聯'),
+        prototypeMakeElement(
+            'p',
+            '',
+            '上方加入方式維持原樣；下方以縮排與可收合分支呈現層級，勾選末端族群即可加入或移除。'));
+    return box;
+}
+
+function renderTopicEditorPrototypeV3(panel) {
+    const root = prototypeMakeElement('div', 'topic-editor-prototype topic-editor-prototype-v3');
+    const selected = topicEditorPrototypeV2Selected();
+    const treeBox = prototypeMakeElement('section', 'topic-editor-prototype-v3-tree-box');
+    const tree = prototypeMakeElement('div', 'topic-editor-prototype-v3-tree');
+
+    treeBox.append(
+        prototypeMakeElement('h3', '', '目前標的的族群樹'),
+        prototypeMakeElement(
+            'p',
+            'topic-editor-prototype-subtitle',
+            '展開／收合第一層或第二層；勾選末端族群代表直接掛入，父層的「下層已關聯」是自動帶入。'),
+        tree);
+    renderTopicEditorPrototypeV3Tree(tree, selected);
+
+    root.append(
+        makeTopicEditorPrototypeV3Header(),
+        makeTopicEditorPrototypeV2Target(),
+        makeTopicEditorPrototypeV2Datalists(),
+        makeTopicEditorPrototypeV2AddForm(),
+        treeBox,
+        makeTopicEditorPrototypeV2ActionBar());
+    panel.append(root);
 }
 
 // ── 分頁一：族群熱度排行榜 ──────────────────────────────────
@@ -9421,6 +10968,213 @@ function splitTopicList(value) {
         .filter(item => item.length > 0);
 }
 
+function topicEditPathText(topic) {
+    const paths = (topic.paths ?? []).map(path => path.join(' › '));
+
+    return paths.length > 0 ? paths.join('｜') : '頂層大類';
+}
+
+function topicMemberEditInheritedNames(nodes, selectedNames) {
+    const byId = new Map(nodes.map(topic => [topic.id, topic]));
+    const inherited = new Set();
+
+    const visit = (topicId, trail = new Set()) => {
+        if (trail.has(topicId)) {
+            return;
+        }
+
+        const topic = byId.get(topicId);
+
+        if (topic === undefined) {
+            return;
+        }
+
+        trail.add(topicId);
+
+        for (const parentId of topic.parentIds ?? []) {
+            const parent = byId.get(parentId);
+
+            if (parent === undefined) {
+                continue;
+            }
+
+            if (!selectedNames.has(parent.name)) {
+                inherited.add(parent.name);
+            }
+
+            visit(parent.id, trail);
+        }
+
+        trail.delete(topicId);
+    };
+
+    for (const topic of nodes) {
+        if (selectedNames.has(topic.name)) {
+            visit(topic.id);
+        }
+    }
+
+    return inherited;
+}
+
+function makeTopicMemberEditTree(container, nodes, selectedNames, onToggle) {
+    const byId = new Map(nodes.map(topic => [topic.id, topic]));
+    const childrenById = new Map(nodes.map(topic => [topic.id, []]));
+
+    for (const topic of nodes) {
+        for (const parentId of topic.parentIds ?? []) {
+            const children = childrenById.get(parentId);
+
+            if (children !== undefined) {
+                children.push(topic);
+            }
+        }
+    }
+
+    for (const children of childrenById.values()) {
+        children.sort(compareTopicOrder);
+    }
+
+    const hasTreeParent = topic => (topic.parentIds ?? []).some(parentId => byId.has(parentId));
+    const roots = nodes.filter(topic => !hasTreeParent(topic));
+    const inheritedIds = new Set();
+    const inheritedTrail = new Set();
+
+    const collectInherited = topicId => {
+        if (inheritedTrail.has(topicId)) {
+            return;
+        }
+
+        const topic = byId.get(topicId);
+
+        if (topic === undefined) {
+            return;
+        }
+
+        inheritedTrail.add(topicId);
+
+        for (const parentId of topic.parentIds ?? []) {
+            const parent = byId.get(parentId);
+
+            if (parent !== undefined) {
+                inheritedIds.add(parent.id);
+                collectInherited(parent.id);
+            }
+        }
+
+        inheritedTrail.delete(topicId);
+    };
+
+    for (const topic of nodes) {
+        if (selectedNames.has(topic.name)) {
+            collectInherited(topic.id);
+        }
+    }
+
+    const descendantCache = new Map();
+    const hasSelectedDescendant = (topicId, trail = new Set()) => {
+        if (descendantCache.has(topicId)) {
+            return descendantCache.get(topicId);
+        }
+
+        if (trail.has(topicId)) {
+            return false;
+        }
+
+        trail.add(topicId);
+        const selected = (childrenById.get(topicId) ?? [])
+            .some(child => selectedNames.has(child.name) || hasSelectedDescendant(child.id, trail));
+        trail.delete(topicId);
+        descendantCache.set(topicId, selected);
+        return selected;
+    };
+
+    const makeCheckbox = (topic, checked) => {
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = checked;
+        checkbox.setAttribute('aria-label', `${topicEditPathText(topic)} 直接掛入`);
+        checkbox.addEventListener('click', event => event.stopPropagation());
+        checkbox.addEventListener('change', () => onToggle(topic, checkbox.checked, checkbox));
+        return checkbox;
+    };
+
+    const renderNode = (topic, depth, ancestors) => {
+        if (ancestors.has(topic.id)) {
+            return document.createDocumentFragment();
+        }
+
+        const isDirect = selectedNames.has(topic.name);
+        const isInherited = !isDirect && inheritedIds.has(topic.id);
+        const children = (childrenById.get(topic.id) ?? [])
+            .filter(child => !ancestors.has(child.id));
+        const hasSelectedChild = hasSelectedDescendant(topic.id);
+        const stateText = isDirect
+            ? '目前直掛'
+            : isInherited || hasSelectedChild
+                ? '下層已關聯'
+                : '可加入';
+        const stateClass = isDirect
+            ? 'topic-edit-tree-state is-direct'
+            : isInherited || hasSelectedChild
+                ? 'topic-edit-tree-state is-inherited'
+                : 'topic-edit-tree-state';
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(topic.id);
+
+        if (children.length === 0) {
+            const row = document.createElement('label');
+            row.className = 'topic-edit-tree-leaf';
+            row.style.setProperty('--topic-edit-depth', String(depth));
+
+            const label = document.createElement('span');
+            label.className = 'topic-edit-tree-label';
+            label.textContent = topic.name;
+            row.append(makeCheckbox(topic, isDirect), label,
+                makeTopicEditState(stateClass, stateText));
+            return row;
+        }
+
+        const details = document.createElement('details');
+        details.className = 'topic-edit-tree-branch';
+        details.open = isDirect || hasSelectedChild;
+
+        const summary = document.createElement('summary');
+        summary.className = 'topic-edit-tree-summary';
+        summary.style.setProperty('--topic-edit-depth', String(depth));
+
+        const label = document.createElement('span');
+        label.className = 'topic-edit-tree-label';
+        label.textContent = topic.name;
+        summary.append(makeCheckbox(topic, isDirect), label,
+            makeTopicEditState(stateClass, stateText));
+        details.append(summary);
+
+        const childrenBox = document.createElement('div');
+        childrenBox.className = 'topic-edit-tree-children';
+
+        for (const child of children) {
+            childrenBox.append(renderNode(child, depth + 1, nextAncestors));
+        }
+
+        details.append(childrenBox);
+        return details;
+    };
+
+    const startNodes = roots.length > 0 ? roots : nodes;
+
+    for (const topic of startNodes) {
+        container.append(renderNode(topic, 0, new Set()));
+    }
+}
+
+function makeTopicEditState(className, text) {
+    const state = document.createElement('span');
+    state.className = className;
+    state.textContent = text;
+    return state;
+}
+
 // ── 表單二：個股對應的族群 ──
 function makeTopicMemberEditor() {
     const box = document.createElement('section');
@@ -9433,30 +11187,61 @@ function makeTopicMemberEditor() {
 
     const intro = document.createElement('p');
     intro.className = 'topic-intro';
-    intro.textContent = '先挑一檔股票，下面會列出它現在直接掛在哪些族群底下，'
-        + '掛錯的按「移出」，漏掉的用底下那一格加進去。'
-        + '從子族群繼承上來的成員不列在這裡——那要去改它真正掛著的那個節點。';
+    intro.textContent = '先用上方欄位把一檔股票加入指定族群；下面用可收合的樹狀圖確認它目前在哪些族群。'
+        + '勾選代表直接掛上，取消勾選代表移出；父層的「下層已關聯」會自動帶出。'
+        + '從概念股名單來的分類會另外標成唯讀。';
     box.append(intro);
 
-    // 一次建好代號到節點的對照。逐格重算的話每打一個字就要掃過全樹的成員名單。
+    const treeNodes = topicEditableNodes();
+    const treeNodeNames = new Set(treeNodes.map(topic => topic.name));
     const nodesByTicker = new Map();
+    const conceptNodesByTicker = new Map();
 
     for (const topic of topicActive.topics) {
+        const target = topic.source === 'tree' ? nodesByTicker : conceptNodesByTicker;
+
         for (const ticker of topic.directTickers ?? []) {
-            const list = nodesByTicker.get(ticker);
+            const list = target.get(ticker);
 
             if (list === undefined) {
-                nodesByTicker.set(ticker, [topic]);
+                target.set(ticker, [topic]);
             } else {
                 list.push(topic);
             }
         }
     }
 
-    const form = document.createElement('form');
-    form.className = 'topic-edit-form';
+    const effectiveTopicNames = ticker => {
+        const names = new Set((nodesByTicker.get(ticker) ?? []).map(topic => topic.name));
+        const pending = topicEdits
+            .filter(edit => edit.enabled
+                && (edit.action === '加入' || edit.action === '退出')
+                && edit.tickers.includes(ticker))
+            .slice()
+            .reverse();
 
-    const stock = makeTopicEditInput(topicMemberDraft.stock, '打代號或名字，例如 2303 或 聯電', TOPIC_STOCK_LIST_ID);
+        for (const edit of pending) {
+            if (!treeNodeNames.has(edit.node)) {
+                continue;
+            }
+
+            if (edit.action === '加入') {
+                names.add(edit.node);
+            } else {
+                names.delete(edit.node);
+            }
+        }
+
+        return names;
+    };
+
+    const form = document.createElement('form');
+    form.className = 'topic-edit-form topic-edit-add-form';
+
+    const stock = makeTopicEditInput(
+        topicMemberDraft.stock,
+        '打代號或名字，例如 2303 或 聯電',
+        TOPIC_STOCK_LIST_ID);
     const node = makeTopicEditInput(topicMemberDraft.node, '要加進哪一個族群', TOPIC_NODE_LIST_ID);
     const note = makeTopicEditInput(topicMemberDraft.note, '為什麼這樣分，會留在紀錄裡');
 
@@ -9478,12 +11263,47 @@ function makeTopicMemberEditor() {
     current.className = 'topic-edit-current';
 
     const rememberDraft = () => {
-        topicMemberDraft = { stock: stock.value, node: node.value, note: note.value };
+        topicMemberDraft = {
+            stock: stock.value,
+            node: node.value,
+            note: note.value
+        };
     };
 
-    // 存一筆就重畫整個面板，畫面上的族群樹卻要等下次更新才會變，
-    // 所以這裡要自己把「已經存了但還沒生效」那幾筆也畫出來，
-    // 否則使用者按完「移出」會看到那個族群還在，只能再按一次。
+    const saveTreeChange = (topic, checked, checkbox) => {
+        const ticker = parseTopicStockInput(stock.value);
+
+        if (ticker === '') {
+            checkbox.checked = !checked;
+            status.textContent = '請先挑一檔股票。';
+            stock.focus();
+            return;
+        }
+
+        const name = (topicData?.stockNames ?? {})[ticker] ?? '';
+        checkbox.disabled = true;
+        status.textContent = '儲存中…';
+
+        saveTopicEdit({
+            action: checked ? '加入' : '退出',
+            node: topic.name,
+            parent: '',
+            tickers: [ticker],
+            aliases: [],
+            note: note.value.trim()
+        })
+            .then(() => {
+                topicMemberStatus = `已存下「${ticker} ${name} ${checked ? '加進' : '移出'} ${topic.name}」，下一次更新後生效。`;
+                rememberDraft();
+                return refreshTopicEdits(true);
+            })
+            .catch(() => {
+                checkbox.checked = !checked;
+                checkbox.disabled = false;
+                status.textContent = '存不進去，可能是資料庫連線問題，稍後再試一次。';
+            });
+    };
+
     const renderCurrent = () => {
         current.replaceChildren();
 
@@ -9500,62 +11320,44 @@ function makeTopicMemberEditor() {
         }
 
         const name = (topicData?.stockNames ?? {})[ticker] ?? '';
+        const effectiveNames = effectiveTopicNames(ticker);
+        const inheritedNames = topicMemberEditInheritedNames(treeNodes, effectiveNames);
         const heading = document.createElement('p');
         heading.className = 'topic-intro';
-
-        const nodes = (nodesByTicker.get(ticker) ?? []).slice().sort(compareTopicOrder);
-
-        heading.textContent = nodes.length === 0
-            ? `${ticker} ${name} 目前沒有直接掛在任何族群底下。`
-            : `${ticker} ${name} 目前直接掛在這 ${nodes.length} 個族群底下：`;
+        heading.textContent = `${ticker} ${name}　直接掛入 ${effectiveNames.size}　上層帶入 ${inheritedNames.size}`
+            + '（含已存待生效變更）：';
         current.append(heading);
 
-        const chips = document.createElement('div');
-        chips.className = 'topic-edit-chips';
+        const picker = document.createElement('section');
+        picker.className = 'topic-edit-tree-picker';
 
-        for (const topic of nodes) {
-            const chip = document.createElement('span');
-            chip.className = 'topic-edit-chip';
+        const pickerTitle = document.createElement('strong');
+        pickerTitle.className = 'topic-edit-tree-picker-title';
+        pickerTitle.textContent = '目前標的的族群樹';
 
-            const label = document.createElement('span');
-            label.textContent = topic.name;
-            label.dataset.hint = topic.source === 'tree'
-                ? topicParentPathText(topic)
-                : '這是概念股名單帶進來的分類，成員在 Google Sheet 上，不在這裡改。';
-            chip.append(label);
+        const summary = document.createElement('p');
+        summary.className = 'topic-edit-tree-summary';
+        summary.textContent = '展開／收合分支；勾選末端或父層族群代表直接掛入，取消勾選代表移出。';
 
-            if (topic.source === 'tree') {
-                const remove = makeTopicEditButton('移出', 'topic-edit-chip-remove');
-                remove.dataset.hint = `把 ${ticker} ${name} 從「${topic.name}」的成員裡拿掉。`;
-                remove.addEventListener('click', () => {
-                    remove.disabled = true;
-                    status.textContent = '儲存中…';
+        const tree = document.createElement('div');
+        tree.className = 'topic-edit-tree';
+        tree.setAttribute('role', 'group');
+        tree.setAttribute('aria-label', `${ticker} 可編輯族群樹`);
+        makeTopicMemberEditTree(tree, treeNodes, effectiveNames, saveTreeChange);
+        picker.append(pickerTitle, summary, tree);
+        current.append(picker);
 
-                    saveTopicEdit({
-                        action: '退出',
-                        node: topic.name,
-                        parent: '',
-                        tickers: [ticker],
-                        aliases: [],
-                        note: note.value.trim()
-                    })
-                        .then(() => {
-                            topicMemberStatus = `已存下「${ticker} ${name} 移出 ${topic.name}」，下一次更新後生效。`;
-                            topicMemberDraft = { stock: stock.value, node: '', note: '' };
-                            return refreshTopicEdits(true);
-                        })
-                        .catch(() => {
-                            remove.disabled = false;
-                            status.textContent = '存不進去，可能是資料庫連線問題，稍後再試一次。';
-                        });
-                });
-                chip.append(remove);
-            }
+        const conceptNodes = (conceptNodesByTicker.get(ticker) ?? [])
+            .slice()
+            .sort(compareTopicOrder);
 
-            chips.append(chip);
+        if (conceptNodes.length > 0) {
+            const readonly = document.createElement('p');
+            readonly.className = 'topic-edit-readonly';
+            readonly.textContent = '概念股名單分類（由 Google Sheet 管理，這裡不能修改）：'
+                + conceptNodes.map(topic => topic.name).join('、');
+            current.append(readonly);
         }
-
-        current.append(chips);
 
         const pending = topicEdits.filter(edit =>
             edit.enabled
@@ -9575,12 +11377,12 @@ function makeTopicMemberEditor() {
         rememberDraft();
         renderCurrent();
     });
-
-    stock.addEventListener('change', renderCurrent);
-
-    for (const input of [node, note]) {
-        input.addEventListener('input', rememberDraft);
-    }
+    stock.addEventListener('change', () => {
+        rememberDraft();
+        renderCurrent();
+    });
+    node.addEventListener('input', rememberDraft);
+    note.addEventListener('input', rememberDraft);
 
     form.addEventListener('submit', event => {
         event.preventDefault();
@@ -9593,19 +11395,22 @@ function makeTopicMemberEditor() {
             return;
         }
 
-        const names = new Set(topicEditableNodes().map(topic => topic.name));
         const nodeName = node.value.trim();
 
-        if (!names.has(nodeName)) {
+        if (!treeNodeNames.has(nodeName)) {
             status.textContent = nodeName === ''
-                ? '請挑一個要加進去的族群。'
+                ? '請先挑一個族群。'
                 : `樹上沒有「${nodeName}」這個族群，請從選單裡挑一個。`;
             node.focus();
             return;
         }
 
-        const name = (topicData?.stockNames ?? {})[ticker] ?? '';
+        if (effectiveTopicNames(ticker).has(nodeName)) {
+            status.textContent = `「${ticker}」目前已經直接掛在「${nodeName}」。`;
+            return;
+        }
 
+        const name = (topicData?.stockNames ?? {})[ticker] ?? '';
         submit.disabled = true;
         status.textContent = '儲存中…';
 
@@ -9634,7 +11439,7 @@ function makeTopicMemberEditor() {
         makeTopicEditField('說明', note, '寫給以後的自己看的。移出時也會一起記下來。'),
         actions);
 
-    box.append(current, form);
+    box.append(form, current);
     renderCurrent();
     return box;
 }
