@@ -1,87 +1,275 @@
-# 盤中每 2 分鐘抓一輪報價寫進 Supabase，整個交易時段跑同一個 job。
-# 輪距定義在 CollectionSchedule，改那邊不必動這裡，但這行的數字要跟著改。
+# 盤中每 2 分鐘抓一輪報價寫進 Supabase。
 #
-# 公開 repo 的 Actions 不計費，所以一天佔著 runner 六個多小時是可以接受的。
-# 盤中資料**不做備份也不救**：它每天重來，隔天盤後資料一到齊就會被 sync 刪掉。
+# ## 為什麼是「自走鏈」而不是排程
+#
+# 2026-08-27、08-28 連兩天，GitHub 的 schedule 事件晚到 6～13 小時，或整天沒送達。
+# 8/28 三個盤中 cron（台北 07:33／08:17／09:01）分別在 15:01、19:22、20:30 才進 runner，
+# 全部落在收盤後；同一天 18:00 的每日快照連同兩個備援也完全沒來。結果就是
+# 「開盤了，網站還停在昨天」，只能靠人手動補跑。
+#
+# 加更多 cron 沒有用——那天三個 cron 全都晚到，不是其中一個漏掉。
+#
+# 所以不再依賴 GitHub 的鬧鐘。實測（run 33177347324 → 33177357163 → 33177365236）確認
+# **GITHUB_TOKEN 可以觸發 workflow_dispatch**：文件把 workflow_dispatch 與
+# repository_dispatch 列為遞迴保護的例外，「always create workflow runs」。
+# 於是這支 workflow 自己接力：每一棒開跑就先把下一棒叫起來排隊，自己睡到下一次開盤
+# （或睡到本棒的時間用完為止），時間到就收集。鏈子自己走，不需要任何外部裝置或金鑰。
+#
+# 代價講清楚：這等於長期佔著一個 runner。公開 repo 的 Actions 不計費，
+# 併發上限 20 個 job 我們只用 1 個，所以可以接受；換來的是「開盤一定有人在」。
+#
+# ## 鏈子斷了怎麼辦
+#
+# 唯一會斷鏈的情況是「叫下一棒」那一步連 API 都打不到，或整個 run 根本沒被建立。
+# 底下仍保留 cron，但它的角色從「主要啟動方式」降級成**復原**：只要有任何一個
+# 事件在任何時間點送達，就會重新長出一條鏈。晚到多久都沒關係，因為新的一棒會自己
+# 算出下一次開盤是什麼時候再睡過去——晚到的事件不再被丟掉。
+#
+# 週末也排一次，因為週五盤後到週一開盤中間如果斷鏈，沒有平日的 cron 可以接。
 
 name: 盤中報價收集
 
 on:
+  workflow_dispatch:
+    inputs:
+      hop:
+        description: 這是接力的第幾棒（自走鏈自己填，手動觸發不必理）
+        default: '0'
+
   schedule:
-    # GitHub 的 schedule 是盡力而為；2026-08-27 曾在交易日完全漏送 07:33 的事件。
-    # 所以在三個非尖峰分鐘建立同一個收集器的啟動機會：台北 07:33、08:17、09:01。
-    # 正常時最早的一場會先拿到同一個 schedule 併發鎖；其餘只會排隊，收盤後由
-    # preflight 略過。第一場漏送時，後面的場次才會補上，不會同時寫兩輪資料。
-    #
-    # 07:33（= UTC 週日到週四 23:33）會在開盤前一個半小時卡住 runner。
-    #
-    # **不能再更早。** GitHub 對單一 job 有六小時硬上限，時間到直接 cancel，
-    # timeout-minutes 設多大都沒用。原本排 07:03、實際 07:30 開跑，
-    # 六小時就落在 13:30～13:34——正好把收盤那幾分鐘吃掉，
-    # 08-19、08-20、08-21 連三天都是 6:00:19 然後 cancelled，收盤那一輪從來沒收到。
-    # 排 07:33、實際約 08:00 開跑，上限落在 14:00，13:35 收工才來得及。
-    #
-    # 另一邊的風險是誤點：排程是盡力而為，實測誤點 28～31 分鐘、最糟 88 分鐘。
-    # 07:33 就算誤點 87 分鐘也還在 09:00 開盤前開跑，兩頭都留得住。
-    # 分鐘避開整點與半點，那是所有人排程的尖峰、誤點最嚴重。
-    #
-    # 提早開跑不會寫進盤前髒資料：MIS 在開盤前給的是上一個交易日，收集器認得出來。
-    # 收工時間定義在 CollectionSchedule（前端也讀同一份），cron 讀不到，改那邊要順手看這裡。
+    # 只是復原用的火種，不是主要啟動方式。分鐘避開整點與半點（排程尖峰）。
     - cron: '33 23 * * 0-4'
-    # 台北週一至週五 08:17、09:01；UTC 跨日規則和第一場不同。
     - cron: '17 0 * * 1-5'
     - cron: '1 1 * * 1-5'
-  workflow_dispatch:
+    - cron: '23 14 * * *'
 
-# 上一場還沒收工就不要再開一場，否則同一個時間點會寫進兩輪。
+permissions:
+  # 叫下一棒要 actions: write。這是整條鏈的關鍵權限。
+  actions: write
+  contents: read
+
+# 同一時間只准一棒在跑，否則同一個時間點會寫進兩輪。
 #
-# 排程跟手動觸發各自一組：兩者共用同一組的話，交易時段中手動點一次
-# workflow_dispatch 來測新功能，就得先把正在跑的排程那場手動取消才擠得進去
-# ——08/24 就是這樣把當天唯一一場自動收集攔腰砍斷，族群盤中熱度整天只有一輪資料。
-# 分開組別後，手動測試最多跟自己排隊，不會動到當天唯一一場自動收集。
+# 這裡刻意讓排程與手動觸發共用同一組——舊版把兩者分開，是為了避免手動測試被排程卡住；
+# 現在自走鏈本身就是 workflow_dispatch，分開就等於允許兩個收集器並行寫入，那是資料錯誤。
+#
+# 想立刻重跑一輪時不要另外觸發（會排到 5 個多小時後），直接把正在睡的那一棒 cancel 掉：
+# 它開跑時已經先把下一棒排在後面，cancel 之後下一棒馬上頂上、重新判斷現在該不該收集。
 concurrency:
-  group: intraday-${{ github.event_name }}
+  group: intraday-daemon
+  cancel-in-progress: false
 
 jobs:
-  # 正常首場已經收工後，排隊中的備援不能再補寫一輪收盤後資料。
-  # `concurrency` 在 workflow 層，因此這一關只會在輪到該 run 時才執行。
-  preflight:
+  hop:
     runs-on: ubuntu-latest
-    outputs:
-      should_collect: ${{ steps.window.outputs.should_collect }}
-    steps:
-      - id: window
-        name: 確認仍在盤中收集時段
-        env:
-          TZ: Asia/Taipei
-        run: |
-          now=$(date +%H%M)
-          if [ "$now" -ge 700 ] && [ "$now" -lt 1335 ]; then
-            echo "should_collect=true" >> "$GITHUB_OUTPUT"
-            echo "台北時間 $(date '+%F %T')，開始收集。"
-          else
-            echo "should_collect=false" >> "$GITHUB_OUTPUT"
-            echo "台北時間 $(date '+%F %T')，已不在收集時段，略過晚到的備援。"
-          fi
-
-  collect:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.should_collect == 'true' }}
-    runs-on: ubuntu-latest
-    # 07:03 開始跑到 13:35 收工是六個半小時，留一點餘裕。
-    timeout-minutes: 420
+    # 單一 job 的硬上限是 6 小時，時間到直接 cancel，timeout-minutes 設多大都沒用。
+    # 底下的 HOP_BUDGET 只給 5 小時 30 分，這裡再留 20 分鐘讓收尾步驟跑完。
+    timeout-minutes: 350
 
     env:
       TZ: Asia/Taipei
       INTRADAY_SOURCE: github-actions
 
+      # 提早 20 分鐘開跑：checkout、setup-dotnet、還原套件要幾分鐘，
+      # 要讓第一輪快照落在 09:00 而不是 09:05。
+      SESSION_OPEN: '0840'
+      # 收工時間的權威定義在 CollectionSchedule（前端讀同一份），這裡只用來判斷
+      # 「現在還算不算盤中」，改那邊要順手看這裡。
+      SESSION_CLOSE: '1335'
+
+      # 一棒最多佔 5 小時 30 分，離 6 小時硬上限留 30 分鐘。
+      HOP_BUDGET_SECONDS: '19800'
+      # 08:40 開跑到 13:35 收工是 4 小時 55 分。剩餘時間不到這個數就不接收集的工作，
+      # 直接交棒——下一棒是全新的 6 小時，反而收得完整。
+      COLLECT_NEEDS_SECONDS: '17700'
+      # 撐不到整場的那一棒要提早幾秒退場，把暖機時間讓給下一棒。
+      # 10 分鐘足夠讓排隊的下一棒拿到 runner 並跑完 checkout 與 setup-dotnet。
+      HANDOFF_LEAD_SECONDS: '600'
+
     steps:
+      # ── 第一件事就是把下一棒排進隊伍 ────────────────────────────────
+      #
+      # 放在最前面而不是最後：這一棒可能被 6 小時上限砍掉、可能 runner 掛掉、
+      # 可能中途被 cancel，那些情況都輪不到「最後一步」執行。先叫好放著排隊，
+      # 不論這一棒怎麼結束，併發鎖一放開下一棒就頂上。
+      #
+      # 排隊中的那一棒不會平行執行：concurrency 保證同組同時只有一個在跑，
+      # 而且新的 pending 會取代舊的 pending，所以永遠只有一棒在等，不會愈叫愈多。
+      - name: 先叫下一棒來排隊
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOP: ${{ inputs.hop || '0' }}
+        run: |
+          # 每個 step 是獨立的 shell，$SECONDS 會重來，所以把開跑時間留在檔案裡，
+          # 最後一步的防暴衝要拿它算整棒活了多久。
+          date +%s > "$RUNNER_TEMP/hop-started-at"
+
+          next=$(( ${HOP:-0} + 1 ))
+          echo "我是第 ${HOP:-0} 棒（$GITHUB_EVENT_NAME），先把第 $next 棒排進隊伍。"
+
+          for attempt in 1 2 3; do
+              if gh api --method POST \
+                  "repos/$GITHUB_REPOSITORY/actions/workflows/intraday.yml/dispatches" \
+                  -f ref=main -f "inputs[hop]=$next"; then
+                  echo "第 $next 棒已排隊。"
+                  exit 0
+              fi
+              echo "::warning::第 $attempt 次叫下一棒失敗，10 秒後重試。"
+              sleep 10
+          done
+
+          # 三次都失敗就讓這一步紅掉，鈴鐺會亮；cron 火種還在，之後仍會重新長出鏈子。
+          echo "::error::叫不到下一棒，自走鏈可能中斷，等 cron 復原。"
+          exit 1
+
       - name: 取出原始碼
         uses: actions/checkout@v4
+
+      # ── 睡到下一次開盤（或睡到本棒時間用完）────────────────────────
+      #
+      # 順便當整個 repo 的鬧鐘：醒著的時候每 5 分鐘看一眼，過了 18:00 而今天還沒有
+      # 成功的每日快照，就把它叫起來。每日快照原本也只靠 cron，8/28 同樣整天沒送達。
+      - name: 等到開盤
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          started=$(date +%s)
+          deadline=$(( started + HOP_BUDGET_SECONDS ))
+
+          in_session() {
+              local d h
+              d=$(date +%u)
+              h=$(date +%H%M)
+              [ "$d" -le 5 ] && [ "$h" -ge "$SESSION_OPEN" ] && [ "$h" -lt "$SESSION_CLOSE" ]
+          }
+
+          # 下一次開盤的 epoch。往後找一週，跳過週六日。
+          #
+          # 刻意先取日期再組成完整字串（"2026-08-31 08:40:00"），不要寫成
+          # date -d "+1 day 08:40"：那是「相對日 + 絕對時刻」的混合式，
+          # 解析結果得看 GNU date 的心情，而整條鏈都押在這個值上。
+          next_open() {
+              local now i day cand dow
+              now=$(date +%s)
+              for i in 0 1 2 3 4 5 6 7; do
+                  dow=$(date -d "+$i day" +%u)
+                  [ "$dow" -le 5 ] || continue
+                  day=$(date -d "+$i day" +%F)
+                  cand=$(date -d "$day ${SESSION_OPEN:0:2}:${SESSION_OPEN:2:2}:00" +%s)
+                  if [ "$cand" -gt "$now" ]; then
+                      echo "$cand"
+                      return
+                  fi
+              done
+          }
+
+          # 今天過了 18:00 而每日快照還沒成功，就把它叫起來。一棒最多叫一次。
+          snapshot_kicked=0
+          maybe_kick_snapshot() {
+              [ "$snapshot_kicked" -eq 0 ] || return
+              local d h since last
+              d=$(date +%u); h=$(date +%H%M)
+              [ "$d" -le 5 ] || return
+              [ "$h" -ge 1800 ] && [ "$h" -lt 2200 ] || return
+
+              # 「今天」是台北的今天；API 回的是 UTC，所以拿台北 00:00 換算成 UTC 當分界線。
+              # date -u 會連輸入字串一起當成 UTC 解讀，所以先在本地時區算出 epoch 再轉。
+              since=$(date -u -d "@$(date -d "$(date +%F) 00:00:00" +%s)" +%Y-%m-%dT%H:%M:%SZ)
+
+              last=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/runs?per_page=20" \
+                  --jq "[.workflow_runs[]
+                         | select(.conclusion == \"success\")
+                         | select(.updated_at > \"$since\")] | length" 2>/dev/null || echo 0)
+
+              if [ "${last:-0}" -gt 0 ]; then
+                  echo "今天已經有成功的每日快照，不重複叫。"
+                  snapshot_kicked=1
+                  return
+              fi
+
+              echo "台北 $(date '+%F %T')：過了 18:00 但今天還沒有成功的每日快照，叫它起來。"
+              if gh api --method POST \
+                  "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/dispatches" \
+                  -f ref=main; then
+                  snapshot_kicked=1
+              else
+                  echo "::warning::叫每日快照失敗，下一輪再試。"
+              fi
+          }
+
+          if in_session; then
+              echo "台北 $(date '+%F %T')，現在就在盤中，直接開始收集。"
+              echo "collect=true" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+
+          target=$(next_open)
+          if [ -z "$target" ]; then
+              # 算不出下一次開盤代表 date 的行為跟預期不一樣。不要用壞掉的數字去做運算，
+              # 直接把這一棒結束掉——下一棒已經排好了，鏈子不會斷。
+              echo "::error::算不出下一次開盤時間，這一棒放棄，交給下一棒。"
+              echo "collect=false" >> "$GITHUB_OUTPUT"
+              exit 1
+          fi
+
+          echo "台北 $(date '+%F %T')；下一次開盤 $(date -d "@$target" '+%F %T')。"
+          echo "本棒最多撐到 $(date -d "@$deadline" '+%F %T')。"
+
+          # 現在就決定這一棒的身分，不要睡到開盤才決定：
+          #
+          #   撐得到 → 睡到開盤，然後自己收集。
+          #   撐不到 → 這一棒只是個佔位的，任務是「在對的時間退場」，讓下一棒接手。
+          #
+          # 撐不到的那一棒刻意提早 HANDOFF_LEAD_SECONDS 退場，而不是撐到開盤才退。
+          # 差別很大：排隊中的下一棒要等併發鎖放開、等 runner 配下來，接著還要
+          # checkout、setup-dotnet、還原套件。如果前一棒是踩著開盤時間才退場，
+          # 這些都得在開盤後才發生，第一輪快照就會遲到。提早退場等於把暖機時間
+          # 讓給下一棒，而下一棒起跑時預算還有 5 小時 20 分，收整場綽綽有餘。
+          if [ $(( deadline - target )) -ge "$COLLECT_NEEDS_SECONDS" ]; then
+              retire=$target
+              role=collector
+              echo "本棒在開盤時還有 $(( (deadline - target) / 60 )) 分鐘，夠收完整場：這一棒自己收。"
+          else
+              retire=$(( target - HANDOFF_LEAD_SECONDS ))
+              [ "$deadline" -lt "$retire" ] && retire=$deadline
+              role=placeholder
+              echo "本棒在開盤時只剩 $(( (deadline - target) / 60 )) 分鐘，收不完整場。"
+              echo "改當佔位棒，$(date -d "@$retire" '+%F %T') 退場讓下一棒提早暖機。"
+          fi
+
+          # 每 5 分鐘醒一次，而不是一覺睡到底：這樣才有機會順手叫每日快照，
+          # 也才看得出這一棒還活著（日誌每 5 分鐘會多一行）。
+          while :; do
+              now=$(date +%s)
+
+              if [ "$now" -ge "$retire" ]; then
+                  if [ "$role" = collector ]; then
+                      echo "開盤了，開始收集。"
+                      echo "collect=true" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "佔位棒退場，交給下一棒。"
+                      echo "collect=false" >> "$GITHUB_OUTPUT"
+                  fi
+                  exit 0
+              fi
+
+              maybe_kick_snapshot
+
+              # 睡到「下一次該醒來」為止：退場時間或 5 分鐘後，取近的那個。
+              wake=$(( now + 300 ))
+              [ "$retire" -lt "$wake" ] && wake=$retire
+              sleep $(( wake - now ))
+          done
+
+      # ── 以下只有輪到收集的那一棒才會做 ──────────────────────────────
 
       # 廣度要比較個股前收、量能要比較最近 20 個交易日；兩者都在 data/imports。
       # 少了這份快取時，收集器仍能寫入即時指數，卻只能得到短期趨勢分數。
       - name: 取出盤後歷史快取
+        if: steps.wait.outputs.collect == 'true'
         uses: actions/checkout@v4
         with:
           ref: data
@@ -89,9 +277,10 @@ jobs:
           fetch-depth: 1
 
       # 只是先看一眼這台 runner 通不通，方便事後看日誌時對照。
-      # 連不上也照跑：開盤前兩小時的一次連線失敗不能代表整天，
+      # 連不上也照跑：開盤前的一次連線失敗不能代表整天，
       # 收集器本來就會每 2 分鐘重試到 13:35，真的整場都沒收到才會紅。
       - name: 探一下 MIS
+        if: steps.wait.outputs.collect == 'true'
         continue-on-error: true
         run: |
           body=$(curl -sS --max-time 30 \
@@ -109,12 +298,14 @@ jobs:
           fi
 
       - uses: actions/setup-dotnet@v4
+        if: steps.wait.outputs.collect == 'true'
         with:
           dotnet-version: '10.0.x'
 
       # 收集器自己撐到 13:35。整場一輪都沒寫進去、而且中間出過錯，它會丟例外讓這一步紅掉；
       # 整場都問得到 MIS、只是日期一直停在上一個交易日，才算休市、正常結束。
       - name: 收集盤中報價
+        if: steps.wait.outputs.collect == 'true'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- intraday --loop
@@ -122,7 +313,7 @@ jobs:
       # 網站上那個鈴鐺。休市會正常結束、不會走到這裡的 else，
       # 所以颱風假不會每次都在畫面上留一個紅點。
       - name: 更新網站上的警報
-        if: always()
+        if: always() && steps.wait.outputs.collect == 'true'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -132,4 +323,28 @@ jobs:
           else
               dotnet run -c Release --project src/Invest.Web -- alert "盤中報價收集" error \
                   "盤中收集這一場沒有正常收工，盤中頁的數字可能停在中途。" "$RUN_URL"
+          fi
+
+      # ── 防暴衝 ────────────────────────────────────────────────────
+      #
+      # 自走鏈最危險的失敗模式是「每一棒都在幾秒內失敗」——那會變成一分鐘好幾棒，
+      # 一天上千個 run。這裡保證每一棒至少活 3 分鐘，最壞情況也只會是一小時 20 棒，
+      # 留得下時間讓人看到鈴鐺並把 workflow 停掉。
+      - name: 保底停留
+        if: always()
+        run: |
+          floor=180
+          started=$(cat "$RUNNER_TEMP/hop-started-at" 2>/dev/null || echo 0)
+          if [ "$started" -eq 0 ]; then
+              echo "沒讀到開跑時間，直接補睡 $floor 秒。"
+              sleep "$floor"
+              exit 0
+          fi
+
+          spent=$(( $(date +%s) - started ))
+          if [ "$spent" -lt "$floor" ]; then
+              echo "這一棒只花了 $spent 秒，補睡 $(( floor - spent )) 秒，避免鏈子空轉暴衝。"
+              sleep $(( floor - spent ))
+          else
+              echo "這一棒活了 $spent 秒，不必補睡。"
           fi
