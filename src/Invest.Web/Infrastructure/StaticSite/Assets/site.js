@@ -897,8 +897,7 @@ const NOTE_CATEGORIES = [
     { key: 'all', text: '全部' },
     { key: '功能', text: '功能' },
     { key: 'Bug', text: 'Bug' },
-    { key: '待驗證', text: '待驗證' },
-    { key: '完成', text: '完成' }
+    { key: '待驗證', text: '待驗證' }
 ];
 const NOTE_STATUSES = ['待處理', '處理中', '待確認', '已完成'];
 const NOTE_IMAGES_BUCKET = 'note-images';
@@ -2137,14 +2136,15 @@ function formatNoteUpdatedAt(value) {
     return Number.isNaN(date.getTime()) ? '時間不明' : toTaipeiText(date.toISOString());
 }
 
+// 「完成」曾經是類型選項，但它講的是進度而不是分類，跟「狀態」的「已完成」重複，
+// 而且沒有任何一筆筆記用過它，2026-08-29 移除。
+// 資料庫的 check 約束仍允許這個值，萬一有舊資料殘留，會落到「功能」的樣式。
 function noteCategoryClass(category) {
     return category === 'Bug'
         ? 'note-category-bug'
         : category === '待驗證'
             ? 'note-category-verify'
-            : category === '完成'
-                ? 'note-category-done'
-                : 'note-category-feature';
+            : 'note-category-feature';
 }
 
 function noteStatusClass(status) {
