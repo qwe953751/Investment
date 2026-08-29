@@ -89,6 +89,26 @@ public sealed class IntradayWorkflowTests
     }
 
     /// <summary>
+    /// Actions 的預設 shell 是 `bash -e`，errexit 是命令列給的，寫 `set -uo pipefail`
+    /// 關不掉它。等待迴圈裡大量用「條件不成立就 return」的寫法，那種 return 會帶著
+    /// 狀態 1 回來——第一次上線就是這樣掛的：maybe_kick_snapshot 在非 18:00～22:00
+    /// 時段 return 1，整個步驟被 errexit 打掉，每一棒都在 20 秒內失敗。
+    /// </summary>
+    [Fact]
+    public void 等待迴圈要明確關掉errexit否則條件不成立的return會打掉整步()
+    {
+        var workflow = ReadIntradayWorkflow();
+
+        Assert.Contains("set +e", workflow, StringComparison.Ordinal);
+
+        // 裸 return（不帶狀態）在 errexit 下會把上一個判斷的失敗狀態傳出去。
+        // 全部釘成 return 0，讓「現在不必做這件事」跟「出錯了」分得開。
+        var wait = Slice(workflow, "maybe_kick_snapshot() {", "if in_session; then");
+        Assert.DoesNotContain("|| return\n", wait, StringComparison.Ordinal);
+        Assert.Contains("|| return 0", wait, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 鏈子唯一會斷的情況是連 dispatch 的 API 都打不到。cron 因此保留，
     /// 但角色從「主要啟動方式」降級成復原火種——晚到多久都沒關係，
     /// 新的一棒會自己算出下一次開盤再睡過去。週末也要有，否則週五盤後斷鏈就撐到週一沒人接。
@@ -217,6 +237,15 @@ public sealed class IntradayWorkflowTests
         Assert.Contains("heat.MarketTurnoverChangeRate", razor, StringComparison.Ordinal);
         Assert.Contains("heat.MarketTurnoverChange", razor, StringComparison.Ordinal);
         Assert.DoesNotContain("盤後不與前一交易日比較", razor, StringComparison.Ordinal);
+    }
+
+    private static string Slice(string text, string from, string to)
+    {
+        var start = text.IndexOf(from, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"找不到 {from}");
+        var end = text.IndexOf(to, start, StringComparison.Ordinal);
+        Assert.True(end >= 0, $"找不到 {to}");
+        return text[start..end];
     }
 
     private static string ReadIntradayWorkflow() => File.ReadAllText(Path.Combine(
