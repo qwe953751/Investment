@@ -426,6 +426,68 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
+    public void 單日比較以選定日對此前區間平均而不是把單日當成完整區間()
+    {
+        var dataSet = new MarketDataSetBuilder()
+            .Day(1, "1101", 100)
+            .Day(2, "1101", 200)
+            .Day(3, "1101", 300)
+            .Day(4, "1101", 500)
+            .Day(5, "1101", 900)
+            .Build();
+
+        var result = _calculator.Calculate(
+            dataSet,
+            Query(periodDays: 2) with
+            {
+                EndDate = MarketDataSetBuilder.DayOf(5),
+                ComparisonMode = RankingComparisonMode.SingleDay
+            });
+        var row = Row(result, "1101");
+
+        // 選定日是第 5 天；前期平均是第 3、4 天，不是第 4、5 天的區間平均。
+        Assert.Equal(1, result.CurrentPeriodDays);
+        Assert.Equal(MarketDataSetBuilder.DayOf(5), result.CurrentPeriodStart);
+        Assert.Equal(MarketDataSetBuilder.DayOf(5), result.CurrentPeriodEnd);
+        Assert.Equal(MarketDataSetBuilder.DayOf(3), result.PreviousPeriodStart);
+        Assert.Equal(MarketDataSetBuilder.DayOf(4), result.PreviousPeriodEnd);
+        Assert.Equal(900m, row.AverageDailyTradingValue);
+        Assert.Equal(400m, row.PreviousAverageDailyTradingValue);
+        Assert.Equal(1.25m, row.TradingValueChangeRate);
+        Assert.Equal(1.6667m, row.PreviousTradingValueChangeRate!.Value, 4);
+    }
+
+    [Fact]
+    public void 單日資金加速需要選定日加前後兩段區間()
+    {
+        var dataSet = new MarketDataSetBuilder()
+            .Days(1, 4, "1101", 100)
+            .Day(5, "1101", 100)
+            .Build();
+
+        var result = _calculator.Calculate(
+            dataSet,
+            Query(periodDays: 2, mode: RankingMode.CapitalAcceleration) with
+            {
+                EndDate = MarketDataSetBuilder.DayOf(5),
+                ComparisonMode = RankingComparisonMode.SingleDay
+            });
+
+        Assert.True(result.HasSufficientData);
+
+        var insufficient = _calculator.Calculate(
+            dataSet,
+            Query(periodDays: 2, mode: RankingMode.CapitalAcceleration) with
+            {
+                EndDate = MarketDataSetBuilder.DayOf(4),
+                ComparisonMode = RankingComparisonMode.SingleDay
+            });
+
+        Assert.False(insufficient.HasSufficientData);
+        Assert.Contains("需要至少 5 個交易日", insufficient.InsufficientDataMessage);
+    }
+
+    [Fact]
     public void 指定基準日時該日之後的行情完全不列入計算()
     {
         var query = Query(periodDays: 1) with { EndDate = MarketDataSetBuilder.DayOf(3) };

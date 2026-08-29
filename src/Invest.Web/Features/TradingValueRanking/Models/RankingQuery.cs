@@ -11,6 +11,11 @@ public sealed record RankingQuery
     public int PeriodDays { get; init; } = 5;
 
     /// <summary>
+    /// 本期是完整區間，或只取選定交易日單日。
+    /// </summary>
+    public RankingComparisonMode ComparisonMode { get; init; } = RankingComparisonMode.Range;
+
+    /// <summary>
     /// 基準日：觀察期間的最後一個交易日。null 代表取資料中最新的交易日。
     /// 這個日期之後的行情在計算時完全視為不存在，因此往回選日期會得到當時的排行結果。
     /// </summary>

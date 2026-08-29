@@ -7,6 +7,12 @@ public sealed class TradingValueRankingResult
 {
     public required int PeriodDays { get; init; }
 
+    /// <summary>
+    /// 本期實際彙總的交易日數。區間比較等於 <see cref="PeriodDays"/>，
+    /// 單日比較則為 1；顯示全市場日均成交值時不能拿比較用的前期長度代替。
+    /// </summary>
+    public int CurrentPeriodDays { get; init; }
+
     public required RankingMode Mode { get; init; }
 
     /// <summary>
@@ -55,11 +61,16 @@ public sealed class TradingValueRankingResult
         int periodDays,
         RankingMode mode,
         int availableTradingDays,
-        int requiredTradingDays)
+        int requiredTradingDays,
+        RankingComparisonMode comparisonMode = RankingComparisonMode.Range)
     {
-        var reason = mode == RankingMode.CapitalAcceleration
-            ? $"（資金加速模式的前期排名本身也是增減率，需要 {periodDays} 日 × 3 段期間）"
-            : $"（本期 {periodDays} 日與前期 {periodDays} 日）";
+        var reason = comparisonMode == RankingComparisonMode.SingleDay
+            ? mode == RankingMode.CapitalAcceleration
+                ? $"（選定交易日單日、前 {periodDays} 日平均與再前 {periodDays} 日平均）"
+                : $"（選定交易日單日與前 {periodDays} 日平均）"
+            : mode == RankingMode.CapitalAcceleration
+                ? $"（資金加速模式的前期排名本身也是增減率，需要 {periodDays} 日 × 3 段期間）"
+                : $"（本期 {periodDays} 日與前期 {periodDays} 日）";
 
         return new TradingValueRankingResult
         {

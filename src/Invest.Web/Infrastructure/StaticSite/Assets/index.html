@@ -86,14 +86,19 @@
                 </div>
             </div>
 
-            <div class="filter-group" data-view="daily intraday">
-                <span class="filter-label" data-hint="盤後：本期的長度，前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。盤中：今天要拿來對照的過去期間長度。">觀察期間</span>
-                <div class="button-row" id="period-options"></div>
-            </div>
-
             <div class="filter-group" data-view="daily">
                 <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
                 <div class="date-picker" id="date-picker"></div>
+            </div>
+
+            <div class="filter-group" data-view="daily">
+                <span class="filter-label" data-hint="區間：選定交易日與前一段同長度區間比較；單日：選定交易日與它之前指定長度的區間平均比較。">比較方式</span>
+                <div class="button-row" id="comparison-mode-options"></div>
+            </div>
+
+            <div class="filter-group" data-view="daily intraday">
+                <span class="filter-label" data-hint="盤後區間：本期的長度；盤後單日：選定日之前的平均區間長度；盤中：今天要拿來對照的過去期間長度。">觀察期間</span>
+                <div class="button-row" id="period-options"></div>
             </div>
 
             <div class="filter-group" data-view="daily intraday">
@@ -250,7 +255,7 @@
                     <section class="notes-images-field" aria-labelledby="notes-images-title">
                         <div class="notes-images-heading">
                             <span id="notes-images-title">圖片</span>
-                            <small>可選多張，單張上限 5 MB</small>
+                            <small>可選多張，單張上限 5 MB；超過 5 MB 會自動壓縮</small>
                         </div>
                         <label class="notes-image-picker">
                             <span>選擇圖片</span>

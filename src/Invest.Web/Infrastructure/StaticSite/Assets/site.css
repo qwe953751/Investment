@@ -3118,16 +3118,31 @@ td.stock-name.stock-name-change-down {
     }
 
     .ranking-table th.col-name,
-    .ranking-table td.stock-name:not(.stock-name-change-up):not(.stock-name-change-down) {
+    .ranking-table td.stock-name {
         position: sticky;
         left: 80px;
+        width: 160px;
+        min-width: 160px;
         background: #fff;
+    }
+
+    .ranking-table td.ticker,
+    .ranking-table td.stock-name {
+        z-index: 2;
     }
 
     .ranking-table th.col-ticker,
     .ranking-table th.col-name {
-        z-index: 1;
+        z-index: 3;
         background: #f5f5f5;
+    }
+
+    .ranking-table td.stock-name.stock-name-change-up {
+        background: #fff1f0;
+    }
+
+    .ranking-table td.stock-name.stock-name-change-down {
+        background: #effaf3;
     }
 }
 
@@ -3239,6 +3254,143 @@ td.stock-name.stock-name-change-down {
 }
 
 /* ── 熱度排行 ── */
+
+.topic-heat-bubble-card {
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid #dbe3ef;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.topic-heat-bubble-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.topic-heat-bubble-heading h3 {
+    margin: 0;
+    font-size: 17px;
+}
+
+.topic-heat-bubble-heading p,
+.topic-heat-bubble-note,
+.topic-heat-bubble-count {
+    margin: 4px 0 0;
+    color: #667085;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.topic-heat-bubble-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin-top: 12px;
+    color: #475467;
+    font-size: 12px;
+}
+
+.topic-heat-bubble-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.topic-heat-bubble-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 1px solid currentColor;
+    border-radius: 50%;
+}
+
+.topic-heat-bubble-chart {
+    margin-top: 8px;
+    overflow-x: auto;
+}
+
+.topic-heat-bubble-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.topic-heat-bubble-grid {
+    stroke: #e5e7eb;
+    stroke-width: 1;
+    stroke-dasharray: 3 4;
+}
+
+.topic-heat-bubble-axis {
+    fill: #98a2b3;
+    font-size: 11px;
+}
+
+.topic-heat-bubble-axis-title {
+    fill: #667085;
+    font-size: 12px;
+}
+
+.topic-heat-bubble {
+    cursor: pointer;
+    outline: none;
+}
+
+.topic-heat-bubble-circle {
+    fill-opacity: 0.76;
+    stroke-width: 2;
+    transition: fill-opacity 120ms ease, stroke-width 120ms ease;
+}
+
+.topic-heat-bubble:hover .topic-heat-bubble-circle,
+.topic-heat-bubble:focus .topic-heat-bubble-circle {
+    fill-opacity: 0.92;
+    stroke-width: 3;
+}
+
+.topic-heat-bubble-broad .topic-heat-bubble-circle,
+.topic-heat-bubble-broad.topic-heat-bubble-swatch {
+    fill: #f28b78;
+    background: #f28b78;
+    color: #d95d49;
+    stroke: #d95d49;
+}
+
+.topic-heat-bubble-narrow .topic-heat-bubble-circle,
+.topic-heat-bubble-narrow.topic-heat-bubble-swatch {
+    fill: #f2c94c;
+    background: #f2c94c;
+    color: #c99a16;
+    stroke: #c99a16;
+}
+
+.topic-heat-bubble-neutral .topic-heat-bubble-circle,
+.topic-heat-bubble-neutral.topic-heat-bubble-swatch {
+    fill: #a7b5c8;
+    background: #a7b5c8;
+    color: #7f8ea3;
+    stroke: #7f8ea3;
+}
+
+.topic-heat-bubble-label,
+.topic-heat-bubble-score {
+    fill: #1f2937;
+    pointer-events: none;
+    user-select: none;
+}
+
+.topic-heat-bubble-label {
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.topic-heat-bubble-score {
+    font-size: 10px;
+}
 
 .topic-heat-table td {
     font-variant-numeric: tabular-nums;

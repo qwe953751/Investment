@@ -33,6 +33,14 @@ public static class TopicHeatCalculator
     public const decimal NewsWeight = 0.15m;
 
     /// <summary>
+    /// 泡泡圖 Y 軸的價格反應主權重。它不是市場熱度欄位的權重。
+    /// </summary>
+    public const decimal PriceReactionBaseWeight = 0.80m;
+
+    /// <summary>族群廣度對泡泡圖 Y 軸的最大修正權重。</summary>
+    public const decimal BreadthAdjustmentWeight = 0.20m;
+
+    /// <summary>
     /// 排行參與率的門檻。文件寫的是「進入成交值前 50 名」。
     /// </summary>
     public const int ParticipationRankLimit = 50;
@@ -114,6 +122,8 @@ public static class TopicHeatCalculator
         var topRanked = 0;
         var rising = 0;
         var priced = 0;
+        var pricedTurnover = 0m;
+        var weightedPriceChange = 0m;
         var members = new List<TopicHeatMember>();
 
         foreach (var ticker in tickers)
@@ -135,6 +145,12 @@ public static class TopicHeatCalculator
             if (quote.PriceChangeRate is { } change)
             {
                 priced++;
+
+                if (quote.MarketShare > 0m)
+                {
+                    pricedTurnover += quote.MarketShare;
+                    weightedPriceChange += quote.MarketShare * change;
+                }
 
                 if (change > 0m)
                 {
@@ -165,6 +181,12 @@ public static class TopicHeatCalculator
                 * penalty * 100m,
                 0m,
                 100m);
+        var weightedPriceChangeRate = pricedTurnover <= 0m
+            ? (decimal?)null
+            : weightedPriceChange / pricedTurnover;
+        var breadthAdjustedPriceReactionRate = BreadthAdjustPriceReaction(
+            weightedPriceChangeRate,
+            breadth);
 
         return new Draft
         {
@@ -179,6 +201,8 @@ public static class TopicHeatCalculator
             DispersionRate = dispersion,
             SingleStockPenalty = penalty,
             BreadthScore = breadth,
+            WeightedPriceChangeRate = weightedPriceChangeRate,
+            BreadthAdjustedPriceReactionRate = breadthAdjustedPriceReactionRate,
             // 成員一檔都不截斷。選到族群就是要看「這一段供應鏈到底有誰」，
             // 截到前 50 檔會讓成員數大的節點永遠看不到後半段。
             // 量過了：全展開只讓 topics.json 從 10,330 列長到 13,260 列。
@@ -230,6 +254,23 @@ public static class TopicHeatCalculator
         _ => 1.00m
     };
 
+    /// <summary>
+    /// 以族群廣度作可信度修正，不把價格反應與廣度直接相加，避免百分比與分數混成沒有單位的數字。
+    /// B=0 時保留 80% 的原始價格反應，B=1 時保留完整價格反應。
+    /// </summary>
+    private static decimal? BreadthAdjustPriceReaction(decimal? priceReaction, decimal? breadth)
+    {
+        if (priceReaction is not { } price || breadth is not { } score)
+        {
+            return null;
+        }
+
+        var breadthRatio = Math.Clamp(score / 100m, 0m, 1m);
+        var confidence = PriceReactionBaseWeight + BreadthAdjustmentWeight * breadthRatio;
+
+        return price * confidence;
+    }
+
     private static TopicHeatRow ToRow(
         Draft draft,
         decimal maxRaw,
@@ -268,6 +309,8 @@ public static class TopicHeatCalculator
             FundRawShare = draft.FundRaw,
             FundScore = fundScore,
             BreadthScore = draft.BreadthScore,
+            WeightedPriceChangeRate = draft.WeightedPriceChangeRate,
+            BreadthAdjustedPriceReactionRate = draft.BreadthAdjustedPriceReactionRate,
             NewsScore = news,
             CompositeScore = composite,
             FundWeight = FundWeight / totalWeight,
@@ -311,6 +354,10 @@ public static class TopicHeatCalculator
         public decimal SingleStockPenalty { get; init; }
 
         public decimal? BreadthScore { get; init; }
+
+        public decimal? WeightedPriceChangeRate { get; init; }
+
+        public decimal? BreadthAdjustedPriceReactionRate { get; init; }
 
         public IReadOnlyList<TopicHeatMember> Members { get; init; } = [];
     }

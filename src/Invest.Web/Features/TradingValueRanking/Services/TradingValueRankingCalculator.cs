@@ -26,28 +26,35 @@ public sealed class TradingValueRankingCalculator
         var periodDays = query.PeriodDays;
         ArgumentOutOfRangeException.ThrowIfLessThan(periodDays, 1);
 
+        var currentPeriodDays = query.ComparisonMode == RankingComparisonMode.SingleDay
+            ? 1
+            : periodDays;
+
         EnsureIndex(dataSet);
 
         // 基準日之後的行情一律當作還沒發生，往回選日期才會得到當時看到的排行。
         var dates = DatesThrough(query.EndDate);
 
         // 資金加速模式的「前期排名」本身是一個增減率，所以前期還需要自己的基期，總共三段。
-        var requiredDays = query.Mode == RankingMode.CapitalAcceleration
-            ? periodDays * 3
-            : periodDays * 2;
+        var requiredDays = currentPeriodDays + periodDays
+            * (query.Mode == RankingMode.CapitalAcceleration ? 2 : 1);
 
         if (dates.Length < requiredDays)
         {
             return TradingValueRankingResult.InsufficientData(
-                periodDays, query.Mode, dates.Length, requiredDays);
+                periodDays,
+                query.Mode,
+                dates.Length,
+                requiredDays,
+                query.ComparisonMode);
         }
 
-        var current = dates[^periodDays..];
-        var previous = dates[^(periodDays * 2)..^periodDays];
+        var current = dates[^currentPeriodDays..];
+        var previous = dates[^(currentPeriodDays + periodDays)..^currentPeriodDays];
         // 再前一期只在資金加速模式才影響排序，但成交熱度模式也一併算出來：
         // 靜態網站的一份檔案要同時餵兩種模式，前期增減率必須跟著每一列走。
-        DateOnly[] prior = dates.Length >= periodDays * 3
-            ? dates[^(periodDays * 3)..^(periodDays * 2)]
+        DateOnly[] prior = dates.Length >= currentPeriodDays + periodDays * 2
+            ? dates[^(currentPeriodDays + periodDays * 2)..^(currentPeriodDays + periodDays)]
             : [];
 
         var currentStats = Aggregate(_byTicker, _adjustmentsByTicker, current);
@@ -135,6 +142,7 @@ public sealed class TradingValueRankingCalculator
         return new TradingValueRankingResult
         {
             PeriodDays = periodDays,
+            CurrentPeriodDays = current.Length,
             Mode = query.Mode,
             HasSufficientData = true,
             CurrentPeriodStart = current[0],

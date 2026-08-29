@@ -156,16 +156,16 @@
 
             <div class="summary-row summary-explanation-row">
                 <div>
-                    <span class="summary-label">本期</span>
+                    <span class="summary-label">@(_query.ComparisonMode == RankingComparisonMode.SingleDay ? "選定日" : "本期")</span>
                     @RankingFormatter.ToPeriodText(_result.CurrentPeriodStart, _result.CurrentPeriodEnd)
                 </div>
                 <div>
-                    <span class="summary-label">前期</span>
+                    <span class="summary-label">@(_query.ComparisonMode == RankingComparisonMode.SingleDay ? "前期平均" : "前期")</span>
                     @RankingFormatter.ToPeriodText(_result.PreviousPeriodStart, _result.PreviousPeriodEnd)
                 </div>
                 <div>
                     <span class="summary-label">全市場日均成交值</span>
-                    @RankingFormatter.ToBillionText(_result.MarketTotalTradingValue / _result.PeriodDays, 0) 億元
+                    @RankingFormatter.ToBillionText(_result.MarketTotalTradingValue / (_result.CurrentPeriodDays > 0 ? _result.CurrentPeriodDays : _result.PeriodDays), 0) 億元
                 </div>
                 <div>
                     <span class="summary-label">符合條件</span>
@@ -176,13 +176,35 @@
 
         <section class="filter-panel">
             <div class="filter-group">
-                <span class="filter-label" data-hint="本期的長度。前期固定採緊鄰的同長度區間，例如近 20 日 vs 再往前 20 日。">觀察期間</span>
+                <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
+                <TradingDatePicker AvailableDates="_tradingDates"
+                                   Value="_query.EndDate"
+                                   ValueChanged="ChangeEndDateAsync" />
+            </div>
+
+            <div class="filter-group">
+                <span class="filter-label" data-hint="區間：選定交易日與前一段同長度區間比較；單日：選定交易日與它之前指定長度的區間平均比較。">比較方式</span>
                 <div class="button-row">
-                    @foreach (var (period, text, hint) in PeriodOptions)
+                    @foreach (var (mode, text, hint) in ComparisonOptions)
+                    {
+                        <button type="button"
+                                class="@ToggleClass(_query.ComparisonMode == mode)"
+                                data-hint="@hint"
+                                @onclick="() => ChangeComparisonModeAsync(mode)">
+                            @text
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <span class="filter-label" data-hint="區間比較：本期的長度；單日比較：選定日之前的平均區間長度。">觀察期間</span>
+                <div class="button-row">
+                    @foreach (var (period, text, rangeHint, singleHint) in PeriodOptions)
                     {
                         <button type="button"
                                 class="@ToggleClass(period == _query.PeriodDays)"
-                                data-hint="@hint"
+                                data-hint="@(_query.ComparisonMode == RankingComparisonMode.SingleDay ? singleHint : rangeHint)"
                                 @onclick="() => ChangePeriodAsync(period)">
                             @text
                         </button>
@@ -191,24 +213,17 @@
             </div>
 
             <div class="filter-group">
-                <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
-                <TradingDatePicker AvailableDates="_tradingDates"
-                                   Value="_query.EndDate"
-                                   ValueChanged="ChangeEndDateAsync" />
-            </div>
-
-            <div class="filter-group">
                 <span class="filter-label" data-hint="決定排行榜依哪個數字排序。">排行模式</span>
                 <div class="button-row">
                     <button type="button"
                             class="@ToggleClass(_query.Mode == RankingMode.TradingHeat)"
-                            data-hint="依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。"
+                            data-hint="@ModeHint(RankingMode.TradingHeat)"
                             @onclick="() => ChangeModeAsync(RankingMode.TradingHeat)">
                         成交熱度
                     </button>
                     <button type="button"
                             class="@ToggleClass(_query.Mode == RankingMode.CapitalAcceleration)"
-                            data-hint="依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。"
+                            data-hint="@ModeHint(RankingMode.CapitalAcceleration)"
                             @onclick="() => ChangeModeAsync(RankingMode.CapitalAcceleration)">
                         資金加速
                     </button>
@@ -291,9 +306,9 @@
                     <tr>
                         @foreach (var column in Columns)
                         {
-                            <th class="@HeaderClass(column)" data-hint="@column.Hint"
+                            <th class="@HeaderClass(column)" data-hint="@ColumnHint(column)"
                                 @onclick="() => SortBy(column)">
-                                @column.Title@SortIndicator(column)
+                                @ColumnTitle(column)@SortIndicator(column)
                             </th>
                         }
                     </tr>
@@ -366,19 +381,26 @@
             <p>市場成交比的分母一律是上市＋上櫃全體，不隨市場篩選改變，因此切換市場時比例可以直接互相比較。</p>
             <p>成交門檻是為了資金加速模式：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜沒有參考價值。</p>
             <p>期間漲跌以進入期間前的最後一個收盤價為基準，所以期間內第一天的漲跌也算在內。</p>
+            <p>單日比較只取選定交易日，成交值與市場成交比會和該日前指定區間的平均比較；切回區間即可恢復原本的同長度區間比較。</p>
             <p>加權指數與櫃買指數是所選交易日的收盤值；括號內為相對前一交易日收盤的漲跌幅。</p>
         </footer>
     }
 </div>
 
 @code {
-    private static readonly (int Days, string Text, string Hint)[] PeriodOptions =
+    private static readonly (int Days, string Text, string RangeHint, string SingleHint)[] PeriodOptions =
     [
-        (1, "前一交易日", "基準日當天，與前一個交易日比較。當日盤中資料之後再做。"),
-        (5, "5 日", "最近 5 個交易日 vs 再往前 5 個交易日"),
-        (10, "10 日", "最近 10 個交易日 vs 再往前 10 個交易日"),
-        (20, "20 日", "最近 20 個交易日 vs 再往前 20 個交易日"),
-        (60, "60 日", "最近 60 個交易日 vs 再往前 60 個交易日")
+        (1, "前一交易日", "最近 1 個交易日 vs 再往前 1 個交易日", "選定交易日 vs 前 1 個交易日平均"),
+        (5, "5 日", "最近 5 個交易日 vs 再往前 5 個交易日", "選定交易日 vs 前 5 個交易日平均"),
+        (10, "10 日", "最近 10 個交易日 vs 再往前 10 個交易日", "選定交易日 vs 前 10 個交易日平均"),
+        (20, "20 日", "最近 20 個交易日 vs 再往前 20 個交易日", "選定交易日 vs 前 20 個交易日平均"),
+        (60, "60 日", "最近 60 個交易日 vs 再往前 60 個交易日", "選定交易日 vs 前 60 個交易日平均")
+    ];
+
+    private static readonly (RankingComparisonMode Mode, string Text, string Hint)[] ComparisonOptions =
+    [
+        (RankingComparisonMode.Range, "區間", "選定交易日作為區間最後一天，與前一段同長度區間比較。"),
+        (RankingComparisonMode.SingleDay, "單日", "只看選定交易日，與它之前指定長度的區間平均比較。")
     ];
 
     private static readonly (MarketFilter Filter, string Text)[] MarketOptions =
@@ -546,6 +568,12 @@
     private Task ChangePeriodAsync(int periodDays)
     {
         _query = _query with { PeriodDays = periodDays };
+        return ReloadAsync();
+    }
+
+    private Task ChangeComparisonModeAsync(RankingComparisonMode comparisonMode)
+    {
+        _query = _query with { ComparisonMode = comparisonMode };
         return ReloadAsync();
     }
 
@@ -763,6 +791,32 @@
         => threshold <= 0
             ? "不過濾"
             : $"平均每日成交值 {RankingFormatter.ToThresholdText(threshold)} 以上";
+
+    private string ColumnTitle(SortColumn column)
+        => _query.ComparisonMode == RankingComparisonMode.SingleDay && column.Key == "value"
+            ? "單日成交值（億）"
+            : column.Title;
+
+    private string ColumnHint(SortColumn column)
+        => _query.ComparisonMode == RankingComparisonMode.SingleDay
+            ? column.Key switch
+            {
+                "value" => "選定交易日的單日成交值。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。",
+                "rate" => "（選定日成交值 − 前期平均）÷ 前期平均。前期是選定日前指定長度的交易日平均；前期為 0 時無法計算，顯示 — 並排在最後。",
+                "share" => "選定交易日個股成交值 ÷ 該日全市場成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變。",
+                "shareChange" => "選定日市場成交比 − 選定日前指定長度交易日的平均市場成交比，單位是百分點。",
+                _ => column.Hint
+            }
+            : column.Hint;
+
+    private string ModeHint(RankingMode mode)
+        => _query.ComparisonMode == RankingComparisonMode.SingleDay
+            ? mode == RankingMode.CapitalAcceleration
+                ? "依選定日相較前 N 日平均的成交值增減率排序；另需再前 N 日平均作為前期基準。"
+                : "依選定交易日的成交值排序，並與前 N 日平均比較。"
+            : mode == RankingMode.CapitalAcceleration
+                ? "依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。"
+                : "依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。";
 
     private string HeaderClass(SortColumn column)
         => _sortKey == column.Key ? "sortable sorted" : "sortable";

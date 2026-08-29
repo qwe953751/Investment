@@ -136,6 +136,7 @@ public sealed class StaticSiteExporter(
         {
             // 這個交易日往回總共有幾天可用，決定了哪些期間算得出來。
             var historyLength = tradingDates.Count(tradingDate => tradingDate <= date);
+            IReadOnlyList<SingleComparisonExport>? singleComparisons = null;
 
             foreach (var periodDays in PeriodDayOptions)
             {
@@ -161,9 +162,37 @@ public sealed class StaticSiteExporter(
                     latestRankings[periodDays] = result;
                 }
 
+                if (periodDays == 1)
+                {
+                    var comparisons = new List<SingleComparisonExport>(PeriodDayOptions.Length);
+
+                    foreach (var singlePeriodDays in PeriodDayOptions)
+                    {
+                        var singleResult = await ranking.GetRankingAsync(
+                            query with
+                            {
+                                PeriodDays = singlePeriodDays,
+                                ComparisonMode = RankingComparisonMode.SingleDay
+                            },
+                            cancellationToken);
+
+                        comparisons.Add(ToSingleComparisonExport(
+                            singlePeriodDays,
+                            historyLength,
+                            singleResult));
+                    }
+
+                    singleComparisons = comparisons;
+                }
+
                 await WriteJsonAsync(
                     Path.Combine(dataDirectory, key + ".json"),
-                    ToExport(key, periodDays, historyLength, result),
+                    ToExport(
+                        key,
+                        periodDays,
+                        historyLength,
+                        result,
+                        periodDays == 1 ? singleComparisons : null),
                     cancellationToken);
 
                 fileCount++;
@@ -468,6 +497,8 @@ public sealed class StaticSiteExporter(
         RoundSignificant(row.FundRawShare),
         Round(row.FundScore, 2),
         Round(row.BreadthScore, 2),
+        Round(row.WeightedPriceChangeRate, 8),
+        Round(row.BreadthAdjustedPriceReactionRate, 8),
         Round(row.NewsScore, 2),
         Round(row.CompositeScore, 2),
         Round(row.FundWeight, 4),
@@ -562,9 +593,13 @@ public sealed class StaticSiteExporter(
         string key,
         int periodDays,
         int historyLength,
-        TradingValueRankingResult result)
+        TradingValueRankingResult result,
+        IReadOnlyList<SingleComparisonExport>? singleComparisons = null)
     {
         var accelerationAvailable = historyLength >= periodDays * 3;
+        var currentPeriodDays = result.CurrentPeriodDays > 0
+            ? result.CurrentPeriodDays
+            : result.PeriodDays;
 
         return new RankingExport(
             key,
@@ -579,10 +614,43 @@ public sealed class StaticSiteExporter(
             RankingFormatter.ToPeriodText(result.CurrentPeriodStart, result.CurrentPeriodEnd),
             RankingFormatter.ToPeriodText(result.PreviousPeriodStart, result.PreviousPeriodEnd),
             result.HasSufficientData
-                ? RankingFormatter.ToBillionText(result.MarketTotalTradingValue / result.PeriodDays, 0)
+                ? RankingFormatter.ToBillionText(result.MarketTotalTradingValue / currentPeriodDays, 0)
                 : "—",
             ToMarketHeatExport(result.MarketHeat),
-            [.. result.Rows.Select(ToExport)]);
+            [.. result.Rows.Select(ToExport)],
+            singleComparisons);
+    }
+
+    private static SingleComparisonExport ToSingleComparisonExport(
+        int periodDays,
+        int historyLength,
+        TradingValueRankingResult result)
+    {
+        var accelerationAvailable = historyLength >= 1 + periodDays * 2;
+
+        return new SingleComparisonExport(
+            periodDays,
+            result.HasSufficientData,
+            result.InsufficientDataMessage,
+            accelerationAvailable,
+            accelerationAvailable
+                ? null
+                : TradingValueRankingResult
+                    .InsufficientData(
+                        periodDays,
+                        RankingMode.CapitalAcceleration,
+                        historyLength,
+                        1 + periodDays * 2,
+                        RankingComparisonMode.SingleDay)
+                    .InsufficientDataMessage,
+            RankingFormatter.ToPeriodText(result.CurrentPeriodStart, result.CurrentPeriodEnd),
+            RankingFormatter.ToPeriodText(result.PreviousPeriodStart, result.PreviousPeriodEnd),
+            [.. result.Rows.Select(row => new SingleRowExport(
+                row.Ticker,
+                Math.Round(row.PreviousAverageDailyTradingValue),
+                Round(row.TradingValueChangeRate),
+                Round(row.PreviousTradingValueChangeRate),
+                RoundSignificant(row.MarketShareChange)))]);
     }
 
     private static MarketHeatExport? ToMarketHeatExport(MarketHeatMetrics? heat)
@@ -1066,7 +1134,25 @@ public sealed class StaticSiteExporter(
         string PreviousPeriod,
         string MarketDailyAverage,
         MarketHeatExport? MarketHeat,
-        IReadOnlyList<RowExport> Rows);
+        IReadOnlyList<RowExport> Rows,
+        IReadOnlyList<SingleComparisonExport>? SingleComparisons);
+
+    private sealed record SingleComparisonExport(
+        int PeriodDays,
+        bool HasSufficientData,
+        string? Message,
+        bool HasAccelerationData,
+        string? AccelerationMessage,
+        string CurrentPeriod,
+        string PreviousPeriod,
+        IReadOnlyList<SingleRowExport> Rows);
+
+    private sealed record SingleRowExport(
+        string Ticker,
+        decimal PreviousValue,
+        decimal? Rate,
+        decimal? PreviousRate,
+        decimal ShareChange);
 
     private sealed record MarketHeatExport(
         string TradingDate,
@@ -1273,6 +1359,8 @@ public sealed class StaticSiteExporter(
         decimal FundRawShare,
         decimal FundScore,
         decimal? BreadthScore,
+        decimal? WeightedPriceChangeRate,
+        decimal? BreadthAdjustedPriceReactionRate,
         decimal? NewsScore,
         decimal CompositeScore,
         decimal FundWeight,

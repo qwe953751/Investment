@@ -55,6 +55,21 @@ public sealed class TopicHeatCalculatorTests
         };
 
     [Fact]
+    public void 泡泡圖價格反應以成交值加權且族群廣度只修正百分之二十()
+    {
+        var row = Assert.Single(TopicHeatCalculator.Calculate(Mapping, Ranking).Rows);
+
+        // P = 0.7 × 3.5% + 0.3 × -1% = 2.15%。
+        Assert.Equal(0.0215m, row.WeightedPriceChangeRate);
+        Assert.Equal(57.26m, row.BreadthScore);
+
+        // Y = P × (0.80 + 0.20 × B)，B = 57.26 / 100。
+        Assert.Equal(0.80m, TopicHeatCalculator.PriceReactionBaseWeight);
+        Assert.Equal(0.20m, TopicHeatCalculator.BreadthAdjustmentWeight);
+        Assert.Equal(0.01966218m, row.BreadthAdjustedPriceReactionRate);
+    }
+
+    [Fact]
     public void 新聞熱度只填進欄位不會動到綜合熱度()
     {
         // 使用者拍板前新聞熱度只是參考欄。這一條是那個決定的守門員：

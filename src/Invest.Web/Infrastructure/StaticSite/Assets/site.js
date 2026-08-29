@@ -117,11 +117,16 @@ const INDEX_KLINE_PRICE_SCALE_AVERAGES = KLINE_PRICE_SCALE_AVERAGES;
 
 // 同一組期間按鈕在兩種檢視是兩件事：盤後是「本期多長」，盤中是「今天要跟過去多長的期間對照」。
 const PERIODS = [
-    { days: 1, text: '前一交易日', hint: '基準日當天，與前一個交易日比較', intradayHint: '跟最近 1 個交易日的市場成交比對照' },
-    { days: 5, text: '5 日', hint: '最近 5 個交易日 vs 再往前 5 個交易日', intradayHint: '跟最近 5 個交易日的市場成交比對照' },
-    { days: 10, text: '10 日', hint: '最近 10 個交易日 vs 再往前 10 個交易日', intradayHint: '跟最近 10 個交易日的市場成交比對照' },
-    { days: 20, text: '20 日', hint: '最近 20 個交易日 vs 再往前 20 個交易日', intradayHint: '跟最近 20 個交易日的市場成交比對照' },
-    { days: 60, text: '60 日', hint: '最近 60 個交易日 vs 再往前 60 個交易日', intradayHint: '跟最近 60 個交易日的市場成交比對照' }
+    { days: 1, text: '前一交易日', hint: '最近 1 個交易日 vs 再往前 1 個交易日', singleDayHint: '選定交易日 vs 前 1 個交易日平均', intradayHint: '跟最近 1 個交易日的市場成交比對照' },
+    { days: 5, text: '5 日', hint: '最近 5 個交易日 vs 再往前 5 個交易日', singleDayHint: '選定交易日 vs 前 5 個交易日平均', intradayHint: '跟最近 5 個交易日的市場成交比對照' },
+    { days: 10, text: '10 日', hint: '最近 10 個交易日 vs 再往前 10 個交易日', singleDayHint: '選定交易日 vs 前 10 個交易日平均', intradayHint: '跟最近 10 個交易日的市場成交比對照' },
+    { days: 20, text: '20 日', hint: '最近 20 個交易日 vs 再往前 20 個交易日', singleDayHint: '選定交易日 vs 前 20 個交易日平均', intradayHint: '跟最近 20 個交易日的市場成交比對照' },
+    { days: 60, text: '60 日', hint: '最近 60 個交易日 vs 再往前 60 個交易日', singleDayHint: '選定交易日 vs 前 60 個交易日平均', intradayHint: '跟最近 60 個交易日的市場成交比對照' }
+];
+
+const COMPARISON_MODES = [
+    { key: 'range', text: '區間', hint: '選定交易日作為區間最後一天，與前一段同長度區間比較。' },
+    { key: 'single', text: '單日', hint: '只看選定交易日，與它之前指定長度的區間平均比較。' }
 ];
 
 // 兩種檢視的預設期間不一樣。盤後回答的是「昨天發生了什麼」，所以預設前一交易日；
@@ -132,11 +137,13 @@ const MODES = [
     {
         key: 'heat', text: '成交熱度',
         hint: '依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。',
+        singleDayHint: '依選定交易日的成交值排序，並與前 N 日平均比較。',
         intradayHint: '依今日累計成交額排序，回答「今天到現在為止哪些標的吸收最多成交值」。'
     },
     {
         key: 'accel', text: '資金加速',
         hint: '依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。',
+        singleDayHint: '依選定日相較前 N 日平均的成交值增減率排序；另需再前 N 日平均作為前期基準。',
         intradayHint: '依成交比變化排序，回答「今天有哪些標的吸走的資金比過去那段期間更多」。'
     }
 ];
@@ -807,6 +814,25 @@ const COLUMNS = [
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) }
 ];
 
+const SINGLE_DAY_COLUMN_HINTS = {
+    value: '選定交易日的單日成交值。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。',
+    rate: '（選定日成交值 − 前期平均）÷ 前期平均。前期是選定日前指定長度的交易日平均；前期為 0 時無法計算，顯示 — 並排在最後。',
+    share: '選定交易日個股成交值 ÷ 該日全市場成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變。',
+    shareChange: '選定日市場成交比 − 選定日前指定長度交易日的平均市場成交比，單位是百分點。'
+};
+
+function rankingColumnTitle(column) {
+    return state.view === 'daily' && state.comparisonMode === 'single' && column.key === 'value'
+        ? '單日成交值（億）'
+        : column.title;
+}
+
+function rankingColumnHint(column) {
+    return state.view === 'daily' && state.comparisonMode === 'single'
+        ? SINGLE_DAY_COLUMN_HINTS[column.key] ?? column.hint
+        : column.hint;
+}
+
 // 盤中要跟過去期間比，卡在「今天還沒過完」：拿半天的量去比人家一整天的量一定小。
 // 解法是兩邊都改看比例——市場成交比的分子與分母取自同一輪，時段進度會自己約掉，
 // 所以 09:05 就能看，完全不依賴預估值。
@@ -941,7 +967,7 @@ let notesControlsWired = false;
 
 function defaultViewPreferences() {
     return {
-        daily: { period: DEFAULT_PERIOD.daily, sortKey: 'rank', sortDescending: false },
+        daily: { period: DEFAULT_PERIOD.daily, comparisonMode: 'range', sortKey: 'rank', sortDescending: false },
         intraday: { period: DEFAULT_PERIOD.intraday, sortKey: 'rank', sortDescending: false },
         custom: { sortKey: 'ticker', sortDescending: false }
     };
@@ -950,6 +976,7 @@ function defaultViewPreferences() {
 const state = {
     view: 'daily',
     period: DEFAULT_PERIOD.daily,
+    comparisonMode: 'range',
     date: '',      // 交易日，start() 從 manifest 取最新的一天。
     customSource: 'daily',
     mode: 'heat',
@@ -972,6 +999,8 @@ const state = {
     // 族群頁預設看最新一輪盤中資料，先聚焦市場當下正在交易的主流方向。
     topicTab: 'heat',
     topicPeriod: INTRADAY_TOPIC_PERIOD,
+    // 熱度排行保留原本列表；泡泡圖是另一種呈現，不改變資料或排行口徑。
+    topicHeatPresentation: 'list',
     topicSortKey: 'composite',
     topicSortDescending: true,
     topicScope: 'major',
@@ -1024,6 +1053,9 @@ function rememberViewPreferences(view = state.view) {
         preference.sortDescending = state.customSortDescending;
     } else {
         preference.period = state.period;
+        if (view === 'daily') {
+            preference.comparisonMode = state.comparisonMode;
+        }
         preference.sortKey = state.sortKey;
         preference.sortDescending = state.sortDescending;
     }
@@ -1047,6 +1079,12 @@ function restoreViewPreferences(view, changes) {
         changes.period = PERIODS.some(period => period.days === preference.period)
             ? preference.period
             : defaults.period;
+    }
+
+    if (view === 'daily' && changes.comparisonMode === undefined) {
+        changes.comparisonMode = COMPARISON_MODES.some(mode => mode.key === preference.comparisonMode)
+            ? preference.comparisonMode
+            : defaults.comparisonMode;
     }
 
     if (changes.sortKey === undefined) {
@@ -1080,6 +1118,10 @@ function restoreStoredViewPreferences(preferences) {
 
         if (view !== 'custom' && PERIODS.some(period => period.days === stored.period)) {
             preference.period = stored.period;
+        }
+
+        if (view === 'daily' && COMPARISON_MODES.some(mode => mode.key === stored.comparisonMode)) {
+            preference.comparisonMode = stored.comparisonMode;
         }
 
         preference.sortKey = isValidSortKey(view, stored.sortKey)
@@ -1269,11 +1311,21 @@ function renderFilters() {
     const intraday = state.view === 'intraday';
 
     renderOptions(
+        'comparison-mode-options',
+        COMPARISON_MODES,
+        state.comparisonMode,
+        comparisonMode => update({ comparisonMode }));
+
+    renderOptions(
         'period-options',
         PERIODS.map(period => ({
             key: period.days,
             text: period.text,
-            hint: intraday ? period.intradayHint : period.hint
+            hint: intraday
+                ? period.intradayHint
+                : state.comparisonMode === 'single'
+                    ? period.singleDayHint
+                    : period.hint
         })),
         state.period,
         days => update({ period: days }));
@@ -1282,7 +1334,14 @@ function renderFilters() {
 
     renderOptions(
         'mode-options',
-        MODES.map(mode => ({ ...mode, hint: intraday ? mode.intradayHint : mode.hint })),
+        MODES.map(mode => ({
+            ...mode,
+            hint: intraday
+                ? mode.intradayHint
+                : state.comparisonMode === 'single'
+                    ? mode.singleDayHint
+                    : mode.hint
+        })),
         state.mode,
         mode => update({ mode }));
 
@@ -1604,6 +1663,10 @@ function applyStoredSettings() {
         state.topicScope = stored.topicScope;
     }
 
+    if (TOPIC_HEAT_PRESENTATIONS.some(presentation => presentation.key === stored.topicHeatPresentation)) {
+        state.topicHeatPresentation = stored.topicHeatPresentation;
+    }
+
     // 門檻可以自己輸入任意金額，所以只驗「是不是合理的數字」，不驗在不在按鈕清單裡。
     if (Number.isFinite(stored.threshold) && stored.threshold >= 0) {
         state.threshold = stored.threshold;
@@ -1801,6 +1864,102 @@ function normalizeNoteAttachments(value) {
         }));
 }
 
+function readNoteImageSource(file) {
+    if (typeof createImageBitmap === 'function') {
+        return createImageBitmap(file).then(source => ({
+            source,
+            release: () => source.close()
+        }));
+    }
+
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const image = new Image();
+        image.onload = () => {
+            URL.revokeObjectURL(url);
+            resolve({ source: image, release: () => {} });
+        };
+        image.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error('圖片無法讀取'));
+        };
+        image.src = url;
+    });
+}
+
+function canvasToNoteImageBlob(canvas, type, quality) {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob(blob => {
+            if (blob === null) {
+                reject(new Error('瀏覽器無法壓縮圖片'));
+                return;
+            }
+
+            resolve(blob);
+        }, type, quality);
+    });
+}
+
+async function compressNoteImage(file) {
+    if (file.size <= NOTE_IMAGE_MAX_BYTES) {
+        return file;
+    }
+
+    const { source, release } = await readNoteImageSource(file);
+    const width = Number(source.width);
+    const height = Number(source.height);
+
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        release();
+        throw new Error('圖片尺寸無法辨識');
+    }
+
+    // JPEG 沒有透明度；其他格式優先轉 WebP，保留 PNG／GIF 常見的透明背景。
+    const outputType = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/webp';
+    const canvas = document.createElement('canvas');
+    let scale = Math.min(1, Math.sqrt(NOTE_IMAGE_MAX_BYTES / file.size) * 0.9);
+    let quality = 0.82;
+    let lastSize = Number.POSITIVE_INFINITY;
+
+    try {
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+            canvas.width = Math.max(1, Math.round(width * scale));
+            canvas.height = Math.max(1, Math.round(height * scale));
+            const context = canvas.getContext('2d');
+
+            if (context === null) {
+                throw new Error('瀏覽器無法準備圖片壓縮畫布');
+            }
+
+            if (outputType === 'image/jpeg') {
+                context.fillStyle = '#ffffff';
+                context.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            context.drawImage(source, 0, 0, canvas.width, canvas.height);
+            const blob = await canvasToNoteImageBlob(canvas, outputType, quality);
+
+            if (blob.size <= NOTE_IMAGE_MAX_BYTES) {
+                const extension = NOTE_IMAGE_EXTENSIONS[blob.type] ?? 'webp';
+                const baseName = file.name.replace(/\.[^.]+$/, '') || '圖片';
+                return new File(
+                    [blob],
+                    `${baseName}.${extension}`,
+                    { type: blob.type, lastModified: file.lastModified });
+            }
+
+            // 某些瀏覽器會忽略品質參數；若檔案沒有變小，就直接縮尺寸，避免無限重試。
+            scale *= blob.size >= lastSize ? 0.68 : 0.82;
+            quality = Math.max(0.35, quality - 0.07);
+            lastSize = blob.size;
+        }
+    } finally {
+        release();
+    }
+
+    throw new Error('圖片壓縮後仍超過 5 MB');
+}
+
 function encodeStoragePath(path) {
     return path.split('/').map(encodeURIComponent).join('/');
 }
@@ -1814,6 +1973,10 @@ function noteImagePublicUrl(path) {
 }
 
 async function uploadNoteImage(noteId, image) {
+    if (image.file.size > NOTE_IMAGE_MAX_BYTES) {
+        throw new Error('圖片壓縮後仍超過 5 MB');
+    }
+
     const extension = NOTE_IMAGE_EXTENSIONS[image.file.type];
     const path = `notes/${noteId}/${crypto.randomUUID()}.${extension}`;
     const response = await fetch(
@@ -2282,11 +2445,15 @@ function wireNotes() {
         el(id).addEventListener('change', rememberDraft);
     }
 
-    el('notes-images').addEventListener('change', event => {
+    el('notes-images').addEventListener('change', async event => {
         const draft = ensureNotesDraft();
         const selected = Array.from(event.target.files ?? []);
         const rejected = [];
+        const compressed = [];
         let accepted = 0;
+
+        notesImagesStatus = selected.length > 0 ? '圖片處理中…' : '';
+        renderNoteEditor();
 
         for (const file of selected) {
             if (draft.attachments.length + draft.newImages.length >= NOTE_IMAGE_MAX_COUNT) {
@@ -2299,22 +2466,29 @@ function wireNotes() {
                 continue;
             }
 
-            if (file.size > NOTE_IMAGE_MAX_BYTES) {
-                rejected.push(`${file.name}：超過 5 MB`);
+            let prepared;
+
+            try {
+                prepared = await compressNoteImage(file);
+            } catch (error) {
+                rejected.push(`${file.name}：${error instanceof Error ? error.message : '壓縮失敗'}`);
                 continue;
             }
 
             draft.newImages.push({
-                file,
-                name: file.name,
-                previewUrl: URL.createObjectURL(file)
+                file: prepared,
+                name: prepared.name,
+                previewUrl: URL.createObjectURL(prepared)
             });
+            if (prepared !== file) {
+                compressed.push(`${file.name} 已自動壓縮`);
+            }
             accepted += 1;
         }
 
         event.target.value = '';
         notesImagesStatus = accepted > 0
-            ? `已加入 ${accepted} 張圖片。${rejected.length > 0 ? ` 略過：${rejected.join('、')}` : ''}`
+            ? `已加入 ${accepted} 張圖片。${compressed.length > 0 ? ` ${compressed.join('、')}。` : ''}${rejected.length > 0 ? ` 略過：${rejected.join('、')}` : ''}`
             : rejected.length > 0
                 ? `沒有加入圖片：${rejected.join('、')}`
                 : '';
@@ -7166,7 +7340,7 @@ function renderTable() {
 
     for (const column of columns()) {
         const cell = document.createElement('th');
-        cell.dataset.hint = tableHeaderHint(column.key, column.hint);
+        cell.dataset.hint = tableHeaderHint(column.key, rankingColumnHint(column));
 
         // 表頭掛上自己的欄位名，對齊與釘選才有辦法用 class 指定。
         // 盤後與盤中的欄位不完全一樣，用 nth-child 指定的話兩邊會各指到不同欄位。
@@ -7190,7 +7364,7 @@ function renderTable() {
         }
 
         cell.className = (state.sortKey === column.key ? 'sortable sorted' : 'sortable') + key;
-        cell.textContent = column.title
+        cell.textContent = rankingColumnTitle(column)
             + (state.sortKey === column.key ? (state.sortDescending ? ' ▼' : ' ▲') : '');
 
         cell.addEventListener('click', () => {
@@ -7394,12 +7568,19 @@ function renderSummary() {
             ['對照期間', current.referencePeriod],
             ['符合條件', `${current.rankedStockCount} 檔，顯示前 ${current.rows.length} 名`]
         ]
-        : [
-            ['本期', current.currentPeriod],
-            ['前期', current.previousPeriod],
-            ['全市場日均成交值', current.marketDailyAverage + ' 億元'],
-            ['符合條件', `${current.rankedStockCount} 檔，顯示前 ${current.rows.length} 名`]
-        ];
+        : state.comparisonMode === 'single'
+            ? [
+                ['選定日', current.currentPeriod],
+                ['前期平均', current.previousPeriod],
+                ['全市場日均成交值', current.marketDailyAverage + ' 億元'],
+                ['符合條件', `${current.rankedStockCount} 檔，顯示前 ${current.rows.length} 名`]
+            ]
+            : [
+                ['本期', current.currentPeriod],
+                ['前期', current.previousPeriod],
+                ['全市場日均成交值', current.marketDailyAverage + ' 億元'],
+                ['符合條件', `${current.rankedStockCount} 檔，顯示前 ${current.rows.length} 名`]
+            ];
 
     const index = state.view === 'intraday'
         ? current.marketIndices
@@ -8477,6 +8658,35 @@ async function fetchPeriod(key) {
     }
 
     return cache.get(key);
+}
+
+// 單日比較共用 1 日排行檔裡的精簡比較資料：當天的成交值、成交比與價格欄位
+// 直接沿用該檔案，前期均值、增減率與成交比變化則由 C# 匯出後帶進來。瀏覽器
+// 只做資料組合，不重新實作排行公式。
+function applySingleDayComparison(data) {
+    const comparison = (data.singleComparisons ?? [])
+        .find(item => item.periodDays === state.period);
+
+    if (!comparison) {
+        return null;
+    }
+
+    const comparisonByTicker = new Map(
+        comparison.rows.map(row => [row.ticker, row]));
+
+    return {
+        ...data,
+        hasSufficientData: comparison.hasSufficientData,
+        message: comparison.message,
+        hasAccelerationData: comparison.hasAccelerationData,
+        accelerationMessage: comparison.accelerationMessage,
+        currentPeriod: comparison.currentPeriod,
+        previousPeriod: comparison.previousPeriod,
+        rows: data.rows.map(row => ({
+            ...row,
+            ...(comparisonByTicker.get(row.ticker) ?? {})
+        }))
+    };
 }
 
 async function buildLocalCustomIntradayPreview() {
@@ -10359,11 +10569,27 @@ function renderTopicEditorPrototypeV3(panel) {
 
 // ── 分頁一：族群熱度排行榜 ──────────────────────────────────
 
+const TOPIC_HEAT_PRESENTATIONS = [
+    {
+        key: 'list',
+        text: '列表',
+        hint: '保留目前的完整族群熱度列表，可排序並展開個股成員。'
+    },
+    {
+        key: 'bubble',
+        text: '泡泡圖',
+        hint: '用資金熱度、價格反應與族群廣度快速看目前最熱的族群；點擊泡泡可展開成員。'
+    }
+];
+
+// 泡泡圖是摘要視圖；完整資料仍在「列表」裡，避免大量族群重疊到無法閱讀。
+const TOPIC_HEAT_BUBBLE_COUNT = 20;
+
 // 每一欄的算法停在標題上就看得到，跟排行榜同一個作法。
 const TOPIC_HEAT_COLUMNS = [
     // 這一欄的名字與說明看有沒有新聞而定，統一由 topicCompositeColumn 決定，所以這裡不寫死。
     { key: 'composite', value: row => row.compositeScore, cell: row => ({ text: topicScoreText(row.compositeScore), cls: 'numeric topic-composite' }) },
-    { key: 'fund', title: '資金熱度', hint: '族群成員的市場成交比加總，除以這一輪最熱的族群再拉到 0～100。同一檔股票掛在幾個族群，每個族群就都完整計一次：這裡看的是資金流向，不是把一檔股票切成幾份。', value: row => row.fundScore, cell: row => ({ text: topicScoreText(row.fundScore), cls: 'numeric' }) },
+    { key: 'fund', title: '資金熱度', hint: '族群成員的市場成交比加總，除以這一輪最熱的族群再拉到 0～100。同一檔股票掛在幾個族群，每個族群就都完整計一次：這裡看的是成交活動熱度，不是帶方向的淨金流。', value: row => row.fundScore, cell: row => ({ text: topicScoreText(row.fundScore), cls: 'numeric' }) },
     { key: 'breadth', title: '族群廣度', hint: '回答「是整個族群在動，還是只有一檔在動」。排行參與率 50%、上漲家數比 30%、資金分散度 20%，再依實際有量的檔數打折。這條公式還沒拍板，是文件裡的候選版本。', value: row => row.breadthScore, cell: row => ({ text: topicScoreText(row.breadthScore), cls: 'numeric' }) },
     { key: 'news', title: '新聞熱度（參考）', hint: '由公開資訊觀測站的重大訊息算出來：材料性 × 新鮮度 × 時間衰減加總，再做指數飽和。同一家公司連發同一類公告會遞減，法說會五天半衰、擴產案九十天。顯示 — 是這個族群近期沒有掛得上的重大訊息。\n這一欄還沒計入綜合熱度，而且已知會偏袒大節點：成員多的族群本來就一定有人在發公告，253 檔的傳產拿到 99 分但資金熱度只有 38。要修得先有「這個節點平常發幾則」的基準線，那需要更長的歷史。', value: row => row.newsScore, cell: row => ({ text: topicScoreText(row.newsScore), cls: 'numeric topic-reference' }) },
     { key: 'share', title: '成交比合計', hint: '族群成員的市場成交比直接加總，也就是資金熱度標準化之前的原始數字。全市場合計會超過 100%，因為一檔股票會出現在好幾個族群裡。', value: row => row.fundRawShare, cell: row => ({ text: toPercentText(row.fundRawShare), cls: 'numeric' }) },
@@ -10398,9 +10624,10 @@ function topicCompositeColumn(period) {
 function renderTopicHeat(panel) {
     const period = topicPeriod();
 
-    panel.append(makeTopicPeriodPanel(true));
+    panel.append(makeTopicPeriodPanel(true, true));
     renderTopicPeriodOptions();
     renderTopicScopeOptions();
+    renderTopicHeatPresentationOptions();
 
     if (isIntradayTopicDataView() && intradayTopicLoadError !== '') {
         panel.append(makeTopicNotice(intradayTopicLoadError, true));
@@ -10453,6 +10680,19 @@ function renderTopicHeat(panel) {
 
         return state.topicSortDescending ? b - a : a - b;
     });
+
+    if (state.topicHeatPresentation === 'bubble') {
+        panel.append(makeTopicHeatBubble(rows, period));
+
+        const expandedRow = rows.find(row => row.topicId === topicHeatExpandedId);
+
+        if (expandedRow) {
+            panel.append(makeTopicMemberBlock(expandedRow));
+        }
+
+        panel.append(makeTopicHeatFooter(period));
+        return;
+    }
 
     const container = document.createElement('div');
     container.className = 'table-container';
@@ -10562,6 +10802,250 @@ function renderTopicHeat(panel) {
     panel.append(container, makeTopicHeatFooter(period));
 }
 
+function topicBubbleScore(value) {
+    if (missing(value)) {
+        return null;
+    }
+
+    const score = Number(value);
+
+    return Number.isFinite(score) ? Math.min(Math.max(score, 0), 100) : null;
+}
+
+function topicBubbleRate(value) {
+    if (missing(value)) {
+        return null;
+    }
+
+    const rate = Number(value);
+
+    return Number.isFinite(rate) ? rate : null;
+}
+
+function topicBubbleRateText(value) {
+    return toSignedPercentText(topicBubbleRate(value), 1);
+}
+
+function topicBubbleBreadthClass(row) {
+    const breadth = topicBubbleScore(row.breadthScore);
+
+    if (breadth === null) {
+        return 'neutral';
+    }
+
+    return breadth >= 60 ? 'broad' : breadth <= 40 ? 'narrow' : 'neutral';
+}
+
+function topicBubbleLabel(row) {
+    const name = topicName(row.topicId) || row.topicId;
+
+    return name.length > 8 ? `${name.slice(0, 7)}…` : name;
+}
+
+function topicBubbleHint(row) {
+    const name = topicName(row.topicId) || row.topicId;
+    return `${name}；廣度調整價格反應 ${topicBubbleRateText(row.breadthAdjustedPriceReactionRate)}，`
+        + `成交值加權漲跌 ${topicBubbleRateText(row.weightedPriceChangeRate)}，`
+        + `族群廣度 ${topicScoreText(row.breadthScore)}，`
+        + `資金熱度 ${topicScoreText(row.fundScore)}。點擊查看成員。`;
+}
+
+function makeTopicHeatBubble(rows, period) {
+    const section = document.createElement('section');
+    section.className = 'topic-heat-bubble-card';
+
+    const heading = document.createElement('div');
+    heading.className = 'topic-heat-bubble-heading';
+
+    const title = document.createElement('h3');
+    title.textContent = '熱門族群泡泡圖';
+
+    const subtitle = document.createElement('p');
+    subtitle.textContent = `目前範圍：${period.period ?? '—'}。點擊泡泡可在圖下方展開成員。`;
+    heading.append(title, subtitle);
+
+    const legend = document.createElement('div');
+    legend.className = 'topic-heat-bubble-legend';
+
+    for (const item of [
+        ['broad', '族群廣度 ≥ 60 分'],
+        ['narrow', '族群廣度 ≤ 40 分'],
+        ['neutral', '中性／資料不足']
+    ]) {
+        const legendItem = document.createElement('span');
+        legendItem.className = 'topic-heat-bubble-legend-item';
+        const swatch = document.createElement('span');
+        swatch.className = `topic-heat-bubble-swatch topic-heat-bubble-${item[0]}`;
+        swatch.setAttribute('aria-hidden', 'true');
+        legendItem.append(swatch, item[1]);
+        legend.append(legendItem);
+    }
+
+    const note = document.createElement('p');
+    note.className = 'topic-heat-bubble-note';
+    note.textContent = '橫軸資金熱度；縱軸為廣度調整後價格反應（價格反應 80%、族群廣度最多修正 20%）。泡泡越大代表族群目前成交值越高。';
+
+    const chartRows = [...rows]
+        .filter(row => topicBubbleScore(row.fundScore) !== null
+            && topicBubbleRate(row.breadthAdjustedPriceReactionRate) !== null)
+        .sort((left, right) => (topicBubbleScore(right.compositeScore) ?? -1) - (topicBubbleScore(left.compositeScore) ?? -1)
+            || topicName(left.topicId).localeCompare(topicName(right.topicId), 'zh-Hant'));
+    const visibleRows = chartRows.slice(0, TOPIC_HEAT_BUBBLE_COUNT);
+
+    if (visibleRows.length === 0) {
+        section.append(heading, note, makeTopicNotice(
+            '目前資料尚未包含廣度調整後價格反應，請先更新網站快照或切回列表查看。', false));
+        return section;
+    }
+
+    const compact = window.matchMedia('(max-width: 720px)').matches;
+    const width = compact ? 390 : 720;
+    const height = 430;
+    const left = compact ? 54 : 70;
+    const right = compact ? 336 : 672;
+    const top = 52;
+    const bottom = 334;
+    const plotWidth = right - left;
+    const plotHeight = bottom - top;
+    const reactionMax = Math.max(...visibleRows.map(row =>
+        Math.abs(topicBubbleRate(row.breadthAdjustedPriceReactionRate))), 0);
+    const yLimit = Math.max(0.02, Math.ceil(reactionMax * 100 / 2) * 0.02);
+    const zeroY = top + plotHeight / 2;
+    const halfPlotHeight = plotHeight / 2;
+    const x = value => left + topicBubbleScore(value) / 100 * plotWidth;
+    const y = value => zeroY - topicBubbleRate(value) / yLimit * halfPlotHeight;
+    const svg = svgElement('svg', {
+        class: 'topic-heat-bubble-svg',
+        viewBox: `0 0 ${width} ${height}`,
+        role: 'img',
+        'aria-label': '熱門族群泡泡圖：橫軸資金熱度、縱軸廣度調整後價格反應、泡泡大小為目前成交值'
+    });
+
+    for (const ratio of [1, 0.5, 0, -0.5, -1]) {
+        const yPosition = zeroY - ratio * halfPlotHeight;
+        svg.append(
+            svgElement('line', {
+                class: 'topic-heat-bubble-grid',
+                x1: left,
+                x2: right,
+                y1: yPosition,
+                y2: yPosition
+            }),
+            svgElement('text', {
+                class: 'topic-heat-bubble-axis',
+                x: left - 8,
+                y: yPosition + 4,
+                'text-anchor': 'end'
+            }, topicBubbleRateText(ratio * yLimit)));
+    }
+
+    for (const ratio of [0, 0.5, 1]) {
+        const xPosition = left + ratio * plotWidth;
+        svg.append(
+            svgElement('line', {
+                class: 'topic-heat-bubble-grid',
+                x1: xPosition,
+                x2: xPosition,
+                y1: top,
+                y2: bottom
+            }),
+            svgElement('text', {
+                class: 'topic-heat-bubble-axis',
+                x: xPosition,
+                y: bottom + 18,
+                'text-anchor': 'middle'
+            }, String(Math.round(ratio * 100))));
+    }
+
+    svg.append(
+        svgElement('text', {
+            class: 'topic-heat-bubble-axis-title',
+            x: (left + right) / 2,
+            y: height - 18,
+            'text-anchor': 'middle'
+        }, compact ? '資金熱度　低 → 高' : '資金熱度　低 ←　　　　　　　　　→ 高'),
+        svgElement('text', {
+            class: 'topic-heat-bubble-axis-title',
+            x: 16,
+            y: zeroY,
+            transform: `rotate(-90 16 ${zeroY})`,
+            'text-anchor': 'middle'
+        }, compact ? '價格反應　負 ← 正' : '價格反應（廣度調整）　負 ←　　　　　　　　　→ 正'));
+
+    const maxFundRaw = Math.max(...visibleRows.map(row => Math.max(0, Number(row.fundRawShare) || 0)), 0);
+    for (const row of visibleRows) {
+        const fundRaw = Math.max(0, Number(row.fundRawShare) || 0);
+        const radius = 13 + Math.sqrt(maxFundRaw > 0 ? fundRaw / maxFundRaw : 0) * 27;
+        const centerX = x(row.fundScore);
+        const centerY = y(row.breadthAdjustedPriceReactionRate);
+        const hint = topicBubbleHint(row);
+        const bubble = svgElement('g', {
+            class: `topic-heat-bubble topic-heat-bubble-${topicBubbleBreadthClass(row)}`,
+            role: 'button',
+            tabindex: 0,
+            'aria-label': hint,
+            'data-topic-id': row.topicId
+        });
+
+        bubble.append(
+            svgElement('title', {}, hint),
+            svgElement('circle', {
+                class: 'topic-heat-bubble-circle',
+                cx: centerX,
+                cy: centerY,
+                r: radius
+            }),
+            svgElement('text', {
+                class: 'topic-heat-bubble-label',
+                x: centerX,
+                y: centerY - 2,
+                'text-anchor': 'middle'
+            }, topicBubbleLabel(row)),
+            svgElement('text', {
+                class: 'topic-heat-bubble-score',
+                x: centerX,
+                y: centerY + 14,
+                'text-anchor': 'middle'
+            }, topicBubbleRateText(row.breadthAdjustedPriceReactionRate)));
+
+        const activate = () => toggleTopicHeatMembers(row.topicId);
+        bubble.addEventListener('click', activate);
+        bubble.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                activate();
+            }
+        });
+        svg.append(bubble);
+    }
+
+    const countNote = document.createElement('p');
+    countNote.className = 'topic-heat-bubble-count';
+    const omitted = chartRows.length - visibleRows.length;
+    const unavailable = rows.length - chartRows.length;
+    countNote.textContent = omitted > 0
+        ? `顯示市場熱度前 ${visibleRows.length} 個族群；其餘 ${omitted} 個仍保留在列表。`
+        : `共顯示 ${visibleRows.length} 個族群。`;
+
+    if (unavailable > 0) {
+        countNote.textContent += `另有 ${unavailable} 個族群資料不足，未繪製。`;
+    }
+
+    const chart = document.createElement('div');
+    chart.className = 'topic-heat-bubble-chart';
+    chart.append(svg);
+    section.append(heading, legend, note, chart, countNote);
+    return section;
+}
+
+function toggleTopicHeatMembers(topicId) {
+    closeKLine(false);
+    closeRevenueDetails(false);
+    topicMemberFilter = 'all';
+    topicHeatExpandedId = topicHeatExpandedId === topicId ? null : topicId;
+    renderTopicPanel();
+}
+
 function makeTopicRowButton(row, topic) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -10593,11 +11077,7 @@ function makeTopicRowButton(row, topic) {
     }
 
     button.addEventListener('click', () => {
-        closeKLine(false);
-        closeRevenueDetails(false);
-        topicMemberFilter = 'all';
-        topicHeatExpandedId = topicHeatExpandedId === row.topicId ? null : row.topicId;
-        renderTopicPanel();
+        toggleTopicHeatMembers(row.topicId);
     });
 
     return button;
@@ -10851,7 +11331,7 @@ function makeTopicMemberTable(members, onSortChanged = null) {
     return scroll;
 }
 
-function makeTopicPeriodPanel(includeScope = false) {
+function makeTopicPeriodPanel(includeScope = false, includeHeatPresentation = false) {
     const wrapper = document.createElement('section');
     wrapper.className = 'filter-panel';
 
@@ -10889,6 +11369,23 @@ function makeTopicPeriodPanel(includeScope = false) {
         wrapper.append(scopeGroup);
     }
 
+    if (includeHeatPresentation) {
+        const presentationGroup = document.createElement('div');
+        presentationGroup.className = 'filter-group';
+
+        const presentationLabel = document.createElement('span');
+        presentationLabel.className = 'filter-label';
+        presentationLabel.textContent = '顯示方式';
+        presentationLabel.dataset.hint = '只切換熱門族群的呈現方式，不改變資料、排行範圍或熱度公式。';
+
+        const presentationRow = document.createElement('div');
+        presentationRow.className = 'button-row';
+        presentationRow.id = 'topic-heat-presentation-options';
+
+        presentationGroup.append(presentationLabel, presentationRow);
+        wrapper.append(presentationGroup);
+    }
+
     return wrapper;
 }
 
@@ -10900,6 +11397,19 @@ function renderTopicScopeOptions() {
         topicScope => {
             closeKLine(false);
             update({ topicScope });
+        });
+}
+
+function renderTopicHeatPresentationOptions() {
+    renderOptions(
+        'topic-heat-presentation-options',
+        TOPIC_HEAT_PRESENTATIONS,
+        state.topicHeatPresentation,
+        presentation => {
+            closeKLine(false);
+            closeRevenueDetails(false);
+            topicHeatExpandedId = null;
+            update({ topicHeatPresentation: presentation });
         });
 }
 
@@ -12910,21 +13420,32 @@ async function load() {
         return;
     }
 
-    const key = `${state.period}-${state.date}`;
+    const key = state.view === 'daily' && state.comparisonMode === 'single'
+        ? `1-${state.date}`
+        : `${state.period}-${state.date}`;
 
     if (!cache.has(key)) {
         showNotice('行情載入中…', false);
     }
 
-    const data = await fetchPeriod(key);
+    const loaded = await fetchPeriod(key);
 
-    if (!data) {
+    if (!loaded) {
         // 抓不到資料，通常是因為手上這份頁面是舊的：新版改了檔名的組成方式。
         if (await reloadIfStale()) {
             return;
         }
 
         showNotice(`讀不到 ${key} 這個組合的資料，請在本機重新產生一次靜態網站。`, true);
+        return;
+    }
+
+    const data = state.view === 'daily' && state.comparisonMode === 'single'
+        ? applySingleDayComparison(loaded)
+        : loaded;
+
+    if (!data) {
+        showNotice('這份網站資料尚未包含單日比較，請重新產生一次靜態網站。', true);
         return;
     }
 

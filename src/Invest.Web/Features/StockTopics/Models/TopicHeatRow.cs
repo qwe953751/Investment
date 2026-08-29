@@ -28,6 +28,17 @@ public sealed class TopicHeatRow
     public decimal? BreadthScore { get; init; }
 
     /// <summary>
+    /// 族群成交值加權漲跌幅。用本期各成員成交值作權重，回答「這個族群的交易活動最後造成什麼價格反應」。
+    /// </summary>
+    public decimal? WeightedPriceChangeRate { get; init; }
+
+    /// <summary>
+    /// 廣度調整後的族群價格反應：原始加權漲跌幅保留 80% 主導，族群廣度最多提供 20% 的可信度修正。
+    /// 這是價格反應代理指標，不是法人或主動買賣的淨金流。
+    /// </summary>
+    public decimal? BreadthAdjustedPriceReactionRate { get; init; }
+
+    /// <summary>
     /// 新聞熱度 0～100。目前一律是 null：還沒有任何新聞來源接上來。
     /// 這裡刻意不填 0——0 的意思是「查過了，沒有新聞」，null 的意思是「根本還沒查」，
     /// 兩者在綜合熱度裡的處理方式完全不同。

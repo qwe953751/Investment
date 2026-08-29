@@ -170,14 +170,39 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 行動版固定名稱欄不應覆蓋個股漲跌底色()
+    public void 行動版名稱欄橫向捲動時固定且保留個股漲跌底色()
     {
         var styles = ReadAsset("site.css");
 
-        Assert.Contains(
+        Assert.Contains(".ranking-table td.stock-name {", styles, StringComparison.Ordinal);
+        Assert.Contains("min-width: 160px;", styles, StringComparison.Ordinal);
+        Assert.Contains("z-index: 2;", styles, StringComparison.Ordinal);
+        Assert.DoesNotContain(
             ".ranking-table td.stock-name:not(.stock-name-change-up):not(.stock-name-change-down)",
             styles,
             StringComparison.Ordinal);
+        Assert.Contains("td.stock-name.stock-name-change-up", styles, StringComparison.Ordinal);
+        Assert.Contains("td.stock-name.stock-name-change-down", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 盤後可切換單日與區間比較並使用單日對此前區間平均()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var exporter = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "Invest.Web",
+            "Infrastructure",
+            "StaticSite",
+            "StaticSiteExporter.cs"));
+
+        Assert.Contains("id=\"comparison-mode-options\"", html, StringComparison.Ordinal);
+        Assert.Contains("const COMPARISON_MODES", script, StringComparison.Ordinal);
+        Assert.Contains("comparisonMode: 'range'", script, StringComparison.Ordinal);
+        Assert.Contains("singleComparisons", script, StringComparison.Ordinal);
+        Assert.Contains("ComparisonMode.SingleDay", exporter, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -530,7 +555,8 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("function usesIntradaySnapshot()", script, StringComparison.Ordinal);
         Assert.Contains("return isIntradayDataView() || isIntradayTopicDataView();", script, StringComparison.Ordinal);
         Assert.Contains("function isIntradayTopicDataView()", script, StringComparison.Ordinal);
-        Assert.Contains("if (isIntradayTopicDataView()) {\n        await loadIntradayTopicHeat();", script, StringComparison.Ordinal);
+        Assert.Contains("if (isIntradayTopicDataView()) {", script, StringComparison.Ordinal);
+        Assert.Contains("await loadIntradayTopicHeat();", script, StringComparison.Ordinal);
         Assert.Contains("if (!await ensureIntradaySnapshot(true))", topicKLine, StringComparison.Ordinal);
         Assert.DoesNotContain("fetchAllRows(", topicKLine, StringComparison.Ordinal);
 
@@ -689,6 +715,24 @@ public sealed class StaticKLineAssetTests
     Assert.Contains("storage.object.delete'])", migration, StringComparison.Ordinal);
 }
 
+    [Fact]
+    public void 筆記超過上限時會先在瀏覽器壓縮而不是直接拒絕()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("超過 5 MB 會自動壓縮", html, StringComparison.Ordinal);
+        Assert.Contains("async function compressNoteImage(file)", script, StringComparison.Ordinal);
+        Assert.Contains("await compressNoteImage(file)", script, StringComparison.Ordinal);
+        Assert.Contains("createImageBitmap", script, StringComparison.Ordinal);
+        Assert.Contains("blob.size <= NOTE_IMAGE_MAX_BYTES", script, StringComparison.Ordinal);
+
+        var handlerStart = script.IndexOf("el('notes-images').addEventListener('change'", StringComparison.Ordinal);
+        var handlerEnd = script.IndexOf("el('notes-form').addEventListener('submit'", handlerStart, StringComparison.Ordinal);
+        Assert.True(handlerStart >= 0 && handlerEnd > handlerStart, "找不到筆記圖片選取處理函式。");
+        Assert.DoesNotContain("if (file.size > NOTE_IMAGE_MAX_BYTES)", script[handlerStart..handlerEnd], StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// 日 K 的三個月起算日，兩邊要算出同一天。JS 的 setMonth 遇到 5/31 會溢位成 3/3，
     /// C# 的 AddMonths(-3) 是夾成 2/28——差三天，「資料不足」的提示就會亂。
@@ -763,6 +807,33 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 熱門族群可在完整列表與泡泡圖間切換且預設列表()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("topicHeatPresentation: 'list'", script, StringComparison.Ordinal);
+        Assert.Contains("const TOPIC_HEAT_PRESENTATIONS", script, StringComparison.Ordinal);
+        Assert.Contains("text: '列表'", script, StringComparison.Ordinal);
+        Assert.Contains("text: '泡泡圖'", script, StringComparison.Ordinal);
+        Assert.Contains("stored.topicHeatPresentation", script, StringComparison.Ordinal);
+        Assert.Contains("makeTopicPeriodPanel(true, true)", script, StringComparison.Ordinal);
+        Assert.Contains("renderTopicHeatPresentationOptions()", script, StringComparison.Ordinal);
+        Assert.Contains("function makeTopicHeatBubble(rows, period)", script, StringComparison.Ordinal);
+        Assert.Contains("topic-heat-bubble-svg", script, StringComparison.Ordinal);
+        Assert.Contains("weightedPriceChangeRate", script, StringComparison.Ordinal);
+        Assert.Contains("breadthAdjustedPriceReactionRate", script, StringComparison.Ordinal);
+        Assert.Contains("價格反應 80%、族群廣度最多修正 20%", script, StringComparison.Ordinal);
+        Assert.Contains("function topicBubbleBreadthClass", script, StringComparison.Ordinal);
+        Assert.Contains("data-topic-id", script, StringComparison.Ordinal);
+        Assert.Contains("toggleTopicHeatMembers(row.topicId)", script, StringComparison.Ordinal);
+        Assert.Contains(".topic-heat-bubble-card", styles, StringComparison.Ordinal);
+        Assert.Contains(".topic-heat-bubble-chart", styles, StringComparison.Ordinal);
+        Assert.Contains(".topic-heat-bubble-broad", styles, StringComparison.Ordinal);
+        Assert.Contains(".topic-heat-bubble-narrow", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 檢視權限只顯示簡短表頭泡泡且族群排行名次變化緊跟名次()
     {
         var hint = ReadAsset("hint.js");
@@ -773,7 +844,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const header = event.target.closest('th')", hint, StringComparison.Ordinal);
         Assert.Contains("return header?.matches(SELECTOR) ? header : null", hint, StringComparison.Ordinal);
         Assert.Contains("function tableHeaderHint(key, fallback)", script, StringComparison.Ordinal);
-        Assert.Contains("cell.dataset.hint = tableHeaderHint(column.key, column.hint)", script, StringComparison.Ordinal);
+        Assert.Contains("cell.dataset.hint = tableHeaderHint(column.key, rankingColumnHint(column))", script, StringComparison.Ordinal);
 
         var topicStart = script.IndexOf("function renderTopicHeat", StringComparison.Ordinal);
         var topicEnd = script.IndexOf("function makeTopicRowButton", topicStart, StringComparison.Ordinal);

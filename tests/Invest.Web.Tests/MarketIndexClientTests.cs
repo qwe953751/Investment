@@ -125,7 +125,7 @@ public sealed class MarketIndexClientTests
             new HttpClient(new CannedResponseHandler("""
                 {"tables":[{
                     "title":"上櫃股票行情",
-                    "data":[["6488","環球晶","950.00","+10.00","10.00","940.00","960.00","930.00","1,000","950,000","100"]]
+                    "data":[["6488","環球晶","950.00","+10.00","940.00","960.00","930.00","945.00","1,000","950,000","100"]]
                 }]}
                 """)),
             NullLogger<TpexDailyQuoteClient>.Instance);
