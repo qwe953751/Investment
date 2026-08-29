@@ -4224,11 +4224,24 @@ function assetOcrHeaderOrderFromText(lines) {
 
         // 至少三欄才算真正的欄位列；只出現「損益」或「成本」的說明文字不能拿來配數字。
         if (found.size >= 3) {
+            const fields = [...found]
+                .sort((left, right) => left[1] - right[1])
+                .map(([field]) => field);
+
+            // 舊版台股頁的「股數」四個字常被辨成亂碼，但「股名／成交均價／投資成本／現價」
+            // 四個相對位置很穩定；這是辨識到明確券商欄位組合後補回遺失的標題，不是照數字
+            // 長相猜欄位。少了這個欄，第一個整數會錯塞成成本均價。
+            if (text.includes('股名')
+                && found.has('costPrice')
+                && found.has('cost')
+                && found.has('marketPrice')
+                && !found.has('quantity')) {
+                fields.splice(fields.indexOf('costPrice'), 0, 'quantity');
+            }
+
             return {
                 index,
-                fields: [...found]
-                    .sort((left, right) => left[1] - right[1])
-                    .map(([field]) => field),
+                fields,
                 allowEnglishTickers: /(?:SYMBOL|TICKER|CODE)/.test(text)
             };
         }
@@ -4297,16 +4310,21 @@ function assetOcrTextLineDraft(text, fields) {
     const values = assetOcrNumbersInText(text);
     const prices = { costPrice: null, marketPrice: null };
     const ticker = assetKnownTickerInText(text);
+    const numericFields = fields.filter(field => field !== 'ticker' && field !== 'name');
 
     if (ticker !== '') {
         draft.ticker = ticker;
         draft.name = assetKnownStockName(ticker);
     }
 
-    for (const field of fields) {
-        if (field === 'ticker' || field === 'name') {
-            continue;
-        }
+    // OCR 少字或多讀到帳號時，欄位數與數字數對不起來。這種列不填金額，避免一格錯位
+    // 之後看起來仍像合理數字；使用者可從校對表補齊。
+    if (values.length !== numericFields.length) {
+        draft.ocrUnitPrices = prices;
+        return draft;
+    }
+
+    for (const field of numericFields) {
 
         const value = values.shift();
 
