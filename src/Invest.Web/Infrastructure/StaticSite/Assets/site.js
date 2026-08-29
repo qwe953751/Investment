@@ -3475,19 +3475,28 @@ const ASSET_OCR_LANGUAGE = 'chi_tra+eng';
 const ASSET_OCR_TIMEOUT_MS = 10_000;
 const ASSET_OCR_MAX_FILES = 20;
 
+// 資產頁通常直接開啟，不一定先載過排行資料；截圖若只有「台虹」這種名稱、沒有代號，
+// 必須自己讀一次靜態名冊反查，不能假設 nameByTicker 已經被其他頁面填好。
+// 這份名冊是 export 時隨站輸出的公開資料，只有使用者選圖時才讀取，不會向 Supabase
+// 發出額外請求，也不會包含或上傳截圖。
+const assetTickerByName = new Map();
+const assetNameByTicker = new Map();
+let assetTickerCatalogLoading = null;
+const assetCloseIndexByDate = new Map();
+
 // 欄位標題的說法各家券商不同，這裡列見得到的。比對時取「最長的那個關鍵字」，
 // 免得「成本」先把「成本市值」吃掉、或「商品」先把「商品名稱」吃掉。
 // costPrice／marketPrice 是每股單價，不是這一檔的總額，所以另外分一欄：
 // 抄成 cost 會讓帳戶的「投入成本」變成幾百塊。要乘上股數才是同一件事。
 const ASSET_OCR_HEADERS = [
     { field: 'ticker', words: ['股票代號', '商品代號', '代號', '股號', 'SYMBOL', 'TICKER', 'CODE'] },
-    { field: 'name', words: ['股票名稱', '商品名稱', '名稱', '商品', '股票', 'STOCK NAME', 'SECURITY', 'COMPANY'] },
+    { field: 'name', words: ['股票名稱', '商品名稱', '股名', '名稱', '商品', '股票', 'STOCK NAME', 'SECURITY', 'COMPANY'] },
     { field: 'quantity', words: ['庫存股數', '集保庫存', '持有股數', '昨日餘額', '可用股數', '股數', '庫存', '現股', '數量', 'SHARES', 'QUANTITY', 'QTY', 'UNITS'] },
     { field: 'cost', words: ['投入成本', '成本金額', '總成本', '成本', 'TOTAL COST', 'COST BASIS', 'INVESTMENT COST', 'TOTAL'] },
     { field: 'costPrice', words: ['成交均價', '成本均價', '買進均價', '平均成本', '成本價', '均價', 'UNIT COST', 'AVG COST', 'AVERAGE COST', 'UNIT'] },
     { field: 'marketValue', words: ['參考市值', '市價金額', '總市值', '市值', '現值', 'MARKET VALUE', 'TOTAL VALUE', 'VALUE'] },
     { field: 'marketPrice', words: ['參考價', '成交價', '市價', '現價', 'CURRENT PRICE', 'MARKET PRICE', 'LAST PRICE', 'PRICE'] },
-    { field: 'unrealized', words: ['未實現損益', '損益金額', '損益試算', '未實現', '損益', 'UNREALIZED P/L', 'UNREALIZED', 'GAIN/LOSS', 'P/L'] }
+    { field: 'unrealized', words: ['未實現損益', '預估損益', '損益金額', '損益試算', '未實現', '損益', 'UNREALIZED P/L', 'UNREALIZED', 'GAIN/LOSS', 'P/L'] }
 ];
 
 // 只有這幾欄是每股單價，其餘都是金額。
@@ -3626,21 +3635,36 @@ function assetOcrProgressText(message) {
 // 手機截圖的表格字很小，原尺寸丟進去常常整列漏掉；先放大再轉高對比灰階，
 // 數字的辨識率差很多。上限是怕大螢幕截圖放大之後把記憶體吃光。
 const ASSET_OCR_MIN_WIDTH = 1800;
-const ASSET_OCR_MAX_PIXELS = 5_000_000;
+const ASSET_OCR_MAX_PIXELS = 6_000_000;
 
 function assetOcrCanvas(bitmap) {
+    // 券商截圖上方多半是帳號、通知與導覽列。這些字既不屬於持倉，也會分走 OCR 的版面
+    // 分析能力；直式截圖略過上下 UI 後，表格可在同樣的像素預算內放大，仍保留欄位標題。
+    const portrait = bitmap.height > bitmap.width * 1.2;
+    const sourceTop = portrait ? Math.floor(bitmap.height * 0.12) : 0;
+    const sourceBottom = portrait ? Math.ceil(bitmap.height * 0.94) : bitmap.height;
+    const sourceHeight = Math.max(1, sourceBottom - sourceTop);
     const enlarge = Math.max(1, ASSET_OCR_MIN_WIDTH / bitmap.width);
-    const budget = Math.sqrt(ASSET_OCR_MAX_PIXELS / (bitmap.width * bitmap.height));
+    const budget = Math.sqrt(ASSET_OCR_MAX_PIXELS / (bitmap.width * sourceHeight));
     // 原本用 Math.max(1, budget) 會讓過大的圖永遠不縮小，手機長截圖的 OCR 因此常超時。
     // 這裡允許縮小到像素預算內，但小圖仍會放大讓欄位標題可讀。
     const scale = Math.min(enlarge, budget);
 
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(bitmap.width * scale);
-    canvas.height = Math.round(bitmap.height * scale);
+    canvas.height = Math.round(sourceHeight * scale);
 
     const context = canvas.getContext('2d', { willReadFrequently: true });
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    context.drawImage(
+        bitmap,
+        0,
+        sourceTop,
+        bitmap.width,
+        sourceHeight,
+        0,
+        0,
+        canvas.width,
+        canvas.height);
 
     const image = context.getImageData(0, 0, canvas.width, canvas.height);
     const pixels = image.data;
@@ -3961,7 +3985,23 @@ function mergeAssetOcrDraft(target, source) {
 }
 
 function finalizeAssetOcrDraft(draft) {
-    const quantity = draft.quantity === '' ? null : Number(draft.quantity);
+    let quantity = draft.quantity === '' ? null : Number(draft.quantity);
+
+    // 只在標題已明確標示「單位成本／總成本」時才反推整數股數。券商的總成本可能因為
+    // 手續費有幾分差，容許 0.1%，超過就留空交給人工核對，不能把不相干的兩個數字相除。
+    if (quantity === null
+        && draft.ocrUnitPrices?.costPrice !== null
+        && draft.ocrUnitPrices?.costPrice !== undefined
+        && draft.cost !== ''
+        && Number(draft.ocrUnitPrices.costPrice) > 0) {
+        const inferred = Math.round(Number(draft.cost) / Number(draft.ocrUnitPrices.costPrice));
+        const difference = Math.abs(Number(draft.cost) - inferred * Number(draft.ocrUnitPrices.costPrice));
+
+        if (inferred > 0 && difference <= Math.max(0.5, Math.abs(Number(draft.cost)) * 0.001)) {
+            quantity = inferred;
+            draft.quantity = inferred;
+        }
+    }
 
     for (const [price, total] of Object.entries(ASSET_OCR_UNIT_PRICES)) {
         const unitPrice = draft.ocrUnitPrices?.[price];
@@ -3971,11 +4011,7 @@ function finalizeAssetOcrDraft(draft) {
         }
     }
 
-    const knownName = assetKnownStockName(draft.ticker);
-
-    if (knownName !== '') {
-        draft.name = knownName;
-    }
+    assetOcrResolveIdentity(draft);
 
     delete draft.ocrUnitPrices;
     return draft;
@@ -3984,9 +4020,10 @@ function finalizeAssetOcrDraft(draft) {
 function assetOcrLinesAreSameRow(left, right) {
     const gap = right.top - left.bottom;
     const height = Math.max(1, left.bottom - left.top, right.bottom - right.top);
-    // 券商常把「名稱／代號」上下排，數字卻和名稱同一排；手機高解析截圖放大後，
-    // 兩段的距離會超過舊版固定 48px。放寬到三個字高仍小於下一筆持倉的列距。
-    return gap >= -height * 0.5 && gap <= Math.max(80, height * 3.5);
+    // 券商常把「名稱／代號」上下排，數字卻和名稱同一排。舊版放到 3.5 個字高，
+    // 已經會把下一檔的名稱與數字併進前一檔，造成代號、成本交錯；兩個字高足以
+    // 保留同一檔的上下兩行，又不會跨到下一筆持倉。
+    return gap >= -height * 0.5 && gap <= Math.max(64, height * 2);
 }
 
 function assetOcrIsHoldingRow(draft) {
@@ -4014,10 +4051,333 @@ function assetOcrIsHoldingRow(draft) {
 
 function assetKnownStockName(ticker) {
     const normalized = String(ticker ?? '').trim().toUpperCase();
-    return nameByTicker.get(normalized) ?? topicData?.stockNames?.[normalized] ?? '';
+    return assetNameByTicker.get(normalized)
+        ?? nameByTicker.get(normalized)
+        ?? topicData?.stockNames?.[normalized]
+        ?? '';
 }
 
-function assetDraftRowsFromOcr(data) {
+function assetNameKey(name) {
+    return String(name ?? '')
+        .normalize('NFKC')
+        .toUpperCase()
+        .replace(/[\s　()（）［］\[\]．.·・-]/g, '');
+}
+
+function addAssetTickerNames(entries) {
+    for (const [rawTicker, rawName] of entries) {
+        const ticker = String(rawTicker ?? '').trim().toUpperCase();
+        const name = String(rawName ?? '').trim();
+        const key = assetNameKey(name);
+
+        if (ticker === '' || name === '' || key === '') {
+            continue;
+        }
+
+        assetNameByTicker.set(ticker, name);
+        const existing = assetTickerByName.get(key);
+
+        // 同名股票若對到不同代號，不偷偷選其中一檔；留給使用者校對比誤寫安全。
+        if (existing === undefined) {
+            assetTickerByName.set(key, ticker);
+        } else if (existing !== ticker) {
+            assetTickerByName.set(key, '');
+        }
+    }
+}
+
+async function ensureAssetTickerCatalog() {
+    addAssetTickerNames(nameByTicker);
+    addAssetTickerNames(Object.entries(topicData?.stockNames ?? {}));
+
+    if (assetTickerByName.size > 0) {
+        return;
+    }
+
+    if (assetTickerCatalogLoading === null) {
+        assetTickerCatalogLoading = (async () => {
+            const response = await fetch(`data/topics.json?v=${version}`, { cache: 'force-cache' });
+
+            if (!response.ok) {
+                throw new Error(`名冊載入失敗（${response.status}）`);
+            }
+
+            const data = await response.json();
+            addAssetTickerNames(Object.entries(data.stockNames ?? {}));
+        })().finally(() => {
+            assetTickerCatalogLoading = null;
+        });
+    }
+
+    await assetTickerCatalogLoading;
+}
+
+function assetOcrTradeDate(text) {
+    const match = /(20\d{2})[/.\-](\d{1,2})[/.\-](\d{1,2})/.exec(String(text ?? ''));
+
+    if (match === null) {
+        return '';
+    }
+
+    return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+}
+
+async function assetCloseIndexForDate(date) {
+    if (date === '' || assetCloseIndexByDate.has(date)) {
+        return assetCloseIndexByDate.get(date) ?? new Map();
+    }
+
+    const response = await fetch(`data/1-${date}.json?v=${version}`, { cache: 'force-cache' });
+
+    if (!response.ok) {
+        return new Map();
+    }
+
+    const data = await response.json();
+    const index = new Map();
+
+    for (const row of data.rows ?? []) {
+        const close = Number(row.close);
+
+        if (!Number.isFinite(close)) {
+            continue;
+        }
+
+        const key = close.toFixed(4);
+        const matches = index.get(key) ?? [];
+        matches.push({ ticker: String(row.ticker ?? ''), name: String(row.name ?? '') });
+        index.set(key, matches);
+    }
+
+    assetCloseIndexByDate.set(date, index);
+    return index;
+}
+
+function assetOcrResolveUniqueClose(draft, closeIndex) {
+    if (draft.ticker !== '' || closeIndex.size === 0) {
+        return;
+    }
+
+    const price = Number(draft.ocrUnitPrices?.marketPrice);
+
+    if (!Number.isFinite(price)) {
+        return;
+    }
+
+    const matches = closeIndex.get(price.toFixed(4)) ?? [];
+
+    if (matches.length === 1 && matches[0].ticker !== '') {
+        draft.ticker = matches[0].ticker;
+        draft.name = matches[0].name;
+    }
+}
+
+function assetKnownTicker(name) {
+    return assetTickerByName.get(assetNameKey(name)) ?? '';
+}
+
+function assetOcrResolveIdentity(draft) {
+    if (draft.ticker === '' && draft.name !== '') {
+        draft.ticker = assetKnownTicker(draft.name);
+    }
+
+    const knownName = assetKnownStockName(draft.ticker);
+
+    if (knownName !== '') {
+        draft.name = knownName;
+    }
+}
+
+// Tesseract 對表格框線有時會把「股票資料那一行」和「下一行的代號」拆開；bbox 行合併
+// 只能猜兩行是否相鄰，遇到手機長截圖便容易跨到下一筆。文字輸出本身保留了正確順序，
+// 因此在有完整欄位標題時，以「資料行 → 緊接的代號行」還原，欄位仍完全由標題決定。
+function assetOcrHeaderOrderFromText(lines) {
+    const candidates = ASSET_OCR_HEADERS
+        .flatMap(header => header.words.map(keyword => ({
+            field: header.field,
+            keyword: keyword.replace(/\s+/g, '').toUpperCase()
+        })))
+        .sort((left, right) => right.keyword.length - left.keyword.length);
+
+    for (let index = 0; index < lines.length; index += 1) {
+        const text = assetNameKey(lines[index]);
+        const claimed = Array.from(text, () => false);
+        const found = new Map();
+
+        for (const candidate of candidates) {
+            if (found.has(candidate.field)) {
+                continue;
+            }
+
+            for (let at = text.indexOf(candidate.keyword); at >= 0; at = text.indexOf(candidate.keyword, at + 1)) {
+                const overlaps = claimed.slice(at, at + candidate.keyword.length).some(Boolean);
+
+                if (overlaps) {
+                    continue;
+                }
+
+                claimed.fill(true, at, at + candidate.keyword.length);
+                found.set(candidate.field, at);
+                break;
+            }
+        }
+
+        // 至少三欄才算真正的欄位列；只出現「損益」或「成本」的說明文字不能拿來配數字。
+        if (found.size >= 3) {
+            return {
+                index,
+                fields: [...found]
+                    .sort((left, right) => left[1] - right[1])
+                    .map(([field]) => field),
+                allowEnglishTickers: /(?:SYMBOL|TICKER|CODE)/.test(text)
+            };
+        }
+
+        // 有些美股 App 把 UNIT、TOTAL 與 COST 疊成兩行，繁中＋英文 OCR 會只留下
+        // "SYMBOL" 與兩個 COST。這仍是可驗證的欄位結構：左邊是單位成本、右邊是總成本，
+        // 不需要也不允許根據金額大小猜欄位。
+        const combined = assetNameKey(lines[index] + (lines[index + 1] ?? ''));
+        const costLabels = combined.match(/COST/g)?.length ?? 0;
+
+        if (combined.includes('SYMBOL') && costLabels >= 2) {
+            return {
+                index: index + (lines[index + 1] === undefined ? 0 : 1),
+                fields: ['ticker', 'costPrice', 'cost'],
+                allowEnglishTickers: true
+            };
+        }
+    }
+
+    return null;
+}
+
+function assetOcrTickerInText(text, allowEnglishTickers = false) {
+    const matches = String(text ?? '').toUpperCase().matchAll(new RegExp(ASSET_OCR_TICKER.source, 'g'));
+
+    for (const match of matches) {
+        const ticker = match[0];
+
+        if (assetKnownStockName(ticker) !== ''
+            || /^\d{4}$/.test(ticker)
+            || (allowEnglishTickers && /^[A-Z]{3,5}(?:[.-][A-Z]{1,2})?$/.test(ticker))) {
+            return ticker;
+        }
+    }
+
+    return '';
+}
+
+function assetOcrNumbersInText(text) {
+    return String(text ?? '')
+        .match(/[+−–—~～-]?[\d０-９][\d０-９,，.]*/g)
+        ?.map(assetOcrNumber)
+        .filter(value => value !== null)
+        ?? [];
+}
+
+function assetKnownTickerInText(text) {
+    const normalized = assetNameKey(text);
+    let ticker = '';
+
+    for (const [name, candidate] of assetTickerByName) {
+        if (candidate !== '' && normalized.includes(name)) {
+            if (ticker !== '' && ticker !== candidate) {
+                return '';
+            }
+
+            ticker = candidate;
+        }
+    }
+
+    return ticker;
+}
+
+function assetOcrTextLineDraft(text, fields) {
+    const draft = assetDraftRowFrom({});
+    const values = assetOcrNumbersInText(text);
+    const prices = { costPrice: null, marketPrice: null };
+    const ticker = assetKnownTickerInText(text);
+
+    if (ticker !== '') {
+        draft.ticker = ticker;
+        draft.name = assetKnownStockName(ticker);
+    }
+
+    for (const field of fields) {
+        if (field === 'ticker' || field === 'name') {
+            continue;
+        }
+
+        const value = values.shift();
+
+        if (value === undefined) {
+            break;
+        }
+
+        if (field in ASSET_OCR_UNIT_PRICES) {
+            prices[field] = value;
+        } else {
+            draft[field] = value;
+        }
+    }
+
+    draft.ocrUnitPrices = prices;
+    return draft;
+}
+
+async function assetDraftRowsFromText(data) {
+    const lines = String(data?.text ?? '')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(line => line !== '');
+    const header = assetOcrHeaderOrderFromText(lines);
+
+    if (header === null) {
+        return { rows: [], matchedHeader: false };
+    }
+
+    const rows = [];
+    const seen = new Set();
+    const closeIndex = await assetCloseIndexForDate(assetOcrTradeDate(data?.text));
+
+    for (let index = header.index + 1; index < lines.length; index += 1) {
+        // 單獨一行四碼代號是前一行資料的識別碼，不可把 1303 當成「股數 1,303」。
+        if (/^\d{4}$/.test(lines[index])) {
+            continue;
+        }
+
+        const draft = assetOcrTextLineDraft(lines[index], header.fields);
+        const hasValues = ASSET_DRAFT_FIELDS.some(field =>
+            field !== 'ticker' && field !== 'name' && draft[field] !== '');
+
+        if (!hasValues) {
+            continue;
+        }
+
+        // 台股畫面常是「一整行資料」下一行才放代號；同一行有代號的美股則直接用自己。
+        const ownTicker = assetOcrTickerInText(lines[index], header.allowEnglishTickers);
+        const nextTicker = assetOcrTickerInText(lines[index + 1], header.allowEnglishTickers);
+        draft.ticker ||= ownTicker || nextTicker;
+        assetOcrResolveUniqueClose(draft, closeIndex);
+        assetOcrResolveIdentity(draft);
+        const finalized = finalizeAssetOcrDraft(draft);
+
+        if (assetOcrIsHoldingRow(finalized) && !seen.has(finalized.ticker)) {
+            seen.add(finalized.ticker);
+            rows.push(finalized);
+        }
+    }
+
+    return { rows, matchedHeader: true };
+}
+
+async function assetDraftRowsFromOcr(data) {
+    const textRows = await assetDraftRowsFromText(data);
+
+    if (textRows.rows.length > 0) {
+        return textRows;
+    }
+
     const lines = assetOcrLines(data);
     const header = assetOcrColumns(lines);
     const columns = header?.columns ?? null;
@@ -4028,6 +4388,7 @@ function assetDraftRowsFromOcr(data) {
     for (let index = startIndex; index < lines.length; index += 1) {
         const line = lines[index];
         const draft = assetOcrRow(line, columns);
+        assetOcrResolveIdentity(draft);
 
         const hasData = draft.ticker !== ''
             || draft.name !== ''
@@ -4109,6 +4470,7 @@ async function recognizeAssetScreenshot(file, index, total) {
 
         setAssetOcrStatus(`第 ${index} / ${total} 張：辨識中（最長 10 秒）…`);
         const { data } = await assetOcrDeadline(worker.recognize(canvas), remainingMs);
+
         return {
             ...assetDraftRowsFromOcr(data),
             elapsedMs: Math.round(performance.now() - startedAt)
@@ -4170,6 +4532,15 @@ async function scanAssetScreenshots(files, accountId, holdings) {
     assetActionNotice = '';
     setAssetOcrStatus('準備辨識…');
     renderAssetsDashboard();
+
+    try {
+        // 名稱截圖（例如台股舊版券商頁）沒有代號時，先讀靜態名冊反查；這不在每張圖
+        // 的十秒 OCR 預算內，且只讀 CDN 快取的公開資料，不會增加 Supabase 流量。
+        setAssetOcrStatus('讀取本機股票名冊…');
+        await ensureAssetTickerCatalog();
+    } catch {
+        // 代號仍可直接辨識；只有名稱反查會少一條路，不能因此阻斷手動校對流程。
+    }
 
     // 辨識期間使用者可能已經換帳戶或按了取消，那就別把結果硬塞回去。
     const rows = [];
