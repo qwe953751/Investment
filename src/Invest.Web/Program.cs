@@ -13,7 +13,6 @@ using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
 using Invest.Web.Infrastructure.StaticSite;
 using Invest.Web.Infrastructure.StockTopics;
-using Invest.Web.Infrastructure.TurnoverAudit;
 using Microsoft.Extensions.Options;
 using System.Globalization;
 using System.Text;
@@ -31,7 +30,6 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- status  [來源] [輸出檔]
 //   dotnet run --project src/Invest.Web -- curve
 //   dotnet run --project src/Invest.Web -- revenue [--backfill 月數]
-//   dotnet run --project src/Invest.Web -- turnover-audit [--loop]
 //   dotnet run --project src/Invest.Web -- alert   <來源> <error|warning> <訊息> [連結]
 //   dotnet run --project src/Invest.Web -- alert-clear <來源>
 // 這種位置引數不符合 CommandLineConfigurationProvider 的格式，會讓它丟例外，
@@ -39,7 +37,7 @@ using System.Text.Json.Serialization;
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "export" or "intraday" or "backfill-intraday-heat" or "sync" or "verify"
-        or "status" or "curve" or "revenue" or "material-events" or "turnover-audit" or "alert" or "alert-clear";
+        or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -75,10 +73,6 @@ builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
-
-// 暫時的：盤中成交金額準確度驗證。驗完連同 Infrastructure/TurnoverAudit 一起刪。
-builder.Services.AddHttpClient<WantgooTurnoverClient>(ConfigureQuoteClient);
-builder.Services.AddSingleton<TurnoverAuditStore>();
 
 builder.Services.AddSingleton<DailyQuoteStore>();
 builder.Services.AddSingleton<IntradayQuoteStore>();
@@ -182,12 +176,6 @@ if (command is "material-events")
     return;
 }
 
-if (command is "turnover-audit")
-{
-    await RunTurnoverAuditAsync(app.Services, args);
-    return;
-}
-
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
 {
@@ -277,6 +265,10 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var rejectedRounds = 0;
     var cdnPublishFailures = 0;
 
+    // 成交金額的逐輪累加狀態。必須活過整個迴圈，不能每輪重建，
+    // 否則每一輪都變回「現價 × 全日累計量」。
+    var turnoverAccumulator = new IntradayTurnoverAccumulator();
+
     // 年初基準只需指數欄位，所以走只讀指數的入口，不要為了兩三個數字
     // 把三百多天的全市場個股報價全部反序列化。
     var dailyIndexHistory = await dailyQuoteStore.LoadMarketIndicesAsync(cts.Token);
@@ -352,6 +344,13 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                 }
                 else
                 {
+                    // 成交金額改成逐輪累加，一定要在算市場熱絡程度與寫入之前做：
+                    // 熱絡程度的分母就是這裡的成交金額合計。
+                    snapshot = snapshot with
+                    {
+                        Quotes = turnoverAccumulator.Apply(snapshot.TradeDate, snapshot.Quotes)
+                    };
+
                     snapshot = snapshot with
                     {
                         MarketIndices = snapshot.MarketIndices
@@ -1567,187 +1566,6 @@ static async Task RunCurveAsync(IServiceProvider services)
     Console.WriteLine(days >= IntradayCurveStore.DaysForCalibration
         ? $"已經累積 {days} 天，可以討論把預估的分母換成 f(t) 了。"
         : $"再累積 {IntradayCurveStore.DaysForCalibration - days} 個交易日就夠拿來校正預估值。");
-}
-
-/// <summary>
-/// 盤中每隔一段時間，把「我們算的成交金額」跟玩股網給的累計成交金額對一次。
-/// **這是暫時的驗證工具，收滿 <see cref="TurnoverAuditStore.RequiredDays"/> 個完整交易日就會連同
-/// db/011_turnover_audit.sql 一起刪掉。**
-///
-/// 為什麼要跑六天而不是收盤後比一次就好：2026-08-21 收盤後比過，逐檔誤差中位數 0.02%、
-/// 全市場合計只差 0.0003%，準確度不是問題。要驗的是**盤中撐不撐得住**——
-/// 會不會中途斷線、會不會有幾檔查不到、會不會某個時段整批停止更新。
-/// 那種事只有在盤中一輪一輪打才看得出來。
-/// </summary>
-static async Task RunTurnoverAuditAsync(IServiceProvider services, string[] args)
-{
-    var loop = args.Contains("--loop", StringComparer.OrdinalIgnoreCase);
-    var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
-
-    using var scope = services.CreateScope();
-    var migrations = scope.ServiceProvider.GetRequiredService<SchemaMigrations>();
-
-    if (!SchemaMigrations.Report(await migrations.CheckAsync(), migrations.Directory))
-    {
-        Environment.ExitCode = 1;
-        return;
-    }
-
-    var universeClient = scope.ServiceProvider.GetRequiredService<StockUniverseClient>();
-    var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
-    var referenceClient = scope.ServiceProvider.GetRequiredService<WantgooTurnoverClient>();
-    var store = scope.ServiceProvider.GetRequiredService<TurnoverAuditStore>();
-
-    using var cts = new CancellationTokenSource();
-    Console.CancelKeyPress += (_, eventArgs) =>
-    {
-        eventArgs.Cancel = true;
-        cts.Cancel();
-    };
-
-    var writtenRounds = 0;
-    var staleRounds = 0;
-    var failedRounds = 0;
-    IReadOnlyList<(Market Market, string Ticker)>? universe = null;
-
-    try
-    {
-        Console.WriteLine(loop
-            ? $"每 {TurnoverAuditStore.Interval.TotalMinutes:0} 分鐘對一次，撐到 "
-                + $"{CollectionSchedule.IntradayEnd:HH\\:mm} 為止。"
-            : "對一輪後結束。");
-        Console.WriteLine();
-
-        while (true)
-        {
-            var capturedAt = DateTimeOffset.UtcNow;
-            var localTime = TimeZoneInfo.ConvertTime(capturedAt, taipei);
-            var today = DateOnly.FromDateTime(localTime.DateTime);
-            var started = System.Diagnostics.Stopwatch.StartNew();
-
-            try
-            {
-                universe ??= await universeClient.GetTickersAsync(cts.Token);
-
-                // 兩邊同時抓，兩份資料的時間才對得起來。差幾秒都會讓誤差看起來比實際大。
-                var ourTask = quoteClient.GetQuotesAsync(universe, cts.Token);
-                var referenceTask = referenceClient.GetAsync(cts.Token);
-                await Task.WhenAll(ourTask, referenceTask);
-
-                var ours = await ourTask;
-                var reference = await referenceTask;
-
-                // 休市時兩邊都照樣回應，但給的是上一個交易日。日期對不上就不寫。
-                if (ours.TradeDate != today || reference.TradeDate != today)
-                {
-                    staleRounds++;
-
-                    Console.WriteLine(
-                        $"{localTime:HH:mm:ss} 我們拿到 {ours.TradeDate:yyyy-MM-dd}、"
-                        + $"對方 {reference.TradeDate?.ToString("yyyy-MM-dd") ?? "—"}，"
-                        + $"都不是今天，不寫入（第 {staleRounds} 次）。");
-                }
-                else
-                {
-                    var round = TurnoverAuditCalculator.Compare(
-                        ours, reference, capturedAt, started.Elapsed);
-
-                    await store.SaveAsync(round, cts.Token);
-                    writtenRounds++;
-
-                    Console.WriteLine(
-                        $"{localTime:HH:mm:ss} 對到 {round.MatchedCount} 檔、查無 {round.MissingCount} 檔；"
-                        + $"合計 {round.OurTotal / 100_000_000m:N0} 億 vs "
-                        + $"{round.ReferenceTotal / 100_000_000m:N0} 億"
-                        + $"（{round.TotalErrorPercent:+0.00;-0.00;0.00}%）；"
-                        + $"逐檔中位數 {round.MedianErrorPercent:0.00}%、"
-                        + $"p90 {round.P90ErrorPercent:0.00}%、"
-                        + $"最大 {round.MaxErrorPercent:0.00}%。");
-                }
-            }
-            catch (Exception exception)
-                when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
-            {
-                failedRounds++;
-
-                Console.WriteLine(
-                    $"{localTime:HH:mm:ss} 這一輪失敗（第 {failedRounds} 次）：{exception.Message}");
-            }
-
-            if (!loop)
-            {
-                break;
-            }
-
-            var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei);
-            var next = CollectionSchedule.NextRound(now, TurnoverAuditStore.Interval);
-
-            if (TimeOnly.FromDateTime(next.DateTime) > CollectionSchedule.IntradayEnd)
-            {
-                Console.WriteLine("已過收盤時間，結束。");
-                break;
-            }
-
-            await Task.Delay(next - now, cts.Token);
-        }
-    }
-    catch (OperationCanceledException) when (cts.IsCancellationRequested)
-    {
-        Console.WriteLine();
-        Console.WriteLine("已中斷。已寫入的比對結果都保留在資料庫。");
-        return;
-    }
-
-    Console.WriteLine();
-    Console.WriteLine(
-        $"收工：寫入 {writtenRounds} 輪、日期對不上 {staleRounds} 輪、失敗 {failedRounds} 輪。");
-
-    await ReportTurnoverAuditProgressAsync(store, cts.Token);
-
-    // 這支是驗證工具，它自己壞掉不能安靜略過，否則六天之後才發現只收到三天。
-    // 但「整場日期都對不上」是休市，那不算失敗。
-    if (failedRounds > 0 && writtenRounds == 0)
-    {
-        throw new InvalidOperationException(
-            $"整場沒有寫進任何一輪，而且有 {failedRounds} 輪失敗——這不是休市，是收集失敗。");
-    }
-}
-
-static async Task ReportTurnoverAuditProgressAsync(
-    TurnoverAuditStore store,
-    CancellationToken cancellationToken)
-{
-    var days = await store.GetProgressAsync(cancellationToken);
-
-    if (days.Count == 0)
-    {
-        Console.WriteLine("還沒有任何比對結果。");
-        return;
-    }
-
-    Console.WriteLine();
-    Console.WriteLine("交易日        輪數   第一輪    最後一輪");
-
-    var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
-
-    foreach (var day in days)
-    {
-        Console.WriteLine(
-            $"{day.TradeDate:yyyy-MM-dd}   {day.RoundCount,4}   "
-            + $"{TimeZoneInfo.ConvertTime(day.FirstRound, taipei):HH:mm}     "
-            + $"{TimeZoneInfo.ConvertTime(day.LastRound, taipei):HH:mm}");
-    }
-
-    // 「完整」的定義：從 09:00 前開始、撐到 13:30 之後。中途才接上的那天不算，
-    // 因為要驗的正是「整場撐不撐得住」，半場的資料回答不了這個問題。
-    var complete = days.Count(day =>
-        TimeZoneInfo.ConvertTime(day.FirstRound, taipei).TimeOfDay <= TimeSpan.FromHours(9)
-        && TimeZoneInfo.ConvertTime(day.LastRound, taipei).TimeOfDay >= new TimeSpan(13, 30, 0));
-
-    Console.WriteLine();
-    Console.WriteLine(complete >= TurnoverAuditStore.RequiredDays
-        ? $"完整的交易日已有 {complete} 天，可以下判斷、把盤中來源換掉，然後刪掉這份驗證資料了。"
-        : $"完整的交易日目前 {complete} 天，還要再 {TurnoverAuditStore.RequiredDays - complete} 天。");
 }
 
 internal sealed record PublishedManifest
