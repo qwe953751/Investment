@@ -162,6 +162,10 @@ public sealed class IntradayCdnGateTests
 
         // 紀錄步驟本身失敗不可以蓋掉前面真正的錯誤。
         Assert.Contains("if: always()", job, StringComparison.Ordinal);
+
+        // 同上：通知寫不進資料庫時不可以把整個工作標紅。
+        var record = job[job.IndexOf("記錄診斷結果", StringComparison.Ordinal)..];
+        Assert.Contains("exit 0", record, StringComparison.Ordinal);
     }
 
     [Fact]
