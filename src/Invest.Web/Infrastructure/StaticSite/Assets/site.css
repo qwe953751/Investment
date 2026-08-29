@@ -727,12 +727,6 @@ body {
     color: #8a5b00;
 }
 
-.note-category-done {
-    border-color: #a8d8bd;
-    background: #effaf3;
-    color: #067647;
-}
-
 .notes-status-pill {
     background: #f2f4f7;
     color: #667085;
