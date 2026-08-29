@@ -59,6 +59,83 @@ public sealed class IntradaySnapshotPublisher(
             : $"{supabaseUrl}/storage/v1/object/public/{GetBucket(configuration)}";
     }
 
+    /// <summary>
+    /// 確認 CDN 上真的抓得到一份完整可用的快照。
+    ///
+    /// 「祕密設定齊全」不等於「bucket 裡有東西」：第一次部署、bucket 被清空、整場上傳
+    /// 全部失敗，都會留下一個空 bucket。而前端讀不到 CDN 時<b>不會</b>自己退回 Supabase
+    /// 直連，所以 manifest 只要宣告了一條抓不到的網址，盤中頁就是直接壞掉。發布前用這個
+    /// 檢查把「宣告了但抓不到」擋在上線之前，寧可繼續走舊路徑也不要讓畫面空掉。
+    ///
+    /// 走的是瀏覽器實際會用的那條公開網址與那兩個檔案，不是只問 bucket 在不在——
+    /// 只有這樣才能保證「檢查通過」和「使用者打得開」是同一件事。
+    /// </summary>
+    public async Task<bool> HasPublishedSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        var baseUrl = GetPublicBaseUrl(configuration);
+
+        if (baseUrl is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var latestResponse = await httpClient.GetAsync($"{baseUrl}/latest.json", cancellationToken);
+
+            if (!latestResponse.IsSuccessStatusCode)
+            {
+                logger.LogWarning(
+                    "盤中 CDN 還沒有 latest.json（HTTP {StatusCode}），這次不在 manifest 宣告 CDN。",
+                    (int)latestResponse.StatusCode);
+
+                return false;
+            }
+
+            var pointer = await latestResponse.Content.ReadFromJsonAsync<LatestDocument>(
+                JsonOptions,
+                cancellationToken);
+
+            if (pointer is null
+                || pointer.SchemaVersion != SchemaVersion
+                || pointer.RowCount <= 0
+                || !SnapshotFileName.IsMatch(pointer.File))
+            {
+                logger.LogWarning("盤中 CDN 的 latest.json 格式不符，這次不在 manifest 宣告 CDN。");
+
+                return false;
+            }
+
+            // latest.json 存在不代表它指到的那份完整快照也在。清理邏輯只保留最近幾份，
+            // 指標若指向已被清掉的檔名，前端第一次抓就會炸；這一步把它一起確認掉。
+            using var snapshotResponse = await httpClient.GetAsync(
+                $"{baseUrl}/{pointer.File}",
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+
+            if (!snapshotResponse.IsSuccessStatusCode)
+            {
+                logger.LogWarning(
+                    "盤中 CDN 的 latest.json 指向 {File}，但那份快照抓不到（HTTP {StatusCode}），"
+                    + "這次不在 manifest 宣告 CDN。",
+                    pointer.File,
+                    (int)snapshotResponse.StatusCode);
+
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+            when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            // 匯出網站不能因為 CDN 探測失敗就整個失敗。探不到就當作沒有，走舊路徑。
+            logger.LogWarning(exception, "探測盤中 CDN 失敗，這次不在 manifest 宣告 CDN。");
+
+            return false;
+        }
+    }
+
     public async Task<IntradaySnapshotPublishResult> PublishAsync(
         long runId,
         IntradaySnapshot snapshot,

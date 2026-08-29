@@ -1137,13 +1137,25 @@ let intradayRefreshMs = DEFAULT_INTRADAY_REFRESH_MS;
 let supabase = null;
 let intradayCdn = null;
 
+// CDN 是省流量的正路，但它掛掉時不能讓盤中頁變成一片空白——那是這個網站最常被看的一頁。
+// 抓不到就自動退回 Supabase 直連（貴很多，每輪整份重抓，所以只當救命用），並把這個旗標
+// 立起來讓畫面上的資料來源顯示得出來。每一輪都會重新試 CDN，恢復了就自己切回去。
+let intradayCdnDegraded = false;
+
 function hasIntradaySnapshotSource() {
     return intradayCdn !== null || supabase !== null;
 }
 
+// 「manifest 有宣告 CDN」和「這一刻真的在用 CDN」是兩件事，判斷路徑一律問這個。
+function usingIntradayCdn() {
+    return intradayCdn !== null && !intradayCdnDegraded;
+}
+
 const intradaySourceLabel = () => intradayCdn === null
     ? '資料庫相容路徑'
-    : '版本化 CDN 快照';
+    : intradayCdnDegraded
+        ? '資料庫直連（CDN 暫時讀不到）'
+        : '版本化 CDN 快照';
 
 function configureIntradayRefresh() {
     const minutes = Number(schedule?.intradayIntervalMinutes);
@@ -7637,17 +7649,40 @@ async function ensureIntradaySnapshot(silent = false, force = false, loadSupport
         }
 
         try {
-            if (intradayCdn !== null) {
-                const document = await fetchIntradayCdnSnapshot();
+            let loadedFromCdn = false;
 
-                if (document !== null) {
-                    applyIntradaySnapshot(document);
-                } else {
-                    intradayRawLoadedAt = Date.now();
-                    lastIntradayLoadedAt = intradayRawLoadedAt;
+            if (intradayCdn !== null) {
+                try {
+                    const document = await fetchIntradayCdnSnapshot();
+
+                    if (document !== null) {
+                        applyIntradaySnapshot(document);
+                    } else {
+                        intradayRawLoadedAt = Date.now();
+                        lastIntradayLoadedAt = intradayRawLoadedAt;
+                    }
+
+                    loadedFromCdn = true;
+
+                    if (intradayCdnDegraded) {
+                        console.info('盤中 CDN 已恢復，切回 CDN 快照。');
+                        intradayCdnDegraded = false;
+                    }
+                } catch (error) {
+                    // bucket 空掉、指標指向被清掉的檔名、Storage 出事、CDN 傳播中——
+                    // 任何一種都不該讓盤中頁只剩一行錯誤訊息。退回資料庫直連把畫面救回來，
+                    // 下一輪再試 CDN。這條路徑很貴，所以要留下記錄也要讓來源標記看得出來。
+                    console.warn('盤中 CDN 讀取失敗，改用資料庫直連：', error);
+                    intradayCdnDegraded = true;
                 }
-            } else {
-                // 舊 manifest 才會走這條相容路徑。新版盤中完整快照與族群熱度都來自 CDN；
+            }
+
+            if (!loadedFromCdn) {
+                if (supabase === null) {
+                    throw new Error('盤中 CDN 讀不到，而且這份 manifest 沒有可用的資料庫連線。');
+                }
+
+                // 舊 manifest 的常態路徑，也是新版 CDN 失效時的救命路徑。
                 // 逐列資料仍必須是全市場，否則成交比的分母會失真。
                 const [rows, summary] = await Promise.all([
                     fetchIntradayRows(),
@@ -8585,14 +8620,19 @@ async function loadIntradayTopicHeat() {
     try {
         let latest;
 
-        if (intradayCdn !== null) {
+        if (usingIntradayCdn()) {
             if (!await ensureIntradaySnapshot(true)) {
-                throw new Error('讀不到盤中 CDN 快照。');
+                throw new Error('讀不到盤中快照。');
             }
 
-            latest = intradaySnapshotTopicHeat;
-        } else {
-            // 舊 manifest 的相容路徑。新版會連同個股完整快照一起讀 CDN，確保族群與行情同輪。
+            // 上面那一步有可能把 CDN 判定為失效並退回資料庫，那時候手上這份快照就沒有
+            // 族群熱度，要跟著改走下面的資料庫路徑，不能顯示成「還沒有這一輪的熱度」。
+            latest = usingIntradayCdn() ? intradaySnapshotTopicHeat : null;
+        }
+
+        if (!usingIntradayCdn()) {
+            // 舊 manifest 的常態路徑，也是 CDN 失效時的救命路徑。
+            // 新版正常情況會連同個股完整快照一起讀 CDN，確保族群與行情同輪。
             const response = await fetch(
                 `${supabase.url}/rest/v1/${INTRADAY_TOPIC_HEAT_VIEW}`
                 + '?select=trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows&limit=1',

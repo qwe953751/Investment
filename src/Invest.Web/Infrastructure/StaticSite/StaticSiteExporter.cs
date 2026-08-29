@@ -34,6 +34,7 @@ public sealed class StaticSiteExporter(
     MarketFlagClient marketFlags,
     GoogleSheetTopicClient topics,
     MaterialEventStore materialEvents,
+    IntradaySnapshotPublisher snapshotPublisher,
     ILogger<StaticSiteExporter> logger,
     IConfiguration configuration)
 {
@@ -195,7 +196,7 @@ public sealed class StaticSiteExporter(
                 ToMarketIndexYearStartExports(dataSet, tradingDates),
                 ToScheduleExport(),
                 ToSupabaseExport(),
-                ToIntradayCdnExport(),
+                await ToIntradayCdnExportAsync(cancellationToken),
                 ToDispositionExports(dispositions),
                 [.. alteredTrading]),
             cancellationToken);
@@ -914,10 +915,14 @@ public sealed class StaticSiteExporter(
 
     /// <summary>
     /// 盤中 CDN 是額外的公開行情路徑，不取代 <see cref="SupabaseExport"/>：後者仍供筆記、
-    /// 資產、提醒、營收等既有功能使用。只有收集器的 Storage 祕密已在執行環境中設定時才寫入，
-    /// 避免程式先發布、bucket 尚未備妥時讓盤中頁切到一條不存在的網址。
+    /// 資產、提醒、營收等既有功能使用。
+    ///
+    /// 兩個條件都成立才宣告：收集器的 Storage 祕密已設定，<b>而且</b> CDN 上真的抓得到
+    /// 一份完整快照。只看祕密有沒有設定是不夠的——祕密設好但 bucket 還是空的（第一次上線、
+    /// bucket 被清空、整場上傳都失敗）一樣會讓盤中頁切到一條抓不到的網址，而前端讀不到
+    /// CDN 時不會自己退回 Supabase 直連。寧可這次繼續走舊路徑，也不要把畫面弄壞。
     /// </summary>
-    private IntradayCdnExport? ToIntradayCdnExport()
+    private async Task<IntradayCdnExport?> ToIntradayCdnExportAsync(CancellationToken cancellationToken)
     {
         if (!IntradaySnapshotPublisher.IsPublishingConfigured(configuration))
         {
@@ -926,9 +931,17 @@ public sealed class StaticSiteExporter(
 
         var baseUrl = IntradaySnapshotPublisher.GetPublicBaseUrl(configuration);
 
-        return baseUrl is null
-            ? null
-            : new IntradayCdnExport(baseUrl, $"{baseUrl}/latest.json");
+        if (baseUrl is null)
+        {
+            return null;
+        }
+
+        if (!await snapshotPublisher.HasPublishedSnapshotAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new IntradayCdnExport(baseUrl, $"{baseUrl}/latest.json");
     }
 
     private sealed record IntradayCdnExport(string BaseUrl, string LatestUrl);

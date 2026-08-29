@@ -360,3 +360,96 @@ jobs:
           else
               echo "這一棒活了 $spent 秒，不必補睡。"
           fi
+
+  # ── 讓 CDN 在當天就生效，而不是等當天 18:00 ────────────────────────────
+  #
+  # 盤中資料改走 Supabase Storage 的公開 CDN 之後，瀏覽器要不要走那條路，是看
+  # manifest.json 裡有沒有 intradayCdn。而 manifest 只有在「輸出靜態網站」時才會重寫。
+  #
+  # 這中間有一個空窗：第一次上線（或 bucket 曾經空掉）時，manifest 還停在「沒有 CDN」，
+  # 要等當天 18:00 的每日快照才會換上去——等於整個交易日都還在燒舊路徑的流量。
+  #
+  # 這個工作專門補這個空窗：跟收集器平行跑，等到 CDN 上真的抓得到 latest.json，
+  # 就立刻叫每日快照用 publish-only 重發一次網站。
+  #
+  # 為什麼不無條件重發：線上 manifest 已經宣告 CDN 就直接收工，所以正常日子它只花
+  # 一次 HTTP 請求。只有「還沒上線」或「上線後又掉回去」時才會真的動作，至多一次。
+  # 這也順便是一道自我修復——匯出時 bucket 剛好是空的而把 CDN 關掉的話，
+  # 下一棒會自己把它補開回來。
+  publish-manifest:
+    runs-on: ubuntu-latest
+    # 跟著本棒一起活。不能只等一兩小時就收工：一棒可能在凌晨三點多就開跑、睡到 08:40
+    # 才開盤，短命的等待會在開盤前就放棄，那就永遠等不到第一次上傳。
+    timeout-minutes: 340
+
+    permissions:
+      actions: write
+      contents: read
+
+    env:
+      SITE_MANIFEST_URL: https://frank-invest.github.io/admin888/manifest.json
+      CDN_LATEST_URL: https://dehzxlxyfvtnylwgbmqy.supabase.co/storage/v1/object/public/intraday-snapshots/latest.json
+      # 和 HOP_BUDGET 一樣是 5 小時 30 分：這一棒還在，就一直看著。
+      WAIT_SECONDS: '19800'
+
+    steps:
+      - name: 等 CDN 有快照就把 manifest 換成走 CDN
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # runner 的預設 shell 是 bash -e，errexit 從命令列來、腳本內的 set 關不掉。
+          # 底下每個判斷都可能「不成立」，那不是錯誤，所以先明確關掉。
+          set +e
+          set -uo pipefail
+
+          manifest=$(curl -fsSL --max-time 30 "$SITE_MANIFEST_URL" 2>/dev/null)
+
+          if [ -n "$manifest" ]; then
+              if printf '%s' "$manifest" | grep -q '"intradayCdn"'; then
+                  echo "線上 manifest 已經宣告盤中 CDN，這一棒不必做事。"
+                  exit 0
+              fi
+              echo "線上 manifest 還沒有盤中 CDN，等 CDN 出現快照後重發網站。"
+          else
+              echo "::warning::讀不到線上 manifest（$SITE_MANIFEST_URL），仍然照常等 CDN。"
+          fi
+
+          deadline=$(( $(date +%s) + WAIT_SECONDS ))
+          found=0
+
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$CDN_LATEST_URL")
+
+              if [ "$code" = "200" ]; then
+                  echo "$(date '+%H:%M:%S') CDN 上已經有 latest.json。"
+                  found=1
+                  break
+              fi
+
+              echo "$(date '+%H:%M:%S') CDN 還沒有 latest.json（HTTP $code），5 分鐘後再看。"
+              sleep 300
+          done
+
+          if [ "$found" -ne 1 ]; then
+              echo "整棒都沒看到 CDN 快照（今天多半沒開盤或收集器沒上傳），不重發網站。"
+              exit 0
+          fi
+
+          # 只重發畫面，不動 data 分支、不等今日行情，所以跟收集器並行沒有衝突。
+          # 匯出端自己也會再確認一次 CDN 抓不抓得到，抓不到就不會宣告——
+          # 這裡即使誤判，最壞情況也只是白跑一次發布。
+          for attempt in 1 2 3; do
+              if gh workflow run daily-snapshot.yml \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --ref main \
+                  -f publish-only=true; then
+                  echo "已請每日快照重發網站，manifest 會換成走 CDN。"
+                  exit 0
+              fi
+
+              echo "::warning::第 $attempt 次觸發重發失敗，10 秒後重試。"
+              sleep 10
+          done
+
+          echo "::error::連續三次都叫不動每日快照，manifest 今天不會切到 CDN。"
+          exit 1
