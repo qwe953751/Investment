@@ -4470,9 +4470,16 @@ async function recognizeAssetScreenshot(file, index, total) {
 
         setAssetOcrStatus(`第 ${index} / ${total} 張：辨識中（最長 10 秒）…`);
         const { data } = await assetOcrDeadline(worker.recognize(canvas), remainingMs);
+        const remainingAfterRecognition = ASSET_OCR_TIMEOUT_MS - (performance.now() - startedAt);
+
+        if (remainingAfterRecognition <= 0) {
+            throw new Error('辨識超過 10 秒，已停止這張圖片。');
+        }
+
+        const parsed = await assetOcrDeadline(assetDraftRowsFromOcr(data), remainingAfterRecognition);
 
         return {
-            ...assetDraftRowsFromOcr(data),
+            ...parsed,
             elapsedMs: Math.round(performance.now() - startedAt)
         };
     } catch (error) {
