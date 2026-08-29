@@ -1,0 +1,55 @@
+version = 1
+name = "Investment (.NET 10)"
+
+# 新 worktree 建立時自動還原套件並先做一次建置，讓後續任務直接可用。
+[setup]
+script = """
+dotnet restore Invest.sln
+dotnet build Invest.sln --no-restore
+"""
+
+[[actions]]
+name = "啟動本機網站"
+icon = "run"
+command = "dotnet run --project src/Invest.Web"
+
+[[actions]]
+name = "執行測試"
+icon = "test"
+command = "dotnet test tests/Invest.Web.Tests/Invest.Web.Tests.csproj -c Release --logger \"console;verbosity=minimal\""
+
+[[actions]]
+name = "匯出並預覽靜態網站"
+icon = "debug"
+platform = "darwin"
+command = """
+dotnet run --project src/Invest.Web -- export "$(pwd)/publish/site"
+python3 -m http.server 5199 --directory publish/site
+"""
+
+[[actions]]
+name = "發布網站（只更新畫面）"
+icon = "tool"
+platform = "darwin"
+command = """
+git fetch origin main
+
+if [ "$(git branch --show-current)" != "main" ]; then
+  echo "發布前必須位於 main branch。" >&2
+  exit 1
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
+  echo "發布前必須先提交所有修改。" >&2
+  git status --short
+  exit 1
+fi
+
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+  echo "本機 main 尚未與 origin/main 同步；請先 push 或 pull。" >&2
+  exit 1
+fi
+
+gh workflow run daily-snapshot.yml --repo qwe953751/Investment --ref main -f trading-days=300 -f publish-only=true
+gh run list --repo qwe953751/Investment --workflow daily-snapshot.yml --branch main --limit 1
+"""

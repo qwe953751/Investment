@@ -72,6 +72,7 @@ builder.Services.AddSingleton<TopicEditStore>();
 
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 
@@ -260,6 +261,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var marketFlagStore = scope.ServiceProvider.GetRequiredService<MarketFlagStore>();
     var topicClient = scope.ServiceProvider.GetRequiredService<GoogleSheetTopicClient>();
     var topicHeatStore = scope.ServiceProvider.GetRequiredService<IntradayTopicHeatStore>();
+    var snapshotPublisher = scope.ServiceProvider.GetRequiredService<IntradaySnapshotPublisher>();
 
     using var cts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, eventArgs) =>
@@ -273,6 +275,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var staleRounds = 0;
     var failedRounds = 0;
     var rejectedRounds = 0;
+    var cdnPublishFailures = 0;
 
     // 年初基準只需指數欄位，所以走只讀指數的入口，不要為了兩三個數字
     // 把三百多天的全市場個股報價全部反序列化。
@@ -394,9 +397,11 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                             topicMappingTask = LoadIntradayTopicMappingAsync(topicClient, cts.Token);
                         }
 
+                        TopicHeatResult? topicHeat = null;
+
                         if (topicMapping is not null && result.RunId is { } runId)
                         {
-                            var topicHeat = IntradayTopicHeatCalculator.Calculate(topicMapping, snapshot);
+                            topicHeat = IntradayTopicHeatCalculator.Calculate(topicMapping, snapshot);
                             await topicHeatStore.SaveAsync(
                                 runId,
                                 snapshot.TradeDate,
@@ -404,6 +409,29 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                                 topicMapping,
                                 topicHeat,
                                 cts.Token);
+                        }
+
+                        if (result.RunId is { } publishedRunId)
+                        {
+                            try
+                            {
+                                await snapshotPublisher.PublishAsync(
+                                    publishedRunId,
+                                    snapshot,
+                                    capturedAt,
+                                    topicMapping,
+                                    topicHeat,
+                                    cts.Token);
+                            }
+                            catch (Exception exception)
+                                when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                            {
+                                // 原始資料已在前一個 transaction 寫好，CDN 暫時失敗不能讓下一輪報價
+                                // 也跟著停掉；但收工時必須讓 workflow 轉紅並留下警報，不能悄悄用舊快照。
+                                cdnPublishFailures++;
+                                Console.WriteLine(
+                                    $"{localTime:HH:mm:ss} CDN 快照發佈失敗（第 {cdnPublishFailures} 次）：{exception.Message}");
+                            }
                         }
 
                         writtenRounds++;
@@ -480,7 +508,15 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     Console.WriteLine();
     Console.WriteLine(
         $"收工：寫入 {writtenRounds} 輪、日期對不上 {staleRounds} 輪、"
-        + $"失敗 {failedRounds} 輪、金額倒退丟掉 {rejectedRounds} 輪。");
+        + $"失敗 {failedRounds} 輪、金額倒退丟掉 {rejectedRounds} 輪、"
+        + $"CDN 發佈失敗 {cdnPublishFailures} 輪。");
+
+    if (!loop && cdnPublishFailures > 0)
+    {
+        throw new InvalidOperationException(
+            $"有 {cdnPublishFailures} 輪資料已寫入資料庫但無法發佈到盤中 CDN。"
+            + "請檢查 Storage bucket 與上傳權杖。");
+    }
 
     if (!loop)
     {
@@ -491,6 +527,13 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     // 這種半殘狀態最危險，因為畫面照樣顯示得出來，所以要讓這一場紅掉去看日誌。
     if (writtenRounds > 0)
     {
+        if (cdnPublishFailures > 0)
+        {
+            throw new InvalidOperationException(
+                $"有 {cdnPublishFailures} 輪資料已寫入資料庫但無法發佈到盤中 CDN。"
+                + "網站會停在前一個完整快照，請檢查 Storage bucket 與上傳權杖。");
+        }
+
         if (rejectedRounds > 0)
         {
             throw new InvalidOperationException(

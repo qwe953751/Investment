@@ -9,6 +9,7 @@ using Invest.Web.Features.StockTopics.Services;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
+using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.StockTopics;
 
 namespace Invest.Web.Infrastructure.StaticSite;
@@ -194,6 +195,7 @@ public sealed class StaticSiteExporter(
                 ToMarketIndexYearStartExports(dataSet, tradingDates),
                 ToScheduleExport(),
                 ToSupabaseExport(),
+                ToIntradayCdnExport(),
                 ToDispositionExports(dispositions),
                 [.. alteredTrading]),
             cancellationToken);
@@ -911,6 +913,27 @@ public sealed class StaticSiteExporter(
     private sealed record SupabaseExport(string Url, string AnonKey);
 
     /// <summary>
+    /// 盤中 CDN 是額外的公開行情路徑，不取代 <see cref="SupabaseExport"/>：後者仍供筆記、
+    /// 資產、提醒、營收等既有功能使用。只有收集器的 Storage 祕密已在執行環境中設定時才寫入，
+    /// 避免程式先發布、bucket 尚未備妥時讓盤中頁切到一條不存在的網址。
+    /// </summary>
+    private IntradayCdnExport? ToIntradayCdnExport()
+    {
+        if (!IntradaySnapshotPublisher.IsPublishingConfigured(configuration))
+        {
+            return null;
+        }
+
+        var baseUrl = IntradaySnapshotPublisher.GetPublicBaseUrl(configuration);
+
+        return baseUrl is null
+            ? null
+            : new IntradayCdnExport(baseUrl, $"{baseUrl}/latest.json");
+    }
+
+    private sealed record IntradayCdnExport(string BaseUrl, string LatestUrl);
+
+    /// <summary>
     /// 前端只需要「哪些股號被處置」加上滑鼠停上去要說什麼，所以日期在這裡就先轉成文字。
     /// </summary>
     private static IReadOnlyList<DispositionExport> ToDispositionExports(
@@ -945,6 +968,9 @@ public sealed class StaticSiteExporter(
         ScheduleExport Schedule,
 
         SupabaseExport? Supabase,
+
+        // 僅限盤中資料使用。其他頁面不讀這個網址，仍走既有資料來源。
+        IntradayCdnExport? IntradayCdn,
 
         // 目前處於處置期間的個股。撮合被改成人工分盤，成交值會被壓低，名次不能照字面讀。
         IReadOnlyList<DispositionExport> Dispositions,

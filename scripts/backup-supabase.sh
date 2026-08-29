@@ -82,7 +82,7 @@ fi
 
 size=$(wc -c < "$target" | tr -d ' ')
 rows=$(grep -c '^INSERT INTO\|^COPY public' "$plain" || true)
-echo "已備份 $target（$(printf '%s' "$size" | awk '{printf "%.1f KB", $1/1024}')）"
+echo "已備份 ${target}（$(printf '%s' "$size" | awk '{printf "%.1f KB", $1/1024}')）"
 
 # 第三層：跟上一份比大小。原生資料只會慢慢長大，突然縮水通常代表刪錯東西。
 if [ -n "$previous" ]; then

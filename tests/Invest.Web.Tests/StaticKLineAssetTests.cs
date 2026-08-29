@@ -511,11 +511,35 @@ public sealed class StaticKLineAssetTests
         var end = script.IndexOf("async function loadCustom(", start, StringComparison.Ordinal);
         var customIntraday = script[start..end];
 
-        Assert.Contains("ensureIntradaySnapshot(silent, force)", customIntraday, StringComparison.Ordinal);
+        Assert.Contains("ensureIntradaySnapshot(silent, force, true)", customIntraday, StringComparison.Ordinal);
         Assert.Contains("mapIntradayRows(raw, summary)", customIntraday, StringComparison.Ordinal);
         Assert.Contains("totalStockCount: liveRows.length", customIntraday, StringComparison.Ordinal);
         Assert.Contains("rows,", customIntraday, StringComparison.Ordinal);
         Assert.DoesNotContain("slice(0, TOP_COUNT)", customIntraday, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 所有盤中入口由單一旗標共用版本化快照()
+    {
+        var script = ReadAsset("site.js");
+        var topicKLineStart = script.IndexOf("async function loadTopicIntradayKLine", StringComparison.Ordinal);
+        var topicKLineEnd = script.IndexOf("function klineEndDate", topicKLineStart, StringComparison.Ordinal);
+        var topicKLine = script[topicKLineStart..topicKLineEnd];
+
+        Assert.Contains("const INTRADAY_TOPIC_TABS = new Set(['heat', 'tree']);", script, StringComparison.Ordinal);
+        Assert.Contains("function usesIntradaySnapshot()", script, StringComparison.Ordinal);
+        Assert.Contains("return isIntradayDataView() || isIntradayTopicDataView();", script, StringComparison.Ordinal);
+        Assert.Contains("function isIntradayTopicDataView()", script, StringComparison.Ordinal);
+        Assert.Contains("if (isIntradayTopicDataView()) {\n        await loadIntradayTopicHeat();", script, StringComparison.Ordinal);
+        Assert.Contains("if (!await ensureIntradaySnapshot(true))", topicKLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("fetchAllRows(", topicKLine, StringComparison.Ordinal);
+
+        // CDN 設定存在時，完整盤中行情與族群熱度要走同一份版本檔；其他 Supabase 功能不因此改路徑。
+        Assert.Contains("intradayCdn = manifest.intradayCdn ?? null;", script, StringComparison.Ordinal);
+        Assert.Contains("async function fetchIntradayCdnSnapshot()", script, StringComparison.Ordinal);
+        Assert.Contains("function initializeIntradayBroadcastChannel()", script, StringComparison.Ordinal);
+        Assert.Contains("function isTaiwanIntradaySession()", script, StringComparison.Ordinal);
+        Assert.Contains("await Promise.all([loadMarketFlags(), loadRevenue()]);", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -834,7 +858,8 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("不會上傳、也不會保存", script, StringComparison.Ordinal);
 
         // 離開資產頁一定要 revoke，否則 blob 會一路留到重新整理。
-        Assert.Contains("URL.revokeObjectURL(assetScreenshotDraft.previewUrl)", script, StringComparison.Ordinal);
+        Assert.Contains("for (const screenshot of assetScreenshotDraft?.screenshots ?? [])", script, StringComparison.Ordinal);
+        Assert.Contains("URL.revokeObjectURL(screenshot.previewUrl)", script, StringComparison.Ordinal);
         Assert.Contains("if (!assetsView) {\n        discardAssetScreenshotDraft();", NormalizeNewlines(script), StringComparison.Ordinal);
 
         Assert.Contains("id=\"assets-page\"", html, StringComparison.Ordinal);
@@ -1203,7 +1228,8 @@ public sealed class StaticKLineAssetTests
                      "tesseract.min.js",
                      "tesseract-worker.min.js",
                      "tesseract-core-simd-lstm.wasm.js",
-                     "chi_tra.traineddata"
+                     "chi_tra.traineddata",
+                     "eng.traineddata"
                  })
         {
             Assert.Contains($"Invest.Web.Infrastructure.StaticSite.Assets.{fileName}", resources);
@@ -1237,7 +1263,44 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
 
         Assert.Contains("const ASSET_OCR_UNIT_PRICES = { costPrice: 'cost', marketPrice: 'marketValue' };", script, StringComparison.Ordinal);
-        Assert.Contains("draft[total] = Math.round(prices[price] * quantity * 100) / 100;", script, StringComparison.Ordinal);
+        Assert.Contains("draft[total] = Math.round(unitPrice * quantity * 100) / 100;", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 截圖辨識會共用預熱Worker並限制每張十秒()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const ASSET_OCR_TIMEOUT_MS = 10_000;", script, StringComparison.Ordinal);
+        Assert.Contains("function warmAssetOcrWorker()", script, StringComparison.Ordinal);
+        Assert.Contains("function getAssetOcrWorker()", script, StringComparison.Ordinal);
+        Assert.Contains("assetOcrDeadline(worker.recognize(canvas), remainingMs)", script, StringComparison.Ordinal);
+        Assert.Contains("resetAssetOcrWorker();", script, StringComparison.Ordinal);
+        Assert.Contains("assetOcrWorker === null", script, StringComparison.Ordinal);
+        Assert.Contains("重新準備辨識引擎", script, StringComparison.Ordinal);
+        Assert.Contains("每張最多 10 秒", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 截圖辨識可選多張並支援英文券商欄位()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const ASSET_OCR_MAX_FILES = 20;", script, StringComparison.Ordinal);
+        Assert.Contains("input.multiple = true;", script, StringComparison.Ordinal);
+        Assert.Contains("scanAssetScreenshots(files, view.id, view.holdings)", script, StringComparison.Ordinal);
+        Assert.Contains("'SYMBOL'", script, StringComparison.Ordinal);
+        Assert.Contains("'TOTAL COST'", script, StringComparison.Ordinal);
+        Assert.Contains("'SHARES'", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_OCR_LANGUAGE = 'chi_tra+eng';", script, StringComparison.Ordinal);
+        Assert.Contains("'昨日餘額'", script, StringComparison.Ordinal);
+        Assert.Contains("const lines = data?.lines ?? [];", script, StringComparison.Ordinal);
+        Assert.Contains("const nextText = words[index + 1]?.text", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrIsHoldingRow(draft)", script, StringComparison.Ordinal);
+        Assert.Contains(".filter(assetOcrIsHoldingRow)", script, StringComparison.Ordinal);
+        Assert.Contains("data-asset-ocr-confirmed", script, StringComparison.Ordinal);
+        Assert.Contains("逐列核對數字並勾選", script, StringComparison.Ordinal);
+        Assert.Contains("mergeAssetOcrScreenshotRows", script, StringComparison.Ordinal);
     }
 
     /// <summary>

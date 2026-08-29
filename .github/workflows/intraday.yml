@@ -134,6 +134,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Actions 預設的 shell 是 `bash -e`，errexit 是命令列給的，寫 set -uo pipefail
+          # 不會把它關掉。這裡明確關掉：底下大量用「條件不成立就 return」的寫法，
+          # 那種 return 會帶著狀態 1 回來，在 errexit 下會直接把整個步驟打掉。
+          set +e
           set -uo pipefail
 
           started=$(date +%s)
@@ -161,19 +165,24 @@ jobs:
                   cand=$(date -d "$day ${SESSION_OPEN:0:2}:${SESSION_OPEN:2:2}:00" +%s)
                   if [ "$cand" -gt "$now" ]; then
                       echo "$cand"
-                      return
+                      return 0
                   fi
               done
+              # 找不到就回空字串，交給呼叫端的守衛處理。狀態一律給 0，
+              # 別讓「沒找到」以非零狀態傳出去。
+              return 0
           }
 
           # 今天過了 18:00 而每日快照還沒成功，就把它叫起來。一棒最多叫一次。
           snapshot_kicked=0
           maybe_kick_snapshot() {
-              [ "$snapshot_kicked" -eq 0 ] || return
+              # 這些 return 一律帶 0：這個函式是在 while 迴圈裡裸呼叫的，
+              # 「現在不必叫快照」是正常結果，不是錯誤。
+              [ "$snapshot_kicked" -eq 0 ] || return 0
               local d h since last
               d=$(date +%u); h=$(date +%H%M)
-              [ "$d" -le 5 ] || return
-              [ "$h" -ge 1800 ] && [ "$h" -lt 2200 ] || return
+              [ "$d" -le 5 ] || return 0
+              [ "$h" -ge 1800 ] && [ "$h" -lt 2200 ] || return 0
 
               # 「今天」是台北的今天；API 回的是 UTC，所以拿台北 00:00 換算成 UTC 當分界線。
               # date -u 會連輸入字串一起當成 UTC 解讀，所以先在本地時區算出 epoch 再轉。
@@ -187,7 +196,7 @@ jobs:
               if [ "${last:-0}" -gt 0 ]; then
                   echo "今天已經有成功的每日快照，不重複叫。"
                   snapshot_kicked=1
-                  return
+                  return 0
               fi
 
               echo "台北 $(date '+%F %T')：過了 18:00 但今天還沒有成功的每日快照，叫它起來。"
@@ -198,6 +207,7 @@ jobs:
               else
                   echo "::warning::叫每日快照失敗，下一輪再試。"
               fi
+              return 0
           }
 
           if in_session; then
@@ -308,6 +318,8 @@ jobs:
         if: steps.wait.outputs.collect == 'true'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          # 只在 runner 上用於上傳公開盤中快照；不可放入 manifest、網站 JS 或 log。
+          SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
         run: dotnet run -c Release --project src/Invest.Web -- intraday --loop
 
       # 網站上那個鈴鐺。休市會正常結束、不會走到這裡的 else，

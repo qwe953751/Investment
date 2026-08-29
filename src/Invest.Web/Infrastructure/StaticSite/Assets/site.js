@@ -12,6 +12,10 @@ const KLINE_DIRECTORY = 'data/kline';
 const REVENUE_HISTORY_TABLE = 'revenue_history';
 const INTRADAY_TOPIC_PERIOD = 'intraday';
 const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
+// 「盤中」不是只指排行頁：族群熱度與族群列表都會顯示同一輪的即時結果，
+// 從列表展開的個股 K 線也必須取同一份快照。所有是否走 CDN／是否輪詢的判斷都
+// 經由 usesIntradaySnapshot()，不可再各頁各自列舉，以免新增一個盤中入口就漏掉。
+const INTRADAY_TOPIC_TABS = new Set(['heat', 'tree']);
 const PREVIEW_QUERY = new URLSearchParams(window.location.search).get('preview');
 // 本機專用：讓指數 K 線的排版在沒有新快照／尚未套用盤中 migration 時也能檢查。
 // 這個開關只接受 localhost，正式網址不會進入假資料分支。
@@ -209,6 +213,14 @@ const TAIPEI_CLOCK = new Intl.DateTimeFormat('en-GB', {
 const TAIPEI_DATE = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit'
 });
+
+// 收集器會在開盤前等候資料，但使用者端只在真正連續交易時段更新。這樣早上九點前與
+// 收盤後打開盤中頁仍能看最後一輪，卻不會為了不會變的資料繼續輪詢 CDN。
+function isTaiwanIntradaySession() {
+    const now = TAIPEI_CLOCK.format(new Date());
+    const end = schedule?.intradayEnd ?? '13:35';
+    return now >= '09:00' && now <= end;
+}
 
 /// 這一輪走到整個交易時段的幾成。收盤後固定是 1，此時預估值等於實際值。
 function sessionProgress(capturedAtIso) {
@@ -980,6 +992,18 @@ function isIntradayDataView() {
     return state.view === 'intraday' || isCustomIntradayView();
 }
 
+function isIntradayTopicDataView() {
+    return state.view === 'topics'
+        && state.topicPeriod === INTRADAY_TOPIC_PERIOD
+        && INTRADAY_TOPIC_TABS.has(state.topicTab);
+}
+
+// 這是盤中資料流唯一的入口旗標。它同時涵蓋：排行、自訂盤中、族群熱度、族群列表，
+// 以及列表裡展開的盤中個股 K 線；筆記、資產、提醒、營收、盤後與其他族群頁面都會是 false。
+function usesIntradaySnapshot() {
+    return isIntradayDataView() || isIntradayTopicDataView();
+}
+
 const thresholdStateKey = () => (state.view === 'custom' ? 'customThreshold' : 'threshold');
 const activeThreshold = () => state[thresholdStateKey()];
 
@@ -1108,9 +1132,18 @@ let latestTradingDate = '';
 let schedule = null;
 let intradayRefreshMs = DEFAULT_INTRADAY_REFRESH_MS;
 
-// 盤中頁直接讀資料庫的連線資訊（公開金鑰，只有讀取權限）。
-// manifest 裡沒有這一段時盤中切換鈕會停用。
+// 既有功能（筆記、資產、提醒、營收等）直接讀資料庫的連線資訊（公開金鑰，只有讀取權限）。
+// 盤中資料若有 intradayCdn 則不使用這組連線；舊 manifest 才降級為原本的只讀查詢。
 let supabase = null;
+let intradayCdn = null;
+
+function hasIntradaySnapshotSource() {
+    return intradayCdn !== null || supabase !== null;
+}
+
+const intradaySourceLabel = () => intradayCdn === null
+    ? '資料庫相容路徑'
+    : '版本化 CDN 快照';
 
 function configureIntradayRefresh() {
     const minutes = Number(schedule?.intradayIntervalMinutes);
@@ -1181,6 +1214,8 @@ function applyViewVisibility() {
     // 留著等於在記憶體裡放一張沒人看的金融截圖直到重新整理。
     if (!assetsView) {
         discardAssetScreenshotDraft();
+        resetAssetOcrWorker();
+        assetOcrWarmupAttempted = false;
     }
     el('topics').hidden = !topics;
     el('notes-page').hidden = !notesView;
@@ -1210,7 +1245,7 @@ function renderFilters() {
         'view-options',
         availableViews().map(view => ({
             ...view,
-            disabled: view.key === 'intraday' && supabase === null
+            disabled: view.key === 'intraday' && !hasIntradaySnapshotSource()
         })),
         state.view,
         view => update({ view }));
@@ -1542,7 +1577,7 @@ function applyStoredSettings() {
 
     // 族群的期間清單是 topics.json 決定的，這時候還沒讀進來，
     // 所以只驗「是不是排行榜有的期間」，真正對不上會在 prepareTopics 再退回第一個。
-    if (stored.topicPeriod === INTRADAY_TOPIC_PERIOD && supabase !== null) {
+    if (stored.topicPeriod === INTRADAY_TOPIC_PERIOD && hasIntradaySnapshotSource()) {
         state.topicPeriod = INTRADAY_TOPIC_PERIOD;
     } else if (PERIODS.some(period => period.days === stored.topicPeriod)) {
         state.topicPeriod = stored.topicPeriod;
@@ -2890,8 +2925,8 @@ function makeAssetSummaryMetrics(summary) {
 function discardAssetScreenshotDraft() {
     // 原始截圖不保存：在沒有登入與 RLS 前，把金融影像留下來只會增加風險。
     // 辨識完該留下的是使用者確認過的數字，不是那張圖。
-    if (assetScreenshotDraft?.previewUrl) {
-        URL.revokeObjectURL(assetScreenshotDraft.previewUrl);
+    for (const screenshot of assetScreenshotDraft?.screenshots ?? []) {
+        URL.revokeObjectURL(screenshot.previewUrl);
     }
 
     assetScreenshotDraft = null;
@@ -3365,7 +3400,8 @@ function assetDraftRowFrom(holding) {
         quantity: holding.quantity ?? '',
         cost: holding.cost ?? '',
         marketValue: holding.marketValue ?? '',
-        unrealized: holding.unrealized ?? ''
+        unrealized: holding.unrealized ?? '',
+        confirmed: holding.confirmed === true
     };
 }
 
@@ -3376,6 +3412,8 @@ function readAssetDraftRows(body) {
         for (const field of ASSET_DRAFT_FIELDS) {
             draft[field] = row.querySelector(`input[data-field="${field}"]`)?.value.trim() ?? '';
         }
+
+        draft.confirmed = row.querySelector('input[data-asset-ocr-confirmed]')?.checked === true;
 
         return draft;
     });
@@ -3395,6 +3433,15 @@ function makeAssetDraftRow(draft) {
         row.append(cell);
     }
 
+    const reviewCell = document.createElement('td');
+    const review = document.createElement('input');
+    review.type = 'checkbox';
+    review.checked = draft.confirmed === true;
+    review.dataset.assetOcrConfirmed = 'true';
+    review.setAttribute('aria-label', '已逐欄核對這筆持倉');
+    reviewCell.append(review);
+    row.append(reviewCell);
+
     return row;
 }
 
@@ -3410,29 +3457,36 @@ function makeAssetDraftRow(draft) {
 // emscripten 從 worker 自己的位置去推 wasm 的網址，而 tesseract.js 的 worker 是
 // blob URL，推出來的路徑不存在，然後就停在「準備辨識」不動也不報錯。
 // 分開版小一 MB，不值得換一個查半天的當機。
-const ASSET_OCR_LANGUAGE = 'chi_tra';
+// 台股截圖以繁中為主，但同一個帳戶也可能混有美股券商畫面；兩個字庫都隨網站發布，
+// 仍完全在瀏覽器內辨識，不向任何第三方傳圖。
+const ASSET_OCR_LANGUAGE = 'chi_tra+eng';
+const ASSET_OCR_TIMEOUT_MS = 10_000;
+const ASSET_OCR_MAX_FILES = 20;
 
 // 欄位標題的說法各家券商不同，這裡列見得到的。比對時取「最長的那個關鍵字」，
 // 免得「成本」先把「成本市值」吃掉、或「商品」先把「商品名稱」吃掉。
 // costPrice／marketPrice 是每股單價，不是這一檔的總額，所以另外分一欄：
 // 抄成 cost 會讓帳戶的「投入成本」變成幾百塊。要乘上股數才是同一件事。
 const ASSET_OCR_HEADERS = [
-    { field: 'ticker', words: ['股票代號', '商品代號', '代號', '股號'] },
-    { field: 'name', words: ['股票名稱', '商品名稱', '名稱', '商品', '股票'] },
-    { field: 'quantity', words: ['庫存股數', '集保庫存', '持有股數', '股數', '庫存', '現股', '數量'] },
-    { field: 'cost', words: ['投入成本', '成本金額', '總成本', '成本'] },
-    { field: 'costPrice', words: ['買進均價', '平均成本', '成本價', '均價'] },
-    { field: 'marketValue', words: ['參考市值', '市價金額', '總市值', '市值', '現值'] },
-    { field: 'marketPrice', words: ['參考價', '成交價', '市價', '現價'] },
-    { field: 'unrealized', words: ['未實現損益', '損益金額', '損益試算', '未實現', '損益'] }
+    { field: 'ticker', words: ['股票代號', '商品代號', '代號', '股號', 'SYMBOL', 'TICKER', 'CODE'] },
+    { field: 'name', words: ['股票名稱', '商品名稱', '名稱', '商品', '股票', 'STOCK NAME', 'SECURITY', 'COMPANY'] },
+    { field: 'quantity', words: ['庫存股數', '集保庫存', '持有股數', '昨日餘額', '可用股數', '股數', '庫存', '現股', '數量', 'SHARES', 'QUANTITY', 'QTY', 'UNITS'] },
+    { field: 'cost', words: ['投入成本', '成本金額', '總成本', '成本', 'TOTAL COST', 'COST BASIS', 'INVESTMENT COST', 'TOTAL'] },
+    { field: 'costPrice', words: ['成交均價', '成本均價', '買進均價', '平均成本', '成本價', '均價', 'UNIT COST', 'AVG COST', 'AVERAGE COST', 'UNIT'] },
+    { field: 'marketValue', words: ['參考市值', '市價金額', '總市值', '市值', '現值', 'MARKET VALUE', 'TOTAL VALUE', 'VALUE'] },
+    { field: 'marketPrice', words: ['參考價', '成交價', '市價', '現價', 'CURRENT PRICE', 'MARKET PRICE', 'LAST PRICE', 'PRICE'] },
+    { field: 'unrealized', words: ['未實現損益', '損益金額', '損益試算', '未實現', '損益', 'UNREALIZED P/L', 'UNREALIZED', 'GAIN/LOSS', 'P/L'] }
 ];
 
 // 只有這幾欄是每股單價，其餘都是金額。
 const ASSET_OCR_UNIT_PRICES = { costPrice: 'cost', marketPrice: 'marketValue' };
 
-const ASSET_OCR_TICKER = /\d{4,6}[A-Za-z]?/;
+const ASSET_OCR_TICKER = /(?:\d{4,6}[A-Za-z]?|[A-Z]{2,5}(?:[.-][A-Z]{1,2})?)/;
 
 let assetOcrEngineLoading = null;
+let assetOcrWorker = null;
+let assetOcrWorkerLoading = null;
+let assetOcrWarmupAttempted = false;
 let assetOcrStatus = '';
 
 function assetSiteUrl(name) {
@@ -3470,6 +3524,64 @@ function loadAssetOcrEngine() {
     return assetOcrEngineLoading;
 }
 
+async function getAssetOcrWorker() {
+    if (assetOcrWorker !== null) {
+        return assetOcrWorker;
+    }
+
+    if (assetOcrWorkerLoading === null) {
+        assetOcrWorkerLoading = (async () => {
+            const Tesseract = await loadAssetOcrEngine();
+            const worker = await Tesseract.createWorker(ASSET_OCR_LANGUAGE, 1, {
+                workerPath: assetSiteUrl('tesseract-worker.min.js'),
+                corePath: assetSiteUrl('tesseract-core-simd-lstm.wasm.js'),
+                langPath: assetSiteUrl('.'),
+                gzip: false,
+                logger: message => setAssetOcrStatus(assetOcrProgressText(message))
+            });
+            assetOcrWorker = worker;
+            return worker;
+        })().finally(() => {
+            assetOcrWorkerLoading = null;
+        });
+    }
+
+    return assetOcrWorkerLoading;
+}
+
+function resetAssetOcrWorker() {
+    const worker = assetOcrWorker;
+    assetOcrWorker = null;
+
+    if (worker !== null) {
+        // timeout 時不可再等待卡住的 worker，否則「十秒上限」只是表面。終止在背景收尾，
+        // 下一張圖會建立乾淨的 worker；失敗也不影響手動校對流程。
+        void worker.terminate().catch(() => {});
+    }
+}
+
+function warmAssetOcrWorker() {
+    if (assetOcrWarmupAttempted || assetOcrWorker !== null || assetOcrWorkerLoading !== null) {
+        return;
+    }
+
+    assetOcrWarmupAttempted = true;
+    setAssetOcrStatus('準備本機辨識引擎…');
+    void getAssetOcrWorker()
+        .then(() => {
+            setAssetOcrStatus('本機辨識引擎已就緒。');
+            if (assetScreenshotDraft === null) {
+                renderAssetsDashboard();
+            }
+        })
+        .catch(() => {
+            setAssetOcrStatus('本機辨識引擎載入失敗，仍可重新選圖後再試。');
+            if (assetScreenshotDraft === null) {
+                renderAssetsDashboard();
+            }
+        });
+}
+
 function setAssetOcrStatus(text) {
     assetOcrStatus = text;
     const node = document.getElementById('asset-ocr-status');
@@ -3501,13 +3613,15 @@ function assetOcrProgressText(message) {
 
 // 手機截圖的表格字很小，原尺寸丟進去常常整列漏掉；先放大再轉高對比灰階，
 // 數字的辨識率差很多。上限是怕大螢幕截圖放大之後把記憶體吃光。
-const ASSET_OCR_MIN_WIDTH = 1400;
-const ASSET_OCR_MAX_PIXELS = 4_000_000;
+const ASSET_OCR_MIN_WIDTH = 1800;
+const ASSET_OCR_MAX_PIXELS = 5_000_000;
 
 function assetOcrCanvas(bitmap) {
     const enlarge = Math.max(1, ASSET_OCR_MIN_WIDTH / bitmap.width);
     const budget = Math.sqrt(ASSET_OCR_MAX_PIXELS / (bitmap.width * bitmap.height));
-    const scale = Math.min(enlarge, Math.max(1, budget));
+    // 原本用 Math.max(1, budget) 會讓過大的圖永遠不縮小，手機長截圖的 OCR 因此常超時。
+    // 這裡允許縮小到像素預算內，但小圖仍會放大讓欄位標題可讀。
+    const scale = Math.min(enlarge, budget);
 
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(bitmap.width * scale);
@@ -3560,6 +3674,7 @@ function assetOcrNumber(text) {
         .replace(/[０-９]/g, character => String.fromCharCode(character.charCodeAt(0) - 0xFEE0))
         .replace(/[，]/g, ',')
         .replace(/[$＄元股]/g, '')
+        .replace(/shares?/gi, '')
         .trim();
 
     let digits = normalized;
@@ -3598,18 +3713,27 @@ function assetOcrNumber(text) {
 }
 
 function assetOcrLines(data) {
+    // Tesseract 的 AUTO 模式能保留券商表格的一列，這比 Sparse Text 拆成單字後再猜分列可靠。
     const lines = data?.lines ?? [];
 
     return lines
-        .map(line => (line.words ?? [])
-            .map(word => ({
-                text: assetOcrWordText(word),
-                left: word.bbox?.x0 ?? 0,
-                right: word.bbox?.x1 ?? 0,
-                center: ((word.bbox?.x0 ?? 0) + (word.bbox?.x1 ?? 0)) / 2
-            }))
-            .filter(word => word.text !== '')
-            .sort((left, right) => left.center - right.center))
+        .map(line => {
+            const words = (line.words ?? [])
+                .map(word => ({
+                    text: assetOcrWordText(word),
+                    left: word.bbox?.x0 ?? 0,
+                    right: word.bbox?.x1 ?? 0,
+                    center: ((word.bbox?.x0 ?? 0) + (word.bbox?.x1 ?? 0)) / 2,
+                    top: word.bbox?.y0 ?? 0,
+                    bottom: word.bbox?.y1 ?? 0
+                }))
+                .filter(word => word.text !== '')
+                .sort((left, right) => left.center - right.center);
+            words.top = Math.min(...words.map(word => word.top));
+            words.bottom = Math.max(...words.map(word => word.bottom));
+            words.centerY = (words.top + words.bottom) / 2;
+            return words;
+        })
         .filter(words => words.length > 0);
 }
 
@@ -3635,14 +3759,17 @@ function assetOcrCharacters(words) {
 
 function assetOcrHeaderFields(words) {
     const characters = assetOcrCharacters(words);
-    const text = characters.map(character => character.text).join('');
+    const text = characters.map(character => character.text).join('').toUpperCase();
     const claimed = characters.map(() => false);
     const found = new Map();
 
     // 長的關鍵字先搶，「成本價」才不會先被「成本」切走一半，
     // 也才不會把「參考市值」認成「市值」而漏掉真正的市價欄。
     const candidates = ASSET_OCR_HEADERS
-        .flatMap(header => header.words.map(keyword => ({ field: header.field, keyword })))
+        .flatMap(header => header.words.map(keyword => ({
+            field: header.field,
+            keyword: keyword.replace(/\s+/g, '').toUpperCase()
+        })))
         .sort((left, right) => right.keyword.length - left.keyword.length);
 
     for (const candidate of candidates) {
@@ -3680,11 +3807,35 @@ function assetOcrColumns(lines) {
     for (let index = 0; index < lines.length; index += 1) {
         const found = assetOcrHeaderFields(lines[index]);
 
-        // 要兩個以上才算標題列：只中一個多半是內文剛好出現「損益」這種字。
+        // 先接受單行完整標題，不能為了湊兩行而跳過第一筆持倉。
         if (found.size >= 2) {
             return {
                 headerIndex: index,
                 columns: [...found]
+                    .map(([field, center]) => ({ field, center }))
+                    .sort((left, right) => left.center - right.center)
+            };
+        }
+
+        // 有些美股 App 把 "UNIT COST" 與 "TOTAL COST" 拆成上下兩行。
+        // 合併最多兩行標題才能把單價和總成本放到正確欄位；不延伸到第三行，
+        // 避免吃進第一筆持倉資料後誤判成標題。
+        const headerLines = [lines[index]];
+
+        if (index + 1 < lines.length && assetOcrLinesAreSameRow(lines[index], lines[index + 1])) {
+            headerLines.push(lines[index + 1]);
+        }
+
+        const words = headerLines
+            .flat()
+            .sort((left, right) => left.center - right.center);
+        const combined = assetOcrHeaderFields(words);
+
+        // 要兩個以上才算標題列：只中一個多半是內文剛好出現「損益」這種字。
+        if (combined.size >= 2) {
+            return {
+                headerIndex: index + headerLines.length - 1,
+                columns: [...combined]
                     .map(([field, center]) => ({ field, center }))
                     .sort((left, right) => left.center - right.center)
             };
@@ -3714,6 +3865,21 @@ function assetOcrRow(words, columns) {
     for (let index = 0; index < words.length; index += 1) {
         const word = words[index];
         const field = columns === null ? null : assetOcrFieldAt(columns, word.center);
+        const nextText = words[index + 1]?.text ?? '';
+        const shares = /^(.*?)(?:shares?|股)$/i.exec(`${word.text}${nextText}`);
+
+        if (shares !== null && draft.quantity === '') {
+            const quantity = assetOcrNumber(shares[1]);
+
+            if (quantity !== null) {
+                draft.quantity = quantity;
+                if (/^shares?$/i.test(nextText)) {
+                    index += 1;
+                }
+
+                continue;
+            }
+        }
 
         // 代號常和名稱擠在同一格（「2330 台積電」），所以先認代號再談欄位。
         // 沒有標題可靠時只看最前面兩段，免得把「20000 股」的股數當成代號。
@@ -3721,11 +3887,11 @@ function assetOcrRow(words, columns) {
             ? index < 2
             : field === 'ticker' || field === 'name';
 
-        if (draft.ticker === '' && couldBeTicker && /^\d/.test(word.text)) {
+        if (draft.ticker === '' && couldBeTicker) {
             const ticker = ASSET_OCR_TICKER.exec(word.text);
 
             if (ticker !== null) {
-                draft.ticker = ticker[0];
+                draft.ticker = ticker[0].toUpperCase();
                 const rest = word.text.slice(ticker[0].length);
 
                 if (rest !== '') {
@@ -3757,13 +3923,7 @@ function assetOcrRow(words, columns) {
         }
     }
 
-    const quantity = draft.quantity === '' ? null : Number(draft.quantity);
-
-    for (const [price, total] of Object.entries(ASSET_OCR_UNIT_PRICES)) {
-        if (draft[total] === '' && prices[price] !== null && quantity !== null) {
-            draft[total] = Math.round(prices[price] * quantity * 100) / 100;
-        }
-    }
+    draft.ocrUnitPrices = prices;
 
     // 名稱只收中文與英數，把 OCR 常噴出來的框線符號濾掉。
     draft.name = names
@@ -3774,29 +3934,149 @@ function assetOcrRow(words, columns) {
     return draft;
 }
 
+function mergeAssetOcrDraft(target, source) {
+    for (const field of ASSET_DRAFT_FIELDS) {
+        if (target[field] === '' && source[field] !== '') {
+            target[field] = source[field];
+        }
+    }
+
+    for (const [field, value] of Object.entries(source.ocrUnitPrices ?? {})) {
+        target.ocrUnitPrices[field] ??= value;
+    }
+
+    return target;
+}
+
+function finalizeAssetOcrDraft(draft) {
+    const quantity = draft.quantity === '' ? null : Number(draft.quantity);
+
+    for (const [price, total] of Object.entries(ASSET_OCR_UNIT_PRICES)) {
+        const unitPrice = draft.ocrUnitPrices?.[price];
+
+        if (draft[total] === '' && unitPrice !== null && unitPrice !== undefined && quantity !== null) {
+            draft[total] = Math.round(unitPrice * quantity * 100) / 100;
+        }
+    }
+
+    const knownName = assetKnownStockName(draft.ticker);
+
+    if (knownName !== '') {
+        draft.name = knownName;
+    }
+
+    delete draft.ocrUnitPrices;
+    return draft;
+}
+
+function assetOcrLinesAreSameRow(left, right) {
+    const gap = right.top - left.bottom;
+    const height = Math.max(1, left.bottom - left.top, right.bottom - right.top);
+    // 券商常把「名稱／代號」上下排，數字卻和名稱同一排；手機高解析截圖放大後，
+    // 兩段的距離會超過舊版固定 48px。放寬到三個字高仍小於下一筆持倉的列距。
+    return gap >= -height * 0.5 && gap <= Math.max(80, height * 3.5);
+}
+
+function assetOcrIsHoldingRow(draft) {
+    const ticker = draft.ticker.toUpperCase();
+
+    // 表頭、導覽列與帳號常被 OCR 誤認成英文字母股票代號；沒有任何持倉數字的列
+    // 不可能安全地更新帳戶，寧可交給手動新增也不能放進可套用清單。
+    if (ticker === '' || /^(?:SYM|COST|TOTAL|SHARES?|UNIT|STOCK|POSITIONS?|WATCHLIST|ORDER|STATUS|ACCOUNT)/.test(ticker)) {
+        return false;
+    }
+
+    // 台股上市櫃代號是四碼，六碼 ETF／權證以 0 開頭；六碼帳號不應被當成股票。
+    if (/^\d{6}$/.test(ticker) && !ticker.startsWith('0')) {
+        return false;
+    }
+
+    // 兩碼英文字極常是 App 介面殘字；這批資料無法與台股名冊交叉驗證時，
+    // 改由使用者手動補，避免把 "AA"、"FS" 之類的雜訊當成美股。
+    if (/^[A-Z]{2}$/.test(ticker) && assetKnownStockName(ticker) === '') {
+        return false;
+    }
+
+    return ASSET_DRAFT_FIELDS.some(field => field !== 'ticker' && field !== 'name' && draft[field] !== '');
+}
+
+function assetKnownStockName(ticker) {
+    const normalized = String(ticker ?? '').trim().toUpperCase();
+    return nameByTicker.get(normalized) ?? topicData?.stockNames?.[normalized] ?? '';
+}
+
 function assetDraftRowsFromOcr(data) {
     const lines = assetOcrLines(data);
     const header = assetOcrColumns(lines);
     const columns = header?.columns ?? null;
     const startIndex = header === null ? 0 : header.headerIndex + 1;
     const rows = [];
+    let pending = null;
 
     for (let index = startIndex; index < lines.length; index += 1) {
-        const draft = assetOcrRow(lines[index], columns);
+        const line = lines[index];
+        const draft = assetOcrRow(line, columns);
 
-        // 沒有代號的列多半是小計、頁尾或按鈕文字，不要塞進表裡讓使用者一列列刪。
-        if (draft.ticker === '') {
+        const hasData = draft.ticker !== ''
+            || draft.name !== ''
+            || ASSET_DRAFT_FIELDS.some(field => field !== 'ticker' && field !== 'name' && draft[field] !== '');
+
+        if (!hasData) {
             continue;
         }
 
-        rows.push(draft);
+        if (draft.ticker !== '') {
+            if (pending !== null && assetOcrLinesAreSameRow(pending.line, line)) {
+                mergeAssetOcrDraft(draft, pending.draft);
+            }
+
+            rows.push({ draft, line });
+            pending = null;
+            continue;
+        }
+
+        const previous = rows.at(-1);
+
+        if (previous !== undefined && assetOcrLinesAreSameRow(previous.line, line)) {
+            mergeAssetOcrDraft(previous.draft, draft);
+            previous.line = line;
+            continue;
+        }
+
+        if (pending !== null && assetOcrLinesAreSameRow(pending.line, line)) {
+            mergeAssetOcrDraft(pending.draft, draft);
+            pending.line = line;
+            continue;
+        }
+
+        pending = { draft, line };
     }
 
-    return { rows, matchedHeader: header !== null };
+    return {
+        rows: rows
+            .map(row => finalizeAssetOcrDraft(row.draft))
+            .filter(assetOcrIsHoldingRow),
+        matchedHeader: header !== null
+    };
 }
 
-async function recognizeAssetScreenshot(file) {
-    const Tesseract = await loadAssetOcrEngine();
+function assetOcrDeadline(promise, remainingMs) {
+    return new Promise((resolve, reject) => {
+        const timer = window.setTimeout(() => reject(new Error('辨識超過 10 秒，已停止這張圖片。')), remainingMs);
+        promise.then(
+            value => {
+                window.clearTimeout(timer);
+                resolve(value);
+            },
+            error => {
+                window.clearTimeout(timer);
+                reject(error);
+            });
+    });
+}
+
+async function recognizeAssetScreenshot(file, index, total) {
+    const startedAt = performance.now();
     const bitmap = await createImageBitmap(file);
     let canvas;
 
@@ -3806,32 +4086,72 @@ async function recognizeAssetScreenshot(file) {
         bitmap.close();
     }
 
-    const worker = await Tesseract.createWorker(ASSET_OCR_LANGUAGE, 1, {
-        workerPath: assetSiteUrl('tesseract-worker.min.js'),
-        corePath: assetSiteUrl('tesseract-core-simd-lstm.wasm.js'),
-        langPath: assetSiteUrl('.'),
-
-        // 我們存的是沒壓縮的 traineddata：GitHub Pages 本來就會 gzip 傳輸，
-        // 存一份 .gz 只是讓瀏覽器多解一次。
-        gzip: false,
-        logger: message => setAssetOcrStatus(assetOcrProgressText(message))
-    });
-
     try {
-        const { data } = await worker.recognize(canvas);
-        return assetDraftRowsFromOcr(data);
+        const worker = await getAssetOcrWorker();
+        const elapsedBeforeRecognition = performance.now() - startedAt;
+        const remainingMs = ASSET_OCR_TIMEOUT_MS - elapsedBeforeRecognition;
+
+        if (remainingMs <= 0) {
+            throw new Error('圖片準備超過 10 秒，已停止這張圖片。');
+        }
+
+        setAssetOcrStatus(`第 ${index} / ${total} 張：辨識中（最長 10 秒）…`);
+        const { data } = await assetOcrDeadline(worker.recognize(canvas), remainingMs);
+        return {
+            ...assetDraftRowsFromOcr(data),
+            elapsedMs: Math.round(performance.now() - startedAt)
+        };
+    } catch (error) {
+        // worker 一旦逾時，不能再讓它偷偷佔著 CPU 跑到幾分鐘後；立刻丟掉，下次才不會
+        // 接到上一張圖的殘留工作。
+        if (String(error?.message ?? error).includes('10 秒')) {
+            resetAssetOcrWorker();
+        }
+
+        throw error;
     } finally {
-        await worker.terminate();
+        canvas.width = 1;
+        canvas.height = 1;
     }
 }
 
-async function scanAssetScreenshot(file, accountId, holdings) {
+function mergeAssetOcrScreenshotRows(rows) {
+    const unique = new Map();
+
+    for (const row of rows) {
+        const key = row.ticker !== '' ? `ticker:${row.ticker}` : `name:${row.name}`;
+        const previous = unique.get(key);
+
+        if (previous === undefined) {
+            unique.set(key, row);
+            continue;
+        }
+
+        for (const field of ASSET_DRAFT_FIELDS) {
+            if (previous[field] === '' && row[field] !== '') {
+                previous[field] = row[field];
+            }
+        }
+    }
+
+    return [...unique.values()];
+}
+
+function formatAssetOcrDuration(milliseconds) {
+    return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)} 秒`;
+}
+
+async function scanAssetScreenshots(files, accountId, holdings) {
     discardAssetScreenshotDraft();
     assetScreenshotDraft = {
         accountId,
-        fileName: file.name,
         capturedAt: new Date().toISOString(),
-        previewUrl: URL.createObjectURL(file),
+        screenshots: files.map(file => ({
+            fileName: file.name,
+            previewUrl: URL.createObjectURL(file),
+            status: '等待中',
+            elapsedMs: null
+        })),
         scanning: true,
         rows: []
     };
@@ -3839,48 +4159,58 @@ async function scanAssetScreenshot(file, accountId, holdings) {
     setAssetOcrStatus('準備辨識…');
     renderAssetsDashboard();
 
-    let result = null;
-    let failure = '';
+    // 辨識期間使用者可能已經換帳戶或按了取消，那就別把結果硬塞回去。
+    const rows = [];
+    const failures = [];
+    let matchedHeader = false;
 
-    try {
-        result = await recognizeAssetScreenshot(file);
-    } catch (error) {
-        failure = String(error?.message ?? error);
+    for (const [zeroBasedIndex, file] of files.entries()) {
+        if (assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
+            setAssetOcrStatus('');
+            return;
+        }
+
+        const screenshot = assetScreenshotDraft.screenshots[zeroBasedIndex];
+        screenshot.status = '辨識中…';
+        setAssetOcrStatus(`第 ${zeroBasedIndex + 1} / ${files.length} 張：準備辨識…`);
+
+        try {
+            const result = await recognizeAssetScreenshot(file, zeroBasedIndex + 1, files.length);
+            screenshot.status = `完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
+            screenshot.elapsedMs = result.elapsedMs;
+            rows.push(...result.rows);
+            matchedHeader ||= result.matchedHeader;
+        } catch (error) {
+            screenshot.status = '失敗';
+            failures.push(`第 ${zeroBasedIndex + 1} 張：${String(error?.message ?? error)}`);
+        }
     }
 
-    // 辨識期間使用者可能已經換帳戶或按了取消，那就別把結果硬塞回去。
     if (assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
         setAssetOcrStatus('');
         return;
     }
 
     assetScreenshotDraft.scanning = false;
+    assetScreenshotDraft.rows = mergeAssetOcrScreenshotRows(rows);
     setAssetOcrStatus('');
 
-    if (result === null) {
-        // 辨識掛掉不代表這次上傳白費：表格照樣開著，只是要自己填。
+    if (assetScreenshotDraft.rows.length === 0) {
         assetScreenshotDraft.rows = holdings.length > 0
             ? holdings.map(assetDraftRowFrom)
             : [assetDraftRowFrom({})];
-        assetActionNotice = `截圖辨識失敗（${failure}），下面這張表請自己填或修改。`;
+        assetActionNotice = failures.length > 0
+            ? `沒有任何圖片成功辨識。${failures.join('；')}，下面這張表請自己填或修改。`
+            : '這批截圖沒有認出任何一檔股票，請改用清楚一點的截圖，或直接在下面填。';
         renderAssetsDashboard();
         return;
     }
 
-    if (result.rows.length === 0) {
-        assetScreenshotDraft.rows = holdings.length > 0
-            ? holdings.map(assetDraftRowFrom)
-            : [assetDraftRowFrom({})];
-        assetActionNotice = '這張截圖沒有認出任何一檔股票，請改用清楚一點的截圖，或直接在下面填。';
-        renderAssetsDashboard();
-        return;
-    }
-
-    assetScreenshotDraft.rows = result.rows;
-    assetActionNotice = result.matchedHeader
-        ? `辨識出 ${result.rows.length} 檔股票，請逐列核對再套用。`
-        : `辨識出 ${result.rows.length} 檔股票，但沒認出欄位標題，金額多半是空的，`
-            + '請自己補。下次截圖記得把「股數／成本／市值／損益」那一行標題一起截進來。';
+    const prefix = `辨識出 ${assetScreenshotDraft.rows.length} 檔股票，請逐列核對再套用。`;
+    const headerNotice = matchedHeader
+        ? ''
+        : '部分圖片沒認出欄位標題，金額可能留空，請自行補齊。';
+    assetActionNotice = [prefix, headerNotice, ...failures].filter(text => text !== '').join(' ');
     renderAssetsDashboard();
 }
 
@@ -3888,48 +4218,86 @@ function makeAssetScreenshotFlow(view) {
     const section = document.createElement('section');
     section.className = 'asset-screenshot-flow';
     const heading = document.createElement('h3');
-    heading.textContent = '上傳截圖更新持倉';
+    heading.textContent = '上傳截圖更新帳戶持倉';
     const description = document.createElement('p');
     description.textContent = '截圖只在這個瀏覽器裡辨識，不會上傳、也不會保存。'
         + '請把欄位標題那一行一起截進來，辨識才知道哪個數字是成本、哪個是市值。'
-        + '辨識結果一定要自己核對過再套用；套用後會以下面這張表取代帳戶目前的全部持倉。';
+        + `一次可選 1–${ASSET_OCR_MAX_FILES} 張，依序辨識，每張最多 10 秒。`
+        + '辨識結果必須逐列核對並勾選後才能套用；套用後會以下面這張表取代帳戶目前的全部持倉。';
     const inputLabel = document.createElement('label');
     inputLabel.className = 'asset-file-input';
     const inputText = document.createElement('span');
-    inputText.textContent = '選擇券商未實現損益截圖';
+    inputText.textContent = `選擇券商未實現損益截圖（最多 ${ASSET_OCR_MAX_FILES} 張）`;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
-    input.disabled = assetsBusy || assetScreenshotDraft?.scanning === true;
+    input.multiple = true;
+    warmAssetOcrWorker();
+    // 每張圖片的十秒只量「圖片前處理＋OCR」，不把第一次下載本機字庫算進去。
+    // 因此 worker 尚未成功建立前不可選檔；否則使用者會以為一張圖超時，實際上是引擎尚未就緒。
+    input.disabled = assetsBusy || assetScreenshotDraft?.scanning === true || assetOcrWorker === null;
     input.addEventListener('change', () => {
-        const file = input.files?.[0];
+        const files = [...(input.files ?? [])];
 
-        if (file === undefined) {
+        if (files.length === 0) {
             return;
         }
 
-        if (!file.type.startsWith('image/')) {
+        if (files.length > ASSET_OCR_MAX_FILES) {
+            assetActionNotice = `一次最多選 ${ASSET_OCR_MAX_FILES} 張圖片，請分批處理。`;
+            renderAssetsDashboard();
+            return;
+        }
+
+        if (files.some(file => !file.type.startsWith('image/'))) {
             assetActionNotice = '請選擇圖片格式的帳戶截圖。';
             renderAssetsDashboard();
             return;
         }
 
-        void scanAssetScreenshot(file, view.id, view.holdings);
+        void scanAssetScreenshots(files, view.id, view.holdings);
     });
     inputLabel.append(inputText, input);
     section.append(heading, description, inputLabel);
+
+    if (assetOcrWorker === null && assetScreenshotDraft?.accountId !== view.id) {
+        const warmup = document.createElement('p');
+        warmup.className = 'asset-ocr-status';
+        warmup.textContent = assetOcrStatus || '準備本機辨識引擎…';
+        section.append(warmup);
+
+        if (assetOcrWorkerLoading === null) {
+            section.append(assetButton('重新準備辨識引擎', 'asset-secondary-button', () => {
+                assetOcrWarmupAttempted = false;
+                warmAssetOcrWorker();
+                renderAssetsDashboard();
+            }));
+        }
+    }
 
     if (assetScreenshotDraft?.accountId !== view.id) {
         return section;
     }
 
-    const preview = document.createElement('img');
-    preview.className = 'asset-screenshot-preview';
-    preview.src = assetScreenshotDraft.previewUrl;
-    preview.alt = `帳戶截圖預覽：${assetScreenshotDraft.fileName}`;
+    const previews = document.createElement('div');
+    previews.className = 'asset-screenshot-previews';
+
+    for (const screenshot of assetScreenshotDraft.screenshots) {
+        const item = document.createElement('figure');
+        item.className = 'asset-screenshot-preview-item';
+        const preview = document.createElement('img');
+        preview.className = 'asset-screenshot-preview';
+        preview.src = screenshot.previewUrl;
+        preview.alt = `帳戶截圖預覽：${screenshot.fileName}`;
+        const detail = document.createElement('figcaption');
+        detail.textContent = `${screenshot.fileName} · ${screenshot.status}`;
+        item.append(preview, detail);
+        previews.append(item);
+    }
+
     const caption = document.createElement('p');
     caption.className = 'asset-screenshot-caption';
-    caption.textContent = `${assetScreenshotDraft.fileName} · ${assetTimeText(assetScreenshotDraft.capturedAt)} · 圖片不會上傳`;
+    caption.textContent = `${assetScreenshotDraft.screenshots.length} 張圖片 · ${assetTimeText(assetScreenshotDraft.capturedAt)} · 圖片不會上傳`;
 
     if (assetScreenshotDraft.scanning) {
         // 辨識期間先不要給校對表：進度每秒跳好幾次，表格會一直被重建，
@@ -3938,7 +4306,7 @@ function makeAssetScreenshotFlow(view) {
         status.className = 'asset-ocr-status';
         status.id = 'asset-ocr-status';
         status.textContent = assetOcrStatus === '' ? '辨識中…' : assetOcrStatus;
-        section.append(preview, caption, status);
+        section.append(previews, caption, status);
         return section;
     }
 
@@ -3952,7 +4320,7 @@ function makeAssetScreenshotFlow(view) {
         body.append(makeAssetDraftRow(draft));
     }
 
-    table.append(assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益']), body);
+    table.append(assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益', '已核對']), body);
 
     const actions = document.createElement('div');
     actions.className = 'asset-editor-actions';
@@ -3977,6 +4345,12 @@ function makeAssetScreenshotFlow(view) {
 
         if (rows.length === 0) {
             assetActionNotice = '這張表沒有任何一列填了代號或名稱，沒有東西可以套用。';
+            renderAssetsDashboard();
+            return;
+        }
+
+        if (rows.some(row => !row.confirmed)) {
+            assetActionNotice = '為了避免 OCR 誤讀覆寫帳戶，請逐列核對數字並勾選「已核對」後再套用。';
             renderAssetsDashboard();
             return;
         }
@@ -4013,7 +4387,7 @@ function makeAssetScreenshotFlow(view) {
     });
 
     review.append(table, actions);
-    section.append(preview, caption, review);
+    section.append(previews, caption, review);
     return section;
 }
 
@@ -5162,13 +5536,11 @@ function renderIndexKLinePopover(market, anchor) {
 }
 
 function topicUsesIntradayData() {
-    return state.view === 'topics'
-        && state.topicPeriod === INTRADAY_TOPIC_PERIOD
-        && (state.topicTab === 'heat' || state.topicTab === 'tree');
+    return isIntradayTopicDataView();
 }
 
 async function loadTopicIntradayKLine(ticker) {
-    if (!topicUsesIntradayData() || supabase === null || intradayTopicPeriod?.capturedAt === undefined) {
+    if (!topicUsesIntradayData() || intradayTopicPeriod?.capturedAt === undefined) {
         return;
     }
 
@@ -5186,19 +5558,21 @@ async function loadTopicIntradayKLine(ticker) {
 
     if (!topicIntradayKLinePromises.has(ticker)) {
         topicIntradayKLinePromises.set(ticker, (async () => {
-            const rows = await fetchAllRows(
-                'intraday_latest',
-                'symbol,trade_date,open_price,high_price,low_price,price,turnover',
-                `&symbol=eq.${encodeURIComponent(ticker)}`);
-            const row = rows[0];
+            // 族群列表展開 K 線必須與它正顯示的熱度／行情是同一輪。新版從記憶體中的
+            // CDN 完整快照取值，不另打 intraday_latest；舊 manifest 才由 ensure 的相容路徑補齊。
+            if (!await ensureIntradaySnapshot(true)) {
+                return;
+            }
+
+            const row = intradayRaw?.find(item => item.symbol === ticker);
             const values = [row?.open_price, row?.high_price, row?.low_price, row?.price].map(Number);
 
-            if (!row?.trade_date || !values.every(Number.isFinite)) {
+            if (intradaySummary?.trade_date === undefined || !values.every(Number.isFinite)) {
                 return;
             }
 
             topicIntradayKLines.set(ticker, {
-                date: String(row.trade_date),
+                date: String(intradaySummary.trade_date),
                 open: values[0],
                 high: values[1],
                 low: values[2],
@@ -6965,6 +7339,26 @@ async function reloadIfStale() {
     return true;
 }
 
+// 舊分頁若一直留著，會繼續使用舊的盤中輪詢程式與舊的資料格式。每十分鐘只讀 GitHub Pages
+// 的小型 manifest；這不是 Supabase 請求，也不會改變筆記、資產等既有資料更新機制。
+const SITE_VERSION_CHECK_MS = 10 * 60_000;
+
+function startSiteVersionChecker() {
+    const check = async () => {
+        if (!document.hidden) {
+            try {
+                await reloadIfStale();
+            } catch {
+                // 網站版本檢查是附加保護；斷網時不能影響使用者正在看的內容。
+            }
+        }
+
+        setTimeout(check, SITE_VERSION_CHECK_MS);
+    };
+
+    setTimeout(check, SITE_VERSION_CHECK_MS);
+}
+
 /// 標題旁的「檢查更新」。這份網站是一份快照，數字要等排程在 GitHub 上重新回補、
 /// 重新發佈才會變新，所以按鈕做的事是「去問有沒有新版本」：有就帶著新版本號重載整頁，
 /// 資料檔的網址跟著換，表格會直接顯示新的數字；沒有就只回報目前的資料日期。
@@ -6998,9 +7392,7 @@ function wireRefreshButton() {
                 return;
             }
 
-            if (state.view === 'topics'
-                && state.topicTab === 'heat'
-                && state.topicPeriod === INTRADAY_TOPIC_PERIOD) {
+            if (isIntradayTopicDataView()) {
                 await loadIntradayTopicHeat();
                 renderSnapshotNote();
                 renderTopicPanel();
@@ -7045,8 +7437,193 @@ function wireRefreshButton() {
 let intradayRaw = null;
 let intradaySummary = null;
 let intradayRawLoadedAt = 0;
+let intradaySnapshotRunId = null;
+let intradaySnapshotTopicHeat = null;
+const INTRADAY_CHANNEL_NAME = 'frank-invest-intraday-snapshot-v1';
+const INTRADAY_LEASE_KEY = 'frank-invest.intraday-poller.v1';
+const INTRADAY_LEASE_MS = 30_000;
+const intradayTabId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+let intradayChannel = null;
+let intradayPollingLeader = false;
 
-async function ensureIntradaySnapshot(silent = false, force = false) {
+function releaseIntradayPollingLease() {
+    intradayPollingLeader = false;
+
+    try {
+        const lease = JSON.parse(localStorage.getItem(INTRADAY_LEASE_KEY) ?? 'null');
+
+        if (lease?.owner === intradayTabId) {
+            localStorage.removeItem(INTRADAY_LEASE_KEY);
+        }
+    } catch {
+        // localStorage 被封鎖時仍可繼續使用 CDN，只是無法跨分頁選出單一輪詢者。
+    }
+}
+
+function claimIntradayPollingLease() {
+    if (!usesIntradaySnapshot() || document.hidden) {
+        releaseIntradayPollingLease();
+        return false;
+    }
+
+    try {
+        const now = Date.now();
+        const current = JSON.parse(localStorage.getItem(INTRADAY_LEASE_KEY) ?? 'null');
+
+        if (current?.owner !== intradayTabId && Number(current?.expiresAt) > now) {
+            intradayPollingLeader = false;
+            return false;
+        }
+
+        const next = { owner: intradayTabId, expiresAt: now + INTRADAY_LEASE_MS };
+        localStorage.setItem(INTRADAY_LEASE_KEY, JSON.stringify(next));
+        const confirmed = JSON.parse(localStorage.getItem(INTRADAY_LEASE_KEY) ?? 'null');
+        intradayPollingLeader = confirmed?.owner === intradayTabId;
+        return intradayPollingLeader;
+    } catch {
+        // 某些隱私模式禁用 localStorage；此時寧可讓每個分頁讀 CDN，也絕不退回直接輪詢資料庫。
+        intradayPollingLeader = true;
+        return true;
+    }
+}
+
+function publishIntradaySnapshotToSiblingTabs(document) {
+    if (intradayPollingLeader && intradayChannel !== null) {
+        intradayChannel.postMessage({ type: 'snapshot', document });
+    }
+}
+
+function renderReceivedIntradaySnapshot() {
+    if (isIntradayDataView()) {
+        void (state.view === 'intraday' ? loadIntraday(true) : loadCustom(true));
+        return;
+    }
+
+    if (isIntradayTopicDataView()) {
+        void loadIntradayTopicHeat().then(() => {
+            if (isIntradayTopicDataView()) {
+                renderSnapshotNote();
+                renderTopicPanel();
+            }
+        });
+    }
+}
+
+function initializeIntradayBroadcastChannel() {
+    if (typeof BroadcastChannel !== 'function') {
+        return;
+    }
+
+    intradayChannel = new BroadcastChannel(INTRADAY_CHANNEL_NAME);
+    intradayChannel.addEventListener('message', event => {
+        const document = event.data?.type === 'snapshot' ? event.data.document : null;
+
+        if (!document
+            || !Number.isInteger(document.runId)
+            || !Array.isArray(document.rows)
+            || document.summary === null
+            || typeof document.summary !== 'object') {
+            return;
+        }
+
+        if (intradaySnapshotRunId === document.runId) {
+            return;
+        }
+
+        applyIntradaySnapshot(document, false);
+        renderReceivedIntradaySnapshot();
+    });
+
+    window.addEventListener('pagehide', releaseIntradayPollingLease);
+}
+
+function intradayCdnUrl(path) {
+    const base = intradayCdn?.baseUrl;
+
+    if (typeof base !== 'string' || base === '') {
+        throw new TypeError('盤中 CDN 缺少 baseUrl。');
+    }
+
+    return new URL(path, `${base.replace(/\/$/, '')}/`).toString();
+}
+
+function validateIntradayCdnSnapshot(pointer, document) {
+    if (document?.schemaVersion !== 1
+        || !Number.isInteger(document.runId)
+        || document.runId !== pointer.runId
+        || !Array.isArray(document.rows)
+        || document.rows.length !== pointer.rowCount
+        || document.rows.length === 0
+        || document.summary === null
+        || typeof document.summary !== 'object'
+        || document.summary.trade_date !== pointer.tradeDate
+        || document.summary.captured_at !== pointer.capturedAt) {
+        throw new TypeError('盤中 CDN 快照格式或版本不一致。');
+    }
+
+    if (document.topicHeat !== null && document.topicHeat !== undefined
+        && document.topicHeat.captured_at !== pointer.capturedAt) {
+        throw new TypeError('盤中族群熱度與行情不是同一輪快照。');
+    }
+}
+
+async function fetchIntradayCdnSnapshot() {
+    const latest = new URL(intradayCdn.latestUrl, location.href);
+
+    // latest 本身只有數百 bytes；用十秒 time slot 讓多裝置仍可共用 CDN 命中，又不會長時間
+    // 停在上一個指標。完整資料一律依不可變檔名快取，絕不覆寫後再賭 CDN 傳播速度。
+    latest.searchParams.set('slot', String(Math.floor(Date.now() / 10_000)));
+    const latestResponse = await fetch(latest, { cache: 'no-store' });
+
+    if (!latestResponse.ok) {
+        throw new Error(`盤中 CDN latest HTTP ${latestResponse.status}`);
+    }
+
+    const pointer = await latestResponse.json();
+
+    if (pointer?.schemaVersion !== 1
+        || !Number.isInteger(pointer.runId)
+        || !Number.isInteger(pointer.rowCount)
+        || pointer.rowCount <= 0
+        || typeof pointer.file !== 'string'
+        || !/^intraday-\d{8}-\d{4}-run\d+\.json$/.test(pointer.file)
+        || typeof pointer.tradeDate !== 'string'
+        || typeof pointer.capturedAt !== 'string') {
+        throw new TypeError('盤中 CDN latest 指標格式不正確。');
+    }
+
+    if (intradaySnapshotRunId === pointer.runId
+        && intradayRaw !== null
+        && intradaySummary !== null) {
+        return null;
+    }
+
+    const snapshotResponse = await fetch(intradayCdnUrl(pointer.file), { cache: 'force-cache' });
+
+    if (!snapshotResponse.ok) {
+        throw new Error(`盤中 CDN 快照 HTTP ${snapshotResponse.status}`);
+    }
+
+    const document = await snapshotResponse.json();
+    validateIntradayCdnSnapshot(pointer, document);
+    return document;
+}
+
+function applyIntradaySnapshot(document, broadcast = true) {
+    intradayRaw = document.rows;
+    intradaySummary = document.summary;
+    intradaySnapshotRunId = Number.isInteger(document.runId) ? document.runId : null;
+    intradaySnapshotTopicHeat = document.topicHeat ?? null;
+    intradayRawLoadedAt = Date.now();
+    lastIntradayLoadedAt = intradayRawLoadedAt;
+    if (broadcast) {
+        publishIntradaySnapshotToSiblingTabs(document);
+    }
+}
+
+async function ensureIntradaySnapshot(silent = false, force = false, loadSupportingData = false) {
     // 切回盤中頁時最常見的情況是「幾十秒前才剛看過」。上一輪的原始資料還在手上、
     // 而且還沒到下一輪收集時間的話就直接重畫，不要把表格藏起來換成「載入中…」
     // 再等一次網路來回——使用者說的「切換頁籤時卡很久才跳出內容」就是這個。
@@ -7060,19 +7637,31 @@ async function ensureIntradaySnapshot(silent = false, force = false) {
         }
 
         try {
-            // 逐列的部分整張表都要：市場成交比的分母是全市場加總，少一檔分母就小一點、
-            // 每一檔的比例就全部偏高。上市＋上櫃有兩千檔，一定會超過單頁上限。
-            // 全市場共用的那一份（交易日、指數、熱絡指標）只抓一列就夠。
-            const [rows, summary] = await Promise.all([
-                fetchIntradayRows(),
-                fetchIntradaySummary(),
-                loadMarketFlags(),
-                loadRevenue()
-            ]);
+            if (intradayCdn !== null) {
+                const document = await fetchIntradayCdnSnapshot();
 
-            intradayRaw = rows;
-            intradaySummary = summary;
-            intradayRawLoadedAt = Date.now();
+                if (document !== null) {
+                    applyIntradaySnapshot(document);
+                } else {
+                    intradayRawLoadedAt = Date.now();
+                    lastIntradayLoadedAt = intradayRawLoadedAt;
+                }
+            } else {
+                // 舊 manifest 才會走這條相容路徑。新版盤中完整快照與族群熱度都來自 CDN；
+                // 逐列資料仍必須是全市場，否則成交比的分母會失真。
+                const [rows, summary] = await Promise.all([
+                    fetchIntradayRows(),
+                    fetchIntradaySummary()
+                ]);
+
+                applyIntradaySnapshot({ rows, summary, runId: null, topicHeat: null });
+            }
+
+            if (loadSupportingData) {
+                // 這兩項不是盤中 CDN 的內容：交易限制與營收延續原本的 Supabase 流程，
+                // 也只在盤中排行／自訂盤中真正需要它們時才讀。
+                await Promise.all([loadMarketFlags(), loadRevenue()]);
+            }
         } catch {
             // 靜默更新失敗就讓畫面停在上一輪的數字，總比把整張表換成錯誤訊息好。
             if (!silent) {
@@ -7082,9 +7671,6 @@ async function ensureIntradaySnapshot(silent = false, force = false) {
             return;
         }
 
-        // 抓成功就記時間，包含「今天還沒有資料」那種空的成功：
-        // 那也是一次有效的問答，不重試才不會每十幾秒就再問一次資料庫。
-        lastIntradayLoadedAt = Date.now();
     }
 
     return true;
@@ -7133,7 +7719,7 @@ function intradayTradingVolume(price, turnover) {
 }
 
 async function loadIntraday(silent = false, force = false) {
-    if (!await ensureIntradaySnapshot(silent, force)) {
+    if (!await ensureIntradaySnapshot(silent, force, true)) {
         return;
     }
 
@@ -7517,7 +8103,7 @@ async function loadCustomIntraday(silent = false, force = false) {
             return;
         }
 
-        if (!await ensureIntradaySnapshot(silent, force)) {
+        if (!await ensureIntradaySnapshot(silent, force, true)) {
             return;
         }
 
@@ -7923,8 +8509,7 @@ async function loadTopics() {
 
     renderTopicTabs();
 
-    if ((state.topicTab === 'heat' || state.topicTab === 'tree')
-        && state.topicPeriod === INTRADAY_TOPIC_PERIOD) {
+    if (isIntradayTopicDataView()) {
         await loadIntradayTopicHeat();
     }
 
@@ -7955,7 +8540,7 @@ function prepareTopics() {
         }
     }
 
-    if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && supabase === null) {
+    if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && !hasIntradaySnapshotSource()) {
         state.topicPeriod = TOPIC_PERIOD_DAYS()[0] ?? state.topicPeriod;
     } else if (state.topicPeriod !== INTRADAY_TOPIC_PERIOD
         && !TOPIC_PERIOD_DAYS().includes(state.topicPeriod)) {
@@ -7991,24 +8576,35 @@ const topicPeriod = () => state.topicPeriod === INTRADAY_TOPIC_PERIOD
     : (topicData?.periods ?? []).find(period => period.periodDays === state.topicPeriod) ?? null;
 
 async function loadIntradayTopicHeat() {
-    if (supabase === null) {
+    if (!hasIntradaySnapshotSource()) {
         intradayTopicPeriod = null;
-        intradayTopicLoadError = '盤中族群熱度需要資料庫連線，這份舊快照沒有提供。';
+        intradayTopicLoadError = '盤中族群熱度需要盤中資料來源，這份舊快照沒有提供。';
         return;
     }
 
     try {
-        const response = await fetch(
-            `${supabase.url}/rest/v1/${INTRADAY_TOPIC_HEAT_VIEW}`
-            + '?select=trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows&limit=1',
-            { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+        let latest;
 
-        if (!response.ok) {
-            throw new Error(String(response.status));
+        if (intradayCdn !== null) {
+            if (!await ensureIntradaySnapshot(true)) {
+                throw new Error('讀不到盤中 CDN 快照。');
+            }
+
+            latest = intradaySnapshotTopicHeat;
+        } else {
+            // 舊 manifest 的相容路徑。新版會連同個股完整快照一起讀 CDN，確保族群與行情同輪。
+            const response = await fetch(
+                `${supabase.url}/rest/v1/${INTRADAY_TOPIC_HEAT_VIEW}`
+                + '?select=trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows&limit=1',
+                { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+
+            if (!response.ok) {
+                throw new Error(String(response.status));
+            }
+
+            [latest] = await response.json();
+            lastIntradayLoadedAt = Date.now();
         }
-
-        const [latest] = await response.json();
-        lastIntradayLoadedAt = Date.now();
 
         if (!latest) {
             intradayTopicPeriod = null;
@@ -9370,7 +9966,7 @@ function renderTopicHeat(panel) {
     renderTopicPeriodOptions();
     renderTopicScopeOptions();
 
-    if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && intradayTopicLoadError !== '') {
+    if (isIntradayTopicDataView() && intradayTopicLoadError !== '') {
         panel.append(makeTopicNotice(intradayTopicLoadError, true));
 
         if (period === null) {
@@ -9874,14 +10470,14 @@ function renderTopicScopeOptions() {
 // renderOptions 是靠 id 找容器的，所以按鈕一定要等期間面板接進 DOM 之後才畫。
 function renderTopicPeriodOptions() {
     const options = [
-        ...((state.topicTab === 'heat' || state.topicTab === 'tree')
+        ...(INTRADAY_TOPIC_TABS.has(state.topicTab)
             ? [{
                 key: INTRADAY_TOPIC_PERIOD,
                 text: '盤中',
-                disabled: supabase === null,
-                hint: supabase === null
-                    ? '這份快照沒有資料庫連線，無法讀取盤中族群熱度。'
-                    : '使用最新一輪 MIS 盤中報價，和盤中個股排行同樣每 2 分鐘更新。'
+                disabled: !hasIntradaySnapshotSource(),
+                hint: !hasIntradaySnapshotSource()
+                    ? '這份快照沒有盤中資料來源，無法讀取盤中族群熱度。'
+                    : '使用最新一輪 MIS 盤中快照，和盤中個股排行同樣每 2 分鐘更新。'
             }]
             : []),
         ...PERIODS.filter(period => TOPIC_PERIOD_DAYS().includes(period.days))
@@ -9973,7 +10569,7 @@ function renderTopicTree(panel) {
     panel.append(makeTopicPeriodPanel());
     renderTopicPeriodOptions();
 
-    if (state.topicPeriod === INTRADAY_TOPIC_PERIOD && intradayTopicLoadError !== '') {
+    if (isIntradayTopicDataView() && intradayTopicLoadError !== '') {
         panel.append(makeTopicNotice(intradayTopicLoadError, true));
     }
 
@@ -11954,6 +12550,11 @@ function update(changes) {
     }
 
     Object.assign(state, changes);
+
+    if (!usesIntradaySnapshot()) {
+        releaseIntradayPollingLease();
+    }
+
     rememberViewPreferences();
     writeSettings();
     renderSnapshotNote();
@@ -11988,9 +12589,9 @@ function renderSnapshotNote() {
     }
 
     if (state.view === 'topics') {
-        el('snapshot-note').textContent = (state.topicTab === 'heat' || state.topicTab === 'tree')
-            && state.topicPeriod === INTRADAY_TOPIC_PERIOD
-            ? `盤中族群熱度直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。`
+        el('snapshot-note').textContent = isIntradayTopicDataView()
+            ? `盤中族群${state.topicTab === 'tree' ? '列表' : '熱度'}使用同一輪${intradaySourceLabel()}，`
+                + `每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。`
                 + collector
             : topicNote || snapshotNote;
         return;
@@ -11999,12 +12600,12 @@ function renderSnapshotNote() {
     if (isCustomIntradayView()) {
         el('snapshot-note').textContent = CUSTOM_INTRADAY_LOCAL_PREVIEW
             ? '本機盤中樣本：沿用既有快照資料確認版面，不代表即時行情。'
-            : `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector;
+            : `盤中資料使用${intradaySourceLabel()}，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector;
         return;
     }
 
     el('snapshot-note').textContent = state.view === 'intraday'
-        ? `盤中資料直接來自資料庫，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
+        ? `盤中資料使用${intradaySourceLabel()}，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
         : snapshotNote;
 }
 
@@ -12112,11 +12713,19 @@ function renderStaleBanner() {
 
 function refreshIntradayIfDue() {
     const isIntradayView = isIntradayDataView();
-    const isIntradayTopic = state.view === 'topics'
-        && (state.topicTab === 'heat' || state.topicTab === 'tree')
-        && state.topicPeriod === INTRADAY_TOPIC_PERIOD;
+    const isIntradayTopic = isIntradayTopicDataView();
 
-    if ((!isIntradayView && !isIntradayTopic) || document.hidden || !intradayIsStale()) {
+    if (!usesIntradaySnapshot() || document.hidden || !isTaiwanIntradaySession() || !intradayIsStale()) {
+        if (!usesIntradaySnapshot() || document.hidden || !isTaiwanIntradaySession()) {
+            releaseIntradayPollingLease();
+        }
+
+        return;
+    }
+
+    // 同一個瀏覽器的多個分頁以短租約選一個 leader。非 leader 只等 BroadcastChannel
+    // 轉送完整快照，不會對 CDN（更不會對 Supabase）再發一輪輪詢。
+    if (!claimIntradayPollingLease()) {
         return;
     }
 
@@ -12128,9 +12737,7 @@ function refreshIntradayIfDue() {
     }
 
     void loadIntradayTopicHeat().then(() => {
-        if (state.view === 'topics'
-            && (state.topicTab === 'heat' || state.topicTab === 'tree')
-            && state.topicPeriod === INTRADAY_TOPIC_PERIOD) {
+        if (isIntradayTopicDataView()) {
             renderSnapshotNote();
             renderTopicPanel();
         }
@@ -12206,6 +12813,7 @@ async function start() {
     schedule = manifest.schedule ?? null;
     configureIntradayRefresh();
     supabase = manifest.supabase ?? null;
+    intradayCdn = manifest.intradayCdn ?? null;
     dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));
     alteredTrading = new Set(manifest.alteredTrading ?? []);
     state.date = dates[dates.length - 1];
@@ -12231,7 +12839,9 @@ async function start() {
     wireAlertBell();
     configureKLinePopover();
     configureRevenuePopover();
+    initializeIntradayBroadcastChannel();
     startIntradayTimer();
+    startSiteVersionChecker();
     renderFilters();
 
     // 鈴鐺是附加資訊，不擋第一次畫面：連不上資料庫時整頁還是要照常出來。

@@ -1329,11 +1329,31 @@ body {
 
 .asset-screenshot-preview {
     width: 100%;
-    max-height: 260px;
+    height: 180px;
     object-fit: contain;
     border: 1px solid #d6deea;
     border-radius: 8px;
     background: #fff;
+}
+
+.asset-screenshot-previews {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+}
+
+.asset-screenshot-preview-item {
+    display: grid;
+    gap: 5px;
+    margin: 0;
+}
+
+.asset-screenshot-preview-item figcaption {
+    overflow: hidden;
+    color: #667085;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .asset-screenshot-caption {

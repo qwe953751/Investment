@@ -285,6 +285,8 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          # 只用來判斷 manifest 能否啟用已備妥的盤中 CDN；絕不寫入靜態輸出。
+          SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
         run: dotnet run -c Release --project src/Invest.Web -- export "$GITHUB_WORKSPACE/publish/site"
 
       # 舊網址（qwe953751.github.io/Investment/）已收掉內容：不帶 GH_PAGES_ADMIN_SUBDIR，
