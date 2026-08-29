@@ -120,8 +120,8 @@ public sealed class IntradayCdnGateTests
         // 不能用空行切：等 CDN 的那段腳本本身就有空行。
         var job = workflow[workflow.IndexOf("publish-manifest:", StringComparison.Ordinal)..];
 
-        // 已經切好了就要立刻收工，否則每一棒都會白白重發一次網站。
-        Assert.Contains("已經宣告盤中 CDN，這一棒不必做事", workflow, StringComparison.Ordinal);
+        // 已經切好了就不該再重發，否則每一棒都會白白重發一次網站。
+        Assert.Contains("steps.probe.outputs.state == 'manifest-missing-cdn'", job, StringComparison.Ordinal);
 
         // 這一棒可能凌晨就開跑、睡到 08:40 才開盤，等待要撐得比開盤久。
         Assert.Contains("WAIT_SECONDS: '19800'", workflow, StringComparison.Ordinal);
@@ -129,6 +129,39 @@ public sealed class IntradayCdnGateTests
 
         // runner 的 shell 是 bash -e，條件不成立的判斷會直接打掉整步（8/29 踩過整整 301 場）。
         Assert.Contains("set +e", job, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 退回資料庫直連不可以沒有人發現()
+    {
+        // 退回資料庫是「保住畫面」的正確行為，但它同時也是「流量開始變貴」。
+        // 沒有紀錄的話就會默默一路燒到下個月帳單——8 月就是這樣燒到 130% 的。
+        var workflow = File.ReadAllText(
+            Path.Combine(FindRepositoryRoot(), ".github", "workflows", "intraday.yml"));
+
+        var job = workflow[workflow.IndexOf("publish-manifest:", StringComparison.Ordinal)..];
+
+        // 診斷要分得出「manifest 根本沒宣告」和「宣告了但 CDN 壞掉」，
+        // 因為這兩種的處理方式完全不同：前者要重發網站，後者要去查上傳。
+        Assert.Contains("state=manifest-missing-cdn", job, StringComparison.Ordinal);
+        Assert.Contains("state=cdn-broken", job, StringComparison.Ordinal);
+
+        // latest.json 在不代表它指到的快照還在（清理只留最近 30 份，指標永不刪）。
+        Assert.Contains("snapshot_code", job, StringComparison.Ordinal);
+
+        // 兩種壞掉都要留下紀錄：鈴鐺給使用者看，job summary 給從 GitHub 這側接手的人看。
+        Assert.Contains("-- alert \"盤中 CDN\"", job, StringComparison.Ordinal);
+        Assert.Contains("-- alert-clear \"盤中 CDN\"", job, StringComparison.Ordinal);
+        Assert.Contains("GITHUB_STEP_SUMMARY", job, StringComparison.Ordinal);
+
+        // 恢復了要自己收掉警報，否則紅點會一直掛著、下次真的壞掉時沒人相信它。
+        Assert.Contains("healthy)", job, StringComparison.Ordinal);
+
+        // 沒開盤的日子不該留警報，否則週末天天紅點，久了就沒人看。
+        Assert.Contains("dispatched=idle", job, StringComparison.Ordinal);
+
+        // 紀錄步驟本身失敗不可以蓋掉前面真正的錯誤。
+        Assert.Contains("if: always()", job, StringComparison.Ordinal);
     }
 
     [Fact]

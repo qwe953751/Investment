@@ -234,6 +234,32 @@ Supabase 已寄出超額通知：**2026-09-27 起適用 Fair Use Policy，要把
 - Supabase 監看 origin egress、cached egress、Storage size、API 錯誤；使用量儀表板
   可能延遲，不能只用一個瞬間數字判斷。
 
+### 自動監看與異常通知（2026-08-29 補）
+
+退回資料庫直連能保住畫面，但它同時就是「流量開始變貴」。**這件事一定要有人發現**，
+否則會默默一路燒到下個月帳單——8 月就是這樣燒到 130% 的。
+
+`intraday.yml` 的 `publish-manifest` 工作每一棒都會診斷一次，跟時間無關（`latest.json`
+永不清理，所以半夜、週末抓不到都是真的壞了，不會誤報）：
+
+| 診斷結果 | 意思 | 動作 |
+|---|---|---|
+| `healthy` | manifest 有宣告 CDN，指標與它指到的快照都抓得到 | 收掉舊警報 |
+| `manifest-missing-cdn` | manifest 沒宣告 CDN，前端整天走資料庫直連 | 等 CDN 出現就重發網站；等不到且非休市日才報警 |
+| `cdn-broken` | manifest 宣告了 CDN，但指標或快照抓不到 | 報 error，前端已退回資料庫直連 |
+| `unknown` | 讀不到線上 manifest | 比照 `manifest-missing-cdn` |
+
+紀錄同時留在三個地方：
+
+1. **網站上的鈴鐺**：`site_alerts` 的 `盤中 CDN` 這個 source。同一個 source 只會有一則
+   未解除的警報，恢復了會自動收掉。`anon` 可讀，所以查得到。
+2. **Actions 的 job summary 與 `::error::` 標註**：從 GitHub 這一側接手時看得到，
+   裡面直接寫了「要去查什麼」。
+3. 本文件。
+
+**下次發現流量又變高時，先看這三個地方，不要憑印象重推架構。**
+最可能的原因就是上面那張表的第二、三列，而不是設計錯了。
+
 ### 故障時
 
 - 先看 Actions 第一個失敗步驟與 HTTP 狀態碼，不要直接刪 bucket 或清空資料。

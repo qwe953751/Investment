@@ -393,7 +393,76 @@ jobs:
       WAIT_SECONDS: '19800'
 
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # ── 先診斷：現在到底走哪一條路 ───────────────────────────────────
+      #
+      # 只有兩個判斷，而且都跟時間無關（latest.json 永遠不清理，所以半夜、週末
+      # 抓不到都是真的壞了，不會誤報）：
+      #   1. 線上 manifest 有沒有宣告 intradayCdn？沒有 → 前端整天走資料庫直連。
+      #   2. CDN 抓不抓得到 latest.json、以及它指到的那份完整快照？
+      #      抓不到 → 前端會退回資料庫直連。
+      #
+      # 兩種情況的後果都一樣：流量從便宜的 cached egress 掉回貴的 database egress。
+      # 這正是 8 月把 Free Plan 額度燒到 130% 的原因，所以必須有人看著。
+      - name: 診斷盤中 CDN 現在健不健康
+        id: probe
+        run: |
+          set +e
+          set -uo pipefail
+
+          state=healthy
+          detail=""
+
+          manifest=$(curl -fsSL --max-time 30 "$SITE_MANIFEST_URL" 2>/dev/null)
+
+          if [ -z "$manifest" ]; then
+              state=unknown
+              detail="讀不到線上 manifest（$SITE_MANIFEST_URL）。"
+          elif ! printf '%s' "$manifest" | grep -q '"intradayCdn"'; then
+              state=manifest-missing-cdn
+              detail="線上 manifest 沒有宣告 intradayCdn，前端只能走資料庫直連。"
+          fi
+
+          # manifest 說要走 CDN 的話，就要確認 CDN 真的給得出東西。
+          if [ "$state" = "healthy" ]; then
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$CDN_LATEST_URL")
+
+              if [ "$code" != "200" ]; then
+                  state=cdn-broken
+                  detail="manifest 宣告了 CDN，但 latest.json 抓不到（HTTP $code）。"
+              else
+                  # latest.json 在，不代表它指到的那份完整快照還在：
+                  # 清理只保留最近 30 份，指標卻永不刪除。
+                  file=$(curl -fsSL --max-time 30 "$CDN_LATEST_URL" 2>/dev/null \
+                      | sed -n 's/.*"file"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+                  if [ -z "$file" ]; then
+                      state=cdn-broken
+                      detail="latest.json 讀得到但解不出 file 欄位，指標格式可能壞了。"
+                  else
+                      snapshot_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+                          "${CDN_LATEST_URL%/latest.json}/$file")
+
+                      if [ "$snapshot_code" != "200" ]; then
+                          state=cdn-broken
+                          detail="latest.json 指到 $file，但那份快照抓不到（HTTP $snapshot_code）。"
+                      fi
+                  fi
+              fi
+          fi
+
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "detail=$detail" >> "$GITHUB_OUTPUT"
+          echo "診斷結果：$state ${detail:-（一切正常）}"
+
       - name: 等 CDN 有快照就把 manifest 換成走 CDN
+        id: republish
+        if: steps.probe.outputs.state == 'manifest-missing-cdn' || steps.probe.outputs.state == 'unknown'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -402,17 +471,7 @@ jobs:
           set +e
           set -uo pipefail
 
-          manifest=$(curl -fsSL --max-time 30 "$SITE_MANIFEST_URL" 2>/dev/null)
-
-          if [ -n "$manifest" ]; then
-              if printf '%s' "$manifest" | grep -q '"intradayCdn"'; then
-                  echo "線上 manifest 已經宣告盤中 CDN，這一棒不必做事。"
-                  exit 0
-              fi
-              echo "線上 manifest 還沒有盤中 CDN，等 CDN 出現快照後重發網站。"
-          else
-              echo "::warning::讀不到線上 manifest（$SITE_MANIFEST_URL），仍然照常等 CDN。"
-          fi
+          echo "manifest 還沒切到 CDN，等 CDN 出現快照後重發網站。"
 
           deadline=$(( $(date +%s) + WAIT_SECONDS ))
           found=0
@@ -431,7 +490,9 @@ jobs:
           done
 
           if [ "$found" -ne 1 ]; then
+              # 沒開盤的日子本來就不會有人上傳，這不是異常。
               echo "整棒都沒看到 CDN 快照（今天多半沒開盤或收集器沒上傳），不重發網站。"
+              echo "dispatched=idle" >> "$GITHUB_OUTPUT"
               exit 0
           fi
 
@@ -444,6 +505,7 @@ jobs:
                   --ref main \
                   -f publish-only=true; then
                   echo "已請每日快照重發網站，manifest 會換成走 CDN。"
+                  echo "dispatched=ok" >> "$GITHUB_OUTPUT"
                   exit 0
               fi
 
@@ -452,4 +514,82 @@ jobs:
           done
 
           echo "::error::連續三次都叫不動每日快照，manifest 今天不會切到 CDN。"
+          echo "dispatched=failed" >> "$GITHUB_OUTPUT"
           exit 1
+
+      # ── 留下紀錄 ────────────────────────────────────────────────────
+      #
+      # 退回資料庫直連是「保住畫面」的正確行為，但它同時也是「流量開始變貴」。
+      # 沒人看著的話就會默默一路燒到下個月帳單——8 月就是這樣燒到 130% 的。
+      #
+      # 所以這裡把結果同時寫到三個地方，讓下一個接手的人（或 AI agent）不必靠記憶：
+      #   1. 網站上的鈴鐺（site_alerts）——你自己看得到，而且 anon 可讀，查得到。
+      #   2. Actions 的 job summary 與 ::error:: 標註——從 GitHub 這一側看得到。
+      #   3. 同一個 source 只會有一則未解除的警報，恢復了會自動收掉。
+      - name: 記錄診斷結果
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          STATE: ${{ steps.probe.outputs.state }}
+          DETAIL: ${{ steps.probe.outputs.detail }}
+          DISPATCHED: ${{ steps.republish.outputs.dispatched }}
+        run: |
+          set +e
+          set -uo pipefail
+
+          alert() {
+              dotnet run -c Release --project src/Invest.Web -- alert "盤中 CDN" "$1" "$2" "$RUN_URL"
+          }
+
+          case "$STATE" in
+              healthy)
+                  echo "### 盤中 CDN 正常" >> "$GITHUB_STEP_SUMMARY"
+                  echo "manifest 有宣告 CDN，latest.json 與它指到的快照都抓得到。" >> "$GITHUB_STEP_SUMMARY"
+                  dotnet run -c Release --project src/Invest.Web -- alert-clear "盤中 CDN"
+                  ;;
+
+              cdn-broken)
+                  echo "::error::盤中 CDN 壞了：$DETAIL 前端已經退回資料庫直連，流量會開始變貴。"
+                  {
+                      echo "### ⚠️ 盤中 CDN 壞了，流量正在變貴"
+                      echo
+                      echo "$DETAIL"
+                      echo
+                      echo "前端會自動退回 Supabase 直連，畫面不會壞，**但流量會從便宜的"
+                      echo "cached egress 掉回貴的 database egress**。放著不管會重演 8 月燒到 130% 的狀況。"
+                      echo
+                      echo "怎麼查：看 \`intraday\` workflow 裡「收集盤中報價」那一步有沒有上傳失敗的訊息；"
+                      echo "再確認 \`SUPABASE_STORAGE_SECRET_KEY\` 還有效、bucket \`intraday-snapshots\` 還在。"
+                      echo "細節見 \`Doc/Supabase多裝置流量節流與盤中CDN決策.md\`。"
+                  } >> "$GITHUB_STEP_SUMMARY"
+                  alert error "盤中 CDN 讀不到，網站已退回資料庫直連——流量會變貴，要盡快查。"
+                  ;;
+
+              manifest-missing-cdn|unknown)
+                  if [ "${DISPATCHED:-}" = "ok" ]; then
+                      echo "### 盤中 CDN 剛剛切上去了" >> "$GITHUB_STEP_SUMMARY"
+                      echo "已請每日快照重發網站，下次診斷應該就會是 healthy。" >> "$GITHUB_STEP_SUMMARY"
+                      exit 0
+                  fi
+
+                  if [ "${DISPATCHED:-}" = "idle" ]; then
+                      # 沒開盤的日子不該留警報，否則週末天天紅點。
+                      echo "### 今天沒看到 CDN 快照" >> "$GITHUB_STEP_SUMMARY"
+                      echo "多半是沒開盤。不視為異常。" >> "$GITHUB_STEP_SUMMARY"
+                      exit 0
+                  fi
+
+                  echo "::error::manifest 沒有宣告盤中 CDN，而且沒能重發網站：$DETAIL"
+                  {
+                      echo "### ⚠️ 網站還在走資料庫直連"
+                      echo
+                      echo "$DETAIL"
+                      echo
+                      echo "每台裝置每 2 分鐘各拉一次全市場資料，這是 8 月把 Free Plan"
+                      echo "額度燒到 130% 的原因。**2026-09-27 起 Fair Use Policy 生效，"
+                      echo "要壓到 5.5 GB 以下。**"
+                  } >> "$GITHUB_STEP_SUMMARY"
+                  alert error "網站還在走資料庫直連，沒切到盤中 CDN——流量會超標，要盡快查。"
+                  ;;
+          esac
