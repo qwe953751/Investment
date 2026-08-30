@@ -1374,6 +1374,23 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("mergeAssetOcrScreenshotRows", script, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 截圖身份補讀必須逐列對齊且美股代號需驗證股數列()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("function assetOcrIdentityCanvas(bitmap)", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_OCR_WIDE_MAX_PIXELS = 1_500_000;", script, StringComparison.Ordinal);
+        Assert.Contains("async function warmAssetOcrRecognition(worker)", script, StringComparison.Ordinal);
+        Assert.Contains("await warmAssetOcrRecognition(worker);", script, StringComparison.Ordinal);
+        Assert.Contains("tessedit_pageseg_mode: '11'", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrLegacyTaiwanHorizontalCandidates(data)", script, StringComparison.Ordinal);
+        Assert.Contains("identityTickers.length !== candidates.length", script, StringComparison.Ordinal);
+        Assert.Contains("shares?\\b", script, StringComparison.Ordinal);
+        Assert.Contains("const moneyAt = fields.includes('costPrice') && fields.includes('cost')", script, StringComparison.Ordinal);
+        Assert.Contains("data?.identityText !== undefined && textRows.matchedHeader", script, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// 認不出欄位標題就只填代號與名稱。照數字出現順序硬猜哪個是成本、哪個是市值，
     /// 會把一個看起來很正常卻是錯的金額寫進資料庫——那比空白難發現得多。
