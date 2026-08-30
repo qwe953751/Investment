@@ -3804,6 +3804,19 @@ td.stock-name.stock-name-change-down {
     line-height: 1.7;
 }
 
+.topic-edit-publish-link {
+    display: inline-block;
+    font-weight: 600;
+    color: #4338ca;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.topic-edit-publish-link:hover,
+.topic-edit-publish-link:focus-visible {
+    color: #312e81;
+}
+
 /* 欄位自己排隊：手機上會自動疊成一欄，不必為了這一頁多寫一組斷點。 */
 .topic-edit-form {
     display: grid;

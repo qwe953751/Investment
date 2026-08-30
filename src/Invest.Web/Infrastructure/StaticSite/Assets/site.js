@@ -12839,6 +12839,16 @@ async function setTopicEditEnabled(id, enabled) {
     }
 }
 
+// 這支 workflow 只重新輸出＋發布，不等今日行情，4 分鐘內會跑完。
+// 網址寫死在這裡而不是接 API 直接觸發：觸發 API 得帶一把 GitHub token，
+// 而這個頁面連同這支 script 會整份發布到公開的 frank-invest.github.io，
+// token 放進去等於公開，GitHub 自己的機密掃描也會在偵測到後直接把它撤銷——
+// 不是要不要冒險的問題，是這條路技術上就走不通。等之後登入功能接上
+// Supabase Edge Function（token 放在伺服器端，只有通過登入的人能呼叫），
+// 才有安全的地方能放這把 token，屆時「按了就發布」可以跟登入一起做。
+const TOPIC_EDIT_PUBLISH_URL =
+    'https://github.com/qwe953751/Investment/actions/workflows/daily-snapshot.yml';
+
 function makeTopicEditIntro() {
     const box = document.createElement('section');
     box.className = 'notice topic-edit-intro';
@@ -12852,6 +12862,17 @@ function makeTopicEditIntro() {
         + '要等下一次更新把這些編輯套上去才看得到。每一筆都留著紀錄，'
         + '改錯了到最下面按「停用」收回來就好。';
     box.append(body);
+
+    const publishRow = document.createElement('p');
+    const publishLink = document.createElement('a');
+    publishLink.className = 'topic-edit-publish-link';
+    publishLink.href = TOPIC_EDIT_PUBLISH_URL;
+    publishLink.target = '_blank';
+    publishLink.rel = 'noopener noreferrer';
+    publishLink.textContent = '不想等下一輪排程？前往「立即發布」（GitHub 頁面上按 Run workflow，'
+        + '打勾 publish-only 再送出，約 4 分鐘）→';
+    publishRow.append(publishLink);
+    box.append(publishRow);
 
     return box;
 }
