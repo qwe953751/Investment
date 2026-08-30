@@ -561,7 +561,7 @@ jobs:
                       echo
                       echo "怎麼查：看 \`intraday\` workflow 裡「收集盤中報價」那一步有沒有上傳失敗的訊息；"
                       echo "再確認 \`SUPABASE_STORAGE_SECRET_KEY\` 還有效、bucket \`intraday-snapshots\` 還在。"
-                      echo "細節見 \`Doc/Supabase多裝置流量節流與盤中CDN決策.md\`。"
+                      echo "細節見 \`Doc/技術文件/Supabase多裝置流量節流與盤中CDN決策.md\`。"
                   } >> "$GITHUB_STEP_SUMMARY"
                   alert error "盤中 CDN 讀不到，網站已退回資料庫直連——流量會變貴，要盡快查。"
                   ;;

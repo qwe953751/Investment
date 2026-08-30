@@ -999,7 +999,7 @@ Actions 的預設 shell 是 `bash -e`，errexit 是命令列給的，
 ### 已經做的
 
 盤中全市場讀取改走 Supabase Storage 的公開 CDN，詳見
-[Doc/Supabase多裝置流量節流與盤中CDN決策.md](Doc/Supabase多裝置流量節流與盤中CDN決策.md)。
+[Doc/技術文件/Supabase多裝置流量節流與盤中CDN決策.md](Doc/技術文件/Supabase多裝置流量節流與盤中CDN決策.md)。
 `publish-manifest` 會自動監看有沒有掉回資料庫直連並報警（同上文件 §7）。
 
 ### 還沒定案的：計費算壓縮前還是壓縮後
