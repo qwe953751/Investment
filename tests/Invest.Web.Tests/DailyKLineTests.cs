@@ -37,6 +37,59 @@ public sealed class DailyKLineTests
     }
 
     [Fact]
+    public void 舊版或價格關係不可能的日K必須重新回補()
+    {
+        var tradingDate = new DateOnly(2026, 8, 28);
+        var invalid = new DailyQuoteSnapshot
+        {
+            SchemaVersion = DailyQuoteSnapshot.CurrentSchemaVersion,
+            TradingDate = tradingDate,
+            IsTradingDay = true,
+            DownloadedAt = DateTimeOffset.UtcNow,
+            DailyBarSchemaVersion = DailyQuoteSnapshot.CurrentDailyBarSchemaVersion,
+            Quotes =
+            [
+                new DailyQuote
+                {
+                    Market = Market.Tpex,
+                    Ticker = "6584",
+                    Name = "南俊國際",
+                    OpenPrice = 682m,
+                    HighPrice = 647m,
+                    LowPrice = 675.69m,
+                    ClosePrice = 682m,
+                    TradingValue = 1m
+                }
+            ]
+        };
+        var oldVersion = new DailyQuoteSnapshot
+        {
+            SchemaVersion = invalid.SchemaVersion,
+            TradingDate = tradingDate,
+            IsTradingDay = true,
+            DownloadedAt = invalid.DownloadedAt,
+            DailyBarSchemaVersion = DailyQuoteSnapshot.CurrentDailyBarSchemaVersion - 1,
+            Quotes =
+            [
+                new DailyQuote
+                {
+                    Market = Market.Tpex,
+                    Ticker = "6584",
+                    Name = "南俊國際",
+                    OpenPrice = 680m,
+                    HighPrice = 682m,
+                    LowPrice = 647m,
+                    ClosePrice = 682m,
+                    TradingValue = 1m
+                }
+            ]
+        };
+
+        Assert.False(invalid.HasCompleteDailyBars);
+        Assert.False(oldVersion.HasCompleteDailyBars);
+    }
+
+    [Fact]
     public void 只選取指定日期前三個月且欄位完整的日K()
     {
         var endDate = new DateOnly(2026, 8, 19);

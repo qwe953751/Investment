@@ -160,6 +160,35 @@ public class TradingValueRankingCalculatorTests
         Assert.Equal(0.4444m, Row(result, "1101").MarketShare, 4);
     }
 
+    /// <summary>
+    /// 美股是美元估算成交值，跟台股新台幣官方成交值不可比較，
+    /// 混進「全部」篩選會讓排行與市場成交比全部失真。這條測試釘住
+    /// <see cref="TradingValueRankingCalculator"/> 永遠不把 <see cref="Market.Us"/>
+    /// 算進 <see cref="MarketFilter.All"/> 或任何既有市場篩選的結果。
+    /// </summary>
+    [Fact]
+    public void 美股永遠不會出現在成交值排行結果中()
+    {
+        var dataSet = new MarketDataSetBuilder()
+            .Stock("1101")
+            .Stock("AAPL", Market.Us)
+            .Days(1, 4, "1101", 100)
+            .Days(1, 4, "AAPL", 999_999)
+            .Build();
+
+        var all = _calculator.Calculate(dataSet, Query(market: MarketFilter.All));
+        Assert.DoesNotContain(all.Rows, row => row.Ticker == "AAPL");
+
+        var twse = _calculator.Calculate(dataSet, Query(market: MarketFilter.Twse));
+        Assert.DoesNotContain(twse.Rows, row => row.Ticker == "AAPL");
+
+        var tpex = _calculator.Calculate(dataSet, Query(market: MarketFilter.Tpex));
+        Assert.DoesNotContain(tpex.Rows, row => row.Ticker == "AAPL");
+
+        // 分母（市場成交比的基準）也不能被美股的天量估算值污染。
+        Assert.Equal(200m, all.MarketTotalTradingValue);
+    }
+
     [Fact]
     public void 成交門檻會排除本期均值低於門檻的個股()
     {
@@ -174,15 +203,16 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
-    public void 資金加速模式依增減率排序並與成交熱度模式結果不同()
+    public void 資金加速模式依量比排序並與成交熱度模式結果不同()
     {
-        // 6 個交易日，期間長度 2：基期 = 1~2、前期 = 3~4、本期 = 5~6
-        //        基期均值  前期均值  本期均值  本期增減率  前期增減率
-        // 1101       100       200       800        3.00        1.00
-        // 2330       100       800      1000        0.25        7.00
+        // 24 個交易日，期間長度 2：本期 = 23~24、前期 = 21~22，
+        // 本期量比的分母是 3~22 的中位數、前期量比的分母是 1~20 的中位數。
+        //        平常量  前期均值  本期均值   量比  前期量比
+        // 1101      100       100       800     8      1
+        // 2330     1000      2000      1000     1      2
         var dataSet = new MarketDataSetBuilder()
-            .Days(1, 2, "1101", 100).Days(3, 4, "1101", 200).Days(5, 6, "1101", 800)
-            .Days(1, 2, "2330", 100).Days(3, 4, "2330", 800).Days(5, 6, "2330", 1000)
+            .Days(1, 22, "1101", 100).Days(23, 24, "1101", 800)
+            .Days(1, 20, "2330", 1000).Days(21, 22, "2330", 2000).Days(23, 24, "2330", 1000)
             .Build();
 
         var heat = _calculator.Calculate(dataSet, Query());
@@ -191,12 +221,13 @@ public class TradingValueRankingCalculatorTests
         // 成交熱度看絕對量：2330 的 1000 大於 1101 的 800。
         Assert.Equal(["2330", "1101"], heat.Rows.Select(row => row.Ticker));
 
-        // 資金加速看成長速度：1101 的 +300% 大於 2330 的 +25%。
+        // 資金加速看「比自己平常放大幾倍」：1101 的 8 倍勝過 2330 的 1 倍，
+        // 即使 2330 的絕對量還是比較大。量比不看誰大，只看誰異常。
         Assert.Equal(["1101", "2330"], acceleration.Rows.Select(row => row.Ticker));
-        Assert.Equal(3m, Row(acceleration, "1101").TradingValueChangeRate);
-        Assert.Equal(0.25m, Row(acceleration, "2330").TradingValueChangeRate);
+        Assert.Equal(8m, Row(acceleration, "1101").VolumeRatio);
+        Assert.Equal(1m, Row(acceleration, "2330").VolumeRatio);
 
-        // 前期排名也是用增減率算的：前期 2330 的 +700% 勝過 1101 的 +100%。
+        // 前期排名同樣用量比算：前期 2330 的 2 倍勝過 1101 的 1 倍。
         Assert.Equal(2, Row(acceleration, "1101").PreviousRank);
         Assert.Equal(1, Row(acceleration, "1101").RankChange);
         Assert.Equal(1, Row(acceleration, "2330").PreviousRank);
@@ -204,20 +235,72 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
-    public void 無法計算增減率的個股在資金加速模式排在最後而不是被當成零()
+    public void 量比的分母固定二十日所以換期間長度時分母不動()
+    {
+        // 分母若跟著使用者選的期間長度走，換一個長度就是換一組分母，排名會整個翻掉。
+        // 固定 20 日之後，兩種期間長度看到的是同一個分母，只有分子在動。
+        var dataSet = new MarketDataSetBuilder()
+            .Days(1, 22, "1101", 100).Days(23, 24, "1101", 900)
+            .Days(1, 23, "2330", 100).Day(24, "2330", 300)
+            .Build();
+
+        var twoDays = _calculator.Calculate(dataSet, Query(periodDays: 2, mode: RankingMode.CapitalAcceleration));
+        var oneDay = _calculator.Calculate(dataSet, Query(periodDays: 1, mode: RankingMode.CapitalAcceleration));
+
+        Assert.Equal(100m, Row(twoDays, "1101").BaselineDailyTradingValue);
+        Assert.Equal(100m, Row(oneDay, "1101").BaselineDailyTradingValue);
+        Assert.Equal(9m, Row(twoDays, "1101").VolumeRatio);
+        Assert.Equal(9m, Row(oneDay, "1101").VolumeRatio);
+    }
+
+    [Fact]
+    public void 量比的分母取中位數所以一天爆量不會把自己的基準墊高()
+    {
+        // 基準區間裡有一天爆到 2000。平均會被拉高到 195，量比只剩 1.5 倍；
+        // 中位數不受單日影響，維持 100，量比是 3 倍——這才是「今天比平常多兩倍」。
+        var dataSet = new MarketDataSetBuilder()
+            .Days(1, 21, "1101", 100).Day(22, "1101", 2000).Days(23, 24, "1101", 300)
+            .Build();
+
+        var row = Row(_calculator.Calculate(dataSet, Query(mode: RankingMode.CapitalAcceleration)), "1101");
+
+        Assert.Equal(100m, row.BaselineDailyTradingValue);
+        Assert.Equal(3m, row.VolumeRatio);
+    }
+
+    [Fact]
+    public void 量比的分母不與分子重疊否則二十日期間的量比會恆等於一()
+    {
+        // 期間長度剛好等於基準長度 20 天。分母若從本期最後一天往回數，
+        // 分子分母會是同一段日期，量比永遠是 1，整個排行變成隨機。
+        var dataSet = new MarketDataSetBuilder()
+            .Days(1, 40, "1101", 100).Days(41, 60, "1101", 500)
+            .Build();
+
+        var row = Row(
+            _calculator.Calculate(dataSet, Query(periodDays: 20, mode: RankingMode.CapitalAcceleration)),
+            "1101");
+
+        Assert.Equal(100m, row.BaselineDailyTradingValue);
+        Assert.Equal(5m, row.VolumeRatio);
+    }
+
+    [Fact]
+    public void 無法計算量比的個股在資金加速模式排在最後而不是被當成零()
     {
         var dataSet = new MarketDataSetBuilder()
-            .Days(1, 2, "1101", 100).Days(3, 4, "1101", 200).Days(5, 6, "1101", 100)
-            // 2330 前期為 0，增減率無法計算
-            .Days(1, 2, "2330", 100).Days(3, 4, "2330", 0).Days(5, 6, "2330", 900)
+            .Days(1, 22, "1101", 100).Days(23, 24, "1101", 50)
+            // 2330 只有最後四天有量，基準區間過半沒成交，中位數是 0，量比算不出來。
+            .Days(21, 24, "2330", 900)
             .Build();
 
         var result = _calculator.Calculate(dataSet, Query(mode: RankingMode.CapitalAcceleration));
 
-        // 1101 的增減率是 -50%，仍然排在「無法計算」的 2330 前面。
+        // 1101 的量比只有 0.5 倍（比平常還冷），仍然排在「算不出來」的 2330 前面。
         Assert.Equal(["1101", "2330"], result.Rows.Select(row => row.Ticker));
-        Assert.Equal(-0.5m, Row(result, "1101").TradingValueChangeRate);
-        Assert.Null(Row(result, "2330").TradingValueChangeRate);
+        Assert.Equal(0.5m, Row(result, "1101").VolumeRatio);
+        Assert.Null(Row(result, "2330").BaselineDailyTradingValue);
+        Assert.Null(Row(result, "2330").VolumeRatio);
     }
 
     [Fact]
@@ -399,17 +482,17 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
-    public void 資金加速需要三倍期間因為前期排名本身也是增減率()
+    public void 資金加速需要兩倍期間再加二十日基準()
     {
-        var dataSet = new MarketDataSetBuilder().Days(1, 5, "1101", 100).Build();
+        var dataSet = new MarketDataSetBuilder().Days(1, 23, "1101", 100).Build();
 
-        // 同樣 5 天，成交熱度夠（需要 4 天），資金加速不夠（需要 6 天）。
+        // 同樣 23 天，成交熱度夠（需要 4 天），資金加速不夠（需要 2 + 2 + 20 = 24 天）。
         Assert.True(_calculator.Calculate(dataSet, Query(periodDays: 2)).HasSufficientData);
 
         var result = _calculator.Calculate(dataSet, Query(periodDays: 2, mode: RankingMode.CapitalAcceleration));
 
         Assert.False(result.HasSufficientData);
-        Assert.Contains("需要至少 6 個交易日", result.InsufficientDataMessage);
+        Assert.Contains("需要至少 24 個交易日", result.InsufficientDataMessage);
     }
 
     [Fact]
@@ -458,18 +541,16 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
-    public void 單日資金加速需要選定日加前後兩段區間()
+    public void 單日資金加速需要選定日加前期區間再加二十日基準()
     {
-        var dataSet = new MarketDataSetBuilder()
-            .Days(1, 4, "1101", 100)
-            .Day(5, "1101", 100)
-            .Build();
+        var dataSet = new MarketDataSetBuilder().Days(1, 23, "1101", 100).Build();
 
+        // 選定日 1 天 + 前期 2 天 + 基準 20 天 = 23 天。
         var result = _calculator.Calculate(
             dataSet,
             Query(periodDays: 2, mode: RankingMode.CapitalAcceleration) with
             {
-                EndDate = MarketDataSetBuilder.DayOf(5),
+                EndDate = MarketDataSetBuilder.DayOf(23),
                 ComparisonMode = RankingComparisonMode.SingleDay
             });
 
@@ -479,12 +560,12 @@ public class TradingValueRankingCalculatorTests
             dataSet,
             Query(periodDays: 2, mode: RankingMode.CapitalAcceleration) with
             {
-                EndDate = MarketDataSetBuilder.DayOf(4),
+                EndDate = MarketDataSetBuilder.DayOf(22),
                 ComparisonMode = RankingComparisonMode.SingleDay
             });
 
         Assert.False(insufficient.HasSufficientData);
-        Assert.Contains("需要至少 5 個交易日", insufficient.InsufficientDataMessage);
+        Assert.Contains("需要至少 23 個交易日", insufficient.InsufficientDataMessage);
     }
 
     [Fact]

@@ -170,12 +170,19 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 行動版名稱欄橫向捲動時固定且保留個股漲跌底色()
+    public void 行動版名稱欄縮窄可換兩行且橫向捲動時固定()
     {
         var styles = ReadAsset("site.css");
 
         Assert.Contains(".ranking-table td.stock-name {", styles, StringComparison.Ordinal);
-        Assert.Contains("min-width: 160px;", styles, StringComparison.Ordinal);
+        Assert.Contains("min-width: 80px;", styles, StringComparison.Ordinal);
+        Assert.Contains("max-width: 80px;", styles, StringComparison.Ordinal);
+        Assert.Contains("left: 80px;", styles, StringComparison.Ordinal);
+        Assert.Contains("box-sizing: border-box;", styles, StringComparison.Ordinal);
+        Assert.Contains("min-width: 104px;", styles, StringComparison.Ordinal);
+        Assert.Contains("max-width: 104px;", styles, StringComparison.Ordinal);
+        Assert.Contains("max-width: 88px;", styles, StringComparison.Ordinal);
+        Assert.Contains("-webkit-line-clamp: 2;", styles, StringComparison.Ordinal);
         Assert.Contains("z-index: 2;", styles, StringComparison.Ordinal);
         Assert.DoesNotContain(
             ".ranking-table td.stock-name:not(.stock-name-change-up):not(.stock-name-change-down)",
@@ -374,9 +381,13 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const volumeTop = 294;", function, StringComparison.Ordinal);
         Assert.Contains("下層：成交量", function, StringComparison.Ordinal);
         Assert.Contains("bar.tradingVolume", function, StringComparison.Ordinal);
-        Assert.Contains("daily-kline-volume-bar", function, StringComparison.Ordinal);
+        Assert.Contains("class: `daily-kline-volume-bar ${klineTrendClass(bar)}`", function, StringComparison.Ordinal);
+        Assert.Contains("const scale = niceKLineScale(prices);", function, StringComparison.Ordinal);
+        Assert.Contains("kLineAxisText(price, scale.step)", function, StringComparison.Ordinal);
+        Assert.Contains("開 ${toFixedText(open, 2)} 高 ${toFixedText(high, 2)}", script, StringComparison.Ordinal);
         Assert.Contains("RoundKLine(point.TradingVolume)", exporter, StringComparison.Ordinal);
-        Assert.Contains(".daily-kline-volume-bar", styles, StringComparison.Ordinal);
+        Assert.Contains(".daily-kline-volume-bar.daily-kline-up", styles, StringComparison.Ordinal);
+        Assert.Contains(".daily-kline-volume-bar.daily-kline-down", styles, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -407,7 +418,7 @@ public sealed class StaticKLineAssetTests
         var function = script[start..end];
 
         Assert.Contains("const referenceDate = String(bar.date ?? '').replaceAll('-', '/').slice(-5);", function, StringComparison.Ordinal);
-        Assert.Contains("referenceValues.push(`收", function, StringComparison.Ordinal);
+        Assert.Contains("`開 ${toFixedText(open, 2)} 高 ${toFixedText(high, 2)} 低 ${toFixedText(low, 2)} 收", function, StringComparison.Ordinal);
         Assert.Contains("referenceValues.push(`${layout.lowerLabel}", function, StringComparison.Ordinal);
         Assert.Contains("referenceSummary.textContent = referenceValues.length > 0", function, StringComparison.Ordinal);
         Assert.Contains("`${referenceDate} ${referenceValues.join(' ｜ ')}`", function, StringComparison.Ordinal);
@@ -698,9 +709,11 @@ public sealed class StaticKLineAssetTests
         var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "023_notes_images.sql"));
 
         Assert.Contains("id=\"notes-images\"", html, StringComparison.Ordinal);
-        Assert.Contains("accept=\"image/jpeg,image/png,image/gif,image/webp\"", html, StringComparison.Ordinal);
+        Assert.Contains("accept=\"image/*,.heic,.heif\"", html, StringComparison.Ordinal);
         Assert.Contains("const NOTE_IMAGES_BUCKET = 'note-images';", script, StringComparison.Ordinal);
         Assert.Contains("const NOTE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;", script, StringComparison.Ordinal);
+        Assert.Contains("'image/heic', 'image/heif'", script, StringComparison.Ordinal);
+        Assert.Contains("function noteImageSourceType(file)", script, StringComparison.Ordinal);
         Assert.Contains("async function uploadNoteImage(noteId, image)", script, StringComparison.Ordinal);
     Assert.Contains("async function removeNoteImages(paths)", script, StringComparison.Ordinal);
     Assert.Contains("attachments: note.attachments", script, StringComparison.Ordinal);
@@ -725,7 +738,10 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("async function compressNoteImage(file)", script, StringComparison.Ordinal);
         Assert.Contains("await compressNoteImage(file)", script, StringComparison.Ordinal);
         Assert.Contains("createImageBitmap", script, StringComparison.Ordinal);
-        Assert.Contains("blob.size <= NOTE_IMAGE_MAX_BYTES", script, StringComparison.Ordinal);
+        Assert.Contains("return readNoteImageElement(file);", script, StringComparison.Ordinal);
+        Assert.Contains("blob.size <= NOTE_IMAGE_TARGET_BYTES", script, StringComparison.Ordinal);
+        Assert.Contains("const outputType = 'image/jpeg';", script, StringComparison.Ordinal);
+        Assert.Contains("body?.message ?? body?.error", script, StringComparison.Ordinal);
 
         var handlerStart = script.IndexOf("el('notes-images').addEventListener('change'", StringComparison.Ordinal);
         var handlerEnd = script.IndexOf("el('notes-form').addEventListener('submit'", handlerStart, StringComparison.Ordinal);
@@ -1384,6 +1400,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const ASSET_OCR_WIDE_MAX_PIXELS = 1_500_000;", script, StringComparison.Ordinal);
         Assert.Contains("async function warmAssetOcrRecognition(worker)", script, StringComparison.Ordinal);
         Assert.Contains("await warmAssetOcrRecognition(worker);", script, StringComparison.Ordinal);
+        Assert.Contains("tessedit_pageseg_mode: '6'", script, StringComparison.Ordinal);
         Assert.Contains("tessedit_pageseg_mode: '11'", script, StringComparison.Ordinal);
         Assert.Contains("function assetOcrLegacyTaiwanHorizontalCandidates(data)", script, StringComparison.Ordinal);
         Assert.Contains("const previousTicker = header.allowEnglishTickers", script, StringComparison.Ordinal);
@@ -1391,6 +1408,9 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("draft.ticker ||= ownTicker || nextTicker || previousTicker;", script, StringComparison.Ordinal);
         Assert.Contains("'日餘額'", script, StringComparison.Ordinal);
         Assert.Contains("identityTickers.length !== candidates.length", script, StringComparison.Ordinal);
+        Assert.Contains("candidate.ticker = identity;", script, StringComparison.Ordinal);
+        Assert.Contains("quantity === available * 1000", script, StringComparison.Ordinal);
+        Assert.Contains("onlyMissingInferableQuantity", script, StringComparison.Ordinal);
         Assert.Contains("shares?\\b", script, StringComparison.Ordinal);
         Assert.Contains("const moneyAt = fields.includes('costPrice') && fields.includes('cost')", script, StringComparison.Ordinal);
         Assert.Contains("data?.identityText !== undefined && textRows.matchedHeader", script, StringComparison.Ordinal);

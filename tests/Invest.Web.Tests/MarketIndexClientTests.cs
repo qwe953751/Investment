@@ -125,6 +125,7 @@ public sealed class MarketIndexClientTests
             new HttpClient(new CannedResponseHandler("""
                 {"tables":[{
                     "title":"上櫃股票行情",
+                    "fields":["代號","名稱","收盤","漲跌","開盤","最高","最低","均價","成交股數","成交金額(元)","成交筆數"],
                     "data":[["6488","環球晶","950.00","+10.00","940.00","960.00","930.00","945.00","1,000","950,000","100"]]
                 }]}
                 """)),
@@ -137,6 +138,27 @@ public sealed class MarketIndexClientTests
         Assert.Equal(960m, quote.HighPrice);
         Assert.Equal(930m, quote.LowPrice);
         Assert.Equal(950m, quote.ClosePrice);
+    }
+
+    [Fact]
+    public async Task TPEx每日行情依fields名稱而不是固定位置讀取日K()
+    {
+        var client = new TpexDailyQuoteClient(
+            new HttpClient(new CannedResponseHandler("""
+                {"tables":[{
+                    "title":"上櫃股票行情",
+                    "fields":["代號","名稱","收盤","漲跌","均價","最低","最高","開盤","成交股數","成交金額(元)","成交筆數"],
+                    "data":[["6584","南俊國際","682.00","+62.00","675.69","647.00","682.00","680.00","4,791,672","3,237,683,253","7,415"]]
+                }]}
+                """)),
+            NullLogger<TpexDailyQuoteClient>.Instance);
+
+        var quote = Assert.Single(await client.GetDailyQuotesAsync(new DateOnly(2026, 8, 28)));
+
+        Assert.Equal(680m, quote.OpenPrice);
+        Assert.Equal(682m, quote.HighPrice);
+        Assert.Equal(647m, quote.LowPrice);
+        Assert.Equal(682m, quote.ClosePrice);
     }
 
     private sealed class CannedResponseHandler(string json) : HttpMessageHandler

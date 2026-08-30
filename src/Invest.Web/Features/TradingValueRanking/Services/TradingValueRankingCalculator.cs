@@ -12,6 +12,20 @@ namespace Invest.Web.Features.TradingValueRanking.Services;
 /// </summary>
 public sealed class TradingValueRankingCalculator
 {
+    /// <summary>
+    /// 量比的基準期長度，固定 20 個交易日（約一個月），不隨使用者選的觀察期間改變。
+    ///
+    /// 分母問的是「這檔股票平常一天成交多少」，那是一個該保持穩定的東西。
+    /// 早期的資金加速讓分母跟著觀察期間一起變，於是 1 日分頁的分母就只剩「前一天」那一個數字，
+    /// 指標退化成一階差分——實測跨日排名的 Spearman 相關是負的（−0.21 ~ −0.33），
+    /// 數學上保證每天大風吹。把分母固定成 20 日之後轉為 +0.50。
+    ///
+    /// 為什麼是 20 不是 60：分母拉長會更穩（60 日是 +0.65），但前十名每天只換 0.3 檔，
+    /// 榜單幾乎不動就失去意義了。20 日每天換約 1 檔，而且基準只回看一個月，
+    /// 不會被三個月前的舊常態綁住。
+    /// </summary>
+    public const int BaselineDays = 20;
+
     private readonly object _indexLock = new();
     private readonly Dictionary<DateOnly, MarketHeatMetrics?> _heatCache = [];
 
@@ -35,9 +49,11 @@ public sealed class TradingValueRankingCalculator
         // 基準日之後的行情一律當作還沒發生，往回選日期才會得到當時看到的排行。
         var dates = DatesThrough(query.EndDate);
 
-        // 資金加速模式的「前期排名」本身是一個增減率，所以前期還需要自己的基期，總共三段。
-        var requiredDays = currentPeriodDays + periodDays
-            * (query.Mode == RankingMode.CapitalAcceleration ? 2 : 1);
+        // 資金加速排的是量比，前期排名要用「前一期的量比」，所以前期也得帶自己的 20 日基準：
+        // 本期 + 前期 + 基準 三段接在一起。
+        var requiredDays = query.Mode == RankingMode.CapitalAcceleration
+            ? currentPeriodDays + periodDays + BaselineDays
+            : currentPeriodDays + periodDays;
 
         if (dates.Length < requiredDays)
         {
@@ -63,9 +79,20 @@ public sealed class TradingValueRankingCalculator
             ? Aggregate(_byTicker, _adjustmentsByTicker, prior)
             : new Dictionary<string, PeriodStats>();
 
+        // 量比的分母。兩段都取「分子期間之前」的 20 個交易日，跟分子不重疊——
+        // 重疊的話 20 日分頁的分子分母會是同一段日期，量比恆等於 1。
+        var baselines = Medians(_byTicker, Preceding(dates, currentPeriodDays));
+        var previousBaselines = Medians(_byTicker, Preceding(dates, currentPeriodDays + periodDays));
+
         // 分母一律是上市＋上櫃全體，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
-        var marketTotal = currentStats.Values.Sum(stats => stats.TotalTradingValue);
-        var previousMarketTotal = previousStats.Values.Sum(stats => stats.TotalTradingValue);
+        // 用 MatchesMarket(..., MarketFilter.All) 排除非上市櫃的市場（如美股），即使資料集不小心
+        // 混進了其他市場的成交值，也不會污染這個分母。
+        var marketTotal = currentStats
+            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock.Market, MarketFilter.All))
+            .Sum(pair => pair.Value.TotalTradingValue);
+        var previousMarketTotal = previousStats
+            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock.Market, MarketFilter.All))
+            .Sum(pair => pair.Value.TotalTradingValue);
         var marketHeat = GetMarketHeat(dataSet, current[^1]);
 
         var candidates = new List<Candidate>();
@@ -96,7 +123,11 @@ public sealed class TradingValueRankingCalculator
                 Current = stats,
                 Previous = previousStat,
                 ChangeRate = ChangeRate(stats.AverageDailyTradingValue, previousStat.AverageDailyTradingValue),
-                PreviousChangeRate = ChangeRate(previousStat.AverageDailyTradingValue, priorStat.AverageDailyTradingValue)
+                PreviousChangeRate = ChangeRate(previousStat.AverageDailyTradingValue, priorStat.AverageDailyTradingValue),
+                Baseline = baselines.TryGetValue(ticker, out var baseline) ? baseline : null,
+                PreviousBaseline = previousBaselines.TryGetValue(ticker, out var previousBaseline)
+                    ? previousBaseline
+                    : null
             });
         }
 
@@ -126,6 +157,8 @@ public sealed class TradingValueRankingCalculator
                     PreviousAverageDailyTradingValue = candidate.Previous.AverageDailyTradingValue,
                     TradingValueChangeRate = candidate.ChangeRate,
                     PreviousTradingValueChangeRate = candidate.PreviousChangeRate,
+                    BaselineDailyTradingValue = candidate.Baseline,
+                    PreviousBaselineDailyTradingValue = candidate.PreviousBaseline,
                     MarketShare = Share(candidate.Current.TotalTradingValue, marketTotal),
                     PreviousMarketShare = Share(candidate.Previous.TotalTradingValue, previousMarketTotal),
                     PriceChangeRate = candidate.Current.PriceChangeRate,
@@ -261,6 +294,82 @@ public sealed class TradingValueRankingCalculator
     private static decimal? ChangeRate(decimal current, decimal baseline)
         => baseline == 0m ? null : (current - baseline) / baseline;
 
+    /// <summary>
+    /// 取「往回跳過 <paramref name="skip"/> 個交易日之後」的那 20 個交易日。
+    /// 湊不滿 20 天就回空的，讓量比算不出來——寧可顯示「—」也不要拿三天的樣本當常態。
+    /// </summary>
+    private static DateOnly[] Preceding(DateOnly[] dates, int skip)
+        => dates.Length >= skip + BaselineDays
+            ? dates[^(skip + BaselineDays)..^skip]
+            : [];
+
+    /// <summary>
+    /// 每一檔在指定區間內「平常一天成交多少」。
+    ///
+    /// 用中位數而不是平均：一天爆量十倍會把 20 日平均拉高將近一半，
+    /// 之後那檔股票連續一個月都顯得很冷，量比會系統性低估——偏偏爆量後的那一個月
+    /// 正是最該盯的時候。中位數完全不受單日離群值影響。
+    ///
+    /// 區間內沒有資料的交易日一律補 0 再取中位數，所以停牌超過一半期間的個股中位數會是 0，
+    /// 回傳時被濾掉、量比算不出來而排到最後。這剛好就是「樣本不足不排名」的保護，
+    /// 不必另外寫一條規則。
+    /// </summary>
+    private static Dictionary<string, decimal> Medians(
+        Dictionary<string, DailyStockTrading[]> byTicker,
+        DateOnly[] window)
+    {
+        if (window.Length == 0)
+        {
+            return [];
+        }
+
+        var start = window[0];
+        var end = window[^1];
+        var result = new Dictionary<string, decimal>(byTicker.Count);
+        var values = new decimal[window.Length];
+
+        foreach (var (ticker, rows) in byTicker)
+        {
+            Array.Clear(values);
+
+            var count = 0;
+
+            foreach (var row in rows)
+            {
+                if (row.TradingDate < start)
+                {
+                    continue;
+                }
+
+                if (row.TradingDate > end)
+                {
+                    break;
+                }
+
+                // 資料比視窗長度多的情況不該發生（window 就是交易日清單的切片），
+                // 真的發生時寧可少收一天也不要覆蓋掉別人的格子。
+                if (count < values.Length)
+                {
+                    values[count++] = row.TradingValue;
+                }
+            }
+
+            Array.Sort(values);
+
+            // 偶數天取中間兩個的平均，跟一般中位數的定義一致。
+            var median = values.Length % 2 == 1
+                ? values[values.Length / 2]
+                : (values[(values.Length / 2) - 1] + values[values.Length / 2]) / 2m;
+
+            if (median > 0m)
+            {
+                result[ticker] = median;
+            }
+        }
+
+        return result;
+    }
+
     private static decimal Share(decimal part, decimal total)
         => total == 0m ? 0m : part / total;
 
@@ -364,7 +473,8 @@ public sealed class TradingValueRankingCalculator
     {
         MarketFilter.Twse => market == Market.Twse,
         MarketFilter.Tpex => market == Market.Tpex,
-        _ => true
+        MarketFilter.All => market is Market.Twse or Market.Tpex,
+        _ => false
     };
 
     /// <summary>
@@ -481,12 +591,27 @@ public sealed class TradingValueRankingCalculator
 
         public decimal? PreviousChangeRate { get; init; }
 
+        /// <summary>本期分子之前 20 個交易日的中位數日成交值。湊不滿或長期停牌時為 null。</summary>
+        public decimal? Baseline { get; init; }
+
+        /// <summary>前期分子之前 20 個交易日的中位數日成交值。</summary>
+        public decimal? PreviousBaseline { get; init; }
+
+        /// <summary>量比：本期日均成交值 ÷ 基準日均。基準算不出來時為 null，排在最後。</summary>
+        public decimal? VolumeRatio => Baseline is > 0m
+            ? Current.AverageDailyTradingValue / Baseline.Value
+            : null;
+
+        public decimal? PreviousVolumeRatio => PreviousBaseline is > 0m
+            ? Previous.AverageDailyTradingValue / PreviousBaseline.Value
+            : null;
+
         public decimal? SortKey(RankingMode mode) => mode == RankingMode.CapitalAcceleration
-            ? ChangeRate
+            ? VolumeRatio
             : Current.AverageDailyTradingValue;
 
         public decimal? PreviousSortKey(RankingMode mode) => mode == RankingMode.CapitalAcceleration
-            ? PreviousChangeRate
+            ? PreviousVolumeRatio
             : Previous.AverageDailyTradingValue;
 
         /// <summary>

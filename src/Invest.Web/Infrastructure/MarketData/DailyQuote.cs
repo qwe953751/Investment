@@ -37,6 +37,10 @@ public sealed record DailyQuote
     /// <summary>
     /// 一般交易的成交金額，單位為元。
     /// 官方原始資料還含零股、盤後定價與鉅額交易，落地前已經逐檔扣除。
+    ///
+    /// 美股（<see cref="Domain.Stocks.Market.Us"/>）沒有官方揭露的成交金額，
+    /// 這裡是 <see cref="ClosePrice"/> × <see cref="TradingVolume"/> 的美元估算值，
+    /// 不是精確數字，且單位是美元、不是新台幣，不可與 Twse/Tpex 的數字混排或加總。
     /// </summary>
     public required decimal TradingValue { get; init; }
 

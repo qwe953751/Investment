@@ -45,6 +45,30 @@ public sealed class StockRankingRow
     public decimal? PreviousTradingValueChangeRate { get; init; }
 
     /// <summary>
+    /// 本期之前 20 個交易日的中位數日成交值，也就是「這檔股票平常一天成交多少」。
+    /// 量比的分母。回看不滿 20 天、或停牌超過一半期間時為 null。
+    /// </summary>
+    public decimal? BaselineDailyTradingValue { get; init; }
+
+    /// <summary>
+    /// 前期自己的基準（前期之前的 20 個交易日）。資金加速的前期排名要用。
+    /// </summary>
+    public decimal? PreviousBaselineDailyTradingValue { get; init; }
+
+    /// <summary>
+    /// 量比：本期平均每日成交值 ÷ 基準日均。1 代表跟平常一樣，3 代表是平常的三倍。
+    /// 資金加速模式就是照這個數字排序。基準算不出來時為 null。
+    /// </summary>
+    public decimal? VolumeRatio => BaselineDailyTradingValue is > 0m
+        ? AverageDailyTradingValue / BaselineDailyTradingValue.Value
+        : null;
+
+    /// <summary>前期的量比。資金加速的前期排名照這個排。</summary>
+    public decimal? PreviousVolumeRatio => PreviousBaselineDailyTradingValue is > 0m
+        ? PreviousAverageDailyTradingValue / PreviousBaselineDailyTradingValue.Value
+        : null;
+
+    /// <summary>
     /// 本期成交值佔全市場（上市＋上櫃）的比例。
     /// </summary>
     public required decimal MarketShare { get; init; }

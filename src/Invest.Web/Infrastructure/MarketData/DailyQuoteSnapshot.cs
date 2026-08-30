@@ -26,8 +26,11 @@ public sealed class DailyQuoteSnapshot
     /// <summary>
     /// 日 K 開高低收欄位的格式版本。與成交值定義及市場指數分開，
     /// 讓既有行情可以只補抓價格欄位，不重算或覆蓋原本的成交值。
+    ///
+    /// 1：首次加入 OHLC；當時 TPEx 欄位曾以錯位索引保存。
+    /// 2：TPEx 依 fields 名稱解析，並拒絕不符合 high/low 關係的 K 棒。
     /// </summary>
-    public const int CurrentDailyBarSchemaVersion = 1;
+    public const int CurrentDailyBarSchemaVersion = 2;
 
     /// <summary>
     /// 這個檔案是用哪一版定義產生的。舊版會被回補指令視為過期並重新下載，
@@ -77,11 +80,7 @@ public sealed class DailyQuoteSnapshot
                 return false;
             }
 
-            var quotesWithCompleteBars = Quotes.Count(quote =>
-                quote.OpenPrice is not null
-                && quote.HighPrice is not null
-                && quote.LowPrice is not null
-                && quote.ClosePrice is not null);
+            var quotesWithCompleteBars = Quotes.Count(HasValidDailyBar);
 
             return quotesWithCompleteBars / (decimal)quotesWithClose >= MinimumDailyBarCoverage;
         }
@@ -129,6 +128,24 @@ public sealed class DailyQuoteSnapshot
         Quotes = MergeDailyBars(Quotes, dailyQuotes)
     };
 
+    /// <summary>
+    /// 疊加其他市場（目前是美股）在同一交易日的報價，不影響既有市場的
+    /// 成交值、指數或日 K。只在 sync／verify 執行當下於記憶體合併，
+    /// 不會寫回 data/imports 的磁碟快取——美股快取獨立存在 data/imports-us，
+    /// 兩份檔案永遠不互相覆寫。
+    /// </summary>
+    public DailyQuoteSnapshot WithAdditionalQuotes(IReadOnlyList<DailyQuote> additionalQuotes) => new()
+    {
+        SchemaVersion = SchemaVersion,
+        TradingDate = TradingDate,
+        IsTradingDay = IsTradingDay,
+        DownloadedAt = DateTimeOffset.Now,
+        Quotes = [.. Quotes, .. additionalQuotes],
+        MarketIndexSchemaVersion = MarketIndexSchemaVersion,
+        MarketIndices = MarketIndices,
+        DailyBarSchemaVersion = DailyBarSchemaVersion
+    };
+
     private static IReadOnlyList<DailyQuote> MergeDailyBars(
         IReadOnlyList<DailyQuote> existing,
         IReadOnlyList<DailyQuote> dailyQuotes)
@@ -140,14 +157,42 @@ public sealed class DailyQuoteSnapshot
 
         return existing
             .Select(quote => byTicker.TryGetValue(quote.Ticker, out var daily)
+                && HasValidDailyBar(daily)
                 ? quote with
                 {
                     OpenPrice = daily.OpenPrice,
                     HighPrice = daily.HighPrice,
                     LowPrice = daily.LowPrice
                 }
-                : quote)
+                : quote with
+                {
+                    OpenPrice = null,
+                    HighPrice = null,
+                    LowPrice = null
+                })
             .ToArray();
+    }
+
+    private static bool HasValidDailyBar(DailyQuote quote)
+    {
+        if (quote.OpenPrice is not > 0m
+            || quote.HighPrice is not > 0m
+            || quote.LowPrice is not > 0m
+            || quote.ClosePrice is not > 0m)
+        {
+            return false;
+        }
+
+        var open = quote.OpenPrice.Value;
+        var high = quote.HighPrice.Value;
+        var low = quote.LowPrice.Value;
+        var close = quote.ClosePrice.Value;
+
+        return high >= open
+            && high >= close
+            && high >= low
+            && low <= open
+            && low <= close;
     }
 
     public static DailyQuoteSnapshot NonTradingDay(DateOnly tradingDate) => new()

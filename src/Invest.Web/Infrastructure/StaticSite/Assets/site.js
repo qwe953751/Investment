@@ -76,6 +76,7 @@ const VIEWER_TABLE_HEADER_HINTS = {
     topicName: '顯示族群名稱；點擊可展開成員。',
     value: '顯示成交值。',
     rate: '顯示相較前期的變化。',
+    volumeRatio: '顯示成交值是這檔股票平常的幾倍。',
     share: '顯示個股占市場成交值的比例。',
     shareChange: '顯示成交比相較前期的變化。',
     price: '上層顯示日漲跌幅，下層顯示週漲跌幅。',
@@ -114,6 +115,49 @@ const INDEX_KLINE_MOVING_AVERAGES = KLINE_MOVING_AVERAGES;
 const KLINE_PRICE_SCALE_AVERAGES = KLINE_MOVING_AVERAGES
     .filter(line => line.key !== 'ma240');
 const INDEX_KLINE_PRICE_SCALE_AVERAGES = KLINE_PRICE_SCALE_AVERAGES;
+
+function niceKLineScale(values, targetTickCount = 5) {
+    const finite = values.map(Number).filter(Number.isFinite);
+
+    if (finite.length === 0) {
+        return { min: 0, max: 1, step: 1, ticks: [0, 1] };
+    }
+
+    const dataMin = Math.min(...finite);
+    const dataMax = Math.max(...finite);
+    const range = dataMax > dataMin ? dataMax - dataMin : Math.max(Math.abs(dataMax) * 0.02, 1);
+    const roughStep = range / Math.max(1, targetTickCount - 1);
+    const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+    const normalized = roughStep / magnitude;
+    const factor = normalized <= 1 ? 1
+        : normalized <= 2 ? 2
+            : normalized <= 2.5 ? 2.5
+                : normalized <= 5 ? 5 : 10;
+    const step = factor * magnitude;
+    let min = Math.floor(dataMin / step) * step;
+    let max = Math.ceil(dataMax / step) * step;
+
+    if (min === max) {
+        min -= step;
+        max += step;
+    }
+
+    const ticks = [];
+
+    for (let value = min, guard = 0; value <= max + step * 0.001 && guard < 20; value += step, guard += 1) {
+        ticks.push(Number(value.toPrecision(12)));
+    }
+
+    return { min, max, step, ticks };
+}
+
+function kLineAxisText(value, step) {
+    const decimals = step >= 1 ? 0 : Math.min(4, Math.max(1, Math.ceil(-Math.log10(step))));
+    return Number(value).toLocaleString('zh-TW', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
+    });
+}
 
 // 同一組期間按鈕在兩種檢視是兩件事：盤後是「本期多長」，盤中是「今天要跟過去多長的期間對照」。
 const PERIODS = [
@@ -338,6 +382,12 @@ const toTaipeiText = iso => TAIPEI_TIME.format(new Date(iso));
 
 // 依正負決定顏色。null 與 0 都視為持平。
 const toTrendClass = value => (value > 0 ? 'positive' : value < 0 ? 'negative' : 'unchanged');
+
+// 量比的中性點是 1（跟平常一樣多），不是 0，所以不能套 toTrendClass。
+const toVolumeRatioText = value => (missing(value) ? '—' : `${toFixedText(Number(value), 2)} 倍`);
+const toVolumeRatioClass = value => (missing(value)
+    ? ''
+    : Number(value) > 1 ? 'positive' : Number(value) < 1 ? 'negative' : 'unchanged');
 
 // 個股名稱用很淡的底色提示日漲跌；沒有日漲跌資料或持平時不染色。
 // 只套名稱儲存格，不整列染色，避免干擾鎖定、交易限制與其他欄位。
@@ -798,14 +848,23 @@ function topicColumnText(ticker) {
 // 大部分欄位與 TradingValueRanking.razor 相同（連 hint 的文字都一樣），
 // 但營收那兩欄只在這裡有：它們是瀏覽器直接跟 Supabase 拿的，
 // 而 Razor 那頁是本機開發用的檢視，沒有接這條線。
+// 量比就是資金加速的排序依據，所以這段話要能獨立解釋整個模式在做什麼。
+const VOLUME_RATIO_HINT = '本期平均每日成交值 ÷ 這檔股票平常一天的成交值。'
+    + '「平常」取本期之前 20 個交易日的中位數——固定 20 天，不隨上面選的觀察期間改變，'
+    + '因為分母問的是「這檔股票平常多熱鬧」，那是一個該保持穩定的東西。'
+    + '用中位數而不是平均，單日爆量才不會把之後一整個月的基準墊高。'
+    + '3.00 倍代表本期成交值是平常的三倍。回看不滿 20 個交易日、'
+    + '或停牌超過一半期間的個股算不出來，顯示 — 並排在最後。';
+
 const COLUMNS = [
-    { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看較前期增減。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
+    { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看量比。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
     { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。右側「市／櫃」標記代表上市或上櫃；再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
+    { key: 'volumeRatio', title: '量比', hint: VOLUME_RATIO_HINT, value: row => row.volumeRatio, cell: row => ({ text: toVolumeRatioText(row.volumeRatio), cls: 'numeric ' + toVolumeRatioClass(row.volumeRatio) }) },
     { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '本期市場成交比 − 前期市場成交比，單位是百分點。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
@@ -817,6 +876,7 @@ const COLUMNS = [
 const SINGLE_DAY_COLUMN_HINTS = {
     value: '選定交易日的單日成交值。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。',
     rate: '（選定日成交值 − 前期平均）÷ 前期平均。前期是選定日前指定長度的交易日平均；前期為 0 時無法計算，顯示 — 並排在最後。',
+    volumeRatio: '選定日成交值 ÷ 這檔股票平常一天的成交值（選定日之前 20 個交易日的中位數）。分母固定 20 日，不隨上面選的期間長度改變。',
     share: '選定交易日個股成交值 ÷ 該日全市場成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變。',
     shareChange: '選定日市場成交比 − 選定日前指定長度交易日的平均市場成交比，單位是百分點。'
 };
@@ -902,6 +962,7 @@ const NOTE_CATEGORIES = [
 const NOTE_STATUSES = ['待處理', '處理中', '待確認', '已完成'];
 const NOTE_IMAGES_BUCKET = 'note-images';
 const NOTE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const NOTE_IMAGE_TARGET_BYTES = Math.floor(4.5 * 1024 * 1024);
 const NOTE_IMAGE_MAX_COUNT = 6;
 const NOTE_IMAGE_EXTENSIONS = {
     'image/jpeg': 'jpg',
@@ -910,6 +971,16 @@ const NOTE_IMAGE_EXTENSIONS = {
     'image/webp': 'webp'
 };
 const NOTE_IMAGE_TYPES = new Set(Object.keys(NOTE_IMAGE_EXTENSIONS));
+const NOTE_IMAGE_SOURCE_TYPES = new Set([...NOTE_IMAGE_TYPES, 'image/heic', 'image/heif']);
+const NOTE_IMAGE_SOURCE_EXTENSIONS = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    heic: 'image/heic',
+    heif: 'image/heif'
+};
 
 // 僅供 review-20260826-notes-v1 本機預覽閱讀，不會寫入資料庫。
 const NOTES_LOCAL_PREVIEW_ITEMS = [
@@ -1863,14 +1934,7 @@ function normalizeNoteAttachments(value) {
         }));
 }
 
-function readNoteImageSource(file) {
-    if (typeof createImageBitmap === 'function') {
-        return createImageBitmap(file).then(source => ({
-            source,
-            release: () => source.close()
-        }));
-    }
-
+function readNoteImageElement(file) {
     return new Promise((resolve, reject) => {
         const url = URL.createObjectURL(file);
         const image = new Image();
@@ -1880,10 +1944,39 @@ function readNoteImageSource(file) {
         };
         image.onerror = () => {
             URL.revokeObjectURL(url);
-            reject(new Error('圖片無法讀取'));
+            reject(new Error('圖片無法讀取；若是 HEIC／HEIF，請確認手機瀏覽器支援此格式'));
         };
         image.src = url;
     });
+}
+
+async function readNoteImageSource(file) {
+    if (typeof createImageBitmap === 'function') {
+        try {
+            const source = await createImageBitmap(file);
+            return {
+                source,
+                release: () => source.close()
+            };
+        } catch {
+            // iOS Safari 可能宣告 createImageBitmap，卻不能用它解 HEIC 或相簿輸出的 JPEG；
+            // 同一檔案仍可由原生 <img> 解碼，所以失敗後要走第二條路。
+        }
+    }
+
+    return readNoteImageElement(file);
+}
+
+function noteImageSourceType(file) {
+    const declared = String(file?.type ?? '').toLowerCase().split(';', 1)[0];
+    const normalized = declared === 'image/jpg' ? 'image/jpeg' : declared;
+
+    if (NOTE_IMAGE_SOURCE_TYPES.has(normalized)) {
+        return normalized;
+    }
+
+    const extension = String(file?.name ?? '').split('.').at(-1)?.toLowerCase() ?? '';
+    return NOTE_IMAGE_SOURCE_EXTENSIONS[extension] ?? '';
 }
 
 function canvasToNoteImageBlob(canvas, type, quality) {
@@ -1900,7 +1993,13 @@ function canvasToNoteImageBlob(canvas, type, quality) {
 }
 
 async function compressNoteImage(file) {
-    if (file.size <= NOTE_IMAGE_MAX_BYTES) {
+    const sourceType = noteImageSourceType(file);
+
+    if (sourceType === '') {
+        throw new Error('格式不支援');
+    }
+
+    if (NOTE_IMAGE_TYPES.has(sourceType) && file.size <= NOTE_IMAGE_MAX_BYTES) {
         return file;
     }
 
@@ -1913,10 +2012,13 @@ async function compressNoteImage(file) {
         throw new Error('圖片尺寸無法辨識');
     }
 
-    // JPEG 沒有透明度；其他格式優先轉 WebP，保留 PNG／GIF 常見的透明背景。
-    const outputType = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/webp';
+    // Storage 僅接受 JPG／PNG／GIF／WebP。HEIC／HEIF 必須轉檔；超大 PNG／GIF 也統一
+    // 轉 JPEG，避免舊版 iOS Canvas 宣告 WebP 卻實際輸出別的 MIME，造成副檔名與內容不符。
+    const outputType = 'image/jpeg';
     const canvas = document.createElement('canvas');
-    let scale = Math.min(1, Math.sqrt(NOTE_IMAGE_MAX_BYTES / file.size) * 0.9);
+    let scale = file.size > NOTE_IMAGE_TARGET_BYTES
+        ? Math.min(1, Math.sqrt(NOTE_IMAGE_TARGET_BYTES / file.size) * 0.9)
+        : 1;
     let quality = 0.82;
     let lastSize = Number.POSITIVE_INFINITY;
 
@@ -1938,8 +2040,8 @@ async function compressNoteImage(file) {
             context.drawImage(source, 0, 0, canvas.width, canvas.height);
             const blob = await canvasToNoteImageBlob(canvas, outputType, quality);
 
-            if (blob.size <= NOTE_IMAGE_MAX_BYTES) {
-                const extension = NOTE_IMAGE_EXTENSIONS[blob.type] ?? 'webp';
+            if (blob.size <= NOTE_IMAGE_TARGET_BYTES) {
+                const extension = NOTE_IMAGE_EXTENSIONS[blob.type] ?? 'jpg';
                 const baseName = file.name.replace(/\.[^.]+$/, '') || '圖片';
                 return new File(
                     [blob],
@@ -1976,7 +2078,13 @@ async function uploadNoteImage(noteId, image) {
         throw new Error('圖片壓縮後仍超過 5 MB');
     }
 
-    const extension = NOTE_IMAGE_EXTENSIONS[image.file.type];
+    const mimeType = noteImageSourceType(image.file);
+    const extension = NOTE_IMAGE_EXTENSIONS[mimeType];
+
+    if (extension === undefined) {
+        throw new Error('圖片尚未轉成可上傳格式');
+    }
+
     const path = `notes/${noteId}/${crypto.randomUUID()}.${extension}`;
     const response = await fetch(
         `${supabase.url}/storage/v1/object/${NOTE_IMAGES_BUCKET}/${encodeStoragePath(path)}`,
@@ -1985,20 +2093,29 @@ async function uploadNoteImage(noteId, image) {
             headers: {
                 apikey: supabase.anonKey,
                 Authorization: `Bearer ${supabase.anonKey}`,
-                'Content-Type': image.file.type,
+                'Content-Type': mimeType,
                 'x-upsert': 'false'
             },
             body: image.file
         });
 
     if (!response.ok) {
-        throw new Error(`圖片上傳失敗（${response.status}）`);
+        let detail = '';
+
+        try {
+            const body = await response.json();
+            detail = String(body?.message ?? body?.error ?? '').trim();
+        } catch {
+            // Storage 有時只回空 body；HTTP 狀態仍足夠定位，這裡不讓解析錯誤蓋掉它。
+        }
+
+        throw new Error(`圖片上傳失敗（${response.status}${detail === '' ? '' : `：${detail}`}）`);
     }
 
     return {
         path,
         name: image.file.name,
-        mimeType: image.file.type,
+        mimeType,
         size: image.file.size
     };
 }
@@ -2461,7 +2578,7 @@ function wireNotes() {
                 break;
             }
 
-            if (!NOTE_IMAGE_TYPES.has(file.type)) {
+            if (noteImageSourceType(file) === '') {
                 rejected.push(`${file.name}：格式不支援`);
                 continue;
             }
@@ -3741,6 +3858,9 @@ async function getAssetOcrWorker() {
                 // 初始化。若這筆成本落在使用者第一張截圖上，就會無端耗掉該圖十秒預算。
                 // 以本站產生、沒有任何帳戶資料的極小畫布先跑完一次，完成才開放選檔。
                 await warmAssetOcrRecognition(worker);
+                // 券商持倉是規則表格；AUTO 會把它拆成直向欄位，文字雖有讀到卻無法還原列。
+                // SINGLE_BLOCK 保留橫向列，再由下面的欄位標題與身份裁切做安全配對。
+                await worker.setParameters({ tessedit_pageseg_mode: '6' });
                 assetOcrWorker = worker;
                 return worker;
             } catch (error) {
@@ -4235,15 +4355,19 @@ function finalizeAssetOcrDraft(draft) {
 
     // 只在標題已明確標示「單位成本／總成本」時才反推整數股數。券商的總成本可能因為
     // 手續費有幾分差，容許 0.1%，超過就留空交給人工核對，不能把不相干的兩個數字相除。
-    if (quantity === null
-        && draft.ocrUnitPrices?.costPrice !== null
+    if (draft.ocrUnitPrices?.costPrice !== null
         && draft.ocrUnitPrices?.costPrice !== undefined
         && draft.cost !== ''
         && Number(draft.ocrUnitPrices.costPrice) > 0) {
         const inferred = Math.round(Number(draft.cost) / Number(draft.ocrUnitPrices.costPrice));
         const difference = Math.abs(Number(draft.cost) - inferred * Number(draft.ocrUnitPrices.costPrice));
+        const statedDifference = quantity === null
+            ? Number.POSITIVE_INFINITY
+            : Math.abs(Number(draft.cost) - quantity * Number(draft.ocrUnitPrices.costPrice));
 
-        if (inferred > 0 && difference <= Math.max(0.5, Math.abs(Number(draft.cost)) * 0.001)) {
+        if (inferred > 0
+            && difference <= Math.max(0.5, Math.abs(Number(draft.cost)) * 0.001)
+            && (quantity === null || statedDifference > Math.max(1, difference * 4))) {
             quantity = inferred;
             draft.quantity = inferred;
         }
@@ -4591,6 +4715,15 @@ function assetOcrIdentityTickers(text, allowEnglishTickers) {
             continue;
         }
 
+        // 台股身份欄的代號通常獨占一行。名冊查不到的 ETF（例如 0050）仍可接受獨立
+        // 四碼，但「7538 | 3,153」這種和股數黏在一起的格線殘字不能當成另一檔股票。
+        if (!allowEnglishTickers
+            && /^\d{4}$/.test(ticker)
+            && assetKnownStockName(ticker) === ''
+            && line.trim() !== ticker) {
+            continue;
+        }
+
         if (ticker !== '' && !seen.has(ticker)) {
             seen.add(ticker);
             tickers.push(ticker);
@@ -4640,7 +4773,11 @@ function assetOcrTextLineDraft(text, fields) {
     const moneyAt = fields.includes('costPrice') && fields.includes('cost')
         ? String(text).indexOf('$')
         : -1;
-    const values = assetOcrNumbersInText(moneyAt >= 0 ? String(text).slice(moneyAt) : text);
+    const numericText = moneyAt >= 0 ? String(text).slice(moneyAt) : String(text);
+    // 表格橫線被辨成「~=-」後會黏在正數股數前面；只有這個明確殘字才移除負號，
+    // 真正的 -271 仍維持負數，不能把融券／先賣後買持倉偷偷改成正數。
+    const values = assetOcrNumbersInText(
+        numericText.replace(/[~～]\s*=\s*[−–—-](?=\s*[\d０-９])/g, ''));
 
     if (ticker !== '') {
         draft.ticker = ticker;
@@ -4649,7 +4786,19 @@ function assetOcrTextLineDraft(text, fields) {
 
     // OCR 少字或多讀到帳號時，欄位數與數字數對不起來。這種列不填金額，避免一格錯位
     // 之後看起來仍像合理數字；使用者可從校對表補齊。
-    if (values.length !== numericFields.length) {
+    const missingFields = numericFields.slice(values.length);
+    const onlyMissingTrailingDisplayFields = values.length > 0
+        && values.length < numericFields.length
+        && missingFields.every(field => ['marketPrice', 'marketValue', 'unrealized'].includes(field));
+    const onlyMissingInferableQuantity = missingFields.length === 1
+        && missingFields[0] === 'quantity'
+        && numericFields.slice(0, values.length).includes('costPrice')
+        && numericFields.slice(0, values.length).includes('cost');
+
+    if (values.length > numericFields.length
+        || (values.length < numericFields.length
+            && !onlyMissingTrailingDisplayFields
+            && !onlyMissingInferableQuantity)) {
         draft.ocrUnitPrices = prices;
         return draft;
     }
@@ -4730,14 +4879,10 @@ async function assetDraftRowsFromText(data) {
             const candidate = candidates[index];
             const identity = identityTickers[index];
 
-            if (candidate.ticker === '') {
-                candidate.ticker = identity;
-            } else if (candidate.ticker !== identity) {
-                // 主辨識與獨立身份欄不一致時，不能從其中一邊挑「看起來比較像」的。
-                // 清掉可疑代號後仍可由名稱或唯一收盤價補回，否則交給人工校對。
-                candidate.ticker = '';
-                candidate.name = '';
-            }
+            // 主表的前後行配對很容易撿到上一檔代號；身份裁切只讀左欄，且數量完全
+            // 相同時列序才成立。這個條件成立就以身份欄為準，不再讓錯的上一檔清空結果。
+            candidate.ticker = identity;
+            candidate.name = assetKnownStockName(identity);
         }
     }
 
@@ -4790,14 +4935,16 @@ function assetOcrTextDataLineCount(data) {
 
 function assetOcrLegacyTaiwanHorizontalCandidates(data) {
     const candidates = [];
+    const lines = String(data?.text ?? '').split(/\r?\n/);
 
-    for (const line of String(data?.text ?? '').split(/\r?\n/)) {
-        // 舊版橫式台股明細的表頭容易被裁掉，但每列仍有「明細／普通」、連續的股數與
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        const line = lines[lineIndex];
+        // 舊版橫式台股明細的表頭容易被裁掉，但每列仍有「普通」、連續的股數與
         // 可用股數、以及市值、成本、損益三個總額。至少兩列都符合才視為同一個明確版型，
         // 不能把單一行剛好出現「普通」的說明文字拿來套模板。
         const marker = line.indexOf('普通');
 
-        if (!line.includes('明細') || marker < 0) {
+        if (marker < 0) {
             continue;
         }
 
@@ -4808,7 +4955,16 @@ function assetOcrLegacyTaiwanHorizontalCandidates(data) {
         }
 
         let quantity = values[0];
-        const available = values[1];
+        let available = values[1];
+
+        // 千分位逗號偶爾被辨成小數點（3,153 → 3.153）。只在另一個「股數」欄是相同
+        // 整數且乘 1000 後精確相等時修復，不把真正有小數的價格套進來。
+        if (Number.isInteger(quantity)
+            && !Number.isInteger(available)
+            && Number.isInteger(available * 1000)
+            && quantity === available * 1000) {
+            available *= 1000;
+        }
 
         // 格線旁的殘字會令「55」讀成「355」；只有它剛好以可用股數完整結尾時才收斂回
         // 相同的股數。這是欄位內的字元修復，不是由金額反推股數。
@@ -4823,14 +4979,23 @@ function assetOcrLegacyTaiwanHorizontalCandidates(data) {
             continue;
         }
 
+        const nearbyName = (lines[lineIndex - 1] ?? '')
+            .match(/[\u3400-\u9FFF][\u3400-\u9FFF0-9A-Za-z-]*/g)
+            ?.find(value => [...value].filter(character => /[\u3400-\u9FFF]/.test(character)).length >= 2
+                && !/(?:明細|普通|股數|成本|市值|損益|重新查詢)/.test(value))
+            ?? '';
+
         candidates.push({
             draft: assetDraftRowFrom({
+                name: nearbyName,
                 quantity,
                 marketValue: values[3],
                 cost: values[5],
                 unrealized: values[6]
             }),
-            ticker: assetOcrTickerInText(line, false)
+            // 主表數字裡的 1770／3540／3865 都可能長得像有效代號。這個版型已要求
+            // 身份裁切筆數完全一致，所以不再採用主表猜出的代號。
+            ticker: ''
         });
     }
 
@@ -4871,7 +5036,8 @@ function assetDraftRowsFromLegacyTaiwanHorizontal(data) {
         assetOcrResolveIdentity(draft);
 
         if (draft.name === '') {
-            draft.name = assetOcrIdentityNameNearTicker(data?.identityText, identity);
+            draft.name = assetOcrIdentityNameNearTicker(data?.identityText, identity)
+                || assetOcrIdentityNameNearTicker(data?.text, identity);
         }
 
         const finalized = finalizeAssetOcrDraft(draft);
@@ -5013,8 +5179,8 @@ async function recognizeAssetScreenshot(file, index, total) {
                 }
 
                 setAssetOcrStatus(`第 ${index} / ${total} 張：補讀股票名稱（仍在 10 秒內）…`);
-                // 完整表格用 AUTO 才能維持欄位關係；這個窄裁切則只要讀散落的名稱／代號，
-                // Sparse Text 能避開表格線與空白區把中文名稱併成亂碼。辨識完立刻切回 AUTO，
+                // 完整表格用 SINGLE_BLOCK 才會維持逐列關係；這個窄裁切只要讀散落名稱／代號，
+                // Sparse Text 能避開表格線與空白區把中文名稱併成亂碼。辨識完立刻切回 SINGLE_BLOCK，
                 // 不讓下一張的主辨識意外沿用此模式。
                 await assetOcrDeadline(
                     worker.setParameters({ tessedit_pageseg_mode: '11' }),
@@ -5039,7 +5205,7 @@ async function recognizeAssetScreenshot(file, index, total) {
                     }
 
                     await assetOcrDeadline(
-                        worker.setParameters({ tessedit_pageseg_mode: '3' }),
+                        worker.setParameters({ tessedit_pageseg_mode: '6' }),
                         remainingBeforeReset);
                 }
 
@@ -5848,8 +6014,8 @@ const order = selector => (left, right) => {
 // 依市場與門檻篩選，再依模式排名。
 function rankRows(data) {
     const acceleration = state.mode === 'accel';
-    const sortKey = row => (acceleration ? row.rate : row.value);
-    const previousSortKey = row => (acceleration ? row.previousRate : row.previousValue);
+    const sortKey = row => (acceleration ? row.volumeRatio : row.value);
+    const previousSortKey = row => (acceleration ? row.previousVolumeRatio : row.previousValue);
 
     const candidates = data.rows.filter(row =>
         (state.market === 'all' || row.market === state.market)
@@ -6742,7 +6908,12 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
             && priceY >= layout.top
             && priceY <= layout.priceBottom) {
             appendReferenceLine(priceY);
-            referenceValues.push(`收 ${toFixedText(priceValue, 2)}`);
+            const open = Number(bar.open);
+            const high = Number(bar.high);
+            const low = Number(bar.low);
+            referenceValues.push([open, high, low].every(Number.isFinite)
+                ? `開 ${toFixedText(open, 2)} 高 ${toFixedText(high, 2)} 低 ${toFixedText(low, 2)} 收 ${toFixedText(priceValue, 2)}`
+                : `收 ${toFixedText(priceValue, 2)}`);
         }
 
         const lowerValue = missing(layout.lowerValue(bar))
@@ -6822,8 +6993,9 @@ function klineTrendClass(bar) {
 function renderKLineSvg(ticker, name, bars, referenceSummary) {
     const width = 600;
     const height = 440;
-    const left = 56;
-    const right = 586;
+    const left = 16;
+    const right = 536;
+    const priceAxisX = right + 8;
     const top = 16;
     // 上層刻意沿用原本的 bottom=258；成交量往下長，不縮小既有 K 棒比例。
     const priceBottom = 258;
@@ -6834,12 +7006,8 @@ function renderKLineSvg(ticker, name, bars, referenceSummary) {
         bar.high,
         ...KLINE_PRICE_SCALE_AVERAGES.map(line => bar[line.key])
     ]).filter(value => !missing(value)).map(Number).filter(Number.isFinite);
-    const dataMin = Math.min(...prices);
-    const dataMax = Math.max(...prices);
-    const dataRange = dataMax > dataMin ? dataMax - dataMin : Math.max(dataMax * 0.02, 1);
-    const padding = dataRange * 0.04;
-    const min = dataMin - padding;
-    const max = dataMax + padding;
+    const scale = niceKLineScale(prices);
+    const { min, max } = scale;
     const y = price => top + (max - Number(price)) / (max - min) * (priceBottom - top);
     const step = (right - left) / Math.max(bars.length, 1);
     const bodyWidth = Math.min(8, Math.max(2.5, step * 0.62));
@@ -6857,11 +7025,11 @@ function renderKLineSvg(ticker, name, bars, referenceSummary) {
         'aria-label': `${ticker} ${name} 三個月還原權息日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與成交量`
     });
 
-    for (const price of [max, (max + min) / 2, min]) {
+    for (const price of scale.ticks) {
         const lineY = y(price);
         svg.append(
             svgElement('line', { class: 'daily-kline-grid-line', x1: left, x2: right, y1: lineY, y2: lineY }),
-            svgElement('text', { class: 'daily-kline-axis', x: left - 8, y: lineY + 4, 'text-anchor': 'end' }, toFixedText(price, 2)));
+            svgElement('text', { class: 'daily-kline-axis', x: priceAxisX, y: lineY + 4, 'text-anchor': 'start' }, kLineAxisText(price, scale.step)));
     }
 
     bars.forEach((bar, index) => {
@@ -6932,7 +7100,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary) {
         }
 
         svg.append(svgElement('rect', {
-            class: 'daily-kline-volume-bar',
+            class: `daily-kline-volume-bar ${klineTrendClass(bar)}`,
             x: x(index) - bodyWidth / 2,
             y: volumeY(value),
             width: bodyWidth,
@@ -6945,7 +7113,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary) {
             class: 'daily-kline-grid-line', x1: left, x2: right, y1: volumeBottom, y2: volumeBottom
         }),
         svgElement('text', {
-            class: 'daily-kline-axis', x: left - 8, y: volumeTop + 4, 'text-anchor': 'end'
+            class: 'daily-kline-axis', x: priceAxisX, y: volumeTop + 4, 'text-anchor': 'start'
         }, toLotText(maxVolume)));
 
     const labels = [bars[0], bars[Math.floor(bars.length / 2)], bars[bars.length - 1]];
@@ -6991,11 +7159,7 @@ function renderKLineLegend(bars) {
         bar.high,
         ...KLINE_PRICE_SCALE_AVERAGES.map(line => bar[line.key])
     ]).filter(value => !missing(value)).map(Number).filter(Number.isFinite);
-    const dataMin = Math.min(...prices);
-    const dataMax = Math.max(...prices);
-    const dataRange = dataMax > dataMin ? dataMax - dataMin : Math.max(dataMax * 0.02, 1);
-    const min = dataMin - dataRange * 0.04;
-    const max = dataMax + dataRange * 0.04;
+    const { min, max } = niceKLineScale(prices);
 
     for (const line of KLINE_MOVING_AVERAGES) {
         const item = document.createElement('span');

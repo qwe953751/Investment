@@ -586,7 +586,7 @@ public sealed class StaticSiteExporter(
     }
 
     /// <summary>
-    /// 資金加速模式的前期排名本身也是增減率，需要三段期間；
+    /// 資金加速排的是量比，前期排名要用前期自己的量比，所以要「本期 + 前期 + 20 日基準」三段；
     /// 成交熱度只需要兩段。同一份檔案要餵兩種模式，所以兩邊的可用狀態都要寫進去。
     /// </summary>
     private static RankingExport ToExport(
@@ -596,7 +596,8 @@ public sealed class StaticSiteExporter(
         TradingValueRankingResult result,
         IReadOnlyList<SingleComparisonExport>? singleComparisons = null)
     {
-        var accelerationAvailable = historyLength >= periodDays * 3;
+        var accelerationDays = periodDays * 2 + TradingValueRankingCalculator.BaselineDays;
+        var accelerationAvailable = historyLength >= accelerationDays;
         var currentPeriodDays = result.CurrentPeriodDays > 0
             ? result.CurrentPeriodDays
             : result.PeriodDays;
@@ -609,7 +610,7 @@ public sealed class StaticSiteExporter(
             accelerationAvailable
                 ? null
                 : TradingValueRankingResult
-                    .InsufficientData(periodDays, RankingMode.CapitalAcceleration, historyLength, periodDays * 3)
+                    .InsufficientData(periodDays, RankingMode.CapitalAcceleration, historyLength, accelerationDays)
                     .InsufficientDataMessage,
             RankingFormatter.ToPeriodText(result.CurrentPeriodStart, result.CurrentPeriodEnd),
             RankingFormatter.ToPeriodText(result.PreviousPeriodStart, result.PreviousPeriodEnd),
@@ -626,7 +627,8 @@ public sealed class StaticSiteExporter(
         int historyLength,
         TradingValueRankingResult result)
     {
-        var accelerationAvailable = historyLength >= 1 + periodDays * 2;
+        var accelerationDays = 1 + periodDays + TradingValueRankingCalculator.BaselineDays;
+        var accelerationAvailable = historyLength >= accelerationDays;
 
         return new SingleComparisonExport(
             periodDays,
@@ -640,7 +642,7 @@ public sealed class StaticSiteExporter(
                         periodDays,
                         RankingMode.CapitalAcceleration,
                         historyLength,
-                        1 + periodDays * 2,
+                        accelerationDays,
                         RankingComparisonMode.SingleDay)
                     .InsufficientDataMessage,
             RankingFormatter.ToPeriodText(result.CurrentPeriodStart, result.CurrentPeriodEnd),
@@ -649,7 +651,8 @@ public sealed class StaticSiteExporter(
                 row.Ticker,
                 Math.Round(row.PreviousAverageDailyTradingValue),
                 Round(row.TradingValueChangeRate),
-                Round(row.PreviousTradingValueChangeRate),
+                RoundRatio(row.VolumeRatio),
+                RoundRatio(row.PreviousVolumeRatio),
                 RoundSignificant(row.MarketShareChange)))]);
     }
 
@@ -694,7 +697,8 @@ public sealed class StaticSiteExporter(
         Math.Round(row.AverageDailyTradingValue),
         Math.Round(row.PreviousAverageDailyTradingValue),
         Round(row.TradingValueChangeRate),
-        Round(row.PreviousTradingValueChangeRate),
+        RoundRatio(row.VolumeRatio),
+        RoundRatio(row.PreviousVolumeRatio),
         RoundSignificant(row.MarketShare),
         RoundSignificant(row.MarketShareChange),
         Round(row.DailyPriceChangeRate),
@@ -709,6 +713,13 @@ public sealed class StaticSiteExporter(
     private static decimal Round(decimal value) => Math.Round(value, 8);
 
     private static decimal? Round(decimal? value) => value is { } number ? Round(number) : null;
+
+    /// <summary>
+    /// 量比是「幾倍」等級的數字（多半落在 0.1 ~ 20），四位小數已經遠超過排序與顯示需要，
+    /// 而且比八位小數短一半——一份檔案有近兩千列，每個位數都要乘上兩千。
+    /// </summary>
+    private static decimal? RoundRatio(decimal? value)
+        => value is { } number ? Math.Round(number, 4) : null;
 
     /// <summary>
     /// 市佔率是萬分之一等級的小數，固定八位小數只剩兩三位有效數字，
@@ -1151,7 +1162,8 @@ public sealed class StaticSiteExporter(
         string Ticker,
         decimal PreviousValue,
         decimal? Rate,
-        decimal? PreviousRate,
+        decimal? VolumeRatio,
+        decimal? PreviousVolumeRatio,
         decimal ShareChange);
 
     private sealed record MarketHeatExport(
@@ -1183,7 +1195,8 @@ public sealed class StaticSiteExporter(
         decimal Value,
         decimal PreviousValue,
         decimal? Rate,
-        decimal? PreviousRate,
+        decimal? VolumeRatio,
+        decimal? PreviousVolumeRatio,
         decimal Share,
         decimal ShareChange,
         decimal? PriceChange,

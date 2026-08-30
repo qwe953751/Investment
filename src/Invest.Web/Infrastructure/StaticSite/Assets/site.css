@@ -2507,8 +2507,19 @@ td.stock-name.stock-name-change-down {
 }
 
 .daily-kline-volume-bar {
-    fill: #5b9bea;
-    opacity: .72;
+    opacity: .78;
+}
+
+.daily-kline-volume-bar.daily-kline-up {
+    fill: #e82830;
+}
+
+.daily-kline-volume-bar.daily-kline-down {
+    fill: #38b448;
+}
+
+.daily-kline-volume-bar.daily-kline-flat {
+    fill: #667085;
 }
 
 .daily-kline-hover-zone {
@@ -3106,8 +3117,10 @@ td.stock-name.stock-name-change-down {
     .ranking-table td.ticker {
         position: sticky;
         left: 0;
+        box-sizing: border-box;
         width: 80px;
         min-width: 80px;
+        max-width: 80px;
         background: #fff;
     }
 
@@ -3115,9 +3128,23 @@ td.stock-name.stock-name-change-down {
     .ranking-table td.stock-name {
         position: sticky;
         left: 80px;
-        width: 160px;
-        min-width: 160px;
+        box-sizing: border-box;
+        width: 104px;
+        min-width: 104px;
+        max-width: 104px;
         background: #fff;
+        white-space: normal;
+    }
+
+    .ranking-table td.stock-name .stock-name-button {
+        display: -webkit-box;
+        max-width: 88px;
+        min-height: 36px;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+        line-height: 1.25;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
     }
 
     .ranking-table td.ticker,

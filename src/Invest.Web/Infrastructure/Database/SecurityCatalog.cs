@@ -30,7 +30,13 @@ public static class SecurityCatalog
             upsert.Parameters.AddWithValue("names", securities.Select(security => security.Name).ToArray());
             upsert.Parameters.AddWithValue(
                 "markets",
-                securities.Select(security => security.Market == Market.Twse ? "TWSE" : "TPEX").ToArray());
+                securities.Select(security => security.Market switch
+                {
+                    Market.Twse => "TWSE",
+                    Market.Tpex => "TPEX",
+                    Market.Us => "US",
+                    var value => throw new ArgumentOutOfRangeException(nameof(securities), value, "未知市場")
+                }).ToArray());
 
             await upsert.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -77,6 +83,7 @@ public static class SecurityCatalog
             {
                 "TWSE" => Market.Twse,
                 "TPEX" => Market.Tpex,
+                "US" => Market.Us,
                 var value => throw new InvalidOperationException($"資料庫出現未知市場：{value}")
             };
 

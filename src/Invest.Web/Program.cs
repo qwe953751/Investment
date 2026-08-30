@@ -11,6 +11,7 @@ using Invest.Web.Infrastructure.MarketData.CorporateActions;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
+using Invest.Web.Infrastructure.MarketData.UsStocks;
 using Invest.Web.Infrastructure.StaticSite;
 using Invest.Web.Infrastructure.StockTopics;
 using Microsoft.Extensions.Options;
@@ -22,6 +23,7 @@ using System.Text.Json.Serialization;
 // 命令列模式：
 //   dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-bars [交易日數] [起始日期]
+//   dotnet run --project src/Invest.Web -- backfill-us
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
@@ -36,8 +38,8 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "export" or "intraday" or "backfill-intraday-heat" or "sync" or "verify"
-        or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear";
+    command is "backfill" or "backfill-bars" or "backfill-us" or "export" or "intraday" or "backfill-intraday-heat"
+        or "sync" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -48,6 +50,8 @@ builder.Services.AddRazorComponents()
 
 builder.Services.Configure<MarketDataOptions>(
     builder.Configuration.GetSection(MarketDataOptions.SectionName));
+builder.Services.Configure<UsMarketDataOptions>(
+    builder.Configuration.GetSection(UsMarketDataOptions.SectionName));
 
 // 官方網站會擋掉沒有 User-Agent 的請求，這些 client 一定要帶。
 builder.Services.AddHttpClient<TwseDailyQuoteClient>(ConfigureQuoteClient);
@@ -74,7 +78,11 @@ builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 
+builder.Services.AddHttpClient<AlphaVantageDailyQuoteClient>(
+    client => client.Timeout = TimeSpan.FromSeconds(30));
+
 builder.Services.AddSingleton<DailyQuoteStore>();
+builder.Services.AddSingleton<UsDailyQuoteStore>();
 builder.Services.AddSingleton<IntradayQuoteStore>();
 builder.Services.AddSingleton<IntradayCurveStore>();
 builder.Services.AddSingleton<IntradayTopicHeatStore>();
@@ -86,6 +94,7 @@ builder.Services.AddSingleton<HeartbeatStore>();
 builder.Services.AddSingleton<SiteAlertStore>();
 builder.Services.AddSingleton<SchemaMigrations>();
 builder.Services.AddTransient<MarketDataDownloader>();
+builder.Services.AddTransient<UsMarketDataDownloader>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
 builder.Services.AddTransient<StaticSiteExporter>();
@@ -101,6 +110,12 @@ if (command is "backfill")
 if (command is "backfill-bars")
 {
     await RunDailyBarBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-us")
+{
+    await RunUsBackfillAsync(app.Services);
     return;
 }
 
@@ -974,11 +989,14 @@ static async Task RunSyncAsync(IServiceProvider services, string[] args)
 
     using var scope = services.CreateScope();
     var localStore = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
+    var usStore = scope.ServiceProvider.GetRequiredService<UsDailyQuoteStore>();
     var syncStore = scope.ServiceProvider.GetRequiredService<DailyQuoteSyncStore>();
 
     Console.WriteLine($"讀取本機快取：{localStore.Directory}");
 
     var snapshots = await localStore.LoadAllAsync();
+    var usSnapshots = await usStore.LoadAllAsync();
+    snapshots = UsMarketSnapshotMerger.Combine(snapshots, usSnapshots);
 
     Console.WriteLine($"本機共 {snapshots.Count} 個交易日，資料庫保留最近 {retention} 個。");
     Console.WriteLine();
@@ -1083,6 +1101,7 @@ static async Task<int> RunVerifyAsync(IServiceProvider services)
 {
     using var scope = services.CreateScope();
     var localStore = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
+    var usStore = scope.ServiceProvider.GetRequiredService<UsDailyQuoteStore>();
     var syncStore = scope.ServiceProvider.GetRequiredService<DailyQuoteSyncStore>();
     var migrations = scope.ServiceProvider.GetRequiredService<SchemaMigrations>();
 
@@ -1095,6 +1114,8 @@ static async Task<int> RunVerifyAsync(IServiceProvider services)
     Console.WriteLine($"本機快取：{localStore.Directory}");
 
     var snapshots = await localStore.LoadAllAsync();
+    var usSnapshots = await usStore.LoadAllAsync();
+    snapshots = UsMarketSnapshotMerger.Combine(snapshots, usSnapshots);
     var local = snapshots.ToDictionary(snapshot => snapshot.TradingDate);
     var remote = await syncStore.ReadDailyTotalsAsync();
 
@@ -1215,6 +1236,55 @@ static async Task RunBackfillAsync(IServiceProvider services, string[] args)
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。已下載的日期都保留在快取，重跑會從斷點繼續。");
+    }
+}
+
+/// <summary>
+/// 回補美股觀察清單（data/imports-us）。跟台股 backfill 不同的是這裡從第一步就要連
+/// Supabase，因為觀察清單本身存在 us_watchlist 表，不是寫死在程式或參數裡。
+/// </summary>
+static async Task RunUsBackfillAsync(IServiceProvider services)
+{
+    using var scope = services.CreateScope();
+    var downloader = scope.ServiceProvider.GetRequiredService<UsMarketDataDownloader>();
+    var store = scope.ServiceProvider.GetRequiredService<UsDailyQuoteStore>();
+
+    Console.WriteLine($"快取位置：{store.Directory}");
+    Console.WriteLine("讀取 Supabase 的 us_watchlist，逐檔呼叫 Alpha Vantage（免費方案 5 次/分、25 次/日，會有節流延遲）。");
+    Console.WriteLine();
+
+    var progress = new Progress<string>(Console.WriteLine);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        var report = await downloader.BackfillAsync(progress, cts.Token);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            $"完成。處理 {report.ProcessedTickers} 檔（成功 {report.SuccessCount}）、"
+            + $"寫入 {report.DatesWritten.Count} 個交易日。");
+
+        if (report.SkippedDueToQuota > 0)
+        {
+            Console.WriteLine($"因額度限制略過 {report.SkippedDueToQuota} 檔，會留到下次排程繼續。");
+        }
+
+        if (report.FailedTickers.Count > 0)
+        {
+            Console.WriteLine($"失敗 {report.FailedTickers.Count} 檔：{string.Join(", ", report.FailedTickers)}");
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine();
+        Console.WriteLine("已中斷。已處理的股票資料都保留在快取。");
     }
 }
 

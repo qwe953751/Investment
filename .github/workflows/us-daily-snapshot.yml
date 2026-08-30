@@ -1,0 +1,133 @@
+# 美股盤後快照：延長盤後交易收盤（20:00 ET）後半小時觸發，回補 us_watchlist
+# 裡的美股 ticker、同步到 Supabase、對帳。跟台股 daily-snapshot.yml 分開一份，
+# 因為資料源（Alpha Vantage）、抓取方向（逐股票 vs 逐日期）、額度限制
+# （5 次/分、25 次/日）都完全不同，合併只會讓兩邊互相牽制。
+#
+# 行情快取放在同一個 repo 的 data 分支，跟台股快照共用同一個分支，
+# 但目錄各自獨立（data/imports-us/ vs data/imports/），互不覆蓋。
+#
+# 沒有匯出、發佈靜態網站的步驟：目前沒有美股排行頁面要發布，這條流程只負責
+# 把資料備好，讓資產表未來直接讀 Supabase 的 daily_quotes_view。
+
+name: 每日美股快照
+
+on:
+  schedule:
+    # UTC 23:30、週一到五。刻意選在還沒跨過 ET 午夜的時間點觸發，
+    # 讓 UTC 星期幾直接等於 ET 星期幾（此時 ET 還是週一到五的白天/傍晚），
+    # 不需要另外處理「UTC 已經是週二但 ET 還是週一」的星期偏移。
+    - cron: '30 23 * * 1-5'
+
+  workflow_dispatch:
+    inputs:
+      skip-wait:
+        description: 跳過等待，立刻執行（測試用）
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: us-daily-snapshot
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    # 進場到 20:30 ET 最多要等幾十分鐘，加上回補（有節流延遲）與同步，兩小時夠用。
+    timeout-minutes: 120
+
+    env:
+      # Alpha Vantage 額度用盡與否跟美東時間掛鉤，回補與對帳都用美東時間判斷「今天」。
+      TZ: America/New_York
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 取出行情快取
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+          # 等一下要從這裡 push，淺層 clone 有機會被拒絕。
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # 20:00 ET 收盤後半小時 = 20:30 ET，跟台股 workflow 同一招：
+      # 用 TZ 環境變數換算，`date -d` 自動處理夏令/冬令，不用維護兩份 cron。
+      - name: 等到 20:30 ET
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip-wait != true }}
+        run: |
+          wait=$(( $(date -d '20:30' +%s) - $(date +%s) ))
+
+          if [ "$wait" -le 0 ]; then
+              echo "現在 $(date +%H:%M)，已經過 20:30，直接開抓。"
+              exit 0
+          fi
+
+          echo "現在 $(date +%H:%M)，睡 $(( wait / 60 )) 分鐘到 20:30。"
+          sleep "$wait"
+
+      # 免費方案 5 次/分、25 次/日，回補邏輯自己控節流與配額，這裡不用重試迴圈——
+      # 額度用盡時已完成的部分照樣正常寫回，剩下的自然留到明天這個時間繼續。
+      - name: 回補美股行情
+        env:
+          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-us
+
+      - name: 保存行情快取
+        working-directory: data
+        run: |
+          git add -A imports-us
+
+          # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
+          # 也不要把「刪掉歷史」這件事推上去。
+          if git diff --cached --name-only --diff-filter=D | grep -q .; then
+              echo "偵測到行情檔案被刪除，中止：" >&2
+              git diff --cached --name-only --diff-filter=D >&2
+              exit 1
+          fi
+
+          if git diff --cached --quiet; then
+              echo "沒有新的交易日，快取不變。"
+              exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -qm "美股行情快取 $(date +%Y-%m-%d)"
+          git push -q
+
+      # 以下每一步都用 !cancelled()，回補失敗不該連帶讓對帳、心跳也整條沒跑，
+      # 任何一步紅了整個 job 還是紅的，但彼此的結果不會互相拖累。
+      - name: 同步到 Supabase
+        if: ${{ !cancelled() }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- sync
+
+      - name: 對帳
+        if: ${{ !cancelled() }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- verify
+
+      # status 指令的 STATUS.md 內容是寫死描述台股快取（imports/），拿來報美股會誤導，
+      # 所以這裡不沿用；「有沒有跑」單純看下面 alert/alert-clear 這個鈴鐺就夠了。
+      - name: 更新網站上的警報
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ '${{ job.status }}' = 'success' ]; then
+              dotnet run -c Release --project src/Invest.Web -- alert-clear "每日美股快照"
+          else
+              dotnet run -c Release --project src/Invest.Web -- alert "每日美股快照" error \
+                  "這一輪有步驟失敗，美股行情可能還停在前一個交易日。" "$RUN_URL"
+          fi
