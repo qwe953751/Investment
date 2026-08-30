@@ -8977,7 +8977,10 @@ async function loadIntraday(silent = false, force = false) {
             : null;
     }
 
-    const candidates = rows.filter(row => state.market === 'all' || row.market === state.market);
+    // 盤中原本沒套用成交門檻，鳥量股靠成交比雜訊就能衝進榜單——跟盤後同一套門檻篩選。
+    const candidates = rows.filter(row =>
+        (state.market === 'all' || row.market === state.market)
+        && row.value >= state.threshold);
     const marketTurnovers = {
         twse: rows.filter(row => row.market === 'twse')
             .reduce((total, row) => total + row.value, 0),
