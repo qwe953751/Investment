@@ -12877,6 +12877,17 @@ function makeTopicEditIntro() {
     publishRow.append(publishLink);
     box.append(publishRow);
 
+    // GitHub Pages 前面的 CDN（Fastly）會把 site.js/資料檔快取住，即使 workflow
+    // 顯示成功、伺服器上的資料其實已經改了，畫面看起來還是十分鐘內的舊內容——
+    // 網址加 ?v= 也不保證繞過去，這層快取不看 query string。這不是又沒生效，
+    // 是快取還沒過期；等個幾分鐘、或用無痕視窗開一次，通常就看得到了。
+    const cacheNote = document.createElement('p');
+    cacheNote.className = 'topic-edit-cache-note';
+    cacheNote.textContent = 'workflow 顯示成功後，網站本身可能還要幾分鐘才會真的換新'
+        + '（GitHub Pages 的快取，不是又沒生效）。如果按完馬上看還是舊的，'
+        + '等 5～10 分鐘再重新整理，或用無痕視窗開一次。';
+    box.append(cacheNote);
+
     return box;
 }
 

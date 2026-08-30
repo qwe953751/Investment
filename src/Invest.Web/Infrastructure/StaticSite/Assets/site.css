@@ -3817,6 +3817,11 @@ td.stock-name.stock-name-change-down {
     color: #312e81;
 }
 
+.topic-edit-cache-note {
+    color: #6b7280;
+    font-size: 13px !important;
+}
+
 /* 欄位自己排隊：手機上會自動疊成一欄，不必為了這一頁多寫一組斷點。 */
 .topic-edit-form {
     display: grid;
