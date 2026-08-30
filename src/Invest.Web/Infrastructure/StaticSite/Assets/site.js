@@ -6011,15 +6011,45 @@ const order = selector => (left, right) => {
     return left.ticker < right.ticker ? -1 : left.ticker > right.ticker ? 1 : 0;
 };
 
+// 這一列平常一天成交多少（20 日中位數）。量比 = 本期 ÷ 這個值，反過來就能還原。
+// 算不出量比（回看不滿 20 天）時回傳 null，不能當成「量很小」。
+function baselineOf(row) {
+    return missing(row.volumeRatio) || row.volumeRatio === 0
+        ? null
+        : row.value / row.volumeRatio;
+}
+
+function median(sortedValues) {
+    const count = sortedValues.length;
+
+    if (count === 0) {
+        return 0;
+    }
+
+    const mid = Math.floor(count / 2);
+    return count % 2 === 1 ? sortedValues[mid] : (sortedValues[mid - 1] + sortedValues[mid]) / 2;
+}
+
 // 依市場與門檻篩選，再依模式排名。
 function rankRows(data) {
     const acceleration = state.mode === 'accel';
     const sortKey = row => (acceleration ? row.volumeRatio : row.value);
     const previousSortKey = row => (acceleration ? row.previousVolumeRatio : row.previousValue);
 
+    // 資金加速專用的鳥量股門檻：平常一天成交都不到「全市場中位數 60%」的股票，
+    // 量比稍微放大就是好幾十倍，會把排行榜洗成一片沒人在意的殭屍股。
+    // 跟 TradingValueRankingCalculator 的 accelerationBaselineFloor 同一套規則，
+    // 用全市場（不受下面的市場、門檻篩選影響）算中位數。
+    const accelerationFloor = acceleration
+        ? median(data.rows.map(baselineOf).filter(value => value !== null).sort((a, b) => a - b)) * 0.6
+        : null;
+
     const candidates = data.rows.filter(row =>
         (state.market === 'all' || row.market === state.market)
-        && row.value >= state.threshold);
+        && row.value >= state.threshold
+        // 只濾掉「量得出平常量、而且確定很小」的股票。算不出平常量（例如新上市）
+        // 不是確定的鳥量股，維持原本沉到最後、但仍顯示的規則。
+        && (accelerationFloor === null || (baselineOf(row) ?? accelerationFloor) >= accelerationFloor));
 
     const previousRanks = new Map([...candidates]
         .sort(order(previousSortKey))

@@ -84,6 +84,13 @@ public sealed class TradingValueRankingCalculator
         var baselines = Medians(_byTicker, Preceding(dates, currentPeriodDays));
         var previousBaselines = Medians(_byTicker, Preceding(dates, currentPeriodDays + periodDays));
 
+        // 資金加速專用的鳥量股門檻：平常一天成交都不到「全市場中位數的 60%」的股票，
+        // 稍微放大就是好幾十倍的量比，會把排行榜洗成一片沒人在意的殭屍股。
+        // 不寫死金額——這裡的 60% 是量出來對到「排除後段四成」的結果，金額本身隨市場每天变。
+        var accelerationBaselineFloor = query.Mode == RankingMode.CapitalAcceleration
+            ? Median(baselines.Values) * 0.6m
+            : (decimal?)null;
+
         // 分母一律是上市＋上櫃全體，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
         // 用 MatchesMarket(..., MarketFilter.All) 排除非上市櫃的市場（如美股），即使資料集不小心
         // 混進了其他市場的成交值，也不會污染這個分母。
@@ -114,6 +121,15 @@ public sealed class TradingValueRankingCalculator
                 continue;
             }
 
+            var baseline = baselines.TryGetValue(ticker, out var baselineValue) ? baselineValue : (decimal?)null;
+
+            // 只濾掉「量得出平常量、而且確定很小」的股票。回看不滿 20 天算不出平常量
+            // （例如新上市）是另一回事——不是確定的鳥量股，維持原本沉到最後、但仍顯示的規則。
+            if (accelerationBaselineFloor is { } floor && baseline is { } knownBaseline && knownBaseline < floor)
+            {
+                continue;
+            }
+
             var previousStat = previousStats.GetValueOrDefault(ticker, PeriodStats.Empty);
             var priorStat = priorStats.GetValueOrDefault(ticker, PeriodStats.Empty);
 
@@ -124,7 +140,7 @@ public sealed class TradingValueRankingCalculator
                 Previous = previousStat,
                 ChangeRate = ChangeRate(stats.AverageDailyTradingValue, previousStat.AverageDailyTradingValue),
                 PreviousChangeRate = ChangeRate(previousStat.AverageDailyTradingValue, priorStat.AverageDailyTradingValue),
-                Baseline = baselines.TryGetValue(ticker, out var baseline) ? baseline : null,
+                Baseline = baseline,
                 PreviousBaseline = previousBaselines.TryGetValue(ticker, out var previousBaseline)
                     ? previousBaseline
                     : null
@@ -368,6 +384,26 @@ public sealed class TradingValueRankingCalculator
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 一組數字的中位數。用來把「全市場個股平常一天成交多少」濃縮成一個代表值，
+    /// 資金加速模式拿它的 60% 當鳥量股門檻——見 <see cref="Calculate"/> 裡的
+    /// <c>accelerationBaselineFloor</c>。
+    /// </summary>
+    private static decimal Median(IReadOnlyCollection<decimal> values)
+    {
+        if (values.Count == 0)
+        {
+            return 0m;
+        }
+
+        var sorted = values.ToArray();
+        Array.Sort(sorted);
+
+        return sorted.Length % 2 == 1
+            ? sorted[sorted.Length / 2]
+            : (sorted[(sorted.Length / 2) - 1] + sorted[sorted.Length / 2]) / 2m;
     }
 
     private static decimal Share(decimal part, decimal total)

@@ -207,27 +207,29 @@ public class TradingValueRankingCalculatorTests
     {
         // 24 個交易日，期間長度 2：本期 = 23~24、前期 = 21~22，
         // 本期量比的分母是 3~22 的中位數、前期量比的分母是 1~20 的中位數。
+        // 兩檔的平常量刻意不要差太多倍（500 vs 1000），避免被鳥量股門檻濾掉——
+        // 那條規則有自己的專屬測試，這裡只驗證排序邏輯。
         //        平常量  前期均值  本期均值   量比  前期量比
-        // 1101      100       100       800     8      1
-        // 2330     1000      2000      1000     1      2
+        // 1101      500       500      1500     3      1
+        // 2330     1000      3000      2000     2      3
         var dataSet = new MarketDataSetBuilder()
-            .Days(1, 22, "1101", 100).Days(23, 24, "1101", 800)
-            .Days(1, 20, "2330", 1000).Days(21, 22, "2330", 2000).Days(23, 24, "2330", 1000)
+            .Days(1, 22, "1101", 500).Days(23, 24, "1101", 1500)
+            .Days(1, 20, "2330", 1000).Days(21, 22, "2330", 3000).Days(23, 24, "2330", 2000)
             .Build();
 
         var heat = _calculator.Calculate(dataSet, Query());
         var acceleration = _calculator.Calculate(dataSet, Query(mode: RankingMode.CapitalAcceleration));
 
-        // 成交熱度看絕對量：2330 的 1000 大於 1101 的 800。
+        // 成交熱度看絕對量：2330 的 2000 大於 1101 的 1500。
         Assert.Equal(["2330", "1101"], heat.Rows.Select(row => row.Ticker));
 
-        // 資金加速看「比自己平常放大幾倍」：1101 的 8 倍勝過 2330 的 1 倍，
+        // 資金加速看「比自己平常放大幾倍」：1101 的 3 倍勝過 2330 的 2 倍，
         // 即使 2330 的絕對量還是比較大。量比不看誰大，只看誰異常。
         Assert.Equal(["1101", "2330"], acceleration.Rows.Select(row => row.Ticker));
-        Assert.Equal(8m, Row(acceleration, "1101").VolumeRatio);
-        Assert.Equal(1m, Row(acceleration, "2330").VolumeRatio);
+        Assert.Equal(3m, Row(acceleration, "1101").VolumeRatio);
+        Assert.Equal(2m, Row(acceleration, "2330").VolumeRatio);
 
-        // 前期排名同樣用量比算：前期 2330 的 2 倍勝過 1101 的 1 倍。
+        // 前期排名同樣用量比算：前期 2330 的 3 倍勝過 1101 的 1 倍。
         Assert.Equal(2, Row(acceleration, "1101").PreviousRank);
         Assert.Equal(1, Row(acceleration, "1101").RankChange);
         Assert.Equal(1, Row(acceleration, "2330").PreviousRank);
@@ -283,6 +285,43 @@ public class TradingValueRankingCalculatorTests
 
         Assert.Equal(100m, row.BaselineDailyTradingValue);
         Assert.Equal(5m, row.VolumeRatio);
+    }
+
+    [Fact]
+    public void 資金加速模式濾掉平常量不到全市場中位數六成的鳥量股()
+    {
+        // 三檔的 20 日平常量（中位數）：1101=1000、2330=100、6488=10。
+        // 三者中位數是 100，門檻＝60 → 6488（10）被濾掉，2330（100）保留、1101（1000）保留。
+        var dataSet = new MarketDataSetBuilder()
+            .Days(1, 22, "1101", 1000).Days(23, 24, "1101", 1000)
+            .Days(1, 22, "2330", 100).Days(23, 24, "2330", 100)
+            .Days(1, 24, "6488", 10)
+            .Build();
+
+        var result = _calculator.Calculate(dataSet, Query(mode: RankingMode.CapitalAcceleration));
+
+        Assert.Equal(["1101", "2330"], result.Rows.Select(row => row.Ticker).OrderBy(t => t));
+        Assert.DoesNotContain(result.Rows, row => row.Ticker == "6488");
+
+        // 成交熱度模式不受這條規則影響，鳥量股一樣會出現、只是排在後面。
+        var heat = _calculator.Calculate(dataSet, Query());
+        Assert.Contains(heat.Rows, row => row.Ticker == "6488");
+    }
+
+    [Fact]
+    public void 回看不滿二十天算不出平常量的股票不會被鳥量股規則濾掉()
+    {
+        // 6488 完全沒有歷史，量比顯示 —，但資金加速模式仍要讓它出現、沉到最後，
+        // 不能因為「算不出平常量」就被誤判成「確定是鳥量股」而整檔消失。
+        var dataSet = new MarketDataSetBuilder()
+            .Days(1, 22, "1101", 1000).Days(23, 24, "1101", 1000)
+            .Days(23, 24, "6488", 5000)
+            .Build();
+
+        var result = _calculator.Calculate(dataSet, Query(mode: RankingMode.CapitalAcceleration));
+
+        Assert.Equal(["1101", "6488"], result.Rows.Select(row => row.Ticker));
+        Assert.Null(Row(result, "6488").VolumeRatio);
     }
 
     [Fact]
