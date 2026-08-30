@@ -1238,6 +1238,17 @@ let marketIndexYearStarts = new Map();
 let version = '';
 let latestTradingDate = '';
 
+// 這份快照是什麼時候輸出的（毫秒）。人工編輯頁靠它把編輯切成「已套用」與「待套用」：
+// 比這個時間早的編輯，眼前這份分類就是套過它之後的結果。
+// 取 version 而不取 manifest.generatedAt：version 是 export 當下的 Unix 秒數，
+// generatedAt 是「2026-08-31 01:34」這種沒有時區、只到分鐘的顯示字串，
+// 丟給 new Date() 會被當成瀏覽器所在時區，人在國外就會整個算錯邊。
+const snapshotExportedAtMs = () => {
+    const seconds = Number(version);
+
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+};
+
 // 收集時間表。唯一的定義在 C# 的 CollectionSchedule，這裡只是讀過來，
 // 刻意不放預設值：在這裡抄一份時間，改了排程就會漏改，畫面會在錯的時間點換行為。
 // manifest 給不出來（舊版 manifest）時就當成沒有記憶功能，一律用預設選項。
@@ -9866,15 +9877,18 @@ async function loadIntradayTopicHeat() {
             topicIntradayKLinePromises.clear();
         }
 
+        const aligned = alignIntradayTopicMembers(rows);
+
         intradayTopicPeriod = {
             hasSufficientData: latest.has_sufficient_data === true,
             message: latest.message ?? null,
             period: `盤中 ${String(latest.trade_date).replaceAll('-', '/')} ${toTaipeiText(latest.captured_at)}`,
             tradeDate: String(latest.trade_date),
-            rows,
+            rows: aligned.rows,
             isIntraday: true,
             capturedAt: latest.captured_at,
-            mappingLabel: latest.mapping_label ?? null
+            mappingLabel: latest.mapping_label ?? null,
+            realignedTopicCount: aligned.realignedCount
         };
         intradayTopicLoadError = '';
     } catch {
@@ -9882,6 +9896,71 @@ async function loadIntradayTopicHeat() {
             ? '讀不到盤中族群熱度，請確認收集器與資料表 migration。'
             : '本次盤中族群熱度更新失敗，暫時保留上一輪與資料時間。';
     }
+}
+
+// 盤中族群熱度的成員名單，是 intraday.yml 在盤中擷取那一刻就算好、整包存進資料庫的，
+// 名單跟著當下那棵族群樹凍結。之後在編輯分頁改了分類、重新輸出並發布，靜態站的
+// topics.json 換成新樹了，這份盤中快照卻還停在舊樹——於是同一個畫面上「近 N 日」是新分類、
+// 切到「盤中」又跳回舊分類。更糟的是期間選擇會存進 localStorage，停在盤中的人每次重新整理
+// 都被還原成盤中，看起來就是「按了立即發布、workflow 也綠了，畫面根本沒變」。
+// 筆記 #39 正是這個：2330 已經從 CPO 移到 CoPoS，盤中卻照舊把它算在 CPO 底下。
+//
+// 下一輪盤中擷取本來就會自己修正，但那要等到下一個交易日，中間這段空窗不能讓它顯示舊分類。
+// 這裡只換成員名單，不動分數：名單直接取 topics.json 這棵新樹裡 export 時就算好的成員
+// （比在前端重走一次 DAG 可靠，也不會把多重父節點的繼承算錯），報價則沿用盤中快照裡
+// 同一檔股票的即時數字——同一檔在哪個族群底下報價都一樣，所以可以互相借用。
+// 資金／廣度／綜合分數維持擷取當下的值：要跟著新名單重算得整輪重跑，那是 export 的工作，
+// 不是前端該偷做的事。因此下面會在頁尾補一行說明，講清楚名單已對齊、分數還是舊的那一輪。
+function alignIntradayTopicMembers(rows) {
+    // 成員名單是從樹推出來的，五個期間完全一樣，取第一個就夠。
+    const currentMembers = new Map(
+        ((topicData?.periods ?? [])[0]?.rows ?? []).map(row => [row.topicId, row.members ?? []]));
+
+    if (currentMembers.size === 0) {
+        return { rows, realignedCount: 0 };
+    }
+
+    const quoteByTicker = new Map();
+
+    for (const row of rows) {
+        for (const member of row.members ?? []) {
+            if (!quoteByTicker.has(member.ticker)) {
+                quoteByTicker.set(member.ticker, member);
+            }
+        }
+    }
+
+    let realignedCount = 0;
+
+    const alignedRows = rows.map(row => {
+        const target = currentMembers.get(row.topicId);
+
+        if (target === undefined) {
+            return row;
+        }
+
+        const before = new Set((row.members ?? []).map(member => member.ticker));
+        const after = target.map(member => quoteByTicker.get(member.ticker)
+            // 新樹才加進來、而且這一輪盤中沒有報價的：留著它成員數才對得上，
+            // 只是沒有即時數字可以填。
+            ?? { ...member, marketShare: null, priceChangeRate: null, rank: null });
+
+        if (after.length === before.size && after.every(member => before.has(member.ticker))) {
+            return row;
+        }
+
+        realignedCount += 1;
+
+        return {
+            ...row,
+            members: after,
+            memberCount: after.length,
+            quotedCount: after.filter(member => member.priceChangeRate !== null
+                && member.priceChangeRate !== undefined).length
+        };
+    });
+
+    return { rows: alignedRows, realignedCount };
 }
 
 function makeTopicNotice(message, isWarning) {
@@ -12089,6 +12168,14 @@ function makeTopicHeatFooter(period) {
                 + '所以熱度只做最新一天。'
     ];
 
+    // 只有真的對齊過才講，沒差異的時候多這一段反而像在暗示資料有問題。
+    if (period.isIntraday && (period.realignedTopicCount ?? 0) > 0) {
+        lines.push(`這一輪盤中快照擷取時的族群樹比現在舊，有 ${period.realignedTopicCount} `
+            + '個族群的成員已改用最新分類顯示（成員名單與檔數以最新分類為準）；'
+            + '資金／廣度／綜合分數仍是擷取當下依舊分類算出來的，'
+            + '要整輪重算得等下一次盤中擷取。');
+    }
+
     for (const line of lines) {
         const item = document.createElement('p');
         item.textContent = line;
@@ -12704,7 +12791,10 @@ function appendTextCell(row, text, cls) {
 // 回頭把同一件事再改一次，最後疊出兩筆互相打架的編輯。
 
 const TOPIC_EDITS_TABLE = 'topic_edits';
-const TOPIC_EDIT_COLUMNS = 'id,action,node,parent,tickers,aliases,note,enabled,created_at';
+// updated_at 是拿來判斷「這一筆有沒有被眼前這份快照吃進去」的：停用一筆舊編輯只會動
+// updated_at，created_at 不變，只看 created_at 的話那一筆會留在歷史裡，
+// 使用者就看不出來自己剛收回的那一筆還在等下一次發布。
+const TOPIC_EDIT_COLUMNS = 'id,action,node,parent,tickers,aliases,note,enabled,created_at,updated_at';
 
 // 選單的 id 要固定：兩張表單的族群欄共用同一份 datalist，
 // 一千個節點沒必要在同一頁裡建兩次。
@@ -12743,6 +12833,10 @@ let topicNodeDraft = { action: '移到', node: '', parent: '', aliases: '', note
 let topicMemberDraft = { stock: '', node: '', note: '' };
 let topicNodeStatus = '';
 let topicMemberStatus = '';
+
+// 歷史紀錄預設收起來。每一筆編輯都是永久保留的，跑久了這張表會有幾十上百列，
+// 而使用者九成的時候只想知道「我剛存的那幾筆套用了沒」。
+let topicEditHistoryOpen = false;
 
 function renderTopicEdits(panel) {
     if (supabase === null) {
@@ -12789,7 +12883,8 @@ async function refreshTopicEdits(force = false) {
                 aliases: Array.isArray(row.aliases) ? row.aliases.map(String) : [],
                 note: typeof row.note === 'string' ? row.note : '',
                 enabled: row.enabled !== false,
-                createdAt: typeof row.created_at === 'string' ? row.created_at : ''
+                createdAt: typeof row.created_at === 'string' ? row.created_at : '',
+                updatedAt: typeof row.updated_at === 'string' ? row.updated_at : ''
             }));
         topicEditsError = '';
     } catch {
@@ -12877,15 +12972,18 @@ function makeTopicEditIntro() {
     publishRow.append(publishLink);
     box.append(publishRow);
 
-    // GitHub Pages 前面的 CDN（Fastly）會把 site.js/資料檔快取住，即使 workflow
-    // 顯示成功、伺服器上的資料其實已經改了，畫面看起來還是十分鐘內的舊內容——
-    // 網址加 ?v= 也不保證繞過去，這層快取不看 query string。這不是又沒生效，
-    // 是快取還沒過期；等個幾分鐘、或用無痕視窗開一次，通常就看得到了。
+    // 發布完卻看不到改動，實際遇過兩種原因，講的時候要照可能性排：
+    // 一是族群頁停在「盤中」——盤中熱度的成員名單是擷取當下就凍結的另一份資料，
+    // 不隨發布更新（現在會自動對齊成新分類，但那一輪的分數仍是舊的）；
+    // 二才是 GitHub Pages 前面 Fastly 的十分鐘快取。
+    // 一開始只寫了第二種，害使用者等了半小時還是看到 2330 掛在 CPO 底下（筆記 #39），
+    // 所以這裡把真正的頭號原因擺前面。
     const cacheNote = document.createElement('p');
     cacheNote.className = 'topic-edit-cache-note';
-    cacheNote.textContent = 'workflow 顯示成功後，網站本身可能還要幾分鐘才會真的換新'
-        + '（GitHub Pages 的快取，不是又沒生效）。如果按完馬上看還是舊的，'
-        + '等 5～10 分鐘再重新整理，或用無痕視窗開一次。';
+    cacheNote.textContent = '發布完看不到改動，先確認族群頁的期間不是停在「盤中」：'
+        + '盤中的成員名單是那一輪擷取時就固定的，要等下一個交易日的盤中才會整輪重算。'
+        + '切到「近 1 日」等盤後期間看到的才是最新分類。'
+        + '若期間本來就是盤後，那多半是 GitHub Pages 的快取，等 5～10 分鐘再重新整理即可。';
     box.append(cacheNote);
 
     return box;
@@ -13631,21 +13729,61 @@ function makeTopicMemberEditor() {
 }
 
 // ── 已經存下的編輯 ──
+// 一筆編輯最後一次被動到是什麼時候。新增看 created_at，停用／啟用只會動 updated_at，
+// 兩個都要看才不會把「剛剛收回的舊編輯」誤判成已經套用完的歷史。
+function topicEditChangedAtMs(edit) {
+    const times = [edit.createdAt, edit.updatedAt]
+        .map(value => new Date(value).getTime())
+        .filter(value => Number.isFinite(value));
+
+    return times.length === 0 ? null : Math.max(...times);
+}
+
+// 眼前這份族群樹是 export 當下把所有編輯照順序套完的結果，所以「比 export 早」
+// 就等於「已經套進去了」，不需要另外記一個 applied 欄位、也不用改資料表。
+// 反過來說，export 之後才存的（或才被收回的）就是還在等下一次發布的。
+function isTopicEditApplied(edit) {
+    const exportedAt = snapshotExportedAtMs();
+    const changedAt = topicEditChangedAtMs(edit);
+
+    return exportedAt !== null && changedAt !== null && changedAt < exportedAt;
+}
+
 function makeTopicEditLog() {
     const box = document.createElement('section');
     box.className = 'topic-pending';
 
-    const active = topicEdits.filter(edit => edit.enabled).length;
+    // 已套用的搬去歷史紀錄，主清單只留還沒生效的——使用者按完「立即發布」回來，
+    // 這張表空了就是真的套完了，不必再自己比對哪幾筆是舊的。
+    const applied = topicEdits.filter(isTopicEditApplied);
+    const pending = topicEdits.filter(edit => !isTopicEditApplied(edit));
+    const pendingActive = pending.filter(edit => edit.enabled).length;
+
+    const header = document.createElement('div');
+    header.className = 'topic-edit-log-header';
 
     const title = document.createElement('h2');
     title.className = 'topic-section-title';
-    title.textContent = `已經存下的編輯（${topicEdits.length}，其中 ${active} 筆生效中）`;
-    box.append(title);
+    title.textContent = `待套用的編輯（${pending.length}，其中 ${pendingActive} 筆生效中）`;
+    header.append(title);
+
+    const historyToggle = makeTopicEditButton(
+        `${topicEditHistoryOpen ? '收起' : '查看'}歷史紀錄（${applied.length}）`,
+        'notes-secondary-button topic-edit-history-button');
+    historyToggle.dataset.hint = '已經套用到眼前這份族群樹上的編輯。'
+        + '紀錄永久保留，需要的話仍然可以在這裡把某一筆收回。';
+    historyToggle.addEventListener('click', () => {
+        topicEditHistoryOpen = !topicEditHistoryOpen;
+        renderTopicPanel();
+    });
+    header.append(historyToggle);
+    box.append(header);
 
     const intro = document.createElement('p');
     intro.className = 'topic-intro';
     intro.textContent = '下一次更新時會照存下的先後順序由上往下套到族群樹上：'
         + '後面存的蓋前面存的，跟人一路改過來的直覺一樣。'
+        + '套用過的會自己移到歷史紀錄裡，所以這張表空了就代表都生效了。'
         + '停用只是把那一筆收回來，紀錄還在——這樣下次再看到同樣的怪現象，才想得起來自己試過了。';
     box.append(intro);
 
@@ -13653,14 +13791,46 @@ function makeTopicEditLog() {
         box.append(makeTopicNotice(topicEditsError, true));
     }
 
-    if (topicEdits.length === 0) {
+    if (pending.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'topic-intro';
-        empty.textContent = topicEditsLoaded ? '還沒有任何編輯。' : '載入中…';
+        empty.textContent = !topicEditsLoaded
+            ? '載入中…'
+            : topicEdits.length === 0
+                ? '還沒有任何編輯。'
+                : '沒有待套用的編輯，存下的都已經反映在眼前這份分類上了。';
         box.append(empty);
-        return box;
+    } else {
+        box.append(makeTopicEditTable(pending));
     }
 
+    if (topicEditHistoryOpen) {
+        const historyTitle = document.createElement('h3');
+        historyTitle.className = 'topic-section-title topic-edit-history-title';
+        historyTitle.textContent = `歷史紀錄（${applied.length}）`;
+        box.append(historyTitle);
+
+        const historyIntro = document.createElement('p');
+        historyIntro.className = 'topic-intro';
+        historyIntro.textContent = '這些在最新一次輸出時就已經套進族群樹了，'
+            + '所以畫面上看到的分類就是套過它們之後的樣子。'
+            + '在這裡按停用會讓下一次輸出不再套用它，等於把那次改動還原。';
+        box.append(historyIntro);
+
+        if (applied.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'topic-intro';
+            empty.textContent = '還沒有套用過的編輯。';
+            box.append(empty);
+        } else {
+            box.append(makeTopicEditTable(applied));
+        }
+    }
+
+    return box;
+}
+
+function makeTopicEditTable(edits) {
     const container = document.createElement('div');
     container.className = 'table-container';
 
@@ -13689,7 +13859,7 @@ function makeTopicEditLog() {
 
     const body = document.createElement('tbody');
 
-    for (const edit of topicEdits) {
+    for (const edit of edits) {
         const tr = document.createElement('tr');
         tr.className = 'topic-compact-row' + (edit.enabled ? '' : ' topic-edit-disabled');
 
@@ -13727,9 +13897,8 @@ function makeTopicEditLog() {
 
     table.append(head, body);
     container.append(table);
-    box.append(container);
 
-    return box;
+    return container;
 }
 
 function topicEditDetailText(edit) {

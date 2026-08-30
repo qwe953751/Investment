@@ -3822,6 +3822,24 @@ td.stock-name.stock-name-change-down {
     font-size: 13px !important;
 }
 
+/* 標題與「歷史紀錄」按鈕同一列。窄螢幕靠 wrap 讓按鈕自己掉到下一行， */
+/* 不必為了這一顆按鈕多寫一組斷點。 */
+.topic-edit-log-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.topic-edit-log-header .topic-section-title {
+    margin-bottom: 0;
+}
+
+.topic-edit-history-title {
+    margin-top: 20px;
+}
+
 /* 欄位自己排隊：手機上會自動疊成一欄，不必為了這一頁多寫一組斷點。 */
 .topic-edit-form {
     display: grid;
