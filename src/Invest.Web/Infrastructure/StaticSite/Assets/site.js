@@ -3666,7 +3666,7 @@ const assetCloseIndexByDate = new Map();
 const ASSET_OCR_HEADERS = [
     { field: 'ticker', words: ['股票代號', '商品代號', '代號', '股號', 'SYMBOL', 'TICKER', 'CODE'] },
     { field: 'name', words: ['股票名稱', '商品名稱', '股名', '名稱', '商品', '股票', 'STOCK NAME', 'SECURITY', 'COMPANY'] },
-    { field: 'quantity', words: ['庫存股數', '集保庫存', '持有股數', '昨日餘額', '可用股數', '股數', '庫存', '現股', '數量', 'SHARES', 'QUANTITY', 'QTY', 'UNITS'] },
+    { field: 'quantity', words: ['庫存股數', '集保庫存', '持有股數', '昨日餘額', '日餘額', '可用股數', '股數', '庫存', '現股', '數量', 'SHARES', 'QUANTITY', 'QTY', 'UNITS'] },
     { field: 'cost', words: ['投入成本', '成本金額', '總成本', '成本', 'TOTAL COST', 'COST BASIS', 'INVESTMENT COST', 'TOTAL'] },
     { field: 'costPrice', words: ['成交均價', '成本均價', '買進均價', '平均成本', '成本價', '均價', 'UNIT COST', 'AVG COST', 'AVERAGE COST', 'UNIT'] },
     { field: 'marketValue', words: ['參考市值', '市價金額', '總市值', '市值', '現值', 'MARKET VALUE', 'TOTAL VALUE', 'VALUE'] },
@@ -3839,7 +3839,11 @@ function assetOcrProgressText(message) {
 // 手機截圖的表格字很小，原尺寸丟進去常常整列漏掉；先放大再轉高對比灰階，
 // 數字的辨識率差很多。上限是怕大螢幕截圖放大之後把記憶體吃光。
 const ASSET_OCR_MIN_WIDTH = 1800;
-const ASSET_OCR_MAX_PIXELS = 6_000_000;
+// 直式手機截圖若硬放大到 1,800px 寬，會產生約六百萬像素；在手機版 Tesseract 上
+// 光主表就可能吃完整個十秒額度，連需要時的身份補讀都來不及跑。400 萬像素保留約
+// 1,600px 寬的表格文字，足以分辨深色券商 App 的 360／350、17／15 等小字差異，
+// 又明顯低於原先六百萬像素的負擔。
+const ASSET_OCR_MAX_PIXELS = 4_000_000;
 // 橫式券商明細的字本來就比手機長截圖大，又要接著讀一次左側身份欄；把整張表維持
 // 三百萬以上像素只會讓冷啟動時兩段 OCR 一起撞上十秒上限。這個預算仍保留 1,800px
 // 寬的可讀文字，並讓昂貴的第一段明顯縮小；身份裁切另有自己的較高密度預算。
@@ -4697,15 +4701,23 @@ async function assetDraftRowsFromText(data) {
             continue;
         }
 
-        // 台股畫面常是「一整行資料」下一行才放代號。美股則不採主表的英文代號，因為
-        // 圖示殘字一旦被誤讀會令後面所有列位移；改由左欄「代號＋shares」成對驗證。
+        // 台股畫面可能是「一整行資料」下一行才放代號，也可能先顯示名稱、代號，第三行
+        // 才放整串數字（深色券商 App）。後一種不能只往下找，否則會把完整的數字列丟掉。
+        // 美股則不採主表的英文代號，因為圖示殘字一旦被誤讀會令後面所有列位移；改由左欄
+        // 「代號＋shares」成對驗證。
         const ownTicker = header.allowEnglishTickers
             ? ''
             : assetOcrTickerInText(lines[index], false);
+        const previousTicker = header.allowEnglishTickers
+            ? ''
+            : assetOcrTickerInText(lines[index - 1], false)
+                || assetOcrTickerInText(lines[index - 2], false);
         const nextTicker = header.allowEnglishTickers
             ? ''
             : assetOcrTickerInText(lines[index + 1], false);
-        draft.ticker ||= ownTicker || nextTicker;
+        // 資料列後緊接代號時，前兩行可能仍是上一檔的代號或雜訊；因此下一行要優先於
+        // 前兩行，才不會把後續持倉誤併進前一檔。
+        draft.ticker ||= ownTicker || nextTicker || previousTicker;
         candidates.push(draft);
     }
 

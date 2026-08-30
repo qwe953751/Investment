@@ -1380,11 +1380,16 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
 
         Assert.Contains("function assetOcrIdentityCanvas(bitmap)", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_OCR_MAX_PIXELS = 4_000_000;", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_OCR_WIDE_MAX_PIXELS = 1_500_000;", script, StringComparison.Ordinal);
         Assert.Contains("async function warmAssetOcrRecognition(worker)", script, StringComparison.Ordinal);
         Assert.Contains("await warmAssetOcrRecognition(worker);", script, StringComparison.Ordinal);
         Assert.Contains("tessedit_pageseg_mode: '11'", script, StringComparison.Ordinal);
         Assert.Contains("function assetOcrLegacyTaiwanHorizontalCandidates(data)", script, StringComparison.Ordinal);
+        Assert.Contains("const previousTicker = header.allowEnglishTickers", script, StringComparison.Ordinal);
+        Assert.Contains("assetOcrTickerInText(lines[index - 2], false)", script, StringComparison.Ordinal);
+        Assert.Contains("draft.ticker ||= ownTicker || nextTicker || previousTicker;", script, StringComparison.Ordinal);
+        Assert.Contains("'日餘額'", script, StringComparison.Ordinal);
         Assert.Contains("identityTickers.length !== candidates.length", script, StringComparison.Ordinal);
         Assert.Contains("shares?\\b", script, StringComparison.Ordinal);
         Assert.Contains("const moneyAt = fields.includes('costPrice') && fields.includes('cost')", script, StringComparison.Ordinal);
