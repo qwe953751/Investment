@@ -992,7 +992,8 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
-        Assert.Contains("const ASSET_DASHBOARD_ENABLED = SITE_ACCESS !== 'viewer';", script, StringComparison.Ordinal);
+        Assert.Contains("let ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';", script, StringComparison.Ordinal);
+        Assert.Contains("function applyEffectiveAccess()", script, StringComparison.Ordinal);
         Assert.Contains("const workspaceViews = ASSET_DASHBOARD_ENABLED", script, StringComparison.Ordinal);
         Assert.Contains("VIEWS.filter(view => view.key !== 'assets')", script, StringComparison.Ordinal);
         Assert.Contains("＋ 新增使用者", script, StringComparison.Ordinal);
@@ -1211,7 +1212,8 @@ public sealed class StaticKLineAssetTests
     {
         var script = ReadAsset("site.js");
 
-        Assert.Contains("const SITE_ACCESS", script, StringComparison.Ordinal);
+        Assert.Contains("const URL_ACCESS", script, StringComparison.Ordinal);
+        Assert.Contains("let SITE_ACCESS = URL_ACCESS", script, StringComparison.Ordinal);
         Assert.Contains("const ADMIN_HOST = 'app.admin.frank-investment.com'", script, StringComparison.Ordinal);
         Assert.Contains("const VIEWER_HOST = 'view.frank-investment.com'", script, StringComparison.Ordinal);
         Assert.Contains("SITE_HOST === VIEWER_HOST", script, StringComparison.Ordinal);
@@ -1219,10 +1221,8 @@ public sealed class StaticKLineAssetTests
             "TOPIC_TABS.filter(tab => tab.key === 'heat')",
             script,
             StringComparison.Ordinal);
-        Assert.Contains(
-            "topicTab: SITE_ACCESS === 'viewer' ? 'heat' : 'tree'",
-            script,
-            StringComparison.Ordinal);
+        Assert.Contains("const availableTopicTabs = () =>", script, StringComparison.Ordinal);
+        Assert.Contains("SITE_ACCESS === 'admin'", script, StringComparison.Ordinal);
     }
 
     [Fact]
