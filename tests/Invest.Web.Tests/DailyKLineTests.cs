@@ -90,6 +90,87 @@ public sealed class DailyKLineTests
     }
 
     [Fact]
+    public void 不可能的日K不應進入圖表或均線()
+    {
+        var start = new DateOnly(2026, 8, 27);
+        var selected = DailyKLineSelector.Select(
+        [
+            new DailyStockTrading
+            {
+                TradingDate = start,
+                Ticker = "6584",
+                OpenPrice = 682m,
+                HighPrice = 647m,
+                LowPrice = 675.69m,
+                ClosePrice = 682m,
+                TradingValue = 1m
+            },
+            new DailyStockTrading
+            {
+                TradingDate = start.AddDays(1),
+                Ticker = "6584",
+                OpenPrice = 680m,
+                HighPrice = 682m,
+                LowPrice = 678m,
+                ClosePrice = 681m,
+                TradingValue = 1m
+            }
+        ],
+        [],
+        "6584",
+        start.AddDays(1),
+        start.AddDays(1),
+        months: 1);
+
+        var point = Assert.Single(selected);
+        Assert.Equal(start.AddDays(1), point.TradingDate);
+        Assert.Equal(680m, point.Open);
+        Assert.Null(point.Ma5);
+    }
+
+    [Fact]
+    public void 完整快照混入單一不可能日K時必須重新回補()
+    {
+        var validQuotes = Enumerable.Range(0, 100)
+            .Select(index => new DailyQuote
+            {
+                Market = Market.Twse,
+                Ticker = (2330 + index).ToString(),
+                Name = "測試標的",
+                OpenPrice = 99m,
+                HighPrice = 101m,
+                LowPrice = 98m,
+                ClosePrice = 100m,
+                TradingValue = 1m
+            });
+        var quotes = validQuotes
+            .Append(new DailyQuote
+            {
+                Market = Market.Twse,
+                Ticker = "6584",
+                Name = "南俊國際",
+                OpenPrice = 682m,
+                HighPrice = 647m,
+                LowPrice = 675.69m,
+                ClosePrice = 682m,
+                TradingValue = 1m
+            })
+            .ToArray();
+
+        var snapshot = new DailyQuoteSnapshot
+        {
+            SchemaVersion = DailyQuoteSnapshot.CurrentSchemaVersion,
+            TradingDate = new DateOnly(2026, 8, 28),
+            IsTradingDay = true,
+            DownloadedAt = DateTimeOffset.UtcNow,
+            DailyBarSchemaVersion = DailyQuoteSnapshot.CurrentDailyBarSchemaVersion,
+            Quotes = quotes
+        };
+
+        Assert.False(snapshot.HasCompleteDailyBars);
+    }
+
+    [Fact]
     public void 只選取指定日期前三個月且欄位完整的日K()
     {
         var endDate = new DateOnly(2026, 8, 19);

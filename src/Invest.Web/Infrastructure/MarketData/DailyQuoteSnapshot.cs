@@ -80,6 +80,13 @@ public sealed class DailyQuoteSnapshot
                 return false;
             }
 
+            // 覆蓋率只能抓到大量缺欄位；單一錯位棒若混在完整快照裡，
+            // 仍可能超過 95%，所以欄位齊全但價格關係不可能時也必須重抓。
+            if (Quotes.Any(HasImpossibleDailyBar))
+            {
+                return false;
+            }
+
             var quotesWithCompleteBars = Quotes.Count(HasValidDailyBar);
 
             return quotesWithCompleteBars / (decimal)quotesWithClose >= MinimumDailyBarCoverage;
@@ -93,10 +100,11 @@ public sealed class DailyQuoteSnapshot
 
     private static bool HasCompleteMarketIndex(MarketIndexQuote index)
         => index.Market is Market.Twse or Market.Tpex
-            && index.Value > 0m
-            && index.OpenPrice is > 0m
-            && index.HighPrice is > 0m
-            && index.LowPrice is > 0m;
+            && DailyBarValidator.IsValid(
+                index.OpenPrice,
+                index.HighPrice,
+                index.LowPrice,
+                index.Value);
 
     /// <summary>
     /// 在不重新計算個股成交值的情況下，補上同一交易日的市場指數。
@@ -174,25 +182,27 @@ public sealed class DailyQuoteSnapshot
     }
 
     private static bool HasValidDailyBar(DailyQuote quote)
+        => DailyBarValidator.IsValid(
+            quote.OpenPrice,
+            quote.HighPrice,
+            quote.LowPrice,
+            quote.ClosePrice);
+
+    private static bool HasImpossibleDailyBar(DailyQuote quote)
     {
-        if (quote.OpenPrice is not > 0m
-            || quote.HighPrice is not > 0m
-            || quote.LowPrice is not > 0m
-            || quote.ClosePrice is not > 0m)
+        if (quote.ClosePrice is not > 0m
+            || quote.OpenPrice is null
+            || quote.HighPrice is null
+            || quote.LowPrice is null)
         {
             return false;
         }
 
-        var open = quote.OpenPrice.Value;
-        var high = quote.HighPrice.Value;
-        var low = quote.LowPrice.Value;
-        var close = quote.ClosePrice.Value;
-
-        return high >= open
-            && high >= close
-            && high >= low
-            && low <= open
-            && low <= close;
+        return !DailyBarValidator.IsValid(
+            quote.OpenPrice,
+            quote.HighPrice,
+            quote.LowPrice,
+            quote.ClosePrice);
     }
 
     public static DailyQuoteSnapshot NonTradingDay(DateOnly tradingDate) => new()

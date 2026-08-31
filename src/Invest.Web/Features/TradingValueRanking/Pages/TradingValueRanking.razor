@@ -843,7 +843,17 @@
                 : "依本期平均每日成交值排序，回答「最近哪些標的吸收最多成交值」。需要 2N 個交易日。";
 
     private string HeaderClass(SortColumn column)
-        => _sortKey == column.Key ? "sortable sorted" : "sortable";
+    {
+        var sorted = _sortKey == column.Key ? "sortable sorted" : "sortable";
+        var sticky = column.Key switch
+        {
+            "ticker" => " col-ticker",
+            "name" => " col-name",
+            _ => string.Empty
+        };
+
+        return sorted + sticky;
+    }
 
     private string SortIndicator(SortColumn column)
         => _sortKey == column.Key ? (_sortDescending ? " ▼" : " ▲") : string.Empty;

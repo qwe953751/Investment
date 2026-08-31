@@ -2797,6 +2797,7 @@ function wireNotes() {
 const ASSET_OWNERS_TABLE = 'asset_owners';
 const ASSET_ACCOUNTS_TABLE = 'asset_accounts';
 const ASSET_HOLDINGS_TABLE = 'asset_holdings';
+const ASSET_CASH_FLOWS_TABLE = 'asset_cash_flows';
 const ASSET_EXCHANGE_RATES_TABLE = 'exchange_rates';
 const ASSET_LATEST_US_QUOTES_VIEW = 'latest_us_quotes';
 const ASSET_MARKETS = ['台股', '美股', '其他'];
@@ -2807,6 +2808,8 @@ const ASSETS_REFRESH_MS = 60_000;
 let assetOwners = [];
 let assetAccountRows = [];
 let assetHoldingRows = [];
+let assetCashFlowRows = [];
+let assetCashFlowAvailable = false;
 let assetsLoaded = false;
 let assetsLoadError = null;
 let assetsBusy = false;
@@ -2901,7 +2904,7 @@ function assetTimeText(value) {
 }
 
 async function loadAssets() {
-    const [owners, accounts, holdings, exchangeRates, usQuotes] = await Promise.all([
+    const [owners, accounts, holdings, cashFlows, exchangeRates, usQuotes] = await Promise.all([
         fetchAllRows(
             ASSET_OWNERS_TABLE,
             'id,name,sort_order,updated_at',
@@ -2914,6 +2917,10 @@ async function loadAssets() {
             ASSET_HOLDINGS_TABLE,
             'id,account_id,ticker,name,quantity,cost,market_value,unrealized,source,sort_order,updated_at',
             '&order=sort_order.asc,ticker.asc'),
+        fetchAllRows(
+            ASSET_CASH_FLOWS_TABLE,
+            'id,account_id,flow_date,direction,amount,note,created_at,updated_at',
+            '&order=flow_date.desc,created_at.desc').catch(() => null),
         fetchAssetLatestUsdTwdRate().catch(() => undefined),
         fetchAllRows(
             ASSET_LATEST_US_QUOTES_VIEW,
@@ -2950,6 +2957,18 @@ async function loadAssets() {
             unrealized: assetNumber(row.unrealized),
             source: row.source === 'ocr' ? 'ocr' : 'manual',
             sortOrder: assetNumber(row.sort_order) ?? 0,
+            updatedAt: String(row.updated_at ?? '')
+        })),
+        cashFlows: cashFlows === null ? null : cashFlows.map(row => ({
+            id: String(row.id),
+            accountId: String(row.account_id),
+            flowDate: String(row.flow_date ?? ''),
+            direction: row.direction === 'withdrawal'
+                ? 'withdrawal'
+                : row.direction === 'deposit' ? 'deposit' : '',
+            amount: assetNumber(row.amount),
+            note: typeof row.note === 'string' ? row.note : '',
+            createdAt: String(row.created_at ?? ''),
             updatedAt: String(row.updated_at ?? '')
         })),
         exchangeRate: exchangeRates,
@@ -3000,6 +3019,8 @@ async function refreshAssets() {
         assetOwners = data.owners;
         assetAccountRows = data.accounts;
         assetHoldingRows = data.holdings;
+        assetCashFlowRows = data.cashFlows ?? [];
+        assetCashFlowAvailable = data.cashFlows !== null;
 
         if (data.exchangeRate !== undefined) {
             assetLatestUsdTwdRate = data.exchangeRate;
@@ -3044,6 +3065,30 @@ function assetAccountsOf(ownerId) {
 
 function assetHoldingsOf(accountId) {
     return assetHoldingRows.filter(holding => holding.accountId === accountId);
+}
+
+function assetCashFlowsOf(accountId) {
+    return assetCashFlowRows.filter(flow => flow.accountId === accountId);
+}
+
+function assetCashFlowNet(rows) {
+    let total = 0;
+
+    for (const row of rows) {
+        const amount = assetNumber(row.amount);
+
+        if (amount === null || amount <= 0) {
+            continue;
+        }
+
+        if (row.direction === 'deposit') {
+            total += amount;
+        } else if (row.direction === 'withdrawal') {
+            total -= amount;
+        }
+    }
+
+    return total;
 }
 
 function assetFindAccount(accountId) {
@@ -3118,6 +3163,7 @@ function assetHoldingForAccount(account, holding) {
 
 function assetAccountView(account) {
     const holdings = assetHoldingsOf(account.id).map(holding => assetHoldingForAccount(account, holding));
+    const cashFlows = assetCashFlowsOf(account.id);
     const sum = account.market === '美股' ? assetSumComplete : assetSum;
     const cost = sum(holdings, holding => holding.cost);
     const marketValue = sum(holdings, holding => holding.marketValue);
@@ -3132,10 +3178,13 @@ function assetAccountView(account) {
                 && !assetLatestUsQuotes.has(holding.ticker.trim().toUpperCase()))
             .map(holding => holding.ticker.trim().toUpperCase())
         : [];
+    const fundingCost = assetCashFlowAvailable ? assetCashFlowNet(cashFlows) : null;
 
     return {
         ...account,
         holdings,
+        cashFlows,
+        fundingCost,
         cost,
         marketValue,
         // 券商截圖多半直接給未實現損益；沒有那一欄的時候才用市值減成本補。
@@ -3147,6 +3196,7 @@ function assetAccountView(account) {
         twdCash: assetNativeToTwd(account.cash, account.market),
         twdRealized: assetNativeToTwd(account.realized, account.market),
         twdTotalValue: assetNativeToTwd(totalValue, account.market),
+        twdFundingCost: assetNativeToTwd(fundingCost, account.market),
         missingQuoteTickers
     };
 }
@@ -3695,6 +3745,7 @@ function makeAssetAccountTable(owner, views) {
 
         const cells = [
             { text: [view.market, view.broker].filter(text => text !== '').join('／') || '—' },
+            { text: assetCurrencyForMarket(view.fundingCost, view.market), className: assetSignClass(view.fundingCost) },
             { text: assetAccountTotalText(view) },
             { text: assetSignedCurrencyForMarket(view.unrealized, view.market), className: assetSignClass(view.unrealized) },
             { text: assetCurrencyForMarket(view.cash, view.market) },
@@ -3717,11 +3768,11 @@ function makeAssetAccountTable(owner, views) {
     }
 
     if (views.length === 0) {
-        body.append(assetEmptyRow(7, '這位使用者還沒有帳戶。按「＋ 新增帳戶」建立第一個。'));
+        body.append(assetEmptyRow(8, '這位使用者還沒有帳戶。按「＋ 新增帳戶」建立第一個。'));
     }
 
     table.append(
-        assetTableHead(['帳戶', '市場／券商', '資產總值', '未實現損益', '現金', '累計已實現', '資料時間']),
+        assetTableHead(['帳戶', '市場／券商', '入金成本', '資產總值', '未實現損益', '現金', '累計已實現', '資料時間']),
         body);
     section.append(table);
 
@@ -3755,7 +3806,8 @@ function makeAssetAccountSettings(view) {
     heading.textContent = '帳戶資料';
     const note = document.createElement('p');
     note.className = 'asset-local-only-note';
-    note.textContent = '現金與累計已實現要自己填：券商的未實現損益畫面看不到這兩個數字，截圖也辨識不出來。';
+    note.textContent = '現金與累計已實現要自己填；入金成本由下方出入金明細自動計算，'
+        + '不會把帳戶現金餘額重複算進去。';
     const form = document.createElement('form');
     form.className = 'asset-editor-form';
     const nameInput = assetField(form, 'text', '帳戶名稱', view.name, { required: true });
@@ -3784,6 +3836,14 @@ function makeAssetAccountSettings(view) {
         `累計已實現損益（${accountCurrency}）`,
         view.realized,
         { step: amountStep });
+    const fundingInput = assetField(
+        form,
+        'text',
+        `入金成本（出入金淨額，${accountCurrency}，唯讀）`,
+        view.fundingCost === null ? '' : assetCurrency(view.fundingCost, accountCurrency));
+    fundingInput.readOnly = true;
+    fundingInput.className = 'asset-readonly-field';
+    fundingInput.title = '入金合計減出金合計；請在下方出入金紀錄新增資料。';
     const actions = assetActions(form, '儲存帳戶資料', returnToAssetDashboard);
     actions.prepend(assetButton('刪除帳戶', 'asset-secondary-button', () => void removeAssetAccount(view)));
 
@@ -3815,9 +3875,30 @@ function makeAssetAccountSettings(view) {
 function makeAssetHoldings(view) {
     const section = document.createElement('section');
     section.className = 'asset-account-holdings';
+    const headingRow = document.createElement('div');
+    headingRow.className = 'asset-section-heading';
     const heading = document.createElement('h2');
     heading.textContent = '持倉';
-    section.append(heading);
+    const removeAll = assetButton(
+        `刪除全部持倉（${view.holdings.length}）`,
+        'asset-danger-button',
+        () => {
+            if (view.holdings.length === 0 || assetsBusy) {
+                return;
+            }
+
+            if (!window.confirm(`確定刪除「${view.name || '未命名帳戶'}」的 ${view.holdings.length} 筆持倉？此動作無法復原。`)) {
+                return;
+            }
+
+            void runAssetAction(
+                '刪除全部持倉中…',
+                () => assetRemove(ASSET_HOLDINGS_TABLE, `?account_id=eq.${encodeURIComponent(view.id)}`),
+                `已刪除全部 ${view.holdings.length} 筆持倉。`);
+        });
+    removeAll.disabled = assetsBusy || view.holdings.length === 0;
+    headingRow.append(heading, removeAll);
+    section.append(headingRow);
 
     const table = document.createElement('table');
     table.className = 'asset-preview-table';
@@ -3867,6 +3948,144 @@ function makeAssetHoldings(view) {
         body);
     section.append(table, makeAssetHoldingEditor(view));
     return section;
+}
+
+function makeAssetCashFlowSection(view) {
+    const panel = document.createElement('section');
+    panel.className = 'asset-editor-panel asset-cash-flow-panel';
+    const heading = document.createElement('h3');
+    heading.textContent = '出入金紀錄';
+    const note = document.createElement('p');
+    note.className = 'asset-local-only-note';
+    note.textContent = '入金成本 = 入金合計 − 出金合計。每筆套用後會寫入資料庫並自動重算；'
+        + '帳戶資料的現金餘額仍代表目前券商現金。';
+    panel.append(heading, note);
+
+    if (!assetCashFlowAvailable) {
+        const warning = document.createElement('p');
+        warning.className = 'asset-data-warning';
+        warning.textContent = '出入金明細尚未啟用，請先由管理者套用 db/030_asset_cash_flows.sql。';
+        panel.append(warning);
+    }
+
+    const table = document.createElement('table');
+    table.className = 'asset-preview-table';
+    const body = document.createElement('tbody');
+    const flows = [...view.cashFlows].sort((left, right) =>
+        String(right.flowDate).localeCompare(String(left.flowDate))
+        || String(right.createdAt).localeCompare(String(left.createdAt)));
+
+    for (const flow of flows) {
+        const row = document.createElement('tr');
+        const signedAmount = flow.direction === 'withdrawal'
+            ? flow.amount === null ? null : -flow.amount
+            : flow.direction === 'deposit' ? flow.amount : null;
+        const cells = [
+            { text: flow.flowDate || '—' },
+            { text: flow.direction === 'deposit' ? '入金' : flow.direction === 'withdrawal' ? '出金' : '—' },
+            { text: assetSignedCurrencyForMarket(signedAmount, view.market), className: assetSignClass(signedAmount) },
+            { text: flow.note || '—' },
+            { text: assetTimeText(flow.updatedAt || flow.createdAt) }
+        ];
+
+        for (const cell of cells) {
+            const element = document.createElement('td');
+            element.textContent = cell.text;
+
+            if (cell.className) {
+                element.className = cell.className;
+            }
+
+            row.append(element);
+        }
+
+        const actionCell = document.createElement('td');
+        actionCell.append(assetButton('刪除', 'asset-secondary-button', () => void runAssetAction(
+            '刪除中…',
+            () => assetRemove(ASSET_CASH_FLOWS_TABLE, `?id=eq.${encodeURIComponent(flow.id)}`),
+            '已刪除這筆出入金，入金成本已重算。')));
+        row.append(actionCell);
+        body.append(row);
+    }
+
+    if (flows.length === 0) {
+        body.append(assetEmptyRow(6, assetCashFlowAvailable
+            ? '尚無出入金紀錄；可用下方表單新增第一筆。'
+            : '出入金明細尚未啟用。'));
+    }
+
+    table.append(assetTableHead(['日期', '類型', '金額', '備註', '紀錄時間', '']), body);
+    panel.append(table);
+
+    const form = document.createElement('form');
+    form.className = 'asset-editor-form asset-cash-flow-form';
+    const dateInput = assetField(form, 'date', '日期', TAIPEI_DATE.format(new Date()), { required: true });
+    const directionLabel = document.createElement('label');
+    directionLabel.textContent = '類型';
+    const directionSelect = document.createElement('select');
+    for (const [value, text] of [['deposit', '入金'], ['withdrawal', '出金']]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        directionSelect.append(option);
+    }
+    directionLabel.append(directionSelect);
+    form.append(directionLabel);
+    const amountInput = assetField(
+        form,
+        'number',
+        `金額（${view.market === '美股' ? 'USD' : 'TWD'}）`,
+        '',
+        { required: true, step: view.market === '美股' ? '0.01' : '1' });
+    amountInput.min = '0.01';
+    const noteInput = assetField(form, 'text', '備註（可留空）', '', {
+        maxLength: 120,
+        placeholder: '例如：轉入券商帳戶'
+    });
+    const actions = assetActions(form, '套用這筆出入金', () => {
+        dateInput.value = TAIPEI_DATE.format(new Date());
+        directionSelect.value = 'deposit';
+        amountInput.value = '';
+        noteInput.value = '';
+    });
+    const submit = actions.querySelector('button[type="submit"]');
+    if (submit) {
+        submit.disabled = assetsBusy || !assetCashFlowAvailable;
+    }
+
+    if (!assetCashFlowAvailable) {
+        form.querySelectorAll('input, select, button').forEach(element => { element.disabled = true; });
+    }
+
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+
+        if (!assetCashFlowAvailable) {
+            return;
+        }
+
+        const amount = assetNumber(amountInput.value);
+
+        if (dateInput.value === '' || amount === null || amount <= 0) {
+            amountInput.focus();
+            return;
+        }
+
+        await runAssetAction(
+            '套用出入金中…',
+            () => assetInsert(ASSET_CASH_FLOWS_TABLE, {
+                id: crypto.randomUUID(),
+                account_id: view.id,
+                flow_date: dateInput.value,
+                direction: directionSelect.value,
+                amount,
+                note: noteInput.value.trim()
+            }),
+            '已新增出入金，入金成本已重算。');
+    });
+
+    panel.append(form);
+    return panel;
 }
 
 function makeAssetHoldingEditor(view) {
@@ -6567,6 +6786,11 @@ function makeAssetAccountDetails(owner, view) {
     metrics.append(
         assetMetric('資產總值', assetAccountTotalText(view),
             document.createTextNode(totalDetail), view.market === '美股' ? 'asset-dual-currency' : ''),
+        assetMetric('入金成本', assetCurrency(view.fundingCost, currency),
+            document.createTextNode(view.fundingCost === null
+                ? '出入金明細尚未啟用'
+                : `共 ${view.cashFlows.length} 筆出入金`),
+            assetSignClass(view.fundingCost)),
         assetMetric('投入成本', assetCurrency(view.cost, currency),
             document.createTextNode(`共 ${view.holdings.length} 筆持倉`)),
         assetMetric('未實現損益', assetSignedCurrency(view.unrealized, currency),
@@ -6597,7 +6821,7 @@ function makeAssetAccountDetails(owner, view) {
         content.append(notice);
     }
 
-    content.append(makeAssetAccountSettings(view), lower);
+    content.append(makeAssetAccountSettings(view), makeAssetCashFlowSection(view), lower);
     return content;
 }
 
@@ -8358,7 +8582,17 @@ function renderKLinePopover(ticker, name, anchor) {
     close.textContent = '關閉';
     close.addEventListener('click', closeKLine);
     header.append(title, close);
-    card.append(header);
+
+    // K 線彈窗也要保留排行榜的族群脈絡；先補名稱，讓族群連結的提示在
+    // 從其他列表開啟彈窗時也能顯示完整標的名稱。
+    nameByTicker.set(ticker, name);
+    const topicRow = document.createElement('div');
+    topicRow.className = 'daily-kline-topic-row';
+    const topicLabel = document.createElement('span');
+    topicLabel.className = 'daily-kline-topic-label';
+    topicLabel.textContent = '族群';
+    topicRow.append(topicLabel, makeTopicCell(ticker, attributionOf(ticker)));
+    card.append(header, topicRow);
 
     if (klineError) {
         const message = document.createElement('p');

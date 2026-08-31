@@ -43,6 +43,11 @@ public static class MarketIndexKLineCalculator
                     HighPrice: > 0m,
                     LowPrice: > 0m
                 }
+                    && DailyBarValidator.IsValid(
+                        quote.OpenPrice,
+                        quote.HighPrice,
+                        quote.LowPrice,
+                        quote.Value)
                     ? new IndexBar(
                         day.TradingDate,
                         quote.OpenPrice!.Value,

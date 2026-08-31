@@ -289,6 +289,63 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 個股K線標題下顯示可點擊的族群連結()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("const topicRow = document.createElement('div');", script, StringComparison.Ordinal);
+        Assert.Contains("topicRow.className = 'daily-kline-topic-row';", script, StringComparison.Ordinal);
+        Assert.Contains("topicRow.append(topicLabel, makeTopicCell(ticker, attributionOf(ticker)))", script, StringComparison.Ordinal);
+        Assert.Contains("button.addEventListener('click', () => focusTopic(topicId));", script, StringComparison.Ordinal);
+        Assert.Contains(".daily-kline-topic-row .topic-links", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 指數K線保留標題而個股才顯示族群列()
+    {
+        var script = ReadAsset("site.js");
+        var indexStart = script.IndexOf("function renderIndexKLinePopover", StringComparison.Ordinal);
+        var stockStart = script.IndexOf("function renderKLinePopover", StringComparison.Ordinal);
+
+        Assert.True(indexStart >= 0 && stockStart > indexStart, "找不到指數／個股 K 線彈窗函式。");
+
+        var indexFunction = script[indexStart..stockStart];
+
+        Assert.Contains("header.append(title, close);", indexFunction, StringComparison.Ordinal);
+        Assert.Contains("card.append(header);", indexFunction, StringComparison.Ordinal);
+        Assert.DoesNotContain("daily-kline-topic-row", indexFunction, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Blazor排行榜手機版表頭與內容固定代號名稱欄()
+    {
+        var root = FindRepositoryRoot();
+        var razor = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Invest.Web",
+            "Features",
+            "TradingValueRanking",
+            "Pages",
+            "TradingValueRanking.razor"));
+        var styles = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Invest.Web",
+            "Features",
+            "TradingValueRanking",
+            "Pages",
+            "TradingValueRanking.razor.css"));
+
+        Assert.Contains("\"ticker\" => \" col-ticker\"", razor, StringComparison.Ordinal);
+        Assert.Contains("\"name\" => \" col-name\"", razor, StringComparison.Ordinal);
+        Assert.Contains(".ranking-table th.col-ticker", styles, StringComparison.Ordinal);
+        Assert.Contains(".ranking-table th.col-name", styles, StringComparison.Ordinal);
+        Assert.Contains("-webkit-line-clamp: 2;", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 指數K線包含上下圖與本機樣板入口()
     {
         var script = ReadAsset("site.js");
@@ -954,22 +1011,27 @@ public sealed class StaticKLineAssetTests
         Assert.Contains(".assets-page", styles, StringComparison.Ordinal);
     }
 
-    // 資產從 localStorage 搬到 Supabase 的驗收條件：三張表都要讀、都要能寫，
+    // 資產從 localStorage 搬到 Supabase 的驗收條件：四張表都要讀、都要能寫，
     // 而且不能再有任何一條路徑把使用者或帳戶留在瀏覽器裡。
     [Fact]
-    public void 資產讀寫Supabase三張表而不是瀏覽器儲存()
+    public void 資產讀寫Supabase四張表而不是瀏覽器儲存()
     {
         var script = ReadAsset("site.js");
 
         Assert.Contains("const ASSET_OWNERS_TABLE = 'asset_owners';", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_ACCOUNTS_TABLE = 'asset_accounts';", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_HOLDINGS_TABLE = 'asset_holdings';", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_CASH_FLOWS_TABLE = 'asset_cash_flows';", script, StringComparison.Ordinal);
         Assert.Contains("fetchAllRows(\n            ASSET_OWNERS_TABLE", NormalizeNewlines(script), StringComparison.Ordinal);
         Assert.Contains("assetInsert(ASSET_OWNERS_TABLE", script, StringComparison.Ordinal);
         Assert.Contains("assetInsert(ASSET_ACCOUNTS_TABLE", script, StringComparison.Ordinal);
         Assert.Contains("assetInsert(ASSET_HOLDINGS_TABLE", script, StringComparison.Ordinal);
         Assert.Contains("assetUpdate(ASSET_ACCOUNTS_TABLE", script, StringComparison.Ordinal);
         Assert.Contains("assetRemove(ASSET_HOLDINGS_TABLE", script, StringComparison.Ordinal);
+        Assert.Contains("assetInsert(ASSET_CASH_FLOWS_TABLE", script, StringComparison.Ordinal);
+        Assert.Contains("assetRemove(ASSET_CASH_FLOWS_TABLE", script, StringComparison.Ordinal);
+        Assert.Contains("function assetCashFlowNet", script, StringComparison.Ordinal);
+        Assert.Contains("刪除全部持倉", script, StringComparison.Ordinal);
 
         // 瀏覽器儲存只留給鎖定股號與檢視偏好，資產一個字都不能碰。
         Assert.DoesNotContain("assetPrototypeData", script, StringComparison.Ordinal);
@@ -996,6 +1058,22 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const cost = sum(holdings, holding => holding.cost);", script, StringComparison.Ordinal);
         Assert.Contains("const marketValue = sum(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
         Assert.Contains("marketValue === null ? null : marketValue + account.cash", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 資產出入金以明細計算入金成本且未套用migration時不阻擋頁面()
+    {
+        var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "030_asset_cash_flows.sql"));
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("create table if not exists asset_cash_flows", migration, StringComparison.Ordinal);
+        Assert.Contains("direction in ('deposit', 'withdrawal')", migration, StringComparison.Ordinal);
+        Assert.Contains("references asset_accounts (id) on delete cascade", migration, StringComparison.Ordinal);
+        Assert.Contains("cashFlows === null ? null : cashFlows.map", script, StringComparison.Ordinal);
+        Assert.Contains("assetCashFlowAvailable = data.cashFlows !== null", script, StringComparison.Ordinal);
+        Assert.Contains("入金成本 = 入金合計 − 出金合計", script, StringComparison.Ordinal);
+        Assert.Contains("入金成本（出入金淨額", script, StringComparison.Ordinal);
+        Assert.Contains("出入金明細尚未啟用", script, StringComparison.Ordinal);
     }
 
     // 大標題不再叫「資產 Dashboard（瀏覽器樣板）」，整個靜態站也不該再有樣板字眼。

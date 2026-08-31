@@ -43,6 +43,16 @@ function holdingDiff() {
     return context.buildAssetHoldingDiff;
 }
 
+function cashFlowNet() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetCashFlowNet')
+    ].join('\n\n'), context);
+    return context.assetCashFlowNet;
+}
+
 test('同標的覆蓋、新增與可選移除會分開列出', () => {
     const diff = holdingDiff()(
         [
@@ -78,4 +88,14 @@ test('空白或重複代號不會被當成新增或覆蓋', () => {
     assert.equal(diff.updates.length, 0);
     assert.equal(diff.additions.length, 0);
     assert.equal(diff.removals.length, 0);
+});
+
+test('入金成本等於入金減出金，無效方向不會混入', () => {
+    assert.equal(cashFlowNet()([
+        { direction: 'deposit', amount: '100000' },
+        { direction: 'withdrawal', amount: '30000' },
+        { direction: 'deposit', amount: 5000 },
+        { direction: 'unknown', amount: 999999 },
+        { direction: 'deposit', amount: null }
+    ]), 75000);
 });

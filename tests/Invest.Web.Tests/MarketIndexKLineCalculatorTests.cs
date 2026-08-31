@@ -94,4 +94,88 @@ public sealed class MarketIndexKLineCalculatorTests
         Assert.Null(points[238].Ma240);
         Assert.Equal(219.5m, points[^1].Ma240);
     }
+
+    [Fact]
+    public void 指數K線會略過價格關係不可能的指數棒()
+    {
+        var start = new DateOnly(2026, 8, 27);
+        var indices = new[]
+        {
+            new DailyMarketIndex
+            {
+                TradingDate = start,
+                Quotes =
+                [
+                    new MarketIndexQuote
+                    {
+                        Market = Market.Twse,
+                        Value = 682m,
+                        OpenPrice = 682m,
+                        HighPrice = 647m,
+                        LowPrice = 675m
+                    }
+                ]
+            },
+            new DailyMarketIndex
+            {
+                TradingDate = start.AddDays(1),
+                Quotes =
+                [
+                    new MarketIndexQuote
+                    {
+                        Market = Market.Twse,
+                        Value = 681m,
+                        OpenPrice = 680m,
+                        HighPrice = 682m,
+                        LowPrice = 678m
+                    }
+                ]
+            }
+        };
+
+        var points = MarketIndexKLineCalculator.Calculate(
+            indices,
+            [],
+            new Dictionary<string, Market>(),
+            Market.Twse,
+            start,
+            start.AddDays(1));
+
+        var point = Assert.Single(points);
+        Assert.Equal(start.AddDays(1), point.TradingDate);
+    }
+
+    [Fact]
+    public void 指數快照混入不可能指數棒時必須重新回補()
+    {
+        var snapshot = new DailyQuoteSnapshot
+        {
+            SchemaVersion = DailyQuoteSnapshot.CurrentSchemaVersion,
+            TradingDate = new DateOnly(2026, 8, 28),
+            IsTradingDay = true,
+            DownloadedAt = DateTimeOffset.UtcNow,
+            MarketIndexSchemaVersion = DailyQuoteSnapshot.CurrentMarketIndexSchemaVersion,
+            MarketIndices =
+            [
+                new MarketIndexQuote
+                {
+                    Market = Market.Twse,
+                    Value = 682m,
+                    OpenPrice = 682m,
+                    HighPrice = 647m,
+                    LowPrice = 675m
+                },
+                new MarketIndexQuote
+                {
+                    Market = Market.Tpex,
+                    Value = 400m,
+                    OpenPrice = 399m,
+                    HighPrice = 401m,
+                    LowPrice = 398m
+                }
+            ]
+        };
+
+        Assert.False(snapshot.HasCompleteMarketIndices);
+    }
 }

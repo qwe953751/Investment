@@ -1,4 +1,5 @@
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Features.TradingValueRanking.Services;
 
@@ -18,7 +19,16 @@ public static class DailyKLineCalculator
         var rows = trading
             .Where(row => row.Ticker == ticker
                 && row.TradingDate <= adjustmentThroughDate
-                && row.ClosePrice is > 0m)
+                && row.ClosePrice is > 0m
+                // 缺 OHLC 的舊資料仍可作為均線暖身；欄位齊全時才要求價格關係合法。
+                && (row.OpenPrice is null
+                    || row.HighPrice is null
+                    || row.LowPrice is null
+                    || DailyBarValidator.IsValid(
+                        row.OpenPrice,
+                        row.HighPrice,
+                        row.LowPrice,
+                        row.ClosePrice)))
             .OrderBy(row => row.TradingDate)
             .ToArray();
         var events = adjustments
@@ -46,7 +56,12 @@ public static class DailyKLineCalculator
                 || row.TradingDate > endDate
                 || row.OpenPrice is null
                 || row.HighPrice is null
-                || row.LowPrice is null)
+                || row.LowPrice is null
+                || !DailyBarValidator.IsValid(
+                    row.OpenPrice,
+                    row.HighPrice,
+                    row.LowPrice,
+                    row.ClosePrice))
             {
                 continue;
             }

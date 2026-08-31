@@ -1072,6 +1072,13 @@ body {
     gap: 18px;
 }
 
+.asset-section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
 .asset-dashboard-user-controls {
     display: flex;
     flex-wrap: wrap;
@@ -1125,6 +1132,30 @@ body {
 .asset-primary-button:focus-visible {
     border-color: #0d0d0d;
     background: #0d0d0d;
+}
+
+.asset-danger-button {
+    border-color: #d92d20;
+    color: #b42318;
+}
+
+.asset-danger-button:hover,
+.asset-danger-button:focus-visible {
+    border-color: #b42318;
+    background: #fff1f0;
+}
+
+.asset-button:disabled,
+.asset-editor-form input:disabled,
+.asset-editor-form select:disabled {
+    cursor: not-allowed;
+    opacity: .55;
+}
+
+.asset-editor-form input[readonly] {
+    background: #eef2f6;
+    color: #667085;
+    cursor: not-allowed;
 }
 
 .asset-secondary-button {
@@ -1241,7 +1272,6 @@ body {
 
 .asset-account-metrics {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 12px;
 }
 
@@ -1249,6 +1279,10 @@ body {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 12px;
+}
+
+.asset-account-metrics {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .asset-dashboard-overview .asset-preview-metrics {
@@ -2578,6 +2612,29 @@ td.stock-name.stock-name-change-down {
     margin-bottom: 4px;
 }
 
+.daily-kline-topic-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 2px 0 4px;
+    padding: 4px 0;
+    border-top: 1px solid #eef2f6;
+    border-bottom: 1px solid #eef2f6;
+}
+
+.daily-kline-topic-label {
+    flex: none;
+    color: #667085;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.daily-kline-topic-row .topic-links {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+}
+
 .kline-title-link {
     color: inherit;
     text-decoration: none;
@@ -3161,7 +3218,8 @@ td.stock-name.stock-name-change-down {
 
     .asset-dashboard-overview,
     .asset-dashboard-config-heading,
-    .asset-account-heading {
+    .asset-account-heading,
+    .asset-section-heading {
         grid-template-columns: 1fr;
         flex-direction: column;
         align-items: stretch;
