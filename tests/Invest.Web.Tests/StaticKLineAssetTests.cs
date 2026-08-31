@@ -1069,6 +1069,11 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("create table if not exists asset_cash_flows", migration, StringComparison.Ordinal);
         Assert.Contains("direction in ('deposit', 'withdrawal')", migration, StringComparison.Ordinal);
         Assert.Contains("references asset_accounts (id) on delete cascade", migration, StringComparison.Ordinal);
+        Assert.Contains("create policy \"public read\"", migration, StringComparison.Ordinal);
+        Assert.Contains("create policy \"public insert\"", migration, StringComparison.Ordinal);
+        Assert.Contains("create policy \"public update\"", migration, StringComparison.Ordinal);
+        Assert.Contains("create policy \"public delete\"", migration, StringComparison.Ordinal);
+        Assert.DoesNotContain("create policy \"public write\"", migration, StringComparison.Ordinal);
         Assert.Contains("cashFlows === null ? null : cashFlows.map", script, StringComparison.Ordinal);
         Assert.Contains("assetCashFlowAvailable = data.cashFlows !== null", script, StringComparison.Ordinal);
         Assert.Contains("入金成本 = 入金合計 − 出金合計", script, StringComparison.Ordinal);
@@ -1515,6 +1520,12 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const moneyAt = fields.includes('costPrice') && fields.includes('cost')", script, StringComparison.Ordinal);
         Assert.Contains("matchAll(/\\$\\s*[+−–—~-]?", script, StringComparison.Ordinal);
         Assert.Contains("data?.identityText !== undefined && textRows.matchedHeader", script, StringComparison.Ordinal);
+        Assert.Contains("{ field: 'quantityYesterday'", script, StringComparison.Ordinal);
+        Assert.Contains("{ field: 'quantityBuy'", script, StringComparison.Ordinal);
+        Assert.Contains("{ field: 'quantitySell'", script, StringComparison.Ordinal);
+        Assert.Contains("const quantity = yesterday + buy - sell;", script, StringComparison.Ordinal);
+        Assert.Contains("onlyMissingInferableCost", script, StringComparison.Ordinal);
+        Assert.Contains("Math.abs(Number(draft.marketValue)) * 0.006", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1534,6 +1545,29 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("views.length === 0 ? 0 : assetSumComplete(views, view => view.twdCash)", script, StringComparison.Ordinal);
         Assert.Contains("holding.ticker.trim().toUpperCase()", script, StringComparison.Ordinal);
         Assert.Contains("US$", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 資產持倉名稱會以各市場最新交易日開啟台美股K線()
+    {
+        var script = ReadAsset("site.js");
+        var exporter = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "Invest.Web",
+            "Infrastructure",
+            "StaticSite",
+            "StaticSiteExporter.cs"));
+
+        Assert.Contains("{ latest: true, market: view.market }", script, StringComparison.Ordinal);
+        Assert.Contains("klineUseLatestDate", script, StringComparison.Ordinal);
+        Assert.Contains("bars?.at(-1)?.date", script, StringComparison.Ordinal);
+        Assert.Contains("payload?.market === 'US'", script, StringComparison.Ordinal);
+        Assert.Contains("payload?.adjustmentMethod === 'raw-us-daily'", script, StringComparison.Ordinal);
+        Assert.Contains("美股日 K", script, StringComparison.Ordinal);
+        Assert.Contains("await usDailyQuotes.LoadAllAsync(cancellationToken)", exporter, StringComparison.Ordinal);
+        Assert.Contains("quote.Market == Market.Us", exporter, StringComparison.Ordinal);
+        Assert.Contains("\"raw-us-daily\"", exporter, StringComparison.Ordinal);
     }
 
     /// <summary>

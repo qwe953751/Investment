@@ -10,6 +10,7 @@ using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.Intraday;
+using Invest.Web.Infrastructure.MarketData.UsStocks;
 using Invest.Web.Infrastructure.StockTopics;
 
 namespace Invest.Web.Infrastructure.StaticSite;
@@ -35,6 +36,7 @@ public sealed class StaticSiteExporter(
     GoogleSheetTopicClient topics,
     MaterialEventStore materialEvents,
     IntradaySnapshotPublisher snapshotPublisher,
+    UsDailyQuoteStore usDailyQuotes,
     ILogger<StaticSiteExporter> logger,
     IConfiguration configuration)
 {
@@ -88,6 +90,7 @@ public sealed class StaticSiteExporter(
         var latestRankings = new Dictionary<int, TradingValueRankingResult>();
 
         var kLineFileCount = 0;
+        var usKLineFileCount = 0;
         var marketIndexKLineWritten = false;
 
         if (tradingDates.Length > 0 && selectableDates.Count > 0)
@@ -117,8 +120,17 @@ public sealed class StaticSiteExporter(
                 cancellationToken);
         }
 
+        // 美股回補存在獨立的 data/imports-us，不能混進台股成交值排行；但資產持倉
+        // 點名稱仍需要真實 OHLC。只在輸出 K 線時讀這份快取，各 ticker 以自己最新
+        // 的交易日為尾端，不拿台股日期或只有 close 的 Supabase 副本硬湊 K 棒。
+        usKLineFileCount = await WriteUsKLineExportsAsync(
+            Path.Combine(dataDirectory, "kline"),
+            await usDailyQuotes.LoadAllAsync(cancellationToken),
+            cancellationToken);
+
         progress?.Report(
-            $"已寫出 {kLineFileCount} 檔最近三個月還原權息日 K 資料"
+            $"已寫出 {kLineFileCount} 檔台股最近三個月還原權息日 K 資料"
+            + (usKLineFileCount > 0 ? $"、{usKLineFileCount} 檔美股原始日 K 資料" : string.Empty)
             + (marketIndexKLineWritten ? "，以及指數 K 線資料" : string.Empty));
 
         // 一律換算成台北時間，不要用這台機器的時區。
@@ -872,9 +884,89 @@ public sealed class StaticSiteExporter(
             }
 
             var export = new KLineExport(
+                "TW",
                 "forward-rights-dividends",
                 adjustmentThroughDate.ToString("yyyy-MM-dd"),
                 tickerEvents.Length,
+                [.. points.Select(point => new KLineBarExport(
+                    point.TradingDate.ToString("yyyy-MM-dd"),
+                    RoundKLine(point.Open),
+                    RoundKLine(point.High),
+                    RoundKLine(point.Low),
+                    RoundKLine(point.Close),
+                    RoundKLine(point.PreviousClose),
+                    RoundKLine(point.Ma5),
+                    RoundKLine(point.Ma10),
+                    RoundKLine(point.Ma20),
+                    RoundKLine(point.Ma60),
+                    RoundKLine(point.Ma240),
+                    RoundKLine(point.TradingVolume)))]);
+
+            await WriteJsonAsync(
+                Path.Combine(directory, ticker + ".json"),
+                export,
+                cancellationToken);
+            count++;
+        }
+
+        return count;
+    }
+
+    private static async Task<int> WriteUsKLineExportsAsync(
+        string directory,
+        IReadOnlyList<DailyQuoteSnapshot> snapshots,
+        CancellationToken cancellationToken)
+    {
+        var rows = snapshots
+            .SelectMany(snapshot => snapshot.Quotes
+                .Where(quote => quote.Market == Market.Us)
+                .Select(quote => new DailyStockTrading
+                {
+                    TradingDate = snapshot.TradingDate,
+                    Ticker = quote.Ticker,
+                    OpenPrice = quote.OpenPrice,
+                    HighPrice = quote.HighPrice,
+                    LowPrice = quote.LowPrice,
+                    ClosePrice = quote.ClosePrice,
+                    TradingValue = quote.TradingValue,
+                    TradingVolume = quote.TradingVolume
+                }))
+            .ToArray();
+
+        if (rows.Length == 0)
+        {
+            return 0;
+        }
+
+        Directory.CreateDirectory(directory);
+        var count = 0;
+
+        foreach (var trading in rows
+            .GroupBy(row => row.Ticker, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var ticker = trading.Key;
+            var endDate = trading.Max(row => row.TradingDate);
+            var startDate = endDate.AddMonths(-DailyKLineSelector.DefaultMonths);
+            var points = DailyKLineCalculator.Calculate(
+                trading,
+                [],
+                ticker,
+                startDate,
+                endDate,
+                endDate);
+
+            if (points.Count == 0)
+            {
+                continue;
+            }
+
+            var export = new KLineExport(
+                "US",
+                "raw-us-daily",
+                endDate.ToString("yyyy-MM-dd"),
+                0,
                 [.. points.Select(point => new KLineBarExport(
                     point.TradingDate.ToString("yyyy-MM-dd"),
                     RoundKLine(point.Open),
@@ -1087,6 +1179,7 @@ public sealed class StaticSiteExporter(
         decimal? TpexIndex);
 
     private sealed record KLineExport(
+        string Market,
         string AdjustmentMethod,
         string AdjustmentThrough,
         int AdjustmentEventCount,

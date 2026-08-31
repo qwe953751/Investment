@@ -1585,6 +1585,8 @@ let topicIntradayKLineCapturedAt = '';
 let klineError = '';
 let expandedTicker = null;
 let expandedKLineName = '';
+let expandedKLineMarket = '';
+let klineUseLatestDate = false;
 let klineAnchor = null;
 let expandedIndexMarket = null;
 let indexKLineAnchor = null;
@@ -4441,9 +4443,18 @@ function makeAssetHoldings(view) {
             { text: holding.source === 'ocr' ? '截圖辨識' : '手動' }
         ];
 
-        for (const cell of cells) {
+        for (let cellIndex = 0; cellIndex < cells.length; cellIndex += 1) {
+            const cell = cells[cellIndex];
             const element = document.createElement('td');
-            element.textContent = cell.text;
+
+            if (cellIndex === 1 && String(holding.ticker ?? '').trim() !== '') {
+                element.append(makeKLineButton(
+                    String(holding.ticker).trim().toUpperCase(),
+                    holding.name || holding.ticker,
+                    { latest: true, market: view.market }));
+            } else {
+                element.textContent = cell.text;
+            }
 
             if (cell.className) {
                 element.className = cell.className;
@@ -5090,7 +5101,12 @@ const assetCloseIndexByDate = new Map();
 const ASSET_OCR_HEADERS = [
     { field: 'ticker', words: ['股票代號', '商品代號', '代號', '股號', 'SYMBOL', 'TICKER', 'CODE'] },
     { field: 'name', words: ['股票名稱', '商品名稱', '股名', '名稱', '商品', '股票', 'STOCK NAME', 'SECURITY', 'COMPANY'] },
-    { field: 'quantity', words: ['庫存股數', '集保庫存', '持有股數', '昨日餘額', '日餘額', '可用股數', '股數', '庫存', '現股', '數量', 'SHARES', 'QUANTITY', 'QTY', 'UNITS'] },
+    // 券商把「昨日餘額／今買成交／今賣成交」拆成三欄時，不能把三個數字都塞進
+    // 同一個 quantity。先保留欄位語意，讀完一列後再算昨日＋買進−賣出。
+    { field: 'quantityYesterday', words: ['昨日餘額', '日餘額', '昨日庫存', '前日餘額'] },
+    { field: 'quantityBuy', words: ['今日買進', '今買成交', '今買成', '今日買成', '買進股數'] },
+    { field: 'quantitySell', words: ['今日賣出', '今賣成交', '今賣成', '今日賣成', '賣出股數'] },
+    { field: 'quantity', words: ['庫存股數', '集保庫存', '持有股數', '可用股數', '股數', '庫存', '現股', '數量', 'SHARES', 'QUANTITY', 'QTY', 'UNITS'] },
     { field: 'cost', words: ['投入成本', '成本金額', '總成本', '成本', 'TOTAL COST', 'COST BASIS', 'INVESTMENT COST', 'TOTAL'] },
     { field: 'costPrice', words: ['成交均價', '成本均價', '買進均價', '平均成本', '成本價', '均價', 'UNIT COST', 'AVG COST', 'AVERAGE COST', 'UNIT'] },
     { field: 'marketValue', words: ['參考市值', '市價金額', '總市值', '市值', '現值', 'MARKET VALUE', 'TOTAL VALUE', 'VALUE'] },
@@ -5100,6 +5116,25 @@ const ASSET_OCR_HEADERS = [
 
 // 只有這幾欄是每股單價，其餘都是金額。
 const ASSET_OCR_UNIT_PRICES = { costPrice: 'cost', marketPrice: 'marketValue' };
+const ASSET_OCR_QUANTITY_COMPONENTS = new Set(['quantityYesterday', 'quantityBuy', 'quantitySell']);
+
+function assetOcrApplyQuantityComponents(draft, components = draft) {
+    const yesterday = assetNumber(components.quantityYesterday);
+
+    if (yesterday === null) {
+        return;
+    }
+
+    const buy = assetNumber(components.quantityBuy) ?? 0;
+    const sell = assetNumber(components.quantitySell) ?? 0;
+    const quantity = yesterday + buy - sell;
+
+    // 台股現股截圖的這三欄都是股數；若 OCR 讀出小數或賣超過持有量，保留空白讓
+    // 使用者校對，不能把一個看似合理的負數或小數自動寫入持倉。
+    if (Number.isInteger(quantity) && quantity >= 0) {
+        draft.quantity = quantity;
+    }
+}
 
 const ASSET_OCR_TICKER = /(?:\d{4,6}[A-Za-z]?|[A-Z]{2,5}(?:[.-][A-Z]{1,2})?)/;
 
@@ -5648,6 +5683,7 @@ function assetOcrFieldAt(columns, center) {
 function assetOcrRow(words, columns) {
     const draft = assetDraftRowFrom({});
     const prices = { costPrice: null, marketPrice: null };
+    const quantityComponents = {};
     const names = [];
 
     for (let index = 0; index < words.length; index += 1) {
@@ -5706,11 +5742,17 @@ function assetOcrRow(words, columns) {
             continue;
         }
 
+        if (field !== null && ASSET_OCR_QUANTITY_COMPONENTS.has(field)) {
+            quantityComponents[field] ??= number;
+            continue;
+        }
+
         if (field !== null && field !== 'ticker' && field !== 'name' && draft[field] === '') {
             draft[field] = number;
         }
     }
 
+    assetOcrApplyQuantityComponents(draft, quantityComponents);
     draft.ocrUnitPrices = prices;
 
     // 名稱只收中文與英數，把 OCR 常噴出來的框線符號濾掉。
@@ -5754,6 +5796,25 @@ function finalizeAssetOcrDraft(draft) {
         if (inferred > 0
             && difference <= Math.max(0.5, Math.abs(Number(draft.cost)) * 0.001)
             && (quantity === null || statedDifference > Math.max(1, difference * 4))) {
+            quantity = inferred;
+            draft.quantity = inferred;
+        }
+    }
+
+    // 深色券商畫面可能把第一列最右側的投入成本漏讀，但仍完整讀到「市值／現價／
+    // 成本均價」。市值通常已扣預估賣出稅費，不能要求精確相乘；只有除回現價後在
+    // 0.6% 內唯一落到正整數股數時才補。補出的股數再乘明確的成本均價形成投入成本。
+    if (quantity === null
+        && draft.ocrUnitPrices?.marketPrice !== null
+        && draft.ocrUnitPrices?.marketPrice !== undefined
+        && Number(draft.ocrUnitPrices.marketPrice) > 0
+        && draft.marketValue !== '') {
+        const inferred = Math.round(Number(draft.marketValue) / Number(draft.ocrUnitPrices.marketPrice));
+        const difference = Math.abs(
+            Number(draft.marketValue) - inferred * Number(draft.ocrUnitPrices.marketPrice));
+
+        if (inferred > 0
+            && difference <= Math.max(1, Math.abs(Number(draft.marketValue)) * 0.006)) {
             quantity = inferred;
             draft.quantity = inferred;
         }
@@ -6086,10 +6147,14 @@ function assetOcrHeaderOrderFromText(lines) {
                 && found.has('costPrice')
                 && found.has('cost')
                 && found.has('marketPrice')
-                && !found.has('quantity')) {
-                if (text.includes('股票名稱')) {
-                    fields.push('quantity');
-                } else {
+                && !found.has('quantity')
+                && !found.has('quantityYesterday')
+                && !found.has('quantityBuy')
+                && !found.has('quantitySell')) {
+                // 深色「股票名稱／市值／現價／成本均價／投資成本」畫面本來就沒有
+                // 股數欄，股數只能由兩組「總額÷單價」交叉驗證後補。舊式「股名」
+                // 版型才確定在均價左側有一個標題漏辨的股數欄。
+                if (!text.includes('股票名稱')) {
                     fields.splice(fields.indexOf('costPrice'), 0, 'quantity');
                 }
             }
@@ -6324,14 +6389,22 @@ function assetOcrTextLineDraft(text, fields) {
         && missingFields[0] === 'quantity'
         && numericFields.slice(0, values.length).includes('costPrice')
         && numericFields.slice(0, values.length).includes('cost');
+    const onlyMissingInferableCost = missingFields.length === 1
+        && missingFields[0] === 'cost'
+        && numericFields.slice(0, values.length).includes('marketValue')
+        && numericFields.slice(0, values.length).includes('marketPrice')
+        && numericFields.slice(0, values.length).includes('costPrice');
 
     if (values.length > numericFields.length
         || (values.length < numericFields.length
             && !onlyMissingTrailingDisplayFields
-            && !onlyMissingInferableQuantity)) {
+            && !onlyMissingInferableQuantity
+            && !onlyMissingInferableCost)) {
         draft.ocrUnitPrices = prices;
         return draft;
     }
+
+    const quantityComponents = {};
 
     for (const field of numericFields) {
 
@@ -6343,11 +6416,14 @@ function assetOcrTextLineDraft(text, fields) {
 
         if (field in ASSET_OCR_UNIT_PRICES) {
             prices[field] = value;
+        } else if (ASSET_OCR_QUANTITY_COMPONENTS.has(field)) {
+            quantityComponents[field] = value;
         } else {
             draft[field] = value;
         }
     }
 
+    assetOcrApplyQuantityComponents(draft, quantityComponents);
     draft.ocrUnitPrices = prices;
     return draft;
 }
@@ -7985,15 +8061,17 @@ function renderPagination() {
     host.hidden = false;
 }
 
-function makeKLineButton(ticker, name) {
+function makeKLineButton(ticker, name, options = {}) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'stock-name-button';
     button.textContent = name;
     button.dataset.ticker = ticker;
-    button.dataset.hint = '點擊開啟這檔標的最近三個月還原權息日 K';
+    button.dataset.hint = options.latest
+        ? '點擊開啟這檔標的截至最新交易日的最近三個月日 K'
+        : '點擊開啟這檔標的最近三個月還原權息日 K';
     button.setAttribute('aria-expanded', String(expandedTicker === ticker));
-    button.addEventListener('click', () => toggleKLine(ticker, name, button));
+    button.addEventListener('click', () => toggleKLine(ticker, name, button, options));
     return button;
 }
 
@@ -8012,8 +8090,10 @@ async function loadKLineData(ticker) {
 
             const payload = await response.json();
 
-            if (payload?.adjustmentMethod !== 'forward-rights-dividends'
-                || !Array.isArray(payload.bars)) {
+            const validAdjustment = payload?.adjustmentMethod === 'forward-rights-dividends'
+                || (payload?.market === 'US' && payload?.adjustmentMethod === 'raw-us-daily');
+
+            if (!validAdjustment || !Array.isArray(payload.bars)) {
                 throw new Error('invalid adjusted K-line payload');
             }
 
@@ -8531,6 +8611,10 @@ async function loadTopicIntradayKLine(ticker) {
 }
 
 function klineEndDate() {
+    if (klineUseLatestDate && expandedTicker !== null && klineData.has(expandedTicker)) {
+        return klineData.get(expandedTicker)?.bars?.at(-1)?.date ?? '';
+    }
+
     if (isIntradayDataView()) {
         return current?.tradeDate;
     }
@@ -9074,28 +9158,35 @@ function renderKLinePopover(ticker, name, anchor) {
     header.className = 'daily-kline-header';
 
     const title = document.createElement('div');
+    const payload = klineData.get(ticker);
+    const isUs = expandedKLineMarket === '美股' || payload?.market === 'US';
 
     // id 留在外層的 <strong> 上：index.html 的 aria-labelledby 指著它。
     // 連結包在裡面而不是讓 <strong> 自己變成 <a>，這樣標題的字重不必再另外寫一次。
     const strong = document.createElement('strong');
     strong.id = 'kline-title';
-    const titleLink = document.createElement('a');
-    titleLink.className = 'kline-title-link';
-    titleLink.href = moneyDjStockUrl(ticker, name);
-    titleLink.target = '_blank';
-    titleLink.rel = 'noopener noreferrer';
-    titleLink.title = '在 MoneyDJ 財經百科查這家公司（公司簡介、產品與競爭條件、市場銷售及競爭）';
-    titleLink.textContent = `${ticker} ${name}`;
-    strong.append(titleLink);
+    if (isUs) {
+        strong.textContent = `${ticker} ${name}`;
+    } else {
+        const titleLink = document.createElement('a');
+        titleLink.className = 'kline-title-link';
+        titleLink.href = moneyDjStockUrl(ticker, name);
+        titleLink.target = '_blank';
+        titleLink.rel = 'noopener noreferrer';
+        titleLink.title = '在 MoneyDJ 財經百科查這家公司（公司簡介、產品與競爭條件、市場銷售及競爭）';
+        titleLink.textContent = `${ticker} ${name}`;
+        strong.append(titleLink);
+    }
     const period = document.createElement('span');
     period.className = 'daily-kline-period';
     const endDate = klineEndDate();
     const requestedStartDate = endDate ? klineStartDate(endDate) : '';
     const bars = klineData.has(ticker) ? selectedKLineBars(ticker) : [];
     const actualStartDate = bars[0]?.date ?? requestedStartDate;
+    const periodLabel = isUs ? '美股日 K' : '還原權息日 K';
     period.textContent = endDate
-        ? `還原權息日 K・${actualStartDate.replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
-        : '還原權息日 K';
+        ? `${periodLabel}・${actualStartDate.replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
+        : periodLabel;
     title.append(strong, period);
 
     const close = document.createElement('button');
@@ -9108,18 +9199,24 @@ function renderKLinePopover(ticker, name, anchor) {
     // K 線彈窗也要保留排行榜的族群脈絡；先補名稱，讓族群連結的提示在
     // 從其他列表開啟彈窗時也能顯示完整標的名稱。
     nameByTicker.set(ticker, name);
-    const topicRow = document.createElement('div');
-    topicRow.className = 'daily-kline-topic-row';
-    const topicLabel = document.createElement('span');
-    topicLabel.className = 'daily-kline-topic-label';
-    topicLabel.textContent = '族群';
-    topicRow.append(topicLabel, makeTopicCell(ticker, attributionOf(ticker)));
-    card.append(header, topicRow);
+    card.append(header);
+
+    if (!isUs) {
+        const topicRow = document.createElement('div');
+        topicRow.className = 'daily-kline-topic-row';
+        const topicLabel = document.createElement('span');
+        topicLabel.className = 'daily-kline-topic-label';
+        topicLabel.textContent = '族群';
+        topicRow.append(topicLabel, makeTopicCell(ticker, attributionOf(ticker)));
+        card.append(topicRow);
+    }
 
     if (klineError) {
         const message = document.createElement('p');
         message.className = 'daily-kline-empty';
-        message.textContent = '讀不到已驗證的還原權息日 K，請重新產生靜態網站。';
+        message.textContent = isUs
+            ? '尚無可用的美股日 K；請先將代號加入美股觀察清單並完成行情回補。'
+            : '讀不到已驗證的還原權息日 K，請重新產生靜態網站。';
         card.append(message);
     } else if (!klineData.has(ticker)) {
         const message = document.createElement('p');
@@ -9171,6 +9268,8 @@ function closeKLine(restoreFocus = true) {
     const previousAnchor = klineAnchor ?? indexKLineAnchor;
     expandedTicker = null;
     expandedKLineName = '';
+    expandedKLineMarket = '';
+    klineUseLatestDate = false;
     klineAnchor = null;
     klineError = '';
     expandedIndexMarket = null;
@@ -9207,8 +9306,10 @@ function refreshKLinePopover() {
 
     const anchor = [...document.querySelectorAll('.stock-name-button[data-ticker]')]
         .find(button => button.dataset.ticker === expandedTicker);
-    const row = current?.rows.find(candidate => candidate.ticker === expandedTicker);
-    const name = row?.name ?? nameByTicker.get(expandedTicker) ?? expandedKLineName;
+    const row = klineUseLatestDate
+        ? null
+        : current?.rows.find(candidate => candidate.ticker === expandedTicker);
+    const name = row?.name || expandedKLineName || nameByTicker.get(expandedTicker);
 
     if (!name || !anchor) {
         closeKLine(false);
@@ -9220,7 +9321,7 @@ function refreshKLinePopover() {
     setKLineButtonStates();
 }
 
-async function toggleKLine(ticker, name, anchor) {
+async function toggleKLine(ticker, name, anchor, options = {}) {
     if (expandedTicker === ticker) {
         closeKLine();
         return;
@@ -9233,6 +9334,8 @@ async function toggleKLine(ticker, name, anchor) {
     closeRevenueDetails(false);
     expandedTicker = ticker;
     expandedKLineName = name;
+    expandedKLineMarket = options.market ?? '';
+    klineUseLatestDate = options.latest === true;
     klineAnchor = anchor;
     klineError = '';
     setKLineButtonStates();
@@ -9246,7 +9349,7 @@ async function toggleKLine(ticker, name, anchor) {
 
     // 族群列表選「盤中」時，K 線的尾端也接最新 MIS 當日棒；抓不到時保留已驗證的
     // 三個月盤後日 K，而不是把整張圖判成失敗。
-    if (topicUsesIntradayData()) {
+    if (!klineUseLatestDate && topicUsesIntradayData()) {
         try {
             await loadTopicIntradayKLine(ticker);
         } catch {
@@ -9257,7 +9360,9 @@ async function toggleKLine(ticker, name, anchor) {
     if (expandedTicker === ticker) {
         renderKLinePopover(
             ticker,
-            nameByTicker.get(ticker) ?? expandedKLineName,
+            klineUseLatestDate
+                ? expandedKLineName
+                : nameByTicker.get(ticker) ?? expandedKLineName,
             klineAnchor);
     }
 }
