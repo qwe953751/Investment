@@ -22,6 +22,9 @@ alter table asset_cash_flows enable row level security;
 
 drop policy if exists "public read" on asset_cash_flows;
 drop policy if exists "public write" on asset_cash_flows;
+drop policy if exists "public insert" on asset_cash_flows;
+drop policy if exists "public update" on asset_cash_flows;
+drop policy if exists "public delete" on asset_cash_flows;
 drop policy if exists "writer all" on asset_cash_flows;
 
 create policy "public read" on asset_cash_flows
@@ -29,8 +32,15 @@ create policy "public read" on asset_cash_flows
 
 -- 見 db/019_assets.sql 檔頭說明：登入與 RLS 白名單尚未完成前，
 -- 資產頁沿用 anon 寫入的既有取捨。
-create policy "public write" on asset_cash_flows
-    for all to anon using (true) with check (true);
+-- 寫入依動作拆開，避免 for all 與 public read 在 select 上形成兩條 permissive policy。
+create policy "public insert" on asset_cash_flows
+    for insert to anon with check (true);
+
+create policy "public update" on asset_cash_flows
+    for update to anon using (true) with check (true);
+
+create policy "public delete" on asset_cash_flows
+    for delete to anon using (true);
 
 create policy "writer all" on asset_cash_flows
     for all to invest_writer using (true) with check (true);
