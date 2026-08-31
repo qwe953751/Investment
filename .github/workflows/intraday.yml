@@ -473,6 +473,23 @@ jobs:
 
           echo "manifest 還沒切到 CDN，等 CDN 出現快照後重發網站。"
 
+          # 這一棒的 hop 收工了沒。concurrency 是「整個 run」層級的鎖，只要這個 job
+          # 還在跑，run 就還算 in_progress，排隊中的下一棒就進不來。
+          #
+          # 2026-08-31 就是這樣卡住的：hop 在 08:30 判斷自己撐不完整場、提早交棒收工，
+          # 但這個 job 還要再等 CDN 五個半小時，於是下一棒從 08:30 一路 pending 到
+          # 10 點多，開盤後一個多小時完全沒有人在收集。
+          #
+          # 這個 job 的定位本來就是「跟著本棒一起活」，hop 死了它就沒有理由繼續佔著鎖。
+          hop_done() {
+              local status
+              status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" \
+                  --jq '[.jobs[] | select(.name == "hop") | .status] | first' 2>/dev/null)
+
+              # 查不到就當作還活著：查詢失敗是暫時性的，不該讓它提早放棄等 CDN。
+              [ "$status" = "completed" ]
+          }
+
           deadline=$(( $(date +%s) + WAIT_SECONDS ))
           found=0
 
@@ -482,6 +499,11 @@ jobs:
               if [ "$code" = "200" ]; then
                   echo "$(date '+%H:%M:%S') CDN 上已經有 latest.json。"
                   found=1
+                  break
+              fi
+
+              if hop_done; then
+                  echo "$(date '+%H:%M:%S') 本棒的 hop 已經收工，不再佔著 concurrency 鎖，讓下一棒進來。"
                   break
               fi
 
