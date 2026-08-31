@@ -1515,10 +1515,16 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("quantity === available * 1000", script, StringComparison.Ordinal);
         Assert.Contains("onlyMissingInferableQuantity", script, StringComparison.Ordinal);
         Assert.Contains("function assetOcrIdentityTickers(text, allowEnglishTickers, candidates = [])", script, StringComparison.Ordinal);
+        Assert.Contains("candidates.every(candidate =>", script, StringComparison.Ordinal);
+        Assert.Contains("fallbackParsed.rows.length === expectedRows", script, StringComparison.Ordinal);
+        Assert.Contains(".split(/[^A-Z0-9.-]+/)", script, StringComparison.Ordinal);
         Assert.Contains("/^(?:SHARES?|POSITIONS?|SYMBOL|TICKER|COST|TOTAL)$/", script, StringComparison.Ordinal);
         Assert.Contains("shares?\\b", script, StringComparison.Ordinal);
         Assert.Contains("const moneyAt = fields.includes('costPrice') && fields.includes('cost')", script, StringComparison.Ordinal);
         Assert.Contains("matchAll(/\\$\\s*[+−–—~-]?", script, StringComparison.Ordinal);
+        Assert.Contains("digits = digits.replace(/[.,]+$/, '');", script, StringComparison.Ordinal);
+        Assert.Contains("numericText.replace(leadingPair[1], String(repaired))", script, StringComparison.Ordinal);
+        Assert.Contains("candidates[index].ticker = '';", script, StringComparison.Ordinal);
         Assert.Contains("data?.identityText !== undefined && textRows.matchedHeader", script, StringComparison.Ordinal);
         Assert.Contains("{ field: 'quantityYesterday'", script, StringComparison.Ordinal);
         Assert.Contains("{ field: 'quantityBuy'", script, StringComparison.Ordinal);

@@ -5522,6 +5522,11 @@ function assetOcrNumber(text) {
         digits = digits.slice(leading[0].length);
     }
 
+    // 手機重新編碼後，金額右側的欄線／小數點偶爾會多辨成一個句點（例如
+    // `$355.07.`）。尾端分隔符不可能是有效小數的一部分，只移除尾端的逗號或
+    // 句點；中間的千分位與小數點仍交由下方既有規則判斷。
+    digits = digits.replace(/[.,]+$/, '');
+
     if (!/^[\d.,]+$/.test(digits) || !/\d/.test(digits)) {
         return null;
     }
@@ -6258,6 +6263,44 @@ function assetOcrIdentityTickers(text, allowEnglishTickers, candidates = []) {
         .map(line => line.trim())
         .filter(line => line !== '');
 
+    // 壓縮後的美股左欄可能只剩「圖示殘字＋代號」，灰色的 N shares 沒被讀到；
+    // 但主表仍有明確的 UNIT COST／TOTAL COST。只有每列都能在 0.1% 內由兩個成本
+    // 唯一反推正整數股數、而且左欄剛好得到同數量的唯一代號時，才接受這條列序。
+    // 每行取最後一個代號，避開 Intel 圖示被讀成 TAT 這類位於真正代號前的殘字。
+    if (allowEnglishTickers
+        && candidates.length >= 2
+        && candidates.every(candidate => {
+            const total = Number(candidate?.cost);
+            const unit = Number(candidate?.ocrUnitPrices?.costPrice);
+            const quantity = unit > 0 ? Math.round(total / unit) : 0;
+            return Number.isFinite(total)
+                && total > 0
+                && quantity > 0
+                && Math.abs(total - quantity * unit) <= Math.max(0.5, total * 0.001);
+        })) {
+        const ordered = [];
+        const orderedSeen = new Set();
+
+        for (const line of lines) {
+            // 以完整 token 判斷，避免 POSITIONS 被無邊界的通用 regex 截成 POSIT，
+            // 也保留 GE 這類兩字母股票。圖示殘字與真正 ticker 同列時仍取最後一個。
+            const matches = line.toUpperCase()
+                .split(/[^A-Z0-9.-]+/)
+                .filter(ticker => /^[A-Z]{2,5}(?:[.-][A-Z]{1,2})?$/.test(ticker))
+                .filter(ticker => !/^(?:SYM|COST|TOTAL|SHARE|UNIT|STOCK|ORDER|STATUS)$/.test(ticker));
+            const ticker = matches.at(-1) ?? '';
+
+            if (ticker !== '' && !orderedSeen.has(ticker)) {
+                orderedSeen.add(ticker);
+                ordered.push(ticker);
+            }
+        }
+
+        if (ordered.length === candidates.length) {
+            return ordered;
+        }
+    }
+
     for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index];
         const ticker = assetKnownTickerInText(line)
@@ -6503,6 +6546,11 @@ async function assetDraftRowsFromText(data) {
                 candidates[index].ticker = identity;
                 candidates[index].name = assetKnownStockName(identity);
             } else {
+                // 主 OCR 會向前／向後找相鄰代號；壓縮後身份補讀若只辨出近似名稱，
+                // 這個殘留代號很可能其實屬於下一列。先清空，再用「同日收盤價＋近似
+                // 名稱唯一命中」重新確認，避免把南電的數字錯配給下一列金居。
+                candidates[index].ticker = '';
+                candidates[index].name = '';
                 assetOcrResolveCloseWithIdentityHint(
                     candidates[index],
                     closeIndex,
@@ -6560,26 +6608,11 @@ function assetOcrTextDataLineCount(data) {
 }
 
 function assetOcrLegacyTaiwanHorizontalCandidates(data) {
-    const candidates = [];
+    const confirmed = [];
+    const inferred = [];
     const lines = String(data?.text ?? '').split(/\r?\n/);
 
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-        const line = lines[lineIndex];
-        // 舊版橫式台股明細的表頭容易被裁掉，但每列仍有「普通」、連續的股數與
-        // 可用股數、以及市值、成本、損益三個總額。至少兩列都符合才視為同一個明確版型，
-        // 不能把單一行剛好出現「普通」的說明文字拿來套模板。
-        const marker = line.indexOf('普通');
-
-        if (marker < 0) {
-            continue;
-        }
-
-        const values = assetOcrNumbersInText(line.slice(marker + '普通'.length));
-
-        if (values.length < 7) {
-            continue;
-        }
-
+    const candidateFrom = (lineIndex, values, nearbyName, ticker = '') => {
         let quantity = values[0];
         let available = values[1];
 
@@ -6602,6 +6635,63 @@ function assetOcrLegacyTaiwanHorizontalCandidates(data) {
         }
 
         if (!Number.isInteger(quantity) || quantity <= 0 || quantity !== available) {
+            return null;
+        }
+
+        return {
+            lineIndex,
+            draft: assetDraftRowFrom({
+                name: nearbyName,
+                quantity,
+                marketValue: values[3],
+                cost: values[5],
+                unrealized: values[6]
+            }),
+            // 主表數字裡的 1770／3540／3865 都可能長得像有效代號。只有相鄰名稱已由
+            // 完整名冊唯一反查時才保留 ticker；其餘仍由身份裁切按完整列序確認。
+            ticker
+        };
+    };
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        const line = lines[lineIndex];
+        // 舊版橫式台股明細的表頭容易被裁掉，但每列仍有「普通」、連續的股數與
+        // 可用股數、以及市值、成本、損益三個總額。至少兩列都符合才視為同一個明確版型，
+        // 不能把單一行剛好出現「普通」的說明文字拿來套模板。
+        const marker = line.indexOf('普通');
+
+        if (marker < 0) {
+            continue;
+        }
+
+        const numericText = line.slice(marker + '普通'.length);
+        let values = assetOcrNumbersInText(numericText);
+
+        // 壓縮後 55 偶爾變成 5S，通用數字解析器會略過它，下一個 55 就被誤當成
+        // 第一欄。只在「普通」後第一個混合字元可明確正規化成下一個整數時補回；
+        // 這裡不處理任意欄位，也不讓 S/B/O/I 的替換流入一般數字解析。
+        const leadingPair = /^\s*[^0-9A-Za-z]*([0-9SBOIl]{1,8})\s+([0-9]{1,8})(?=\s|[|])/i.exec(numericText);
+
+        if (leadingPair !== null && /[SBOIl]/i.test(leadingPair[1])) {
+            const repaired = Number(leadingPair[1]
+                .replace(/S/gi, '5')
+                .replace(/B/gi, '8')
+                .replace(/O/gi, '0')
+                .replace(/[Il]/g, '1'));
+            const paired = Number(leadingPair[2]);
+
+            if (Number.isInteger(repaired)
+                && repaired > 0
+                && repaired === paired) {
+                // 通用解析器會把 `5S` 中的 5 先取出；直接 unshift 會變成
+                // [55, 5, 55, ...]。先只替換已驗證的第一個混合 token 再重解析，
+                // 才會得到正確的 [55, 55, ...]。
+                values = assetOcrNumbersInText(
+                    numericText.replace(leadingPair[1], String(repaired)));
+            }
+        }
+
+        if (values.length < 7) {
             continue;
         }
 
@@ -6610,22 +6700,59 @@ function assetOcrLegacyTaiwanHorizontalCandidates(data) {
             ?.find(value => [...value].filter(character => /[\u3400-\u9FFF]/.test(character)).length >= 2
                 && !/(?:明細|普通|股數|成本|市值|損益|重新查詢)/.test(value))
             ?? '';
+        const candidate = candidateFrom(lineIndex, values, nearbyName);
 
-        candidates.push({
-            draft: assetDraftRowFrom({
-                name: nearbyName,
-                quantity,
-                marketValue: values[3],
-                cost: values[5],
-                unrealized: values[6]
-            }),
-            // 主表數字裡的 1770／3540／3865 都可能長得像有效代號。這個版型已要求
-            // 身份裁切筆數完全一致，所以不再採用主表猜出的代號。
-            ticker: ''
-        });
+        if (candidate !== null) {
+            confirmed.push(candidate);
+        }
     }
 
-    return candidates.length >= 2 ? candidates : [];
+    // 至少兩列含「普通」並通過成對股數與完整金額欄，才確認這是橫式台股持倉表。
+    // 確認後才補看漏掉「普通」的列；它仍必須有成對相同股數、至少七個欄位，且前一行
+    // 能由完整名冊唯一找到名稱／代號。這只修復聯發科那類單一標籤漏字，不接受任意數列。
+    if (confirmed.length < 2) {
+        return [];
+    }
+
+    const confirmedLines = new Set(confirmed.map(candidate => candidate.lineIndex));
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        if (confirmedLines.has(lineIndex) || lines[lineIndex].includes('普通')) {
+            continue;
+        }
+
+        const values = assetOcrNumbersInText(lines[lineIndex]);
+
+        if (values.length < 7 || values[0] !== values[1]) {
+            continue;
+        }
+
+        const previous = lines[lineIndex - 1] ?? '';
+        const nearbyTicker = assetKnownTickerInText(previous);
+        const nearbyName = assetKnownStockName(nearbyTicker)
+            || previous.match(/[\u3400-\u9FFF][\u3400-\u9FFF0-9A-Za-z-]*/g)
+                ?.find(value => [...value]
+                    .filter(character => /[\u3400-\u9FFF]/.test(character)).length >= 2
+                    && !/(?:明細|普通|股數|成本|市值|損益|重新查詢)/.test(value))
+            || '';
+
+        // 名冊可能因 OCR 在名稱旁混入英文字而無法直接反查；此處只把「相鄰中文名稱＋
+        // 成對股數＋完整七欄」加入候選，最終仍必須由左欄補讀取得完全相同筆數的代號，
+        // 否則整批拒絕，不會拿名稱猜 ticker。
+        if (nearbyName === '') {
+            continue;
+        }
+
+        const candidate = candidateFrom(lineIndex, values, nearbyName, nearbyTicker);
+
+        if (candidate !== null) {
+            inferred.push(candidate);
+        }
+    }
+
+    return [...confirmed, ...inferred]
+        .sort((left, right) => left.lineIndex - right.lineIndex)
+        .map(({ lineIndex: _, ...candidate }) => candidate);
 }
 
 function assetOcrLegacyTaiwanHorizontalDataLineCount(data) {
@@ -6798,6 +6925,11 @@ async function recognizeAssetScreenshot(file, index, total) {
 
         if (missingIdentities) {
             const legacyWhite = canvas.dataset.assetOcrLegacyWhite === 'true';
+            const textLines = String(data?.text ?? '')
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(line => line !== '');
+            const englishIdentity = assetOcrHeaderOrderFromText(textLines)?.allowEnglishTickers === true;
             identityCanvases = legacyWhite ? assetOcrLegacyWhiteIdentityCanvases(bitmap) : [];
             identityCanvas = legacyWhite ? null : assetOcrIdentityCanvas(bitmap);
             const identityTargets = legacyWhite ? identityCanvases : [identityCanvas].filter(Boolean);
@@ -6814,6 +6946,8 @@ async function recognizeAssetScreenshot(file, index, total) {
                     : `第 ${index} / ${total} 張：補讀股票名稱（仍在 10 秒內）…`);
                 // 一般左欄用 Sparse Text 避開格線；舊版白底頁已逐列裁掉格線，改用
                 // SINGLE_LINE 才能保住台虹、南電、金居這種只有兩個中文字的身份。
+                // 美股先用 Sparse Text：原圖能保住「代號＋N shares」的強身份證據；
+                // 壓縮圖若漏掉 shares，後面才用 SINGLE_BLOCK 做受限 fallback。
                 await assetOcrDeadline(
                     worker.setParameters({ tessedit_pageseg_mode: legacyWhite ? '7' : '11' }),
                     remainingBeforeIdentity);
@@ -6857,6 +6991,53 @@ async function recognizeAssetScreenshot(file, index, total) {
                         identityRows: legacyWhite ? identityRows : undefined
                     }),
                     remainingAfterIdentity);
+
+                // 壓縮後的美股灰字 shares 可能在 Sparse Text 消失。只有第一輪仍少列時
+                // 才以 SINGLE_BLOCK 重讀同一個左欄；assetOcrIdentityTickers 另要求代號
+                // 筆數完全一致，且每列總成本／單位成本可唯一反推正整數股數，避免靠
+                // 順序硬配造成整批錯位。fallback 也必須剛好補足 expectedRows 才採用。
+                if (englishIdentity
+                    && !legacyWhite
+                    && parsed.rows.length < expectedRows
+                    && identityCanvas !== null) {
+                    const remainingBeforeEnglishFallback = ASSET_OCR_TIMEOUT_MS
+                        - (performance.now() - startedAt);
+
+                    if (remainingBeforeEnglishFallback <= 0) {
+                        throw new Error('辨識超過 10 秒，已停止這張圖片。');
+                    }
+
+                    await assetOcrDeadline(
+                        worker.setParameters({ tessedit_pageseg_mode: '6' }),
+                        remainingBeforeEnglishFallback);
+                    const remainingForEnglishFallback = ASSET_OCR_TIMEOUT_MS
+                        - (performance.now() - startedAt);
+
+                    if (remainingForEnglishFallback <= 0) {
+                        throw new Error('辨識超過 10 秒，已停止這張圖片。');
+                    }
+
+                    const { data: fallbackIdentityData } = await assetOcrDeadline(
+                        worker.recognize(identityCanvas),
+                        remainingForEnglishFallback);
+                    const remainingAfterEnglishFallback = ASSET_OCR_TIMEOUT_MS
+                        - (performance.now() - startedAt);
+
+                    if (remainingAfterEnglishFallback <= 0) {
+                        throw new Error('辨識超過 10 秒，已停止這張圖片。');
+                    }
+
+                    const fallbackParsed = await assetOcrDeadline(
+                        assetDraftRowsFromOcr({
+                            ...data,
+                            identityText: fallbackIdentityData?.text ?? ''
+                        }),
+                        remainingAfterEnglishFallback);
+
+                    if (fallbackParsed.rows.length === expectedRows) {
+                        parsed = fallbackParsed;
+                    }
+                }
             }
         }
 
