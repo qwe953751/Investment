@@ -89,10 +89,12 @@
 
 ## 最新已發布版本
 
-本次「台股 K 線、手機圖片上傳與文件整理」的程式基準為 GitHub `main`（`6a8e1d3d`，2026-08-30）；
-修正後的 2026-08-28 日 K 快取為 `data`（`f62b3ec8`）。publish-only Action `33304959714` 成功，
-GitHub Pages manifest 版本為 `1788083401`（最新交易日 `2026/08/28`、產生時間 `2026-08-30 17:50`）。
-最高權限網站已更新至 `https://frank-invest.github.io/admin888/`，檢視網址為 `https://frank-invest.github.io/viewer/`。
+本次最新安全提交為 GitHub `main`（`faa1d731`，2026-08-31），包含券商 OCR 漏列修正、美股帳戶與
+USD/TWD 匯率支援。publish-only Action `33344764649` 成功，外部 Pages 的 `admin888/manifest.json`
+版本為 `1788136289`（最新交易日 `2026/08/28`、產生時間 `2026-08-31 08:31`）；公開網址已驗證與該版本
+一致。最高權限網站為 `https://frank-invest.github.io/admin888/`，檢視網址為
+`https://frank-invest.github.io/viewer/`。未核准的權限登入實驗（含 `db/029_permission_accounts.sql`）
+未提交，登入與 RLS 仍以 `TODO.md` 為準。
 這一版已完成並驗收：
 
 - 盤中、盤後旁新增「自訂」頁；可瀏覽單一交易日的完整上市櫃資料，不建立預設排行。
