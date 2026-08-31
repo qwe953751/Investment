@@ -8,6 +8,7 @@ using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.Database;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.CorporateActions;
+using Invest.Web.Infrastructure.MarketData.ForeignExchange;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
@@ -28,6 +29,7 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- intraday [--loop]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
 //   dotnet run --project src/Invest.Web -- sync     [保留交易日數]
+//   dotnet run --project src/Invest.Web -- sync-fx
 //   dotnet run --project src/Invest.Web -- verify
 //   dotnet run --project src/Invest.Web -- status  [來源] [輸出檔]
 //   dotnet run --project src/Invest.Web -- curve
@@ -39,7 +41,7 @@ using System.Text.Json.Serialization;
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "backfill-us" or "export" or "intraday" or "backfill-intraday-heat"
-        or "sync" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear";
+        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -77,6 +79,7 @@ builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
 
 builder.Services.AddHttpClient<AlphaVantageDailyQuoteClient>(
     client => client.Timeout = TimeSpan.FromSeconds(30));
@@ -93,6 +96,7 @@ builder.Services.AddSingleton<DailyQuoteSyncStore>();
 builder.Services.AddSingleton<HeartbeatStore>();
 builder.Services.AddSingleton<SiteAlertStore>();
 builder.Services.AddSingleton<SchemaMigrations>();
+builder.Services.AddSingleton<ExchangeRateStore>();
 builder.Services.AddTransient<MarketDataDownloader>();
 builder.Services.AddTransient<UsMarketDataDownloader>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
@@ -152,6 +156,12 @@ if (command is "backfill-intraday-heat")
 if (command is "sync")
 {
     await RunSyncAsync(app.Services, args);
+    return;
+}
+
+if (command is "sync-fx")
+{
+    await RunExchangeRateSyncAsync(app.Services);
     return;
 }
 
@@ -1007,6 +1017,24 @@ static async Task RunSyncAsync(IServiceProvider services, string[] args)
     Console.WriteLine(
         $"完成。新增 {report.InsertedDates} 個交易日（{report.InsertedRows:N0} 列）、"
         + $"清除逾期 {report.PrunedRows:N0} 列。");
+}
+
+static async Task RunExchangeRateSyncAsync(IServiceProvider services)
+{
+    using var scope = services.CreateScope();
+    var migrations = scope.ServiceProvider.GetRequiredService<SchemaMigrations>();
+
+    if (!SchemaMigrations.Report(await migrations.CheckAsync(), migrations.Directory))
+    {
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    var client = scope.ServiceProvider.GetRequiredService<TaifexExchangeRateClient>();
+    var store = scope.ServiceProvider.GetRequiredService<ExchangeRateStore>();
+    var rate = await client.GetLatestUsdTwdAsync();
+    await store.SaveAsync(rate);
+    Console.WriteLine($"USD/TWD {rate.RateDate:yyyy-MM-dd} = {rate.Rate:0.######}（{rate.Source}）");
 }
 
 /// <summary>

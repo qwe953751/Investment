@@ -231,6 +231,14 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- sync
 
+      # 匯率只需每日一筆，由伺服器端集中讀取期交所並保存；不要讓每台裝置各自打
+      # 外部 API。publish-only 不改資料庫，因此沿用上一次完整流程保存的匯率。
+      - name: 更新美元兌台幣參考匯率
+        if: ${{ !cancelled() && inputs.publish-only != true }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- sync-fx
+
       # 重大訊息跟營收不一樣，不能另外開一條流程慢慢跑：它要在下面的匯出之前進資料庫，
       # 當天的催化事件才會出現在當天發佈的網站上。
       #

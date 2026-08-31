@@ -2797,6 +2797,8 @@ function wireNotes() {
 const ASSET_OWNERS_TABLE = 'asset_owners';
 const ASSET_ACCOUNTS_TABLE = 'asset_accounts';
 const ASSET_HOLDINGS_TABLE = 'asset_holdings';
+const ASSET_EXCHANGE_RATES_TABLE = 'exchange_rates';
+const ASSET_LATEST_US_QUOTES_VIEW = 'latest_us_quotes';
 const ASSET_MARKETS = ['台股', '美股', '其他'];
 
 // 資產不像盤中報價那樣一直變，但兩台裝置各填一半時要看得到對方寫進去的東西。
@@ -2810,6 +2812,8 @@ let assetsLoadError = null;
 let assetsBusy = false;
 let lastAssetsLoadedAt = 0;
 let assetSelectedOwnerId = '';
+let assetLatestUsdTwdRate = null;
+let assetLatestUsQuotes = new Map();
 
 function assetNumber(value) {
     if (value === null || value === undefined || value === '') {
@@ -2821,20 +2825,59 @@ function assetNumber(value) {
 }
 
 // 沒有值就顯示「—」，不要顯示 0：截圖辨識不到那一欄，跟那一欄真的是零是兩回事。
-function assetCurrency(value) {
+function assetCurrency(value, currency = 'TWD') {
     const amount = assetNumber(value);
 
-    return amount === null
-        ? '—'
+    if (amount === null) {
+        return '—';
+    }
+
+    return currency === 'USD'
+        ? `US$${new Intl.NumberFormat('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        }).format(amount)}`
         : `NT$${new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(amount)}`;
 }
 
-function assetSignedCurrency(value) {
+function assetSignedCurrency(value, currency = 'TWD') {
     const amount = assetNumber(value);
 
     return amount === null
         ? '—'
-        : `${amount >= 0 ? '+' : '−'}${assetCurrency(Math.abs(amount))}`;
+        : `${amount >= 0 ? '+' : '−'}${assetCurrency(Math.abs(amount), currency)}`;
+}
+
+function assetCurrencyForMarket(value, market) {
+    return assetCurrency(value, market === '美股' ? 'USD' : 'TWD');
+}
+
+function assetSignedCurrencyForMarket(value, market) {
+    return assetSignedCurrency(value, market === '美股' ? 'USD' : 'TWD');
+}
+
+function assetNativeToTwd(value, market) {
+    const amount = assetNumber(value);
+
+    if (amount === null) {
+        return null;
+    }
+
+    if (market !== '美股' || amount === 0) {
+        return amount;
+    }
+
+    return assetLatestUsdTwdRate === null
+        ? null
+        : amount * assetLatestUsdTwdRate.rate;
+}
+
+function assetAccountTotalText(view) {
+    if (view.market !== '美股') {
+        return assetCurrency(view.totalValue);
+    }
+
+    return `${assetCurrency(view.twdTotalValue)}（${assetCurrency(view.totalValue, 'USD')}）`;
 }
 
 function assetQuantityText(value) {
@@ -2858,7 +2901,7 @@ function assetTimeText(value) {
 }
 
 async function loadAssets() {
-    const [owners, accounts, holdings] = await Promise.all([
+    const [owners, accounts, holdings, exchangeRates, usQuotes] = await Promise.all([
         fetchAllRows(
             ASSET_OWNERS_TABLE,
             'id,name,sort_order,updated_at',
@@ -2870,7 +2913,12 @@ async function loadAssets() {
         fetchAllRows(
             ASSET_HOLDINGS_TABLE,
             'id,account_id,ticker,name,quantity,cost,market_value,unrealized,source,sort_order,updated_at',
-            '&order=sort_order.asc,ticker.asc')
+            '&order=sort_order.asc,ticker.asc'),
+        fetchAssetLatestUsdTwdRate().catch(() => undefined),
+        fetchAllRows(
+            ASSET_LATEST_US_QUOTES_VIEW,
+            'symbol,name,trade_date,close_price',
+            '&order=symbol.asc').catch(() => undefined)
     ]);
 
     return {
@@ -2903,8 +2951,37 @@ async function loadAssets() {
             source: row.source === 'ocr' ? 'ocr' : 'manual',
             sortOrder: assetNumber(row.sort_order) ?? 0,
             updatedAt: String(row.updated_at ?? '')
-        }))
+        })),
+        exchangeRate: exchangeRates,
+        usQuotes
     };
+}
+
+async function fetchAssetLatestUsdTwdRate() {
+    const response = await fetch(
+        `${supabase.url}/rest/v1/${ASSET_EXCHANGE_RATES_TABLE}`
+            + '?select=rate_date,rate,source'
+            + '&base_currency=eq.USD&quote_currency=eq.TWD'
+            + '&order=rate_date.desc&limit=1',
+        {
+            headers: { apikey: supabase.anonKey },
+            cache: 'no-store'
+        });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
+    }
+
+    const row = (await response.json())[0];
+    const rate = assetNumber(row?.rate);
+
+    return rate !== null && rate > 0
+        ? {
+            date: String(row.rate_date ?? ''),
+            rate,
+            source: String(row.source ?? '')
+        }
+        : null;
 }
 
 // 失敗也記一次時間，否則連不上資料庫時每一格 tick 都會再試一遍。
@@ -2923,6 +3000,23 @@ async function refreshAssets() {
         assetOwners = data.owners;
         assetAccountRows = data.accounts;
         assetHoldingRows = data.holdings;
+
+        if (data.exchangeRate !== undefined) {
+            assetLatestUsdTwdRate = data.exchangeRate;
+        }
+
+        if (data.usQuotes !== undefined) {
+            assetLatestUsQuotes = new Map(data.usQuotes.map(row => [
+                String(row.symbol ?? '').trim().toUpperCase(),
+                {
+                    name: String(row.name ?? ''),
+                    tradeDate: String(row.trade_date ?? ''),
+                    close: assetNumber(row.close_price)
+                }
+            ]));
+            addAssetTickerNames([...assetLatestUsQuotes].map(([ticker, quote]) => [ticker, quote.name]));
+        }
+
         assetsLoadError = null;
     } catch {
         assetsLoadError = '讀不到資產資料，可能是資料庫連線問題；稍後會自動重試。';
@@ -2965,7 +3059,7 @@ function assetSum(rows, pick) {
     for (const row of rows) {
         const value = pick(row);
 
-        if (value !== null) {
+        if (value !== null && value !== undefined) {
             total += value;
             seen = true;
         }
@@ -2974,11 +3068,70 @@ function assetSum(rows, pick) {
     return seen ? total : null;
 }
 
+function assetSumComplete(rows, pick) {
+    let total = 0;
+
+    for (const row of rows) {
+        const value = pick(row);
+
+        if (value === null || value === undefined) {
+            return null;
+        }
+
+        total += value;
+    }
+
+    return rows.length === 0 ? null : total;
+}
+
+function assetHoldingForAccount(account, holding) {
+    if (account.market !== '美股') {
+        return holding;
+    }
+
+    const ticker = holding.ticker.trim().toUpperCase();
+    const quote = assetLatestUsQuotes.get(ticker);
+    const quantity = assetNumber(holding.quantity);
+
+    if (quote?.close === null || quote?.close === undefined || quantity === null) {
+        return {
+            ...holding,
+            name: holding.name || quote?.name || '',
+            marketValue: null,
+            unrealized: null,
+            quoteDate: quote?.tradeDate ?? ''
+        };
+    }
+
+    const marketValue = Math.round(quote.close * quantity * 100) / 100;
+
+    return {
+        ...holding,
+        name: holding.name || quote.name,
+        marketValue,
+        unrealized: holding.cost === null
+            ? null
+            : Math.round((marketValue - holding.cost) * 100) / 100,
+        quoteDate: quote.tradeDate
+    };
+}
+
 function assetAccountView(account) {
-    const holdings = assetHoldingsOf(account.id);
-    const cost = assetSum(holdings, holding => holding.cost);
-    const marketValue = assetSum(holdings, holding => holding.marketValue);
-    const unrealized = assetSum(holdings, holding => holding.unrealized);
+    const holdings = assetHoldingsOf(account.id).map(holding => assetHoldingForAccount(account, holding));
+    const sum = account.market === '美股' ? assetSumComplete : assetSum;
+    const cost = sum(holdings, holding => holding.cost);
+    const marketValue = sum(holdings, holding => holding.marketValue);
+    const statedUnrealized = sum(holdings, holding => holding.unrealized);
+    const unrealized = statedUnrealized ?? (marketValue !== null && cost !== null ? marketValue - cost : null);
+    const totalValue = holdings.length === 0
+        ? account.cash
+        : marketValue === null ? null : marketValue + account.cash;
+    const missingQuoteTickers = account.market === '美股'
+        ? holdings
+            .filter(holding => holding.quantity !== null
+                && !assetLatestUsQuotes.has(holding.ticker.trim().toUpperCase()))
+            .map(holding => holding.ticker.trim().toUpperCase())
+        : [];
 
     return {
         ...account,
@@ -2986,19 +3139,29 @@ function assetAccountView(account) {
         cost,
         marketValue,
         // 券商截圖多半直接給未實現損益；沒有那一欄的時候才用市值減成本補。
-        unrealized: unrealized ?? (marketValue !== null && cost !== null ? marketValue - cost : null),
-        totalValue: (marketValue ?? 0) + account.cash
+        unrealized,
+        totalValue,
+        twdCost: assetNativeToTwd(cost, account.market),
+        twdMarketValue: assetNativeToTwd(marketValue, account.market),
+        twdUnrealized: assetNativeToTwd(unrealized, account.market),
+        twdCash: assetNativeToTwd(account.cash, account.market),
+        twdRealized: assetNativeToTwd(account.realized, account.market),
+        twdTotalValue: assetNativeToTwd(totalValue, account.market),
+        missingQuoteTickers
     };
 }
 
 function assetPortfolioSummary(views) {
+    const holdingViews = views.filter(view => view.holdings.length > 0);
+
     return {
-        marketValue: assetSum(views, view => view.marketValue),
-        cost: assetSum(views, view => view.cost),
-        unrealized: assetSum(views, view => view.unrealized),
-        cash: views.reduce((sum, view) => sum + view.cash, 0),
-        realized: views.reduce((sum, view) => sum + view.realized, 0),
-        totalValue: views.reduce((sum, view) => sum + view.totalValue, 0)
+        marketValue: assetSumComplete(holdingViews, view => view.twdMarketValue),
+        cost: assetSumComplete(holdingViews, view => view.twdCost),
+        unrealized: assetSumComplete(holdingViews, view => view.twdUnrealized),
+        cash: views.length === 0 ? 0 : assetSumComplete(views, view => view.twdCash),
+        realized: views.length === 0 ? 0 : assetSumComplete(views, view => view.twdRealized),
+        totalValue: assetSumComplete(views, view => view.twdTotalValue) ?? (views.length === 0 ? 0 : null),
+        incomplete: views.some(view => view.twdTotalValue === null)
     };
 }
 
@@ -3079,11 +3242,11 @@ function assetButton(text, className = '', onClick = null) {
     return button;
 }
 
-function assetDelta(value, label = '') {
+function assetDelta(value, label = '', currency = 'TWD') {
     const delta = document.createElement('span');
     const amount = assetNumber(value);
     delta.className = `asset-preview-delta ${assetSignClass(value)}`.trim();
-    delta.textContent = amount === null ? `${label}—` : `${label}${assetSignedCurrency(amount)}`;
+    delta.textContent = amount === null ? `${label}—` : `${label}${assetSignedCurrency(amount, currency)}`;
     return delta;
 }
 
@@ -3169,11 +3332,11 @@ function makeAssetDonut(views, summary) {
     section.className = 'asset-dashboard-donut-card';
     const donut = document.createElement('div');
     donut.className = 'asset-dashboard-donut';
-    const total = summary.totalValue;
+    const total = summary.totalValue ?? 0;
     const colors = ['#3b82b9', '#63a8d6', '#8fc8e4', '#b8dced', '#d5eaf5'];
     let start = 0;
     const slices = views.map((view, index) => {
-        const share = total > 0 ? view.totalValue / total * 100 : 0;
+        const share = total > 0 ? (view.twdTotalValue ?? 0) / total * 100 : 0;
         const end = start + share;
         const slice = `${colors[index % colors.length]} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
         start = end;
@@ -3202,7 +3365,9 @@ function makeAssetDonut(views, summary) {
         const name = document.createElement('span');
         name.textContent = view.name || '（未命名帳戶）';
         const share = document.createElement('strong');
-        share.textContent = total > 0 ? `${(view.totalValue / total * 100).toFixed(1)}%` : '—';
+        share.textContent = total > 0 && view.twdTotalValue !== null
+            ? `${(view.twdTotalValue / total * 100).toFixed(1)}%`
+            : '—';
         item.append(dot, name, share);
         legend.append(item);
     }
@@ -3226,7 +3391,8 @@ function makeAssetSummaryMetrics(summary) {
     metrics.append(
         assetMetric('資產總值', assetCurrency(summary.totalValue),
             document.createTextNode(
-                `持倉 ${assetCurrency(summary.marketValue)} ＋ 現金 ${assetCurrency(summary.cash)}`)),
+                `持倉 ${assetCurrency(summary.marketValue)} ＋ 現金 ${assetCurrency(summary.cash)}`
+                    + (summary.incomplete ? '；有美股尚缺匯率或行情' : ''))),
         assetMetric('投入成本', assetCurrency(summary.cost),
             document.createTextNode('由每一筆持倉的成本加總')),
         assetMetric('未實現損益', assetSignedCurrency(summary.unrealized),
@@ -3407,8 +3573,9 @@ function makeAssetAccountEditor(owner) {
     });
 
     const marketLabel = document.createElement('label');
-    marketLabel.textContent = '市場';
+    marketLabel.textContent = '市場（決定幣別）';
     const marketSelect = document.createElement('select');
+    marketSelect.setAttribute('aria-label', '新增帳戶市場');
 
     for (const market of ASSET_MARKETS) {
         const option = document.createElement('option');
@@ -3508,10 +3675,10 @@ function makeAssetAccountTable(owner, views) {
 
         const cells = [
             { text: [view.market, view.broker].filter(text => text !== '').join('／') || '—' },
-            { text: assetCurrency(view.totalValue) },
-            { text: assetSignedCurrency(view.unrealized), className: assetSignClass(view.unrealized) },
-            { text: assetCurrency(view.cash) },
-            { text: assetSignedCurrency(view.realized), className: assetSignClass(view.realized) },
+            { text: assetAccountTotalText(view) },
+            { text: assetSignedCurrencyForMarket(view.unrealized, view.market), className: assetSignClass(view.unrealized) },
+            { text: assetCurrencyForMarket(view.cash, view.market) },
+            { text: assetSignedCurrencyForMarket(view.realized, view.market), className: assetSignClass(view.realized) },
             { text: assetTimeText(view.updatedAt) }
         ];
 
@@ -3572,9 +3739,31 @@ function makeAssetAccountSettings(view) {
     const form = document.createElement('form');
     form.className = 'asset-editor-form';
     const nameInput = assetField(form, 'text', '帳戶名稱', view.name, { required: true });
+    const marketLabel = document.createElement('label');
+    marketLabel.textContent = '市場（切換台股／美股幣別）';
+    const marketSelect = document.createElement('select');
+    marketSelect.setAttribute('aria-label', '帳戶市場');
+
+    for (const market of ASSET_MARKETS) {
+        const option = document.createElement('option');
+        option.value = market;
+        option.textContent = market;
+        marketSelect.append(option);
+    }
+
+    marketSelect.value = view.market || '台股';
+    marketLabel.append(marketSelect);
+    form.append(marketLabel);
     const brokerInput = assetField(form, 'text', '券商（可留空）', view.broker);
-    const cashInput = assetField(form, 'number', '現金餘額（NT$）', view.cash, { step: '1' });
-    const realizedInput = assetField(form, 'number', '累計已實現損益（NT$）', view.realized, { step: '1' });
+    const accountCurrency = view.market === '美股' ? 'USD' : 'TWD';
+    const amountStep = accountCurrency === 'USD' ? '0.01' : '1';
+    const cashInput = assetField(form, 'number', `現金餘額（${accountCurrency}）`, view.cash, { step: amountStep });
+    const realizedInput = assetField(
+        form,
+        'number',
+        `累計已實現損益（${accountCurrency}）`,
+        view.realized,
+        { step: amountStep });
     const actions = assetActions(form, '儲存帳戶資料', returnToAssetDashboard);
     actions.prepend(assetButton('刪除帳戶', 'asset-secondary-button', () => void removeAssetAccount(view)));
 
@@ -3591,6 +3780,7 @@ function makeAssetAccountSettings(view) {
             '儲存中…',
             () => assetUpdate(ASSET_ACCOUNTS_TABLE, view.id, {
                 name,
+                market: marketSelect.value,
                 broker: brokerInput.value.trim(),
                 cash: assetNumber(cashInput.value) ?? 0,
                 realized: assetNumber(realizedInput.value) ?? 0
@@ -3619,9 +3809,12 @@ function makeAssetHoldings(view) {
             { text: holding.ticker || '—' },
             { text: holding.name || '—' },
             { text: assetQuantityText(holding.quantity) },
-            { text: assetCurrency(holding.cost) },
-            { text: assetCurrency(holding.marketValue) },
-            { text: assetSignedCurrency(holding.unrealized), className: assetSignClass(holding.unrealized) },
+            { text: assetCurrencyForMarket(holding.cost, view.market) },
+            { text: assetCurrencyForMarket(holding.marketValue, view.market) },
+            {
+                text: assetSignedCurrencyForMarket(holding.unrealized, view.market),
+                className: assetSignClass(holding.unrealized)
+            },
             { text: holding.source === 'ocr' ? '截圖辨識' : '手動' }
         ];
 
@@ -3659,12 +3852,26 @@ function makeAssetHoldings(view) {
 function makeAssetHoldingEditor(view) {
     const panel = document.createElement('form');
     panel.className = 'asset-editor-form asset-holding-form';
-    const tickerInput = assetField(panel, 'text', '代號', '', { required: true, maxLength: 20, placeholder: '2330' });
-    const nameInput = assetField(panel, 'text', '名稱', '', { maxLength: 40, placeholder: '台積電' });
+    const isUs = view.market === '美股';
+    const currency = isUs ? 'USD' : 'TWD';
+    const tickerInput = assetField(panel, 'text', '代號', '', {
+        required: true,
+        maxLength: 20,
+        placeholder: isUs ? 'AAPL' : '2330'
+    });
+    const nameInput = assetField(panel, 'text', '名稱', '', {
+        maxLength: 40,
+        placeholder: isUs ? 'Apple Inc.' : '台積電'
+    });
     const quantityInput = assetField(panel, 'number', '股數', '');
-    const costInput = assetField(panel, 'number', '成本', '', { step: '1' });
-    const marketValueInput = assetField(panel, 'number', '市值', '', { step: '1' });
-    const unrealizedInput = assetField(panel, 'number', '未實現損益', '', { step: '1' });
+    const costInput = assetField(panel, 'number', `成本（${currency}）`, '', { step: isUs ? '0.01' : '1' });
+    const marketValueInput = assetField(panel, 'number', `市值（${currency}）`, '', { step: isUs ? '0.01' : '1' });
+    const unrealizedInput = assetField(
+        panel,
+        'number',
+        `未實現損益（${currency}）`,
+        '',
+        { step: isUs ? '0.01' : '1' });
     const actions = document.createElement('div');
     actions.className = 'asset-editor-actions';
     const submit = assetButton('＋ 新增持倉', 'asset-primary-button');
@@ -3785,6 +3992,7 @@ const ASSET_OCR_MAX_FILES = 20;
 const assetTickerByName = new Map();
 const assetNameByTicker = new Map();
 let assetTickerCatalogLoading = null;
+let assetTickerCatalogLoaded = false;
 const assetCloseIndexByDate = new Map();
 
 // 欄位標題的說法各家券商不同，這裡列見得到的。比對時取「最長的那個關鍵字」，
@@ -3905,14 +4113,14 @@ async function warmAssetOcrRecognition(worker) {
     }
 }
 
-function resetAssetOcrWorker() {
+async function resetAssetOcrWorker() {
     const worker = assetOcrWorker;
     assetOcrWorker = null;
 
     if (worker !== null) {
-        // timeout 時不可再等待卡住的 worker，否則「十秒上限」只是表面。終止在背景收尾，
-        // 下一張圖會建立乾淨的 worker；失敗也不影響手動校對流程。
-        void worker.terminate().catch(() => {});
+        // timeout 後要等瀏覽器真的終止舊 worker，下一張才能建立乾淨實例；只把 terminate
+        // 丟到背景會讓同一批的下一張和上一張殘留工作同時搶 CPU，造成連鎖逾時。
+        await worker.terminate().catch(() => {});
     }
 }
 
@@ -3970,16 +4178,69 @@ function assetOcrProgressText(message) {
 // 手機截圖的表格字很小，原尺寸丟進去常常整列漏掉；先放大再轉高對比灰階，
 // 數字的辨識率差很多。上限是怕大螢幕截圖放大之後把記憶體吃光。
 const ASSET_OCR_MIN_WIDTH = 1800;
-// 直式手機截圖若硬放大到 1,800px 寬，會產生約六百萬像素；在手機版 Tesseract 上
-// 光主表就可能吃完整個十秒額度，連需要時的身份補讀都來不及跑。400 萬像素保留約
-// 1,600px 寬的表格文字，足以分辨深色券商 App 的 360／350、17／15 等小字差異，
-// 又明顯低於原先六百萬像素的負擔。
+// 深色長列表需要約 400 萬像素才能保住最後一檔的小字；舊式白底券商頁裁掉大段空白後
+// 只需 220 萬像素。兩種版型共用同一預算會顧此失彼，因此明確拆開。
 const ASSET_OCR_MAX_PIXELS = 4_000_000;
+const ASSET_OCR_LEGACY_WHITE_MAX_PIXELS = 2_200_000;
 // 橫式券商明細的字本來就比手機長截圖大，又要接著讀一次左側身份欄；把整張表維持
 // 三百萬以上像素只會讓冷啟動時兩段 OCR 一起撞上十秒上限。這個預算仍保留 1,800px
 // 寬的可讀文字，並讓昂貴的第一段明顯縮小；身份裁切另有自己的較高密度預算。
 const ASSET_OCR_WIDE_MAX_PIXELS = 1_500_000;
 const ASSET_OCR_IDENTITY_MAX_PIXELS = 900_000;
+
+function assetOcrUsefulBottom(bitmap, fallbackBottom) {
+    if (bitmap.height <= bitmap.width * 1.2) {
+        return fallbackBottom;
+    }
+
+    // 舊式券商網頁常在三筆持倉後留二、三成純白空間，最底下卻又有導覽列。若照 98%
+    // 全部送進 OCR，白區與導覽列不只浪費一半時間，也會讓第一筆資料在版面分析時被漏掉。
+    // 只在中後段找到連續 8% 高度、98.5% 以上近白的長空白帶時裁切；一般深色長列表
+    // 沒有這種結構，不會套用這條規則。
+    const sample = document.createElement('canvas');
+    sample.width = Math.min(192, bitmap.width);
+    sample.height = Math.max(1, Math.round(bitmap.height * sample.width / bitmap.width));
+    const context = sample.getContext('2d', { willReadFrequently: true });
+    context.drawImage(bitmap, 0, 0, sample.width, sample.height);
+    const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
+    const scanStart = Math.floor(sample.height * 0.45);
+    const scanEnd = Math.min(
+        Math.floor(sample.height * 0.94),
+        Math.ceil(fallbackBottom / bitmap.height * sample.height));
+    const xStart = Math.floor(sample.width * 0.02);
+    const xEnd = Math.ceil(sample.width * 0.98);
+    const minimumRun = Math.max(2, Math.ceil(sample.height * 0.08));
+    let runStart = -1;
+
+    for (let y = scanStart; y < scanEnd; y += 1) {
+        let white = 0;
+
+        for (let x = xStart; x < xEnd; x += 1) {
+            const offset = (y * sample.width + x) * 4;
+            const gray = (pixels[offset] * 299 + pixels[offset + 1] * 587 + pixels[offset + 2] * 114) / 1000;
+            white += gray >= 248 ? 1 : 0;
+        }
+
+        const blank = white / Math.max(1, xEnd - xStart) >= 0.985;
+
+        if (blank && runStart < 0) {
+            runStart = y;
+        } else if (!blank) {
+            runStart = -1;
+        }
+
+        if (runStart >= 0 && y - runStart + 1 >= minimumRun) {
+            const bottom = Math.floor(runStart / sample.height * bitmap.height);
+            sample.width = 1;
+            sample.height = 1;
+            return Math.max(Math.floor(bitmap.height * 0.55), Math.min(fallbackBottom, bottom));
+        }
+    }
+
+    sample.width = 1;
+    sample.height = 1;
+    return fallbackBottom;
+}
 
 function assetOcrCanvasRegion(bitmap, sourceLeft, sourceTop, sourceWidth, sourceHeight, minimumWidth, maximumPixels) {
     const enlarge = Math.max(1, minimumWidth / sourceWidth);
@@ -4039,12 +4300,16 @@ function assetOcrCanvas(bitmap) {
     const sourceTop = portrait ? Math.floor(bitmap.height * 0.12) : 0;
     // 底部持倉在手機長截圖常剛好落在原本 94% 的裁切線後；保留到 98% 才不會只認到
     // 倒數第二筆。導覽列殘字沒有合格的代號與持倉欄位，後面的資料驗證會排除它。
-    const sourceBottom = portrait ? Math.ceil(bitmap.height * 0.98) : bitmap.height;
+    const fallbackBottom = portrait ? Math.ceil(bitmap.height * 0.98) : bitmap.height;
+    const sourceBottom = assetOcrUsefulBottom(bitmap, fallbackBottom);
     const sourceHeight = Math.max(1, sourceBottom - sourceTop);
-    const maximumPixels = portrait ? ASSET_OCR_MAX_PIXELS : ASSET_OCR_WIDE_MAX_PIXELS;
+    const legacyWhite = portrait && sourceBottom <= Math.floor(bitmap.height * 0.65);
+    const maximumPixels = portrait
+        ? legacyWhite ? ASSET_OCR_LEGACY_WHITE_MAX_PIXELS : ASSET_OCR_MAX_PIXELS
+        : ASSET_OCR_WIDE_MAX_PIXELS;
     // 原本用 Math.max(1, budget) 會讓過大的圖永遠不縮小，手機長截圖的 OCR 因此常超時。
     // 這裡允許縮小到像素預算內，但小圖仍會放大讓欄位標題可讀。
-    return assetOcrCanvasRegion(
+    const canvas = assetOcrCanvasRegion(
         bitmap,
         0,
         sourceTop,
@@ -4052,6 +4317,9 @@ function assetOcrCanvas(bitmap) {
         sourceHeight,
         ASSET_OCR_MIN_WIDTH,
         maximumPixels);
+    canvas.dataset.assetOcrTrimmed = String(sourceBottom < fallbackBottom);
+    canvas.dataset.assetOcrLegacyWhite = String(legacyWhite);
+    return canvas;
 }
 
 function assetOcrIdentityCanvas(bitmap) {
@@ -4060,7 +4328,8 @@ function assetOcrIdentityCanvas(bitmap) {
     const portrait = bitmap.height > bitmap.width * 1.2;
     const sourceLeft = portrait ? 0 : Math.floor(bitmap.width * 0.03);
     const sourceTop = portrait ? Math.floor(bitmap.height * 0.22) : Math.floor(bitmap.height * 0.12);
-    const sourceBottom = Math.ceil(bitmap.height * 0.98);
+    const fallbackBottom = Math.ceil(bitmap.height * 0.98);
+    const sourceBottom = assetOcrUsefulBottom(bitmap, fallbackBottom);
     const sourceWidth = portrait
         ? Math.max(1, Math.ceil(bitmap.width * 0.34))
         : Math.max(1, Math.ceil(bitmap.width * 0.28));
@@ -4074,6 +4343,24 @@ function assetOcrIdentityCanvas(bitmap) {
         sourceHeight,
         900,
         ASSET_OCR_IDENTITY_MAX_PIXELS);
+}
+
+function assetOcrLegacyWhiteIdentityCanvases(bitmap) {
+    // 舊版券商白底頁每頁三筆，藍色名稱被灰色格線包住時，整欄丟給 Tesseract 會只剩
+    // 「虹」或完全空白。只在前面已偵測到大型白色尾段時逐列裁掉格線再補讀名稱；
+    // 每個結果仍須由完整股票名冊唯一反查，沒有辨出名稱就不填代號。
+    const sourceLeft = Math.floor(bitmap.width * 0.135);
+    const sourceWidth = Math.max(1, Math.floor(bitmap.width * 0.10));
+    const sourceHeight = Math.max(1, Math.floor(bitmap.height * 0.04));
+
+    return [0, 1, 2].map(row => assetOcrCanvasRegion(
+        bitmap,
+        sourceLeft,
+        Math.floor(bitmap.height * (0.322 + row * 0.058)),
+        sourceWidth,
+        sourceHeight,
+        700,
+        300_000));
 }
 
 function assetOcrWordText(word) {
@@ -4471,7 +4758,11 @@ async function ensureAssetTickerCatalog() {
     addAssetTickerNames(nameByTicker);
     addAssetTickerNames(Object.entries(topicData?.stockNames ?? {}));
 
-    if (assetTickerByName.size > 0) {
+    if (Object.keys(topicData?.stockNames ?? {}).length > 0) {
+        assetTickerCatalogLoaded = true;
+    }
+
+    if (assetTickerCatalogLoaded) {
         return;
     }
 
@@ -4485,6 +4776,7 @@ async function ensureAssetTickerCatalog() {
 
             const data = await response.json();
             addAssetTickerNames(Object.entries(data.stockNames ?? {}));
+            assetTickerCatalogLoaded = true;
         })().finally(() => {
             assetTickerCatalogLoading = null;
         });
@@ -4550,6 +4842,96 @@ function assetOcrResolveUniqueClose(draft, closeIndex) {
     if (matches.length === 1 && matches[0].ticker !== '') {
         draft.ticker = matches[0].ticker;
         draft.name = matches[0].name;
+    }
+}
+
+function assetOcrApplyOfficialClose(draft, closeIndex) {
+    if (draft.ticker === '' || closeIndex.size === 0) {
+        return;
+    }
+
+    for (const [rawClose, matches] of closeIndex) {
+        const match = matches.find(candidate => candidate.ticker === draft.ticker);
+
+        if (match === undefined) {
+            continue;
+        }
+
+        const close = Number(rawClose);
+
+        if (Number.isFinite(close)) {
+            // 截圖有明確交易日且身份已安全確認時，以該日權威收盤價覆核 OCR 現價。
+            // 壓縮圖最常把 1,135 認成 3；成本仍保留券商截圖值，不從行情反推。
+            draft.ocrUnitPrices.marketPrice = close;
+            draft.name = match.name || draft.name;
+        }
+
+        return;
+    }
+}
+
+function assetOcrTextDistance(left, right) {
+    const source = [...left];
+    const target = [...right];
+    let previous = target.map((_, index) => index + 1);
+    previous.unshift(0);
+
+    for (let sourceIndex = 0; sourceIndex < source.length; sourceIndex += 1) {
+        const current = [sourceIndex + 1];
+
+        for (let targetIndex = 0; targetIndex < target.length; targetIndex += 1) {
+            current.push(Math.min(
+                current[targetIndex] + 1,
+                previous[targetIndex + 1] + 1,
+                previous[targetIndex] + (source[sourceIndex] === target[targetIndex] ? 0 : 1)));
+        }
+
+        previous = current;
+    }
+
+    return previous.at(-1) ?? 0;
+}
+
+function assetOcrResolveCloseWithIdentityHint(draft, closeIndex, identityText) {
+    if (draft.ticker !== '' || closeIndex.size === 0) {
+        return;
+    }
+
+    const price = Number(draft.ocrUnitPrices?.marketPrice);
+    const matches = Number.isFinite(price) ? closeIndex.get(price.toFixed(4)) ?? [] : [];
+    const hints = String(identityText ?? '').match(/[\u3400-\u9FFF]{2,}/g) ?? [];
+    const scores = [];
+
+    for (const match of matches) {
+        const name = assetNameKey(match.name);
+
+        for (const hint of hints) {
+            const normalizedHint = assetNameKey(hint);
+
+            if (normalizedHint.length < 2 || name === '') {
+                continue;
+            }
+
+            scores.push({
+                ...match,
+                distance: assetOcrTextDistance(normalizedHint, name),
+                limit: Math.max(1, Math.floor(Math.min(normalizedHint.length, name.length) * 0.34))
+            });
+        }
+    }
+
+    scores.sort((left, right) => left.distance - right.distance);
+    const best = scores[0];
+    const second = scores.find(score => score.ticker !== best?.ticker);
+
+    // 必須同時符合：當日同收盤價候選、最多一個字的 OCR 誤差、而且最佳答案唯一。
+    // 任何一項不成立就留白，不能用模糊名稱自行猜持倉。
+    if (best !== undefined
+        && best.ticker !== ''
+        && best.distance <= best.limit
+        && (second === undefined || second.distance > best.distance)) {
+        draft.ticker = best.ticker;
+        draft.name = best.name;
     }
 }
 
@@ -4701,7 +5083,21 @@ function assetKnownTickerInText(text) {
     return ticker;
 }
 
-function assetOcrIdentityTickers(text, allowEnglishTickers) {
+function assetOcrRowIdentityInText(text) {
+    const known = assetKnownTickerInText(text);
+
+    if (known !== '') {
+        return known;
+    }
+
+    // 相鄰行只能接受「行首明確代號」；不能再從整行任意找四碼。券商1 的現價 1,135
+    // 就在上一筆資料的下一行尾端，舊邏輯把它當 1135 股票代號，造成台虹金額錯綁南電。
+    const normalized = String(text ?? '').trim().toUpperCase();
+    const match = /^(\d{4}|0\d{5})(?=$|\s|[\u3400-\u9FFF])/.exec(normalized);
+    return match?.[1] ?? '';
+}
+
+function assetOcrIdentityTickers(text, allowEnglishTickers, candidates = []) {
     const tickers = [];
     const seen = new Set();
     const lines = String(text ?? '')
@@ -4713,16 +5109,34 @@ function assetOcrIdentityTickers(text, allowEnglishTickers) {
         const line = lines[index];
         const ticker = assetKnownTickerInText(line)
             || assetOcrTickerInText(line, allowEnglishTickers);
+
+        // 「14 shares」會被英文字規則截出 SHARE；它是股數單位，不能因剛好位於最後一筆
+        // 前面就套用下方的末列補救，否則真正的 INTC 會被擠掉。
+        if (allowEnglishTickers && /^(?:SHARES?|POSITIONS?|SYMBOL|TICKER|COST|TOTAL)$/.test(ticker)) {
+            continue;
+        }
+
         const following = lines.slice(index + 1, index + 3);
         const hasFollowingShares = following.some(next => /^\s*\d+[\d,，.]*\s+shares?\b/i.test(next));
         const startsNextTicker = /^[A-Z]{2,5}(?:[.-][A-Z]{1,2})?$/.test(following[0] ?? '');
+        const pairedCandidate = candidates[tickers.length];
+        const candidateCost = Number(pairedCandidate?.cost);
+        const candidateUnitCost = Number(pairedCandidate?.ocrUnitPrices?.costPrice);
+        const inferredShares = candidateUnitCost > 0 ? Math.round(candidateCost / candidateUnitCost) : 0;
+        const inferableLastTicker = candidates.length >= 2
+            && tickers.length === candidates.length - 1
+            && Number.isFinite(candidateCost)
+            && candidateCost > 0
+            && inferredShares > 0
+            && Math.abs(candidateCost - inferredShares * candidateUnitCost)
+                <= Math.max(0.5, candidateCost * 0.001);
 
         // 美股 App 左欄常有圓形圖示殘字；它後面不會緊接「N shares」。這個成對結構
         // 比「看起來像三到五個大寫字」可靠。若下一行已經是另一個代號，後面的 shares
         // 屬於下一檔，仍不可採信目前的殘字（例如 IDVL → AAPL → 14 shares）。
         if (allowEnglishTickers
             && /^[A-Z]{2,5}(?:[.-][A-Z]{1,2})?$/.test(ticker)
-            && (!hasFollowingShares || startsNextTicker)) {
+            && ((!hasFollowingShares && !inferableLastTicker) || startsNextTicker)) {
             continue;
         }
 
@@ -4787,8 +5201,25 @@ function assetOcrTextLineDraft(text, fields) {
     const numericText = moneyAt >= 0 ? String(text).slice(moneyAt) : String(text);
     // 表格橫線被辨成「~=-」後會黏在正數股數前面；只有這個明確殘字才移除負號，
     // 真正的 -271 仍維持負數，不能把融券／先賣後買持倉偷偷改成正數。
-    const values = assetOcrNumbersInText(
-        numericText.replace(/[~～]\s*=\s*[−–—-](?=\s*[\d０-９])/g, ''));
+    const moneyValues = moneyAt >= 0
+        ? [...numericText.matchAll(/\$\s*[+−–—~-]?[\d０-９][\d０-９,，.]*/g)]
+            .map(match => assetOcrNumber(match[0]))
+            .filter(value => value !== null)
+        : [];
+    const values = moneyValues.length > 0
+        ? moneyValues
+        : assetOcrNumbersInText(
+            numericText.replace(/[~～]\s*=\s*[−–—-](?=\s*[\d０-９])/g, ''));
+
+    // 舊版白底券商頁的每列左端都是「明細」按鈕。OCR 偶爾把按鈕框與殘字讀成 28，
+    // 形成「明細 28 … 69 443.12 30,575 417」。只有欄位恰為這四欄、數字也恰好多一個
+    // 時才移除第一個值；一般圖片仍維持數量不合就整列拒收的保護。
+    const legacyWhiteFields = fields.length === 4
+        && fields.every((field, index) => field === ['quantity', 'costPrice', 'cost', 'marketPrice'][index]);
+
+    if (legacyWhiteFields && /明細/.test(String(text)) && values.length === numericFields.length + 1) {
+        values.shift();
+    }
 
     if (ticker !== '') {
         draft.ticker = ticker;
@@ -4867,14 +5298,14 @@ async function assetDraftRowsFromText(data) {
         // 「代號＋shares」成對驗證。
         const ownTicker = header.allowEnglishTickers
             ? ''
-            : assetOcrTickerInText(lines[index], false);
+            : assetOcrRowIdentityInText(lines[index]);
         const previousTicker = header.allowEnglishTickers
             ? ''
-            : assetOcrTickerInText(lines[index - 1], false)
-                || assetOcrTickerInText(lines[index - 2], false);
+            : assetOcrRowIdentityInText(lines[index - 1])
+                || assetOcrRowIdentityInText(lines[index - 2]);
         const nextTicker = header.allowEnglishTickers
             ? ''
-            : assetOcrTickerInText(lines[index + 1], false);
+            : assetOcrRowIdentityInText(lines[index + 1]);
         // 資料列後緊接代號時，前兩行可能仍是上一檔的代號或雜訊；因此下一行要優先於
         // 前兩行，才不會把後續持倉誤併進前一檔。
         draft.ticker ||= ownTicker || nextTicker || previousTicker;
@@ -4883,7 +5314,10 @@ async function assetDraftRowsFromText(data) {
 
     // 左欄裁切只在主 OCR 已經看出「有幾筆數字資料、卻缺幾筆身份」時才取得。候選數量
     // 必須完全相同才依列序補身份；多一筆或少一筆都代表畫面可能有截斷或漏辨，不可硬配。
-    const identityTickers = assetOcrIdentityTickers(data?.identityText, header.allowEnglishTickers);
+    const identityTickers = assetOcrIdentityTickers(
+        data?.identityText,
+        header.allowEnglishTickers,
+        candidates);
 
     if (identityTickers.length === candidates.length) {
         for (let index = 0; index < candidates.length; index += 1) {
@@ -4897,12 +5331,29 @@ async function assetDraftRowsFromText(data) {
         }
     }
 
+    if (Array.isArray(data?.identityRows) && data.identityRows.length === candidates.length) {
+        for (let index = 0; index < candidates.length; index += 1) {
+            const identity = assetKnownTickerInText(data.identityRows[index]);
+
+            if (identity !== '') {
+                candidates[index].ticker = identity;
+                candidates[index].name = assetKnownStockName(identity);
+            } else {
+                assetOcrResolveCloseWithIdentityHint(
+                    candidates[index],
+                    closeIndex,
+                    data.identityRows[index]);
+            }
+        }
+    }
+
     const rows = [];
     const seen = new Set();
 
     for (const draft of candidates) {
         assetOcrResolveUniqueClose(draft, closeIndex);
         assetOcrResolveIdentity(draft);
+        assetOcrApplyOfficialClose(draft, closeIndex);
         const finalized = finalizeAssetOcrDraft(draft);
 
         if (assetOcrIsHoldingRow(finalized) && !seen.has(finalized.ticker)) {
@@ -5154,6 +5605,7 @@ async function recognizeAssetScreenshot(file, index, total) {
     const bitmap = await createImageBitmap(file);
     let canvas;
     let identityCanvas = null;
+    let identityCanvases = [];
 
     try {
         canvas = assetOcrCanvas(bitmap);
@@ -5177,37 +5629,45 @@ async function recognizeAssetScreenshot(file, index, total) {
         const expectedRows = Math.max(
             assetOcrTextDataLineCount(data),
             assetOcrLegacyTaiwanHorizontalDataLineCount(data));
-        const missingIdentities = expectedRows > parsed.rows.length;
+        const missingIdentities = expectedRows > parsed.rows.length
+            || canvas.dataset.assetOcrTrimmed === 'true';
 
         if (missingIdentities) {
-            identityCanvas = assetOcrIdentityCanvas(bitmap);
+            const legacyWhite = canvas.dataset.assetOcrLegacyWhite === 'true';
+            identityCanvases = legacyWhite ? assetOcrLegacyWhiteIdentityCanvases(bitmap) : [];
+            identityCanvas = legacyWhite ? null : assetOcrIdentityCanvas(bitmap);
+            const identityTargets = legacyWhite ? identityCanvases : [identityCanvas].filter(Boolean);
 
-            if (identityCanvas !== null) {
+            if (identityTargets.length > 0) {
                 const remainingBeforeIdentity = ASSET_OCR_TIMEOUT_MS - (performance.now() - startedAt);
 
                 if (remainingBeforeIdentity <= 0) {
                     throw new Error('辨識超過 10 秒，已停止這張圖片。');
                 }
 
-                setAssetOcrStatus(`第 ${index} / ${total} 張：補讀股票名稱（仍在 10 秒內）…`);
-                // 完整表格用 SINGLE_BLOCK 才會維持逐列關係；這個窄裁切只要讀散落名稱／代號，
-                // Sparse Text 能避開表格線與空白區把中文名稱併成亂碼。辨識完立刻切回 SINGLE_BLOCK，
-                // 不讓下一張的主辨識意外沿用此模式。
+                setAssetOcrStatus(legacyWhite
+                    ? `第 ${index} / ${total} 張：逐列補讀股票名稱（仍在 10 秒內）…`
+                    : `第 ${index} / ${total} 張：補讀股票名稱（仍在 10 秒內）…`);
+                // 一般左欄用 Sparse Text 避開格線；舊版白底頁已逐列裁掉格線，改用
+                // SINGLE_LINE 才能保住台虹、南電、金居這種只有兩個中文字的身份。
                 await assetOcrDeadline(
-                    worker.setParameters({ tessedit_pageseg_mode: '11' }),
+                    worker.setParameters({ tessedit_pageseg_mode: legacyWhite ? '7' : '11' }),
                     remainingBeforeIdentity);
-                let identityData;
+                const identityRows = [];
 
                 try {
-                    const remainingForIdentity = ASSET_OCR_TIMEOUT_MS - (performance.now() - startedAt);
+                    for (const target of identityTargets) {
+                        const remainingForIdentity = ASSET_OCR_TIMEOUT_MS - (performance.now() - startedAt);
 
-                    if (remainingForIdentity <= 0) {
-                        throw new Error('辨識超過 10 秒，已停止這張圖片。');
+                        if (remainingForIdentity <= 0) {
+                            throw new Error('辨識超過 10 秒，已停止這張圖片。');
+                        }
+
+                        const { data: identityData } = await assetOcrDeadline(
+                            worker.recognize(target),
+                            remainingForIdentity);
+                        identityRows.push(identityData?.text ?? '');
                     }
-
-                    ({ data: identityData } = await assetOcrDeadline(
-                        worker.recognize(identityCanvas),
-                        remainingForIdentity));
                 } finally {
                     const remainingBeforeReset = ASSET_OCR_TIMEOUT_MS - (performance.now() - startedAt);
 
@@ -5227,7 +5687,11 @@ async function recognizeAssetScreenshot(file, index, total) {
                 }
 
                 parsed = await assetOcrDeadline(
-                    assetDraftRowsFromOcr({ ...data, identityText: identityData?.text ?? '' }),
+                    assetDraftRowsFromOcr({
+                        ...data,
+                        identityText: identityRows.join('\n'),
+                        identityRows: legacyWhite ? identityRows : undefined
+                    }),
                     remainingAfterIdentity);
             }
         }
@@ -5240,7 +5704,7 @@ async function recognizeAssetScreenshot(file, index, total) {
         // worker 一旦逾時，不能再讓它偷偷佔著 CPU 跑到幾分鐘後；立刻丟掉，下次才不會
         // 接到上一張圖的殘留工作。
         if (String(error?.message ?? error).includes('10 秒')) {
-            resetAssetOcrWorker();
+            await resetAssetOcrWorker();
         }
 
         throw error;
@@ -5252,6 +5716,10 @@ async function recognizeAssetScreenshot(file, index, total) {
         if (identityCanvas !== null) {
             identityCanvas.width = 1;
             identityCanvas.height = 1;
+        }
+        for (const rowCanvas of identityCanvases) {
+            rowCanvas.width = 1;
+            rowCanvas.height = 1;
         }
 
         bitmap.close();
@@ -5284,7 +5752,38 @@ function formatAssetOcrDuration(milliseconds) {
     return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)} 秒`;
 }
 
-async function scanAssetScreenshots(files, accountId, holdings) {
+function assetEnrichOcrRows(rows, market) {
+    if (market !== '美股') {
+        return rows;
+    }
+
+    return rows.map(row => {
+        const ticker = String(row.ticker ?? '').trim().toUpperCase();
+        const quote = assetLatestUsQuotes.get(ticker);
+        const quantity = assetNumber(row.quantity);
+        const cost = assetNumber(row.cost);
+
+        if (quote?.close === null || quote?.close === undefined || quantity === null) {
+            return {
+                ...row,
+                ticker,
+                name: row.name || quote?.name || ''
+            };
+        }
+
+        const marketValue = Math.round(quote.close * quantity * 100) / 100;
+
+        return {
+            ...row,
+            ticker,
+            name: row.name || quote.name,
+            marketValue,
+            unrealized: cost === null ? row.unrealized : Math.round((marketValue - cost) * 100) / 100
+        };
+    });
+}
+
+async function scanAssetScreenshots(files, accountId, holdings, market) {
     discardAssetScreenshotDraft();
     assetScreenshotDraft = {
         accountId,
@@ -5330,7 +5829,7 @@ async function scanAssetScreenshots(files, accountId, holdings) {
             const result = await recognizeAssetScreenshot(file, zeroBasedIndex + 1, files.length);
             screenshot.status = `完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
             screenshot.elapsedMs = result.elapsedMs;
-            rows.push(...result.rows);
+            rows.push(...assetEnrichOcrRows(result.rows, market));
             matchedHeader ||= result.matchedHeader;
         } catch (error) {
             screenshot.status = '失敗';
@@ -5359,10 +5858,18 @@ async function scanAssetScreenshots(files, accountId, holdings) {
     }
 
     const prefix = `辨識出 ${assetScreenshotDraft.rows.length} 檔股票，請逐列核對再套用。`;
+    const missingUsQuotes = market === '美股'
+        ? assetScreenshotDraft.rows
+            .filter(row => row.quantity !== '' && !assetLatestUsQuotes.has(String(row.ticker).toUpperCase()))
+            .map(row => row.ticker)
+        : [];
     const headerNotice = matchedHeader
         ? ''
         : '部分圖片沒認出欄位標題，金額可能留空，請自行補齊。';
-    assetActionNotice = [prefix, headerNotice, ...failures].filter(text => text !== '').join(' ');
+    const quoteNotice = missingUsQuotes.length > 0
+        ? `美股 ${missingUsQuotes.join('、')} 尚無收盤行情，先保留股數與成本，市值不猜。`
+        : '';
+    assetActionNotice = [prefix, headerNotice, quoteNotice, ...failures].filter(text => text !== '').join(' ');
     renderAssetsDashboard();
 }
 
@@ -5374,6 +5881,9 @@ function makeAssetScreenshotFlow(view) {
     const description = document.createElement('p');
     description.textContent = '截圖只在這個瀏覽器裡辨識，不會上傳、也不會保存。'
         + '請把欄位標題那一行一起截進來，辨識才知道哪個數字是成本、哪個是市值。'
+        + (view.market === '美股'
+            ? '目前帳戶是美股，辨識金額以美元保存；最新收盤價與 USD/TWD 匯率由資料庫帶入。'
+            : '目前帳戶是台股，辨識金額以台幣保存。')
         + `一次可選 1–${ASSET_OCR_MAX_FILES} 張，依序辨識，每張最多 10 秒。`
         + '辨識結果必須逐列核對並勾選後才能套用；套用後會以下面這張表取代帳戶目前的全部持倉。';
     const inputLabel = document.createElement('label');
@@ -5407,7 +5917,7 @@ function makeAssetScreenshotFlow(view) {
             return;
         }
 
-        void scanAssetScreenshots(files, view.id, view.holdings);
+        void scanAssetScreenshots(files, view.id, view.holdings, view.market);
     });
     inputLabel.append(inputText, input);
     section.append(heading, description, inputLabel);
@@ -5563,22 +6073,41 @@ function makeAssetAccountDetails(owner, view) {
 
     const metrics = document.createElement('section');
     metrics.className = 'asset-preview-metrics asset-account-metrics';
+    const currency = view.market === '美股' ? 'USD' : 'TWD';
+    const totalDetail = view.market === '美股'
+        ? `持倉 ${assetCurrency(view.marketValue, 'USD')} ＋ 現金 ${assetCurrency(view.cash, 'USD')}`
+            + (assetLatestUsdTwdRate === null
+                ? '；尚無 USD/TWD 匯率'
+                : `；${assetLatestUsdTwdRate.date} 匯率 ${assetLatestUsdTwdRate.rate}`)
+        : `持倉 ${assetCurrency(view.marketValue)} ＋ 現金 ${assetCurrency(view.cash)}`;
     metrics.append(
-        assetMetric('資產總值', assetCurrency(view.totalValue),
-            document.createTextNode(
-                `持倉 ${assetCurrency(view.marketValue)} ＋ 現金 ${assetCurrency(view.cash)}`)),
-        assetMetric('投入成本', assetCurrency(view.cost),
+        assetMetric('資產總值', assetAccountTotalText(view),
+            document.createTextNode(totalDetail), view.market === '美股' ? 'asset-dual-currency' : ''),
+        assetMetric('投入成本', assetCurrency(view.cost, currency),
             document.createTextNode(`共 ${view.holdings.length} 筆持倉`)),
-        assetMetric('未實現損益', assetSignedCurrency(view.unrealized),
-            assetDelta(view.unrealized), assetSignClass(view.unrealized)),
-        assetMetric('累計已實現', assetSignedCurrency(view.realized),
-            assetDelta(view.realized), assetSignClass(view.realized)));
+        assetMetric('未實現損益', assetSignedCurrency(view.unrealized, currency),
+            assetDelta(view.unrealized, '', currency), assetSignClass(view.unrealized)),
+        assetMetric('累計已實現', assetSignedCurrency(view.realized, currency),
+            assetDelta(view.realized, '', currency), assetSignClass(view.realized)));
 
     const notice = makeAssetNotice();
     const lower = document.createElement('div');
     lower.className = 'asset-account-lower';
     lower.append(makeAssetHoldings(view), makeAssetScreenshotFlow(view));
     content.append(heading, metrics);
+
+    if (view.missingQuoteTickers.length > 0) {
+        const warning = document.createElement('p');
+        warning.className = 'asset-data-warning';
+        warning.textContent = `下列美股尚無資料庫收盤價：${view.missingQuoteTickers.join('、')}。`
+            + '為避免把成本誤當市值，資產總值暫顯示「—」。';
+        content.append(warning);
+    } else if (view.market === '美股' && assetLatestUsdTwdRate === null) {
+        const warning = document.createElement('p');
+        warning.className = 'asset-data-warning';
+        warning.textContent = '尚無 USD/TWD 匯率，美元持倉仍會顯示，但台幣資產總值暫顯示「—」。';
+        content.append(warning);
+    }
 
     if (notice !== null) {
         content.append(notice);

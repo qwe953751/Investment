@@ -992,9 +992,10 @@ public sealed class StaticKLineAssetTests
         Assert.DoesNotContain("market_value", accountsTable, StringComparison.Ordinal);
         Assert.DoesNotContain("unrealized", accountsTable, StringComparison.Ordinal);
 
-        Assert.Contains("const cost = assetSum(holdings, holding => holding.cost);", script, StringComparison.Ordinal);
-        Assert.Contains("const marketValue = assetSum(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
-        Assert.Contains("totalValue: (marketValue ?? 0) + account.cash", script, StringComparison.Ordinal);
+        Assert.Contains("const sum = account.market === '美股' ? assetSumComplete : assetSum;", script, StringComparison.Ordinal);
+        Assert.Contains("const cost = sum(holdings, holding => holding.cost);", script, StringComparison.Ordinal);
+        Assert.Contains("const marketValue = sum(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
+        Assert.Contains("marketValue === null ? null : marketValue + account.cash", script, StringComparison.Ordinal);
     }
 
     // 大標題不再叫「資產 Dashboard（瀏覽器樣板）」，整個靜態站也不該再有樣板字眼。
@@ -1362,7 +1363,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("function warmAssetOcrWorker()", script, StringComparison.Ordinal);
         Assert.Contains("function getAssetOcrWorker()", script, StringComparison.Ordinal);
         Assert.Contains("assetOcrDeadline(worker.recognize(canvas), remainingMs)", script, StringComparison.Ordinal);
-        Assert.Contains("resetAssetOcrWorker();", script, StringComparison.Ordinal);
+        Assert.Contains("await resetAssetOcrWorker();", script, StringComparison.Ordinal);
         Assert.Contains("assetOcrWorker === null", script, StringComparison.Ordinal);
         Assert.Contains("重新準備辨識引擎", script, StringComparison.Ordinal);
         Assert.Contains("每張最多 10 秒", script, StringComparison.Ordinal);
@@ -1375,7 +1376,7 @@ public sealed class StaticKLineAssetTests
 
         Assert.Contains("const ASSET_OCR_MAX_FILES = 20;", script, StringComparison.Ordinal);
         Assert.Contains("input.multiple = true;", script, StringComparison.Ordinal);
-        Assert.Contains("scanAssetScreenshots(files, view.id, view.holdings)", script, StringComparison.Ordinal);
+        Assert.Contains("scanAssetScreenshots(files, view.id, view.holdings, view.market)", script, StringComparison.Ordinal);
         Assert.Contains("'SYMBOL'", script, StringComparison.Ordinal);
         Assert.Contains("'TOTAL COST'", script, StringComparison.Ordinal);
         Assert.Contains("'SHARES'", script, StringComparison.Ordinal);
@@ -1397,23 +1398,54 @@ public sealed class StaticKLineAssetTests
 
         Assert.Contains("function assetOcrIdentityCanvas(bitmap)", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_OCR_MAX_PIXELS = 4_000_000;", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_OCR_LEGACY_WHITE_MAX_PIXELS = 2_200_000;", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_OCR_WIDE_MAX_PIXELS = 1_500_000;", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrUsefulBottom(bitmap, fallbackBottom)", script, StringComparison.Ordinal);
+        Assert.Contains("canvas.dataset.assetOcrTrimmed", script, StringComparison.Ordinal);
+        Assert.Contains("canvas.dataset.assetOcrLegacyWhite", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrLegacyWhiteIdentityCanvases(bitmap)", script, StringComparison.Ordinal);
         Assert.Contains("async function warmAssetOcrRecognition(worker)", script, StringComparison.Ordinal);
         Assert.Contains("await warmAssetOcrRecognition(worker);", script, StringComparison.Ordinal);
         Assert.Contains("tessedit_pageseg_mode: '6'", script, StringComparison.Ordinal);
-        Assert.Contains("tessedit_pageseg_mode: '11'", script, StringComparison.Ordinal);
+        Assert.Contains("legacyWhite ? '7' : '11'", script, StringComparison.Ordinal);
         Assert.Contains("function assetOcrLegacyTaiwanHorizontalCandidates(data)", script, StringComparison.Ordinal);
         Assert.Contains("const previousTicker = header.allowEnglishTickers", script, StringComparison.Ordinal);
-        Assert.Contains("assetOcrTickerInText(lines[index - 2], false)", script, StringComparison.Ordinal);
+        Assert.Contains("assetOcrRowIdentityInText(lines[index - 2])", script, StringComparison.Ordinal);
         Assert.Contains("draft.ticker ||= ownTicker || nextTicker || previousTicker;", script, StringComparison.Ordinal);
         Assert.Contains("'日餘額'", script, StringComparison.Ordinal);
+        Assert.Contains("let assetTickerCatalogLoaded = false;", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrRowIdentityInText(text)", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrApplyOfficialClose(draft, closeIndex)", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrResolveCloseWithIdentityHint(draft, closeIndex, identityText)", script, StringComparison.Ordinal);
         Assert.Contains("identityTickers.length !== candidates.length", script, StringComparison.Ordinal);
         Assert.Contains("candidate.ticker = identity;", script, StringComparison.Ordinal);
         Assert.Contains("quantity === available * 1000", script, StringComparison.Ordinal);
         Assert.Contains("onlyMissingInferableQuantity", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrIdentityTickers(text, allowEnglishTickers, candidates = [])", script, StringComparison.Ordinal);
+        Assert.Contains("/^(?:SHARES?|POSITIONS?|SYMBOL|TICKER|COST|TOTAL)$/", script, StringComparison.Ordinal);
         Assert.Contains("shares?\\b", script, StringComparison.Ordinal);
         Assert.Contains("const moneyAt = fields.includes('costPrice') && fields.includes('cost')", script, StringComparison.Ordinal);
+        Assert.Contains("matchAll(/\\$\\s*[+−–—~-]?", script, StringComparison.Ordinal);
         Assert.Contains("data?.identityText !== undefined && textRows.matchedHeader", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 美股帳戶使用美元且總值同時顯示台幣與美元()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const ASSET_EXCHANGE_RATES_TABLE = 'exchange_rates';", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_LATEST_US_QUOTES_VIEW = 'latest_us_quotes';", script, StringComparison.Ordinal);
+        Assert.Contains("function assetCurrencyForMarket(value, market)", script, StringComparison.Ordinal);
+        Assert.Contains("function assetAccountTotalText(view)", script, StringComparison.Ordinal);
+        Assert.Contains("market: marketSelect.value", script, StringComparison.Ordinal);
+        Assert.Contains("marketSelect.setAttribute('aria-label', '帳戶市場')", script, StringComparison.Ordinal);
+        Assert.Contains("assetEnrichOcrRows(result.rows, market)", script, StringComparison.Ordinal);
+        Assert.Contains("為避免把成本誤當市值", script, StringComparison.Ordinal);
+        Assert.Contains("marketValue: null", script, StringComparison.Ordinal);
+        Assert.Contains("views.length === 0 ? 0 : assetSumComplete(views, view => view.twdCash)", script, StringComparison.Ordinal);
+        Assert.Contains("holding.ticker.trim().toUpperCase()", script, StringComparison.Ordinal);
+        Assert.Contains("US$", script, StringComparison.Ordinal);
     }
 
     /// <summary>

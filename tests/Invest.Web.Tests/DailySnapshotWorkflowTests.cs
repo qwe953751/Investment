@@ -36,6 +36,17 @@ public sealed class DailySnapshotWorkflowTests
         Assert.Contains(".conclusion == \"success\"", workflow, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 完整盤後流程會更新匯率而純發布不會寫資料庫()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        Assert.Contains("更新美元兌台幣參考匯率", workflow, StringComparison.Ordinal);
+        Assert.Contains("-- sync-fx", workflow, StringComparison.Ordinal);
+        Assert.Contains("inputs.publish-only != true", workflow, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)

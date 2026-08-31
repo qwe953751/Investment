@@ -1283,6 +1283,24 @@ body {
     white-space: nowrap;
 }
 
+.asset-preview-metric-value.asset-dual-currency {
+    font-size: 18px;
+    line-height: 1.35;
+    text-overflow: clip;
+    white-space: normal;
+}
+
+.asset-data-warning {
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid #f4c790;
+    border-radius: 8px;
+    background: #fff8eb;
+    color: #8a4b08;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
 .asset-preview-delta {
     font-variant-numeric: tabular-nums;
 }
