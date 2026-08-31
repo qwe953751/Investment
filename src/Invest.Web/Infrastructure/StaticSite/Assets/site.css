@@ -93,6 +93,86 @@ body {
     background: #f7f1ff;
 }
 
+/* 登入列：跟檢視切換分開放一排，隨時看得到目前權限。 */
+.access-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: #fafafa;
+    font-size: 13px;
+    color: #555;
+}
+
+.access-bar-tier {
+    padding: 3px 10px;
+    border: 1px solid #9db7d8;
+    border-radius: 999px;
+    color: #24558d;
+    background: #eef6ff;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.access-bar-tier.access-viewer {
+    border-color: #c8b4e8;
+    color: #644399;
+    background: #f7f1ff;
+}
+
+.access-bar-tier.access-monitor {
+    border-color: #a6d3b5;
+    color: #1f7a45;
+    background: #eefaf1;
+}
+
+.access-bar-tier.access-admin {
+    border-color: #f0c48a;
+    color: #a35c00;
+    background: #fff6ea;
+}
+
+#access-bar-login-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#access-bar-login-form input[type="password"] {
+    width: 120px;
+    padding: 6px 10px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 13px;
+}
+
+#access-bar-login-form button,
+.access-bar-logout {
+    padding: 6px 14px;
+    border: 1px solid #aaa;
+    border-radius: 6px;
+    background: white;
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+#access-bar-login-form button:hover,
+.access-bar-logout:hover {
+    background: #f0f0f0;
+}
+
+.access-bar-error {
+    color: #b3261e;
+    font-size: 12px;
+}
+
 /* 自動流程的異常鈴鐺。沒有任何紀錄時整塊藏起來，
    讓「一切正常」的畫面跟現在完全一樣。 */
 .alert-bell {
@@ -3524,6 +3604,20 @@ td.stock-name.stock-name-change-down {
         flex: 1 1 0;
         padding-right: 10px;
         padding-left: 10px;
+    }
+
+    .access-bar {
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    #access-bar-login-form {
+        width: 100%;
+    }
+
+    #access-bar-login-form input[type="password"] {
+        flex: 1 1 auto;
+        width: auto;
     }
 
     .notes-toolbar {

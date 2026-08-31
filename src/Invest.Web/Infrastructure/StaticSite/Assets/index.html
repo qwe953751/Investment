@@ -11,6 +11,16 @@
 <body>
 <div class="ranking-page">
     <header class="page-header">
+        <div class="access-bar" id="access-bar">
+            <span>目前權限：</span>
+            <span class="access-bar-tier" id="access-bar-tier"></span>
+            <form id="access-bar-login-form" data-hint="不登入預設為訪客；監控者與最高權限需要密碼登入，登入過的裝置之後會自動恢復。">
+                <input type="password" id="access-bar-password" placeholder="密碼" autocomplete="current-password" />
+                <button type="submit">登入</button>
+            </form>
+            <button type="button" class="access-bar-logout" id="access-bar-logout" hidden>登出</button>
+            <span class="access-bar-error" id="access-bar-error" hidden></span>
+        </div>
         <div class="page-title">
             <h1 id="page-heading">個股成交值排行</h1>
             <button type="button" class="refresh-button" id="refresh"

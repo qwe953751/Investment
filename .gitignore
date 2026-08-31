@@ -512,3 +512,8 @@ data/
 # OCR 測試用的券商截圖。這個 repo 是公開的，持倉截圖進版控等於把資產公開，
 # 而且 git history 刪不乾淨。放在本機就好。
 實驗檔案/
+
+# 權限帳號的建表 SQL（筆記 #37）：內容用明碼密碼呼叫 crypt()，這個 repo 是公開的，
+# 進 git history 就洗不掉了。套用方式見 memory reference_supabase_ddl，檔案本身
+# 留在本機、用 Management API 直接套用，不進版控。
+db/029_permission_accounts.sql

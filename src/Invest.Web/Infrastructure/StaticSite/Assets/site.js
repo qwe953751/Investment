@@ -48,6 +48,8 @@ const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.locatio
     && new URLSearchParams(window.location.search).get('local-revenue-preview') === '1';
 const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
 const VIEW_QUERY = new URLSearchParams(window.location.search).get('view');
+// 長者友善連結：網址帶 ?key=密碼，開頁就自動登入，不用打字。
+const AUTOLOGIN_QUERY = new URLSearchParams(window.location.search).get('key');
 const ACCESS_PATH = window.location.pathname.split('/').filter(Boolean).at(-1);
 const SITE_HOST = window.location.hostname.toLowerCase();
 const ADMIN_HOST = 'app.admin.frank-investment.com';
@@ -57,12 +59,28 @@ const DEPLOYED_ACCESS = SITE_HOST === VIEWER_HOST
     : SITE_HOST === ADMIN_HOST
         ? 'admin'
         : null;
-const SITE_ACCESS = DEPLOYED_ACCESS
+// 網址決定的下限，維持原本的行為完全不變：admin888／viewer 這兩個網址現在怎麼運作，
+// 之後還是怎麼運作。權限功能（筆記 #37）是疊上去的——登入只會把權限往上加，
+// 不會蓋掉網址原本給的下限。等權限功能驗證完，才會考慮收掉這一段。
+const URL_ACCESS = DEPLOYED_ACCESS
     ?? (ACCESS_QUERY === 'viewer' || ACCESS_PATH === 'viewer' ? 'viewer' : 'admin');
-// 資產是個人資料工作區，只在最高權限網址出現；檢視權限連頁籤都不給。
-const ASSET_DASHBOARD_ENABLED = SITE_ACCESS !== 'viewer';
+const ACCESS_RANK = { viewer: 0, monitor: 1, admin: 2 };
+const ACCESS_TIER_TEXT = { viewer: '訪客', monitor: '監控者', admin: '最高權限' };
+// 登入拿到的層級；null 代表沒登入（訪客）。跟 URL_ACCESS 各自獨立，
+// 實際生效的權限（SITE_ACCESS）取兩者較高的一個，見 applyEffectiveAccess()。
+let loginTier = null;
+let SITE_ACCESS = URL_ACCESS;
+// 資產是個人資料工作區，只有最高權限（admin888 網址，或登入最高權限帳號）才給。
+let ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';
 const ACCESS_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && (ACCESS_QUERY === 'admin' || ACCESS_QUERY === 'viewer');
+
+function applyEffectiveAccess() {
+    SITE_ACCESS = loginTier !== null && ACCESS_RANK[loginTier] > ACCESS_RANK[URL_ACCESS]
+        ? loginTier
+        : URL_ACCESS;
+    ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';
+}
 
 // 檢視權限的泡泡只開放表格／列表表頭，而且只說明「這欄怎麼看」。
 // 公式與資料來源細節留在最高權限，避免訪客在每個欄位上看到過長、容易誤讀的說明。
@@ -95,7 +113,7 @@ const VIEWER_TABLE_HEADER_HINTS = {
 };
 
 function tableHeaderHint(key, fallback) {
-    return SITE_ACCESS === 'viewer'
+    return SITE_ACCESS !== 'admin'
         ? (VIEWER_TABLE_HEADER_HINTS[key] ?? '顯示這一欄的資料。')
         : fallback;
 }
@@ -215,15 +233,15 @@ const CUSTOM_DATA_SOURCES = [
     { key: 'daily', text: '盤後', hint: '瀏覽指定交易日的收盤資料；可以使用交易日選擇器。' }
 ];
 
-// 筆記與資產都是個人工作區，最高權限才顯示；檢視權限只保留公開行情頁。
+// 筆記與資產都是個人工作區，最高權限才顯示（admin888 網址，或登入最高權限帳號）。
 const availableViews = () => {
     const workspaceViews = ASSET_DASHBOARD_ENABLED
         ? VIEWS
         : VIEWS.filter(view => view.key !== 'assets');
 
-    return SITE_ACCESS === 'viewer'
-        ? workspaceViews.filter(view => view.key !== 'notes' && view.key !== 'assets')
-        : workspaceViews;
+    return SITE_ACCESS === 'admin'
+        ? workspaceViews
+        : workspaceViews.filter(view => view.key !== 'notes' && view.key !== 'assets');
 };
 
 // 族群檢視底下的四個分頁。熱度排行是主畫面，其餘三個是它的來源與維護紀錄。
@@ -234,11 +252,19 @@ const TOPIC_TABS = [
     { key: 'edits', text: '人工編輯', hint: '直接改族群與個股的分類，改的東西下一次更新時套用；也列出還等著你拍板的合併、歧義與暫掛。' }
 ];
 
-// 檢視權限保留族群入口，但只給已整理好的熱度排行；來源樹、事件與人工編輯
-// 仍屬最高權限。這是靜態站的導覽切換，不等於登入驗證或資料安全邊界。
-const availableTopicTabs = () => SITE_ACCESS === 'viewer'
-    ? TOPIC_TABS.filter(tab => tab.key === 'heat')
-    : TOPIC_TABS;
+// 訪客只保留已整理好的熱度排行；監控者多族群列表／催化事件；人工編輯仍是最高權限。
+// 這是靜態站的導覽切換，不等於登入驗證或資料安全邊界。
+const availableTopicTabs = () => {
+    if (SITE_ACCESS === 'admin') {
+        return TOPIC_TABS;
+    }
+
+    if (SITE_ACCESS === 'monitor') {
+        return TOPIC_TABS.filter(tab => tab.key !== 'edits');
+    }
+
+    return TOPIC_TABS.filter(tab => tab.key === 'heat');
+};
 
 // 盤中頁的更新週期與收集器共用 manifest 裡的 CollectionSchedule。
 // 舊版 manifest 沒有這欄時才退回目前的 2 分鐘，避免前端失去更新能力。
@@ -1671,6 +1697,157 @@ function renderAccessBadge() {
         : '本機預覽：可使用目前網站的所有頁籤與族群功能。';
 }
 
+// 筆記 #37：登入列。跟網址決定的下限（URL_ACCESS）各自獨立，登入只會把權限往上加，
+// 不會蓋掉網址原本給的下限——見檔案開頭 applyEffectiveAccess() 的說明。
+// 帳號固定兩組、密碼寫在 Supabase Auth 裡，這裡不判斷帳號名稱，兩組都試一次密碼即可。
+const ACCESS_TIER_ACCOUNTS = [
+    { email: 'admin@investment.local', tier: 'admin' },
+    { email: 'monitor@investment.local', tier: 'monitor' }
+];
+const AUTH_STORAGE_KEY = 'invest.auth';
+
+async function authRequest(grantType, body) {
+    if (supabase === null) {
+        return null;
+    }
+
+    try {
+        const response = await fetch(`${supabase.url}/auth/v1/token?grant_type=${grantType}`, {
+            method: 'POST',
+            headers: { apikey: supabase.anonKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        return response.ok ? response.json() : null;
+    } catch {
+        return null;
+    }
+}
+
+function saveAuthSession(session, tier) {
+    try {
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ refreshToken: session.refresh_token, tier }));
+    } catch {
+    }
+}
+
+function clearAuthSession() {
+    try {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+    } catch {
+    }
+}
+
+async function loginWithPassword(password) {
+    for (const account of ACCESS_TIER_ACCOUNTS) {
+        const session = await authRequest('password', { email: account.email, password });
+
+        if (session !== null) {
+            loginTier = account.tier;
+            saveAuthSession(session, account.tier);
+            applyEffectiveAccess();
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function logout() {
+    loginTier = null;
+    clearAuthSession();
+    applyEffectiveAccess();
+}
+
+// 同裝置登入過就自動恢復，靠 refresh token 換一組新的 session，不用再輸入密碼。
+async function restoreSession() {
+    let stored;
+
+    try {
+        stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY));
+    } catch {
+        return;
+    }
+
+    if (stored === null || typeof stored !== 'object' || !stored.refreshToken || !stored.tier) {
+        return;
+    }
+
+    const session = await authRequest('refresh_token', { refresh_token: stored.refreshToken });
+
+    if (session === null) {
+        clearAuthSession();
+        return;
+    }
+
+    loginTier = stored.tier;
+    saveAuthSession(session, stored.tier);
+    applyEffectiveAccess();
+}
+
+function renderAccessBar() {
+    const tierLabel = el('access-bar-tier');
+
+    if (!tierLabel) {
+        return;
+    }
+
+    tierLabel.textContent = ACCESS_TIER_TEXT[SITE_ACCESS] ?? SITE_ACCESS;
+    tierLabel.className = `access-bar-tier access-${SITE_ACCESS}`;
+
+    const loggedIn = loginTier !== null;
+    el('access-bar-login-form').hidden = loggedIn;
+    el('access-bar-logout').hidden = !loggedIn;
+}
+
+// 權限一變（登入或登出），目前頁籤如果已經不在允許範圍內就退回預設，再重畫一次篩選與資料。
+function afterAccessChange() {
+    if (!availableViews().some(view => view.key === state.view)) {
+        state.view = 'daily';
+    }
+
+    renderFilters();
+    load();
+}
+
+function wireAccessBar() {
+    const form = el('access-bar-login-form');
+    const passwordInput = el('access-bar-password');
+    const errorLabel = el('access-bar-error');
+    const logoutButton = el('access-bar-logout');
+
+    if (!form) {
+        return;
+    }
+
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        const password = passwordInput.value;
+
+        if (password === '') {
+            return;
+        }
+
+        errorLabel.hidden = true;
+        const ok = await loginWithPassword(password);
+        passwordInput.value = '';
+
+        if (!ok) {
+            errorLabel.textContent = '密碼錯誤。';
+            errorLabel.hidden = false;
+            return;
+        }
+
+        afterAccessChange();
+    });
+
+    logoutButton.addEventListener('click', () => {
+        logout();
+        errorLabel.hidden = true;
+        afterAccessChange();
+    });
+}
+
 // 盤後專用的篩選條件（期間、交易日、模式、門檻）在盤中沒有意義，直接收起來，
 // 留著反而會讓人以為切到盤中還在篩什麼。市場與鎖定兩邊都適用。
 function applyViewVisibility() {
@@ -1719,6 +1896,7 @@ function renderFilters() {
     el('page-heading').textContent = PAGE_HEADINGS[state.view] ?? '個股成交值排行';
     document.title = el('page-heading').textContent;
     renderAccessBadge();
+    renderAccessBar();
 
     renderOptions(
         'view-options',
@@ -2067,8 +2245,8 @@ function applyStoredSettings() {
         state.topicTab = stored.topicTab;
     }
 
-    if (SITE_ACCESS === 'viewer') {
-        state.topicTab = 'heat';
+    if (!availableTopicTabs().some(tab => tab.key === state.topicTab)) {
+        state.topicTab = availableTopicTabs()[0].key;
     }
 
     // 族群的期間清單是 topics.json 決定的，這時候還沒讀進來，
@@ -16166,6 +16344,25 @@ async function start() {
     alteredTrading = new Set(manifest.alteredTrading ?? []);
     state.date = dates[dates.length - 1];
 
+    // 同裝置登入過就自動恢復，一定要在套用上次選的頁籤之前完成，
+    // 不然頁籤的可用性判斷（availableViews／availableTopicTabs）會用到舊的權限。
+    await restoreSession();
+
+    // 長者友善連結：跟手動輸入密碼走同一套驗證，只是省了打字。安全層級跟
+    // admin888 網址本身一樣，只是網址上的一段字串，不是真正的存取控制。
+    // 已經用 refresh token 恢復過登入就不用再試一次。
+    if (AUTOLOGIN_QUERY && loginTier === null) {
+        await loginWithPassword(AUTOLOGIN_QUERY);
+    }
+
+    // 用過就把 key 從網址列拿掉：分享畫面截圖、瀏覽器歷史記錄都不會留下明文密碼。
+    // 之後這台裝置靠 restoreSession() 的 refresh token 記得住，不用再帶著這段網址。
+    if (AUTOLOGIN_QUERY) {
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.searchParams.delete('key');
+        window.history.replaceState(null, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+    }
+
     // 預設值都擺好之後才套上次選的，這樣驗不過的項目自然留在預設。
     applyStoredSettings();
 
@@ -16185,6 +16382,7 @@ async function start() {
     renderSnapshotNote();
     wireRefreshButton();
     wireAlertBell();
+    wireAccessBar();
     wireDevicePresence();
     startDevicePresenceHeartbeat();
     configureKLinePopover();
