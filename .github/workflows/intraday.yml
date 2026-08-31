@@ -179,7 +179,7 @@ jobs:
               # 這些 return 一律帶 0：這個函式是在 while 迴圈裡裸呼叫的，
               # 「現在不必叫快照」是正常結果，不是錯誤。
               [ "$snapshot_kicked" -eq 0 ] || return 0
-              local d h since last
+              local d h since run_id
               d=$(date +%u); h=$(date +%H%M)
               [ "$d" -le 5 ] || return 0
               [ "$h" -ge 1800 ] && [ "$h" -lt 2200 ] || return 0
@@ -188,16 +188,30 @@ jobs:
               # date -u 會連輸入字串一起當成 UTC 解讀，所以先在本地時區算出 epoch 再轉。
               since=$(date -u -d "@$(date -d "$(date +%F) 00:00:00" +%s)" +%Y-%m-%dT%H:%M:%SZ)
 
-              last=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/runs?per_page=20" \
+              # 只認「真的把今天行情收回來」的那種 run。
+              #
+              # 2026-08-31 就是栽在這裡：當天 GitHub 的 cron 一發都沒送到，本來全靠這個
+              # 鬧鐘補位，但白天有人手動用 publish-only 重發過幾次網站。publish-only 會
+              # 跳過「回補行情」，只重跑輸出與發布，run 的 conclusion 一樣是 success。
+              # 舊寫法只看 conclusion，於是 18:00:30 判定「今天已經有成功的每日快照」而
+              # 不叫，整天的盤後資料就沒人收——data 分支停在 08-28，網站也停在 08-28。
+              #
+              # 所以改成逐一翻開當天的 run，確認裡面「回補行情」這一步真的成功過。
+              # 步驟名稱是跟 daily-snapshot.yml 對齊的約定，改那邊要順手改這裡
+              # （已用單元測試釘住）。
+              for run_id in $(gh api \
+                  "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/runs?per_page=30" \
                   --jq "[.workflow_runs[]
-                         | select(.conclusion == \"success\")
-                         | select(.updated_at > \"$since\")] | length" 2>/dev/null || echo 0)
-
-              if [ "${last:-0}" -gt 0 ]; then
-                  echo "今天已經有成功的每日快照，不重複叫。"
-                  snapshot_kicked=1
-                  return 0
-              fi
+                         | select(.updated_at > \"$since\")
+                         | .id] | .[]" 2>/dev/null); do
+                  if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
+                      --jq '.jobs[].steps[]? | select(.name == "回補行情" and .conclusion == "success") | .name' \
+                      2>/dev/null | grep -q .; then
+                      echo "今天的 run $run_id 已經回補過行情，不重複叫。"
+                      snapshot_kicked=1
+                      return 0
+                  fi
+              done
 
               echo "台北 $(date '+%F %T')：過了 18:00 但今天還沒有成功的每日快照，叫它起來。"
               if gh api --method POST \

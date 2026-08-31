@@ -137,9 +137,37 @@ public sealed class IntradayWorkflowTests
             "\"repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/dispatches\"",
             workflow,
             StringComparison.Ordinal);
-        // 只在今天沒有成功快照時才叫，而且一棒最多叫一次。
-        Assert.Contains("select(.conclusion == \\\"success\\\")", workflow, StringComparison.Ordinal);
+        // 只在今天還沒收過盤後時才叫，而且一棒最多叫一次。
         Assert.Contains("snapshot_kicked=1", workflow, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 2026-08-31：當天 GitHub 的 cron 一發都沒送到，全靠這個鬧鐘補位，結果它在
+    /// 18:00:30 回報「今天已經有成功的每日快照，不重複叫」，整天的盤後資料沒人收。
+    /// 原因是白天有人用 publish-only 重發過網站——publish-only 會跳過「回補行情」，
+    /// 只重跑輸出與發布，run 的 conclusion 一樣是 success，舊寫法只看 conclusion 就被騙了。
+    /// 判斷依據必須是「回補行情這一步真的成功過」，不是 run 的結論。
+    /// </summary>
+    [Fact]
+    public void 鬧鐘要看有沒有真的回補行情而不是只看run成功()
+    {
+        var workflow = ReadIntradayWorkflow();
+        var alarm = Slice(workflow, "maybe_kick_snapshot() {", "if in_session; then");
+
+        // 逐一翻開當天的 run，看步驟層級的結果。
+        Assert.Contains("actions/runs/$run_id/jobs?per_page=100", alarm, StringComparison.Ordinal);
+        Assert.Contains(
+            "select(.name == \"回補行情\" and .conclusion == \"success\")",
+            alarm,
+            StringComparison.Ordinal);
+
+        // 純發布也會成功，所以 run 層級的 conclusion 不能再當成判斷依據。
+        Assert.DoesNotContain("select(.conclusion == \\\"success\\\")", alarm, StringComparison.Ordinal);
+
+        // 步驟名稱是跟 daily-snapshot.yml 對齊的約定，兩邊要一起改。
+        var daily = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+        Assert.Contains("- name: 回補行情", daily, StringComparison.Ordinal);
     }
 
     [Fact]
