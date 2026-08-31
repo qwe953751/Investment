@@ -341,11 +341,6 @@
                                 @RankingFormatter.ToSignedPercentText(row.TradingValueChangeRate)
                             </td>
 
-                            @* 量比的中性點是 1（跟平常一樣多），不是 0，所以不能套 ToTrendCssClass。 *@
-                            <td class="numeric @VolumeRatioCssClass(row.VolumeRatio)">
-                                @VolumeRatioText(row.VolumeRatio)
-                            </td>
-
                             <td class="numeric">@RankingFormatter.ToPercentText(row.MarketShare)</td>
 
                             <td class="numeric @RankingFormatter.ToTrendCssClass(row.MarketShareChange)">
@@ -456,12 +451,6 @@
         new("rate", "較前期增減",
             "（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。",
             row => row.TradingValueChangeRate),
-
-        new("volumeRatio", "量比",
-            "本期平均每日成交值 ÷ 這檔股票平常一天的成交值（本期之前 20 個交易日的中位數）。"
-            + "1 倍代表跟平常一樣，3 倍代表爆量。分母固定 20 日，不隨上面選的期間長度改變，"
-            + "所以換期間長度時排名不會整個大風吹。回看不滿 20 天或期間內過半沒成交時顯示 —。",
-            row => row.VolumeRatio),
 
         new("share", "市場成交比",
             "個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變，切換市場時比例才能互相比較。",
@@ -694,18 +683,6 @@
             _ => string.Empty
         };
 
-    private static string VolumeRatioText(decimal? ratio)
-        => ratio is { } value ? $"{value:N2} 倍" : "—";
-
-    private static string VolumeRatioCssClass(decimal? ratio)
-        => ratio switch
-        {
-            > 1m => "positive",
-            < 1m => "negative",
-            null => string.Empty,
-            _ => "unchanged"
-        };
-
     private decimal? IndexYearToDateRate(MarketIndexQuote? index)
     {
         if (index is null || _query.EndDate is not { } date)
@@ -826,7 +803,6 @@
             {
                 "value" => "選定交易日的單日成交值。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。",
                 "rate" => "（選定日成交值 − 前期平均）÷ 前期平均。前期是選定日前指定長度的交易日平均；前期為 0 時無法計算，顯示 — 並排在最後。",
-                "volumeRatio" => "選定日成交值 ÷ 這檔股票平常一天的成交值（選定日之前 20 個交易日的中位數）。分母固定 20 日，不隨上面選的期間長度改變。",
                 "share" => "選定交易日個股成交值 ÷ 該日全市場成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變。",
                 "shareChange" => "選定日市場成交比 − 選定日前指定長度交易日的平均市場成交比，單位是百分點。",
                 _ => column.Hint

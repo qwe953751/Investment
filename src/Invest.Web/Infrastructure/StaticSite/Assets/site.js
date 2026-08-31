@@ -611,6 +611,351 @@ function wireAlertBell() {
     });
 }
 
+// 裝置使用狀況不直接開放 device_sessions 給瀏覽器：IP 與 user-agent 只由 Edge Function
+// 在伺服器端寫入，列表也只由同一支 function 回傳。前端的 SITE_ACCESS 仍是既有的網址 gate，
+// 不是登入授權；真正要防止偽造最高權限，還需要 Supabase Auth／白名單模型。
+const DEVICE_PRESENCE_FUNCTION = 'device-presence';
+const DEVICE_PRESENCE_STORAGE_KEY = 'invest-device-presence-id';
+const DEVICE_PRESENCE_HEARTBEAT_MS = 5 * 60_000;
+const DEVICE_PRESENCE_REFRESH_MS = 60_000;
+const DEVICE_PRESENCE_ACTIVE_WINDOW_MS = 10 * 60_000;
+
+let devicePresenceDevices = [];
+let devicePresenceLoadedAt = 0;
+let devicePresenceLoading = false;
+let devicePresenceLoaded = false;
+let devicePresenceError = '';
+let devicePresenceHeartbeatTimer = null;
+let devicePresenceWired = false;
+
+function getDevicePresenceId() {
+    try {
+        const stored = localStorage.getItem(DEVICE_PRESENCE_STORAGE_KEY);
+
+        if (stored) {
+            return stored;
+        }
+    } catch {
+        // 私密瀏覽或禁用 storage 時仍要能留下這一次的活動紀錄。
+    }
+
+    const generated = globalThis.crypto?.randomUUID?.()
+        ?? `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+    try {
+        localStorage.setItem(DEVICE_PRESENCE_STORAGE_KEY, generated);
+    } catch {
+        // 這個識別碼只是去重提示，不能因為保存失敗就阻斷網站。
+    }
+
+    return generated;
+}
+
+function getDevicePresenceName() {
+    const platform = navigator.userAgentData?.platform
+        || navigator.platform
+        || '未知平台';
+    const userAgent = navigator.userAgent || '';
+    const browser = userAgent.includes('Edg/')
+        ? 'Edge'
+        : userAgent.includes('Chrome/')
+            ? 'Chrome'
+            : userAgent.includes('Firefox/')
+                ? 'Firefox'
+                : userAgent.includes('Safari/')
+                    ? 'Safari'
+                    : '瀏覽器';
+
+    return `${platform}｜${browser}`.slice(0, 120);
+}
+
+function devicePresenceEndpoint() {
+    return supabase === null
+        ? null
+        : `${supabase.url}/functions/v1/${DEVICE_PRESENCE_FUNCTION}`;
+}
+
+function devicePresenceHeaders(json = false) {
+    const headers = {
+        apikey: supabase.anonKey,
+        Authorization: `Bearer ${supabase.anonKey}`,
+        'x-site-access': SITE_ACCESS
+    };
+
+    if (json) {
+        headers['Content-Type'] = 'application/json';
+    }
+
+    return headers;
+}
+
+async function registerDevicePresence() {
+    const endpoint = devicePresenceEndpoint();
+
+    if (endpoint === null) {
+        return false;
+    }
+
+    try {
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: devicePresenceHeaders(true),
+            body: JSON.stringify({
+                device_id: getDevicePresenceId(),
+                device_name: getDevicePresenceName()
+            }),
+            cache: 'no-store'
+        });
+
+        if (!response.ok) {
+            throw new Error(String(response.status));
+        }
+
+        return true;
+    } catch (error) {
+        // 裝置紀錄是附加功能；Edge Function 暫時不可用時不能讓行情頁消失。
+        if (!devicePresenceLoaded) {
+            devicePresenceError = '裝置紀錄暫時無法連線，網站其他功能不受影響。';
+        }
+
+        console.warn('裝置使用狀況寫入失敗', error);
+        return false;
+    }
+}
+
+function devicePresenceRelativeTime(iso) {
+    const timestamp = Date.parse(iso);
+
+    if (!Number.isFinite(timestamp)) {
+        return '時間未知';
+    }
+
+    const elapsed = Math.max(0, Date.now() - timestamp);
+
+    if (elapsed < 60_000) {
+        return '剛剛';
+    }
+
+    if (elapsed < 60 * 60_000) {
+        return `${Math.floor(elapsed / 60_000)} 分鐘前`;
+    }
+
+    if (elapsed < 24 * 60 * 60_000) {
+        return `${Math.floor(elapsed / (60 * 60_000))} 小時前`;
+    }
+
+    return `${Math.floor(elapsed / (24 * 60 * 60_000))} 天前`;
+}
+
+function devicePresenceLastSeenText(iso) {
+    const timestamp = Date.parse(iso);
+
+    if (!Number.isFinite(timestamp)) {
+        return '—';
+    }
+
+    return `${toTaipeiText(iso)}（${devicePresenceRelativeTime(iso)}）`;
+}
+
+function devicePresenceIsOnline(device) {
+    const timestamp = Date.parse(device.last_seen_at);
+
+    return device.status === 'online'
+        && Number.isFinite(timestamp)
+        && Date.now() - timestamp <= DEVICE_PRESENCE_ACTIVE_WINDOW_MS;
+}
+
+function appendDevicePresenceCell(row, label, value, strong = false) {
+    const cell = document.createElement('div');
+    cell.className = 'device-presence-cell';
+
+    const cellLabel = document.createElement('span');
+    cellLabel.className = 'device-presence-cell-label';
+    cellLabel.textContent = label;
+
+    const content = document.createElement(strong ? 'strong' : 'span');
+    content.textContent = value || '—';
+
+    cell.append(cellLabel, content);
+    row.append(cell);
+}
+
+function renderDevicePresencePanel() {
+    const summary = el('device-presence-summary');
+    const list = el('device-presence-list');
+    const status = el('device-presence-status');
+
+    if (!summary || !list || !status) {
+        return;
+    }
+
+    summary.replaceChildren();
+    list.replaceChildren();
+
+    const onlineCount = devicePresenceDevices.filter(devicePresenceIsOnline).length;
+    const count = document.createElement('strong');
+    count.textContent = String(onlineCount);
+
+    const summaryText = document.createElement('span');
+    summaryText.textContent = `台活躍中，共 ${devicePresenceDevices.length} 台紀錄`;
+    summary.append(count, summaryText);
+
+    if (devicePresenceLoading && devicePresenceDevices.length === 0) {
+        const loading = document.createElement('p');
+        loading.className = 'device-presence-empty';
+        loading.textContent = '讀取中…';
+        list.append(loading);
+    } else if (devicePresenceDevices.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'device-presence-empty';
+        empty.textContent = devicePresenceLoaded ? '目前還沒有其他裝置存取紀錄。' : '尚未讀取裝置紀錄。';
+        list.append(empty);
+    } else {
+        for (const device of devicePresenceDevices) {
+            const online = devicePresenceIsOnline(device);
+            const row = document.createElement('div');
+            row.className = online ? 'device-presence-row is-online' : 'device-presence-row';
+
+            appendDevicePresenceCell(row, '裝置', device.device_name, true);
+            appendDevicePresenceCell(row, 'IP', device.ip_address || '未取得');
+            appendDevicePresenceCell(row, '權限', device.access_level === 'admin' ? '最高權限' : '檢視權限');
+
+            const lastSeen = document.createElement('div');
+            lastSeen.className = 'device-presence-cell';
+            const lastSeenLabel = document.createElement('span');
+            lastSeenLabel.className = 'device-presence-cell-label';
+            lastSeenLabel.textContent = '最後活動';
+            const time = document.createElement('span');
+            time.textContent = devicePresenceLastSeenText(device.last_seen_at);
+
+            const state = document.createElement('span');
+            state.className = 'device-presence-state';
+            state.textContent = online ? '活躍' : '離線';
+            lastSeen.append(lastSeenLabel, time, document.createTextNode(' '), state);
+            row.append(lastSeen);
+
+            list.append(row);
+        }
+    }
+
+    status.classList.toggle('device-presence-error', Boolean(devicePresenceError));
+    status.textContent = devicePresenceError
+        || (devicePresenceLoadedAt > 0
+            ? `最後整理：${toTaipeiText(new Date(devicePresenceLoadedAt).toISOString())}；每 60 秒自動重讀。`
+            : '');
+}
+
+async function loadDevicePresence(force = false) {
+    const endpoint = devicePresenceEndpoint();
+
+    if (SITE_ACCESS !== 'admin' || endpoint === null || devicePresenceLoading) {
+        return;
+    }
+
+    if (!force && devicePresenceLoadedAt > 0 && Date.now() - devicePresenceLoadedAt < DEVICE_PRESENCE_REFRESH_MS) {
+        return;
+    }
+
+    devicePresenceLoading = true;
+    devicePresenceError = '';
+    renderDevicePresencePanel();
+
+    try {
+        const response = await fetch(`${endpoint}?action=list`, {
+            headers: devicePresenceHeaders(),
+            cache: 'no-store'
+        });
+
+        if (!response.ok) {
+            throw new Error(String(response.status));
+        }
+
+        const payload = await response.json();
+        devicePresenceDevices = Array.isArray(payload.devices) ? payload.devices : [];
+        devicePresenceLoaded = true;
+        devicePresenceLoadedAt = Date.now();
+    } catch (error) {
+        devicePresenceError = error instanceof Error && error.message === '403'
+            ? '只有最高權限可以查看裝置列表。'
+            : '裝置列表暫時無法讀取，請稍後重試。';
+        console.warn('裝置使用狀況讀取失敗', error);
+    } finally {
+        devicePresenceLoading = false;
+        renderDevicePresencePanel();
+    }
+}
+
+function wireDevicePresence() {
+    const root = el('device-presence');
+    const toggle = el('device-presence-toggle');
+    const panel = el('device-presence-panel');
+    const refresh = el('device-presence-refresh');
+
+    if (!root || !toggle || !panel || !refresh || SITE_ACCESS !== 'admin') {
+        return;
+    }
+
+    root.hidden = false;
+    renderDevicePresencePanel();
+
+    if (devicePresenceWired) {
+        return;
+    }
+
+    devicePresenceWired = true;
+
+    toggle.addEventListener('click', () => {
+        const opening = panel.hidden;
+        panel.hidden = !opening;
+        toggle.setAttribute('aria-expanded', String(opening));
+
+        if (opening) {
+            void loadDevicePresence(true);
+        }
+    });
+
+    refresh.addEventListener('click', () => {
+        void loadDevicePresence(true);
+    });
+
+    document.addEventListener('click', event => {
+        if (!panel.hidden && !root.contains(event.target)) {
+            panel.hidden = true;
+            toggle.setAttribute('aria-expanded', 'false');
+        }
+    });
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !panel.hidden) {
+            panel.hidden = true;
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.focus();
+        }
+    });
+}
+
+function startDevicePresenceHeartbeat() {
+    if (supabase === null || devicePresenceHeartbeatTimer !== null) {
+        return;
+    }
+
+    const beat = async () => {
+        if (!document.hidden) {
+            await registerDevicePresence();
+        }
+
+        devicePresenceHeartbeatTimer = setTimeout(beat, DEVICE_PRESENCE_HEARTBEAT_MS);
+    };
+
+    void beat();
+
+    window.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            void registerDevicePresence();
+        }
+    });
+}
+
 // 從 market_flags 讀今天最新的處置／全額交割名單。抓不到就沿用上一次的名單，
 // 這份名單一天只會被盤中 Action 寫一次，差一次刷新不會有太大影響，
 // 但不能因為抓不到就讓整張盤中排行都顯示不出來。
@@ -864,7 +1209,6 @@ const COLUMNS = [
     { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
-    { key: 'volumeRatio', title: '量比', hint: VOLUME_RATIO_HINT, value: row => row.volumeRatio, cell: row => ({ text: toVolumeRatioText(row.volumeRatio), cls: 'numeric ' + toVolumeRatioClass(row.volumeRatio) }) },
     { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '本期市場成交比 − 前期市場成交比，單位是百分點。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
@@ -15779,6 +16123,15 @@ function startIntradayTimer() {
             });
         }
 
+        // 裝置列表只有最高權限能打開；面板開著時每分鐘重讀一次，
+        // 讓使用者不用手動刷新就能看到其他裝置的最後活動時間。
+        if (SITE_ACCESS === 'admin'
+            && !document.hidden
+            && !el('device-presence-panel').hidden
+            && Date.now() - devicePresenceLoadedAt >= DEVICE_PRESENCE_REFRESH_MS) {
+            void loadDevicePresence();
+        }
+
         setTimeout(tickOnce, tick);
     };
 
@@ -15832,6 +16185,8 @@ async function start() {
     renderSnapshotNote();
     wireRefreshButton();
     wireAlertBell();
+    wireDevicePresence();
+    startDevicePresenceHeartbeat();
     configureKLinePopover();
     configureRevenuePopover();
     initializeIntradayBroadcastChannel();

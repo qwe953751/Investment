@@ -19,6 +19,26 @@
             </button>
             <span class="refresh-status" id="refresh-status"></span>
             <span class="access-badge" id="access-badge" hidden></span>
+            <div class="device-presence" id="device-presence" hidden>
+                <button type="button" class="device-presence-button" id="device-presence-toggle"
+                        aria-expanded="false"
+                        data-hint="只在最高權限入口顯示。這裡看得到最近使用網站的裝置、IP、權限與最後活動時間。">
+                    <span class="device-presence-icon" aria-hidden="true">⌁</span>裝置狀況
+                </button>
+                <section class="device-presence-panel" id="device-presence-panel"
+                         aria-labelledby="device-presence-title" hidden>
+                    <div class="device-presence-panel-heading">
+                        <div>
+                            <h2 id="device-presence-title">裝置使用狀況</h2>
+                            <p>以網站存取紀錄判斷，不代表真正的帳號登入。</p>
+                        </div>
+                        <button type="button" class="device-presence-refresh" id="device-presence-refresh">重新整理</button>
+                    </div>
+                    <div class="device-presence-summary" id="device-presence-summary"></div>
+                    <div class="device-presence-list" id="device-presence-list" aria-live="polite"></div>
+                    <p class="device-presence-status" id="device-presence-status" role="status"></p>
+                </section>
+            </div>
             <div class="alert-bell" id="alert-bell" hidden>
                 <button type="button" class="alert-button" id="alert-toggle"
                         aria-expanded="false"
