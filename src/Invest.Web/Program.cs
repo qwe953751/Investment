@@ -24,6 +24,7 @@ using System.Text.Json.Serialization;
 // 命令列模式：
 //   dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-bars [交易日數] [起始日期]
+//   dotnet run --project src/Invest.Web -- verify-kline-cache [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-us
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop]
@@ -40,7 +41,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-us" or "export" or "intraday" or "backfill-intraday-heat"
+    command is "backfill" or "backfill-bars" or "verify-kline-cache" or "backfill-us" or "export" or "intraday" or "backfill-intraday-heat"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -114,6 +115,12 @@ if (command is "backfill")
 if (command is "backfill-bars")
 {
     await RunDailyBarBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "verify-kline-cache")
+{
+    await RunDailyBarCacheVerificationAsync(app.Services, args);
     return;
 }
 
@@ -1365,6 +1372,37 @@ static async Task RunDailyBarBackfillAsync(IServiceProvider services, string[] a
         Console.WriteLine();
         Console.WriteLine("已中斷。已完成的日 K 都保留在快取，重跑會從缺少的日期繼續。");
     }
+}
+
+/// <summary>
+/// <c>publish-only</c> 不寫入 data 分支，故只能在日 K 快取已與目前格式一致時使用。
+/// 這個檢查刻意只看 schema 版本；個別官方回應暫缺的情況仍由完整流程與圖表資料不足提示處理。
+/// </summary>
+static async Task RunDailyBarCacheVerificationAsync(IServiceProvider services, string[] args)
+{
+    var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 300;
+    var startFrom = args.Length > 2 && DateOnly.TryParse(args[2], out var parsedDate)
+        ? parsedDate
+        : DateOnly.FromDateTime(DateTime.Today);
+    var store = services.GetRequiredService<DailyQuoteStore>();
+    var snapshots = await store.LoadAllAsync();
+    var outdated = DailyBarCacheVersionChecker.FindOutdatedSnapshots(
+        snapshots,
+        targetTradingDays,
+        startFrom);
+
+    if (outdated.Count == 0)
+    {
+        Console.WriteLine($"日 K 快取版本已是 v{DailyQuoteSnapshot.CurrentDailyBarSchemaVersion}，可安全純發布。");
+        return;
+    }
+
+    Console.Error.WriteLine(
+        $"日 K 快取有 {outdated.Count} 天仍是舊格式（{outdated[0]:yyyy-MM-dd} ～ {outdated[^1]:yyyy-MM-dd}）。");
+    Console.Error.WriteLine(
+        "不可使用 publish-only；請在收盤後以 publish-only=false 執行完整流程，"
+        + "讓 backfill-bars 回補完成後再發布。");
+    Environment.ExitCode = 1;
 }
 
 /// <summary>

@@ -130,6 +130,13 @@ jobs:
       - name: 驗證計算公式
         run: dotnet test -c Release
 
+      # 純發布只讀 data 快取，不會補抓 OHLC。日 K 格式升版後若舊快取還沒回補，
+      # 新的資料防呆會排除舊棒，結果是這次筆記 #44 那種大規模缺棒；此時寧可中止，
+      # 不把看似成功但殘缺的快照推到正式網站。
+      - name: 驗證日 K 快取版本
+        if: ${{ inputs.publish-only == true }}
+        run: dotnet run -c Release --project src/Invest.Web -- verify-kline-cache "$TRADING_DAYS"
+
       # 排程提早進場是為了搶 runner，不是為了提早抓。收盤行情下午三點才公布，
       # 太早抓只會抓到空的，所以睡到 18:00 整再開始。手動觸發時不等。
       # 18:00 這個時間定義在 CollectionSchedule.DailyRefresh（前端也讀同一份），

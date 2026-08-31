@@ -47,6 +47,17 @@ public sealed class DailySnapshotWorkflowTests
         Assert.Contains("inputs.publish-only != true", workflow, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 純發布會先拒絕日K快取格式落後的資料()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        Assert.Contains("驗證日 K 快取版本", workflow, StringComparison.Ordinal);
+        Assert.Contains("inputs.publish-only == true", workflow, StringComparison.Ordinal);
+        Assert.Contains("verify-kline-cache \"$TRADING_DAYS\"", workflow, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
