@@ -1386,8 +1386,18 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const nextText = words[index + 1]?.text", script, StringComparison.Ordinal);
         Assert.Contains("function assetOcrIsHoldingRow(draft)", script, StringComparison.Ordinal);
         Assert.Contains(".filter(assetOcrIsHoldingRow)", script, StringComparison.Ordinal);
-        Assert.Contains("data-asset-ocr-confirmed", script, StringComparison.Ordinal);
-        Assert.Contains("逐列核對數字並勾選", script, StringComparison.Ordinal);
+        Assert.Contains("function buildAssetHoldingDiff", script, StringComparison.Ordinal);
+        Assert.Contains("套用前差異", script, StringComparison.Ordinal);
+        Assert.Contains("勾選要套用的項目", script, StringComparison.Ordinal);
+        Assert.Contains("移除項目預設不勾選", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "table.append(assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益']), body);",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains("assetScreenshotDraft.diff = null;", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-asset-ocr-confirmed", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("確定以這 ${rows.length} 列取代", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("?account_id=eq.${encodeURIComponent(accountId)}", script, StringComparison.Ordinal);
         Assert.Contains("mergeAssetOcrScreenshotRows", script, StringComparison.Ordinal);
     }
 

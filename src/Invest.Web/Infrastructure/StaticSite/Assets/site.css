@@ -1391,6 +1391,222 @@ body {
     gap: 10px;
 }
 
+/* OCR 結果先變成可選的差異清單，手機不用橫向捲到最右邊才找得到核對欄。 */
+.asset-screenshot-diff {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid #cfd8e6;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.asset-screenshot-diff > h4,
+.asset-screenshot-diff > p,
+.asset-holding-diff-section h4,
+.asset-holding-diff-section p,
+.asset-holding-diff-invalid h4,
+.asset-holding-diff-invalid p {
+    margin: 0;
+}
+
+.asset-screenshot-diff > h4 {
+    color: #1d2939;
+    font-size: 17px;
+}
+
+.asset-screenshot-diff > p,
+.asset-holding-diff-section p,
+.asset-holding-diff-invalid p {
+    color: #667085;
+    font-size: 13px;
+    line-height: 1.55;
+}
+
+.asset-holding-diff-section,
+.asset-holding-diff-invalid {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid #dbe3ee;
+    border-radius: 8px;
+    background: #fbfcfe;
+}
+
+.asset-holding-diff-removal {
+    border-color: #fecdca;
+    background: #fffafa;
+}
+
+.asset-holding-diff-invalid {
+    border-color: #fec84b;
+    background: #fffaeb;
+}
+
+.asset-holding-diff-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.asset-holding-diff-header > div:first-child {
+    display: grid;
+    gap: 4px;
+}
+
+.asset-holding-diff-header h4,
+.asset-holding-diff-invalid h4 {
+    color: #344054;
+    font-size: 15px;
+}
+
+.asset-holding-diff-controls {
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 6px;
+}
+
+.asset-holding-diff-controls .asset-button {
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.asset-holding-diff-list {
+    display: grid;
+    gap: 8px;
+}
+
+.asset-holding-diff-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    padding: 10px;
+    border: 1px solid #e4e9f1;
+    border-radius: 7px;
+    background: #fff;
+    color: #1d2939;
+    cursor: pointer;
+}
+
+.asset-holding-diff-item:hover {
+    border-color: #98a2b3;
+}
+
+.asset-screenshot-review .asset-holding-diff-item input[type='checkbox'] {
+    width: 20px;
+    min-width: 20px;
+    min-height: 20px;
+    height: 20px;
+    margin: 1px 0 0;
+    padding: 0;
+    accent-color: #1d2939;
+}
+
+.asset-holding-diff-content {
+    display: grid;
+    min-width: 0;
+    gap: 6px;
+}
+
+.asset-holding-diff-content > strong {
+    overflow: hidden;
+    font-size: 15px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-holding-diff-content > small {
+    color: #667085;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.asset-holding-diff-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.asset-holding-diff-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 6px;
+    border-radius: 5px;
+    background: #f2f4f7;
+    font-size: 12px;
+}
+
+.asset-holding-diff-field small {
+    color: #667085;
+}
+
+.asset-holding-diff-field s {
+    color: #98a2b3;
+}
+
+.asset-holding-diff-field b {
+    color: #175cd3;
+}
+
+.asset-holding-diff-empty {
+    margin: 0;
+    padding: 4px 0;
+}
+
+.asset-holding-diff-invalid ul {
+    display: grid;
+    gap: 5px;
+    margin: 0;
+    padding-left: 20px;
+    color: #7a271a;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.asset-holding-diff-selection {
+    flex: 1 1 200px;
+    margin: 0;
+    color: #475467;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.asset-holding-diff-actions {
+    align-items: center;
+}
+
+.asset-screenshot-feedback {
+    margin: 0;
+    padding: 9px 10px;
+    border: 1px solid #b2ddff;
+    border-radius: 7px;
+    background: #eff8ff;
+    color: #175cd3 !important;
+}
+
+.asset-screenshot-editor {
+    padding: 10px 12px;
+    border: 1px solid #dbe3ee;
+    border-radius: 8px;
+    background: #fbfcfe;
+}
+
+.asset-screenshot-editor > summary {
+    color: #344054;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.asset-screenshot-editor > p {
+    margin: 10px 0;
+    color: #667085;
+    font-size: 13px;
+}
+
 /* 持倉欄位一列排開；窄畫面時自己折行，不要橫向捲。 */
 .asset-holding-form {
     grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -2978,6 +3194,28 @@ td.stock-name.stock-name-change-down {
 
     .asset-editor-actions {
         justify-content: flex-start;
+    }
+
+    .asset-holding-diff-header {
+        flex-direction: column;
+    }
+
+    .asset-holding-diff-controls {
+        width: 100%;
+    }
+
+    .asset-holding-diff-controls .asset-button,
+    .asset-holding-diff-actions .asset-primary-button {
+        flex: 1 1 0;
+    }
+
+    .asset-holding-diff-actions {
+        align-items: stretch;
+        flex-wrap: wrap;
+    }
+
+    .asset-holding-diff-selection {
+        flex-basis: 100%;
     }
 
     .asset-preview-table {

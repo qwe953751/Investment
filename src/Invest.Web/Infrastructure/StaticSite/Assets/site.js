@@ -3182,7 +3182,7 @@ async function assetWrite(table, method, body, query = '') {
     });
 
     if (!response.ok) {
-        throw new Error(String(response.status));
+        throw new Error(`HTTP ${response.status}`);
     }
 }
 
@@ -3218,10 +3218,30 @@ async function runAssetAction(pendingText, action, doneText) {
     try {
         await action();
         await refreshAssets();
-        assetActionNotice = doneText;
+        assetActionNotice = assetsLoadError === null
+            ? doneText
+            : `${doneText} 但重新讀取資料失敗，請重新整理後確認帳戶。`;
         done = true;
-    } catch {
-        assetActionNotice = '寫入資料庫失敗，資料沒有變動；請檢查網路連線後重試。';
+    } catch (error) {
+        // 一次截圖可能同時有更新、新增與移除；若中途網路失敗，不能保證前面幾筆
+        // 沒有成功。先重讀資料庫，把畫面拉回實際狀態，避免「其實已寫入」卻誤導成
+        // 完全沒變動。
+        let reloaded = false;
+
+        try {
+            await refreshAssets();
+            reloaded = assetsLoadError === null;
+        } catch {
+            // 保留原畫面，並在下面明確要求使用者重新整理確認，不以快取假裝成功。
+        }
+
+        const detail = error instanceof Error && error.message !== ''
+            ? `（${error.message}）`
+            : '';
+        assetActionNotice = `寫入資料庫失敗${detail}。`
+            + (reloaded
+                ? '已重新讀取目前資料，請確認後再試。'
+                : '請重新整理頁面確認目前資料後再試。');
     }
 
     assetsBusy = false;
@@ -3909,9 +3929,9 @@ function makeAssetHoldingEditor(view) {
     return panel;
 }
 
-// 截圖流程。截圖本身只在瀏覽器裡跑，辨識完就丟；留下來的是使用者在下面那張表
-// 校對過的數字。「套用」會以這張表取代帳戶目前的全部持倉——券商的未實現損益畫面
-// 是一份完整清單，逐列合併只會把已經賣掉的股票永遠留在表上。
+// 截圖流程。截圖本身只在瀏覽器裡跑，辨識完就丟；留下來的是使用者在下面校對過的數字。
+// 套用前先和帳戶現有持倉比對：同代號直接覆蓋、截圖新出現的列新增、截圖未出現的列
+// 則明列為「可選移除」。不再用「先刪全部、再重建」的做法，避免 OCR 少認一列就誤刪。
 const ASSET_DRAFT_FIELDS = ['ticker', 'name', 'quantity', 'cost', 'marketValue', 'unrealized'];
 
 function assetDraftRowFrom(holding) {
@@ -3921,9 +3941,156 @@ function assetDraftRowFrom(holding) {
         quantity: holding.quantity ?? '',
         cost: holding.cost ?? '',
         marketValue: holding.marketValue ?? '',
-        unrealized: holding.unrealized ?? '',
-        confirmed: holding.confirmed === true
+        unrealized: holding.unrealized ?? ''
     };
+}
+
+function assetHoldingTicker(row) {
+    return String(row?.ticker ?? '').trim().toUpperCase();
+}
+
+function assetHoldingComparable(value) {
+    const text = String(value ?? '')
+        .trim()
+        .replaceAll(',', '')
+        .replaceAll('，', '')
+        .replaceAll('−', '-')
+        .replaceAll('–', '-')
+        .replaceAll('—', '-');
+
+    if (text === '') {
+        return null;
+    }
+
+    const number = Number(text);
+    return Number.isFinite(number) ? number : text;
+}
+
+function assetHoldingChangedFields(holding, draft) {
+    return ['ticker', 'name', 'quantity', 'cost', 'marketValue', 'unrealized']
+        .map(field => {
+            const before = field === 'ticker'
+                ? assetHoldingTicker(holding)
+                : field === 'name'
+                    ? String(holding?.[field] ?? '').trim()
+                    : assetHoldingComparable(holding?.[field]);
+            const after = field === 'ticker'
+                ? assetHoldingTicker(draft)
+                : field === 'name'
+                    ? String(draft?.[field] ?? '').trim()
+                    : assetHoldingComparable(draft?.[field]);
+            return { field, before, after };
+        })
+        .filter(field => field.before !== field.after);
+}
+
+// 回傳的三種變更是畫面和寫入流程共用的唯一差異來源。ticker 是帳戶內的自然鍵：
+// 台股代號不受大小寫影響，美股則一律轉大寫。空白或重複代號不做猜測、不納入套用。
+function buildAssetHoldingDiff(holdings, draftRows) {
+    const current = Array.isArray(holdings) ? holdings : [];
+    const drafts = Array.isArray(draftRows) ? draftRows : [];
+    const currentByTicker = new Map();
+    const duplicateCurrentTickers = new Set();
+    const invalid = [];
+
+    for (const holding of current) {
+        const ticker = assetHoldingTicker(holding);
+
+        if (ticker === '') {
+            invalid.push({ kind: 'existingMissingTicker', holding });
+            continue;
+        }
+
+        if (currentByTicker.has(ticker)) {
+            duplicateCurrentTickers.add(ticker);
+        } else {
+            currentByTicker.set(ticker, holding);
+        }
+    }
+
+    for (const ticker of duplicateCurrentTickers) {
+        invalid.push({
+            kind: 'existingDuplicate',
+            ticker,
+            holdings: current.filter(holding => assetHoldingTicker(holding) === ticker)
+        });
+    }
+
+    const draftByTicker = new Map();
+    const duplicateDraftTickers = new Set();
+
+    for (const [index, draft] of drafts.entries()) {
+        const ticker = assetHoldingTicker(draft);
+
+        if (ticker === '') {
+            invalid.push({ kind: 'draftMissingTicker', index, draft });
+            continue;
+        }
+
+        if (draftByTicker.has(ticker)) {
+            duplicateDraftTickers.add(ticker);
+            continue;
+        }
+
+        draftByTicker.set(ticker, { index, draft });
+    }
+
+    for (const ticker of duplicateDraftTickers) {
+        invalid.push({
+            kind: 'draftDuplicate',
+            ticker,
+            rows: drafts.filter(draft => assetHoldingTicker(draft) === ticker)
+        });
+    }
+
+    const additions = [];
+    const updates = [];
+    const removals = [];
+    const seenTickers = new Set();
+
+    for (const [ticker, item] of draftByTicker) {
+        seenTickers.add(ticker);
+
+        if (duplicateDraftTickers.has(ticker) || duplicateCurrentTickers.has(ticker)) {
+            continue;
+        }
+
+        const holding = currentByTicker.get(ticker);
+
+        if (holding === undefined) {
+            additions.push({
+                kind: 'addition',
+                key: `addition:${ticker}`,
+                index: item.index,
+                draft: item.draft
+            });
+            continue;
+        }
+
+        const fields = assetHoldingChangedFields(holding, item.draft);
+
+        if (fields.length > 0) {
+            updates.push({
+                kind: 'update',
+                key: `update:${holding.id}`,
+                holding,
+                draft: item.draft,
+                fields
+            });
+        }
+    }
+
+    for (const [ticker, holding] of currentByTicker) {
+        if (!seenTickers.has(ticker) && !duplicateCurrentTickers.has(ticker)) {
+            removals.push({
+                kind: 'removal',
+                key: `removal:${holding.id}`,
+                holding
+            });
+        }
+    }
+
+    return { additions, updates, removals, invalid };
 }
 
 function readAssetDraftRows(body) {
@@ -3933,8 +4100,6 @@ function readAssetDraftRows(body) {
         for (const field of ASSET_DRAFT_FIELDS) {
             draft[field] = row.querySelector(`input[data-field="${field}"]`)?.value.trim() ?? '';
         }
-
-        draft.confirmed = row.querySelector('input[data-asset-ocr-confirmed]')?.checked === true;
 
         return draft;
     });
@@ -3954,16 +4119,198 @@ function makeAssetDraftRow(draft) {
         row.append(cell);
     }
 
-    const reviewCell = document.createElement('td');
-    const review = document.createElement('input');
-    review.type = 'checkbox';
-    review.checked = draft.confirmed === true;
-    review.dataset.assetOcrConfirmed = 'true';
-    review.setAttribute('aria-label', '已逐欄核對這筆持倉');
-    reviewCell.append(review);
-    row.append(reviewCell);
-
     return row;
+}
+
+function assetHoldingWriteBody(row, sortOrder) {
+    return {
+        ticker: assetHoldingTicker(row),
+        name: String(row.name ?? '').trim(),
+        quantity: assetNumber(assetHoldingComparable(row.quantity)),
+        cost: assetNumber(assetHoldingComparable(row.cost)),
+        market_value: assetNumber(assetHoldingComparable(row.marketValue)),
+        unrealized: assetNumber(assetHoldingComparable(row.unrealized)),
+        source: 'ocr',
+        sort_order: sortOrder
+    };
+}
+
+function assetHoldingDiffValueText(field, value, market) {
+    if (field === 'ticker' || field === 'name') {
+        return String(value ?? '').trim() || '—';
+    }
+
+    if (field === 'quantity') {
+        return assetQuantityText(assetHoldingComparable(value));
+    }
+
+    return assetCurrencyForMarket(assetHoldingComparable(value), market);
+}
+
+function assetHoldingSummaryText(holding, market) {
+    return [
+        `股數 ${assetHoldingDiffValueText('quantity', holding.quantity, market)}`,
+        `成本 ${assetHoldingDiffValueText('cost', holding.cost, market)}`,
+        `市值 ${assetHoldingDiffValueText('marketValue', holding.marketValue, market)}`
+    ].join(' · ');
+}
+
+const ASSET_HOLDING_FIELD_LABELS = {
+    ticker: '代號',
+    name: '名稱',
+    quantity: '股數',
+    cost: '成本',
+    marketValue: '市值',
+    unrealized: '未實現損益'
+};
+
+function makeAssetHoldingDiffItem(change, market, selected, onSelectionChange) {
+    const item = document.createElement('label');
+    item.className = `asset-holding-diff-item asset-holding-diff-${change.kind}`;
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = selected === true;
+    checkbox.dataset.assetHoldingChange = change.key;
+    checkbox.setAttribute('aria-label', `套用${change.kind === 'removal' ? '移除' : '持倉'}變更`);
+    checkbox.addEventListener('change', () => onSelectionChange(change.key, checkbox.checked));
+
+    const content = document.createElement('span');
+    content.className = 'asset-holding-diff-content';
+    const title = document.createElement('strong');
+    const row = change.draft ?? change.holding;
+    title.textContent = `${assetHoldingTicker(row)} ${String(row.name ?? '').trim()}`.trim();
+    content.append(title);
+
+    if (change.kind === 'update') {
+        const fields = document.createElement('span');
+        fields.className = 'asset-holding-diff-fields';
+
+        for (const field of change.fields) {
+            const detail = document.createElement('span');
+            detail.className = 'asset-holding-diff-field';
+            const label = document.createElement('small');
+            label.textContent = ASSET_HOLDING_FIELD_LABELS[field.field];
+            const before = document.createElement('s');
+            before.textContent = assetHoldingDiffValueText(field.field, field.before, market);
+            const after = document.createElement('b');
+            after.textContent = assetHoldingDiffValueText(field.field, field.after, market);
+            detail.append(label, before, after);
+            fields.append(detail);
+        }
+
+        content.append(fields);
+    } else {
+        const summary = document.createElement('small');
+        summary.textContent = assetHoldingSummaryText(row, market);
+        content.append(summary);
+    }
+
+    item.append(checkbox, content);
+    return item;
+}
+
+function makeAssetHoldingDiffSection(title, description, changes, market, selections, onSelectionChange, variant) {
+    const section = document.createElement('section');
+    section.className = `asset-holding-diff-section asset-holding-diff-${variant}`;
+    const header = document.createElement('div');
+    header.className = 'asset-holding-diff-header';
+    const copy = document.createElement('div');
+    const heading = document.createElement('h4');
+    heading.textContent = `${title}（${changes.length} 項）`;
+    const note = document.createElement('p');
+    note.textContent = description;
+    copy.append(heading, note);
+    header.append(copy);
+
+    if (changes.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'asset-holding-diff-empty';
+        empty.textContent = '沒有差異。';
+        section.append(header, empty);
+        return section;
+    }
+
+    const controls = document.createElement('div');
+    controls.className = 'asset-holding-diff-controls';
+    const list = document.createElement('div');
+    list.className = 'asset-holding-diff-list';
+    const inputs = [];
+
+    for (const change of changes) {
+        const item = makeAssetHoldingDiffItem(
+            change,
+            market,
+            selections[change.key] === true,
+            (key, checked) => {
+                selections[key] = checked;
+                onSelectionChange();
+            });
+        inputs.push(item.querySelector('input[data-asset-holding-change]'));
+        list.append(item);
+    }
+
+    controls.append(
+        assetButton('全選', 'asset-secondary-button', () => {
+            for (const input of inputs) {
+                input.checked = true;
+                selections[input.dataset.assetHoldingChange] = true;
+            }
+            onSelectionChange();
+        }),
+        assetButton('全不選', 'asset-secondary-button', () => {
+            for (const input of inputs) {
+                input.checked = false;
+                selections[input.dataset.assetHoldingChange] = false;
+            }
+            onSelectionChange();
+        }));
+    header.append(controls);
+    section.append(header, list);
+    return section;
+}
+
+function makeAssetHoldingDiffInvalidRows(invalid) {
+    if (invalid.length === 0) {
+        return null;
+    }
+
+    const section = document.createElement('section');
+    section.className = 'asset-holding-diff-invalid';
+    const heading = document.createElement('h4');
+    heading.textContent = `需要修正（${invalid.length} 項）`;
+    const description = document.createElement('p');
+    description.textContent = '這些列不會套用；請展開下方「修改辨識結果」補上唯一代號後，再重新比較。';
+    const list = document.createElement('ul');
+
+    for (const item of invalid) {
+        const row = document.createElement('li');
+
+        if (item.kind === 'draftMissingTicker') {
+            row.textContent = `第 ${item.index + 1} 列「${String(item.draft.name ?? '').trim() || '未命名'}」缺少代號。`;
+        } else if (item.kind === 'draftDuplicate') {
+            row.textContent = `截圖內的 ${item.ticker} 重複出現，請保留一列。`;
+        } else if (item.kind === 'existingDuplicate') {
+            row.textContent = `帳戶現有的 ${item.ticker} 有重複持倉，請先在持倉表人工整理。`;
+        } else {
+            row.textContent = '帳戶中有一列缺少代號，無法安全比對。';
+        }
+
+        list.append(row);
+    }
+
+    section.append(heading, description, list);
+    return section;
+}
+
+function refreshAssetScreenshotDiff(holdings, rows) {
+    if (assetScreenshotDraft === null) {
+        return;
+    }
+
+    assetScreenshotDraft.rows = rows;
+    assetScreenshotDraft.diff = buildAssetHoldingDiff(holdings, rows);
+    assetScreenshotDraft.selections = {};
+    assetScreenshotDraft.diffStale = false;
 }
 
 // 截圖辨識。辨識程式（tesseract.js）與繁體中文字庫都放在本站自己的檔案裡，不從 CDN 載。
@@ -5795,7 +6142,11 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             elapsedMs: null
         })),
         scanning: true,
-        rows: []
+        rows: [],
+        diff: null,
+        selections: {},
+        diffStale: false,
+        notice: ''
     };
     assetActionNotice = '';
     setAssetOcrStatus('準備辨識…');
@@ -5850,14 +6201,15 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         assetScreenshotDraft.rows = holdings.length > 0
             ? holdings.map(assetDraftRowFrom)
             : [assetDraftRowFrom({})];
-        assetActionNotice = failures.length > 0
+        refreshAssetScreenshotDiff(holdings, assetScreenshotDraft.rows);
+        assetScreenshotDraft.notice = failures.length > 0
             ? `沒有任何圖片成功辨識。${failures.join('；')}，下面這張表請自己填或修改。`
             : '這批截圖沒有認出任何一檔股票，請改用清楚一點的截圖，或直接在下面填。';
         renderAssetsDashboard();
         return;
     }
 
-    const prefix = `辨識出 ${assetScreenshotDraft.rows.length} 檔股票，請逐列核對再套用。`;
+    const prefix = `辨識出 ${assetScreenshotDraft.rows.length} 檔股票，請核對下方差異後勾選要套用的項目。`;
     const missingUsQuotes = market === '美股'
         ? assetScreenshotDraft.rows
             .filter(row => row.quantity !== '' && !assetLatestUsQuotes.has(String(row.ticker).toUpperCase()))
@@ -5869,7 +6221,10 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
     const quoteNotice = missingUsQuotes.length > 0
         ? `美股 ${missingUsQuotes.join('、')} 尚無收盤行情，先保留股數與成本，市值不猜。`
         : '';
-    assetActionNotice = [prefix, headerNotice, quoteNotice, ...failures].filter(text => text !== '').join(' ');
+    refreshAssetScreenshotDiff(holdings, assetScreenshotDraft.rows);
+    assetScreenshotDraft.notice = [prefix, headerNotice, quoteNotice, ...failures]
+        .filter(text => text !== '')
+        .join(' ');
     renderAssetsDashboard();
 }
 
@@ -5885,7 +6240,7 @@ function makeAssetScreenshotFlow(view) {
             ? '目前帳戶是美股，辨識金額以美元保存；最新收盤價與 USD/TWD 匯率由資料庫帶入。'
             : '目前帳戶是台股，辨識金額以台幣保存。')
         + `一次可選 1–${ASSET_OCR_MAX_FILES} 張，依序辨識，每張最多 10 秒。`
-        + '辨識結果必須逐列核對並勾選後才能套用；套用後會以下面這張表取代帳戶目前的全部持倉。';
+        + '辨識完成後會先列出和目前持倉的差異；勾選代表已核對且要套用。相同代號直接覆蓋，移除項目預設不勾選。';
     const inputLabel = document.createElement('label');
     inputLabel.className = 'asset-file-input';
     const inputText = document.createElement('span');
@@ -5982,73 +6337,202 @@ function makeAssetScreenshotFlow(view) {
         body.append(makeAssetDraftRow(draft));
     }
 
-    table.append(assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益', '已核對']), body);
+    table.append(assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益']), body);
 
-    const actions = document.createElement('div');
-    actions.className = 'asset-editor-actions';
-    const apply = assetButton('套用到持倉', 'asset-primary-button');
+    if (assetScreenshotDraft.diff === null) {
+        refreshAssetScreenshotDiff(view.holdings, assetScreenshotDraft.rows);
+    }
+
+    const diff = assetScreenshotDraft.diff;
+    const changes = [...diff.updates, ...diff.additions, ...diff.removals];
+    const diffPanel = document.createElement('section');
+    diffPanel.className = 'asset-screenshot-diff';
+    const diffHeading = document.createElement('h4');
+    diffHeading.textContent = '套用前差異';
+    const diffDescription = document.createElement('p');
+    diffDescription.textContent = '每一項都需自行勾選才會套用；沒有勾選的持倉維持原樣。'
+        + '這取代了舊版「一次刪除全部再重建」的流程。';
+    const selectionSummary = document.createElement('p');
+    selectionSummary.className = 'asset-holding-diff-selection';
+    const apply = assetButton('套用到持倉（0 項）', 'asset-primary-button');
     apply.type = 'submit';
-    apply.disabled = assetsBusy;
-    actions.append(
+    const selectedChanges = () => changes.filter(change => assetScreenshotDraft.selections[change.key] === true);
+    const refreshSelectionSummary = () => {
+        const selectedCount = selectedChanges().length;
+        apply.textContent = `套用到持倉（${selectedCount} 項）`;
+        apply.disabled = assetsBusy || assetScreenshotDraft.diffStale || selectedCount === 0;
+        selectionSummary.textContent = assetScreenshotDraft.diffStale
+            ? '辨識結果已修改，請先按「重新比較差異」。'
+            : selectedCount === 0
+                ? '請勾選已人工核對、要套用的項目。'
+                : `已選 ${selectedCount} 項變更；按下按鈕後才會寫入帳戶。`;
+    };
+
+    diffPanel.append(diffHeading, diffDescription);
+
+    const invalid = makeAssetHoldingDiffInvalidRows(diff.invalid);
+    if (invalid !== null) {
+        diffPanel.append(invalid);
+    }
+
+    diffPanel.append(
+        makeAssetHoldingDiffSection(
+            '覆蓋持倉',
+            '截圖與帳戶都有同一代號；勾選後直接用截圖數字覆蓋。',
+            diff.updates,
+            view.market,
+            assetScreenshotDraft.selections,
+            refreshSelectionSummary,
+            'update'),
+        makeAssetHoldingDiffSection(
+            '新增持倉',
+            '截圖有、帳戶沒有的代號；勾選後新增。',
+            diff.additions,
+            view.market,
+            assetScreenshotDraft.selections,
+            refreshSelectionSummary,
+            'addition'),
+        makeAssetHoldingDiffSection(
+            '移除持倉',
+            '帳戶有、截圖沒有的代號；為避免 OCR 漏列誤刪，預設不勾選。',
+            diff.removals,
+            view.market,
+            assetScreenshotDraft.selections,
+            refreshSelectionSummary,
+            'removal'));
+
+    if (assetScreenshotDraft.notice !== '') {
+        const notice = document.createElement('p');
+        notice.className = 'asset-screenshot-feedback';
+        notice.textContent = assetScreenshotDraft.notice;
+        diffPanel.append(notice);
+    }
+
+    const diffActions = document.createElement('div');
+    diffActions.className = 'asset-editor-actions asset-holding-diff-actions';
+    diffActions.append(selectionSummary, apply);
+    diffPanel.append(diffActions);
+
+    const editor = document.createElement('details');
+    editor.className = 'asset-screenshot-editor';
+    editor.open = assetScreenshotDraft.diffStale === true;
+    const editorHeading = document.createElement('summary');
+    editorHeading.textContent = `修改辨識結果（${assetScreenshotDraft.rows.length} 列）`;
+    const editorHint = document.createElement('p');
+    editorHint.textContent = '修正欄位、補上代號或新增一列後，請按「重新比較差異」。';
+    const editorActions = document.createElement('div');
+    editorActions.className = 'asset-editor-actions';
+    editorActions.append(
         assetButton('＋ 一列', 'asset-secondary-button', () => {
             assetScreenshotDraft.rows = [...readAssetDraftRows(body), assetDraftRowFrom({})];
+            assetScreenshotDraft.diffStale = true;
+            assetScreenshotDraft.notice = '已新增空白列；完成後請重新比較差異。';
+            renderAssetsDashboard();
+        }),
+        assetButton('重新比較差異', 'asset-secondary-button', () => {
+            const rows = readAssetDraftRows(body).filter(row => row.ticker !== '' || row.name !== '');
+
+            if (rows.length === 0) {
+                assetScreenshotDraft.notice = '沒有可比較的列；請至少填入一筆代號或名稱。';
+                renderAssetsDashboard();
+                return;
+            }
+
+            refreshAssetScreenshotDiff(view.holdings, rows);
+            assetScreenshotDraft.notice = '已依目前辨識結果重新列出差異；請勾選要套用的項目。';
             renderAssetsDashboard();
         }),
         assetButton('取消', 'asset-secondary-button', () => {
             discardAssetScreenshotDraft();
             assetActionNotice = '已取消這次截圖，持倉沒有變動。';
             renderAssetsDashboard();
-        }),
-        apply);
+        }));
+    editor.append(editorHeading, editorHint, table, editorActions);
 
     review.addEventListener('submit', async event => {
         event.preventDefault();
-        const rows = readAssetDraftRows(body).filter(row => row.ticker !== '' || row.name !== '');
-
-        if (rows.length === 0) {
-            assetActionNotice = '這張表沒有任何一列填了代號或名稱，沒有東西可以套用。';
+        if (assetScreenshotDraft.diffStale) {
+            assetScreenshotDraft.notice = '辨識結果已修改，請先重新比較差異。';
             renderAssetsDashboard();
             return;
         }
 
-        if (rows.some(row => !row.confirmed)) {
-            assetActionNotice = '為了避免 OCR 誤讀覆寫帳戶，請逐列核對數字並勾選「已核對」後再套用。';
+        const selected = selectedChanges();
+
+        if (selected.length === 0) {
+            assetScreenshotDraft.notice = '請至少勾選一項已核對的差異。';
             renderAssetsDashboard();
             return;
         }
 
-        if (!window.confirm(`確定以這 ${rows.length} 列取代「${view.name}」目前的全部持倉？`)) {
-            return;
-        }
-
+        const updates = selected.filter(change => change.kind === 'update');
+        const additions = selected.filter(change => change.kind === 'addition');
+        const removals = selected.filter(change => change.kind === 'removal');
         const accountId = view.id;
         const done = await runAssetAction(
-            '寫入中…',
+            `套用 ${selected.length} 項差異中…`,
             async () => {
-                await assetRemove(ASSET_HOLDINGS_TABLE, `?account_id=eq.${encodeURIComponent(accountId)}`);
-                await assetInsert(ASSET_HOLDINGS_TABLE, rows.map((row, index) => ({
-                    id: crypto.randomUUID(),
-                    account_id: accountId,
-                    ticker: row.ticker,
-                    name: row.name,
-                    quantity: assetNumber(row.quantity),
-                    cost: assetNumber(row.cost),
-                    market_value: assetNumber(row.marketValue),
-                    unrealized: assetNumber(row.unrealized),
-                    source: 'ocr',
-                    sort_order: index
-                })));
+                // 先更新、再新增、最後才移除。網路若中斷，最保守的結果是留下舊持倉，
+                // 而不是先清空帳戶；runAssetAction 失敗時也會重新讀取實際資料庫狀態。
+                for (const change of updates) {
+                    await assetUpdate(
+                        ASSET_HOLDINGS_TABLE,
+                        change.holding.id,
+                        assetHoldingWriteBody(change.draft, change.holding.sortOrder));
+                }
+
+                let nextSortOrder = Math.max(
+                    -1,
+                    ...view.holdings.map(holding => assetNumber(holding.sortOrder) ?? 0)) + 1;
+
+                for (const change of additions) {
+                    await assetInsert(ASSET_HOLDINGS_TABLE, {
+                        id: crypto.randomUUID(),
+                        account_id: accountId,
+                        ...assetHoldingWriteBody(change.draft, nextSortOrder)
+                    });
+                    nextSortOrder += 1;
+                }
+
+                for (const change of removals) {
+                    await assetRemove(
+                        ASSET_HOLDINGS_TABLE,
+                        `?id=eq.${encodeURIComponent(change.holding.id)}`);
+                }
+
                 await assetUpdate(ASSET_ACCOUNTS_TABLE, accountId, {});
             },
-            `已套用 ${rows.length} 筆持倉，資產表格同步更新。`);
+            `已套用 ${selected.length} 項差異：覆蓋 ${updates.length}、新增 ${additions.length}、移除 ${removals.length}。`);
 
         if (done) {
             discardAssetScreenshotDraft();
             renderAssetsDashboard();
+        } else if (assetScreenshotDraft?.accountId === view.id) {
+            if (assetsLoadError === null) {
+                // 失敗前可能已有部分更新成功；清掉舊差異快照，讓下一次畫面一定以剛重讀
+                // 到的持倉重算，避免重試時把已成功新增的同代號再插入一次。
+                assetScreenshotDraft.diff = null;
+                assetScreenshotDraft.selections = {};
+                assetScreenshotDraft.diffStale = false;
+                assetScreenshotDraft.notice = `${assetActionNotice} 已依目前資料重新列出差異，請重新勾選。`;
+            } else {
+                // 讀不到資料庫時沒有安全的基準可重算，先鎖住套用，請使用者重新整理確認。
+                assetScreenshotDraft.diffStale = true;
+                assetScreenshotDraft.notice = assetActionNotice;
+            }
+            renderAssetsDashboard();
         }
     });
 
-    review.append(table, actions);
+    body.addEventListener('input', () => {
+        if (!assetScreenshotDraft.diffStale) {
+            assetScreenshotDraft.diffStale = true;
+            assetScreenshotDraft.notice = '辨識結果已修改，請按「重新比較差異」再套用。';
+            refreshSelectionSummary();
+        }
+    });
+    refreshSelectionSummary();
+    review.append(diffPanel, editor);
     section.append(previews, caption, review);
     return section;
 }
