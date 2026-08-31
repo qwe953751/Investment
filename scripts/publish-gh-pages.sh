@@ -18,12 +18,17 @@
 # 專案要換發布網址想避免的事，所以發布用的 commit 一律用機器人身分，不管是
 # CI 自動跑還是本機手動跑。
 #
-# GH_PAGES_ADMIN_SUBDIR：設定時（例如 admin888），真正的網站內容改發到這個
-# 子路徑，網域根目錄只留一頁看不到任何內容的空白頁。不設定時，連子路徑都不發，
-# 整個網域只有那頁空白頁——舊網址（qwe953751.github.io/Investment/）就是這樣用，
-# 等於整個網站在那個網域上完全隱藏。用子路徑當最高權限的門檻，跟原本的
-# ?access=viewer 一樣本來就不是真正的存取控制，只是讓路過的訪客看到空白頁，
-# 知道網址、故意去找的人才看得到內容。
+# GH_PAGES_ADMIN_SUBDIR：設定時（例如 admin888），真正的網站內容發到這個子路徑，
+# 網域根目錄與 .../viewer/ 都是同網域 iframe 轉發頁，內嵌 $admin_subdir/?access=viewer
+# ——網址列停在根目錄／viewer/，訪客模式（訪客層級，見筆記 #37 三層權限）。
+# 不設定 GH_PAGES_ADMIN_SUBDIR 時，連子路徑都不發，整個網域只有空白頁——舊網址
+# （qwe953751.github.io/Investment/）就是這樣用，等於整個網站在那個網域上完全隱藏，
+# 這次「復原根目錄預設訪客模式」只動有設定 admin_subdir 的網域，不影響這個舊網址。
+#
+# 2026-08-25 之前根目錄也是空白頁，理由是「拿子路徑當最高權限門檻，路過的人只看
+# 得到空白頁」——但那時還沒有登入機制，訪客／監控者／最高權限現在是靠密碼分層
+# （筆記 #37），子路徑只是不想讓網址列直接暴露 admin888 字樣，不是唯一防線，所以
+# 根目錄改回顯示訪客內容是安全的。
 
 set -euo pipefail
 
@@ -50,10 +55,56 @@ print(manifest['version'], manifest.get('latestTradingDate', '?'))
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# 網域根目錄一律只放空白頁，不含任何排行資料或版面——這是刻意的行為，不是
-# 漏推：真正的內容只會出現在 GH_PAGES_ADMIN_SUBDIR 指定的子路徑之下；沒設
-# 子路徑時，這個網域完全不發布內容。
-cat > "$work/index.html" <<'HTML'
+# 產生一頁同網域 iframe 轉發頁：網址列停在 $2，實際內容來自 $3（登入功能上線後
+# 已經有真正的密碼驗證，這裡只是不想讓網址列直接暴露 $admin_subdir 這個字串）。
+#
+# 轉發頁自己的網址列 query string（例如長者友善連結 ?key=密碼）會原封不動轉貼到
+# iframe 的 src 後面，這樣 .../viewer/?key=xxx 才能跟直接打 admin888/?key=xxx 一樣
+# 觸發 site.js 的自動登入（見 site.js 內 AUTOLOGIN_QUERY 那段說明）；site.js 用完
+# 這個 key 之後只會清掉「它自己那份網址」（iframe 內的 admin888/...）的 query
+# string，轉發頁本身網址列上的 ?key= 不會被自動拿掉，分享出去的長者友善連結若含
+# 密碼要自行避免外流，跟直接分享 admin888 連結風險相同。
+write_iframe_page() {
+    local dest="$1" title="$2" target="$3"
+    mkdir -p "$dest"
+    cat > "$dest/index.html" <<HTML
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>$title</title>
+  <style>
+    html, body { margin: 0; height: 100%; }
+    iframe { display: block; width: 100%; height: 100%; border: 0; }
+  </style>
+</head>
+<body>
+  <iframe id="viewer-frame" title="Frank Investment 檢視頁面"></iframe>
+  <script>
+    var target = '$target';
+    var forwarded = window.location.search.replace(/^\\?/, '');
+    if (forwarded) {
+      target += (target.indexOf('?') === -1 ? '?' : '&') + forwarded;
+    }
+    document.getElementById('viewer-frame').src = target;
+  </script>
+</body>
+</html>
+HTML
+}
+
+if [ -n "$admin_subdir" ]; then
+    # 網域根目錄改回訪客模式（跟 .../viewer/ 用同一招同網域 iframe，網址列停在
+    # 根目錄，不會暴露 $admin_subdir 這個字串）。筆記 #37 上線後已經有密碼登入，
+    # 根目錄預設訪客只是初始畫面，訪客／監控者／最高權限仍然看登入狀態決定，
+    # 不是靠網址本身擋人。
+    write_iframe_page "$work" "Frank Investment" "$admin_subdir/?access=viewer"
+else
+    # 沒設定 $admin_subdir 的網域（例如舊網址 qwe953751.github.io/Investment/）
+    # 維持完全空白，這個網域從沒真正發布過內容，不在這次「復原根目錄」範圍內。
+    cat > "$work/index.html" <<'HTML'
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -65,6 +116,7 @@ cat > "$work/index.html" <<'HTML'
 <body></body>
 </html>
 HTML
+fi
 
 # 不讓 GitHub Pages 拿 Jekyll 處理這份產出，否則底線開頭的檔名會被吃掉。
 touch "$work/.nojekyll"
@@ -87,35 +139,16 @@ if [ -n "$admin_subdir" ]; then
     # view-source（純看原始碼、不執行 JS）都看不到 $admin_subdir 字樣，只有
     # 主動按 F12 開發者工具（Elements／Network）才挖得到。之前評估過 iframe 內嵌
     # 別的網域會在原始碼裡直接暴露目標網址（Investment-view 那次），但這裡是
-    # 同網域內嵌、且 src 是執行期才寫入，不會有那個問題。
+    # 同網域內嵌、且 src 是執行期才寫入，不會有那個問題。根目錄的轉發頁用的是
+    # 同一招（見上方 write_iframe_page）。
     #
     # 這仍然不是真正的存取控制：$admin_subdir/?access=viewer 這個網址一旦被挖
-    # 出來，拿掉 ?access=viewer 還是能看到最高權限畫面（沒有登入機制）。這裡要
-    # 擋的是「分享檢視網址時，網址列本身就洩漏最高權限路徑」這件事，不是防堵
-    # 刻意打開開發者工具去找的人——跟這個專案其他地方的作法一致（見上面
+    # 出來，拿掉 ?access=viewer 還是能看到最高權限畫面——但筆記 #37 上線後，
+    # 看得到畫面不等於能改資料或看見資產金額，那些頁籤與登入層級仍然要密碼。
+    # 這裡要擋的只是「分享網址時，網址列本身就洩漏 $admin_subdir 路徑」這件事，
+    # 不是防堵刻意打開開發者工具去找的人——跟這個專案其他地方的作法一致（見上面
     # GH_PAGES_ADMIN_SUBDIR 那段說明）。
-    mkdir -p "$work/viewer"
-    cat > "$work/viewer/index.html" <<HTML
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex">
-  <title>Frank Investment｜檢視</title>
-  <style>
-    html, body { margin: 0; height: 100%; }
-    iframe { display: block; width: 100%; height: 100%; border: 0; }
-  </style>
-</head>
-<body>
-  <iframe id="viewer-frame" title="Frank Investment 檢視頁面"></iframe>
-  <script>
-    document.getElementById('viewer-frame').src = '../$admin_subdir/?access=viewer';
-  </script>
-</body>
-</html>
-HTML
+    write_iframe_page "$work/viewer" "Frank Investment｜檢視" "../$admin_subdir/?access=viewer"
 fi
 
 # GitHub Pages 的 branch 發布會把 CNAME 放在來源分支；本腳本每次產生 orphan
@@ -133,7 +166,7 @@ git commit -qm "更新排行快照 $version"
 git push -qf "$remote" gh-pages
 
 if [ -n "$admin_subdir" ]; then
-    echo "已發佈快照 $version（最新交易日 $trade_date），最高權限在 $admin_subdir/，根目錄為空白頁"
+    echo "已發佈快照 $version（最新交易日 $trade_date），最高權限在 $admin_subdir/，根目錄與 viewer/ 為訪客模式轉發頁"
 else
     echo "已發佈空白頁（無內容），未對外公開任何排行資料（最新交易日 $trade_date）"
 fi

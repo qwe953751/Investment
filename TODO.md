@@ -23,7 +23,7 @@
 | 9 | [已合併的遠端分支要不要刪](#todo-9) | 🟡 等你決定 |
 | 10 | [盤中「成交比變化」疑似每列都是 +0.01%](#todo-10) | 🟡 等盤中確認 |
 | 11 | [盤中輪距要不要縮到 1 分鐘](#todo-11) | 🟡 等第 8 項換完資料來源 |
-| 12 | [最高權限改到 admin888 子路徑，新舊網址根目錄已收掉內容，等你各裝置驗證](#todo-12) | 🟡 等你驗證 |
+| 12 | [最高權限在 admin888 子路徑；frank-invest.github.io 根目錄已改回訪客模式（尚未發布）](#todo-12) | 🟡 等發布並驗證 |
 | 13 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-13) | 🟡 等資料 |
 | 14 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-14) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 15 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-15) | 🟡 已改走 CDN，等 8/31 量實際流量 |
@@ -693,7 +693,9 @@ key 是 `invest.lockedTickers`、讀寫都包 try/catch 讓無痕模式不會炸
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：最高權限改發到 `frank-invest.github.io/admin888/`，新舊網址根目錄都已收掉內容，只剩空白頁**
+**狀態：最高權限在 `frank-invest.github.io/admin888/`；`frank-invest.github.io/`
+根目錄已改回訪客模式（程式已 commit 並推送 `main`，尚未發布，見下方
+「根目錄復原訪客模式」一節）；`qwe953751.github.io/Investment/` 根目錄維持空白頁**
 
 ### 已討論（2026-08-24）
 
@@ -818,6 +820,26 @@ org 管理畫面**，不是訪客看到的樣子。那兩個按鈕本來就只�
 `?access=viewer`）的風險等級一致。本機用假的 bare repo 重跑過
 `publish-gh-pages.sh`，確認 `viewer/index.html` 產出的 iframe `src` 正確
 帶出 `../admin888/?access=viewer`。
+
+### 根目錄復原訪客模式、登入列改版面（2026-09-01，已 commit 並推送，尚未發布）
+
+筆記 #37 的密碼登入三層權限上線後，子路徑（`admin888`）不再是唯一防線——訪客／
+監控者／最高權限已經看登入狀態決定，所以你要求把 `frank-invest.github.io/`
+根目錄從「刻意留空白頁擋人」復原成訪客模式。已做完：
+
+- `scripts/publish-gh-pages.sh` 新增可重用的 `write_iframe_page()`，根目錄跟
+  `viewer/` 現在都用同一招同網域 iframe 轉發頁，內嵌 `admin888/?access=viewer`，
+  網址列不會出現 `admin888` 字樣。只動有設 `GH_PAGES_ADMIN_SUBDIR` 的發布目標
+  （`frank-invest.github.io`），舊網址 `qwe953751.github.io/Investment/` 沒有
+  設這個變數，維持原本的空白頁不受影響，不在這次復原範圍內。
+- 轉發頁會把自己網址列的 query string（例如 `?key=密碼`）轉貼進 iframe 的
+  src，所以長者友善連結之後可以直接分享 `.../viewer/?key=<密碼>`，不用先進
+  `admin888/`。
+- 順便把登入列（`#access-bar`）從「頁首最上面單獨一整條」改成併入標題那一排、
+  推到右上角，視窗窄於 720px 時跟原本一樣整條換到下一行。
+- 本機用假 remote 跑過 `publish-gh-pages.sh` 驗證產出內容，也用真實資料本機
+  預覽過新版面。**這次只 commit／push，沒有觸發 publish-only 發布**，正式網站
+  要等下一次明確要求發布才會變成訪客模式。
 
 ### 尚未做的
 

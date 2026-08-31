@@ -93,13 +93,16 @@ body {
     background: #f7f1ff;
 }
 
-/* 登入列：跟檢視切換分開放一排，隨時看得到目前權限。 */
+/* 登入列：跟標題同一排，靠右對齊（右上角），不是版面最上面單獨一整條。
+   margin-left: auto 讓它在 .page-title 這個 flex 容器裡被推到最右邊；
+   視窗太窄放不下時，flex-wrap 會讓它自己換到下一行，換行後 margin-left: auto
+   一樣會把它推到那一行的最右邊，不會變成貼左。 */
 .access-bar {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 8px;
-    margin-bottom: 12px;
+    margin-left: auto;
     padding: 8px 12px;
     border: 1px solid #ddd;
     border-radius: 10px;
@@ -3608,6 +3611,7 @@ td.stock-name.stock-name-change-down {
 
     .access-bar {
         width: 100%;
+        margin-left: 0;
         box-sizing: border-box;
     }
 
