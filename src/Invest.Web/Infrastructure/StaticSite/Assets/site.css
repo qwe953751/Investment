@@ -1347,6 +1347,13 @@ body {
     gap: 12px;
 }
 
+.asset-section-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
 .asset-dashboard-user-controls {
     display: flex;
     flex-wrap: wrap;
@@ -1475,6 +1482,23 @@ body {
     font-weight: 600;
 }
 
+.asset-table-sort-button {
+    margin: -7px -9px;
+    padding: 7px 9px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    cursor: pointer;
+}
+
+.asset-table-sort-button:hover,
+.asset-table-sort-button:focus-visible {
+    color: #175cd3;
+    text-decoration: underline;
+}
+
 .asset-preview-table th:first-child,
 .asset-preview-table td:first-child,
 .asset-preview-table th:nth-child(2),
@@ -1590,6 +1614,24 @@ body {
     line-height: 1.35;
     text-overflow: clip;
     white-space: normal;
+}
+
+.asset-dual-currency-value {
+    display: grid;
+    gap: 2px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.35;
+}
+
+.asset-dual-currency-primary {
+    color: #1d2939;
+    font-weight: 700;
+}
+
+.asset-dual-currency-secondary {
+    color: #667085;
+    font-size: 12px;
+    font-weight: 500;
 }
 
 .asset-data-warning {
@@ -1926,6 +1968,39 @@ body {
     background: #fff;
     color: #1d2939;
     font: inherit;
+}
+
+.asset-holding-price-change {
+    display: grid;
+    gap: 2px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+}
+
+.asset-holding-quote-session {
+    color: #667085;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.asset-holding-batch-editor {
+    overflow: hidden;
+}
+
+.asset-holding-batch-editor > h3,
+.asset-holding-batch-editor > p {
+    margin-top: 0;
+}
+
+.asset-holding-batch-table {
+    display: block;
+    overflow-x: auto;
+}
+
+.asset-holding-batch-table input {
+    box-sizing: border-box;
+    min-width: 112px;
+    width: 100%;
 }
 
 .asset-review-table td {
@@ -3503,6 +3578,10 @@ td.stock-name.stock-name-change-down {
     }
 
     .asset-dashboard-user-controls {
+        justify-content: flex-start;
+    }
+
+    .asset-section-actions {
         justify-content: flex-start;
     }
 

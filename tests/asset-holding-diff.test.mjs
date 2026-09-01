@@ -53,6 +53,35 @@ function cashFlowNet() {
     return context.assetCashFlowNet;
 }
 
+function assetNumber() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext(functionSource('assetNumber'), context);
+    return context.assetNumber;
+}
+
+function assetGroupedAmountText() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext(functionSource('assetGroupedAmountText'), context);
+    return context.assetGroupedAmountText;
+}
+
+function holdingSort() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetHoldingTicker'),
+        functionSource('assetSortHoldings'),
+        functionSource('assetHoldingSortOrders')
+    ].join('\n\n'), context);
+    return {
+        sort: context.assetSortHoldings,
+        orders: context.assetHoldingSortOrders
+    };
+}
+
 test('同標的覆蓋、新增與可選移除會分開列出', () => {
     const diff = holdingDiff()(
         [
@@ -98,4 +127,42 @@ test('入金成本等於入金減出金，無效方向不會混入', () => {
         { direction: 'unknown', amount: 999999 },
         { direction: 'deposit', amount: null }
     ]), 75000);
+});
+
+test('含千分位的金額可用於出入金計算', () => {
+    assert.equal(assetNumber()('1,234,567.89'), 1234567.89);
+    const net = cashFlowNet()([
+        { direction: 'deposit', amount: '1,234,567.89' },
+        { direction: 'withdrawal', amount: '234,567.89' }
+    ]);
+
+    // JavaScript number 以二進位浮點相加；畫面會按幣別格式化，這裡只驗證金額意義。
+    assert.ok(Math.abs(net - 1000000) < 0.000001);
+});
+
+test('入金輸入保留任意位數與小數，同時以千分位呈現', () => {
+    const format = assetGroupedAmountText();
+
+    assert.equal(format('12345678901234567890.123456'), '12,345,678,901,234,567,890.123456');
+    assert.equal(format('-1234567.50'), '-1,234,567.50');
+    assert.equal(format('1,234,567'), '1,234,567');
+});
+
+test('持倉預設以代號排序，漲跌幅可排序且未知值固定排在最後', () => {
+    const holdings = [
+        { id: 'b', ticker: '2330', priceChange: 0.025 },
+        { id: 'a', ticker: '0050', priceChange: null },
+        { id: 'c', ticker: '1101', priceChange: -0.01 }
+    ];
+    const { sort, orders } = holdingSort();
+
+    assert.deepEqual(JSON.parse(JSON.stringify(sort(holdings).map(row => row.ticker))),
+        ['0050', '1101', '2330']);
+    assert.deepEqual(JSON.parse(JSON.stringify(sort(holdings, 'priceChange', 'desc').map(row => row.ticker))),
+        ['2330', '1101', '0050']);
+    assert.deepEqual(JSON.parse(JSON.stringify(orders(holdings))), [
+        { id: 'a', sortOrder: 0 },
+        { id: 'c', sortOrder: 1 },
+        { id: 'b', sortOrder: 2 }
+    ]);
 });

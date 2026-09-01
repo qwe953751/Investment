@@ -24,6 +24,7 @@ using System.Text.Json.Serialization;
 // 命令列模式：
 //   dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-bars [交易日數] [起始日期]
+//   dotnet run --project src/Invest.Web -- backfill-etfs [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- verify-kline-cache [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-us
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
@@ -41,7 +42,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "verify-kline-cache" or "backfill-us" or "export" or "intraday" or "backfill-intraday-heat"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "export" or "intraday" or "backfill-intraday-heat"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -59,6 +60,7 @@ builder.Services.Configure<UsMarketDataOptions>(
 // 官方網站會擋掉沒有 User-Agent 的請求，這些 client 一定要帶。
 builder.Services.AddHttpClient<TwseDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexDailyQuoteClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<TaiwanEtfCatalogClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexMarketIndexClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseNonRegularTradingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexNonRegularTradingClient>(ConfigureQuoteClient);
@@ -115,6 +117,12 @@ if (command is "backfill")
 if (command is "backfill-bars")
 {
     await RunDailyBarBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-etfs")
+{
+    await RunEtfBackfillAsync(app.Services, args);
     return;
 }
 
@@ -1371,6 +1379,59 @@ static async Task RunDailyBarBackfillAsync(IServiceProvider services, string[] a
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。已完成的日 K 都保留在快取，重跑會從缺少的日期繼續。");
+    }
+}
+
+/// <summary>
+/// 以交易所官方 ETF 名冊補齊既有快取。這個指令會寫入 data/imports，
+/// 應只在 data branch 與明確資料更新授權下執行。
+/// </summary>
+static async Task RunEtfBackfillAsync(IServiceProvider services, string[] args)
+{
+    var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 300;
+    var startFrom = args.Length > 2 && DateOnly.TryParse(args[2], out var parsedDate)
+        ? parsedDate
+        : DateOnly.FromDateTime(DateTime.Today);
+
+    using var scope = services.CreateScope();
+    var downloader = scope.ServiceProvider.GetRequiredService<MarketDataDownloader>();
+    var store = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
+
+    Console.WriteLine($"開始補抓最近 {targetTradingDays} 個交易日的 ETF 行情與日 K，截止 {startFrom:yyyy-MM-dd}。");
+    Console.WriteLine($"快取位置：{store.Directory}");
+    Console.WriteLine("只新增或更新官方名冊確認的 ETF，不會重算一般股票的成交值排行。");
+    Console.WriteLine();
+
+    var progress = new Progress<string>(Console.WriteLine);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        var report = await downloader.BackfillEtfsAsync(
+            targetTradingDays, startFrom, progress, cts.Token);
+
+        Console.WriteLine();
+        Console.WriteLine($"完成。涵蓋 {report.TradingDayCount} 天"
+            + $"（補入 ETF {report.UpdatedCount}、略過已補快取 {report.SkippedCount}）。");
+
+        if (report.FailedDates.Count > 0)
+        {
+            Console.WriteLine($"失敗 {report.FailedDates.Count} 天："
+                + string.Join(", ", report.FailedDates.Select(date => date.ToString("yyyy-MM-dd"))));
+            Console.WriteLine("重跑同一個指令即可補上失敗日期。");
+            Environment.ExitCode = 1;
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine();
+        Console.WriteLine("已中斷。完成的 ETF 快取已保留，重跑會從尚未補齊的日期繼續。");
     }
 }
 

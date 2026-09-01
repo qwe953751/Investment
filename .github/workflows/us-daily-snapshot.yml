@@ -6,8 +6,9 @@
 # 行情快取放在同一個 repo 的 data 分支，跟台股快照共用同一個分支，
 # 但目錄各自獨立（data/imports-us/ vs data/imports/），互不覆蓋。
 #
-# 沒有匯出、發佈靜態網站的步驟：目前沒有美股排行頁面要發布，這條流程只負責
-# 把資料備好，讓資產表未來直接讀 Supabase 的 daily_quotes_view。
+# 美股沒有獨立排行頁；但資產頁的 K 線與代號名冊讀靜態快照。因此只要 imports-us
+# 有新資料，就交給既有 daily-snapshot.yml 的 publish-only 路徑重新輸出／發布；不在
+# 這裡直接碰 gh-pages，也不重跑台股回補、同步或備份。
 
 name: 每日美股快照
 
@@ -27,6 +28,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: us-daily-snapshot
@@ -81,6 +83,7 @@ jobs:
         run: dotnet run -c Release --project src/Invest.Web -- backfill-us
 
       - name: 保存行情快取
+        id: cache
         working-directory: data
         run: |
           git add -A imports-us
@@ -95,6 +98,7 @@ jobs:
 
           if git diff --cached --quiet; then
               echo "沒有新的交易日，快取不變。"
+              echo "changed=false" >> "$GITHUB_OUTPUT"
               exit 0
           fi
 
@@ -102,6 +106,16 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -qm "美股行情快取 $(date +%Y-%m-%d)"
           git push -q
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # 靜態資產頁的美股 K 線／名冊是 exporter 從 data/imports-us 產出的。這裡只在
+      # 快取實際新增後叫既有 publish-only；它有自己的併發鎖與日 K 驗證，且不會等待
+      # 或干擾完整台股盤後快照。
+      - name: 發布含美股資料的資產快照
+        if: ${{ !cancelled() && steps.cache.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run daily-snapshot.yml --ref main -f trading-days=300 -f publish-only=true
 
       # 以下每一步都用 !cancelled()，回補失敗不該連帶讓對帳、心跳也整條沒跑，
       # 任何一步紅了整個 job 還是紅的，但彼此的結果不會互相拖累。

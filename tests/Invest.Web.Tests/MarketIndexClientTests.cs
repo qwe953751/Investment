@@ -161,6 +161,31 @@ public sealed class MarketIndexClientTests
         Assert.Equal(682m, quote.ClosePrice);
     }
 
+    [Fact]
+    public async Task 只有官方ETF名冊列出的標的才會與一般股票一起解析()
+    {
+        var client = new TwseDailyQuoteClient(
+            new HttpClient(new CannedResponseHandler("""
+                {"tables":[{
+                    "title":"每日收盤行情(全部)",
+                    "data":[
+                      ["2330","台積電","1,000","100","1,000,000","1000","1010","990","1005"],
+                      ["0050","元大台灣50","2,000","200","200,000","100","101","99","100"],
+                      ["01002T","土開","100","10","1,000","10","11","9","10"]
+                    ]
+                }],"stat":"OK"}
+                """)),
+            NullLogger<TwseDailyQuoteClient>.Instance);
+
+        var quotes = await client.GetDailyQuotesAsync(
+            new DateOnly(2026, 8, 18),
+            new HashSet<string>(["0050"], StringComparer.Ordinal));
+
+        Assert.Equal(["0050", "2330"], quotes.Select(quote => quote.Ticker).OrderBy(ticker => ticker));
+        Assert.Equal(StockKind.Etf, quotes.Single(quote => quote.Ticker == "0050").Kind);
+        Assert.Equal(StockKind.CommonStock, quotes.Single(quote => quote.Ticker == "2330").Kind);
+    }
+
     private sealed class CannedResponseHandler(string json) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(

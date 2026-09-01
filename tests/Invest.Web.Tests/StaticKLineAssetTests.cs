@@ -1055,16 +1055,19 @@ public sealed class StaticKLineAssetTests
         Assert.DoesNotContain("market_value", accountsTable, StringComparison.Ordinal);
         Assert.DoesNotContain("unrealized", accountsTable, StringComparison.Ordinal);
 
-        Assert.Contains("const sum = account.market === '美股' ? assetSumComplete : assetSum;", script, StringComparison.Ordinal);
-        Assert.Contains("const cost = sum(holdings, holding => holding.cost);", script, StringComparison.Ordinal);
-        Assert.Contains("const marketValue = sum(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
+        Assert.Contains("const cost = assetSum(holdings, holding => holding.cost);", script, StringComparison.Ordinal);
+        Assert.Contains("const marketValue = assetSum(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
+        Assert.Contains("const completeMarketValue = assetSumComplete(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
+        Assert.Contains("const totalValue = holdings.length === 0\n        ? account.cash", script, StringComparison.Ordinal);
         Assert.Contains("marketValue === null ? null : marketValue + account.cash", script, StringComparison.Ordinal);
+        Assert.Contains("const fundingCost = assetCashFlowAvailable ? assetCashFlowNet(cashFlows) : null;", script, StringComparison.Ordinal);
     }
 
     [Fact]
     public void 資產出入金以明細計算入金成本且未套用migration時不阻擋頁面()
     {
         var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "030_asset_cash_flows.sql"));
+        var unboundedAmountMigration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "032_asset_cash_flows_unbounded_amount.sql"));
         var script = ReadAsset("site.js");
 
         Assert.Contains("create table if not exists asset_cash_flows", migration, StringComparison.Ordinal);
@@ -1080,6 +1083,28 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("入金成本 = 入金合計 − 出金合計", script, StringComparison.Ordinal);
         Assert.Contains("入金成本（出入金淨額", script, StringComparison.Ordinal);
         Assert.Contains("出入金明細尚未啟用", script, StringComparison.Ordinal);
+        Assert.Contains("alter column amount type numeric", unboundedAmountMigration, StringComparison.Ordinal);
+        Assert.DoesNotContain("numeric(18, 2)", unboundedAmountMigration, StringComparison.Ordinal);
+        Assert.Contains("function assetGroupedAmountText", script, StringComparison.Ordinal);
+        Assert.Contains("function assetAmountField", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 資產持倉可批次編輯依代號或漲跌幅排序並以行情著色()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("編輯全部持倉", script, StringComparison.Ordinal);
+        Assert.Contains("function makeAssetHoldingBatchEditor", script, StringComparison.Ordinal);
+        Assert.Contains("function wireAssetTickerName", script, StringComparison.Ordinal);
+        Assert.Contains("function assetHoldingSortHeader", script, StringComparison.Ordinal);
+        Assert.Contains("assetHoldingSortHeader('代號', 'ticker')", script, StringComparison.Ordinal);
+        Assert.Contains("assetHoldingSortHeader(title, 'priceChange')", script, StringComparison.Ordinal);
+        Assert.Contains("function assetHoldingPriceChangeText", script, StringComparison.Ordinal);
+        Assert.Contains("stockNameChangeClass(holding.priceChange)", script, StringComparison.Ordinal);
+        Assert.Contains("quoteSession: '盤後'", script, StringComparison.Ordinal);
+        Assert.Contains("session: '盤中'", script, StringComparison.Ordinal);
+        Assert.Contains("function assetPersistHoldingSortOrders", script, StringComparison.Ordinal);
     }
 
     // 大標題不再叫「資產 Dashboard（瀏覽器樣板）」，整個靜態站也不該再有樣板字眼。
@@ -1537,6 +1562,7 @@ public sealed class StaticKLineAssetTests
     [Fact]
     public void 美股帳戶使用美元且總值同時顯示台幣與美元()
     {
+        var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "033_latest_us_quotes_previous_close.sql"));
         var script = ReadAsset("site.js");
 
         Assert.Contains("const ASSET_EXCHANGE_RATES_TABLE = 'exchange_rates';", script, StringComparison.Ordinal);
@@ -1548,8 +1574,17 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("assetEnrichOcrRows(result.rows, market)", script, StringComparison.Ordinal);
         Assert.Contains("為避免把成本誤當市值", script, StringComparison.Ordinal);
         Assert.Contains("marketValue: null", script, StringComparison.Ordinal);
-        Assert.Contains("views.length === 0 ? 0 : assetSumComplete(views, view => view.twdCash)", script, StringComparison.Ordinal);
-        Assert.Contains("holding.ticker.trim().toUpperCase()", script, StringComparison.Ordinal);
+        Assert.Contains("marketValue: assetSum(holdingViews, view => view.twdMarketValue)", script, StringComparison.Ordinal);
+        Assert.Contains("cash: views.length === 0 ? 0 : assetSum(views, view => view.twdCash)", script, StringComparison.Ordinal);
+        Assert.Contains("totalValue: assetSum(views, view => view.twdTotalValue)", script, StringComparison.Ordinal);
+        Assert.Contains("previous_close_price", migration, StringComparison.Ordinal);
+        Assert.Contains("lag(d.close_price)", migration, StringComparison.Ordinal);
+        Assert.Contains("previous_close_price", script, StringComparison.Ordinal);
+        Assert.Contains("function assetDualCurrencyValue", script, StringComparison.Ordinal);
+        Assert.Contains("function assetMarketCurrencyValue", script, StringComparison.Ordinal);
+        Assert.Contains("僅加總已有行情的持倉", script, StringComparison.Ordinal);
+        Assert.Contains("function assetHoldingTicker(row)", script, StringComparison.Ordinal);
+        Assert.Contains("assetHoldingTicker(holding)", script, StringComparison.Ordinal);
         Assert.Contains("US$", script, StringComparison.Ordinal);
     }
 
@@ -1570,10 +1605,13 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("bars?.at(-1)?.date", script, StringComparison.Ordinal);
         Assert.Contains("payload?.market === 'US'", script, StringComparison.Ordinal);
         Assert.Contains("payload?.adjustmentMethod === 'raw-us-daily'", script, StringComparison.Ordinal);
+        Assert.Contains("payload?.adjustmentMethod === 'raw-tw-etf-daily'", script, StringComparison.Ordinal);
         Assert.Contains("美股日 K", script, StringComparison.Ordinal);
         Assert.Contains("await usDailyQuotes.LoadAllAsync(cancellationToken)", exporter, StringComparison.Ordinal);
         Assert.Contains("quote.Market == Market.Us", exporter, StringComparison.Ordinal);
         Assert.Contains("\"raw-us-daily\"", exporter, StringComparison.Ordinal);
+        Assert.Contains("\"raw-tw-etf-daily\"", exporter, StringComparison.Ordinal);
+        Assert.Contains("asset-catalog.json", exporter, StringComparison.Ordinal);
     }
 
     /// <summary>

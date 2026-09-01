@@ -19,7 +19,15 @@ public static class MarketHeatCalculator
     public static MarketHeatMetrics? Calculate(
         MarketDataSet dataSet,
         DateOnly endDate)
-        => Calculate(dataSet.DailyTrading, dataSet.MarketIndices, endDate);
+    {
+        var stocks = dataSet.Stocks.ToDictionary(stock => stock.Ticker, StringComparer.Ordinal);
+        var commonStockTrading = dataSet.DailyTrading
+            .Where(row => stocks.TryGetValue(row.Ticker, out var stock)
+                && stock.Kind == StockKind.CommonStock)
+            .ToArray();
+
+        return Calculate(commonStockTrading, dataSet.MarketIndices, endDate);
+    }
 
     public static MarketHeatMetrics? Calculate(
         IReadOnlyList<DailyStockTrading> trading,

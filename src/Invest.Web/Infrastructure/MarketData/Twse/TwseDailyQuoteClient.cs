@@ -19,11 +19,29 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
     public async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesAsync(
         DateOnly tradingDate,
         CancellationToken cancellationToken = default)
-        => (await GetDailyDataAsync(tradingDate, cancellationToken)).Quotes;
+        => (await GetDailyDataCoreAsync(tradingDate, null, cancellationToken)).Quotes;
 
-    public async Task<TwseDailyData> GetDailyDataAsync(
+    public async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesAsync(
+        DateOnly tradingDate,
+        IReadOnlySet<string> etfTickers,
+        CancellationToken cancellationToken = default)
+        => (await GetDailyDataCoreAsync(tradingDate, etfTickers, cancellationToken)).Quotes;
+
+    public Task<TwseDailyData> GetDailyDataAsync(
         DateOnly tradingDate,
         CancellationToken cancellationToken = default)
+        => GetDailyDataCoreAsync(tradingDate, null, cancellationToken);
+
+    public Task<TwseDailyData> GetDailyDataAsync(
+        DateOnly tradingDate,
+        IReadOnlySet<string> etfTickers,
+        CancellationToken cancellationToken = default)
+        => GetDailyDataCoreAsync(tradingDate, etfTickers, cancellationToken);
+
+    private async Task<TwseDailyData> GetDailyDataCoreAsync(
+        DateOnly tradingDate,
+        IReadOnlySet<string>? etfTickers,
+        CancellationToken cancellationToken)
     {
         var url = "https://wwwc.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
             + $"?date={tradingDate:yyyyMMdd}&type=ALLBUT0999&response=json";
@@ -55,7 +73,7 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
             && rows.ValueKind == JsonValueKind.Array)
         {
             quotes = rows.EnumerateArray()
-                .Select(ParseRow)
+                .Select(row => ParseRow(row, etfTickers))
                 .OfType<DailyQuote>()
                 .ToArray();
         }
@@ -114,7 +132,7 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
     /// 欄位順序：0 證券代號、1 證券名稱、2 成交股數、3 成交筆數、4 成交金額、
     /// 5 開盤價、6 最高價、7 最低價、8 收盤價。
     /// </summary>
-    private static DailyQuote? ParseRow(JsonElement row)
+    private static DailyQuote? ParseRow(JsonElement row, IReadOnlySet<string>? etfTickers)
     {
         if (row.ValueKind != JsonValueKind.Array || row.GetArrayLength() < 9)
         {
@@ -123,7 +141,9 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
 
         var ticker = row[0].GetString()?.Trim();
 
-        if (!QuoteFieldParser.IsCommonStockTicker(ticker))
+        var kind = QuoteFieldParser.GetTaiwanStockKind(ticker, etfTickers);
+
+        if (kind is null)
         {
             return null;
         }
@@ -133,6 +153,7 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
             Market = Market.Twse,
             Ticker = ticker!,
             Name = row[1].GetString()?.Trim() ?? ticker!,
+            Kind = kind.Value,
             TradingVolume = QuoteFieldParser.ParseDecimal(row[2].GetString()),
             TransactionCount = QuoteFieldParser.ParseInt(row[3].GetString()),
             TradingValue = QuoteFieldParser.ParseDecimal(row[4].GetString()),

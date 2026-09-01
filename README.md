@@ -73,6 +73,8 @@
 帳戶明細另有多筆「出入金紀錄」：入金成本固定由「入金合計 − 出金合計」計算，
 不是帳戶內再存一個容易失真的總數；每筆可記日期、方向、金額與備註。資料表由
 `db/030_asset_cash_flows.sql` 建立；正式 Supabase 已於 2026-08-31 套用並查證 RLS、權限與前端表單。
+金額欄位的無上限型別與美股最新價前收欄位另有 `db/032_asset_cash_flows_unbounded_amount.sql`
+及 `db/033_latest_us_quotes_previous_close.sql`，需依獨立 migration 流程套用。
 
 本機預覽：`http://127.0.0.1:5220/?access=admin`、
 `http://127.0.0.1:5220/?access=viewer`。
@@ -102,11 +104,12 @@
 
 ## 最新已發布版本
 
-本次最新發布包含密碼登入三層權限、券商 OCR 漏列修正、美股帳戶與 USD/TWD 匯率支援、
-台美股持倉 K 線與出入金成本。`daily-snapshot.yml` publish-only Action
-`33413192326` 已完成靜態輸出與兩個 Pages 發布步驟；它因 `data` 分支仍有 299 天舊日 K 快取在
-版本驗證步驟標紅，但公開 `admin888/manifest.json` 版本 `1788193106` 已與 `gh-pages` 同版，
-線上 `site.js` 亦已驗證包含本次功能。最高權限網站為
+本次最新發布包含 A｜極簡動作列、密碼登入三層權限、券商 OCR 漏列修正、美股帳戶與
+USD/TWD 匯率支援、台美股持倉 K 線與出入金成本。`daily-snapshot.yml`
+publish-only Action `33474489830` 已完成靜態輸出與兩個 Pages 發布步驟，使用的
+`main` head 是 `12ed2f72acf9c1f52f2bbeb33a1631461f0ec671`；公開
+`admin888/manifest.json` 版本 `1788241293` 已與 `gh-pages` 同版，線上 CSS／HTML
+也已驗證包含 A 版頁首工具列。最高權限網站為
 `https://frank-invest.github.io/admin888/`，檢視網址為 `https://frank-invest.github.io/viewer/`。
 密碼登入已上線，資產相關匿名 RLS 收權限仍以 `TODO.md` 為準。
 這一版已完成並驗收：
@@ -138,6 +141,11 @@
 - 族群頁的「人工編輯」選定單一標的後，會以可搜尋的完整族群路徑列表勾選直接關聯；勾選代表加入、取消代表移出，概念股名單分類則標為唯讀。
 - 發布流程已將 `publish-only=true` 與完整快照分開併發鎖；完整快照正在回補／備份時，純畫面發布不必取消資料流程或等待它結束。
 - 資產截圖可一次選最多 20 張，逐張最長辨識 10 秒；OCR 結果先列出覆蓋／新增／移除差異，逐項核對並勾選後才可套用。同代號直接覆蓋，移除預設不勾選，避免 OCR 漏列誤刪持倉。
+- 台股 ETF 以證交所／櫃買中心官方名冊判定：保留在資產名冊與日 K，排除一般股票成交值排行及市場成交值分母；可用 `backfill-etfs` 補齊既有快取。
+
+本次工作區整合的 ETF 行情與資產帳戶改進已 commit／merge 到本機 `main`，但尚未納入上述公開快照；要更新正式網站仍需另跑一次 `publish-only`。
+美股快照在 `imports-us` 實際有新資料時會自動委派既有 `daily-snapshot.yml` 的
+`publish-only=true` 發布，不在美股 workflow 直接修改 `gh-pages`。
 
 ## 最近已整合功能（已發布）
 

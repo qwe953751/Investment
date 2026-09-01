@@ -15,6 +15,12 @@ public sealed record DailyQuote
     public required string Name { get; init; }
 
     /// <summary>
+    /// ETF 會和一般股票一起保存，供持倉名稱、報價與日 K 使用；
+    /// 排行服務只會採用 <see cref="StockKind.CommonStock"/>。
+    /// </summary>
+    public StockKind Kind { get; init; } = StockKind.CommonStock;
+
+    /// <summary>
     /// 開盤價。當日無成交時為 null。
     /// </summary>
     public decimal? OpenPrice { get; init; }

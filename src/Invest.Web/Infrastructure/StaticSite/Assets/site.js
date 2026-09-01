@@ -618,14 +618,19 @@ async function refreshAlerts() {
     renderAlertPanel(alerts);
 }
 
+function toggleHeaderPanel(toggle, panel) {
+    const opening = panel.hidden;
+    panel.hidden = !opening;
+    toggle.setAttribute('aria-expanded', String(opening));
+    return opening;
+}
+
 function wireAlertBell() {
     const toggle = el('alert-toggle');
     const panel = el('alert-panel');
 
     toggle.addEventListener('click', () => {
-        const opening = panel.hidden;
-        panel.hidden = !opening;
-        toggle.setAttribute('aria-expanded', String(opening));
+        toggleHeaderPanel(toggle, panel);
     });
 
     // 點面板以外的地方就收起來，跟 K 線那兩個彈窗同一個作法。
@@ -931,9 +936,7 @@ function wireDevicePresence() {
     devicePresenceWired = true;
 
     toggle.addEventListener('click', () => {
-        const opening = panel.hidden;
-        panel.hidden = !opening;
-        toggle.setAttribute('aria-expanded', String(opening));
+        const opening = toggleHeaderPanel(toggle, panel);
 
         if (opening) {
             void loadDevicePresence(true);
@@ -1891,6 +1894,7 @@ const PAGE_HEADINGS = {
     notes: '筆記',
     assets: '資產總覽'
 };
+
 
 function renderFilters() {
     const custom = state.view === 'custom';
@@ -3341,14 +3345,77 @@ let lastAssetsLoadedAt = 0;
 let assetSelectedOwnerId = '';
 let assetLatestUsdTwdRate = null;
 let assetLatestUsQuotes = new Map();
+let assetTickerQuotes = new Map();
+let assetIntradayQuotes = new Map();
+let assetHoldingSortKey = 'ticker';
+let assetHoldingSortDirection = 'asc';
 
 function assetNumber(value) {
     if (value === null || value === undefined || value === '') {
         return null;
     }
 
-    const number = Number(value);
+    const number = Number(String(value)
+        .trim()
+        .replaceAll(',', '')
+        .replaceAll('，', '')
+        .replaceAll('−', '-')
+        .replaceAll('–', '-')
+        .replaceAll('—', '-'));
     return Number.isFinite(number) ? number : null;
+}
+
+// 文字欄位才能同時顯示千分位與保留使用者尚未送出的尾端小數點；type=number
+// 既不支援逗號，也會在大型金額輸入時自行改寫值。資料庫端仍以 numeric 接收原始數字。
+function assetGroupedAmountText(value) {
+    const text = String(value ?? '')
+        .trim()
+        .replaceAll(',', '')
+        .replaceAll('，', '')
+        .replaceAll('−', '-')
+        .replaceAll('–', '-')
+        .replaceAll('—', '-');
+
+    if (text === '') {
+        return '';
+    }
+
+    const negative = text.startsWith('-');
+    const unsigned = text
+        .replace(/^[+-]/, '')
+        .replace(/[^\d.]/g, '');
+    const decimalAt = unsigned.indexOf('.');
+    const integer = (decimalAt < 0 ? unsigned : unsigned.slice(0, decimalAt))
+        .replace(/^0+(?=\d)/, '');
+    const fraction = decimalAt < 0
+        ? ''
+        : unsigned.slice(decimalAt + 1).replaceAll('.', '');
+    const grouped = integer === ''
+        ? ''
+        : integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+    return `${negative ? '-' : ''}${grouped}${decimalAt < 0 ? '' : `.${fraction}`}`;
+}
+
+function wireAssetAmountInput(input) {
+    input.inputMode = 'decimal';
+    input.autocomplete = 'off';
+    input.addEventListener('input', () => {
+        const formatted = assetGroupedAmountText(input.value);
+
+        if (input.value !== formatted) {
+            input.value = formatted;
+        }
+    });
+}
+
+function assetAmountField(form, text, value, options = {}) {
+    const input = assetField(form, 'text', text, assetGroupedAmountText(value), {
+        ...options,
+        inputMode: 'decimal'
+    });
+    wireAssetAmountInput(input);
+    return input;
 }
 
 // 沒有值就顯示「—」，不要顯示 0：截圖辨識不到那一欄，跟那一欄真的是零是兩回事。
@@ -3399,12 +3466,46 @@ function assetNativeToTwd(value, market) {
         : amount * assetLatestUsdTwdRate.rate;
 }
 
+function assetChangePercent(current, previous) {
+    const currentValue = assetNumber(current);
+    const previousValue = assetNumber(previous);
+
+    return currentValue === null || previousValue === null || previousValue <= 0
+        ? null
+        : Math.round((currentValue / previousValue - 1) * 10_000) / 100;
+}
+
 function assetAccountTotalText(view) {
     if (view.market !== '美股') {
         return assetCurrency(view.totalValue);
     }
 
-    return `${assetCurrency(view.twdTotalValue)}（${assetCurrency(view.totalValue, 'USD')}）`;
+    return `${assetCurrency(view.twdTotalValue)}（${assetCurrency(view.totalValue, 'USD')}）`
+        + (view.incomplete ? '（部分行情）' : '');
+}
+
+function assetDualCurrencyValue(twdValue, usdValue, signed = false) {
+    const value = document.createElement('span');
+    value.className = 'asset-dual-currency-value';
+    const twd = document.createElement('span');
+    twd.className = 'asset-dual-currency-primary';
+    twd.textContent = signed ? assetSignedCurrency(twdValue) : assetCurrency(twdValue);
+    const usd = document.createElement('span');
+    usd.className = 'asset-dual-currency-secondary';
+    const usdText = signed
+        ? assetSignedCurrency(usdValue, 'USD')
+        : assetCurrency(usdValue, 'USD');
+    usd.textContent = `（${usdText}）`;
+    value.append(twd, usd);
+    return value;
+}
+
+function assetMarketCurrencyValue(twdValue, nativeValue, market, signed = false) {
+    if (market === '美股') {
+        return assetDualCurrencyValue(twdValue, nativeValue, signed);
+    }
+
+    return signed ? assetSignedCurrency(nativeValue) : assetCurrency(nativeValue);
 }
 
 function assetQuantityText(value) {
@@ -3446,10 +3547,7 @@ async function loadAssets() {
             'id,account_id,flow_date,direction,amount,note,created_at,updated_at',
             '&order=flow_date.desc,created_at.desc').catch(() => null),
         fetchAssetLatestUsdTwdRate().catch(() => undefined),
-        fetchAllRows(
-            ASSET_LATEST_US_QUOTES_VIEW,
-            'symbol,name,trade_date,close_price',
-            '&order=symbol.asc').catch(() => undefined)
+        fetchAssetLatestUsQuotes().catch(() => undefined)
     ]);
 
     return {
@@ -3498,6 +3596,59 @@ async function loadAssets() {
         exchangeRate: exchangeRates,
         usQuotes
     };
+}
+
+async function fetchAssetLatestUsQuotes() {
+    try {
+        return await fetchAllRows(
+            ASSET_LATEST_US_QUOTES_VIEW,
+            'symbol,name,trade_date,close_price,previous_close_price',
+            '&order=symbol.asc');
+    } catch {
+        // db/033 尚未套用的站點仍可讀舊 view；只是暫時沒有前收可計算名稱漲跌幅。
+        return fetchAllRows(
+            ASSET_LATEST_US_QUOTES_VIEW,
+            'symbol,name,trade_date,close_price',
+            '&order=symbol.asc');
+    }
+}
+
+async function fetchAssetIntradayQuotes(accounts, holdings) {
+    if (supabase === null || !isTaiwanIntradaySession()) {
+        return new Map();
+    }
+
+    const accountsById = new Map(accounts.map(account => [account.id, account]));
+    const tickers = [...new Set(holdings
+        .filter(holding => accountsById.get(holding.accountId)?.market === '台股')
+        .map(assetHoldingTicker)
+        .filter(ticker => /^\d{4,6}$/.test(ticker)))];
+
+    if (tickers.length === 0) {
+        return new Map();
+    }
+
+    const response = await fetch(
+        `${supabase.url}/rest/v1/intraday_latest`
+            + '?select=symbol,name,price,change_percent'
+            + `&symbol=${encodeURIComponent(`in.(${tickers.join(',')})`)}`,
+        { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
+    }
+
+    return new Map((await response.json()).map(row => {
+        const ticker = String(row.symbol ?? '').trim().toUpperCase();
+
+        return [ticker, {
+            name: String(row.name ?? ''),
+            close: assetNumber(row.price),
+            priceChange: assetNumber(row.change_percent),
+            quoteDate: '',
+            session: '盤中'
+        }];
+    }));
 }
 
 async function fetchAssetLatestUsdTwdRate() {
@@ -3556,10 +3707,26 @@ async function refreshAssets() {
                 {
                     name: String(row.name ?? ''),
                     tradeDate: String(row.trade_date ?? ''),
-                    close: assetNumber(row.close_price)
+                    close: assetNumber(row.close_price),
+                    previousClose: assetNumber(row.previous_close_price),
+                    priceChange: assetChangePercent(row.close_price, row.previous_close_price),
+                    session: '盤後'
                 }
             ]));
             addAssetTickerNames([...assetLatestUsQuotes].map(([ticker, quote]) => [ticker, quote.name]));
+        }
+
+        try {
+            await ensureAssetTickerCatalog();
+        } catch {
+            // 名冊只影響名稱自動帶入與漲跌幅，不可因此阻斷原本資產資料。
+        }
+
+        try {
+            assetIntradayQuotes = await fetchAssetIntradayQuotes(assetAccountRows, assetHoldingRows);
+        } catch {
+            // 盤中報價是加值資訊；端點暫時不可用時退回最近盤後行情。
+            assetIntradayQuotes = new Map();
         }
 
         assetsLoadError = null;
@@ -3654,21 +3821,37 @@ function assetSumComplete(rows, pick) {
 }
 
 function assetHoldingForAccount(account, holding) {
+    const ticker = assetHoldingTicker(holding);
+    const catalogQuote = assetTickerQuotes.get(ticker);
+
     if (account.market !== '美股') {
-        return holding;
+        const quote = account.market === '台股'
+            ? assetIntradayQuotes.get(ticker) ?? catalogQuote
+            : catalogQuote;
+
+        return {
+            ...holding,
+            name: holding.name || quote?.name || '',
+            priceChange: quote?.priceChange ?? null,
+            quoteDate: quote?.quoteDate ?? '',
+            quoteSession: quote?.session ?? '盤後'
+        };
     }
 
-    const ticker = holding.ticker.trim().toUpperCase();
     const quote = assetLatestUsQuotes.get(ticker);
     const quantity = assetNumber(holding.quantity);
+    const priceChange = quote?.priceChange ?? catalogQuote?.priceChange ?? null;
+    const quoteDate = quote?.tradeDate ?? catalogQuote?.quoteDate ?? '';
 
     if (quote?.close === null || quote?.close === undefined || quantity === null) {
         return {
             ...holding,
-            name: holding.name || quote?.name || '',
+            name: holding.name || quote?.name || catalogQuote?.name || '',
             marketValue: null,
             unrealized: null,
-            quoteDate: quote?.tradeDate ?? ''
+            priceChange,
+            quoteDate,
+            quoteSession: '盤後'
         };
     }
 
@@ -3676,33 +3859,46 @@ function assetHoldingForAccount(account, holding) {
 
     return {
         ...holding,
-        name: holding.name || quote.name,
+        name: holding.name || quote.name || catalogQuote?.name || '',
         marketValue,
         unrealized: holding.cost === null
             ? null
             : Math.round((marketValue - holding.cost) * 100) / 100,
-        quoteDate: quote.tradeDate
+        priceChange,
+        quoteDate,
+        quoteSession: '盤後'
     };
 }
 
 function assetAccountView(account) {
     const holdings = assetHoldingsOf(account.id).map(holding => assetHoldingForAccount(account, holding));
     const cashFlows = assetCashFlowsOf(account.id);
-    const sum = account.market === '美股' ? assetSumComplete : assetSum;
-    const cost = sum(holdings, holding => holding.cost);
-    const marketValue = sum(holdings, holding => holding.marketValue);
-    const statedUnrealized = sum(holdings, holding => holding.unrealized);
+    const cost = assetSum(holdings, holding => holding.cost);
+    const marketValue = assetSum(holdings, holding => holding.marketValue);
+    const completeMarketValue = assetSumComplete(holdings, holding => holding.marketValue);
+    const statedUnrealized = assetSum(holdings, holding => holding.unrealized);
     const unrealized = statedUnrealized ?? (marketValue !== null && cost !== null ? marketValue - cost : null);
     const totalValue = holdings.length === 0
         ? account.cash
         : marketValue === null ? null : marketValue + account.cash;
     const missingQuoteTickers = account.market === '美股'
         ? holdings
-            .filter(holding => holding.quantity !== null
-                && !assetLatestUsQuotes.has(holding.ticker.trim().toUpperCase()))
-            .map(holding => holding.ticker.trim().toUpperCase())
+            .filter(holding => {
+                const close = assetLatestUsQuotes.get(assetHoldingTicker(holding))?.close;
+                return holding.quantity !== null && (close === null || close === undefined);
+            })
+            .map(assetHoldingTicker)
         : [];
     const fundingCost = assetCashFlowAvailable ? assetCashFlowNet(cashFlows) : null;
+    const twdCost = assetNativeToTwd(cost, account.market);
+    const twdMarketValue = assetNativeToTwd(marketValue, account.market);
+    const twdUnrealized = assetNativeToTwd(unrealized, account.market);
+    const twdCash = assetNativeToTwd(account.cash, account.market);
+    const twdRealized = assetNativeToTwd(account.realized, account.market);
+    const twdTotalValue = assetNativeToTwd(totalValue, account.market);
+    const twdFundingCost = assetNativeToTwd(fundingCost, account.market);
+    const incomplete = (holdings.length > 0 && completeMarketValue === null)
+        || (account.market === '美股' && totalValue !== null && twdTotalValue === null);
 
     return {
         ...account,
@@ -3714,14 +3910,15 @@ function assetAccountView(account) {
         // 券商截圖多半直接給未實現損益；沒有那一欄的時候才用市值減成本補。
         unrealized,
         totalValue,
-        twdCost: assetNativeToTwd(cost, account.market),
-        twdMarketValue: assetNativeToTwd(marketValue, account.market),
-        twdUnrealized: assetNativeToTwd(unrealized, account.market),
-        twdCash: assetNativeToTwd(account.cash, account.market),
-        twdRealized: assetNativeToTwd(account.realized, account.market),
-        twdTotalValue: assetNativeToTwd(totalValue, account.market),
-        twdFundingCost: assetNativeToTwd(fundingCost, account.market),
-        missingQuoteTickers
+        twdCost,
+        twdMarketValue,
+        twdUnrealized,
+        twdCash,
+        twdRealized,
+        twdTotalValue,
+        twdFundingCost,
+        incomplete,
+        missingQuoteTickers: [...new Set(missingQuoteTickers)]
     };
 }
 
@@ -3729,13 +3926,13 @@ function assetPortfolioSummary(views) {
     const holdingViews = views.filter(view => view.holdings.length > 0);
 
     return {
-        marketValue: assetSumComplete(holdingViews, view => view.twdMarketValue),
-        cost: assetSumComplete(holdingViews, view => view.twdCost),
-        unrealized: assetSumComplete(holdingViews, view => view.twdUnrealized),
-        cash: views.length === 0 ? 0 : assetSumComplete(views, view => view.twdCash),
-        realized: views.length === 0 ? 0 : assetSumComplete(views, view => view.twdRealized),
-        totalValue: assetSumComplete(views, view => view.twdTotalValue) ?? (views.length === 0 ? 0 : null),
-        incomplete: views.some(view => view.twdTotalValue === null)
+        marketValue: assetSum(holdingViews, view => view.twdMarketValue),
+        cost: assetSum(holdingViews, view => view.twdCost),
+        unrealized: assetSum(holdingViews, view => view.twdUnrealized),
+        cash: views.length === 0 ? 0 : assetSum(views, view => view.twdCash),
+        realized: views.length === 0 ? 0 : assetSum(views, view => view.twdRealized),
+        totalValue: assetSum(views, view => view.twdTotalValue) ?? (views.length === 0 ? 0 : null),
+        incomplete: views.some(view => view.incomplete || view.twdTotalValue === null)
     };
 }
 
@@ -3862,6 +4059,10 @@ function assetField(form, type, text, value, options = {}) {
         input.placeholder = options.placeholder;
     }
 
+    if (options.inputMode !== undefined) {
+        input.inputMode = options.inputMode;
+    }
+
     label.append(input);
     form.append(label);
     return input;
@@ -3888,7 +4089,11 @@ function assetMetric(label, value, detail, valueClass = '') {
 
     const amount = document.createElement('strong');
     amount.className = `asset-preview-metric-value ${valueClass}`.trim();
-    amount.textContent = value;
+    if (typeof Node !== 'undefined' && value instanceof Node) {
+        amount.append(value);
+    } else {
+        amount.textContent = value;
+    }
 
     const description = document.createElement('span');
     description.className = 'asset-preview-metric-detail';
@@ -4268,18 +4473,36 @@ function makeAssetAccountTable(owner, views) {
         row.append(accountCell);
 
         const cells = [
-            { text: [view.market, view.broker].filter(text => text !== '').join('／') || '—' },
-            { text: assetCurrencyForMarket(view.fundingCost, view.market), className: assetSignClass(view.fundingCost) },
-            { text: assetAccountTotalText(view) },
-            { text: assetSignedCurrencyForMarket(view.unrealized, view.market), className: assetSignClass(view.unrealized) },
-            { text: assetCurrencyForMarket(view.cash, view.market) },
-            { text: assetSignedCurrencyForMarket(view.realized, view.market), className: assetSignClass(view.realized) },
-            { text: assetTimeText(view.updatedAt) }
+            { content: [view.market, view.broker].filter(text => text !== '').join('／') || '—' },
+            {
+                content: assetMarketCurrencyValue(view.twdFundingCost, view.fundingCost, view.market),
+                className: assetSignClass(view.fundingCost)
+            },
+            {
+                content: view.market === '美股'
+                    ? assetDualCurrencyValue(view.twdTotalValue, view.totalValue)
+                    : assetAccountTotalText(view)
+            },
+            {
+                content: assetMarketCurrencyValue(view.twdUnrealized, view.unrealized, view.market, true),
+                className: assetSignClass(view.unrealized)
+            },
+            { content: assetMarketCurrencyValue(view.twdCash, view.cash, view.market) },
+            {
+                content: assetMarketCurrencyValue(view.twdRealized, view.realized, view.market, true),
+                className: assetSignClass(view.realized)
+            },
+            { content: assetTimeText(view.updatedAt) }
         ];
 
         for (const cell of cells) {
             const element = document.createElement('td');
-            element.textContent = cell.text;
+
+            if (typeof Node !== 'undefined' && cell.content instanceof Node) {
+                element.append(cell.content);
+            } else {
+                element.textContent = cell.content;
+            }
 
             if (cell.className) {
                 element.className = cell.className;
@@ -4352,14 +4575,11 @@ function makeAssetAccountSettings(view) {
     form.append(marketLabel);
     const brokerInput = assetField(form, 'text', '券商（可留空）', view.broker);
     const accountCurrency = view.market === '美股' ? 'USD' : 'TWD';
-    const amountStep = accountCurrency === 'USD' ? '0.01' : '1';
-    const cashInput = assetField(form, 'number', `現金餘額（${accountCurrency}）`, view.cash, { step: amountStep });
-    const realizedInput = assetField(
+    const cashInput = assetAmountField(form, `現金餘額（${accountCurrency}）`, view.cash);
+    const realizedInput = assetAmountField(
         form,
-        'number',
         `累計已實現損益（${accountCurrency}）`,
-        view.realized,
-        { step: amountStep });
+        view.realized);
     const fundingInput = assetField(
         form,
         'text',
@@ -4403,6 +4623,19 @@ function makeAssetHoldings(view) {
     headingRow.className = 'asset-section-heading';
     const heading = document.createElement('h2');
     heading.textContent = '持倉';
+    const headingActions = document.createElement('div');
+    headingActions.className = 'asset-section-actions';
+    const editAll = assetButton('編輯全部持倉', 'asset-primary-button', () => {
+        if (assetsBusy) {
+            return;
+        }
+
+        discardAssetScreenshotDraft();
+        assetEditorMode = 'holdings';
+        assetActionNotice = '';
+        renderAssetsDashboard();
+    });
+    editAll.disabled = assetsBusy || view.holdings.length === 0;
     const removeAll = assetButton(
         `刪除全部持倉（${view.holdings.length}）`,
         'asset-danger-button',
@@ -4421,63 +4654,90 @@ function makeAssetHoldings(view) {
                 `已刪除全部 ${view.holdings.length} 筆持倉。`);
         });
     removeAll.disabled = assetsBusy || view.holdings.length === 0;
-    headingRow.append(heading, removeAll);
+    headingActions.append(editAll, removeAll);
+    headingRow.append(heading, headingActions);
     section.append(headingRow);
+
+    if (assetEditorMode === 'holdings') {
+        section.append(makeAssetHoldingBatchEditor(view));
+        return section;
+    }
 
     const table = document.createElement('table');
     table.className = 'asset-preview-table';
     const body = document.createElement('tbody');
 
-    for (const holding of view.holdings) {
+    for (const holding of assetSortHoldings(view.holdings, assetHoldingSortKey, assetHoldingSortDirection)) {
         const row = document.createElement('tr');
-        const cells = [
-            { text: holding.ticker || '—' },
-            { text: holding.name || '—' },
-            { text: assetQuantityText(holding.quantity) },
-            { text: assetCurrencyForMarket(holding.cost, view.market) },
-            { text: assetCurrencyForMarket(holding.marketValue, view.market) },
-            {
-                text: assetSignedCurrencyForMarket(holding.unrealized, view.market),
-                className: assetSignClass(holding.unrealized)
-            },
-            { text: holding.source === 'ocr' ? '截圖辨識' : '手動' }
-        ];
+        const ticker = document.createElement('td');
+        ticker.textContent = holding.ticker || '—';
+        const name = document.createElement('td');
+        name.className = `stock-name ${stockNameChangeClass(holding.priceChange)}`.trim();
 
-        for (let cellIndex = 0; cellIndex < cells.length; cellIndex += 1) {
-            const cell = cells[cellIndex];
-            const element = document.createElement('td');
-
-            if (cellIndex === 1 && String(holding.ticker ?? '').trim() !== '') {
-                element.append(makeKLineButton(
-                    String(holding.ticker).trim().toUpperCase(),
-                    holding.name || holding.ticker,
-                    { latest: true, market: view.market }));
-            } else {
-                element.textContent = cell.text;
-            }
-
-            if (cell.className) {
-                element.className = cell.className;
-            }
-
-            row.append(element);
+        if (assetHoldingTicker(holding) !== '') {
+            name.append(makeKLineButton(
+                assetHoldingTicker(holding),
+                holding.name || holding.ticker,
+                { latest: true, market: view.market }));
+        } else {
+            name.textContent = holding.name || '—';
         }
 
+        const change = document.createElement('td');
+        change.className = `asset-holding-price-change ${assetSignClass(holding.priceChange)}`.trim();
+        const changeValue = document.createElement('span');
+        changeValue.textContent = assetHoldingPriceChangeText(holding.priceChange);
+        const session = document.createElement('small');
+        session.className = 'asset-holding-quote-session';
+        session.textContent = holding.priceChange === null || holding.priceChange === undefined
+            ? '行情未提供'
+            : holding.quoteSession ?? '盤後';
+        change.title = holding.quoteDate === '' || holding.quoteDate === undefined
+            ? session.textContent
+            : `${session.textContent} ${holding.quoteDate}`;
+        change.append(changeValue, session);
+
+        const quantity = document.createElement('td');
+        quantity.textContent = assetQuantityText(holding.quantity);
+        const cost = document.createElement('td');
+        cost.textContent = assetCurrencyForMarket(holding.cost, view.market);
+        const marketValue = document.createElement('td');
+        marketValue.textContent = assetCurrencyForMarket(holding.marketValue, view.market);
+        const unrealized = document.createElement('td');
+        unrealized.className = assetSignClass(holding.unrealized);
+        unrealized.textContent = assetSignedCurrencyForMarket(holding.unrealized, view.market);
+        const source = document.createElement('td');
+        source.textContent = holding.source === 'ocr' ? '截圖辨識' : '手動';
+        row.append(ticker, name, change, quantity, cost, marketValue, unrealized, source);
+
         const actionCell = document.createElement('td');
-        actionCell.append(assetButton('刪除', 'asset-secondary-button', () => void runAssetAction(
-            '刪除中…',
-            () => assetRemove(ASSET_HOLDINGS_TABLE, `?id=eq.${encodeURIComponent(holding.id)}`),
-            `已刪除持倉「${holding.ticker || holding.name || '未命名'}」。`)));
+        actionCell.append(assetButton('刪除', 'asset-secondary-button', () => {
+            void (async () => {
+                const done = await runAssetAction(
+                    '刪除中…',
+                    async () => {
+                        await assetRemove(ASSET_HOLDINGS_TABLE, `?id=eq.${encodeURIComponent(holding.id)}`);
+                        await assetPersistHoldingSortOrders(view.holdings.filter(item => item.id !== holding.id));
+                    },
+                    `已刪除持倉「${holding.ticker || holding.name || '未命名'}」。`);
+
+                if (done) {
+                    assetHoldingSortKey = 'ticker';
+                    assetHoldingSortDirection = 'asc';
+                    renderAssetsDashboard();
+                }
+            })();
+        }));
         row.append(actionCell);
         body.append(row);
     }
 
     if (view.holdings.length === 0) {
-        body.append(assetEmptyRow(8, '這個帳戶還沒有持倉。上傳券商截圖辨識，或用下面的表單手動加一筆。'));
+        body.append(assetEmptyRow(9, '這個帳戶還沒有持倉。上傳券商截圖辨識，或用下面的表單手動加一筆。'));
     }
 
     table.append(
-        assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益', '來源', '']),
+        makeAssetHoldingTableHead(),
         body);
     section.append(table, makeAssetHoldingEditor(view));
     return section;
@@ -4564,13 +4824,11 @@ function makeAssetCashFlowSection(view) {
     }
     directionLabel.append(directionSelect);
     form.append(directionLabel);
-    const amountInput = assetField(
+    const amountInput = assetAmountField(
         form,
-        'number',
         `金額（${view.market === '美股' ? 'USD' : 'TWD'}）`,
         '',
-        { required: true, step: view.market === '美股' ? '0.01' : '1' });
-    amountInput.min = '0.01';
+        { required: true });
     const noteInput = assetField(form, 'text', '備註（可留空）', '', {
         maxLength: 120,
         placeholder: '例如：轉入券商帳戶'
@@ -4636,14 +4894,10 @@ function makeAssetHoldingEditor(view) {
         placeholder: isUs ? 'Apple Inc.' : '台積電'
     });
     const quantityInput = assetField(panel, 'number', '股數', '');
-    const costInput = assetField(panel, 'number', `成本（${currency}）`, '', { step: isUs ? '0.01' : '1' });
-    const marketValueInput = assetField(panel, 'number', `市值（${currency}）`, '', { step: isUs ? '0.01' : '1' });
-    const unrealizedInput = assetField(
-        panel,
-        'number',
-        `未實現損益（${currency}）`,
-        '',
-        { step: isUs ? '0.01' : '1' });
+    const costInput = assetAmountField(panel, `成本（${currency}）`, '');
+    const marketValueInput = assetAmountField(panel, `市值（${currency}）`, '');
+    const unrealizedInput = assetAmountField(panel, `未實現損益（${currency}）`, '');
+    wireAssetTickerName(tickerInput, nameInput);
     const actions = document.createElement('div');
     actions.className = 'asset-editor-actions';
     const submit = assetButton('＋ 新增持倉', 'asset-primary-button');
@@ -4654,28 +4908,51 @@ function makeAssetHoldingEditor(view) {
 
     panel.addEventListener('submit', async event => {
         event.preventDefault();
-        const ticker = tickerInput.value.trim();
+        const ticker = assetHoldingTicker({ ticker: tickerInput.value });
 
         if (ticker === '') {
             tickerInput.focus();
             return;
         }
 
-        await runAssetAction(
+        if (view.holdings.some(holding => assetHoldingTicker(holding) === ticker)) {
+            tickerInput.setCustomValidity(`「${ticker}」已在這個帳戶。`);
+            tickerInput.reportValidity();
+            return;
+        }
+
+        tickerInput.setCustomValidity('');
+        const id = crypto.randomUUID();
+        const row = {
+            id,
+            ticker,
+            name: nameInput.value.trim() || assetKnownStockName(ticker),
+            quantity: quantityInput.value,
+            cost: costInput.value,
+            marketValue: marketValueInput.value,
+            unrealized: unrealizedInput.value
+        };
+        const sortOrder = new Map(assetHoldingSortOrders([...view.holdings, row]))
+            .get(id) ?? view.holdings.length;
+
+        const done = await runAssetAction(
             '新增中…',
-            () => assetInsert(ASSET_HOLDINGS_TABLE, {
-                id: crypto.randomUUID(),
-                account_id: view.id,
-                ticker,
-                name: nameInput.value.trim(),
-                quantity: assetNumber(quantityInput.value),
-                cost: assetNumber(costInput.value),
-                market_value: assetNumber(marketValueInput.value),
-                unrealized: assetNumber(unrealizedInput.value),
-                source: 'manual',
-                sort_order: view.holdings.length
-            }),
+            async () => {
+                await assetInsert(ASSET_HOLDINGS_TABLE, {
+                    id,
+                    account_id: view.id,
+                    ...assetHoldingWriteBody(row, sortOrder, 'manual')
+                });
+                await assetPersistHoldingSortOrders(view.holdings);
+                await assetUpdate(ASSET_ACCOUNTS_TABLE, view.id, {});
+            },
             `已新增持倉「${ticker}」。`);
+
+        if (done) {
+            assetHoldingSortKey = 'ticker';
+            assetHoldingSortDirection = 'asc';
+            renderAssetsDashboard();
+        }
     });
 
     return panel;
@@ -4699,6 +4976,276 @@ function assetDraftRowFrom(holding) {
 
 function assetHoldingTicker(row) {
     return String(row?.ticker ?? '').trim().toUpperCase();
+}
+
+function assetSortHoldings(holdings, key = 'ticker', direction = 'asc') {
+    const multiplier = direction === 'desc' ? -1 : 1;
+
+    return [...(Array.isArray(holdings) ? holdings : [])].sort((left, right) => {
+        if (key === 'priceChange') {
+            const leftValue = assetNumber(left?.priceChange);
+            const rightValue = assetNumber(right?.priceChange);
+
+            // 缺報價不是 0%，不論升冪或降冪都固定沉到最後。
+            if (leftValue === null || rightValue === null) {
+                return leftValue === rightValue
+                    ? assetHoldingTicker(left).localeCompare(assetHoldingTicker(right), 'en')
+                    : leftValue === null ? 1 : -1;
+            }
+
+            if (leftValue !== rightValue) {
+                return (leftValue - rightValue) * multiplier;
+            }
+        }
+
+        return assetHoldingTicker(left).localeCompare(assetHoldingTicker(right), 'en') * multiplier;
+    });
+}
+
+function assetHoldingSortOrders(holdings) {
+    return assetSortHoldings(holdings).map((holding, sortOrder) => ({
+        id: holding.id,
+        sortOrder
+    }));
+}
+
+function assetHoldingPriceChangeText(value) {
+    const amount = assetNumber(value);
+
+    return amount === null
+        ? '—'
+        : `${amount > 0 ? '+' : ''}${amount.toFixed(2)} %`;
+}
+
+function assetHoldingSortHeader(label, key) {
+    const heading = document.createElement('th');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'asset-table-sort-button';
+    const active = assetHoldingSortKey === key;
+    const direction = assetHoldingSortDirection === 'desc' ? '▼' : '▲';
+    button.textContent = `${label}${active ? ` ${direction}` : ''}`;
+    button.title = `點擊依${label}排序；再次點擊切換方向。`;
+    button.setAttribute('aria-pressed', String(active));
+    button.addEventListener('click', () => {
+        if (assetHoldingSortKey === key) {
+            assetHoldingSortDirection = assetHoldingSortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            assetHoldingSortKey = key;
+            assetHoldingSortDirection = key === 'priceChange' ? 'desc' : 'asc';
+        }
+
+        renderAssetsDashboard();
+    });
+    heading.append(button);
+    return heading;
+}
+
+function makeAssetHoldingTableHead() {
+    const head = document.createElement('thead');
+    const row = document.createElement('tr');
+    row.append(
+        assetHoldingSortHeader('代號', 'ticker'),
+        ...['名稱', '漲跌幅', '股數', '成本', '市值', '未實現損益', '來源', ''].map(title => {
+            const cell = document.createElement('th');
+
+            if (title === '漲跌幅') {
+                const sort = assetHoldingSortHeader(title, 'priceChange');
+                return sort;
+            }
+
+            cell.textContent = title;
+            return cell;
+        }));
+    head.append(row);
+    return head;
+}
+
+async function assetPersistHoldingSortOrders(holdings) {
+    const currentById = new Map(holdings.map(holding => [holding.id, holding]));
+
+    for (const order of assetHoldingSortOrders(holdings)) {
+        const current = currentById.get(order.id);
+
+        if (current !== undefined && (assetNumber(current.sortOrder) ?? 0) !== order.sortOrder) {
+            await assetUpdate(ASSET_HOLDINGS_TABLE, order.id, { sort_order: order.sortOrder });
+        }
+    }
+}
+
+function wireAssetTickerName(tickerInput, nameInput) {
+    const fillName = async () => {
+        const ticker = assetHoldingTicker({ ticker: tickerInput.value });
+
+        if (ticker === '' || nameInput.value.trim() !== '') {
+            return;
+        }
+
+        try {
+            await ensureAssetTickerCatalog();
+            const name = assetKnownStockName(assetHoldingTicker({ ticker: tickerInput.value }));
+
+            if (name !== '' && nameInput.value.trim() === '') {
+                nameInput.value = name;
+            }
+        } catch {
+            // 名冊載入失敗時仍能手動輸入名稱；不可為此擋住新增／編輯持倉。
+        }
+    };
+
+    tickerInput.addEventListener('input', () => {
+        tickerInput.setCustomValidity('');
+        void fillName();
+    });
+    tickerInput.addEventListener('blur', () => { void fillName(); });
+}
+
+function makeAssetHoldingEditableInput(field, value) {
+    const input = document.createElement('input');
+    const isAmount = ['cost', 'marketValue', 'unrealized'].includes(field);
+    input.type = field === 'ticker' || field === 'name' || isAmount ? 'text' : 'number';
+    input.dataset.field = field;
+    input.step = 'any';
+    input.value = value === null || value === undefined
+        ? ''
+        : isAmount ? assetGroupedAmountText(value) : String(value);
+
+    if (field === 'ticker') {
+        input.required = true;
+        input.maxLength = 20;
+    } else if (field === 'name') {
+        input.maxLength = 40;
+    }
+
+    if (isAmount) {
+        wireAssetAmountInput(input);
+    }
+
+    return input;
+}
+
+function makeAssetHoldingBatchEditor(view) {
+    const panel = document.createElement('form');
+    panel.className = 'asset-editor-panel asset-holding-batch-editor';
+    const heading = document.createElement('h3');
+    heading.textContent = `編輯全部持倉（${view.holdings.length} 筆）`;
+    const note = document.createElement('p');
+    note.className = 'asset-local-only-note';
+    note.textContent = '可一次修改所有可編輯欄位。儲存後一律依代號重排；來源欄保留原始追蹤資訊。';
+    const table = document.createElement('table');
+    table.className = 'asset-preview-table asset-holding-batch-table';
+    const body = document.createElement('tbody');
+    const labels = ['代號', '名稱', '股數', '成本', '市值', '未實現損益'];
+
+    for (const holding of assetSortHoldings(view.holdings)) {
+        const row = document.createElement('tr');
+        row.dataset.holdingId = holding.id;
+        const inputs = new Map();
+
+        for (const field of ASSET_DRAFT_FIELDS) {
+            const cell = document.createElement('td');
+            const input = makeAssetHoldingEditableInput(field, holding[field]);
+            inputs.set(field, input);
+            cell.append(input);
+            row.append(cell);
+        }
+
+        wireAssetTickerName(inputs.get('ticker'), inputs.get('name'));
+        body.append(row);
+    }
+
+    table.append(assetTableHead(labels), body);
+    const actions = assetActions(panel, '儲存全部持倉', () => {
+        assetEditorMode = '';
+        assetActionNotice = '已取消批次編輯，持倉沒有變動。';
+        renderAssetsDashboard();
+    });
+
+    panel.addEventListener('submit', async event => {
+        event.preventDefault();
+        const rows = [...body.querySelectorAll('tr')].map(element => ({
+            id: String(element.dataset.holdingId ?? ''),
+            draft: Object.fromEntries(ASSET_DRAFT_FIELDS.map(field => [
+                field,
+                element.querySelector(`input[data-field="${field}"]`)?.value.trim() ?? ''
+            ])),
+            tickerInput: element.querySelector('input[data-field="ticker"]')
+        }));
+        const seen = new Map();
+
+        for (const row of rows) {
+            const ticker = assetHoldingTicker(row.draft);
+            const input = row.tickerInput;
+
+            if (input === null) {
+                continue;
+            }
+
+            input.setCustomValidity('');
+
+            if (ticker === '') {
+                input.setCustomValidity('代號不可空白。');
+                input.reportValidity();
+                return;
+            }
+
+            if (seen.has(ticker)) {
+                input.setCustomValidity(`代號「${ticker}」重複。`);
+                input.reportValidity();
+                return;
+            }
+
+            seen.set(ticker, row.id);
+        }
+
+        const originals = new Map(view.holdings.map(holding => [holding.id, holding]));
+        const sortOrderById = new Map(assetHoldingSortOrders(rows.map(row => ({
+            id: row.id,
+            ticker: row.draft.ticker
+        }))).map(order => [order.id, order.sortOrder]));
+        const writes = rows.filter(row => {
+            const original = originals.get(row.id);
+            return original !== undefined && (assetHoldingChangedFields(original, row.draft).length > 0
+                || (assetNumber(original.sortOrder) ?? 0) !== sortOrderById.get(row.id));
+        });
+
+        if (writes.length === 0) {
+            assetEditorMode = '';
+            assetActionNotice = '沒有持倉變更；仍維持依代號排序。';
+            assetHoldingSortKey = 'ticker';
+            assetHoldingSortDirection = 'asc';
+            renderAssetsDashboard();
+            return;
+        }
+
+        const done = await runAssetAction(
+            `儲存 ${writes.length} 筆持倉中…`,
+            async () => {
+                for (const row of writes) {
+                    const original = originals.get(row.id);
+                    await assetUpdate(
+                        ASSET_HOLDINGS_TABLE,
+                        row.id,
+                        assetHoldingWriteBody(
+                            row.draft,
+                            sortOrderById.get(row.id) ?? 0,
+                            original?.source ?? 'manual'));
+                }
+
+                await assetUpdate(ASSET_ACCOUNTS_TABLE, view.id, {});
+            },
+            `已儲存 ${writes.length} 筆持倉，並依代號重新排序。`);
+
+        if (done) {
+            assetEditorMode = '';
+            assetHoldingSortKey = 'ticker';
+            assetHoldingSortDirection = 'asc';
+            renderAssetsDashboard();
+        }
+    });
+
+    panel.append(heading, note, table, actions);
+    return panel;
 }
 
 function assetHoldingComparable(value) {
@@ -4859,22 +5406,22 @@ function readAssetDraftRows(body) {
 
 function makeAssetDraftRow(draft) {
     const row = document.createElement('tr');
+    const inputs = new Map();
 
     for (const field of ASSET_DRAFT_FIELDS) {
         const cell = document.createElement('td');
-        const input = document.createElement('input');
-        input.type = field === 'ticker' || field === 'name' ? 'text' : 'number';
-        input.step = 'any';
-        input.dataset.field = field;
-        input.value = draft[field] === null || draft[field] === undefined ? '' : String(draft[field]);
+        const input = makeAssetHoldingEditableInput(field, draft[field]);
+        inputs.set(field, input);
         cell.append(input);
         row.append(cell);
     }
 
+    wireAssetTickerName(inputs.get('ticker'), inputs.get('name'));
+
     return row;
 }
 
-function assetHoldingWriteBody(row, sortOrder) {
+function assetHoldingWriteBody(row, sortOrder, source = 'ocr') {
     return {
         ticker: assetHoldingTicker(row),
         name: String(row.name ?? '').trim(),
@@ -4882,7 +5429,7 @@ function assetHoldingWriteBody(row, sortOrder) {
         cost: assetNumber(assetHoldingComparable(row.cost)),
         market_value: assetNumber(assetHoldingComparable(row.marketValue)),
         unrealized: assetNumber(assetHoldingComparable(row.unrealized)),
-        source: 'ocr',
+        source: source === 'manual' ? 'manual' : 'ocr',
         sort_order: sortOrder
     };
 }
@@ -5873,7 +6420,8 @@ function assetOcrIsHoldingRow(draft) {
 
 function assetKnownStockName(ticker) {
     const normalized = String(ticker ?? '').trim().toUpperCase();
-    return assetNameByTicker.get(normalized)
+    return assetTickerQuotes.get(normalized)?.name
+        ?? assetNameByTicker.get(normalized)
         ?? nameByTicker.get(normalized)
         ?? topicData?.stockNames?.[normalized]
         ?? '';
@@ -5908,13 +6456,34 @@ function addAssetTickerNames(entries) {
     }
 }
 
+function addAssetTickerQuotes(entries) {
+    for (const entry of Array.isArray(entries) ? entries : []) {
+        const ticker = String(entry?.ticker ?? '').trim().toUpperCase();
+        const name = String(entry?.name ?? '').trim();
+
+        if (ticker === '') {
+            continue;
+        }
+
+        if (name !== '') {
+            addAssetTickerNames([[ticker, name]]);
+        }
+
+        assetTickerQuotes.set(ticker, {
+            name,
+            close: assetNumber(entry?.closePrice),
+            priceChange: assetNumber(entry?.changePercent),
+            quoteDate: String(entry?.quoteDate ?? ''),
+            session: '盤後',
+            market: String(entry?.market ?? ''),
+            kind: String(entry?.kind ?? '')
+        });
+    }
+}
+
 async function ensureAssetTickerCatalog() {
     addAssetTickerNames(nameByTicker);
     addAssetTickerNames(Object.entries(topicData?.stockNames ?? {}));
-
-    if (Object.keys(topicData?.stockNames ?? {}).length > 0) {
-        assetTickerCatalogLoaded = true;
-    }
 
     if (assetTickerCatalogLoaded) {
         return;
@@ -5922,14 +6491,25 @@ async function ensureAssetTickerCatalog() {
 
     if (assetTickerCatalogLoading === null) {
         assetTickerCatalogLoading = (async () => {
-            const response = await fetch(`data/topics.json?v=${version}`, { cache: 'force-cache' });
+            const catalogResponse = await fetch(`data/asset-catalog.json?v=${version}`, { cache: 'force-cache' });
 
-            if (!response.ok) {
-                throw new Error(`名冊載入失敗（${response.status}）`);
+            if (catalogResponse.ok) {
+                const catalog = await catalogResponse.json();
+                addAssetTickerQuotes(catalog.entries);
+                assetTickerCatalogLoaded = true;
+                return;
             }
 
-            const data = await response.json();
-            addAssetTickerNames(Object.entries(data.stockNames ?? {}));
+            // 舊快照沒有資產名冊時，維持既有 topics.json 的台股名稱備援；不把 ETF
+            // 猜成股票，也不因為這個加值資料缺席就阻斷原本的資產頁。
+            const topicResponse = await fetch(`data/topics.json?v=${version}`, { cache: 'force-cache' });
+
+            if (!topicResponse.ok) {
+                throw new Error(`名冊載入失敗（${catalogResponse.status}/${topicResponse.status}）`);
+            }
+
+            const topics = await topicResponse.json();
+            addAssetTickerNames(Object.entries(topics.stockNames ?? {}));
             assetTickerCatalogLoaded = true;
         })().finally(() => {
             assetTickerCatalogLoading = null;
@@ -7472,24 +8052,53 @@ function makeAssetScreenshotFlow(view) {
             async () => {
                 // 先更新、再新增、最後才移除。網路若中斷，最保守的結果是留下舊持倉，
                 // 而不是先清空帳戶；runAssetAction 失敗時也會重新讀取實際資料庫狀態。
-                for (const change of updates) {
-                    await assetUpdate(
-                        ASSET_HOLDINGS_TABLE,
-                        change.holding.id,
-                        assetHoldingWriteBody(change.draft, change.holding.sortOrder));
+                const updatesById = new Map(updates.map(change => [change.holding.id, change]));
+                const removalIds = new Set(removals.map(change => change.holding.id));
+                const additionsWithId = additions.map(change => ({
+                    id: crypto.randomUUID(),
+                    draft: change.draft
+                }));
+                const finalRows = [
+                    ...view.holdings
+                        .filter(holding => !removalIds.has(holding.id))
+                        .map(holding => {
+                            const change = updatesById.get(holding.id);
+                            return change === undefined
+                                ? holding
+                                : { ...holding, ...change.draft, source: 'ocr' };
+                        }),
+                    ...additionsWithId.map(item => ({ ...item.draft, id: item.id, source: 'ocr' }))
+                ];
+                const sortOrderById = new Map(assetHoldingSortOrders(finalRows)
+                    .map(order => [order.id, order.sortOrder]));
+
+                for (const holding of view.holdings) {
+                    if (removalIds.has(holding.id)) {
+                        continue;
+                    }
+
+                    const change = updatesById.get(holding.id);
+                    const sortOrder = sortOrderById.get(holding.id) ?? 0;
+
+                    if (change !== undefined) {
+                        await assetUpdate(
+                            ASSET_HOLDINGS_TABLE,
+                            holding.id,
+                            assetHoldingWriteBody(change.draft, sortOrder, 'ocr'));
+                    } else if ((assetNumber(holding.sortOrder) ?? 0) !== sortOrder) {
+                        await assetUpdate(ASSET_HOLDINGS_TABLE, holding.id, { sort_order: sortOrder });
+                    }
                 }
 
-                let nextSortOrder = Math.max(
-                    -1,
-                    ...view.holdings.map(holding => assetNumber(holding.sortOrder) ?? 0)) + 1;
-
-                for (const change of additions) {
+                for (const addition of additionsWithId) {
                     await assetInsert(ASSET_HOLDINGS_TABLE, {
-                        id: crypto.randomUUID(),
+                        id: addition.id,
                         account_id: accountId,
-                        ...assetHoldingWriteBody(change.draft, nextSortOrder)
+                        ...assetHoldingWriteBody(
+                            addition.draft,
+                            sortOrderById.get(addition.id) ?? 0,
+                            'ocr')
                     });
-                    nextSortOrder += 1;
                 }
 
                 for (const change of removals) {
@@ -7504,6 +8113,8 @@ function makeAssetScreenshotFlow(view) {
 
         if (done) {
             discardAssetScreenshotDraft();
+            assetHoldingSortKey = 'ticker';
+            assetHoldingSortDirection = 'asc';
             renderAssetsDashboard();
         } else if (assetScreenshotDraft?.accountId === view.id) {
             if (assetsLoadError === null) {
@@ -7561,21 +8172,25 @@ function makeAssetAccountDetails(owner, view) {
             + (assetLatestUsdTwdRate === null
                 ? '；尚無 USD/TWD 匯率'
                 : `；${assetLatestUsdTwdRate.date} 匯率 ${assetLatestUsdTwdRate.rate}`)
+            + (view.incomplete ? '；僅加總已有行情的持倉' : '')
         : `持倉 ${assetCurrency(view.marketValue)} ＋ 現金 ${assetCurrency(view.cash)}`;
     metrics.append(
-        assetMetric('資產總值', assetAccountTotalText(view),
+        assetMetric('資產總值', assetMarketCurrencyValue(view.twdTotalValue, view.totalValue, view.market),
             document.createTextNode(totalDetail), view.market === '美股' ? 'asset-dual-currency' : ''),
-        assetMetric('入金成本', assetCurrency(view.fundingCost, currency),
+        assetMetric('入金成本', assetMarketCurrencyValue(view.twdFundingCost, view.fundingCost, view.market),
             document.createTextNode(view.fundingCost === null
                 ? '出入金明細尚未啟用'
                 : `共 ${view.cashFlows.length} 筆出入金`),
-            assetSignClass(view.fundingCost)),
-        assetMetric('投入成本', assetCurrency(view.cost, currency),
-            document.createTextNode(`共 ${view.holdings.length} 筆持倉`)),
-        assetMetric('未實現損益', assetSignedCurrency(view.unrealized, currency),
-            assetDelta(view.unrealized, '', currency), assetSignClass(view.unrealized)),
-        assetMetric('累計已實現', assetSignedCurrency(view.realized, currency),
-            assetDelta(view.realized, '', currency), assetSignClass(view.realized)));
+            `${assetSignClass(view.fundingCost)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`),
+        assetMetric('投入成本', assetMarketCurrencyValue(view.twdCost, view.cost, view.market),
+            document.createTextNode(`共 ${view.holdings.length} 筆持倉`),
+            view.market === '美股' ? 'asset-dual-currency' : ''),
+        assetMetric('未實現損益', assetMarketCurrencyValue(view.twdUnrealized, view.unrealized, view.market, true),
+            assetDelta(view.unrealized, '', currency),
+            `${assetSignClass(view.unrealized)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`),
+        assetMetric('累計已實現', assetMarketCurrencyValue(view.twdRealized, view.realized, view.market, true),
+            assetDelta(view.realized, '', currency),
+            `${assetSignClass(view.realized)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`));
 
     const notice = makeAssetNotice();
     const lower = document.createElement('div');
@@ -7587,7 +8202,7 @@ function makeAssetAccountDetails(owner, view) {
         const warning = document.createElement('p');
         warning.className = 'asset-data-warning';
         warning.textContent = `下列美股尚無資料庫收盤價：${view.missingQuoteTickers.join('、')}。`
-            + '為避免把成本誤當市值，資產總值暫顯示「—」。';
+            + '為避免把成本誤當市值，資產總值只顯示已有行情持倉的小計。';
         content.append(warning);
     } else if (view.market === '美股' && assetLatestUsdTwdRate === null) {
         const warning = document.createElement('p');
@@ -8272,6 +8887,7 @@ async function loadKLineData(ticker) {
             const payload = await response.json();
 
             const validAdjustment = payload?.adjustmentMethod === 'forward-rights-dividends'
+                || payload?.adjustmentMethod === 'raw-tw-etf-daily'
                 || (payload?.market === 'US' && payload?.adjustmentMethod === 'raw-us-daily');
 
             if (!validAdjustment || !Array.isArray(payload.bars)) {

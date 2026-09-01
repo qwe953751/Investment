@@ -38,13 +38,18 @@ internal sealed class MarketDataSetBuilder
         return this;
     }
 
-    public MarketDataSetBuilder Stock(string ticker, Market market = Market.Twse, string? name = null)
+    public MarketDataSetBuilder Stock(
+        string ticker,
+        Market market = Market.Twse,
+        string? name = null,
+        StockKind kind = StockKind.CommonStock)
     {
         _stocks[ticker] = new Stock
         {
             Ticker = ticker,
             Name = name ?? $"股票{ticker}",
             Market = market,
+            Kind = kind,
             IsActive = true
         };
 

@@ -14,5 +14,7 @@ public sealed class Stock
 
     public required string Name { get; init; }
 
+    public StockKind Kind { get; init; } = StockKind.CommonStock;
+
     public bool IsActive { get; init; } = true;
 }

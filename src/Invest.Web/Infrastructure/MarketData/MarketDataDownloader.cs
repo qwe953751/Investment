@@ -1,3 +1,4 @@
+using Invest.Web.Domain.Stocks;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
 using Microsoft.Extensions.Options;
@@ -14,6 +15,7 @@ namespace Invest.Web.Infrastructure.MarketData;
 public sealed class MarketDataDownloader(
     TwseDailyQuoteClient twseClient,
     TpexDailyQuoteClient tpexClient,
+    TaiwanEtfCatalogClient etfCatalogClient,
     TpexMarketIndexClient tpexIndexClient,
     TwseNonRegularTradingClient twseNonRegularClient,
     TpexNonRegularTradingClient tpexNonRegularClient,
@@ -38,6 +40,7 @@ public sealed class MarketDataDownloader(
 
         var report = new BackfillReport();
         var cursor = startFrom;
+        TaiwanEtfCatalog? etfCatalog = null;
 
         // 保險絲：即使遇到連假也不至於無限往回走。
         var remainingCalendarDays = targetTradingDays * 3 + 30;
@@ -96,7 +99,16 @@ public sealed class MarketDataDownloader(
                 progress?.Report($"{date:yyyy-MM-dd} 是舊版格式，重新下載");
             }
 
-            var snapshot = await DownloadDayAsync(date, progress, cancellationToken);
+            etfCatalog ??= await DownloadEtfCatalogAsync(progress, cancellationToken);
+
+            if (etfCatalog is null)
+            {
+                report.FailedDates.Add(date);
+                progress?.Report("ETF 官方名冊下載失敗，停止本輪回補，避免寫入不完整的市場範圍");
+                break;
+            }
+
+            var snapshot = await DownloadDayAsync(date, etfCatalog, progress, cancellationToken);
 
             if (snapshot is null)
             {
@@ -146,6 +158,13 @@ public sealed class MarketDataDownloader(
         {
             TradingDayCount = targets.Length
         };
+        var etfCatalog = await DownloadEtfCatalogAsync(progress, cancellationToken);
+
+        if (etfCatalog is null)
+        {
+            report.FailedDates.AddRange(targets.Select(snapshot => snapshot.TradingDate));
+            return report;
+        }
 
         foreach (var snapshot in targets)
         {
@@ -159,7 +178,7 @@ public sealed class MarketDataDownloader(
 
             progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 補抓日 K 開高低");
             var dailyQuotes = await DownloadDailyBarsAsync(
-                snapshot.TradingDate, progress, cancellationToken);
+                snapshot.TradingDate, etfCatalog, progress, cancellationToken);
 
             if (dailyQuotes is null)
             {
@@ -188,13 +207,73 @@ public sealed class MarketDataDownloader(
         return report;
     }
 
+    /// <summary>
+    /// 將既有快取補入官方 ETF 名冊中的商品。這是明確的一次性資料補齊動作，
+    /// 不會在每日回補時重寫已存在的歷史快照。
+    /// </summary>
+    public async Task<EtfBackfillReport> BackfillEtfsAsync(
+        int targetTradingDays,
+        DateOnly startFrom,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(targetTradingDays, 1);
+
+        var snapshots = await store.LoadAllAsync(cancellationToken);
+        var targets = snapshots
+            .Where(snapshot => snapshot.TradingDate <= startFrom)
+            .TakeLast(targetTradingDays)
+            .ToArray();
+        var report = new EtfBackfillReport
+        {
+            TradingDayCount = targets.Length
+        };
+        var etfCatalog = await DownloadEtfCatalogAsync(progress, cancellationToken);
+
+        if (etfCatalog is null)
+        {
+            report.FailedDates.AddRange(targets.Select(snapshot => snapshot.TradingDate));
+            return report;
+        }
+
+        foreach (var snapshot in targets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (snapshot.EtfSchemaVersion >= DailyQuoteSnapshot.CurrentEtfSchemaVersion)
+            {
+                report.SkippedCount++;
+                continue;
+            }
+
+            progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 補抓 ETF 行情與日 K");
+            var etfQuotes = await DownloadEtfQuotesAsync(
+                snapshot.TradingDate, etfCatalog, progress, cancellationToken);
+
+            if (etfQuotes is not { Count: > 0 })
+            {
+                report.FailedDates.Add(snapshot.TradingDate);
+                progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} ETF 回應為空，保留原快取並下次重試");
+                continue;
+            }
+
+            await store.SaveAsync(snapshot.WithEtfQuotes(etfQuotes), cancellationToken);
+            report.UpdatedCount++;
+            progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} ETF 完成（{etfQuotes.Count} 檔）");
+        }
+
+        return report;
+    }
+
     private async Task<IReadOnlyList<DailyQuote>?> DownloadDailyBarsAsync(
         DateOnly date,
+        TaiwanEtfCatalog etfCatalog,
         IProgress<string>? progress,
         CancellationToken cancellationToken)
     {
         var twse = await WithRetryAsync(
-            () => twseClient.GetDailyQuotesAsync(date, cancellationToken),
+            () => twseClient.GetDailyQuotesAsync(
+                date, etfCatalog.GetTickers(Market.Twse), cancellationToken),
             $"TWSE 日 K {date:yyyy-MM-dd}",
             progress,
             cancellationToken);
@@ -207,7 +286,8 @@ public sealed class MarketDataDownloader(
         await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
 
         var tpex = await WithRetryAsync(
-            () => tpexClient.GetDailyQuotesAsync(date, cancellationToken),
+            () => tpexClient.GetDailyQuotesAsync(
+                date, etfCatalog.GetTickers(Market.Tpex), cancellationToken),
             $"TPEx 日 K {date:yyyy-MM-dd}",
             progress,
             cancellationToken);
@@ -221,13 +301,55 @@ public sealed class MarketDataDownloader(
         return [.. twse, .. tpex];
     }
 
+    private async Task<IReadOnlyList<DailyQuote>?> DownloadEtfQuotesAsync(
+        DateOnly date,
+        TaiwanEtfCatalog etfCatalog,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        var twse = await WithRetryAsync(
+            () => twseClient.GetDailyQuotesAsync(
+                date, etfCatalog.GetTickers(Market.Twse), cancellationToken),
+            $"TWSE ETF {date:yyyy-MM-dd}",
+            progress,
+            cancellationToken);
+
+        if (twse is null)
+        {
+            return null;
+        }
+
+        await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+
+        var tpex = await WithRetryAsync(
+            () => tpexClient.GetDailyQuotesAsync(
+                date, etfCatalog.GetTickers(Market.Tpex), cancellationToken),
+            $"TPEx ETF {date:yyyy-MM-dd}",
+            progress,
+            cancellationToken);
+
+        if (tpex is null)
+        {
+            return null;
+        }
+
+        await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+        return
+        [
+            .. twse.Where(quote => quote.Kind == StockKind.Etf),
+            .. tpex.Where(quote => quote.Kind == StockKind.Etf)
+        ];
+    }
+
     private async Task<DailyQuoteSnapshot?> DownloadDayAsync(
         DateOnly date,
+        TaiwanEtfCatalog etfCatalog,
         IProgress<string>? progress,
         CancellationToken cancellationToken)
     {
         var twseData = await WithRetryAsync(
-            () => twseClient.GetDailyDataAsync(date, cancellationToken),
+            () => twseClient.GetDailyDataAsync(
+                date, etfCatalog.GetTickers(Market.Twse), cancellationToken),
             $"TWSE {date:yyyy-MM-dd}",
             progress,
             cancellationToken);
@@ -242,7 +364,8 @@ public sealed class MarketDataDownloader(
         await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
 
         var tpex = await WithRetryAsync(
-            () => tpexClient.GetDailyQuotesAsync(date, cancellationToken),
+            () => tpexClient.GetDailyQuotesAsync(
+                date, etfCatalog.GetTickers(Market.Tpex), cancellationToken),
             $"TPEx {date:yyyy-MM-dd}",
             progress,
             cancellationToken);
@@ -327,6 +450,7 @@ public sealed class MarketDataDownloader(
             DownloadedAt = DateTimeOffset.Now,
             MarketIndexSchemaVersion = DailyQuoteSnapshot.CurrentMarketIndexSchemaVersion,
             DailyBarSchemaVersion = DailyQuoteSnapshot.CurrentDailyBarSchemaVersion,
+            EtfSchemaVersion = DailyQuoteSnapshot.CurrentEtfSchemaVersion,
             MarketIndices = [validTwseIndex, validTpexIndex],
             Quotes =
             [
@@ -335,6 +459,15 @@ public sealed class MarketDataDownloader(
             ]
         };
     }
+
+    private Task<TaiwanEtfCatalog?> DownloadEtfCatalogAsync(
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+        => WithRetryAsync(
+            () => etfCatalogClient.GetAsync(cancellationToken),
+            "TWSE／TPEx ETF 官方名冊",
+            progress,
+            cancellationToken);
 
     private async Task<IReadOnlyList<MarketIndexQuote>?> DownloadMarketIndicesAsync(
         DateOnly date,
@@ -442,6 +575,17 @@ public sealed class BackfillReport
 }
 
 public sealed class DailyBarBackfillReport
+{
+    public int TradingDayCount { get; init; }
+
+    public int UpdatedCount { get; set; }
+
+    public int SkippedCount { get; set; }
+
+    public List<DateOnly> FailedDates { get; } = [];
+}
+
+public sealed class EtfBackfillReport
 {
     public int TradingDayCount { get; init; }
 

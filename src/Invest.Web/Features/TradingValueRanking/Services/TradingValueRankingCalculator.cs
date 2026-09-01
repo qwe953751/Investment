@@ -91,14 +91,13 @@ public sealed class TradingValueRankingCalculator
             ? Median(baselines.Values) * 0.6m
             : (decimal?)null;
 
-        // 分母一律是上市＋上櫃全體，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
-        // 用 MatchesMarket(..., MarketFilter.All) 排除非上市櫃的市場（如美股），即使資料集不小心
-        // 混進了其他市場的成交值，也不會污染這個分母。
+        // 分母一律是上市＋上櫃一般股票，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
+        // ETF 與美股雖保留在資料集供持倉／日 K 使用，也不能污染這個分母。
         var marketTotal = currentStats
-            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock.Market, MarketFilter.All))
+            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock, MarketFilter.All))
             .Sum(pair => pair.Value.TotalTradingValue);
         var previousMarketTotal = previousStats
-            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock.Market, MarketFilter.All))
+            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock, MarketFilter.All))
             .Sum(pair => pair.Value.TotalTradingValue);
         var marketHeat = GetMarketHeat(dataSet, current[^1]);
 
@@ -111,7 +110,7 @@ public sealed class TradingValueRankingCalculator
                 continue;
             }
 
-            if (!MatchesMarket(stock.Market, query.Market))
+            if (!MatchesMarket(stock, query.Market))
             {
                 continue;
             }
@@ -228,23 +227,30 @@ public sealed class TradingValueRankingCalculator
                 return;
             }
 
-            _allDates = dataSet.DailyTrading
+            _stocksByTicker = dataSet.Stocks.ToDictionary(stock => stock.Ticker);
+            var rankingTrading = dataSet.DailyTrading
+                .Where(trading => _stocksByTicker.TryGetValue(trading.Ticker, out var stock)
+                    && stock.Kind == StockKind.CommonStock)
+                .ToArray();
+
+            _allDates = rankingTrading
                 .Select(trading => trading.TradingDate)
                 .Distinct()
                 .OrderBy(date => date)
                 .ToArray();
 
-            _byTicker = dataSet.DailyTrading
+            _byTicker = rankingTrading
                 .GroupBy(trading => trading.Ticker)
                 .ToDictionary(
                     group => group.Key,
                     group => group.OrderBy(trading => trading.TradingDate).ToArray());
 
-            _stocksByTicker = dataSet.Stocks.ToDictionary(stock => stock.Ticker);
-
             // 只留算得出還原倍數的事件。倍數是 參考價 ÷ 前一日收盤價，兩邊都得是正數。
             _adjustmentsByTicker = dataSet.PriceAdjustments
-                .Where(item => item.PreviousClose > 0m && item.ReferencePrice > 0m)
+                .Where(item => item.PreviousClose > 0m
+                    && item.ReferencePrice > 0m
+                    && _stocksByTicker.TryGetValue(item.Ticker, out var stock)
+                    && stock.Kind == StockKind.CommonStock)
                 .GroupBy(item => item.Ticker)
                 .ToDictionary(
                     group => group.Key,
@@ -505,11 +511,12 @@ public sealed class TradingValueRankingCalculator
             ? (value - baseline.Value) / baseline.Value
             : null;
 
-    private static bool MatchesMarket(Market market, MarketFilter filter) => filter switch
+    private static bool MatchesMarket(Stock stock, MarketFilter filter)
+        => stock.Kind == StockKind.CommonStock && filter switch
     {
-        MarketFilter.Twse => market == Market.Twse,
-        MarketFilter.Tpex => market == Market.Tpex,
-        MarketFilter.All => market is Market.Twse or Market.Tpex,
+        MarketFilter.Twse => stock.Market == Market.Twse,
+        MarketFilter.Tpex => stock.Market == Market.Tpex,
+        MarketFilter.All => stock.Market is Market.Twse or Market.Tpex,
         _ => false
     };
 

@@ -16,6 +16,18 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
     public async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesAsync(
         DateOnly tradingDate,
         CancellationToken cancellationToken = default)
+        => await GetDailyQuotesCoreAsync(tradingDate, null, cancellationToken);
+
+    public async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesAsync(
+        DateOnly tradingDate,
+        IReadOnlySet<string> etfTickers,
+        CancellationToken cancellationToken = default)
+        => await GetDailyQuotesCoreAsync(tradingDate, etfTickers, cancellationToken);
+
+    private async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesCoreAsync(
+        DateOnly tradingDate,
+        IReadOnlySet<string>? etfTickers,
+        CancellationToken cancellationToken)
     {
         var url = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
             + $"?date={tradingDate:yyyy/MM/dd}&type=EW&id=&response=json";
@@ -56,7 +68,7 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
         }
 
         return rows.EnumerateArray()
-            .Select(row => ParseRow(row, columns))
+            .Select(row => ParseRow(row, columns, etfTickers))
             .OfType<DailyQuote>()
             .ToArray();
     }
@@ -65,7 +77,10 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
     /// 欄位位置一律由官方回應的 fields 對應，不把目前順序硬編在程式裡。
     /// TPEx 曾在收盤與開盤之間增列漲跌欄；只靠固定索引會把最高、最低與均價整段錯位。
     /// </summary>
-    private static DailyQuote? ParseRow(JsonElement row, DailyQuoteColumns columns)
+    private static DailyQuote? ParseRow(
+        JsonElement row,
+        DailyQuoteColumns columns,
+        IReadOnlySet<string>? etfTickers)
     {
         if (row.ValueKind != JsonValueKind.Array || row.GetArrayLength() <= columns.MaxIndex)
         {
@@ -74,7 +89,9 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
 
         var ticker = row[columns.Ticker].GetString()?.Trim();
 
-        if (!QuoteFieldParser.IsCommonStockTicker(ticker))
+        var kind = QuoteFieldParser.GetTaiwanStockKind(ticker, etfTickers);
+
+        if (kind is null)
         {
             return null;
         }
@@ -84,6 +101,7 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
             Market = Market.Tpex,
             Ticker = ticker!,
             Name = row[columns.Name].GetString()?.Trim() ?? ticker!,
+            Kind = kind.Value,
             ClosePrice = QuoteFieldParser.ParseNullableDecimal(row[columns.Close].GetString()),
             OpenPrice = QuoteFieldParser.ParseNullableDecimal(row[columns.Open].GetString()),
             HighPrice = QuoteFieldParser.ParseNullableDecimal(row[columns.High].GetString()),

@@ -33,6 +33,13 @@ public sealed class DailyQuoteSnapshot
     public const int CurrentDailyBarSchemaVersion = 2;
 
     /// <summary>
+    /// ETF 商品名冊與行情寫入快取的格式版本。ETF 與一般股票共用快取及日 K，
+    /// 但排行榜只會讀一般股票；這個獨立版本讓舊快取能用明確指令補齊 ETF，
+    /// 不必把整份歷史行情重新下載。
+    /// </summary>
+    public const int CurrentEtfSchemaVersion = 1;
+
+    /// <summary>
     /// 這個檔案是用哪一版定義產生的。舊版會被回補指令視為過期並重新下載，
     /// 避免新舊定義混在同一份排行裡——那種錯誤從畫面上完全看不出來。
     /// 沒有這個欄位的舊檔案反序列化後會是 0，一樣算過期。
@@ -56,6 +63,8 @@ public sealed class DailyQuoteSnapshot
     public IReadOnlyList<MarketIndexQuote> MarketIndices { get; init; } = [];
 
     public int DailyBarSchemaVersion { get; init; }
+
+    public int EtfSchemaVersion { get; init; }
 
     /// <summary>
     /// 版本號代表補抓流程曾經寫入過，但不能保證那次回應真的包含完整市場。
@@ -118,7 +127,8 @@ public sealed class DailyQuoteSnapshot
         Quotes = Quotes,
         MarketIndexSchemaVersion = CurrentMarketIndexSchemaVersion,
         MarketIndices = marketIndices,
-        DailyBarSchemaVersion = DailyBarSchemaVersion
+        DailyBarSchemaVersion = DailyBarSchemaVersion,
+        EtfSchemaVersion = EtfSchemaVersion
     };
 
     /// <summary>
@@ -133,6 +143,7 @@ public sealed class DailyQuoteSnapshot
         MarketIndexSchemaVersion = MarketIndexSchemaVersion,
         MarketIndices = MarketIndices,
         DailyBarSchemaVersion = CurrentDailyBarSchemaVersion,
+        EtfSchemaVersion = EtfSchemaVersion,
         Quotes = MergeDailyBars(Quotes, dailyQuotes)
     };
 
@@ -151,8 +162,34 @@ public sealed class DailyQuoteSnapshot
         Quotes = [.. Quotes, .. additionalQuotes],
         MarketIndexSchemaVersion = MarketIndexSchemaVersion,
         MarketIndices = MarketIndices,
-        DailyBarSchemaVersion = DailyBarSchemaVersion
+        DailyBarSchemaVersion = DailyBarSchemaVersion,
+        EtfSchemaVersion = EtfSchemaVersion
     };
+
+    /// <summary>
+    /// 將官方 ETF 名冊確認的日行情以市場與代號寫入同一日快取。既有一般股票
+    /// 完全不動；若 ETF 已存在則以重新下載的資料更新，避免重跑時重複新增。
+    /// </summary>
+    public DailyQuoteSnapshot WithEtfQuotes(IReadOnlyList<DailyQuote> etfQuotes)
+    {
+        if (etfQuotes.Any(quote => quote.Kind != StockKind.Etf))
+        {
+            throw new ArgumentException("ETF 補抓結果不可混入一般股票。", nameof(etfQuotes));
+        }
+
+        return new()
+        {
+            SchemaVersion = SchemaVersion,
+            TradingDate = TradingDate,
+            IsTradingDay = IsTradingDay,
+            DownloadedAt = DateTimeOffset.Now,
+            MarketIndexSchemaVersion = MarketIndexSchemaVersion,
+            MarketIndices = MarketIndices,
+            DailyBarSchemaVersion = DailyBarSchemaVersion,
+            EtfSchemaVersion = CurrentEtfSchemaVersion,
+            Quotes = MergeQuotes(Quotes, etfQuotes)
+        };
+    }
 
     private static IReadOnlyList<DailyQuote> MergeDailyBars(
         IReadOnlyList<DailyQuote> existing,
@@ -179,6 +216,33 @@ public sealed class DailyQuoteSnapshot
                     LowPrice = null
                 })
             .ToArray();
+    }
+
+    private static IReadOnlyList<DailyQuote> MergeQuotes(
+        IReadOnlyList<DailyQuote> existing,
+        IReadOnlyList<DailyQuote> incoming)
+    {
+        var incomingByKey = incoming.ToDictionary(
+            quote => (quote.Market, quote.Ticker),
+            quote => quote);
+        var merged = new List<DailyQuote>(existing.Count + incoming.Count);
+
+        foreach (var quote in existing)
+        {
+            if (incomingByKey.Remove((quote.Market, quote.Ticker), out var replacement))
+            {
+                merged.Add(replacement);
+            }
+            else
+            {
+                merged.Add(quote);
+            }
+        }
+
+        merged.AddRange(incomingByKey.Values
+            .OrderBy(quote => quote.Market)
+            .ThenBy(quote => quote.Ticker, StringComparer.Ordinal));
+        return merged;
     }
 
     private static bool HasValidDailyBar(DailyQuote quote)
@@ -210,6 +274,7 @@ public sealed class DailyQuoteSnapshot
         SchemaVersion = CurrentSchemaVersion,
         TradingDate = tradingDate,
         IsTradingDay = false,
-        DownloadedAt = DateTimeOffset.Now
+        DownloadedAt = DateTimeOffset.Now,
+        EtfSchemaVersion = CurrentEtfSchemaVersion
     };
 }

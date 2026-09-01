@@ -70,6 +70,8 @@ public static class SecurityCatalog
             """
             select market, symbol
             from securities
+            where market in ('TWSE', 'TPEX')
+              and symbol ~ '^[1-9][0-9]{3}$'
             order by market, symbol
             """,
             connection);

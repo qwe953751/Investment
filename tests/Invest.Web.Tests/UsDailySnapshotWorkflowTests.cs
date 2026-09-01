@@ -27,7 +27,7 @@ public sealed class UsDailySnapshotWorkflowTests
     }
 
     [Fact]
-    public void 同步對帳與警報都有串進流程且不含發布靜態站步驟()
+    public void 同步對帳與警報都有串進流程且快取變更時會委派既有純發布工作流()
     {
         var workflow = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(), ".github", "workflows", "us-daily-snapshot.yml"));
@@ -35,8 +35,14 @@ public sealed class UsDailySnapshotWorkflowTests
         Assert.Contains("-- sync", workflow, StringComparison.Ordinal);
         Assert.Contains("-- verify", workflow, StringComparison.Ordinal);
         Assert.Contains("alert-clear", workflow, StringComparison.Ordinal);
+        Assert.Contains("actions: write", workflow, StringComparison.Ordinal);
+        Assert.Contains("id: cache", workflow, StringComparison.Ordinal);
+        Assert.Contains("changed=false", workflow, StringComparison.Ordinal);
+        Assert.Contains("changed=true", workflow, StringComparison.Ordinal);
+        Assert.Contains("steps.cache.outputs.changed == 'true'", workflow, StringComparison.Ordinal);
+        Assert.Contains("gh workflow run daily-snapshot.yml --ref main -f trading-days=300 -f publish-only=true", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("-- export", workflow, StringComparison.Ordinal);
-        Assert.DoesNotContain("gh-pages", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("scripts/publish-gh-pages.sh", workflow, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()

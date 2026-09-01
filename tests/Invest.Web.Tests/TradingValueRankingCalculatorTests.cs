@@ -190,6 +190,22 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
+    public void ETF保留在資料集但永遠不會出現在成交值排行或市場分母中()
+    {
+        var dataSet = new MarketDataSetBuilder()
+            .Stock("1101")
+            .Stock("0050", kind: StockKind.Etf)
+            .Days(1, 4, "1101", 100)
+            .Days(1, 4, "0050", 999_999)
+            .Build();
+
+        var result = _calculator.Calculate(dataSet, Query());
+
+        Assert.DoesNotContain(result.Rows, row => row.Ticker == "0050");
+        Assert.Equal(200m, result.MarketTotalTradingValue);
+    }
+
+    [Fact]
     public void 成交門檻會排除本期均值低於門檻的個股()
     {
         // 6488 本期均值 100，低於門檻 200。

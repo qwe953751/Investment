@@ -123,14 +123,24 @@ public sealed class StaticSiteExporter(
         // 美股回補存在獨立的 data/imports-us，不能混進台股成交值排行；但資產持倉
         // 點名稱仍需要真實 OHLC。只在輸出 K 線時讀這份快取，各 ticker 以自己最新
         // 的交易日為尾端，不拿台股日期或只有 close 的 Supabase 副本硬湊 K 棒。
+        var usSnapshots = await usDailyQuotes.LoadAllAsync(cancellationToken);
+
         usKLineFileCount = await WriteUsKLineExportsAsync(
             Path.Combine(dataDirectory, "kline"),
-            await usDailyQuotes.LoadAllAsync(cancellationToken),
+            usSnapshots,
+            cancellationToken);
+
+        var assetCatalogCount = await WriteAssetCatalogAsync(
+            Path.Combine(dataDirectory, "asset-catalog.json"),
+            dataSet,
+            usSnapshots,
+            tradingDates.Length > 0 ? tradingDates[^1] : null,
             cancellationToken);
 
         progress?.Report(
             $"已寫出 {kLineFileCount} 檔台股最近三個月還原權息日 K 資料"
             + (usKLineFileCount > 0 ? $"、{usKLineFileCount} 檔美股原始日 K 資料" : string.Empty)
+            + $"、{assetCatalogCount} 檔持倉名冊"
             + (marketIndexKLineWritten ? "，以及指數 K 線資料" : string.Empty));
 
         // 一律換算成台北時間，不要用這台機器的時區。
@@ -859,6 +869,10 @@ public sealed class StaticSiteExporter(
             .Where(item => item.EffectiveDate <= adjustmentThroughDate)
             .GroupBy(item => item.Ticker, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+        var kindsByTicker = dataSet.Stocks.ToDictionary(
+            stock => stock.Ticker,
+            stock => stock.Kind,
+            StringComparer.Ordinal);
         var count = 0;
 
         foreach (var trading in dataSet.DailyTrading
@@ -867,7 +881,9 @@ public sealed class StaticSiteExporter(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var ticker = trading.Key;
-            var tickerEvents = eventsByTicker.TryGetValue(ticker, out var foundEvents)
+            var isEtf = kindsByTicker.TryGetValue(ticker, out var kind)
+                && kind == StockKind.Etf;
+            var tickerEvents = !isEtf && eventsByTicker.TryGetValue(ticker, out var foundEvents)
                 ? foundEvents
                 : [];
             var points = DailyKLineCalculator.Calculate(
@@ -885,7 +901,7 @@ public sealed class StaticSiteExporter(
 
             var export = new KLineExport(
                 "TW",
-                "forward-rights-dividends",
+                isEtf ? "raw-tw-etf-daily" : "forward-rights-dividends",
                 adjustmentThroughDate.ToString("yyyy-MM-dd"),
                 tickerEvents.Length,
                 [.. points.Select(point => new KLineBarExport(
@@ -911,6 +927,133 @@ public sealed class StaticSiteExporter(
 
         return count;
     }
+
+    /// <summary>
+    /// 資產頁只需一份輕量名冊：輸入代號時帶回名稱，並用最新可用收盤／前收顯示漲跌。
+    /// ETF 仍保留在這份資料內；是否參加成交值排行由排名計算器的 StockKind 篩選決定。
+    /// </summary>
+    private static async Task<int> WriteAssetCatalogAsync(
+        string path,
+        MarketDataSet dataSet,
+        IReadOnlyList<DailyQuoteSnapshot> usSnapshots,
+        DateOnly? adjustmentThroughDate,
+        CancellationToken cancellationToken)
+    {
+        var rowsByTicker = dataSet.DailyTrading
+            .GroupBy(row => row.Ticker, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<DailyStockTrading>)group
+                    .OrderByDescending(row => row.TradingDate)
+                    .ToArray(),
+                StringComparer.Ordinal);
+        var eventsByTicker = dataSet.PriceAdjustments
+            .GroupBy(item => item.Ticker, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<StockPriceAdjustment>)group.ToArray(),
+                StringComparer.Ordinal);
+        var entries = new List<AssetCatalogEntry>();
+
+        foreach (var stock in dataSet.Stocks
+            .Where(stock => stock.Market is Market.Twse or Market.Tpex)
+            .OrderBy(stock => stock.Market)
+            .ThenBy(stock => stock.Ticker, StringComparer.Ordinal))
+        {
+            rowsByTicker.TryGetValue(stock.Ticker, out var rows);
+            eventsByTicker.TryGetValue(stock.Ticker, out var adjustments);
+            entries.Add(ToTaiwanAssetCatalogEntry(
+                stock,
+                rows ?? [],
+                stock.Kind == StockKind.Etf ? [] : adjustments ?? [],
+                adjustmentThroughDate));
+        }
+
+        foreach (var group in usSnapshots
+            .SelectMany(snapshot => snapshot.Quotes
+                .Where(quote => quote.Market == Market.Us)
+                .Select(quote => new AssetQuoteRow(snapshot.TradingDate, quote)))
+            .GroupBy(row => row.Quote.Ticker, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            var rows = group
+                .OrderByDescending(row => row.TradingDate)
+                .ToArray();
+            var priceRows = rows
+                .Where(row => row.Quote.ClosePrice is > 0m)
+                .ToArray();
+            var latest = priceRows.FirstOrDefault();
+            var previous = priceRows.Skip(1).FirstOrDefault();
+            var latestClose = latest?.Quote.ClosePrice;
+            var previousClose = previous?.Quote.ClosePrice;
+
+            entries.Add(new AssetCatalogEntry(
+                "US",
+                group.Key,
+                rows.FirstOrDefault()?.Quote.Name ?? group.Key,
+                "stock",
+                latest?.TradingDate.ToString("yyyy-MM-dd"),
+                RoundKLine(latestClose),
+                ToChangePercent(latestClose, previousClose)));
+        }
+
+        await WriteJsonAsync(
+            path,
+            new AssetCatalogExport(entries),
+            cancellationToken);
+        return entries.Count;
+    }
+
+    private static AssetCatalogEntry ToTaiwanAssetCatalogEntry(
+        Stock stock,
+        IReadOnlyList<DailyStockTrading> rows,
+        IReadOnlyList<StockPriceAdjustment> adjustments,
+        DateOnly? adjustmentThroughDate)
+    {
+        var priceRows = rows
+            .Where(row => row.ClosePrice is > 0m)
+            .ToArray();
+        var latest = priceRows.FirstOrDefault();
+        var previous = priceRows.Skip(1).FirstOrDefault();
+        var throughDate = adjustmentThroughDate ?? latest?.TradingDate;
+        var latestClose = AdjustAssetClose(latest, adjustments, throughDate);
+        var previousClose = AdjustAssetClose(previous, adjustments, throughDate);
+
+        return new AssetCatalogEntry(
+            stock.Market == Market.Twse ? "TWSE" : "TPEX",
+            stock.Ticker,
+            stock.Name,
+            stock.Kind == StockKind.Etf ? "etf" : "stock",
+            latest?.TradingDate.ToString("yyyy-MM-dd"),
+            RoundKLine(latestClose),
+            ToChangePercent(latestClose, previousClose));
+    }
+
+    private static decimal? AdjustAssetClose(
+        DailyStockTrading? row,
+        IReadOnlyList<StockPriceAdjustment> adjustments,
+        DateOnly? adjustmentThroughDate)
+    {
+        if (row?.ClosePrice is not { } close)
+        {
+            return null;
+        }
+
+        var throughDate = adjustmentThroughDate ?? row.TradingDate;
+        var factor = adjustments
+            .Where(item => item.EffectiveDate > row.TradingDate
+                && item.EffectiveDate <= throughDate
+                && item.PreviousClose > 0m
+                && item.ReferencePrice > 0m)
+            .Aggregate(1m, (current, item) => current * item.Factor);
+
+        return close * factor;
+    }
+
+    private static decimal? ToChangePercent(decimal? current, decimal? previous)
+        => current is { } currentClose && previous is > 0m
+            ? decimal.Round((currentClose / previous.Value - 1m) * 100m, 2)
+            : null;
 
     private static async Task<int> WriteUsKLineExportsAsync(
         string directory,
@@ -1184,6 +1327,19 @@ public sealed class StaticSiteExporter(
         string AdjustmentThrough,
         int AdjustmentEventCount,
         IReadOnlyList<KLineBarExport> Bars);
+
+    private sealed record AssetCatalogExport(IReadOnlyList<AssetCatalogEntry> Entries);
+
+    private sealed record AssetCatalogEntry(
+        string Market,
+        string Ticker,
+        string Name,
+        string Kind,
+        string? QuoteDate,
+        decimal? ClosePrice,
+        decimal? ChangePercent);
+
+    private sealed record AssetQuoteRow(DateOnly TradingDate, DailyQuote Quote);
 
     private sealed record KLineBarExport(
         string Date,

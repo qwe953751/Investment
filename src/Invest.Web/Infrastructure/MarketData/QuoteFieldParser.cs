@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using Invest.Web.Domain.Stocks;
 
 namespace Invest.Web.Infrastructure.MarketData;
 
@@ -68,5 +69,22 @@ internal static class QuoteFieldParser
         return ticker is { Length: 4 }
             && ticker[0] != '0'
             && ticker.All(char.IsAsciiDigit);
+    }
+
+    /// <summary>
+    /// 只讓官方 ETF 名冊明確列出的代號成為 ETF；日行情裡其餘非一般股票一律略過。
+    /// </summary>
+    public static StockKind? GetTaiwanStockKind(string? ticker, IReadOnlySet<string>? etfTickers)
+    {
+        var normalized = ticker?.Trim().ToUpperInvariant();
+
+        if (IsCommonStockTicker(normalized))
+        {
+            return StockKind.CommonStock;
+        }
+
+        return normalized is not null && etfTickers?.Contains(normalized) == true
+            ? StockKind.Etf
+            : null;
     }
 }

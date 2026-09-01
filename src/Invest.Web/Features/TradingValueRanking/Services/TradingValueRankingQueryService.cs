@@ -124,6 +124,7 @@ public sealed class TradingValueRankingQueryService(
                     Market = quote.Market,
                     Ticker = quote.Ticker,
                     Name = quote.Name,
+                    Kind = quote.Kind,
                     IsActive = true
                 };
 
