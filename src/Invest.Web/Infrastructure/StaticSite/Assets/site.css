@@ -5594,3 +5594,161 @@ td.stock-name.stock-name-change-down {
         text-align: right;
     }
 }
+
+/* ── A｜極簡動作列 ────────────────────────────────────────────────
+   標題是頁首的主視覺，檢查更新、通知、裝置與權限縮成右側輕量動作列。
+   保留既有 DOM 與 JavaScript，只改排列、留白與控制項的視覺重量。 */
+.page-title {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px 18px;
+    margin-bottom: 10px;
+}
+
+.page-title-heading {
+    display: flex;
+    align-items: center;
+    min-width: 180px;
+    flex: 1 1 auto;
+}
+
+.page-title-heading h1 {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.page-title-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+.page-title-tools .refresh-button,
+.page-title-tools .device-presence-button,
+.page-title-tools .alert-button {
+    min-height: 34px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.page-title-tools .refresh-button:hover:not(:disabled),
+.page-title-tools .device-presence-button:hover,
+.page-title-tools .alert-button:hover {
+    background: #f5f8fc;
+}
+
+.page-title-tools .refresh-status {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.page-title-tools .access-badge {
+    padding: 3px 8px;
+    font-size: 11px;
+}
+
+.page-title-tools .device-presence,
+.page-title-tools .alert-bell {
+    position: relative;
+    margin-left: 0;
+}
+
+.page-title-tools .access-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-left: 4px;
+    padding: 0 0 0 9px;
+    border: 0;
+    border-left: 1px solid #e1e7ef;
+    border-radius: 0;
+    background: transparent;
+    font-size: 12px;
+}
+
+.page-title-tools .access-bar-label {
+    color: #8491a3;
+    font-size: 12px;
+}
+
+.page-title-tools .access-bar-tier {
+    padding: 2px 8px;
+}
+
+.page-title-tools #access-bar-login-form {
+    gap: 4px;
+}
+
+.page-title-tools #access-bar-login-form input[type="password"] {
+    width: 96px;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+
+.page-title-tools #access-bar-login-form button,
+.page-title-tools .access-bar-logout {
+    min-height: 30px;
+    padding: 5px 9px;
+    border-radius: 7px;
+    font-size: 12px;
+}
+
+.page-title-tools .alert-panel,
+.page-title-tools .device-presence-panel {
+    top: calc(100% + 8px);
+    right: 0;
+    left: auto;
+}
+
+@media (max-width: 1100px) {
+    .page-title-tools {
+        justify-content: flex-start;
+        width: 100%;
+    }
+}
+
+@media (max-width: 720px) {
+    .page-title {
+        display: block;
+        position: relative;
+    }
+
+    .page-title-heading {
+        margin-bottom: 8px;
+    }
+
+    .page-title-tools {
+        justify-content: flex-start;
+        width: 100%;
+    }
+
+    .page-title-tools .access-bar {
+        width: 100%;
+        max-width: 100%;
+        margin-left: 0;
+        padding-left: 0;
+        border-left: 0;
+    }
+
+    .page-title-tools .alert-panel,
+    .page-title-tools .device-presence-panel {
+        left: 0;
+        right: auto;
+        width: min(560px, calc(100vw - 24px));
+    }
+}
