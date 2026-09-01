@@ -401,7 +401,7 @@ jobs:
       contents: read
 
     env:
-      SITE_MANIFEST_URL: https://frank-invest.github.io/admin888/manifest.json
+      SITE_MANIFEST_URL: https://frank-invest.github.io/manifest.json
       CDN_LATEST_URL: https://dehzxlxyfvtnylwgbmqy.supabase.co/storage/v1/object/public/intraday-snapshots/latest.json
       # 和 HOP_BUDGET 一樣是 5 小時 30 分：這一棒還在，就一直看著。
       WAIT_SECONDS: '19800'

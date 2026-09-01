@@ -135,10 +135,10 @@ gh run view <RUN_ID> --json status,conclusion,headSha,url,jobs
 
 #### 4. 發布後固定驗證
 
-正式網址是 `frank-invest.github.io`，最高權限的實際內容在 `admin888/` 子路徑下；
-根目錄 `qwe953751.github.io/Investment/` 跟 `frank-invest.github.io/`（不含
-`admin888/`）都只發空白頁，驗證時**不要**拿這兩個根目錄的 `manifest.json` /
-`site.js` 來檢查，一定會 404 或抓到空白頁，不是發布失敗。
+正式網址是 `frank-invest.github.io`（單一網址，訪客模式為預設，監控者／最高權限
+要登入才能拿到，見筆記 #37）；舊網址 `qwe953751.github.io/Investment/` 只發空白頁，
+驗證時**不要**拿這個根目錄的 `manifest.json` / `site.js` 來檢查，一定會 404 或抓到
+空白頁，不是發布失敗。
 
 先驗證遠端分支，再驗證公開檔案；不要只看到 Actions 綠燈就宣稱網站已更新：
 
@@ -146,14 +146,14 @@ gh run view <RUN_ID> --json status,conclusion,headSha,url,jobs
 git ls-remote origin main gh-pages
 gh api 'repos/frank-invest/frank-invest.github.io/git/refs/heads/gh-pages'
 
-$manifest = gh api 'repos/frank-invest/frank-invest.github.io/contents/admin888/manifest.json?ref=gh-pages' | ConvertFrom-Json
+$manifest = gh api 'repos/frank-invest/frank-invest.github.io/contents/manifest.json?ref=gh-pages' | ConvertFrom-Json
 $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($manifest.content -replace '\s','')))
 $data = $json | ConvertFrom-Json
 $data.version
 $data.latestTradingDate
 $data.generatedAt
 
-$response = Invoke-WebRequest -UseBasicParsing 'https://frank-invest.github.io/admin888/manifest.json?verify=YYYYMMDD'
+$response = Invoke-WebRequest -UseBasicParsing 'https://frank-invest.github.io/manifest.json?verify=YYYYMMDD'
 $online = $response.Content | ConvertFrom-Json
 $response.StatusCode
 $online.version
@@ -163,7 +163,7 @@ $online.latestTradingDate
 再檢查線上 `site.js` 確實包含這次功能的字串（例如指數今年漲跌點數與盤中族群熱絡資料）：
 
 ```powershell
-$response = Invoke-WebRequest -UseBasicParsing 'https://frank-invest.github.io/admin888/site.js?verify=YYYYMMDD'
+$response = Invoke-WebRequest -UseBasicParsing 'https://frank-invest.github.io/site.js?verify=YYYYMMDD'
 $response.StatusCode
 $response.Content -like '*yearToDatePointSuffix*'
 $response.Content -like '*intraday_topic_heat_latest*'

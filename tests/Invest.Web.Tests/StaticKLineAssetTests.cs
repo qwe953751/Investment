@@ -1241,9 +1241,7 @@ public sealed class StaticKLineAssetTests
 
         Assert.Contains("const URL_ACCESS", script, StringComparison.Ordinal);
         Assert.Contains("let SITE_ACCESS = URL_ACCESS", script, StringComparison.Ordinal);
-        Assert.Contains("const ADMIN_HOST = 'app.admin.frank-investment.com'", script, StringComparison.Ordinal);
-        Assert.Contains("const VIEWER_HOST = 'view.frank-investment.com'", script, StringComparison.Ordinal);
-        Assert.Contains("SITE_HOST === VIEWER_HOST", script, StringComparison.Ordinal);
+        Assert.Contains("const URL_ACCESS = ACCESS_PREVIEW_QUERY ?? 'viewer';", script, StringComparison.Ordinal);
         Assert.Contains(
             "TOPIC_TABS.filter(tab => tab.key === 'heat')",
             script,

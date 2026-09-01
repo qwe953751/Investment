@@ -36,16 +36,15 @@
 
 ### 權限樣板與網址目標
 
-正式網址是 `https://frank-invest.github.io/`（`frank-invest` 是另外建的 GitHub 組織，
-不含原始帳號名稱）。但這個網域**根目錄看不到任何內容**，只有一頁空白頁：
+正式網址是唯一的一個：`https://frank-invest.github.io/`（`frank-invest` 是另外建的
+GitHub 組織，不含原始帳號名稱）。打開就是**訪客（檢視）模式**，監控者／最高權限
+一律要在頁首右上角登入才能拿到（見下方「密碼登入三層權限」）；密碼登入是唯一的
+存取控制，網址本身不再區分權限。
 
-- **最高權限**：`https://frank-invest.github.io/admin888/`
-- **檢視權限**：`https://frank-invest.github.io/viewer/`（跟 `admin888/` 平級，不是巢狀在它底下）
-
-舊網址 `https://qwe953751.github.io/Investment/` 也已收掉內容，整個網域只剩空白頁，
+舊網址 `https://qwe953751.github.io/Investment/` 已收掉內容，整個網域只剩空白頁，
 不再對外提供任何排行資料；repo 跟 GitHub Pages 設定本身沒有關掉，純粹是發布腳本不再
-往那邊送內容。用子路徑（而不是登入或白名單）當最高權限的門檻，額外加路徑不等於真正的
-權限保護，因此不把「網址複雜度」當成登入授權；正式登入與 RLS 狀態仍以 `TODO.md` 為準。
+往那邊送內容。`admin888/`、`viewer/` 這兩個過渡期用的子路徑網址已一併收掉（2026-09-01
+起不再發布內容，改成單一網址＋登入分層）。
 檢視模式仍可進入盤中、盤後、自訂、族群，但族群頁只開放「熱度排行」；這是 UI 樣板，
 不是登入授權。
 「筆記」是個人工作區，只在最高權限樣板顯示；內容直接讀寫 Supabase 的 `notes` 表，任何裝置都能看到同一份資料，
@@ -311,16 +310,16 @@ GitHub Pages 的快取是十分鐘且無法改標頭，靠網址變動才能讓�
 
 ```bash
 GH_PAGES_REMOTE=https://x-access-token:$(gh auth token)@github.com/frank-invest/frank-invest.github.io.git \
-GH_PAGES_ADMIN_SUBDIR=admin888 \
+GH_PAGES_PUBLISH_ROOT=1 \
 scripts/publish-gh-pages.sh publish/site
 ```
 
-網址：<https://frank-invest.github.io/admin888/>（檢視權限：<https://frank-invest.github.io/viewer/>）
+網址：<https://frank-invest.github.io/>（單一網址，訪客模式為預設，監控者／最高權限登入後才拿得到）
 
 不帶 `GH_PAGES_REMOTE` 時預設推去 `origin`（`qwe953751/Investment`）；不帶
-`GH_PAGES_ADMIN_SUBDIR` 時，整個網域只會發一頁看不到任何內容的空白頁——這是刻意
+`GH_PAGES_PUBLISH_ROOT` 時，整個網域只會發一頁看不到任何內容的空白頁——這是刻意
 的預設值，`qwe953751.github.io/Investment/` 就是這樣被收掉內容的。手動在其他裝置
-發布最高權限內容時，兩個環境變數都要記得帶，漏帶 `GH_PAGES_ADMIN_SUBDIR` 就會把
+發布內容時，兩個環境變數都要記得帶，漏帶 `GH_PAGES_PUBLISH_ROOT` 就會把
 新網址也發成空白頁。詳見 [Doc/開發環境.md](Doc/開發環境.md) 的「發布到新網址」。
 
 前端抓 `data/*.json` 時會帶上 `manifest.json` 裡的版本號（發佈時間的 Unix 秒數）當查詢字串，
@@ -414,7 +413,7 @@ dotnet run --project src/Invest.Web -- backfill-intraday-heat
 公司網路無法直連 PostgreSQL 時，才明確使用下列受控路徑。它由正式網站公開的唯讀 API
 讀取快照、仍由 C# 計算、再以 Management API 精準更新同一個時間戳；需要
 `SUPABASE_ACCESS_TOKEN`，不能用於一般日常收集。公開 manifest 固定讀實際發布的
-`https://frank-invest.github.io/admin888/manifest.json`；舊 `qwe953751.github.io/Investment/` 根目錄已刻意收掉內容，不能再當回填來源：
+`https://frank-invest.github.io/manifest.json`；舊 `qwe953751.github.io/Investment/` 根目錄已刻意收掉內容，不能再當回填來源：
 
 ```bash
 dotnet run --project src/Invest.Web -- backfill-intraday-heat --via-management-api

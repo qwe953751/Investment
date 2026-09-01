@@ -50,30 +50,25 @@ const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
 const VIEW_QUERY = new URLSearchParams(window.location.search).get('view');
 // 長者友善連結：網址帶 ?key=密碼，開頁就自動登入，不用打字。
 const AUTOLOGIN_QUERY = new URLSearchParams(window.location.search).get('key');
-const ACCESS_PATH = window.location.pathname.split('/').filter(Boolean).at(-1);
-const SITE_HOST = window.location.hostname.toLowerCase();
-const ADMIN_HOST = 'app.admin.frank-investment.com';
-const VIEWER_HOST = 'view.frank-investment.com';
-const DEPLOYED_ACCESS = SITE_HOST === VIEWER_HOST
-    ? 'viewer'
-    : SITE_HOST === ADMIN_HOST
-        ? 'admin'
-        : null;
-// 網址決定的下限，維持原本的行為完全不變：admin888／viewer 這兩個網址現在怎麼運作，
-// 之後還是怎麼運作。權限功能（筆記 #37）是疊上去的——登入只會把權限往上加，
-// 不會蓋掉網址原本給的下限。等權限功能驗證完，才會考慮收掉這一段。
-const URL_ACCESS = DEPLOYED_ACCESS
-    ?? (ACCESS_QUERY === 'viewer' || ACCESS_PATH === 'viewer' ? 'viewer' : 'admin');
+// 本機測試專用：?access=admin／?access=viewer 可以不登入就切換畫面看到的權限，
+// 正式網址不會進這個分支，只影響 URL_ACCESS 與下面的預覽徽章。
+const ACCESS_PREVIEW_QUERY = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && (ACCESS_QUERY === 'admin' || ACCESS_QUERY === 'viewer')
+    ? ACCESS_QUERY
+    : null;
+// 網址決定的下限：正式網站只有單一網址，一律預設訪客，監控者／最高權限一律要
+// 登入才能拿到（筆記 #37 收尾：admin888／viewer 這兩個轉發網址已經收掉，不再
+// 靠路徑當防線）。
+const URL_ACCESS = ACCESS_PREVIEW_QUERY ?? 'viewer';
 const ACCESS_RANK = { viewer: 0, monitor: 1, admin: 2 };
 const ACCESS_TIER_TEXT = { viewer: '訪客', monitor: '監控者', admin: '最高權限' };
 // 登入拿到的層級；null 代表沒登入（訪客）。跟 URL_ACCESS 各自獨立，
 // 實際生效的權限（SITE_ACCESS）取兩者較高的一個，見 applyEffectiveAccess()。
 let loginTier = null;
 let SITE_ACCESS = URL_ACCESS;
-// 資產是個人資料工作區，只有最高權限（admin888 網址，或登入最高權限帳號）才給。
+// 資產是個人資料工作區，只有最高權限（登入最高權限帳號）才給。
 let ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';
-const ACCESS_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
-    && (ACCESS_QUERY === 'admin' || ACCESS_QUERY === 'viewer');
+const ACCESS_PREVIEW = ACCESS_PREVIEW_QUERY !== null;
 
 function applyEffectiveAccess() {
     SITE_ACCESS = loginTier !== null && ACCESS_RANK[loginTier] > ACCESS_RANK[URL_ACCESS]
@@ -233,7 +228,7 @@ const CUSTOM_DATA_SOURCES = [
     { key: 'daily', text: '盤後', hint: '瀏覽指定交易日的收盤資料；可以使用交易日選擇器。' }
 ];
 
-// 筆記與資產都是個人工作區，最高權限才顯示（admin888 網址，或登入最高權限帳號）。
+// 筆記與資產都是個人工作區，只有登入最高權限帳號才顯示。
 const availableViews = () => {
     const workspaceViews = ASSET_DASHBOARD_ENABLED
         ? VIEWS
@@ -5698,8 +5693,8 @@ let assetOcrWarmupAttempted = false;
 let assetOcrStatus = '';
 
 function assetSiteUrl(name) {
-    // 網站可能被放在 /admin888/ 這種子目錄底下，所以要相對目前這一頁去解，
-    // 不能寫成 '/tesseract.min.js'。
+    // 相對目前這一頁去解析，不能寫成 '/tesseract.min.js'，避免網站換到子目錄
+    // 底下時路徑失效。
     return new URL(name, window.location.href).href;
 }
 
@@ -17257,7 +17252,7 @@ async function start() {
     await restoreSession();
 
     // 長者友善連結：跟手動輸入密碼走同一套驗證，只是省了打字。安全層級跟
-    // admin888 網址本身一樣，只是網址上的一段字串，不是真正的存取控制。
+    // 手動打密碼一樣，只是密碼變成寫在網址上，不是額外的存取控制。
     // 已經用 refresh token 恢復過登入就不用再試一次。
     if (AUTOLOGIN_QUERY && loginTier === null) {
         await loginWithPassword(AUTOLOGIN_QUERY);

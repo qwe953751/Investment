@@ -30,7 +30,7 @@ public sealed class DailySnapshotWorkflowTests
 
         Assert.Contains("actions/runs/$run_id/jobs?per_page=100", workflow, StringComparison.Ordinal);
         Assert.Contains(
-            "發佈到 frank-invest.github.io（新網址，最高權限在 admin888/）",
+            "發佈到 frank-invest.github.io（單一網址，訪客為預設）",
             workflow,
             StringComparison.Ordinal);
         Assert.Contains(".conclusion == \"success\"", workflow, StringComparison.Ordinal);

@@ -83,7 +83,7 @@ jobs:
               [ "$updated" -ge "$day_start" ] || continue
 
               if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
-                  --jq '.jobs[].steps[]? | select(.name == "發佈到 frank-invest.github.io（新網址，最高權限在 admin888/）" and .conclusion == "success") | .name' \
+                  --jq '.jobs[].steps[]? | select(.name == "發佈到 frank-invest.github.io（單一網址，訪客為預設）" and .conclusion == "success") | .name' \
                   | grep -q .; then
                   echo "should_run=false" >> "$GITHUB_OUTPUT"
                   echo "同日 run $run_id 已成功發布正式網址，略過這場備援。"
@@ -304,7 +304,7 @@ jobs:
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
         run: dotnet run -c Release --project src/Invest.Web -- export "$GITHUB_WORKSPACE/publish/site"
 
-      # 舊網址（qwe953751.github.io/Investment/）已收掉內容：不帶 GH_PAGES_ADMIN_SUBDIR，
+      # 舊網址（qwe953751.github.io/Investment/）已收掉內容：不帶 GH_PAGES_PUBLISH_ROOT，
       # publish-gh-pages.sh 只會發一頁空白頁，訪客看不到任何排行資料。這個 repo
       # 的 gh-pages 分支還留著（沒關 Pages），但打開網址什麼都看不到。
       - name: 發佈到 GitHub Pages（舊網址，僅留空白頁）
@@ -319,16 +319,15 @@ jobs:
       # 新網址：frank-invest 這個 org 底下沒有帳號原名，訪客看不到 qwe953751。
       # FRANK_INVEST_PAT 是個人 PAT（跟本機 gh CLI 用同一組），因為這個 repo
       # 屬於另一個 org，GITHUB_TOKEN 天生跨不過去。
-      # GH_PAGES_ADMIN_SUBDIR=admin888：最高權限改發到子路徑
-      # https://frank-invest.github.io/admin888/，網域根目錄（https://frank-invest.github.io/）
-      # 只留空白頁，跟舊網址一樣看不到內容；檢視權限維持獨立、好記的
-      # https://frank-invest.github.io/viewer/（跟 admin888/ 平級，不是巢狀在它
-      # 底下），進來會轉址到 admin888/?access=viewer。
-      - name: 發佈到 frank-invest.github.io（新網址，最高權限在 admin888/）
+      # GH_PAGES_PUBLISH_ROOT=1：內容直接發到網域根目錄
+      # https://frank-invest.github.io/——單一網址，訪客模式為預設，監控者／
+      # 最高權限一律要登入才能拿到（筆記 #37 收尾：不再有 admin888/、viewer/
+      # 這兩個獨立網址）。
+      - name: 發佈到 frank-invest.github.io（單一網址，訪客為預設）
         if: ${{ !cancelled() }}
         env:
           GH_PAGES_REMOTE: https://x-access-token:${{ secrets.FRANK_INVEST_PAT }}@github.com/frank-invest/frank-invest.github.io.git
-          GH_PAGES_ADMIN_SUBDIR: admin888
+          GH_PAGES_PUBLISH_ROOT: '1'
         run: scripts/publish-gh-pages.sh publish/site
 
       # 心跳的用途是回答「到底有沒有跑」，所以前面炸掉了也要記，用 always()。

@@ -903,9 +903,10 @@ static async Task<PublishedManifest> LoadPublishedManifestAsync(
     HttpClient client,
     CancellationToken cancellationToken)
 {
-    // 舊網址根目錄已刻意收掉內容；回填必須讀實際發布資料的最高權限子路徑。
-    // 這裡只拿公開 anon key 與 schema，寫入仍強制走明確帶 --via-management-api 的受控路徑。
-    const string ManifestUrl = "https://frank-invest.github.io/admin888/manifest.json";
+    // 舊網址（qwe953751.github.io/Investment/）根目錄已刻意收掉內容；回填必須讀
+    // frank-invest.github.io 這個正式網址。這裡只拿公開 anon key 與 schema，
+    // 寫入仍強制走明確帶 --via-management-api 的受控路徑。
+    const string ManifestUrl = "https://frank-invest.github.io/manifest.json";
     var json = await client.GetStringAsync(ManifestUrl, cancellationToken);
     return JsonSerializer.Deserialize<PublishedManifest>(json, CreatePublicJsonOptions())
         ?? throw new InvalidOperationException("讀不到正式網站的 manifest.json。");

@@ -23,7 +23,7 @@
 | 9 | [已合併的遠端分支要不要刪](#todo-9) | 🟡 等你決定 |
 | 10 | [盤中「成交比變化」疑似每列都是 +0.01%](#todo-10) | 🟡 等盤中確認 |
 | 11 | [盤中輪距要不要縮到 1 分鐘](#todo-11) | 🟡 等第 8 項換完資料來源 |
-| 12 | [最高權限在 admin888 子路徑；frank-invest.github.io 根目錄已改回訪客模式（主站已發布，外部 viewer repo 待決定）](#todo-12) | 🟡 等你決定 |
+| 12 | [收攏成單一網址：admin888／viewer 已收掉，改單一根目錄＋登入分層（程式已 commit，尚未發布）](#todo-12) | 🟡 待發布 |
 | 13 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-13) | 🟡 等資料 |
 | 14 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-14) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 15 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-15) | 🟡 已改走 CDN，等 8/31 量實際流量 |
@@ -693,9 +693,10 @@ key 是 `invest.lockedTickers`、讀寫都包 try/catch 讓無痕模式不會炸
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：最高權限在 `frank-invest.github.io/admin888/`；`frank-invest.github.io/`
-根目錄已改回訪客模式（程式已 commit 並推送 `main`，尚未發布，見下方
-「根目錄復原訪客模式」一節）；`qwe953751.github.io/Investment/` 根目錄維持空白頁**
+**狀態：已決定收掉 `admin888/`、`viewer/` 這兩個過渡網址，改成單一根目錄網址
+＋登入分層（訪客為預設，監控者／最高權限需登入）；程式已 commit 並推送
+`main`，**尚未發布**，正式網站目前仍是 `admin888/`／`viewer/` 舊架構（見下方
+「收攏成單一網址」一節）；`qwe953751.github.io/Investment/` 根目錄維持空白頁**
 
 ### 已討論（2026-08-24）
 
@@ -840,6 +841,39 @@ org 管理畫面**，不是訪客看到的樣子。那兩個按鈕本來就只�
 - 本機用假 remote 跑過 `publish-gh-pages.sh` 驗證產出內容，也用真實資料本機
   預覽過新版面；publish-only run `33474489830` 已完成輸出與發布，公開根目錄與
   `viewer/` 已驗證為 iframe 轉發頁。
+
+### 收攏成單一網址，admin888／viewer 收掉（2026-09-01，已 commit，尚未發布）
+
+登入分層（筆記 #37）上線後，`admin888` 子路徑跟 `viewer/` 轉發頁已經不是真正
+的存取控制，只是不讓網址列直接暴露一段字串，還多一層 iframe 轉發要維護。
+你確認方向後直接收掉這兩個網址，改成單一根目錄網址＋登入分層：
+
+- 最終網址：**`https://frank-invest.github.io/`**（單一網址，預設訪客，
+  監控者／最高權限一律要密碼登入才能拿到）。
+- 長者友善連結：**`https://frank-invest.github.io/?key=<監控者密碼>`**，延續既有
+  `?key=` 自動登入機制（`AUTOLOGIN_QUERY`），開頁即自動登入監控者模式，沒有另外
+  再做轉發頁。
+- `site.js`：`URL_ACCESS` 從「不是 viewer 路徑就預設 admin」改成一律預設
+  `'viewer'`；清掉沒用過的 `ADMIN_HOST`／`VIEWER_HOST`／`DEPLOYED_ACCESS` 自訂
+  子網域死碼。本機測試仍可用 `?access=admin`／`?access=viewer`（限 localhost）
+  覆寫，不受影響。
+- `scripts/publish-gh-pages.sh`：拿掉 `write_iframe_page()` 與
+  `GH_PAGES_ADMIN_SUBDIR` 的子路徑＋iframe 轉發殼，改用新的布林旗標
+  `GH_PAGES_PUBLISH_ROOT`——設定時內容直接發到網域根目錄，不設定時維持原本的
+  空白頁行為（`qwe953751.github.io/Investment/` 不受影響，不在這次範圍內）。
+- 同步調整 `daily-snapshot.yml` 發布步驟名稱與環境變數、`intraday.yml` 的
+  `SITE_MANIFEST_URL`、`Program.cs` 的回補用 `ManifestUrl`、`AGENTS.md` 的
+  發布後驗證指令、`README.md`／`Doc/開發環境.md` 的網址說明，全部從
+  `admin888/manifest.json` 改成根目錄 `manifest.json`。
+- 測試同步：`DailySnapshotWorkflowTests.cs`、`StaticKLineAssetTests.cs` 裡斷言
+  舊字串（發布步驟名稱、`ADMIN_HOST`／`VIEWER_HOST`）的地方改成新字串。
+- 本機驗證：`dotnet test` Release 全數通過（`331/332`，唯一失敗是另一個並行
+  session 尚未完成的 OCR 工作，跟這次改動無關）；`publish-gh-pages.sh` 用本機
+  假 remote（`/tmp` bare repo）分別跑過 `GH_PAGES_PUBLISH_ROOT=1` 與不設定兩種
+  模式，確認根目錄直接拿到完整網站內容、未設定時維持純空白頁。
+- **狀態**：程式碼已 commit 並推送 `main`，**尚未觸發 publish-only 發布**——
+  正式網站目前仍是 `admin888/`／`viewer/` 舊架構，等下一次明確要求發布時才會
+  切換成單一根目錄網址。
 
 ### 尚未做的
 
