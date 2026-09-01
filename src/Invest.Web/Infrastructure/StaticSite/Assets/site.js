@@ -3630,7 +3630,7 @@ async function fetchAssetIntradayQuotes(accounts, holdings) {
 
     const response = await fetch(
         `${supabase.url}/rest/v1/intraday_latest`
-            + '?select=symbol,name,price,change_percent'
+            + '?select=symbol,name,price,change_percent,trade_date'
             + `&symbol=${encodeURIComponent(`in.(${tickers.join(',')})`)}`,
         { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
 
@@ -3638,17 +3638,23 @@ async function fetchAssetIntradayQuotes(accounts, holdings) {
         throw new Error(String(response.status));
     }
 
-    return new Map((await response.json()).map(row => {
-        const ticker = String(row.symbol ?? '').trim().toUpperCase();
+    const today = TAIPEI_DATE.format(new Date());
 
-        return [ticker, {
-            name: String(row.name ?? ''),
-            close: assetNumber(row.price),
-            priceChange: assetNumber(row.change_percent),
-            quoteDate: '',
-            session: '盤中'
-        }];
-    }));
+    // 非交易日也可能正好落在 09:00～13:35；不能把上一個交易日留在 view 的輪次
+    // 誤當成現在盤中，否則名稱顏色與漲跌幅會顯示錯誤的行情時段。
+    return new Map((await response.json())
+        .filter(row => String(row.trade_date ?? '') === today)
+        .map(row => {
+            const ticker = String(row.symbol ?? '').trim().toUpperCase();
+
+            return [ticker, {
+                name: String(row.name ?? ''),
+                close: assetNumber(row.price),
+                priceChange: assetNumber(row.change_percent),
+                quoteDate: '',
+                session: '盤中'
+            }];
+        }));
 }
 
 async function fetchAssetLatestUsdTwdRate() {

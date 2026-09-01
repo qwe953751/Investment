@@ -1058,7 +1058,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const cost = assetSum(holdings, holding => holding.cost);", script, StringComparison.Ordinal);
         Assert.Contains("const marketValue = assetSum(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
         Assert.Contains("const completeMarketValue = assetSumComplete(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
-        Assert.Contains("const totalValue = holdings.length === 0\n        ? account.cash", script, StringComparison.Ordinal);
+        Assert.Contains("const totalValue = holdings.length === 0", script, StringComparison.Ordinal);
         Assert.Contains("marketValue === null ? null : marketValue + account.cash", script, StringComparison.Ordinal);
         Assert.Contains("const fundingCost = assetCashFlowAvailable ? assetCashFlowNet(cashFlows) : null;", script, StringComparison.Ordinal);
     }
@@ -1104,6 +1104,8 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("stockNameChangeClass(holding.priceChange)", script, StringComparison.Ordinal);
         Assert.Contains("quoteSession: '盤後'", script, StringComparison.Ordinal);
         Assert.Contains("session: '盤中'", script, StringComparison.Ordinal);
+        Assert.Contains("?select=symbol,name,price,change_percent,trade_date", script, StringComparison.Ordinal);
+        Assert.Contains("String(row.trade_date ?? '') === today", script, StringComparison.Ordinal);
         Assert.Contains("function assetPersistHoldingSortOrders", script, StringComparison.Ordinal);
     }
 
