@@ -113,11 +113,11 @@ public sealed class CorporateActionClient(
         DateOnly endDate,
         CancellationToken cancellationToken)
     {
-        var url = "https://wwwc.twse.com.tw/rwd/zh/exRight/TWT49U"
+        var url = "https://www.twse.com.tw/rwd/zh/exRight/TWT49U"
             + $"?startDate={startDate:yyyyMMdd}&endDate={endDate:yyyyMMdd}&response=json";
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Referrer = new Uri(
-            "https://wwwc.twse.com.tw/zh/announcement/ex-right/twt49u.html");
+            "https://www.twse.com.tw/zh/announcement/ex-right/twt49u.html");
         using var response = await httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         RequireJson(response, TwseSource);

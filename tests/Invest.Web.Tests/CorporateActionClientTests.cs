@@ -156,7 +156,7 @@ public sealed class CorporateActionClientTests
         {
             if (request.Method == HttpMethod.Get)
             {
-                Assert.Equal("wwwc.twse.com.tw", request.RequestUri!.Host);
+                Assert.Equal("www.twse.com.tw", request.RequestUri!.Host);
             }
 
             var json = request.Method == HttpMethod.Get
