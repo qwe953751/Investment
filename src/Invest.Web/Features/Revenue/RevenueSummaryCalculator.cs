@@ -25,13 +25,44 @@ public static class RevenueSummaryCalculator
     }
 
     /// <summary>
-    /// 今天該看哪一個月的營收：一律是上個月，不看日期。
+    /// 營收月份的上限：上個月。公司不可能已經公告當月的營收，
+    /// 所以比這個更新的月份一定是來源資料出錯，直接不採用。
     ///
-    /// 公司要在每月 10 日前申報上個月的營收，所以月初那幾天很多家還沒公告。
-    /// 沒公告就是沒有，畫面上顯示 —，不會退回去拿上上個月的數字頂替：
-    /// 8 月看到的只能是 7 月，就算 6 月的數字擺在手邊也不能拿出來用。
+    /// 這是**上限**，不是「一定要顯示這個月」——後者是 2026-09-02 之前的做法，
+    /// 見 <see cref="SummarizeLatest"/> 說明為什麼被換掉。
     /// </summary>
     public static DateOnly EligibleMonth(DateOnly today) => new DateOnly(today.Year, today.Month, 1).AddMonths(-1);
+
+    /// <summary>
+    /// 這一檔要顯示哪一個月：手上有資料的**最新**月份，但不超過 <paramref name="ceiling"/>。
+    ///
+    /// 原本的規則是「一律看上個月，沒公告就顯示 —」，理由是不要讓人拿上上個月的數字
+    /// 當上個月的看。但公司要在每月 10 日前才申報，所以每個月 1 號一到，
+    /// 上個月的資料**一檔都還沒有**，整個營收欄與創高欄會同時變成 —，
+    /// 連前一天還看得到的、貨真價實的上上個月創高紀錄也一起消失。
+    /// 使用者在 2026-09-02 回報的就是這件事（筆記 #47）：
+    /// 「已經公布了、有些個股有創新高，但頁面上沒資料」。
+    ///
+    /// 改成逐檔取最新之後，公告期內的畫面會是混的——早報的公司顯示新的月份、
+    /// 還沒報的顯示前一個月——但**永遠不會整片空白**，而且每一格的月份都跟著資料走，
+    /// 彈窗與儲存格用的是同一個月份，不會互相打架。
+    /// </summary>
+    public static RevenueSummary? SummarizeLatest(
+        IReadOnlyDictionary<DateOnly, long> history,
+        DateOnly ceiling)
+    {
+        DateOnly? latest = null;
+
+        foreach (var month in history.Keys)
+        {
+            if (month <= ceiling && (latest is null || month > latest.Value))
+            {
+                latest = month;
+            }
+        }
+
+        return latest is null ? null : Summarize(latest.Value, history);
+    }
 
     /// <summary>
     /// 算出某一檔在指定月份的營收摘要。<paramref name="history"/> 是這一檔所有月份的單月營收。

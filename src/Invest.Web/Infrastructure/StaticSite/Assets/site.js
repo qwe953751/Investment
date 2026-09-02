@@ -1021,13 +1021,19 @@ const toRankChangeText = rankChange => (missing(rankChange)
 // 資料在 Supabase 的 revenue_latest，不在靜態快照裡：公司要在每月 10 日前申報上個月營收，
 // 那十天內整天都會多出幾家，靜態站一天只重算一次（18:00），中間公告的就要等隔天。
 // 跟 market_flags 同一個理由、同一種做法。
+//
+// revenue_latest 是逐檔一列，月份存在 month 欄，**各檔不保證同一個月**：
+// 公告期內早報的公司已經是新的一期，還沒報的仍是前一期。
 
 let revenueByTicker = new Map();
 
-// 今天該看哪一個月：一律是上個月，不看日期，也不會退回去拿上上個月。
-// 8 月看到的只能是 7 月，就算 6 月的數字擺在手邊也不能拿出來用。
-// 後端寫進 revenue_latest 時已經照這個規則挑過一次，這裡再算一次是因為
-// 跨月當下那張表還沒重算，內容會停在上上個月——那時候整欄要顯示 —。
+// 營收最新能顯示到哪一個月的**上限**：上個月。
+// 公司不可能已經公告當月營收，比這更新的一定是壞資料。
+//
+// 這裡刻意不是「一定要等於上個月」。公司要在每月 10 日前才申報，所以 1 號一到，
+// 上個月的資料一檔都還沒有；硬性等於上個月會讓整個營收欄與創高欄同時變空白，
+// 連前一天還看得到的上上個月創高也一起不見（筆記 #47）。
+// 後端 revenue_latest 現在是逐檔存「自己手上最新的那一期」，這裡只負責擋掉超過上限的。
 function eligibleMonthKey() {
     const [year, month] = TAIPEI_DATE.format(new Date()).split('-').map(Number);
 
@@ -1058,18 +1064,34 @@ async function loadRevenue(force = false) {
 
         const eligible = eligibleMonthKey();
 
-        // month 是該月一號（2026-07-01），只比對年月。對不上就整批丟掉：
-        // 寧可顯示 —，也不要讓人拿上上個月的營收當上個月的看。
-        revenueByTicker = new Map(raw
-            .filter(row => row.month.slice(0, 7) === eligible)
-            .map(row => [row.ticker, {
-                month: row.month.slice(0, 7),
+        // month 是該月一號（2026-07-01），只比對年月。
+        // 只擋掉「比上個月還新」的月份（那是壞資料），舊的一律留著顯示，
+        // 因為公告期內大多數公司手上最新的就是再前一期。
+        // 後端一檔只會寫一列，這裡仍取最新的那一列，免得將來多寫幾列時默默取到舊的。
+        revenueByTicker = new Map();
+
+        for (const row of raw) {
+            const month = row.month.slice(0, 7);
+
+            if (month > eligible) {
+                continue;
+            }
+
+            const kept = revenueByTicker.get(row.ticker);
+
+            if (kept && kept.month >= month) {
+                continue;
+            }
+
+            revenueByTicker.set(row.ticker, {
+                month,
                 revenue: Number(row.revenue),
                 yoy: row.yoy,
                 mom: row.mom,
                 highMonths: row.high_months,
                 recordHigh: row.record_high
-            }]));
+            });
+        }
 
         lastRevenueLoadedAt = Date.now();
     } catch {
@@ -1129,6 +1151,9 @@ function toRevenueGrowthCell(ticker, fallback = null) {
     return {
         cls: 'numeric metric-stack revenue-growth',
         revenueDetails: true,
+        // 公告期內每一檔顯示的月份可能不一樣（早報的是新的一期、還沒報的是前一期），
+        // 所以月份要跟著這一格走。版面不變，只放進 hint 裡。
+        revenueMonth: revenue?.month ?? null,
         lines: [
             {
                 label: 'YOY',
@@ -1184,12 +1209,13 @@ function toHighMonthsCell(ticker, fallback = null) {
     };
 }
 
-const REVENUE_CHANGE_HINT = '上個月的單月營收增減。YOY 跟去年同月比、MOM 跟上個月比，'
+const REVENUE_CHANGE_HINT = '這一檔最新一期已公告的單月營收增減。YOY 跟去年同月比、MOM 跟上個月比，'
     + '兩個都由我們自己的營收歷史算出來，不抄報表上算好的欄位。'
     + '點表頭以 YOY 排序；點儲存格開啟 20 個月圖表與最近 5 個月列表。'
-    + '公司要在每月 10 日前申報，還沒公告就顯示 —。';
+    + '公司要在每月 10 日前申報，所以每月 1～10 日各家顯示的月份可能不同，'
+    + '把游標移到儲存格上會顯示那一格是哪個月。';
 
-const HIGH_MONTHS_HINT = '上個月的營收往回數，連續幾個月都沒有比它高的（含當月自己）。'
+const HIGH_MONTHS_HINT = '從左欄那一期的營收往回數，連續幾個月都沒有比它高的（含該月自己）。'
     + '數到手上的歷史用完會標成 N+，意思是「至少 N 個月」。沒創高顯示 —。';
 
 const TOPIC_COLUMN_HINT = '上層是大題材（供應鏈樹的最上層），下層是當前題材（這檔股票掛到的最細節點）。'
@@ -11374,9 +11400,8 @@ function selectedRevenueMonths(ticker) {
         }
     }
 
-    // 儲存格用 eligibleMonthKey() 擋掉「還沒公告的月份」，彈窗也得照同一條規則擋。
-    // 不然跨月當下 revenue_latest 還停在上上個月時，表格顯示 —、
-    // 點開卻看得到上上個月的數字，同一列的兩個地方各說各話。
+    // 儲存格用 eligibleMonthKey() 當上限擋掉「不可能存在的月份」，彈窗照同一條規則擋，
+    // 兩邊的最後一個月才會是同一個月，不會同一列的兩個地方各說各話。
     const eligible = eligibleMonthKey();
 
     return months
@@ -11755,7 +11780,7 @@ function renderTable() {
         }
 
         for (const column of columns()) {
-            const { text, cls, lines, kline, marketMark, revenueDetails, topic, tickerBadges } = column.cell(row);
+            const { text, cls, lines, kline, marketMark, revenueDetails, revenueMonth, topic, tickerBadges } = column.cell(row);
             const td = document.createElement('td');
             td.className = cls;
 
@@ -11812,7 +11837,8 @@ function renderTable() {
                     target.type = 'button';
                     target.className = 'revenue-cell-button';
                     target.dataset.ticker = row.ticker;
-                    target.dataset.hint = '點擊開啟 20 個月營收圖表與最近 5 個月列表';
+                    target.dataset.hint = (revenueMonth ? `這格是 ${revenueMonth} 的營收。` : '')
+                        + '點擊開啟 20 個月營收圖表與最近 5 個月列表';
                     target.setAttribute('aria-controls', 'revenue-popover');
                     target.setAttribute('aria-expanded', String(expandedRevenueTicker === row.ticker));
                     target.setAttribute('aria-label', `${row.ticker} ${row.name} 營收詳情`);

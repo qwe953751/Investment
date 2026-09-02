@@ -1568,8 +1568,12 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
 
         var history = await store.LoadHistoryAsync(cts.Token);
 
+        // 逐檔取「手上最新、且不超過上個月」的那一期，而不是硬指定上個月。
+        // 硬指定的話，每個月 1 號到第一家公司公告之間，整欄會是空的（筆記 #47）。
         var summaries = history
-            .Select(entry => (Ticker: entry.Key, Summary: RevenueSummaryCalculator.Summarize(eligible, entry.Value)))
+            .Select(entry => (
+                Ticker: entry.Key,
+                Summary: RevenueSummaryCalculator.SummarizeLatest(entry.Value, eligible)))
             .Where(item => item.Summary is not null)
             .Select(item => (item.Ticker, Summary: item.Summary!))
             .ToArray();
@@ -1582,16 +1586,22 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
         await store.SaveSummariesAsync(summaries, historySummaries, cts.Token);
 
         var highs = summaries.Count(item => item.Summary.HighStreak is not null);
+        var current = summaries.Count(item => item.Summary.Month == eligible);
 
         Console.WriteLine();
         Console.WriteLine(
-            $"完成。上個月是 {eligible:yyyy-MM}，{summaries.Length} 檔有營收"
+            $"完成。{summaries.Length} 檔有營收可顯示"
             + $"（歷史共 {history.Count} 檔、彈窗摘要 {historySummaries.Length:N0} 列），"
             + $"其中 {highs} 檔創高。");
 
+        // 公告期內這兩個數字會不一樣，那是正常的：還沒公告的公司顯示的是前一期。
+        Console.WriteLine(
+            $"最新一期 {eligible:yyyy-MM} 已公告 {current} 檔，"
+            + $"其餘 {summaries.Length - current} 檔顯示各自手上最新的那一期。");
+
         if (summaries.Length == 0)
         {
-            Console.WriteLine($"{eligible:yyyy-MM} 目前一檔都還沒公告，網頁上的營收欄會全部顯示 —。");
+            Console.WriteLine("資料庫裡完全沒有營收歷史，網頁上的營收欄會全部顯示 —。");
         }
     }
     catch (OperationCanceledException)
