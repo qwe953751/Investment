@@ -1566,14 +1566,42 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
             Console.WriteLine("最新一期是空的，只用資料庫裡已有的歷史重算。");
         }
 
+        // 上面那兩支 OpenAPI 是**整批出表**的，出表日期擺在回應裡：2026-09-02 當天問到的
+        // 還是「出表日期 1150817、資料年月 11507」，也就是 8/17 那份七月的完整名單。
+        // 換句話說公告期內先報的那幾十家，OpenAPI 根本還沒收進去。
+        //
+        // 觀測站的逐月報表則是即時的：同一天問 115 年 8 月，sii 26 KB、otc 22 KB，
+        // 解出 49 檔已公告。只靠 OpenAPI 的話這 49 檔要等到 9/17 前後才會出現，
+        // 使用者在 9/02 看到的就是「明明已經公布了卻沒抓到」（筆記 #47）。
+        //
+        // 所以上個月一律再走一次觀測站。四個檔案、幾十 KB，比漏掉資料便宜太多。
+        // 月份已經定案之後這一趟會抓到跟資料庫一樣的內容，寫進去是無害的覆蓋，
+        // 而且公司事後更正營收時也會跟著更新。
+        //
+        // backfillMonths > 0 時上面的迴圈第一圈就是 eligible，而且 index 0 一定小於
+        // AlwaysRefreshMonths，不會被「已有資料就略過」擋掉，這裡再抓一次是白跑四個檔案。
+        if (backfillMonths == 0)
+        {
+            var eligibleRows = await client.GetMonthAsync(eligible, cts.Token);
+
+            if (eligibleRows.Count > 0)
+            {
+                await store.SaveMonthlyAsync(eligibleRows, cts.Token);
+                Console.WriteLine($"{eligible:yyyy-MM} 觀測站寫入 {eligibleRows.Count} 檔。");
+            }
+            else
+            {
+                Console.WriteLine($"{eligible:yyyy-MM} 觀測站還是空表，這個月還沒有人公告。");
+            }
+        }
+
         var history = await store.LoadHistoryAsync(cts.Token);
 
-        // 逐檔取「手上最新、且不超過上個月」的那一期，而不是硬指定上個月。
-        // 硬指定的話，每個月 1 號到第一家公司公告之間，整欄會是空的（筆記 #47）。
+        // 就是上個月，沒公告的那幾檔本來就該是空的。
+        // 公告期內這裡的數字會從幾十檔一路長到一千九百多檔，那是正常的進度，
+        // 不是「資料不完整」——真正要擔心的是它卡在 0 不動，那代表上游沒抓到。
         var summaries = history
-            .Select(entry => (
-                Ticker: entry.Key,
-                Summary: RevenueSummaryCalculator.SummarizeLatest(entry.Value, eligible)))
+            .Select(entry => (Ticker: entry.Key, Summary: RevenueSummaryCalculator.Summarize(eligible, entry.Value)))
             .Where(item => item.Summary is not null)
             .Select(item => (item.Ticker, Summary: item.Summary!))
             .ToArray();
@@ -1586,22 +1614,16 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
         await store.SaveSummariesAsync(summaries, historySummaries, cts.Token);
 
         var highs = summaries.Count(item => item.Summary.HighStreak is not null);
-        var current = summaries.Count(item => item.Summary.Month == eligible);
 
         Console.WriteLine();
         Console.WriteLine(
-            $"完成。{summaries.Length} 檔有營收可顯示"
+            $"完成。上個月是 {eligible:yyyy-MM}，{summaries.Length} 檔有營收"
             + $"（歷史共 {history.Count} 檔、彈窗摘要 {historySummaries.Length:N0} 列），"
             + $"其中 {highs} 檔創高。");
 
-        // 公告期內這兩個數字會不一樣，那是正常的：還沒公告的公司顯示的是前一期。
-        Console.WriteLine(
-            $"最新一期 {eligible:yyyy-MM} 已公告 {current} 檔，"
-            + $"其餘 {summaries.Length - current} 檔顯示各自手上最新的那一期。");
-
         if (summaries.Length == 0)
         {
-            Console.WriteLine("資料庫裡完全沒有營收歷史，網頁上的營收欄會全部顯示 —。");
+            Console.WriteLine($"{eligible:yyyy-MM} 目前一檔都還沒公告，網頁上的營收欄會全部顯示 —。");
         }
     }
     catch (OperationCanceledException)

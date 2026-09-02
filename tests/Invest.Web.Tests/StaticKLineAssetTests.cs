@@ -710,20 +710,19 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("'numeric positive'", cell, StringComparison.Ordinal);
     }
 
-    // 營收改成逐檔取自己最新一期後，每一格的月份可能不同，
-    // 所以月份必須跟著儲存格走，不能只靠欄位說明寫死「上個月」。
+    // 表格只認上個月那一格，對不上就整批丟掉顯示 —。
+    //
+    // 2026-09-02 曾經把這裡放寬成「逐檔取自己手上最新的一期」，想解決「1 號整欄變空白」。
+    // 那是修錯地方：空白的原因是抓取漏了公告期內早報的那幾十家（見 Program.cs 的
+    // 「上個月一律再走一次觀測站」），放寬只會讓畫面混著兩個月份，把資料沒抓到蓋掉。
+    // 這個測試就是不讓它再被放寬一次。
     [Fact]
-    public void 營收儲存格要帶出自己那一期的月份()
+    public void 營收儲存格只認上個月那一期()
     {
         var script = ReadAsset("site.js");
 
-        Assert.Contains("revenueMonth: revenue?.month ?? null", script, StringComparison.Ordinal);
-        Assert.Contains("`這格是 ${revenueMonth} 的營收。`", script, StringComparison.Ordinal);
-
-        // 只擋掉「比上個月還新」的壞資料，舊的月份一律留著——
-        // 改回 === 的話，每個月 1 號整欄又會變空白。
-        Assert.Contains("if (month > eligible) {", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("row.month.slice(0, 7) === eligible", script, StringComparison.Ordinal);
+        Assert.Contains("row.month.slice(0, 7) === eligible", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("revenueMonth", script, StringComparison.Ordinal);
     }
 
     [Fact]

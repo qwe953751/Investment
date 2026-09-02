@@ -7,8 +7,7 @@ namespace Invest.Web.Infrastructure.MarketData;
 
 /// <summary>
 /// 月營收在 Supabase 的三層：monthly_revenue 存原始逐月資料，
-/// revenue_latest 存每一檔「自己手上最新一期」那格（月份逐檔記在 month 欄，
-/// 每月 1～10 日的公告期內各家不會一致），revenue_history 存每標的最近 20 個月摘要。
+/// revenue_latest 存「上個月」那格，revenue_history 存每標的最近 20 個月摘要。
 /// 兩張對外表的 YoY／MoM 都由 C# 同一個計算器產生。
 /// </summary>
 public sealed class RevenueStore(ILogger<RevenueStore> logger)
@@ -116,8 +115,9 @@ public sealed class RevenueStore(ILogger<RevenueStore> logger)
     {
         // 下面是「先清空再整批寫回」，所以要先擋掉「清空之後什麼都寫不回去」。
         //
-        // 判斷用 historyRows 而不是 latestRows：兩者都是從同一份歷史算出來的，
-        // 但 latestRows 逐檔各取一列、遇到沒有歷史的新標的會少一列，數字本來就會浮動。
+        // 判斷用 historyRows 而不是 latestRows：
+        // latestRows 只收「上個月有公告的那些檔」，月初那幾天只有幾十檔是正常的，
+        // 那時 revenue_latest 本來就只有那幾十列，其餘顯示 — 才對。
         // historyRows 收的是每一檔最近 20 個月，只要 monthly_revenue 裡還有任何一列就不會是空的。
         // 它變成 0 只有一個意思：整份歷史沒讀出來，來源或解析壞了。
         //

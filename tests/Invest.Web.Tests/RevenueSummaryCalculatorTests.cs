@@ -11,7 +11,7 @@ public class RevenueSummaryCalculatorTests
     private static DateOnly Month(int year, int month) => new(year, month, 1);
 
     [Fact]
-    public void 月份上限一律是上個月()
+    public void 今天看的一律是上個月()
     {
         Assert.Equal(Month(2026, 7), RevenueSummaryCalculator.EligibleMonth(new DateOnly(2026, 8, 1)));
         Assert.Equal(Month(2026, 7), RevenueSummaryCalculator.EligibleMonth(new DateOnly(2026, 8, 17)));
@@ -31,10 +31,9 @@ public class RevenueSummaryCalculatorTests
     }
 
     [Fact]
-    public void 指定月份時不會拿上上個月的數字頂替()
+    public void 不會拿上上個月的數字頂替()
     {
-        // Summarize 是「就是要這個月」的入口：7 月沒公告就是沒有，
-        // 即使 6 月的數字擺在手邊也不會被當成 7 月的拿出來用。
+        // 7 月沒公告時就是沒有，即使 6 月的數字擺在手邊也不能拿出來用。
         var history = new Dictionary<DateOnly, long>
         {
             [Month(2026, 5)] = 100,
@@ -44,61 +43,6 @@ public class RevenueSummaryCalculatorTests
         Assert.Null(RevenueSummaryCalculator.Summarize(Month(2026, 7), history));
         Assert.Equal(200, RevenueSummaryCalculator.Summarize(Month(2026, 6), history)!.Revenue);
     }
-
-    [Fact]
-    public void 公告期內還沒公告的公司顯示前一期而不是空白()
-    {
-        // 每個月 1～10 日是申報期。以前這裡硬性只看上個月，於是 1 號一到整欄變空白，
-        // 連前一天還看得到的創高也一起消失（筆記 #47）。現在要退回這一檔手上最新的那期。
-        var history = new Dictionary<DateOnly, long>
-        {
-            [Month(2026, 5)] = 100,
-            [Month(2026, 6)] = 200
-        };
-
-        var summary = RevenueSummaryCalculator.SummarizeLatest(history, ceiling: Month(2026, 7));
-
-        Assert.NotNull(summary);
-        Assert.Equal(Month(2026, 6), summary.Month);
-        Assert.Equal(200, summary.Revenue);
-    }
-
-    [Fact]
-    public void 已經公告的公司就顯示最新那一期()
-    {
-        var history = new Dictionary<DateOnly, long>
-        {
-            [Month(2026, 5)] = 100,
-            [Month(2026, 6)] = 200,
-            [Month(2026, 7)] = 300
-        };
-
-        Assert.Equal(
-            Month(2026, 7),
-            RevenueSummaryCalculator.SummarizeLatest(history, ceiling: Month(2026, 7))!.Month);
-    }
-
-    [Fact]
-    public void 比上個月還新的月份是壞資料要擋掉()
-    {
-        // 公司不可能已經公告當月營收。來源給出這種月份時寧可退回前一期，
-        // 也不要把一個不存在的月份畫到頁面上。
-        var history = new Dictionary<DateOnly, long>
-        {
-            [Month(2026, 7)] = 300,
-            [Month(2026, 8)] = 999
-        };
-
-        var summary = RevenueSummaryCalculator.SummarizeLatest(history, ceiling: Month(2026, 7));
-
-        Assert.Equal(Month(2026, 7), summary!.Month);
-        Assert.Equal(300, summary.Revenue);
-    }
-
-    [Fact]
-    public void 完全沒有歷史的標的還是沒有摘要()
-        => Assert.Null(RevenueSummaryCalculator.SummarizeLatest(
-            new Dictionary<DateOnly, long>(), ceiling: Month(2026, 7)));
 
     [Fact]
     public void 增減率是跟去年同月與上個月比()
