@@ -1675,6 +1675,12 @@ body {
     overflow-wrap: break-word;
 }
 
+.asset-preview-table td:nth-child(2) {
+    /* 美股全名（例如 Advanced Micro Devices, Inc.）換行後還是佔太多寬度，
+       壓縮欄寬讓數字欄位有更多空間；代號欄不受影響，維持自然寬度即可。 */
+    max-width: 110px;
+}
+
 .asset-cash-flow-edit-row input,
 .asset-cash-flow-edit-row select {
     box-sizing: border-box;
@@ -2151,14 +2157,22 @@ body {
     font: inherit;
 }
 
+/* 這個 class 直接掛在 <td> 上（不是內層 wrapper）。以前用 display: grid 疊漲跌幅
+   跟盤中／盤後兩行，但 grid 會讓這顆儲存格脫離表格的儲存格版面配置，
+   跟同一列其他 <td> 比矮了幾像素、看起來不在同一列。改用兩個子元素各自
+   display: block 疊行，保留儲存格原本的 table-cell 版面，才會跟同列其他欄位等高。 */
 .asset-holding-price-change {
-    display: grid;
-    gap: 2px;
     font-variant-numeric: tabular-nums;
     line-height: 1.25;
 }
 
+.asset-holding-price-change > span {
+    display: block;
+}
+
 .asset-holding-quote-session {
+    display: block;
+    margin-top: 2px;
     color: var(--text-muted);
     font-size: 11px;
     font-weight: 500;
@@ -3121,6 +3135,57 @@ td.stock-name.stock-name-change-down {
 .revenue-backdrop[hidden],
 .revenue-popover[hidden] {
     display: none;
+}
+
+/* 「檢查更新」的結果訊息：原本塞進頁首一小格 .refresh-status，字一長就被
+   text-overflow: ellipsis 切掉。改成置中彈窗，訊息再長也看得到完整內容。 */
+.status-popup-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: #00000059;
+}
+
+.status-popup {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    z-index: 31;
+    width: min(360px, calc(100vw - 32px));
+    padding: 20px;
+    transform: translate(-50%, -50%);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 8px 24px #00000026;
+    text-align: center;
+}
+
+.status-popup-backdrop[hidden],
+.status-popup[hidden] {
+    display: none;
+}
+
+.status-popup p {
+    margin: 0 0 16px;
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+.status-popup-close {
+    min-height: 36px;
+    padding: 7px 20px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.status-popup-close:hover {
+    background: var(--surface-hover);
 }
 
 .daily-kline-card {

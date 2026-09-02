@@ -10158,7 +10158,7 @@ function selectedIndexKLineBars(market) {
         .sort((left, right) => left.date.localeCompare(right.date));
     return buildIndexMovingAverages([
         ...historicalBars,
-        { ...liveBar, previousClose: historicalBars.at(-1)?.close ?? null, live: true }
+        { ...liveBar, previousClose: historicalBars.at(-1)?.close ?? null }
     ].sort((left, right) => left.date.localeCompare(right.date)))
         .filter(bar => bar.date >= startDate && bar.date <= endDate);
 }
@@ -10581,8 +10581,7 @@ function selectedKLineBars(ticker) {
         ...liveBar,
         previousClose: historicalBars.length
             ? historicalBars[historicalBars.length - 1].close
-            : null,
-        live: true
+            : null
     }]
         .sort((left, right) => left.date.localeCompare(right.date));
 }
@@ -10735,37 +10734,20 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
     hitArea.addEventListener('pointerleave', () => renderReferenceLines(referenceIndex));
 }
 
-// 紅綠一律比「昨收」，沒有昨收才退回開盤價（已收盤的歷史棒適用；即時棒見下方）。
-// 這條規則的正本是 C# 的 DailyKLineTrendCalculator，兩邊必須一模一樣：
-// 跳空開高、收在開盤價之下但仍高於昨收的那種 K 棒，
-// 用開盤價比是綠的、用昨收比是紅的——同一根棒子在 Blazor 與靜態站會顏色相反。
-// 匯出的 JSON 本來就帶著 previousClose，這裡只是要記得用它。
-//
-// 盤中還在成形的當日棒（bar.live）例外，改比「今天的開盤價」：使用者要看的是
-// 這一輪現價相對今天開盤是漲是跌，不是離昨收還差多少——開低走高但還沒收復
-// 昨收的棒子，比昨收會一路顯示下跌色，即使已經比開盤價高。這根棒子只存在於
-// 前端（MIS 即時報價），C# 的 DailyKLineTrendCalculator 沒有對應的即時概念。
+// 紅漲綠跌比同一根棒子自己的開盤價，不是比前一交易日收盤。
+// 這條規則的正本是 C# 的 DailyKLineTrendCalculator，兩邊必須一模一樣，
+// 否則同一根棒子在 Blazor 與靜態站會顏色相反。
 function klineTrendClass(bar) {
     const open = Number(bar.open);
     const close = Number(bar.close);
 
-    if (!Number.isFinite(close)) {
+    if (!Number.isFinite(close) || !Number.isFinite(open)) {
         return 'daily-kline-flat';
     }
 
-    // 第一根棒子沒有昨收，JSON 裡是 null，所以這裡直接檢查原值、不先套 Number()：
-    // Number(null) 是 0 而且通過 Number.isFinite，那根棒子會拿 0 當基準、永遠是紅的。
-    const reference = bar.live
-        ? open
-        : (Number.isFinite(bar.previousClose) ? bar.previousClose : open);
-
-    if (!Number.isFinite(reference)) {
-        return 'daily-kline-flat';
-    }
-
-    return close > reference
+    return close > open
         ? 'daily-kline-up'
-        : close < reference
+        : close < open
             ? 'daily-kline-down'
             : 'daily-kline-flat';
 }
@@ -12319,9 +12301,32 @@ function startSiteVersionChecker() {
 /// 標題旁的「檢查更新」。這份網站是一份快照，數字要等排程在 GitHub 上重新回補、
 /// 重新發佈才會變新，所以按鈕做的事是「去問有沒有新版本」：有就帶著新版本號重載整頁，
 /// 資料檔的網址跟著換，表格會直接顯示新的數字；沒有就只回報目前的資料日期。
+function showStatusPopup(message) {
+    el('status-popup-message').textContent = message;
+    el('status-popup-backdrop').hidden = false;
+    el('status-popup').hidden = false;
+}
+
+function hideStatusPopup() {
+    el('status-popup-backdrop').hidden = true;
+    el('status-popup').hidden = true;
+}
+
+function wireStatusPopup() {
+    el('status-popup-backdrop').addEventListener('click', hideStatusPopup);
+    el('status-popup-close').addEventListener('click', hideStatusPopup);
+}
+
 function wireRefreshButton() {
     const button = el('refresh');
     const status = el('refresh-status');
+
+    // 结果訊息原本只塞在頁首那格窄窄的 .refresh-status，字一長就被裁掉；
+    // 改成同時彈窗顯示完整訊息，頁首那格留著當作不用點開也看得到的簡短提示。
+    const setStatus = message => {
+        status.textContent = message;
+        showStatusPopup(message);
+    };
 
     button.addEventListener('click', async () => {
         button.disabled = true;
@@ -12336,7 +12341,7 @@ function wireRefreshButton() {
                 } else {
                     await loadCustom(true, true);
                 }
-                status.textContent = current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料';
+                setStatus(current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料');
                 button.disabled = false;
                 return;
             }
@@ -12344,7 +12349,7 @@ function wireRefreshButton() {
             if (state.view === 'assets') {
                 await refreshAssets();
                 renderAssetsDashboard();
-                status.textContent = assetsLoadError ?? '已是最新';
+                setStatus(assetsLoadError ?? '已是最新');
                 button.disabled = false;
                 return;
             }
@@ -12353,14 +12358,15 @@ function wireRefreshButton() {
                 await loadIntradayTopicHeat();
                 renderSnapshotNote();
                 renderTopicPanel();
-                status.textContent = intradayTopicPeriod
+                setStatus(intradayTopicPeriod
                     ? `已更新（資料時間 ${toTaipeiText(intradayTopicPeriod.capturedAt)}）`
-                    : '還沒有盤中族群熱度';
+                    : '還沒有盤中族群熱度');
                 button.disabled = false;
                 return;
             }
 
             if (await reloadIfStale()) {
+                // 這裡不彈窗：馬上要重新整理頁面，彈窗只會閃一下就被蓋掉。
                 status.textContent = '有新資料，重新載入…';
                 return;
             }
@@ -12374,9 +12380,9 @@ function wireRefreshButton() {
                 renderTable();
             }
 
-            status.textContent = `已是最新（資料截至 ${latestTradingDate}）`;
+            setStatus(`已是最新（資料截至 ${latestTradingDate}）`);
         } catch {
-            status.textContent = '連不上，稍後再試';
+            setStatus('連不上，稍後再試');
         }
 
         button.disabled = false;
@@ -18381,6 +18387,7 @@ async function start() {
         + `${manifest.stockCount} 檔個股。本快照產生於 ${manifest.generatedAt}。`;
 
     renderSnapshotNote();
+    wireStatusPopup();
     wireRefreshButton();
     wireAlertBell();
     wireAccessBar();

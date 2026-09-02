@@ -261,7 +261,7 @@ public sealed class DailyKLineTests
     }
 
     [Fact]
-    public void K棒漲跌以收盤價相對前一交易日收盤判斷()
+    public void K棒漲跌以收盤價相對同一根的開盤價判斷()
     {
         var firstDate = new DateOnly(2026, 8, 12);
         var trading = new[]
@@ -287,8 +287,10 @@ public sealed class DailyKLineTests
             firstDate.AddDays(1),
             months: 1);
 
+        // 昨收 2415、開盤 2440、收盤 2435：比昨收是漲（舊規則），比自己的開盤是跌（現在的規則）。
+        // 特意挑這種「跳空開高、收在開盤之下但仍高於昨收」的棒子，才鎖得住兩種規則的差異。
         Assert.Equal(2415m, selected[1].PreviousClose);
-        Assert.Equal(DailyKLineTrend.Up, DailyKLineTrendCalculator.Get(selected[1]));
+        Assert.Equal(DailyKLineTrend.Down, DailyKLineTrendCalculator.Get(selected[1]));
     }
 
     [Fact]

@@ -67,51 +67,26 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 已收盤的K棒顏色比昨收而不是比同一根的開盤價()
+    public void K棒顏色比同一根的開盤價而不是比昨收()
     {
-        // 這條規則的正本是 DailyKLineTrendCalculator（close 比 PreviousClose ?? Open）。
-        // 靜態站以前比的是開盤價，跳空開高又收在開盤價之下的那種棒子，
-        // 在 Blazor 是紅的、在手機上看到的靜態站是綠的。
+        // 這條規則的正本是 DailyKLineTrendCalculator（close 比 Open）。
+        // 筆記 #46：3037 欣興 09/01 開 921、收 971，比昨收是跌（昨收較高）、
+        // 比自己的開盤是漲——使用者要看的是這根棒子今天走出來的方向，不是跟昨天比。
+        // 之前改成「已收盤棒比昨收、盤中即時棒比開盤」兩套規則，使用者驗收時指出
+        // 已收盤的棒子（09/01 早已收盤）也該比開盤，才改成兩種棒子一視同仁都比開盤，
+        // 不再區分 live／historical，也不再需要 previousClose。
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
         Assert.Contains("function klineTrendClass(bar)", script, StringComparison.Ordinal);
-        Assert.Contains(
-            ": (Number.isFinite(bar.previousClose) ? bar.previousClose : open);",
-            script,
-            StringComparison.Ordinal);
-        Assert.Contains("return close > reference", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("return close > open", script, StringComparison.Ordinal);
-
-        // Number(null) 是 0 而且通過 Number.isFinite，第一根棒子會拿 0 當基準、永遠是紅的。
-        Assert.DoesNotContain("Number(bar.previousClose)", script, StringComparison.Ordinal);
+        Assert.Contains("return close > open", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("bar.previousClose", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("bar.live", script, StringComparison.Ordinal);
 
         Assert.Contains(".kline-backdrop", styles, StringComparison.Ordinal);
         var normalizedStyles = styles.Replace("\r\n", "\n", StringComparison.Ordinal);
         Assert.DoesNotContain(".kline-backdrop {\n    pointer-events: none", normalizedStyles, StringComparison.Ordinal);
         Assert.Contains("el('kline-backdrop').addEventListener('click', () => closeKLine(false));", script, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void 盤中即時棒的K棒顏色比今日開盤價而不是比昨收()
-    {
-        // 筆記 #46：開低走高的當日即時棒若跟已收盤棒子一樣比昨收，
-        // 開低但還沒收復昨收時會一路顯示下跌色，即使現價已經比今天開盤高。
-        // 這根棒子只存在於前端（MIS 即時報價／liveKLine），
-        // C# 的 DailyKLineTrendCalculator 沒有對應的即時概念，不用兩邊比對。
-        var script = ReadAsset("site.js");
-
-        Assert.Contains("const reference = bar.live", script, StringComparison.Ordinal);
-        Assert.Contains(
-            ": (Number.isFinite(bar.previousClose) ? bar.previousClose : open);",
-            script,
-            StringComparison.Ordinal);
-
-        // 個股與指數彈出圖各自把即時棒接到歷史棒尾端的地方，都要標成 live，
-        // klineTrendClass 才分辨得出這一根該比開盤價而不是比昨收。
-        var liveFlagCount = script.Split("live: true", StringSplitOptions.None).Length - 1;
-        Assert.True(liveFlagCount >= 2,
-            $"預期至少兩處把即時棒標成 live（個股彈窗、指數彈窗），實際 {liveFlagCount} 處。");
     }
 
     [Fact]
@@ -490,7 +465,7 @@ public sealed class StaticKLineAssetTests
     {
         var script = ReadAsset("site.js");
         var start = script.IndexOf("function attachKLineInteractions", StringComparison.Ordinal);
-        var end = script.IndexOf("// 紅綠一律比", start, StringComparison.Ordinal);
+        var end = script.IndexOf("// 紅漲綠跌比", start, StringComparison.Ordinal);
 
         Assert.True(start >= 0 && end > start, "找不到 K 線互動函式。");
 
@@ -509,7 +484,7 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
         var start = script.IndexOf("function attachKLineInteractions", StringComparison.Ordinal);
-        var end = script.IndexOf("// 紅綠一律比", start, StringComparison.Ordinal);
+        var end = script.IndexOf("// 紅漲綠跌比", start, StringComparison.Ordinal);
 
         Assert.True(start >= 0 && end > start, "找不到 K 線互動函式。");
 
@@ -530,7 +505,7 @@ public sealed class StaticKLineAssetTests
     {
         var script = ReadAsset("site.js");
         var start = script.IndexOf("function attachKLineInteractions", StringComparison.Ordinal);
-        var end = script.IndexOf("// 紅綠一律比", start, StringComparison.Ordinal);
+        var end = script.IndexOf("// 紅漲綠跌比", start, StringComparison.Ordinal);
 
         Assert.True(start >= 0 && end > start, "找不到 K 線互動函式。");
 

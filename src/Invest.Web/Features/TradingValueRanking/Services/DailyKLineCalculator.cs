@@ -116,13 +116,13 @@ public enum DailyKLineTrend
 
 public static class DailyKLineTrendCalculator
 {
+    // 紅漲綠跌比同一根棒子自己的開盤價，不是比前一交易日收盤——這是傳統 K 棒的讀法，
+    // 使用者要看的是「這根棒子今天走出來的方向」，不是「今天收盤跟昨天比是漲是跌」。
     public static DailyKLineTrend Get(DailyKLinePoint point)
     {
-        var referenceClose = point.PreviousClose ?? point.Open;
-
-        return point.Close > referenceClose
+        return point.Close > point.Open
             ? DailyKLineTrend.Up
-            : point.Close < referenceClose
+            : point.Close < point.Open
                 ? DailyKLineTrend.Down
                 : DailyKLineTrend.Unchanged;
     }
