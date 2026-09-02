@@ -77,6 +77,9 @@ builder.Services.AddHttpClient<CompanyIndustryClient>(ConfigureQuoteClient);
 // 使用者在人工編輯頁改過的族群分類，匯出時要套回樹上。
 builder.Services.AddSingleton<TopicEditStore>();
 
+// Google Sheet 讀不到時的備援快取（db/036_topic_sheet_cache.sql）。
+builder.Services.AddSingleton<TopicSheetCacheStore>();
+
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();

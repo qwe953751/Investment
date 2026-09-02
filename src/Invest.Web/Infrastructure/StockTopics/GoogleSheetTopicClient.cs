@@ -16,11 +16,16 @@ namespace Invest.Web.Infrastructure.StockTopics;
 ///
 /// 任何一步失敗都只記警告、回傳目前拿到的部分（甚至整份空的），
 /// 絕不讓整個靜態網站匯出跟著倒——族群是附加功能，排行榜本身跟它一點關係都沒有。
+///
+/// Google Sheet 讀成功時會把原始解析結果（<see cref="TopicSheetCacheStore"/>）存進 Supabase
+/// 當備援；讀失敗時改讀那份快取再照平常規則重新分類，比直接開天窗好，但快取只是保險，
+/// 分類的權威來源仍然是這份 Google Sheet 本身。
 /// </summary>
 public sealed class GoogleSheetTopicClient(
     HttpClient client,
     CompanyIndustryClient industries,
     TopicEditStore edits,
+    TopicSheetCacheStore cache,
     IConfiguration configuration,
     ILogger<GoogleSheetTopicClient> logger)
 {
@@ -80,12 +85,23 @@ public sealed class GoogleSheetTopicClient(
 
             logger.LogInformation("族群樹讀到 {Count} 條 F:J 路徑。", paths.Count);
 
+            // 存快取不能擋住這次回傳：寫失敗只是下次少一份備援，不該連這次讀成功的結果都不要了。
+            await cache.SaveTreeAsync(paths, cancellationToken);
+
             return paths;
         }
         catch (Exception exception)
         {
             logger.LogWarning(exception, "讀不到族群樹分頁。");
-            warnings.Add("讀不到族群樹分頁（F:J），族群列表會是空的。");
+
+            if (await cache.LoadTreeAsync(cancellationToken) is { Count: > 0 } cached)
+            {
+                warnings.Add("讀不到族群樹分頁（F:J），改用最近一次成功讀取的備援快取。");
+
+                return cached;
+            }
+
+            warnings.Add("讀不到族群樹分頁（F:J），也沒有備援快取，族群列表會是空的。");
 
             return [];
         }
@@ -124,6 +140,9 @@ public sealed class GoogleSheetTopicClient(
                     result.Columns.Count,
                     result.Columns.Sum(column => column.Members.Count));
 
+                // 同上：存快取失敗不影響這次讀到的結果。
+                await cache.SaveConceptsAsync(result, cancellationToken);
+
                 return result;
             }
             finally
@@ -134,7 +153,15 @@ public sealed class GoogleSheetTopicClient(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "讀不到概念股分頁。");
-            warnings.Add($"讀不到「{sheetName}」分頁，族群熱度會沒有任何成員個股。");
+
+            if (await cache.LoadConceptsAsync(cancellationToken) is { Count: > 0 } cached)
+            {
+                warnings.Add($"讀不到「{sheetName}」分頁，改用最近一次成功讀取的備援快取。");
+
+                return new ConceptSheetParser.Result(cached, []);
+            }
+
+            warnings.Add($"讀不到「{sheetName}」分頁，也沒有備援快取，族群熱度會沒有任何成員個股。");
 
             return new ConceptSheetParser.Result([], []);
         }
