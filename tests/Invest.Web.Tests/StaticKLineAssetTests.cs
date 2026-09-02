@@ -67,7 +67,7 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void K棒顏色比昨收而不是比同一根的開盤價()
+    public void 已收盤的K棒顏色比昨收而不是比同一根的開盤價()
     {
         // 這條規則的正本是 DailyKLineTrendCalculator（close 比 PreviousClose ?? Open）。
         // 靜態站以前比的是開盤價，跳空開高又收在開盤價之下的那種棒子，
@@ -77,7 +77,7 @@ public sealed class StaticKLineAssetTests
 
         Assert.Contains("function klineTrendClass(bar)", script, StringComparison.Ordinal);
         Assert.Contains(
-            "const reference = Number.isFinite(bar.previousClose) ? bar.previousClose : open;",
+            ": (Number.isFinite(bar.previousClose) ? bar.previousClose : open);",
             script,
             StringComparison.Ordinal);
         Assert.Contains("return close > reference", script, StringComparison.Ordinal);
@@ -90,6 +90,28 @@ public sealed class StaticKLineAssetTests
         var normalizedStyles = styles.Replace("\r\n", "\n", StringComparison.Ordinal);
         Assert.DoesNotContain(".kline-backdrop {\n    pointer-events: none", normalizedStyles, StringComparison.Ordinal);
         Assert.Contains("el('kline-backdrop').addEventListener('click', () => closeKLine(false));", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 盤中即時棒的K棒顏色比今日開盤價而不是比昨收()
+    {
+        // 筆記 #46：開低走高的當日即時棒若跟已收盤棒子一樣比昨收，
+        // 開低但還沒收復昨收時會一路顯示下跌色，即使現價已經比今天開盤高。
+        // 這根棒子只存在於前端（MIS 即時報價／liveKLine），
+        // C# 的 DailyKLineTrendCalculator 沒有對應的即時概念，不用兩邊比對。
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("const reference = bar.live", script, StringComparison.Ordinal);
+        Assert.Contains(
+            ": (Number.isFinite(bar.previousClose) ? bar.previousClose : open);",
+            script,
+            StringComparison.Ordinal);
+
+        // 個股與指數彈出圖各自把即時棒接到歷史棒尾端的地方，都要標成 live，
+        // klineTrendClass 才分辨得出這一根該比開盤價而不是比昨收。
+        var liveFlagCount = script.Split("live: true", StringSplitOptions.None).Length - 1;
+        Assert.True(liveFlagCount >= 2,
+            $"預期至少兩處把即時棒標成 live（個股彈窗、指數彈窗），實際 {liveFlagCount} 處。");
     }
 
     [Fact]
@@ -247,7 +269,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("id=\"view-options\"", html, StringComparison.Ordinal);
         Assert.Contains(".asset-dashboard-overview", styles, StringComparison.Ordinal);
         Assert.Contains(".asset-account-content", styles, StringComparison.Ordinal);
-        Assert.Contains("background: #ffffff", styles, StringComparison.Ordinal);
+        Assert.Contains("background: var(--surface)", styles, StringComparison.Ordinal);
         Assert.Contains(".asset-dashboard-donut-inside", styles, StringComparison.Ordinal);
     }
 
@@ -1300,7 +1322,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("summary-explanation-row", script, StringComparison.Ordinal);
         Assert.Contains("summary-index-row", script, StringComparison.Ordinal);
         Assert.Contains(".summary {\n    display: flex;\n    flex-direction: column;", styles, StringComparison.Ordinal);
-        Assert.Contains(".summary-index-row {\n    padding-top: 8px;\n    border-top: 1px solid #eee;", styles, StringComparison.Ordinal);
+        Assert.Contains(".summary-index-row {\n    padding-top: 8px;\n    border-top: 1px solid var(--border);", styles, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -44,6 +44,9 @@ let assetSelectedAccountId = '';
 let assetEditorMode = '';
 let assetScreenshotDraft = null;
 let assetActionNotice = '';
+// 出入金紀錄的「就地編輯」：一次只允許一列進入編輯狀態，切到別列不會遺失資料，
+// 因為原本就還沒送出。跟 assetEditorMode（持倉整表批次編輯）是各自獨立的狀態。
+let assetEditingCashFlowId = '';
 const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && new URLSearchParams(window.location.search).get('local-revenue-preview') === '1';
 const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
@@ -3322,6 +3325,7 @@ const ASSET_ACCOUNTS_TABLE = 'asset_accounts';
 const ASSET_HOLDINGS_TABLE = 'asset_holdings';
 const ASSET_CASH_FLOWS_TABLE = 'asset_cash_flows';
 const ASSET_VALUE_SNAPSHOTS_TABLE = 'asset_value_snapshots';
+const ASSET_ACCOUNT_VALUE_SNAPSHOTS_TABLE = 'asset_account_value_snapshots';
 const ASSET_EXCHANGE_RATES_TABLE = 'exchange_rates';
 const ASSET_LATEST_US_QUOTES_VIEW = 'latest_us_quotes';
 const ASSET_MARKETS = ['台股', '美股', '其他'];
@@ -3336,6 +3340,8 @@ let assetCashFlowRows = [];
 let assetCashFlowAvailable = false;
 let assetValueSnapshotRows = [];
 let assetValueSnapshotsAvailable = false;
+let assetAccountValueSnapshotRows = [];
+let assetAccountValueSnapshotsAvailable = false;
 let assetsLoaded = false;
 let assetsLoadError = null;
 let assetsBusy = false;
@@ -3527,7 +3533,8 @@ function assetTimeText(value) {
 }
 
 async function loadAssets() {
-    const [owners, accounts, holdings, cashFlows, valueSnapshots, exchangeRates, usQuotes] = await Promise.all([
+    const [owners, accounts, holdings, cashFlows, valueSnapshots, accountValueSnapshots, exchangeRates, usQuotes]
+        = await Promise.all([
         fetchAllRows(
             ASSET_OWNERS_TABLE,
             'id,name,sort_order,updated_at',
@@ -3547,6 +3554,10 @@ async function loadAssets() {
         fetchAllRows(
             ASSET_VALUE_SNAPSHOTS_TABLE,
             'owner_id,snapshot_date,total_value_twd,market_value_twd,cash_twd,cost_twd,unrealized_twd,updated_at',
+            '&order=snapshot_date.asc').catch(() => null),
+        fetchAllRows(
+            ASSET_ACCOUNT_VALUE_SNAPSHOTS_TABLE,
+            'account_id,snapshot_date,total_value_twd,market_value_twd,cash_twd,cost_twd,unrealized_twd,updated_at',
             '&order=snapshot_date.asc').catch(() => null),
         fetchAssetLatestUsdTwdRate().catch(() => undefined),
         fetchAssetLatestUsQuotes().catch(() => undefined)
@@ -3597,6 +3608,16 @@ async function loadAssets() {
         })),
         valueSnapshots: valueSnapshots === null ? null : valueSnapshots.map(row => ({
             ownerId: String(row.owner_id),
+            snapshotDate: String(row.snapshot_date ?? ''),
+            totalValue: assetNumber(row.total_value_twd),
+            marketValue: assetNumber(row.market_value_twd),
+            cash: assetNumber(row.cash_twd),
+            cost: assetNumber(row.cost_twd),
+            unrealized: assetNumber(row.unrealized_twd),
+            updatedAt: String(row.updated_at ?? '')
+        })),
+        accountValueSnapshots: accountValueSnapshots === null ? null : accountValueSnapshots.map(row => ({
+            accountId: String(row.account_id),
             snapshotDate: String(row.snapshot_date ?? ''),
             totalValue: assetNumber(row.total_value_twd),
             marketValue: assetNumber(row.market_value_twd),
@@ -3716,6 +3737,8 @@ async function refreshAssets({ persistSnapshots = true } = {}) {
         assetCashFlowAvailable = data.cashFlows !== null;
         assetValueSnapshotRows = data.valueSnapshots ?? [];
         assetValueSnapshotsAvailable = data.valueSnapshots !== null;
+        assetAccountValueSnapshotRows = data.accountValueSnapshots ?? [];
+        assetAccountValueSnapshotsAvailable = data.accountValueSnapshots !== null;
 
         if (data.exchangeRate !== undefined) {
             assetLatestUsdTwdRate = data.exchangeRate;
@@ -3754,6 +3777,12 @@ async function refreshAssets({ persistSnapshots = true } = {}) {
                 await persistAssetValueSnapshots(false);
             } catch {
                 // 歷史圖是加值資訊；快照暫時寫不進去時仍顯示目前資產，下一次再補。
+            }
+
+            try {
+                await persistAssetAccountValueSnapshots(false);
+            } catch {
+                // 同上，帳戶層級的歷史圖失敗不影響目前資產顯示。
             }
         }
 
@@ -4048,6 +4077,80 @@ async function persistAssetValueSnapshots(force) {
     ];
 }
 
+// 帳戶明細頁的「資產變化」歷史，跟上面的 persistAssetValueSnapshots（使用者總表）
+// 是同一套邏輯的帳戶層級版本：force=false 只補當天缺的，force=true 在使用者操作
+// 後強制覆寫今天這筆。兩者各自獨立寫各自的表，互不影響、互不取代。
+async function persistAssetAccountValueSnapshots(force) {
+    if (supabase === null || !assetAccountValueSnapshotsAvailable) {
+        return;
+    }
+
+    const snapshotDate = TAIPEI_DATE.format(new Date());
+    const existingKeys = new Set(assetAccountValueSnapshotRows
+        .filter(row => row.snapshotDate === snapshotDate)
+        .map(row => row.accountId));
+    const now = new Date().toISOString();
+    const rows = [];
+
+    for (const account of assetAccountRows) {
+        const view = assetAccountView(account);
+
+        if (view.incomplete
+            || view.twdTotalValue === null
+            || (!force && existingKeys.has(account.id))) {
+            continue;
+        }
+
+        rows.push({
+            account_id: account.id,
+            snapshot_date: snapshotDate,
+            total_value_twd: assetSnapshotAmount(view.twdTotalValue),
+            market_value_twd: assetSnapshotAmount(view.twdMarketValue),
+            cash_twd: assetSnapshotAmount(view.twdCash),
+            cost_twd: assetSnapshotAmount(view.twdCost),
+            unrealized_twd: assetSnapshotAmount(view.twdUnrealized),
+            updated_at: now
+        });
+    }
+
+    if (rows.length === 0) {
+        return;
+    }
+
+    const response = await fetch(
+        `${supabase.url}/rest/v1/${ASSET_ACCOUNT_VALUE_SNAPSHOTS_TABLE}`
+            + '?on_conflict=account_id,snapshot_date',
+        {
+            method: 'POST',
+            headers: {
+                apikey: supabase.anonKey,
+                'Content-Type': 'application/json',
+                Prefer: 'resolution=merge-duplicates,return=minimal'
+            },
+            body: JSON.stringify(rows),
+            cache: 'no-store'
+        });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+
+    const replacedAccounts = new Set(rows.map(row => `${row.account_id}|${row.snapshot_date}`));
+    assetAccountValueSnapshotRows = [
+        ...assetAccountValueSnapshotRows.filter(row => !replacedAccounts.has(`${row.accountId}|${row.snapshotDate}`)),
+        ...rows.map(row => ({
+            accountId: row.account_id,
+            snapshotDate: row.snapshot_date,
+            totalValue: row.total_value_twd,
+            marketValue: row.market_value_twd,
+            cash: row.cash_twd,
+            cost: row.cost_twd,
+            unrealized: row.unrealized_twd,
+            updatedAt: row.updated_at
+        }))
+    ];
+}
+
 function assetInsert(table, body) {
     return assetWrite(table, 'POST', body);
 }
@@ -4086,6 +4189,12 @@ async function runAssetAction(pendingText, action, doneText) {
                 await persistAssetValueSnapshots(true);
             } catch {
                 // 主資料已寫成功時，歷史快照失敗不可把整筆操作誤報成失敗。
+            }
+
+            try {
+                await persistAssetAccountValueSnapshots(true);
+            } catch {
+                // 同上，帳戶層級的歷史快照失敗不可把整筆操作誤報成失敗。
             }
         }
 
@@ -4321,25 +4430,29 @@ function assetValueTrendRows(ownerId, currentTotal) {
         .slice(-120);
 }
 
-function makeAssetValueTrend(owner, summary) {
+// owner 層級（Dashboard 總覽）與 account 層級（帳戶明細）的資產變化圖是同一份畫圖
+// 邏輯，只有「資料從哪張表來、沒資料時的提示文字」不同，所以畫圖核心抽成這個共用
+// 函式，兩層各自只負責準備 rows 與提示文字，避免兩份幾乎一樣的 SVG 程式碼各自漂移。
+function makeAssetValueTrendCard(rows, options) {
     const card = document.createElement('section');
     card.className = 'asset-value-trend-card';
     const heading = document.createElement('div');
     heading.className = 'asset-value-trend-heading';
     const title = document.createElement('h2');
     title.textContent = '資產變化';
-    const rows = assetValueTrendRows(owner.id, summary.incomplete ? null : summary.totalValue);
     const detail = document.createElement('span');
-    detail.textContent = rows.length === 0
+    // 尚未啟用時 rows 仍有「今天」這個即時算出的點（見 assetValueTrendRows），
+    // 但歷史表根本讀不到，不該顯示交易／紀錄日數，否則會跟下面的停用提示互相矛盾。
+    detail.textContent = !options.available || rows.length === 0
         ? '尚無完整資料'
         : `${rows[0].date.replaceAll('-', '/')} ～ ${rows.at(-1).date.replaceAll('-', '/')} · ${rows.length} 個交易／紀錄日`;
     heading.append(title, detail);
     card.append(heading);
 
-    if (!assetValueSnapshotsAvailable) {
+    if (!options.available) {
         const warning = document.createElement('p');
         warning.className = 'asset-data-warning';
-        warning.textContent = '資產歷史尚未啟用，請先由管理者套用 db/035_asset_value_snapshots.sql。';
+        warning.textContent = options.unavailableHint;
         card.append(warning);
         return card;
     }
@@ -4347,7 +4460,7 @@ function makeAssetValueTrend(owner, summary) {
     if (rows.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'asset-local-only-note';
-        empty.textContent = '等所有帳戶都有行情與匯率後，系統會從當天開始每天保存一個資產總值。';
+        empty.textContent = options.emptyHint;
         card.append(empty);
         return card;
     }
@@ -4436,6 +4549,46 @@ function makeAssetValueTrend(owner, summary) {
     note.textContent = '折線以台幣顯示；今天使用目前最新行情即時計算，過去日期讀取資料庫每日快照。';
     card.append(note);
     return card;
+}
+
+function makeAssetValueTrend(owner, summary) {
+    return makeAssetValueTrendCard(
+        assetValueTrendRows(owner.id, summary.incomplete ? null : summary.totalValue),
+        {
+            available: assetValueSnapshotsAvailable,
+            unavailableHint: '資產歷史尚未啟用，請先由管理者套用 db/035_asset_value_snapshots.sql。',
+            emptyHint: '等所有帳戶都有行情與匯率後，系統會從當天開始每天保存一個資產總值。'
+        });
+}
+
+function assetAccountValueTrendRows(accountId, currentTotal) {
+    const today = TAIPEI_DATE.format(new Date());
+    const byDate = new Map(assetAccountValueSnapshotRows
+        .filter(row => row.accountId === accountId && assetNumber(row.totalValue) !== null)
+        .map(row => [row.snapshotDate, {
+            date: row.snapshotDate,
+            value: assetNumber(row.totalValue)
+        }]));
+    const current = assetNumber(currentTotal);
+
+    if (current !== null) {
+        byDate.set(today, { date: today, value: current });
+    }
+
+    return [...byDate.values()]
+        .filter(row => /^\d{4}-\d{2}-\d{2}$/.test(row.date) && row.value !== null)
+        .sort((left, right) => left.date.localeCompare(right.date))
+        .slice(-120);
+}
+
+function makeAssetAccountValueTrend(view) {
+    return makeAssetValueTrendCard(
+        assetAccountValueTrendRows(view.id, view.incomplete ? null : view.twdTotalValue),
+        {
+            available: assetAccountValueSnapshotsAvailable,
+            unavailableHint: '這個帳戶的資產歷史尚未啟用，請先由管理者套用 db/037_asset_account_value_snapshots.sql。',
+            emptyHint: '等這個帳戶有完整行情與匯率後，系統會從當天開始每天保存一個資產總值。'
+        });
 }
 
 function discardAssetScreenshotDraft() {
@@ -5006,6 +5159,11 @@ function makeAssetCashFlowSection(view) {
         || String(right.createdAt).localeCompare(String(left.createdAt)));
 
     for (const flow of flows) {
+        if (flow.id === assetEditingCashFlowId) {
+            body.append(makeAssetCashFlowEditRow(view, flow));
+            continue;
+        }
+
         const row = document.createElement('tr');
         const signedAmount = flow.direction === 'withdrawal'
             ? flow.amount === null ? null : -flow.amount
@@ -5030,7 +5188,13 @@ function makeAssetCashFlowSection(view) {
         }
 
         const actionCell = document.createElement('td');
-        actionCell.append(assetButton('刪除', 'asset-secondary-button', () => void runAssetAction(
+        actionCell.className = 'asset-cash-flow-row-actions';
+        const editButton = assetButton('編輯', 'asset-secondary-button', () => {
+            assetEditingCashFlowId = flow.id;
+            renderAssetsDashboard();
+        });
+        editButton.disabled = assetsBusy || !assetCashFlowAvailable;
+        actionCell.append(editButton, assetButton('刪除', 'asset-secondary-button', () => void runAssetAction(
             '刪除中…',
             () => assetRemove(ASSET_CASH_FLOWS_TABLE, `?id=eq.${encodeURIComponent(flow.id)}`),
             '已刪除這筆出入金，入金成本已重算。')));
@@ -5114,6 +5278,87 @@ function makeAssetCashFlowSection(view) {
 
     panel.append(form);
     return panel;
+}
+
+// 出入金紀錄的單列就地編輯：裸 input 直接塞進 td，不套 assetField 的 <label> 包裝
+// （欄位語意已經由表頭文字表達），比照 makeAssetHoldingEditableInput 的寫法。
+function makeAssetCashFlowEditRow(view, flow) {
+    const row = document.createElement('tr');
+    row.className = 'asset-cash-flow-edit-row';
+
+    const dateCell = document.createElement('td');
+    const dateInput = document.createElement('input');
+    dateInput.type = 'date';
+    dateInput.required = true;
+    dateInput.value = flow.flowDate || '';
+    dateCell.append(dateInput);
+
+    const directionCell = document.createElement('td');
+    const directionSelect = document.createElement('select');
+    for (const [value, text] of [['deposit', '入金'], ['withdrawal', '出金']]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        directionSelect.append(option);
+    }
+    directionSelect.value = flow.direction;
+    directionCell.append(directionSelect);
+
+    const amountCell = document.createElement('td');
+    const amountInput = document.createElement('input');
+    amountInput.type = 'text';
+    amountInput.required = true;
+    amountInput.inputMode = 'decimal';
+    amountInput.value = assetGroupedAmountText(flow.amount);
+    wireAssetAmountInput(amountInput);
+    amountCell.append(amountInput);
+
+    const noteCell = document.createElement('td');
+    const noteInput = document.createElement('input');
+    noteInput.type = 'text';
+    noteInput.maxLength = 120;
+    noteInput.value = flow.note || '';
+    noteCell.append(noteInput);
+
+    const timeCell = document.createElement('td');
+    timeCell.textContent = assetTimeText(flow.updatedAt || flow.createdAt);
+
+    const actionCell = document.createElement('td');
+    actionCell.className = 'asset-cash-flow-row-actions';
+    const saveButton = assetButton('儲存', 'asset-primary-button', () => {
+        const amount = assetNumber(amountInput.value);
+
+        if (dateInput.value === '' || amount === null || amount <= 0) {
+            amountInput.focus();
+            return;
+        }
+
+        void (async () => {
+            const done = await runAssetAction(
+                '儲存出入金中…',
+                () => assetUpdate(ASSET_CASH_FLOWS_TABLE, flow.id, {
+                    flow_date: dateInput.value,
+                    direction: directionSelect.value,
+                    amount,
+                    note: noteInput.value.trim()
+                }),
+                '已更新這筆出入金，入金成本已重算。');
+
+            if (done) {
+                assetEditingCashFlowId = '';
+                renderAssetsDashboard();
+            }
+        })();
+    });
+    saveButton.disabled = assetsBusy;
+    const cancelButton = assetButton('取消', 'asset-secondary-button', () => {
+        assetEditingCashFlowId = '';
+        renderAssetsDashboard();
+    });
+    actionCell.append(saveButton, cancelButton);
+
+    row.append(dateCell, directionCell, amountCell, noteCell, timeCell, actionCell);
+    return row;
 }
 
 function makeAssetHoldingEditor(view) {
@@ -9042,7 +9287,7 @@ function makeAssetAccountDetails(owner, view) {
     const lower = document.createElement('div');
     lower.className = 'asset-account-lower';
     lower.append(makeAssetHoldings(view), makeAssetScreenshotFlow(view));
-    content.append(heading, metrics);
+    content.append(heading, metrics, makeAssetAccountValueTrend(view));
 
     if (view.missingQuoteTickers.length > 0) {
         const warning = document.createElement('p');
@@ -9913,7 +10158,7 @@ function selectedIndexKLineBars(market) {
         .sort((left, right) => left.date.localeCompare(right.date));
     return buildIndexMovingAverages([
         ...historicalBars,
-        { ...liveBar, previousClose: historicalBars.at(-1)?.close ?? null }
+        { ...liveBar, previousClose: historicalBars.at(-1)?.close ?? null, live: true }
     ].sort((left, right) => left.date.localeCompare(right.date)))
         .filter(bar => bar.date >= startDate && bar.date <= endDate);
 }
@@ -10336,7 +10581,8 @@ function selectedKLineBars(ticker) {
         ...liveBar,
         previousClose: historicalBars.length
             ? historicalBars[historicalBars.length - 1].close
-            : null
+            : null,
+        live: true
     }]
         .sort((left, right) => left.date.localeCompare(right.date));
 }
@@ -10489,11 +10735,16 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
     hitArea.addEventListener('pointerleave', () => renderReferenceLines(referenceIndex));
 }
 
-// 紅綠一律比「昨收」，沒有昨收才退回開盤價。
+// 紅綠一律比「昨收」，沒有昨收才退回開盤價（已收盤的歷史棒適用；即時棒見下方）。
 // 這條規則的正本是 C# 的 DailyKLineTrendCalculator，兩邊必須一模一樣：
 // 跳空開高、收在開盤價之下但仍高於昨收的那種 K 棒，
 // 用開盤價比是綠的、用昨收比是紅的——同一根棒子在 Blazor 與靜態站會顏色相反。
 // 匯出的 JSON 本來就帶著 previousClose，這裡只是要記得用它。
+//
+// 盤中還在成形的當日棒（bar.live）例外，改比「今天的開盤價」：使用者要看的是
+// 這一輪現價相對今天開盤是漲是跌，不是離昨收還差多少——開低走高但還沒收復
+// 昨收的棒子，比昨收會一路顯示下跌色，即使已經比開盤價高。這根棒子只存在於
+// 前端（MIS 即時報價），C# 的 DailyKLineTrendCalculator 沒有對應的即時概念。
 function klineTrendClass(bar) {
     const open = Number(bar.open);
     const close = Number(bar.close);
@@ -10504,7 +10755,9 @@ function klineTrendClass(bar) {
 
     // 第一根棒子沒有昨收，JSON 裡是 null，所以這裡直接檢查原值、不先套 Number()：
     // Number(null) 是 0 而且通過 Number.isFinite，那根棒子會拿 0 當基準、永遠是紅的。
-    const reference = Number.isFinite(bar.previousClose) ? bar.previousClose : open;
+    const reference = bar.live
+        ? open
+        : (Number.isFinite(bar.previousClose) ? bar.previousClose : open);
 
     if (!Number.isFinite(reference)) {
         return 'daily-kline-flat';
@@ -18171,4 +18424,73 @@ async function start() {
     await load();
 }
 
+const THEME_STORAGE_KEY = 'invest.theme';
+let themePreference = 'system';
+
+// preference 是 'light' | 'dark' | 'system'。'system' 不設 [data-theme]，
+// 交給 site.css 的 @media (prefers-color-scheme: dark) 分支接手；
+// 'light' / 'dark' 是使用者手動選擇，用 [data-theme] 蓋過系統設定。
+function applyTheme(preference) {
+    if (preference === 'light' || preference === 'dark') {
+        document.documentElement.dataset.theme = preference;
+    } else {
+        delete document.documentElement.dataset.theme;
+    }
+
+    const meta = document.querySelector('meta[name="color-scheme"]');
+
+    if (meta !== null) {
+        meta.content = preference === 'light' || preference === 'dark' ? preference : 'light dark';
+    }
+
+    for (const button of document.querySelectorAll('.theme-switcher-option')) {
+        button.setAttribute('aria-pressed', String(button.dataset.themeValue === preference));
+    }
+}
+
+function wireThemeSwitcher() {
+    const switcher = el('theme-switcher');
+
+    if (switcher === null) {
+        return;
+    }
+
+    try {
+        const stored = localStorage.getItem(THEME_STORAGE_KEY);
+
+        if (stored === 'light' || stored === 'dark' || stored === 'system') {
+            themePreference = stored;
+        }
+    } catch {
+        // 讀不到 localStorage 就用預設的「系統」，不擋畫面。
+    }
+
+    applyTheme(themePreference);
+
+    for (const button of switcher.querySelectorAll('.theme-switcher-option')) {
+        button.addEventListener('click', () => {
+            themePreference = button.dataset.themeValue;
+            applyTheme(themePreference);
+
+            try {
+                localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+            } catch {
+                // 存不進去就只影響這次瀏覽，不影響這次切換本身。
+            }
+        });
+    }
+
+    // 偏好是「系統」時即時跟著 OS 深色模式切換，不用重新整理頁面。
+    if (typeof window.matchMedia === 'function') {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            if (themePreference === 'system') {
+                applyTheme('system');
+            }
+        });
+    }
+}
+
+// 越早呼叫越好：這是整支腳本第一個非同步斷點（start() 內的 await）之前
+// 最後一個同步呼叫，避免瀏覽器先畫出預設外觀、下一輪才跳成使用者選的深色。
+wireThemeSwitcher();
 start();

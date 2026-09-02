@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <title>個股成交值排行</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="site.css" />
@@ -21,6 +21,20 @@
                     <span class="refresh-icon" aria-hidden="true">↻</span><span>檢查更新</span>
                 </button>
                 <span class="refresh-status" id="refresh-status"></span>
+                <div class="theme-switcher" id="theme-switcher" role="group" aria-label="外觀">
+                    <button type="button" class="theme-switcher-option" data-theme-value="system"
+                            aria-pressed="false" title="外觀：跟隨系統">
+                        <span aria-hidden="true">◑</span><span class="sr-only">跟隨系統</span>
+                    </button>
+                    <button type="button" class="theme-switcher-option" data-theme-value="light"
+                            aria-pressed="false" title="外觀：淺色">
+                        <span aria-hidden="true">☀</span><span class="sr-only">淺色</span>
+                    </button>
+                    <button type="button" class="theme-switcher-option" data-theme-value="dark"
+                            aria-pressed="false" title="外觀：深色">
+                        <span aria-hidden="true">☾</span><span class="sr-only">深色</span>
+                    </button>
+                </div>
                 <span class="access-badge" id="access-badge" hidden></span>
                 <div class="device-presence" id="device-presence" hidden>
                     <button type="button" class="device-presence-button" id="device-presence-toggle"
