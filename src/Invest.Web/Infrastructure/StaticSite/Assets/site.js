@@ -1196,11 +1196,22 @@ const toTickerCell = row => ({
 
 // 創幾個月新高。N+ 代表往回數到手上的資料用完都沒有更高的，
 // 也就是「至少 N 個月」——再往前的資料不在手上，不能說它是歷史新高。
+//
+// 三種狀態要長得不一樣（筆記 #47）：
+//   有創高   → N / N+
+//   沒創高   → ✕，紅字
+//   還沒公告 → —
+// 以前後兩者都是 —，於是「這家沒創高」跟「這家還沒交作業」在畫面上分不出來，
+// 掃過去只會覺得整欄都是空的。
 function toHighMonthsCell(ticker, fallback = null) {
     const revenue = revenueOf(ticker) ?? fallback;
 
-    if (revenue === null || missing(revenue.highMonths)) {
+    if (revenue === null) {
         return { text: '—', cls: 'numeric' };
+    }
+
+    if (missing(revenue.highMonths)) {
+        return { text: '✕', cls: 'numeric negative' };
     }
 
     return {
@@ -1216,7 +1227,8 @@ const REVENUE_CHANGE_HINT = '這一檔最新一期已公告的單月營收增減
     + '把游標移到儲存格上會顯示那一格是哪個月。';
 
 const HIGH_MONTHS_HINT = '從左欄那一期的營收往回數，連續幾個月都沒有比它高的（含該月自己）。'
-    + '數到手上的歷史用完會標成 N+，意思是「至少 N 個月」。沒創高顯示 —。';
+    + '數到手上的歷史用完會標成 N+，意思是「至少 N 個月」。'
+    + '沒創高顯示 ✕，還沒公告那一期的顯示 —，兩者不一樣。';
 
 const TOPIC_COLUMN_HINT = '上層是大題材（供應鏈樹的最上層），下層是當前題材（這檔股票掛到的最細節點）。'
     + '兩層各自是連結，點下去跳到族群列表的那個節點。'

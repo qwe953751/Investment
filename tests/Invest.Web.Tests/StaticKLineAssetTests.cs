@@ -687,6 +687,45 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("toHighMonthsCell(row.ticker)", customColumns, StringComparison.Ordinal);
     }
 
+    // 「沒創高」跟「還沒公告」在畫面上必須分得出來（筆記 #47）。
+    // 以前兩者都是 —，掃過去只會覺得整欄都是空的，看不出哪些是真的沒創高。
+    [Fact]
+    public void 沒創高與還沒公告要用不同符號()
+    {
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("function toHighMonthsCell", StringComparison.Ordinal);
+        var end = script.IndexOf("const REVENUE_CHANGE_HINT", start, StringComparison.Ordinal);
+        var cell = script[start..end];
+
+        // 還沒公告：整個 revenue 是 null。
+        Assert.Contains("revenue === null", cell, StringComparison.Ordinal);
+        Assert.Contains("text: '—'", cell, StringComparison.Ordinal);
+
+        // 有這一期但沒創高：highMonths 是 null，要標成紅色的 ✕，不能跟上面同一個字。
+        Assert.Contains("missing(revenue.highMonths)", cell, StringComparison.Ordinal);
+        Assert.Contains("text: '✕', cls: 'numeric negative'", cell, StringComparison.Ordinal);
+
+        // 有創高才是 N／N+。
+        Assert.Contains("revenue.highMonths + (revenue.recordHigh ? '+' : '')", cell, StringComparison.Ordinal);
+        Assert.Contains("'numeric positive'", cell, StringComparison.Ordinal);
+    }
+
+    // 營收改成逐檔取自己最新一期後，每一格的月份可能不同，
+    // 所以月份必須跟著儲存格走，不能只靠欄位說明寫死「上個月」。
+    [Fact]
+    public void 營收儲存格要帶出自己那一期的月份()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("revenueMonth: revenue?.month ?? null", script, StringComparison.Ordinal);
+        Assert.Contains("`這格是 ${revenueMonth} 的營收。`", script, StringComparison.Ordinal);
+
+        // 只擋掉「比上個月還新」的壞資料，舊的月份一律留著——
+        // 改回 === 的話，每個月 1 號整欄又會變空白。
+        Assert.Contains("if (month > eligible) {", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("row.month.slice(0, 7) === eligible", script, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void 熱絡表盤後顯示正式成交額相較前一交易日比較()
     {
