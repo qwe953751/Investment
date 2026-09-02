@@ -1227,6 +1227,7 @@ body {
 
 .asset-dashboard-donut-card,
 .asset-dashboard-config-card,
+.asset-value-trend-card,
 .asset-account-holdings,
 .asset-screenshot-flow {
     min-width: 0;
@@ -1331,6 +1332,69 @@ body {
 
 .asset-dashboard-config-card {
     padding: 22px 28px 26px;
+}
+
+.asset-value-trend-card {
+    min-width: 0;
+    padding: 20px 24px 14px;
+    border: 1px solid #d6deea;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.asset-value-trend-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.asset-value-trend-heading h2 {
+    margin: 0;
+    color: #1d2939;
+    font-size: 18px;
+}
+
+.asset-value-trend-heading span {
+    color: #667085;
+    font-size: 12px;
+}
+
+.asset-value-trend-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin-top: 12px;
+    overflow: visible;
+}
+
+.asset-value-trend-grid {
+    stroke: #e5eaf1;
+    stroke-width: 1;
+}
+
+.asset-value-trend-axis {
+    fill: #667085;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-value-trend-line {
+    fill: none;
+    stroke: #2879b5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 3;
+}
+
+.asset-value-trend-point {
+    fill: #fff;
+    stroke: #2879b5;
+    stroke-width: 2;
+}
+
+.asset-value-trend-point.is-latest {
+    fill: #2879b5;
 }
 
 .asset-dashboard-config-heading {
@@ -3586,6 +3650,7 @@ td.stock-name.stock-name-change-down {
     }
 
     .asset-dashboard-config-card,
+    .asset-value-trend-card,
     .asset-account-holdings,
     .asset-screenshot-flow {
         padding: 16px;

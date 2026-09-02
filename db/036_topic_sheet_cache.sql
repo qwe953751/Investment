@@ -22,10 +22,10 @@ alter table topic_sheet_cache enable row level security;
 drop policy if exists "public read" on topic_sheet_cache;
 drop policy if exists "writer all" on topic_sheet_cache;
 
-create policy "public read" on topic_sheet_cache for select to anon using (true);
 create policy "writer all" on topic_sheet_cache for all to invest_writer using (true) with check (true);
 
-grant select on topic_sheet_cache to anon;
+-- 這張表只供後端匯出流程使用；前端不直接讀取，避免再增加公開 PostgREST 面積。
+revoke all on topic_sheet_cache from anon, authenticated;
 grant select, insert, update, delete on topic_sheet_cache to invest_writer;
 
 insert into schema_migrations (filename) values ('036_topic_sheet_cache.sql')

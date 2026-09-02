@@ -1012,7 +1012,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains(".assets-page", styles, StringComparison.Ordinal);
     }
 
-    // 資產從 localStorage 搬到 Supabase 的驗收條件：四張表都要讀、都要能寫，
+    // 資產從 localStorage 搬到 Supabase 的驗收條件：主資料與每日總值快照都要讀寫，
     // 而且不能再有任何一條路徑把使用者或帳戶留在瀏覽器裡。
     [Fact]
     public void 資產讀寫Supabase四張表而不是瀏覽器儲存()
@@ -1023,6 +1023,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const ASSET_ACCOUNTS_TABLE = 'asset_accounts';", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_HOLDINGS_TABLE = 'asset_holdings';", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_CASH_FLOWS_TABLE = 'asset_cash_flows';", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_VALUE_SNAPSHOTS_TABLE = 'asset_value_snapshots';", script, StringComparison.Ordinal);
         Assert.Contains("fetchAllRows(\n            ASSET_OWNERS_TABLE", NormalizeNewlines(script), StringComparison.Ordinal);
         Assert.Contains("assetInsert(ASSET_OWNERS_TABLE", script, StringComparison.Ordinal);
         Assert.Contains("assetInsert(ASSET_ACCOUNTS_TABLE", script, StringComparison.Ordinal);
@@ -1031,6 +1032,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("assetRemove(ASSET_HOLDINGS_TABLE", script, StringComparison.Ordinal);
         Assert.Contains("assetInsert(ASSET_CASH_FLOWS_TABLE", script, StringComparison.Ordinal);
         Assert.Contains("assetRemove(ASSET_CASH_FLOWS_TABLE", script, StringComparison.Ordinal);
+        Assert.Contains("persistAssetValueSnapshots", script, StringComparison.Ordinal);
         Assert.Contains("function assetCashFlowNet", script, StringComparison.Ordinal);
         Assert.Contains("刪除全部持倉", script, StringComparison.Ordinal);
 
@@ -1055,8 +1057,8 @@ public sealed class StaticKLineAssetTests
         Assert.DoesNotContain("market_value", accountsTable, StringComparison.Ordinal);
         Assert.DoesNotContain("unrealized", accountsTable, StringComparison.Ordinal);
 
-        Assert.Contains("const cost = assetSum(holdings, holding => holding.cost);", script, StringComparison.Ordinal);
-        Assert.Contains("const marketValue = assetSum(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
+        Assert.Contains("const cost = assetSumComplete(holdings, holding => holding.cost);", script, StringComparison.Ordinal);
+        Assert.Contains("const marketValue = assetSumComplete(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
         Assert.Contains("const completeMarketValue = assetSumComplete(holdings, holding => holding.marketValue);", script, StringComparison.Ordinal);
         Assert.Contains("const totalValue = holdings.length === 0", script, StringComparison.Ordinal);
         Assert.Contains("marketValue === null ? null : marketValue + account.cash", script, StringComparison.Ordinal);
@@ -1102,11 +1104,36 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("assetHoldingSortHeader(title, 'priceChange')", script, StringComparison.Ordinal);
         Assert.Contains("function assetHoldingPriceChangeText", script, StringComparison.Ordinal);
         Assert.Contains("stockNameChangeClass(holding.priceChange)", script, StringComparison.Ordinal);
-        Assert.Contains("quoteSession: '盤後'", script, StringComparison.Ordinal);
+        Assert.Contains("const quoteSession = quote?.session ?? '盤後';", script, StringComparison.Ordinal);
         Assert.Contains("session: '盤中'", script, StringComparison.Ordinal);
         Assert.Contains("?select=symbol,name,price,change_percent,trade_date", script, StringComparison.Ordinal);
         Assert.Contains("String(row.trade_date ?? '') === today", script, StringComparison.Ordinal);
         Assert.Contains("function assetPersistHoldingSortOrders", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_EDITABLE_HOLDING_FIELDS = ['ticker', 'quantity', 'cost'];", script, StringComparison.Ordinal);
+        Assert.Contains("市值 = 庫存數量 × 最新盤中價／收盤價", script, StringComparison.Ordinal);
+        Assert.Contains("market_value: null", script, StringComparison.Ordinal);
+        Assert.Contains("unrealized: null", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 資產變化折線保存每日快照且舊行情View使用呼叫者權限()
+    {
+        var root = FindRepositoryRoot();
+        var snapshots = File.ReadAllText(Path.Combine(root, "db", "035_asset_value_snapshots.sql"));
+        var viewSecurity = File.ReadAllText(Path.Combine(root, "db", "034_daily_quotes_view_security.sql"));
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("create table if not exists asset_value_snapshots", snapshots, StringComparison.Ordinal);
+        Assert.Contains("primary key (owner_id, snapshot_date)", snapshots, StringComparison.Ordinal);
+        Assert.Contains("alter table asset_value_snapshots enable row level security", snapshots, StringComparison.Ordinal);
+        Assert.Contains("create policy \"public insert\"", snapshots, StringComparison.Ordinal);
+        Assert.Contains("create policy \"public update\"", snapshots, StringComparison.Ordinal);
+        Assert.Contains("with (security_invoker = true)", viewSecurity, StringComparison.Ordinal);
+        Assert.Contains("daily_quotes_by_security_date", viewSecurity, StringComparison.Ordinal);
+        Assert.Contains("function makeAssetValueTrend", script, StringComparison.Ordinal);
+        Assert.Contains("resolution=merge-duplicates,return=minimal", script, StringComparison.Ordinal);
+        Assert.Contains("if (views.length === 0", script, StringComparison.Ordinal);
+        Assert.Contains("makeAssetValueTrend(owner, summary)", script, StringComparison.Ordinal);
     }
 
     // 大標題不再叫「資產 Dashboard（瀏覽器樣板）」，整個靜態站也不該再有樣板字眼。
@@ -1470,7 +1497,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const ASSET_OCR_TIMEOUT_MS = 10_000;", script, StringComparison.Ordinal);
         Assert.Contains("function warmAssetOcrWorker()", script, StringComparison.Ordinal);
         Assert.Contains("function getAssetOcrWorker()", script, StringComparison.Ordinal);
-        Assert.Contains("assetOcrDeadline(worker.recognize(canvas), remainingMs)", script, StringComparison.Ordinal);
+        Assert.Contains("assetOcrDeadline(worker.recognize(canvas), remainingForRecognition)", script, StringComparison.Ordinal);
         Assert.Contains("await resetAssetOcrWorker();", script, StringComparison.Ordinal);
         Assert.Contains("assetOcrWorker === null", script, StringComparison.Ordinal);
         Assert.Contains("重新準備辨識引擎", script, StringComparison.Ordinal);
@@ -1518,6 +1545,11 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const ASSET_OCR_MAX_PIXELS = 4_000_000;", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_OCR_LEGACY_WHITE_MAX_PIXELS = 2_200_000;", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_OCR_WIDE_MAX_PIXELS = 1_500_000;", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_OCR_TALL_IDENTITY_MAX_PIXELS = 600_000;", script, StringComparison.Ordinal);
+        Assert.Contains("const ASSET_OCR_TALL_TABLE_MAX_PIXELS = 2_500_000;", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrTallIdentityRowCanvas(bitmap, rowIndex, rowCount)", script, StringComparison.Ordinal);
+        Assert.Contains("canvas.dataset.assetOcrTallTable = String(tallTable);", script, StringComparison.Ordinal);
+        Assert.Contains("const tallTable = canvas.dataset.assetOcrTallTable === 'true';", script, StringComparison.Ordinal);
         Assert.Contains("function assetOcrUsefulBottom(bitmap, fallbackBottom)", script, StringComparison.Ordinal);
         Assert.Contains("canvas.dataset.assetOcrTrimmed", script, StringComparison.Ordinal);
         Assert.Contains("canvas.dataset.assetOcrLegacyWhite", script, StringComparison.Ordinal);
@@ -1557,6 +1589,21 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const quantity = yesterday + buy - sell;", script, StringComparison.Ordinal);
         Assert.Contains("onlyMissingInferableCost", script, StringComparison.Ordinal);
         Assert.Contains("Math.abs(Number(draft.marketValue)) * 0.006", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrUsPositionsCandidates(data)", script, StringComparison.Ordinal);
+        Assert.Contains("function assetDraftRowsFromUsPositions(data)", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrPortraitTaiwanCandidates(data)", script, StringComparison.Ordinal);
+        Assert.Contains("async function assetDraftRowsFromPortraitTaiwan(data)", script, StringComparison.Ordinal);
+        Assert.Contains("const alignedIdentity = identityLines.length === candidates.length;", script, StringComparison.Ordinal);
+        Assert.Contains("if (portraitRows > 0 && parsed.rows.length !== portraitRows)", script, StringComparison.Ordinal);
+        Assert.Contains("const identityPageMode = legacyWhite ? '7' : '11';", script, StringComparison.Ordinal);
+        Assert.Contains("tessedit_pageseg_mode: '4'", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrPortraitIdentityLines(text, candidatesOrExpectedRows)", script, StringComparison.Ordinal);
+        Assert.Contains("function assetOcrPortraitFuzzyTicker(text, candidate)", script, StringComparison.Ordinal);
+        Assert.Contains("const longest = Math.max(...matches.map(match => [...match.name].length));", script, StringComparison.Ordinal);
+        Assert.Contains("tessedit_char_blacklist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'", script, StringComparison.Ordinal);
+        Assert.Contains("tessedit_char_blacklist: ''", script, StringComparison.Ordinal);
+        Assert.Contains("const targetTicker = assetKnownTicker(targetText)", script, StringComparison.Ordinal);
+        Assert.Contains("assetOcrResolveCloseWithIdentityHint(draft, closeIndex, draft.ocrIdentityText)", script, StringComparison.Ordinal);
     }
 
     [Fact]

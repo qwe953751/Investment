@@ -230,7 +230,7 @@ CI 的密碼放在 GitHub Secrets，不能讓它擁有 DDL 權限。
 
 ### 尚未討論／待驗收
 
-- **RLS 尚未收權限**：`notes`／`topic_edits`／三張 `asset_*` 目前仍是 anon
+- **RLS 尚未收權限**：`notes`／`topic_edits`／資產相關表（含持倉、出入金與每日快照）目前仍是 anon
   可讀可寫，跟登入前完全一樣——這次只做了前端登入與頁籤切換，故意不動 RLS。
   等使用者實際用過登入功能、確認沒問題後，才會有下一支 migration 把這幾張表的
   政策換成「只認這裡建的帳號」（見 `db/029_permission_accounts.sql` 檔頭與
