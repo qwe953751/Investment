@@ -90,6 +90,32 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 外觀切換一定要留著淺色選項()
+    {
+        // 2026-09-02 迴歸：有人以「多餘」為由把 data-theme-value="light" 那顆按鈕拿掉，
+        // 只留系統／深色。但「系統」在深色模式的 macOS 上解出來就是深色，於是深色
+        // 使用者按遍所有按鈕都還是深色，完全沒有回到淺色的路徑。三個選項缺一不可：
+        // 沒有淺色，深色系統的人被鎖死；沒有深色，淺色系統的人被鎖死。
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        foreach (var value in new[] { "system", "light", "dark" })
+        {
+            Assert.Contains($"data-theme-value=\"{value}\"", html, StringComparison.Ordinal);
+        }
+
+        // CSS 兩邊都要有：[data-theme="dark"] 讓淺色系統的人選得到深色，
+        // 媒體查詢裡的 :not([data-theme="light"]) 讓深色系統的人選得回淺色。
+        Assert.Contains("@media (prefers-color-scheme: dark)", styles, StringComparison.Ordinal);
+        Assert.Contains(":root:not([data-theme=\"light\"])", styles, StringComparison.Ordinal);
+        Assert.Contains(":root[data-theme=\"dark\"]", styles, StringComparison.Ordinal);
+
+        Assert.Contains("function applyTheme(preference)", script, StringComparison.Ordinal);
+        Assert.Contains("preference === 'light' || preference === 'dark'", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void K線切換頁籤或交易日會關閉彈窗但盤中更新會重畫內容()
     {
         var script = ReadAsset("site.js");

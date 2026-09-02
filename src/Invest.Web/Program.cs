@@ -1230,8 +1230,8 @@ static async Task<int> RunVerifyAsync(IServiceProvider services)
     }
 
     Console.WriteLine();
-    Console.WriteLine("以 data/imports 為準。重跑 sync 不會修正既有日期，");
-    Console.WriteLine("要更正得先刪掉資料庫裡那幾天，再同步一次。");
+    Console.WriteLine("以 data/imports 為準。sync 會重送這裡列出的日期（判斷條件跟這份對帳一樣），");
+    Console.WriteLine("所以先跑一次 sync 再跑 verify；若跑完還是同一批日期，才是本機快取本身有問題。");
 
     return 1;
 }

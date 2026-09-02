@@ -40,7 +40,7 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
 
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
 
-        var existing = await ReadExistingCountsAsync(connection, cancellationToken);
+        var existing = await ReadExistingTotalsAsync(connection, cancellationToken);
 
         // 視窗外的日期送上去也會在下面被 PruneAsync 立刻刪掉，
         // 白搬幾萬列還讓「新增 N 個交易日」每天都是同一個數字。
@@ -50,14 +50,9 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
             .Take(retentionTradingDays)
             .ToHashSet();
 
-        // 比的是檔數而不只是「這天在不在」。同一天可能上次只寫進去一部分
-        // （例如當時的快取只有上市、或寫到一半被中止），日期看起來有了，
-        // 內容卻是殘的——只看日期的話這種天數永遠補不回來。
         var pending = snapshots
             .Where(snapshot => retained.Contains(snapshot.TradingDate))
-            .Where(snapshot =>
-                existing.GetValueOrDefault(snapshot.TradingDate)
-                    < snapshot.Quotes.Select(quote => quote.Ticker).Distinct(StringComparer.Ordinal).Count())
+            .Where(snapshot => NeedsSync(snapshot, existing.GetValueOrDefault(snapshot.TradingDate)))
             .OrderBy(snapshot => snapshot.TradingDate)
             .ToArray();
 
@@ -74,10 +69,13 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
             insertedDates++;
 
             logger.LogInformation(
-                "已同步 {Date:yyyy-MM-dd}（資料庫原有 {Before} 檔，本機 {Count} 檔）。",
+                "已同步 {Date:yyyy-MM-dd}（資料庫原有 {Before} 檔／成交值 {BeforeValue:N0}，"
+                + "本機 {Count} 檔／成交值 {Value:N0}）。",
                 snapshot.TradingDate,
-                before,
-                snapshot.Quotes.Count);
+                before?.Count ?? 0,
+                before?.TradingValue ?? 0m,
+                snapshot.Quotes.Count,
+                snapshot.Quotes.Sum(quote => quote.TradingValue));
         }
 
         var prunedDates = await PruneAsync(connection, retentionTradingDays, cancellationToken);
@@ -121,24 +119,59 @@ public sealed class DailyQuoteSyncStore(ILogger<DailyQuoteSyncStore> logger)
         return totals;
     }
 
-    private static async Task<Dictionary<DateOnly, int>> ReadExistingCountsAsync(
+    /// <summary>
+    /// 這天要不要重送。
+    ///
+    /// 判斷條件跟 <c>verify</c> 對帳用的完全一樣（檔數／成交值／成交股數三個總和），
+    /// 因為兩邊不一致的話就會出現「對帳說錯、重跑 sync 卻說沒事」的死結。
+    ///
+    /// 檔數用「少於」而不是「不等於」：資料庫比本機多的日期是舊資料留下的，
+    /// 重送也蓋不掉，重試只會每天白跑一次。成交值與成交股數則是任一邊不同就重送——
+    /// 美股的當日量在 20:30 ET 抓下來還是暫時值，隔天 Alpha Vantage 會回填成定稿，
+    /// 於是 imports-us 裡的舊日期會被改寫。只看檔數的話這種「檔數一樣、數字變了」
+    /// 永遠不會被重送，資料庫就會一直卡在暫時值，每天對帳都紅。
+    /// </summary>
+    public static bool NeedsSync(DailyQuoteSnapshot snapshot, DailyQuoteTotals? existing)
+    {
+        if (existing is null)
+        {
+            return true;
+        }
+
+        var tickers = snapshot.Quotes.Select(quote => quote.Ticker).Distinct(StringComparer.Ordinal).Count();
+
+        return existing.Count < tickers
+            || existing.TradingValue != snapshot.Quotes.Sum(quote => quote.TradingValue)
+            || existing.TradingVolume != snapshot.Quotes.Sum(quote => quote.TradingVolume);
+    }
+
+    private static async Task<Dictionary<DateOnly, DailyQuoteTotals>> ReadExistingTotalsAsync(
         NpgsqlConnection connection,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
-            "select trade_date, count(*) from daily_quotes group by trade_date",
+            """
+            select trade_date, count(*), sum(trading_value), sum(trading_volume)
+            from daily_quotes
+            group by trade_date
+            """,
             connection);
 
-        var counts = new Dictionary<DateOnly, int>();
+        var totals = new Dictionary<DateOnly, DailyQuoteTotals>();
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         while (await reader.ReadAsync(cancellationToken))
         {
-            counts[reader.GetFieldValue<DateOnly>(0)] = (int)reader.GetInt64(1);
+            var date = reader.GetFieldValue<DateOnly>(0);
+            totals[date] = new DailyQuoteTotals(
+                date,
+                reader.GetInt64(1),
+                reader.GetFieldValue<decimal>(2),
+                reader.GetFieldValue<decimal>(3));
         }
 
-        return counts;
+        return totals;
     }
 
     private static async Task<int> InsertDayAsync(

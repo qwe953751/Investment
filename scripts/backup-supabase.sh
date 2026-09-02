@@ -10,6 +10,11 @@
 # 拿舊資料蓋掉正確資料——這是正確性問題，不是省空間。
 # 結構仍然會備份，還原後 sync（行情）或 revenue --backfill（營收）就能補滿。
 #
+# 排除某張表的內容時，指向它的表也必須一起排除，否則備份會帶著一堆孤兒外鍵，
+# 還原到空資料庫時就會停在 violates foreign key constraint。這件事看不出來——
+# 備份步驟本身照樣成功，要等每週的還原測試才會紅，所以下面有一段目錄查詢
+# 會在備份當下就把「漏排除的下游表」找出來。
+#
 # 保留策略是 GFS：最近 5 份、每週 4 份、每月 6 份，合計約半年。
 # 輪替掉的檔案只是從目錄消失，git 歷史裡永遠找得回來。
 
@@ -28,6 +33,31 @@ if [ -z "$pg_dump" ]; then
     exit 1
 fi
 
+# psql 跟 pg_dump 同一包，所以拿 pg_dump 的目錄去找，版本一定對得起來。
+psql=${PSQL:-$(dirname "$pg_dump")/psql}
+if [ ! -x "$psql" ]; then
+    psql=$(command -v psql || true)
+fi
+if [ -z "$psql" ] || [ ! -x "$psql" ]; then
+    echo "找不到 psql（外鍵檢查要用）。macOS 可用 brew install libpq。" >&2
+    exit 1
+fi
+
+# 只列一次，pg_dump 的參數與後面的檢查都從這裡展開。
+# 之前這份清單抄了兩份，加表的人只會想到自己那張，兩邊都不會更新。
+excluded_tables=(
+    daily_quotes
+    intraday_quotes
+    intraday_runs
+    intraday_topic_heat
+    monthly_revenue
+)
+
+exclude_args=()
+for excluded in "${excluded_tables[@]}"; do
+    exclude_args+=(--exclude-table-data="public.$excluded")
+done
+
 mkdir -p "$snapshot_dir"
 
 today=$(date +%F)
@@ -41,15 +71,34 @@ plain="$work/dump.sql"
 # --exclude-table-data 只擋內容，建表語句還在，所以還原出來是一套空的行情表。
 # --enable-row-security：連線用的是 invest_writer，不是 superuser，
 #   沒有這個旗標 pg_dump 會直接拒絕匯出有 RLS 的表。
+# 有表指向被排除的表卻自己沒被排除的話，備份會帶出孤兒外鍵。
+# 在花時間 dump 之前先問資料庫，答案永遠比人腦裡的清單新。
+orphan_sources=$("$psql" "$SUPABASE_DB_URL" -tAX -c "
+    select distinct child.relname
+    from pg_constraint c
+    join pg_class child on child.oid = c.conrelid
+    join pg_class parent on parent.oid = c.confrelid
+    join pg_namespace n on n.oid = child.relnamespace
+    where c.contype = 'f'
+      and n.nspname = 'public'
+      and parent.relname = any(string_to_array('$(IFS=,; echo "${excluded_tables[*]}")', ','))
+      and child.relname <> all(string_to_array('$(IFS=,; echo "${excluded_tables[*]}")', ','))
+    order by 1;")
+
+if [ -n "$orphan_sources" ]; then
+    echo "這些表指向被排除內容的表，但自己沒被排除：" >&2
+    echo "$orphan_sources" | sed 's/^/  /' >&2
+    echo "備份會帶出孤兒外鍵，還原時會停在 violates foreign key constraint。" >&2
+    echo "把它們加進本檔的 excluded_tables，或改掉那條外鍵。" >&2
+    exit 1
+fi
+
 "$pg_dump" "$SUPABASE_DB_URL" \
     --format=plain \
     --schema=public \
     --no-owner \
     --enable-row-security \
-    --exclude-table-data='public.daily_quotes' \
-    --exclude-table-data='public.intraday_quotes' \
-    --exclude-table-data='public.intraday_runs' \
-    --exclude-table-data='public.monthly_revenue' \
+    "${exclude_args[@]}" \
     > "$plain"
 
 # 第一層：內容看起來像不像一份完整的 dump。
@@ -64,7 +113,7 @@ if ! grep -q 'CREATE TABLE public.securities' "$plain"; then
 fi
 
 # 排除清單失效的話（例如表被改名）行情就會偷偷混進備份裡，這裡直接擋下來。
-for excluded in daily_quotes intraday_quotes intraday_runs monthly_revenue; do
+for excluded in "${excluded_tables[@]}"; do
     if grep -q "^COPY public.$excluded " "$plain"; then
         echo "備份裡出現 $excluded 的資料，排除清單失效了。" >&2
         exit 1

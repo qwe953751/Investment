@@ -104,6 +104,9 @@ jobs:
           check "daily_quotes 是空的" "select count(*) from daily_quotes;" "0"
           check "intraday_quotes 是空的" "select count(*) from intraday_quotes;" "0"
           check "intraday_runs 是空的" "select count(*) from intraday_runs;" "0"
+          # 指向 intraday_runs，所以必須跟著一起空。2026-08-23、08-30 連兩週的
+          # 還原測試就是敗在它有資料、intraday_runs 沒有，外鍵當場擋下。
+          check "intraday_topic_heat 是空的" "select count(*) from intraday_topic_heat;" "0"
 
           # 用名字點名，不用數量。數量會在每加一張表就紅一次，
           # 那種紅燈跟「備份壞了」長得一模一樣。
