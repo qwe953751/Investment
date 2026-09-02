@@ -27,6 +27,9 @@ on:
         description: 只用 data 分支現有快取重新輸出並發布，不等待今日行情
         type: boolean
         default: false
+      etf-backfill-days:
+        description: 補抓幾個交易日的 ETF 歷史（0 表示不補；只有 2026-09-01 之前的舊快取需要）
+        default: '0'
 
 permissions:
   contents: write
@@ -110,6 +113,7 @@ jobs:
       # 官方行情以台北時間為準，回補的「今天」也必須是台北的今天。
       TZ: Asia/Taipei
       TRADING_DAYS: ${{ inputs.trading-days || '300' }}
+      ETF_BACKFILL_DAYS: ${{ inputs.etf-backfill-days || '0' }}
 
     steps:
       - name: 取出原始碼
@@ -201,6 +205,19 @@ jobs:
         if: ${{ inputs.publish-only != true }}
         continue-on-error: true
         run: dotnet run -c Release --project src/Invest.Web -- backfill-bars "$TRADING_DAYS"
+
+      # ETF 是 2026-09-01 才併進每日回補的，所以那天之後的快照本來就有 ETF，
+      # 之前的沒有——0050 這種老 ETF 只有一根 K 棒，畫不出線（筆記 #47）。
+      # 這一步是補那段歷史用的，平常留 0 不跑：每天多打六百次官方 API 只為了
+      # 重抓不會再變的舊日期，沒有意義。已經是最新 etfSchemaVersion 的日期會自己略過，
+      # 所以中途失敗直接重跑同一個指令就能接續。
+      #
+      # 跟 backfill-bars 一樣允許失敗：官方偶爾漏掉某一天是常態，
+      # 不該讓它把「排行已經發布成功」的一輪標成紅燈。
+      - name: 補抓 ETF 歷史
+        if: ${{ inputs.publish-only != true && inputs.etf-backfill-days != '' && inputs.etf-backfill-days != '0' }}
+        continue-on-error: true
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-etfs "$ETF_BACKFILL_DAYS"
 
       - name: 保存行情快取
         if: ${{ inputs.publish-only != true }}

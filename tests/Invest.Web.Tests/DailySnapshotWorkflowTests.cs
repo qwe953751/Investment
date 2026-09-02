@@ -58,6 +58,28 @@ public sealed class DailySnapshotWorkflowTests
         Assert.Contains("verify-kline-cache \"$TRADING_DAYS\"", workflow, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 補抓ETF歷史是手動選項而且預設不跑()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        Assert.Contains("etf-backfill-days:", workflow, StringComparison.Ordinal);
+        Assert.Contains("ETF_BACKFILL_DAYS: ${{ inputs.etf-backfill-days || '0' }}", workflow, StringComparison.Ordinal);
+        Assert.Contains("-- backfill-etfs \"$ETF_BACKFILL_DAYS\"", workflow, StringComparison.Ordinal);
+
+        // 預設 '0' 代表不跑：每天多打六百次官方 API 只為了重抓不會再變的舊日期沒有意義。
+        // 這個判斷式漏掉任何一段，這一步就會變成每天都跑。
+        Assert.Contains(
+            "inputs.etf-backfill-days != '' && inputs.etf-backfill-days != '0'",
+            workflow,
+            StringComparison.Ordinal);
+
+        // 官方偶爾漏掉某一天是常態，不該把「排行已經發布成功」的一輪標成紅燈。
+        var step = workflow[workflow.IndexOf("- name: 補抓 ETF 歷史", StringComparison.Ordinal)..];
+        Assert.Contains("continue-on-error: true", step[..step.IndexOf("run:", StringComparison.Ordinal)], StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
