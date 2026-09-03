@@ -921,7 +921,14 @@ function wireDevicePresence() {
     const panel = el('device-presence-panel');
     const refresh = el('device-presence-refresh');
 
-    if (!root || !toggle || !panel || !refresh || SITE_ACCESS !== 'admin') {
+    if (!root || !toggle || !panel || !refresh) {
+        return;
+    }
+
+    // 權限中途變動（登入／登出）也會再呼叫一次這裡，不能只在「是最高權限」那條路
+    // 把 hidden 設成 false——降回其他權限時要在這裡明確關掉，不能靠早退什麼都不做。
+    if (SITE_ACCESS !== 'admin') {
+        root.hidden = true;
         return;
     }
 
@@ -1820,12 +1827,17 @@ function renderAccessBar() {
 }
 
 // 權限一變（登入或登出），目前頁籤如果已經不在允許範圍內就退回預設，再重畫一次篩選與資料。
+// 頁首那幾顆小控件（裝置、通知）只在頁面第一次載入時判斷過權限，不會自己跟著變，
+// 這裡要一併重新判斷一次，不然登出後畫面還留著最高權限才看得到的按鈕。
 function afterAccessChange() {
     if (!availableViews().some(view => view.key === state.view)) {
         state.view = 'daily';
     }
 
     renderFilters();
+    renderAccessBadge();
+    wireDevicePresence();
+    void refreshAlerts();
     load();
 }
 
