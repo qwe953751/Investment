@@ -1,9 +1,13 @@
--- 美股觀察清單。使用者自行在 Supabase Studio 增減要追蹤的美股 ticker，
--- backfill-us 只讀 is_active 的列，不依賴 asset_holdings（兩者刻意分開，
--- 觀察清單可能包含還沒買的股票，資產表只是清單的其中一個消費者）。
+-- 美股觀察清單。backfill-us 只讀 is_active 的列；觀察清單可能包含還沒買的股票，
+-- 資產表只是清單的其中一個消費者，兩者資料模型仍然刻意分開。
 --
--- 沒有開放 anon 寫入：每加一檔就會在下次排程吃掉一次 Alpha Vantage 額度
--- （免費方案 25 次/日），不像資產表可以隨便改錯重打，維護清單走 Supabase Studio。
+-- 新增 ticker 已改成自動同步（backfill-us 執行時由
+-- UsWatchlistStore.SyncFromHoldingsAsync 從 asset_holdings 補齊持倉裡有、
+-- 清單裡沒有的美股 ticker，2026-09-03 起），不用再手動來這裡新增一列。
+-- 停用、改名、調整排序等既有列的維護仍然只能走 Supabase Studio——沒有開放
+-- anon 寫入：亂寫一檔就會在下次排程吃掉一次 Alpha Vantage 額度（免費方案
+-- 25 次/日），只有真的持有的股票才會被自動加進來，維護既有列的風險比照舊規則
+-- 留在人工這一邊。
 --
 -- 提醒：daily_quotes / daily_quotes_view 從這個 migration 之後會混進美股（USD、
 -- 估算成交值）列，任何要跨市場加總或排序 trading_value／close_price 的功能，

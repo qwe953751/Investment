@@ -74,14 +74,22 @@ public sealed class StaticKLineAssetTests
         // 比自己的開盤是漲——使用者要看的是這根棒子今天走出來的方向，不是跟昨天比。
         // 之前改成「已收盤棒比昨收、盤中即時棒比開盤」兩套規則，使用者驗收時指出
         // 已收盤的棒子（09/01 早已收盤）也該比開盤，才改成兩種棒子一視同仁都比開盤，
-        // 不再區分 live／historical，也不再需要 previousClose。
+        // 不再區分 live／historical。bar.previousClose 之後被查價線的漲跌幅顯示
+        // 另外用掉了（純顯示用途，跟顏色規則無關），所以「不用 previousClose」
+        // 只鎖定 klineTrendClass 這個函式本身，不是鎖整支 script。
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
+        var trendStart = script.IndexOf("function klineTrendClass(bar)", StringComparison.Ordinal);
+        var trendEnd = script.IndexOf("function renderKLineSvg", trendStart, StringComparison.Ordinal);
+
+        Assert.True(trendStart >= 0 && trendEnd > trendStart, "找不到 klineTrendClass。");
+
+        var trendFunction = script[trendStart..trendEnd];
 
         Assert.Contains("function klineTrendClass(bar)", script, StringComparison.Ordinal);
         Assert.Contains("return close > open", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("bar.previousClose", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("bar.live", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("bar.previousClose", trendFunction, StringComparison.Ordinal);
+        Assert.DoesNotContain("bar.live", trendFunction, StringComparison.Ordinal);
 
         Assert.Contains(".kline-backdrop", styles, StringComparison.Ordinal);
         var normalizedStyles = styles.Replace("\r\n", "\n", StringComparison.Ordinal);
@@ -468,7 +476,6 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("class: `daily-kline-volume-bar ${klineTrendClass(bar)}`", function, StringComparison.Ordinal);
         Assert.Contains("const scale = niceKLineScale(prices);", function, StringComparison.Ordinal);
         Assert.Contains("kLineAxisText(price, scale.step)", function, StringComparison.Ordinal);
-        Assert.Contains("開 ${toFixedText(open, 2)} 高 ${toFixedText(high, 2)}", script, StringComparison.Ordinal);
         Assert.Contains("RoundKLine(point.TradingVolume)", exporter, StringComparison.Ordinal);
         Assert.Contains(".daily-kline-volume-bar.daily-kline-up", styles, StringComparison.Ordinal);
         Assert.Contains(".daily-kline-volume-bar.daily-kline-down", styles, StringComparison.Ordinal);
@@ -502,7 +509,9 @@ public sealed class StaticKLineAssetTests
         var function = script[start..end];
 
         Assert.Contains("const referenceDate = String(bar.date ?? '').replaceAll('-', '/').slice(-5);", function, StringComparison.Ordinal);
-        Assert.Contains("`開 ${toFixedText(open, 2)} 高 ${toFixedText(high, 2)} 低 ${toFixedText(low, 2)} 收", function, StringComparison.Ordinal);
+        Assert.Contains("referenceValues.push(`${bar.isLive ? '現價' : '收盤'} ${toFixedText(priceValue, 2)}${changeText}`);", function, StringComparison.Ordinal);
+        Assert.Contains("assetChangePercent(priceValue, Number(bar.previousClose))", function, StringComparison.Ordinal);
+        Assert.Contains("assetHoldingPriceChangeText(changePercent)", function, StringComparison.Ordinal);
         Assert.Contains("referenceValues.push(`${layout.lowerLabel}", function, StringComparison.Ordinal);
         Assert.Contains("referenceSummary.textContent = referenceValues.length > 0", function, StringComparison.Ordinal);
         Assert.Contains("`${referenceDate} ${referenceValues.join(' ｜ ')}`", function, StringComparison.Ordinal);

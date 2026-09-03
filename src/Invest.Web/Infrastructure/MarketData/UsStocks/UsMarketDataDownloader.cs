@@ -20,6 +20,15 @@ public sealed class UsMarketDataDownloader(
         CancellationToken cancellationToken = default)
     {
         var report = new UsBackfillReport();
+        var syncedCount = await UsWatchlistStore.SyncFromHoldingsAsync(cancellationToken);
+
+        if (syncedCount > 0)
+        {
+            var syncMessage = $"自動同步了 {syncedCount} 檔美股持倉進觀察清單。";
+            logger.LogInformation(syncMessage);
+            progress?.Report(syncMessage);
+        }
+
         var watchlist = await UsWatchlistStore.LoadActiveAsync(cancellationToken);
 
         if (watchlist.Count == 0)

@@ -3,11 +3,34 @@ using Npgsql;
 namespace Invest.Web.Infrastructure.Database;
 
 /// <summary>
-/// 美股觀察清單。使用者自行在 Supabase 的 us_watchlist 表增減 ticker，
-/// backfill-us 只讀這張表，不依賴 asset_holdings（見 db/026_us_watchlist.sql）。
+/// 美股觀察清單。backfill-us 讀這張表決定要抓哪些 ticker（見 db/026_us_watchlist.sql）。
+/// 新增 ticker 已改成 <see cref="SyncFromHoldingsAsync"/> 自動同步，不用再手動去
+/// Supabase Studio 加；停用／改名等既有列的維護仍然只能靠 Supabase Studio。
 /// </summary>
 public static class UsWatchlistStore
 {
+    /// <summary>
+    /// 把「持倉裡有、清單裡沒有」的美股 ticker 自動補進來，回傳新增了幾檔。
+    /// 這裡是後端的 SUPABASE_DB_URL 連線（invest_writer 等級），不是前端的 anon key，
+    /// 所以能寫；只新增，不動任何已存在的列——尊重使用者在 Supabase Studio 手動停用的紀錄。
+    /// </summary>
+    public static async Task<int> SyncFromHoldingsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            """
+            insert into us_watchlist (ticker, name)
+            select distinct upper(trim(h.ticker)), h.name
+            from asset_holdings h
+            join asset_accounts a on a.id = h.account_id
+            where a.market = '美股' and trim(h.ticker) <> ''
+            on conflict (ticker) do nothing
+            """,
+            connection);
+
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public static async Task<IReadOnlyList<UsWatchlistEntry>> LoadActiveAsync(
         CancellationToken cancellationToken = default)
     {

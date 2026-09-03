@@ -3528,6 +3528,67 @@ function assetMarketCurrencyValue(twdValue, nativeValue, market, signed = false)
     return signed ? assetSignedCurrency(nativeValue) : assetCurrency(nativeValue);
 }
 
+// 未實現損益的百分比：跟成本的比例，分子分母同一套匯率換算出來的，不受幣別影響，
+// 雙幣別不用各自算一次。cost 缺值或 ≤ 0（零成本持倉）時沒有比較基準，回傳 null。
+function assetUnrealizedPercent(unrealized, cost) {
+    const amount = assetNumber(unrealized);
+    const base = assetNumber(cost);
+
+    return amount === null || base === null || base <= 0
+        ? null
+        : Math.round(amount / base * 1000) / 10;
+}
+
+// 未實現損益改成「金額(%數)」：不寫 +/− 符號，色塊（呼叫端另外套 assetSignClass）
+// 就足以表達正負，所以金額跟百分比都取絕對值——Intl.NumberFormat 本身會幫負數
+// 加上「-」，這裡要比照 assetSignedCurrency 的做法自己擋掉。算不出百分比時只顯示
+// 金額，不留一個空括號。
+function assetUnrealizedText(unrealized, cost, currency = 'TWD') {
+    const amount = assetNumber(unrealized);
+    const percent = assetUnrealizedPercent(unrealized, cost);
+    const amountText = amount === null ? assetCurrency(unrealized, currency) : assetCurrency(Math.abs(amount), currency);
+
+    return percent === null ? amountText : `${amountText}（${Math.abs(percent)}%）`;
+}
+
+function assetUnrealizedForMarket(unrealized, cost, market) {
+    return assetUnrealizedText(unrealized, cost, market === '美股' ? 'USD' : 'TWD');
+}
+
+// 帳戶／Dashboard 層級的雙幣別未實現損益：百分比只在台幣主行顯示一次——
+// 比例不受幣別影響，美元次行再顯示一次只是同一個數字講兩遍。
+function assetUnrealizedDualCurrency(twdUnrealized, twdCost, usdUnrealized, market) {
+    if (market !== '美股') {
+        return document.createTextNode(assetUnrealizedText(twdUnrealized, twdCost));
+    }
+
+    const value = document.createElement('span');
+    value.className = 'asset-dual-currency-value';
+    const twd = document.createElement('span');
+    twd.className = 'asset-dual-currency-primary';
+    twd.textContent = assetUnrealizedText(twdUnrealized, twdCost);
+    const usd = document.createElement('span');
+    usd.className = 'asset-dual-currency-secondary';
+    const usdAmount = assetNumber(usdUnrealized);
+    usd.textContent = `（${assetCurrency(usdAmount === null ? usdUnrealized : Math.abs(usdAmount), 'USD')}）`;
+    value.append(twd, usd);
+    return value;
+}
+
+// 卡片未實現損益下面那行小字：原本是同一個金額再顯示一次，改成只顯示百分比，
+// 不然主要數字已經有「金額(%數)」了，這行還講同一個金額像是排版錯誤。完全沒有
+// cost 基準、算不出百分比時，退回顯示金額本身，比留白更有資訊量。
+function assetUnrealizedDelta(unrealized, cost, currency = 'TWD') {
+    const amount = assetNumber(unrealized);
+    const percent = assetUnrealizedPercent(unrealized, cost);
+    const delta = document.createElement('span');
+    delta.className = `asset-preview-delta ${assetSignClass(unrealized)}`.trim();
+    delta.textContent = percent !== null
+        ? `${Math.abs(percent)}%`
+        : amount === null ? assetCurrency(unrealized, currency) : assetCurrency(Math.abs(amount), currency);
+    return delta;
+}
+
 function assetQuantityText(value) {
     const amount = assetNumber(value);
 
@@ -3663,7 +3724,7 @@ async function fetchAssetLatestUsQuotes() {
 }
 
 async function fetchAssetIntradayQuotes(accounts, holdings) {
-    if (supabase === null || !isTaiwanIntradaySession()) {
+    if (supabase === null) {
         return new Map();
     }
 
@@ -3689,8 +3750,10 @@ async function fetchAssetIntradayQuotes(accounts, holdings) {
 
     const today = TAIPEI_DATE.format(new Date());
 
-    // 非交易日也可能正好落在 09:00～13:35；不能把上一個交易日留在 view 的輪次
-    // 誤當成現在盤中，否則名稱顏色與漲跌幅會顯示錯誤的行情時段。
+    // 不看時鐘、任何時候都查：intraday_latest 留到下一個有效交易日成功寫入才刪除，
+    // 收盤後查它依然是今天最後一輪的資料，資產頁要沿用到官方盤後資料上線為止
+    // （見 assetHoldingForAccount／assetIntradayLiveKLine）。這裡的 today 篩選
+    // 才是真正的正確性防線：非交易日或跨過今天之後，都不會誤把舊的一輪當成現在。
     return new Map((await response.json())
         .filter(row => String(row.trade_date ?? '') === today)
         .map(row => {
@@ -3902,10 +3965,14 @@ function assetSumComplete(rows, pick) {
 function assetHoldingForAccount(account, holding) {
     const ticker = assetHoldingTicker(holding);
     const catalogQuote = assetTickerQuotes.get(ticker);
+    // 今天的官方盤後資料一上線（asset-catalog.json 隨靜態站重新發佈而更新）就優先採用，
+    // 比盤中最後一輪更權威；上線前（收盤到 18:00 那段空窗）繼續沿用今天的盤中資料，
+    // 不要一過 13:30 就掉回可能還停在前一個交易日的舊快照。
+    const catalogIsToday = catalogQuote?.quoteDate === TAIPEI_DATE.format(new Date());
     const quote = account.market === '美股'
         ? assetLatestUsQuotes.get(ticker) ?? catalogQuote
         : account.market === '台股'
-            ? assetIntradayQuotes.get(ticker) ?? catalogQuote
+            ? (catalogIsToday ? catalogQuote : assetIntradayQuotes.get(ticker) ?? catalogQuote)
             : catalogQuote;
     const quantity = assetNumber(holding.quantity);
     const close = assetNumber(quote?.close);
@@ -4425,8 +4492,8 @@ function makeAssetSummaryMetrics(summary) {
                     + (summary.incomplete ? '；有美股尚缺匯率或行情' : ''))),
         assetMetric('投入成本', assetCurrency(summary.cost),
             document.createTextNode('由每一筆持倉的成本加總')),
-        assetMetric('未實現損益', assetSignedCurrency(summary.unrealized),
-            assetDelta(summary.unrealized), assetSignClass(summary.unrealized)),
+        assetMetric('未實現損益', assetUnrealizedText(summary.unrealized, summary.cost),
+            assetUnrealizedDelta(summary.unrealized, summary.cost), assetSignClass(summary.unrealized)),
         assetMetric('累計已實現', assetSignedCurrency(summary.realized),
             assetDelta(summary.realized), assetSignClass(summary.realized)));
     return metrics;
@@ -4892,7 +4959,7 @@ function makeAssetAccountTable(owner, views) {
                     : assetAccountTotalText(view)
             },
             {
-                content: assetMarketCurrencyValue(view.twdUnrealized, view.unrealized, view.market, true),
+                content: assetUnrealizedDualCurrency(view.twdUnrealized, view.twdCost, view.unrealized, view.market),
                 className: assetSignClass(view.unrealized)
             },
             { content: assetMarketCurrencyValue(view.twdCash, view.cash, view.market) },
@@ -5117,7 +5184,7 @@ function makeAssetHoldings(view) {
         marketValue.textContent = assetCurrencyForMarket(holding.marketValue, view.market);
         const unrealized = document.createElement('td');
         unrealized.className = assetSignClass(holding.unrealized);
-        unrealized.textContent = assetSignedCurrencyForMarket(holding.unrealized, view.market);
+        unrealized.textContent = assetUnrealizedForMarket(holding.unrealized, holding.cost, view.market);
         const source = document.createElement('td');
         source.textContent = holding.source === 'ocr' ? '截圖辨識' : '手動';
         row.append(ticker, name, change, quantity, cost, marketValue, unrealized, source);
@@ -9290,8 +9357,9 @@ function makeAssetAccountDetails(owner, view) {
     metrics.append(
         assetMetric('資產總值', assetMarketCurrencyValue(view.twdTotalValue, view.totalValue, view.market),
             document.createTextNode(totalDetail), view.market === '美股' ? 'asset-dual-currency' : ''),
-        assetMetric('未實現損益', assetMarketCurrencyValue(view.twdUnrealized, view.unrealized, view.market, true),
-            assetDelta(view.unrealized, '', currency),
+        assetMetric('未實現損益',
+            assetUnrealizedDualCurrency(view.twdUnrealized, view.twdCost, view.unrealized, view.market),
+            assetUnrealizedDelta(view.twdUnrealized, view.twdCost),
             `${assetSignClass(view.unrealized)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`),
         assetMetric('入金成本', assetMarketCurrencyValue(view.twdFundingCost, view.fundingCost, view.market),
             document.createTextNode(view.fundingCost === null
@@ -10180,7 +10248,7 @@ function selectedIndexKLineBars(market) {
         .sort((left, right) => left.date.localeCompare(right.date));
     return buildIndexMovingAverages([
         ...historicalBars,
-        { ...liveBar, previousClose: historicalBars.at(-1)?.close ?? null }
+        { ...liveBar, previousClose: historicalBars.at(-1)?.close ?? null, isLive: true }
     ].sort((left, right) => left.date.localeCompare(right.date)))
         .filter(bar => bar.date >= startDate && bar.date <= endDate);
 }
@@ -10570,6 +10638,13 @@ function hasIncompleteKLineHistory(requestedStartDate, actualStartDate) {
 // assetIntradayQuotes；開高低任一項缺值時回傳的物件會被 selectedKLineBars
 // 後面的 null 檢查擋下，自動退回純歷史棒，不用在這裡重複判斷。
 function assetIntradayLiveKLine(ticker) {
+    // 今天的官方日 K 一旦隨靜態站重新發佈上線，歷史 bars 陣列自己就有這根收盤棒了，
+    // 不用再疊一根即時棒——判斷方式跟 assetHoldingForAccount 同一套（asset-catalog.json
+    // 的 quoteDate 是否已經是今天），兩邊在同一次發佈裡一定同時翻新，不會不同步。
+    if (assetTickerQuotes.get(ticker)?.quoteDate === TAIPEI_DATE.format(new Date())) {
+        return null;
+    }
+
     const quote = assetIntradayQuotes.get(ticker);
 
     if (!quote) {
@@ -10627,7 +10702,8 @@ function selectedKLineBars(ticker) {
         ...liveBar,
         previousClose: historicalBars.length
             ? historicalBars[historicalBars.length - 1].close
-            : null
+            : null,
+        isLive: true
     }]
         .sort((left, right) => left.date.localeCompare(right.date));
 }
@@ -10726,12 +10802,11 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
             && priceY >= layout.top
             && priceY <= layout.priceBottom) {
             appendReferenceLine(priceY);
-            const open = Number(bar.open);
-            const high = Number(bar.high);
-            const low = Number(bar.low);
-            referenceValues.push([open, high, low].every(Number.isFinite)
-                ? `開 ${toFixedText(open, 2)} 高 ${toFixedText(high, 2)} 低 ${toFixedText(low, 2)} 收 ${toFixedText(priceValue, 2)}`
-                : `收 ${toFixedText(priceValue, 2)}`);
+            // 現價／收盤二選一：isLive 是這根棒子有沒有接上即時資料（見 selectedKLineBars／
+            // selectedIndexKLineBars），不是看時鐘——已經有官方收盤資料的棒子一律算收盤。
+            const changePercent = assetChangePercent(priceValue, Number(bar.previousClose));
+            const changeText = changePercent === null ? '' : ` ${assetHoldingPriceChangeText(changePercent)}`;
+            referenceValues.push(`${bar.isLive ? '現價' : '收盤'} ${toFixedText(priceValue, 2)}${changeText}`);
         }
 
         const lowerValue = missing(layout.lowerValue(bar))
