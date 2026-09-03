@@ -1175,7 +1175,6 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("function wireAssetTickerName", script, StringComparison.Ordinal);
         Assert.Contains("function assetHoldingSortHeader", script, StringComparison.Ordinal);
         Assert.Contains("assetHoldingSortHeader('代號', 'ticker')", script, StringComparison.Ordinal);
-        Assert.Contains("assetHoldingSortHeader(title, 'priceChange')", script, StringComparison.Ordinal);
         Assert.Contains("function assetHoldingPriceChangeText", script, StringComparison.Ordinal);
         Assert.Contains("stockNameChangeClass(holding.priceChange)", script, StringComparison.Ordinal);
         Assert.Contains("const quoteSession = quote?.session ?? '盤後';", script, StringComparison.Ordinal);
@@ -1187,6 +1186,44 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("市值 = 庫存數量 × 最新盤中價／收盤價", script, StringComparison.Ordinal);
         Assert.Contains("market_value: null", script, StringComparison.Ordinal);
         Assert.Contains("unrealized: null", script, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 筆記 #49：一開始只有「代號」「漲跌幅」能排序，其餘 6 欄一律 fallback 成按代號排。
+    /// 這裡釘住其餘 6 個標題也換成可排序的表頭，且排序函式認得每一個 key，
+    /// 不能悄悄退回只認 priceChange 的舊行為。
+    /// </summary>
+    [Fact]
+    public void 資產持倉表頭全部六個欄位皆可排序且缺值沉底()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains(
+            "const ASSET_HOLDING_SORT_NUMERIC_KEYS = new Set(['priceChange', 'quantity', 'cost', 'marketValue', 'unrealized']);",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "const ASSET_HOLDING_SORT_TEXT_KEYS = new Set(['name', 'source']);",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains("if (ASSET_HOLDING_SORT_NUMERIC_KEYS.has(key)) {", script, StringComparison.Ordinal);
+        Assert.Contains("} else if (ASSET_HOLDING_SORT_TEXT_KEYS.has(key)) {", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "const ASSET_HOLDING_SORTABLE_HEADERS = [\n"
+            + "    ['名稱', 'name'],\n"
+            + "    ['漲跌幅', 'priceChange'],\n"
+            + "    ['股數', 'quantity'],\n"
+            + "    ['成本', 'cost'],\n"
+            + "    ['市值', 'marketValue'],\n"
+            + "    ['未實現損益', 'unrealized'],\n"
+            + "    ['來源', 'source']\n"
+            + "];",
+            script.Replace("\r\n", "\n", StringComparison.Ordinal),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "...ASSET_HOLDING_SORTABLE_HEADERS.map(([title, key]) => assetHoldingSortHeader(title, key)),",
+            script,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1678,6 +1715,58 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("tessedit_char_blacklist: ''", script, StringComparison.Ordinal);
         Assert.Contains("const targetTicker = assetKnownTicker(targetText)", script, StringComparison.Ordinal);
         Assert.Contains("assetOcrResolveCloseWithIdentityHint(draft, closeIndex, draft.ocrIdentityText)", script, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 筆記 #38：6213 聯茂被收盤價模糊比對誤配成 1313 聯成。根因有兩個：
+    /// 一是容忍門檻對兩字短名給了「至少容忍一個字」的下限，兩字只差一字就會被判定像；
+    /// 二是模糊比對可以覆蓋掉一個已經是名冊合法代號的 draft.ticker。
+    /// 這裡釘住兩個防線都還在，不能被後續改動悄悄拿掉。
+    /// </summary>
+    [Fact]
+    public void 資產截圖代號模糊比對不得覆蓋已知合法代號且短名不給容忍下限()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("function assetOcrNamesLikelyMatch(left, right)", script, StringComparison.Ordinal);
+        Assert.Contains("const limit = Math.floor(shorter * 0.34);", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("Math.max(1, Math.floor(Math.min(normalizedHint.length", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "if (draft.ticker !== '' && assetKnownStockName(draft.ticker) !== '') {\n        return;\n    }",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (draft.name === '' || assetOcrNamesLikelyMatch(draft.name, knownName)) {\n        draft.name = knownName;\n        return;\n    }\n\n    draft.ticker = '';",
+            script,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 筆記 #38：部分券商截圖直接從表格標題列開始，沒有多餘的頂部 UI 可裁
+    /// （例如美股深色截圖 IMG_1603）。固定裁掉頂部 12% 會把標題本身裁掉，
+    /// 導致完全認不出欄位結構。這裡釘住「沒認出標題且頂部有被裁」才會
+    /// 用 skipTopCrop 重跑一次，且只有重跑也認出標題才採用重跑結果。
+    /// </summary>
+    [Fact]
+    public void 資產截圖頂部裁切導致標題辨識失敗時會重跑一次不裁頂部的版本()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("function assetOcrCanvas(bitmap, options = {})", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "const sourceTop = portrait && !options.skipTopCrop ? Math.floor(bitmap.height * 0.12) : 0;",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains("canvas.dataset.assetOcrTopCropped = String(sourceTop > 0);", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "if (!parsed.matchedHeader && canvas.dataset.assetOcrTopCropped === 'true') {",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "const retryCanvas = assetOcrCanvas(bitmap, { skipTopCrop: true });",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains("if (retryParsed.matchedHeader) {", script, StringComparison.Ordinal);
     }
 
     [Fact]

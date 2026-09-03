@@ -5576,15 +5576,22 @@ function assetHoldingTicker(row) {
     return String(row?.ticker ?? '').trim().toUpperCase();
 }
 
+// 筆記 #49：一開始只有代號／漲跌幅能排序，其餘 6 欄一律 fallback 成按代號排。
+// 數字欄（股數／成本／市值／未實現損益／漲跌幅）沿用漲跌幅欄原本的作法：
+// 缺值不是 0，不論升冪或降冪都固定沉到最後，不能讓「沒有資料」贏過「虧損」。
+// 文字欄（名稱／來源）用 localeCompare('en')，跟代號排序一致；名稱缺值一樣沉底，
+// 來源固定是 'ocr'／'manual' 兩種，理論上不會缺值，仍走同一套邏輯以防未來資料異常。
+const ASSET_HOLDING_SORT_NUMERIC_KEYS = new Set(['priceChange', 'quantity', 'cost', 'marketValue', 'unrealized']);
+const ASSET_HOLDING_SORT_TEXT_KEYS = new Set(['name', 'source']);
+
 function assetSortHoldings(holdings, key = 'ticker', direction = 'asc') {
     const multiplier = direction === 'desc' ? -1 : 1;
 
     return [...(Array.isArray(holdings) ? holdings : [])].sort((left, right) => {
-        if (key === 'priceChange') {
-            const leftValue = assetNumber(left?.priceChange);
-            const rightValue = assetNumber(right?.priceChange);
+        if (ASSET_HOLDING_SORT_NUMERIC_KEYS.has(key)) {
+            const leftValue = assetNumber(left?.[key]);
+            const rightValue = assetNumber(right?.[key]);
 
-            // 缺報價不是 0%，不論升冪或降冪都固定沉到最後。
             if (leftValue === null || rightValue === null) {
                 return leftValue === rightValue
                     ? assetHoldingTicker(left).localeCompare(assetHoldingTicker(right), 'en')
@@ -5593,6 +5600,21 @@ function assetSortHoldings(holdings, key = 'ticker', direction = 'asc') {
 
             if (leftValue !== rightValue) {
                 return (leftValue - rightValue) * multiplier;
+            }
+        } else if (ASSET_HOLDING_SORT_TEXT_KEYS.has(key)) {
+            const leftValue = String(left?.[key] ?? '').trim();
+            const rightValue = String(right?.[key] ?? '').trim();
+
+            if (leftValue === '' || rightValue === '') {
+                return leftValue === rightValue
+                    ? assetHoldingTicker(left).localeCompare(assetHoldingTicker(right), 'en')
+                    : leftValue === '' ? 1 : -1;
+            }
+
+            const compared = leftValue.localeCompare(rightValue, 'en');
+
+            if (compared !== 0) {
+                return compared * multiplier;
             }
         }
 
@@ -5639,22 +5661,23 @@ function assetHoldingSortHeader(label, key) {
     return heading;
 }
 
+const ASSET_HOLDING_SORTABLE_HEADERS = [
+    ['名稱', 'name'],
+    ['漲跌幅', 'priceChange'],
+    ['股數', 'quantity'],
+    ['成本', 'cost'],
+    ['市值', 'marketValue'],
+    ['未實現損益', 'unrealized'],
+    ['來源', 'source']
+];
+
 function makeAssetHoldingTableHead() {
     const head = document.createElement('thead');
     const row = document.createElement('tr');
     row.append(
         assetHoldingSortHeader('代號', 'ticker'),
-        ...['名稱', '漲跌幅', '股數', '成本', '市值', '未實現損益', '來源', ''].map(title => {
-            const cell = document.createElement('th');
-
-            if (title === '漲跌幅') {
-                const sort = assetHoldingSortHeader(title, 'priceChange');
-                return sort;
-            }
-
-            cell.textContent = title;
-            return cell;
-        }));
+        ...ASSET_HOLDING_SORTABLE_HEADERS.map(([title, key]) => assetHoldingSortHeader(title, key)),
+        document.createElement('th'));
     head.append(row);
     return head;
 }
@@ -6605,12 +6628,19 @@ function assetOcrCanvasRegion(bitmap, sourceLeft, sourceTop, sourceWidth, source
     return canvas;
 }
 
-function assetOcrCanvas(bitmap) {
+function assetOcrCanvas(bitmap, options = {}) {
     // 券商截圖上方多半是帳號、通知與導覽列。這些字既不屬於持倉，也會分走 OCR 的版面
     // 分析能力；直式截圖略過上下 UI 後，表格可在同樣的像素預算內放大，仍保留欄位標題。
+    //
+    // 12% 是「有狀態列＋App 導覽列」那種截圖的經驗值，但不是每張截圖都有這兩層——
+    // 有些券商 App 分享出來的截圖本身就從表格標題列開始，沒有多餘的頂部 UI。
+    // 這種圖被裁掉 12% 會直接把表格標題也裁掉，後面連「有沒有認出欄位」都判斷不出來
+    // （筆記 #38 的美股深色截圖就是這樣）。這裡不做像素層級的內容判斷去猜要不要
+    // 裁——那需要一大批樣本才調得準——而是讓呼叫端在第一次辨識沒認出標題列時，
+    // 用 skipTopCrop 重跑一次不裁頂部的版本；options.skipTopCrop 就是那個開關。
     const portrait = bitmap.height > bitmap.width * 1.2;
     const tallTable = bitmap.height >= bitmap.width * 3;
-    const sourceTop = portrait ? Math.floor(bitmap.height * 0.12) : 0;
+    const sourceTop = portrait && !options.skipTopCrop ? Math.floor(bitmap.height * 0.12) : 0;
     // 底部持倉在手機長截圖常剛好落在原本 94% 的裁切線後；保留到 98% 才不會只認到
     // 倒數第二筆。導覽列殘字沒有合格的代號與持倉欄位，後面的資料驗證會排除它。
     const fallbackBottom = portrait ? Math.ceil(bitmap.height * 0.98) : bitmap.height;
@@ -6635,6 +6665,7 @@ function assetOcrCanvas(bitmap) {
     canvas.dataset.assetOcrTrimmed = String(sourceBottom < fallbackBottom);
     canvas.dataset.assetOcrLegacyWhite = String(legacyWhite);
     canvas.dataset.assetOcrTallTable = String(tallTable);
+    canvas.dataset.assetOcrTopCropped = String(sourceTop > 0);
     return canvas;
 }
 
@@ -7340,6 +7371,25 @@ function assetOcrTextDistance(left, right) {
     return previous.at(-1) ?? 0;
 }
 
+/// 兩個中文股名夠不夠像，容忍比例統一用 0.34（約三個字錯一個）。
+/// 兩字短名（聯茂／聯成、台泥／台肥這類）刻意不給下限：0.34 * 2 取整就是 0，
+/// 必須完全相同才算像。曾經對短名也套用「至少容忍一個字」的下限，結果任何
+/// 兩個只差一個字的兩字股名都會被判定「像」，6213 聯茂就是這樣被配對成
+/// 1313 聯成——這個門檻本身在保護短名時完全沒作用，只在製造誤配。
+function assetOcrNamesLikelyMatch(left, right) {
+    const a = assetNameKey(left);
+    const b = assetNameKey(right);
+
+    if (a === '' || b === '') {
+        return false;
+    }
+
+    const shorter = Math.min(a.length, b.length);
+    const limit = Math.floor(shorter * 0.34);
+
+    return assetOcrTextDistance(a, b) <= limit;
+}
+
 function assetOcrResolveCloseWithIdentityHint(draft, closeIndex, identityText) {
     if (closeIndex.size === 0) {
         return;
@@ -7355,6 +7405,13 @@ function assetOcrResolveCloseWithIdentityHint(draft, closeIndex, identityText) {
     if (current !== undefined) {
         draft.name = current.name || draft.name;
         draft.ocrUnitPrices.marketPrice = result.price;
+        return;
+    }
+
+    // 代號已經是名冊裡查得到的真代號，只是它的收盤價剛好不在這批候選裡
+    // （價格 OCR 誤差、或當天沒有這檔的收盤價可比對）——這不代表代號是錯的，
+    // 不能因此用模糊名稱比對把一個已知合法的代號換成別檔。
+    if (draft.ticker !== '' && assetKnownStockName(draft.ticker) !== '') {
         return;
     }
 
@@ -7374,7 +7431,7 @@ function assetOcrResolveCloseWithIdentityHint(draft, closeIndex, identityText) {
             scores.push({
                 ...match,
                 distance: assetOcrTextDistance(normalizedHint, name),
-                limit: Math.max(1, Math.floor(Math.min(normalizedHint.length, name.length) * 0.34))
+                limit: Math.floor(Math.min(normalizedHint.length, name.length) * 0.34)
             });
         }
     }
@@ -7406,9 +7463,22 @@ function assetOcrResolveIdentity(draft) {
 
     const knownName = assetKnownStockName(draft.ticker);
 
-    if (knownName !== '') {
-        draft.name = knownName;
+    if (knownName === '') {
+        return;
     }
+
+    // draft.name 這時可能還是列構建當下的原始 OCR 文字（見 assetDraftRowFromRow
+    // 那段「名稱只收中文與英數」的組字），也可能是前面某個解析步驟已經填成的
+    // 目錄名稱。已經有 OCR 文字時要先跟代號對應的官方名稱交叉比對，差距在容忍
+    // 範圍內才覆蓋；差太多就是代號本身配錯了（例如收盤價模糊比對把 6213 配成
+    // 1313），與其蓋成一個聽起來合理但其實是別檔公司的名字，不如保留原始 OCR
+    // 文字並讓代號留白——寧可讓使用者從校對表手動核對，也不要靜靜地講錯話。
+    if (draft.name === '' || assetOcrNamesLikelyMatch(draft.name, knownName)) {
+        draft.name = knownName;
+        return;
+    }
+
+    draft.ticker = '';
 }
 
 // Tesseract 對表格框線有時會把「股票資料那一行」和「下一行的代號」拆開；bbox 行合併
@@ -8576,7 +8646,7 @@ async function recognizeAssetScreenshot(file, index, total) {
             throw new Error('辨識超過 10 秒，已停止這張圖片。');
         }
 
-        const { data } = await assetOcrDeadline(worker.recognize(canvas), remainingForRecognition);
+        let data = (await assetOcrDeadline(worker.recognize(canvas), remainingForRecognition)).data;
         let remainingAfterRecognition = ASSET_OCR_TIMEOUT_MS - (performance.now() - startedAt);
 
         if (remainingAfterRecognition <= 0) {
@@ -8595,6 +8665,34 @@ async function recognizeAssetScreenshot(file, index, total) {
         }
 
         let parsed = await assetOcrDeadline(assetDraftRowsFromOcr(data), remainingAfterRecognition);
+
+        // 頂部 12% 裁切假設有 App 導覽列可以裁；有些券商截圖是直接從表格標題列開始，
+        // 沒有多餘的頂部 UI，這 12% 會把標題本身裁掉，導致完全認不出欄位結構
+        // （筆記 #38 的美股深色截圖就是這樣）。這裡不用像素分析去猜要不要裁，
+        // 而是先照原本假設裁一次；沒認出標題才重跑一次不裁頂部的版本，
+        // 兩次都在同一個 10 秒預算內，重跑成功才採用重跑結果。
+        if (!parsed.matchedHeader && canvas.dataset.assetOcrTopCropped === 'true') {
+            const remainingBeforeRetry = ASSET_OCR_TIMEOUT_MS - (performance.now() - startedAt);
+
+            if (remainingBeforeRetry > 0) {
+                const retryCanvas = assetOcrCanvas(bitmap, { skipTopCrop: true });
+                const retryData = (await assetOcrDeadline(
+                    worker.recognize(retryCanvas), remainingBeforeRetry)).data;
+                const remainingAfterRetry = ASSET_OCR_TIMEOUT_MS - (performance.now() - startedAt);
+
+                if (remainingAfterRetry > 0) {
+                    const retryParsed = await assetOcrDeadline(
+                        assetDraftRowsFromOcr(retryData), remainingAfterRetry);
+
+                    if (retryParsed.matchedHeader) {
+                        canvas = retryCanvas;
+                        data = retryData;
+                        parsed = retryParsed;
+                    }
+                }
+            }
+        }
+
         const expectedRows = Math.max(
             assetOcrTextDataLineCount(data),
             assetOcrLegacyTaiwanHorizontalDataLineCount(data),
