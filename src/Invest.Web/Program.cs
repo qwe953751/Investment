@@ -87,6 +87,10 @@ builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
 
+// 美股主要資料源：Yahoo Finance 公開 chart API，UsMarketDataDownloader 實際呼叫這支。
+builder.Services.AddHttpClient<YahooFinanceDailyQuoteClient>(ConfigureQuoteClient);
+
+// 備援：Alpha Vantage，目前沒有接線，留著在 Yahoo Finance 被擋時可以手動切回。
 builder.Services.AddHttpClient<AlphaVantageDailyQuoteClient>(
     client => client.Timeout = TimeSpan.FromSeconds(30));
 
@@ -1297,7 +1301,7 @@ static async Task RunUsBackfillAsync(IServiceProvider services)
     var store = scope.ServiceProvider.GetRequiredService<UsDailyQuoteStore>();
 
     Console.WriteLine($"快取位置：{store.Directory}");
-    Console.WriteLine("讀取 Supabase 的 us_watchlist，逐檔呼叫 Alpha Vantage（免費方案 5 次/分、25 次/日，會有節流延遲）。");
+    Console.WriteLine("讀取 Supabase 的 us_watchlist，逐檔呼叫 Yahoo Finance（禮貌性節流，無已知配額）。");
     Console.WriteLine();
 
     var progress = new Progress<string>(Console.WriteLine);

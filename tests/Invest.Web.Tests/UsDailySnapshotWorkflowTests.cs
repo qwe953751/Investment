@@ -15,12 +15,12 @@ public sealed class UsDailySnapshotWorkflowTests
     }
 
     [Fact]
-    public void 回補會帶上AlphaVantage金鑰並存進獨立的importsUs目錄()
+    public void 回補不需要ApiKey且存進獨立的importsUs目錄()
     {
         var workflow = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(), ".github", "workflows", "us-daily-snapshot.yml"));
 
-        Assert.Contains("ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("ALPHA_VANTAGE_API_KEY", workflow, StringComparison.Ordinal);
         Assert.Contains("-- backfill-us", workflow, StringComparison.Ordinal);
         Assert.Contains("git add -A imports-us", workflow, StringComparison.Ordinal);
         Assert.Contains("--diff-filter=D", workflow, StringComparison.Ordinal);

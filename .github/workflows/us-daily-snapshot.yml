@@ -1,7 +1,7 @@
 # 美股盤後快照：延長盤後交易收盤（20:00 ET）後半小時觸發，回補 us_watchlist
 # 裡的美股 ticker、同步到 Supabase、對帳。跟台股 daily-snapshot.yml 分開一份，
-# 因為資料源（Alpha Vantage）、抓取方向（逐股票 vs 逐日期）、額度限制
-# （5 次/分、25 次/日）都完全不同，合併只會讓兩邊互相牽制。
+# 因為資料源（Yahoo Finance）、抓取方向（逐股票 vs 逐日期）都完全不同，
+# 合併只會讓兩邊互相牽制。
 #
 # 行情快取放在同一個 repo 的 data 分支，跟台股快照共用同一個分支，
 # 但目錄各自獨立（data/imports-us/ vs data/imports/），互不覆蓋。
@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      # Alpha Vantage 額度用盡與否跟美東時間掛鉤，回補與對帳都用美東時間判斷「今天」。
+      # 回補與對帳都要用美東時間判斷「今天」，不看 runner 所在時區。
       TZ: America/New_York
 
     steps:
@@ -74,11 +74,10 @@ jobs:
           echo "現在 $(date +%H:%M)，睡 $(( wait / 60 )) 分鐘到 20:30。"
           sleep "$wait"
 
-      # 免費方案 5 次/分、25 次/日，回補邏輯自己控節流與配額，這裡不用重試迴圈——
-      # 額度用盡時已完成的部分照樣正常寫回，剩下的自然留到明天這個時間繼續。
+      # Yahoo Finance 沒有公佈配額，回補邏輯只做禮貌性節流；真的被限流時
+      # 已完成的部分照樣正常寫回，剩下的自然留到明天這個時間繼續。
       - name: 回補美股行情
         env:
-          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- backfill-us
 
