@@ -1,9 +1,11 @@
 /* 靜態版排行頁的樣式。內容與 TradingValueRanking.razor.css 對齊，
    另外補上手機版的版面，因為這份快照主要就是拿手機看的。 */
 
-/* 外觀（淺色／深色／系統）。沒有 [data-theme] 屬性＝跟隨系統的
-   prefers-color-scheme；[data-theme="light"|"dark"] 是使用者手動選擇，
-   蓋過系統設定。site.js 的 applyTheme() 負責切換這個屬性與下面的 meta 標籤。
+/* 外觀（淺色／深色，二選一，沒有跟隨系統）。[data-theme="light"|"dark"]
+   一定會有其中一個，預設淺色；site.js 的 applyTheme() 負責切換這個屬性與
+   下面的 meta 標籤。兩個按鈕互相獨立、直接指定，不經過系統偏好解讀——
+   這個設計本身就避免了「系統在深色 OS 上解出來永遠是深色，導致某個外觀
+   按都按不到」那種死路（見 Doc/完成進度.md 的坑清單）。
    紅漲綠跌是本站慣例（跟一般美股網站相反），深色底下紅綠都調亮一階以維持
    對比；不是把淺色版直接反相，反相會讓部分文字色跟底色糊在一起。 */
 :root {
@@ -36,40 +38,6 @@
     --warning-bg: #fff8e7;
     --danger: #b42318;
     --danger-bg: #fff2f2;
-}
-
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-        color-scheme: dark;
-
-        --bg: #0d1117;
-        --surface: #12161c;
-        --surface-alt: #161b22;
-        --surface-hover: #1c2530;
-        --border: #2d333b;
-        --border-strong: #4b5563;
-        --text: #e6e8eb;
-        --text-secondary: #c3c8d0;
-        --text-muted: #8b95a3;
-        --text-faint: #6b7685;
-
-        --accent: #5b9bea;
-        --accent-strong: #9db7d8;
-        --accent-bg: #16283d;
-        --accent-border: #2c4a6e;
-
-        --up-text: #f87171;
-        --up-fill: #f87171;
-        --up-bg: #3b1719;
-        --down-text: #4ade80;
-        --down-fill: #4ade80;
-        --down-bg: #0f2a1a;
-
-        --warning: #eab86e;
-        --warning-bg: #3a2a0f;
-        --danger: #f87171;
-        --danger-bg: #3b1719;
-    }
 }
 
 :root[data-theme="dark"] {
@@ -172,9 +140,10 @@ body {
     line-height: 1;
 }
 
+/* 這個 class 現在是包住「檢查更新」按鈕＋下拉結果面板的容器，
+   跟 .device-presence／.alert-bell 同一個「按鈕＋錨定面板」寫法。 */
 .refresh-status {
-    color: var(--text-muted);
-    font-size: 13px;
+    position: relative;
 }
 
 .access-badge {
@@ -3137,55 +3106,32 @@ td.stock-name.stock-name-change-down {
     display: none;
 }
 
-/* 「檢查更新」的結果訊息：原本塞進頁首一小格 .refresh-status，字一長就被
-   text-overflow: ellipsis 切掉。改成置中彈窗，訊息再長也看得到完整內容。 */
-.status-popup-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 30;
-    background: #00000059;
-}
-
-.status-popup {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    z-index: 31;
-    width: min(360px, calc(100vw - 32px));
-    padding: 20px;
-    transform: translate(-50%, -50%);
+/* 「檢查更新」的結果訊息，錨定在按鈕正下方，視覺與定位比照 .alert-panel，
+   不是置中彈窗——效果要跟「裝置」「通知」那兩個下拉面板一致。 */
+.refresh-status-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 20;
+    width: max-content;
+    max-width: min(320px, calc(100vw - 48px));
+    padding: 10px 14px;
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--surface);
-    color: var(--text);
-    box-shadow: 0 8px 24px #00000026;
-    text-align: center;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+    text-align: left;
 }
 
-.status-popup-backdrop[hidden],
-.status-popup[hidden] {
+.refresh-status-panel[hidden] {
     display: none;
 }
 
-.status-popup p {
-    margin: 0 0 16px;
-    font-size: 15px;
-    line-height: 1.6;
-}
-
-.status-popup-close {
-    min-height: 36px;
-    padding: 7px 20px;
-    border: 1px solid var(--border-strong);
-    border-radius: 999px;
-    background: var(--surface);
+.refresh-status-panel p {
+    margin: 0;
     color: var(--text);
-    font: inherit;
-    cursor: pointer;
-}
-
-.status-popup-close:hover {
-    background: var(--surface-hover);
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 .daily-kline-card {
@@ -5972,14 +5918,7 @@ td.stock-name.stock-name-change-down {
 .page-title-tools .refresh-button:hover:not(:disabled),
 .page-title-tools .device-presence-button:hover,
 .page-title-tools .alert-button:hover {
-    background: #f5f8fc;
-}
-
-.page-title-tools .refresh-status {
-    max-width: 180px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    background: var(--surface-hover);
 }
 
 .page-title-tools .access-badge {
@@ -5999,16 +5938,17 @@ td.stock-name.stock-name-change-down {
     border: 0;
 }
 
-/* 深色底的固定膠囊殼，不隨頁面主題變色——不管頁面本身是淺色還是深色，
-   這顆控制項都要一眼認出來是「外觀設定」，比照站內其他強調用途的深色
-   膠囊（例如 .toggle-button.selected）不隨主題變色的做法。 */
+/* 膠囊殼跟著頁面主題變色（用既有 token），不是寫死的固定深色——
+   淺色頁面上是淺色殼，深色頁面上是深色殼，選中的那顆用 --accent 標出來，
+   跟頁面其他控制項的配色邏輯一致。 */
 .theme-switcher {
     display: inline-flex;
     align-items: center;
     gap: 2px;
     padding: 3px;
+    border: 1px solid var(--border);
     border-radius: 999px;
-    background: #1f2430;
+    background: var(--surface-alt);
 }
 
 .theme-switcher-option {
@@ -6020,26 +5960,28 @@ td.stock-name.stock-name-change-down {
     border: 0;
     border-radius: 999px;
     background: transparent;
-    color: #9aa4b2;
+    color: var(--text-muted);
     font-size: 13px;
     line-height: 1;
     cursor: pointer;
 }
 
 .theme-switcher-option:hover {
-    color: #e6e8eb;
+    color: var(--text);
+    background: var(--surface-hover);
 }
 
 .theme-switcher-option[aria-pressed="true"] {
-    background: #3a4150;
+    background: var(--accent);
     color: #ffffff;
 }
 
 .theme-switcher-option:focus-visible {
-    outline: 2px solid #5b9bea;
+    outline: 2px solid var(--accent);
     outline-offset: 1px;
 }
 
+.page-title-tools .refresh-status,
 .page-title-tools .device-presence,
 .page-title-tools .alert-bell {
     position: relative;

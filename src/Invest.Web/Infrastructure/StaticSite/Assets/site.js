@@ -609,7 +609,8 @@ async function refreshAlerts() {
     const bell = el('alert-bell');
     const open = alerts.filter(alert => alert.resolved_at === null);
 
-    bell.hidden = alerts.length === 0;
+    // 跟「裝置」一樣限最高權限才看得到；監控者／訪客不需要看排程異常細節。
+    bell.hidden = alerts.length === 0 || SITE_ACCESS !== 'admin';
     bell.classList.toggle('has-open', open.length > 0);
     el('alert-count').textContent = open.length > 0 ? String(open.length) : '';
 
@@ -3678,7 +3679,7 @@ async function fetchAssetIntradayQuotes(accounts, holdings) {
 
     const response = await fetch(
         `${supabase.url}/rest/v1/intraday_latest`
-            + '?select=symbol,name,price,change_percent,trade_date'
+            + '?select=symbol,name,price,change_percent,trade_date,open_price,high_price,low_price,turnover'
             + `&symbol=${encodeURIComponent(`in.(${tickers.join(',')})`)}`,
         { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
 
@@ -3700,7 +3701,13 @@ async function fetchAssetIntradayQuotes(accounts, holdings) {
                 close: assetNumber(row.price),
                 priceChange: assetNumber(row.change_percent),
                 quoteDate: '',
-                session: '盤中'
+                session: '盤中',
+                // 資產頁的持倉 K 線彈窗要能接上這一輪的即時棒（見 selectedKLineBars），
+                // 開高低跟成交量算法比照盤中排行頁的 mapIntradayRows，兩邊不能各自漂移。
+                open: missing(row.open_price) ? null : Number(row.open_price),
+                high: missing(row.high_price) ? null : Number(row.high_price),
+                low: missing(row.low_price) ? null : Number(row.low_price),
+                tradingVolume: intradayTradingVolume(row.price, row.turnover)
             }];
         }));
 }
@@ -4880,10 +4887,6 @@ function makeAssetAccountTable(owner, views) {
         const cells = [
             { content: [view.market, view.broker].filter(text => text !== '').join('／') || '—' },
             {
-                content: assetMarketCurrencyValue(view.twdFundingCost, view.fundingCost, view.market),
-                className: assetSignClass(view.fundingCost)
-            },
-            {
                 content: view.market === '美股'
                     ? assetDualCurrencyValue(view.twdTotalValue, view.totalValue)
                     : assetAccountTotalText(view)
@@ -4893,6 +4896,10 @@ function makeAssetAccountTable(owner, views) {
                 className: assetSignClass(view.unrealized)
             },
             { content: assetMarketCurrencyValue(view.twdCash, view.cash, view.market) },
+            {
+                content: assetMarketCurrencyValue(view.twdFundingCost, view.fundingCost, view.market),
+                className: assetSignClass(view.fundingCost)
+            },
             {
                 content: assetMarketCurrencyValue(view.twdRealized, view.realized, view.market, true),
                 className: assetSignClass(view.realized)
@@ -4924,7 +4931,7 @@ function makeAssetAccountTable(owner, views) {
     }
 
     table.append(
-        assetTableHead(['帳戶', '市場／券商', '入金成本', '資產總值', '未實現損益', '現金', '累計已實現', '資料時間']),
+        assetTableHead(['帳戶', '市場／券商', '資產總值', '未實現損益', '現金', '入金成本', '累計已實現', '資料時間']),
         body);
     section.append(table);
 
@@ -9283,6 +9290,9 @@ function makeAssetAccountDetails(owner, view) {
     metrics.append(
         assetMetric('資產總值', assetMarketCurrencyValue(view.twdTotalValue, view.totalValue, view.market),
             document.createTextNode(totalDetail), view.market === '美股' ? 'asset-dual-currency' : ''),
+        assetMetric('未實現損益', assetMarketCurrencyValue(view.twdUnrealized, view.unrealized, view.market, true),
+            assetDelta(view.unrealized, '', currency),
+            `${assetSignClass(view.unrealized)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`),
         assetMetric('入金成本', assetMarketCurrencyValue(view.twdFundingCost, view.fundingCost, view.market),
             document.createTextNode(view.fundingCost === null
                 ? '出入金明細尚未啟用'
@@ -9291,9 +9301,6 @@ function makeAssetAccountDetails(owner, view) {
         assetMetric('投入成本', assetMarketCurrencyValue(view.twdCost, view.cost, view.market),
             document.createTextNode(`共 ${view.holdings.length} 筆持倉`),
             view.market === '美股' ? 'asset-dual-currency' : ''),
-        assetMetric('未實現損益', assetMarketCurrencyValue(view.twdUnrealized, view.unrealized, view.market, true),
-            assetDelta(view.unrealized, '', currency),
-            `${assetSignClass(view.unrealized)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`),
         assetMetric('累計已實現', assetMarketCurrencyValue(view.twdRealized, view.realized, view.market, true),
             assetDelta(view.realized, '', currency),
             `${assetSignClass(view.realized)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`));
@@ -10559,6 +10566,26 @@ function hasIncompleteKLineHistory(requestedStartDate, actualStartDate) {
     return toDate(actualStartDate) > toleranceDate;
 }
 
+// 資產頁台股持倉的盤中即時棒，資料來自 fetchAssetIntradayQuotes 存進的
+// assetIntradayQuotes；開高低任一項缺值時回傳的物件會被 selectedKLineBars
+// 後面的 null 檢查擋下，自動退回純歷史棒，不用在這裡重複判斷。
+function assetIntradayLiveKLine(ticker) {
+    const quote = assetIntradayQuotes.get(ticker);
+
+    if (!quote) {
+        return null;
+    }
+
+    return {
+        date: TAIPEI_DATE.format(new Date()),
+        open: quote.open,
+        high: quote.high,
+        low: quote.low,
+        close: quote.close,
+        tradingVolume: quote.tradingVolume
+    };
+}
+
 function selectedKLineBars(ticker) {
     const endDate = klineEndDate();
 
@@ -10572,11 +10599,15 @@ function selectedKLineBars(ticker) {
 
     // 盤中把 MIS 的當日開高低與最新現價接到歷史日 K 尾端；排行榜與族群列表
     // 都讀各自正在呈現的同一輪盤中資料，不能拿前一次切換頁籤的排名資料湊。
+    // 資產頁的台股持倉另外接自己那份 assetIntradayQuotes（見 fetchAssetIntradayQuotes），
+    // 不是排行榜的 current.rows，否則從資產頁開的彈窗會永遠停在最近一個已收盤日。
     const liveBar = isIntradayDataView()
         ? current?.rows.find(row => row.ticker === ticker)?.liveKLine
         : topicUsesIntradayData()
             ? topicIntradayKLines.get(ticker)
-            : null;
+            : state.view === 'assets'
+                ? assetIntradayLiveKLine(ticker)
+                : null;
 
     if (liveBar === null || liveBar === undefined) {
         return bars;
@@ -12316,36 +12347,33 @@ function startSiteVersionChecker() {
 /// 標題旁的「檢查更新」。這份網站是一份快照，數字要等排程在 GitHub 上重新回補、
 /// 重新發佈才會變新，所以按鈕做的事是「去問有沒有新版本」：有就帶著新版本號重載整頁，
 /// 資料檔的網址跟著換，表格會直接顯示新的數字；沒有就只回報目前的資料日期。
+/// 結果訊息只在按鈕正下方的下拉面板顯示，不再另外塞一份在按鈕旁邊。
 function showStatusPopup(message) {
-    el('status-popup-message').textContent = message;
-    el('status-popup-backdrop').hidden = false;
-    el('status-popup').hidden = false;
+    el('refresh-status-message').textContent = message;
+    el('refresh-status-panel').hidden = false;
+    el('refresh').setAttribute('aria-expanded', 'true');
 }
 
 function hideStatusPopup() {
-    el('status-popup-backdrop').hidden = true;
-    el('status-popup').hidden = true;
+    el('refresh-status-panel').hidden = true;
+    el('refresh').setAttribute('aria-expanded', 'false');
 }
 
 function wireStatusPopup() {
-    el('status-popup-backdrop').addEventListener('click', hideStatusPopup);
-    el('status-popup-close').addEventListener('click', hideStatusPopup);
+    // 點面板以外的地方就收起來，跟「裝置」「通知」那兩個下拉面板同一個作法。
+    document.addEventListener('click', event => {
+        const panel = el('refresh-status-panel');
+        if (!panel.hidden && !el('refresh-status').contains(event.target)) {
+            hideStatusPopup();
+        }
+    });
 }
 
 function wireRefreshButton() {
     const button = el('refresh');
-    const status = el('refresh-status');
-
-    // 结果訊息原本只塞在頁首那格窄窄的 .refresh-status，字一長就被裁掉；
-    // 改成同時彈窗顯示完整訊息，頁首那格留著當作不用點開也看得到的簡短提示。
-    const setStatus = message => {
-        status.textContent = message;
-        showStatusPopup(message);
-    };
 
     button.addEventListener('click', async () => {
         button.disabled = true;
-        status.textContent = '檢查中…';
 
         try {
             // 盤中資料的「新資料」是資料庫裡的下一輪，不是重新發佈的網站。
@@ -12356,7 +12384,7 @@ function wireRefreshButton() {
                 } else {
                     await loadCustom(true, true);
                 }
-                setStatus(current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料');
+                showStatusPopup(current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料');
                 button.disabled = false;
                 return;
             }
@@ -12364,7 +12392,7 @@ function wireRefreshButton() {
             if (state.view === 'assets') {
                 await refreshAssets();
                 renderAssetsDashboard();
-                setStatus(assetsLoadError ?? '已是最新');
+                showStatusPopup(assetsLoadError ?? '已是最新');
                 button.disabled = false;
                 return;
             }
@@ -12373,7 +12401,7 @@ function wireRefreshButton() {
                 await loadIntradayTopicHeat();
                 renderSnapshotNote();
                 renderTopicPanel();
-                setStatus(intradayTopicPeriod
+                showStatusPopup(intradayTopicPeriod
                     ? `已更新（資料時間 ${toTaipeiText(intradayTopicPeriod.capturedAt)}）`
                     : '還沒有盤中族群熱度');
                 button.disabled = false;
@@ -12381,8 +12409,7 @@ function wireRefreshButton() {
             }
 
             if (await reloadIfStale()) {
-                // 這裡不彈窗：馬上要重新整理頁面，彈窗只會閃一下就被蓋掉。
-                status.textContent = '有新資料，重新載入…';
+                // 馬上要重新整理頁面，面板顯示了也只會閃一下就被蓋掉，不開。
                 return;
             }
 
@@ -12395,9 +12422,9 @@ function wireRefreshButton() {
                 renderTable();
             }
 
-            setStatus(`已是最新（資料截至 ${latestTradingDate}）`);
+            showStatusPopup(`已是最新（資料截至 ${latestTradingDate}）`);
         } catch {
-            setStatus('連不上，稍後再試');
+            showStatusPopup('連不上，稍後再試');
         }
 
         button.disabled = false;
@@ -13297,6 +13324,10 @@ let topicBranchesInitialized = false;
 // 所以先記著，等族群列表畫完再處理。
 let pendingTopicFocus = '';
 
+// 監控者權限只看得到一個大族群，這是目前顯示的那一個的節點 id。
+// null 代表還沒決定，prepareTopics() 會補上預設值（伺服器）。
+let monitorVisibleTopicRootId = null;
+
 const TOPIC_CATEGORY_TEXT = {
     fixed: '固定族群',
     narrative: '市場敘事',
@@ -13491,8 +13522,35 @@ function makeTopicLevelLabel(text) {
     return label;
 }
 
+// 沿 parentIds 往上走到第一個沒有父節點的祖先，當作這個節點所屬的「大族群」。
+// 一個節點理論上可能掛在多條路徑下（DAG，不是純樹），這裡只取第一條走到底的根，
+// 監控者視角只需要「一個」代表根即可。
+function topicRootId(topicId) {
+    const visited = new Set();
+    let current = topicById.get(topicId);
+
+    while (current !== undefined && !visited.has(current.id)) {
+        visited.add(current.id);
+        const parentIds = current.parentIds ?? [];
+
+        if (parentIds.length === 0) {
+            return current.id;
+        }
+
+        current = topicById.get(parentIds[0]);
+    }
+
+    return current?.id ?? topicId;
+}
+
 /// 從排行榜跳到族群列表的某個節點。用 Id 不用名字：名字在人工編輯頁改得動。
 function focusTopic(topicId) {
+    // 監控者只看得到一個大族群：跳轉前先把「目前顯示的大族群」切成目標所屬的那一個，
+    // 不然目標可能落在畫不出來的樹外，選中會是個 silent no-op。
+    if (SITE_ACCESS === 'monitor') {
+        monitorVisibleTopicRootId = topicRootId(topicId);
+    }
+
     pendingTopicFocus = topicId;
     update({ view: 'topics', topicTab: SITE_ACCESS === 'viewer' ? 'heat' : 'tree' });
 }
@@ -13562,6 +13620,20 @@ function prepareTopics() {
     topicById = new Map((topicActive?.topics ?? []).map(topic => [topic.id, topic]));
     topicOrder = new Map((topicActive?.topics ?? []).map((topic, index) => [topic.id, index]));
     openAllTopicBranches();
+
+    // 監控者只看得到一個大族群：預設鎖「伺服器」，並直接選中它，
+    // 右側明細不用使用者自己點一次才看得到內容。
+    if (SITE_ACCESS === 'monitor' && monitorVisibleTopicRootId === null) {
+        const defaultRoot = (topicActive?.topics ?? [])
+            .find(topic => topic.source === 'tree'
+                && (topic.parentIds ?? []).length === 0
+                && topic.name === '伺服器');
+        monitorVisibleTopicRootId = defaultRoot?.id ?? null;
+
+        if (selectedTopicId === null) {
+            selectedTopicId = monitorVisibleTopicRootId;
+        }
+    }
 
     // events 已經照日期由新到舊排好，所以第一次遇到某一檔就是它最新的那一則。
     // 只收生效中的：已衰減的事件擺在泡泡裡會讓人以為現在還有事在發生。
@@ -16001,7 +16073,13 @@ function renderTopicTree(panel) {
     const body = document.createElement('div');
     body.id = 'topic-tree-body';
 
-    treeSide.append(intro, makeTopicTreeControls(), body);
+    // 監控者只看得到一個大族群，搜尋整棵樹／篩選全部／熱門／待整理沒有意義，不顯示。
+    if (SITE_ACCESS === 'monitor') {
+        treeSide.append(intro, body);
+    } else {
+        treeSide.append(intro, makeTopicTreeControls(), body);
+    }
+
     renderTopicTreeBody(body);
 
     const detailSide = document.createElement('div');
@@ -16072,10 +16150,12 @@ function renderTopicTreeBody(container) {
     // 頂層的判斷是「沒有上層」，不是 depth === 0。depth 取的是這個節點在所有路徑裡最淺的那一層，
     // 而工具機、半導體設備在表格上同時是大族群與別人的子節點，depth 會是 0 卻有父節點——
     // 用 depth 篩就會讓它們在頂層與父節點底下各出現一次。
+    // 監控者只看得到自己目前那一個大族群（monitorVisibleTopicRootId），其餘全部濾掉。
     const roots = topicActive.topics
         .filter(topic => topic.source === 'tree'
             && (topic.parentIds ?? []).length === 0
-            && isTopicVisible(topic.id))
+            && isTopicVisible(topic.id)
+            && (SITE_ACCESS !== 'monitor' || topic.id === monitorVisibleTopicRootId))
         .sort(compareTopicOrder);
 
     let shown = roots.length;
@@ -16086,24 +16166,27 @@ function renderTopicTreeBody(container) {
 
     // 樹外的三類：集團、客戶生態系、市場敘事。它們不是供應鏈段位，
     // 混進樹裡會讓「這是哪一段」這個問題失去意義，所以另外列。
-    for (const category of ['narrative', 'group', 'ecosystem']) {
-        const nodes = topicActive.topics
-            .filter(topic => topic.source === 'concept'
-                && topic.category === category
-                && isTopicVisible(topic.id))
-            .sort(compareTopicOrder);
+    // 監控者只看一個大族群，這三類跟「大族群」是平行的概念，一併不顯示。
+    if (SITE_ACCESS !== 'monitor') {
+        for (const category of ['narrative', 'group', 'ecosystem']) {
+            const nodes = topicActive.topics
+                .filter(topic => topic.source === 'concept'
+                    && topic.category === category
+                    && isTopicVisible(topic.id))
+                .sort(compareTopicOrder);
 
-        if (nodes.length === 0) {
-            continue;
+            if (nodes.length === 0) {
+                continue;
+            }
+
+            shown += nodes.length;
+
+            const title = document.createElement('h2');
+            title.className = 'topic-section-title';
+            title.textContent = `${TOPIC_CATEGORY_TEXT[category]}（${nodes.length}）`;
+            title.dataset.hint = '不是供應鏈上的一段，所以不放進樹裡，但仍然會算熱度。';
+            container.append(title, makeTopicBranchList(nodes, new Set()));
         }
-
-        shown += nodes.length;
-
-        const title = document.createElement('h2');
-        title.className = 'topic-section-title';
-        title.textContent = `${TOPIC_CATEGORY_TEXT[category]}（${nodes.length}）`;
-        title.dataset.hint = '不是供應鏈上的一段，所以不放進樹裡，但仍然會算熱度。';
-        container.append(title, makeTopicBranchList(nodes, new Set()));
     }
 
     if (shown === 0) {
@@ -18447,22 +18530,18 @@ async function start() {
 }
 
 const THEME_STORAGE_KEY = 'invest.theme';
-let themePreference = 'system';
+let themePreference = 'light';
 
-// preference 是 'light' | 'dark' | 'system'。'system' 不設 [data-theme]，
-// 交給 site.css 的 @media (prefers-color-scheme: dark) 分支接手；
-// 'light' / 'dark' 是使用者手動選擇，用 [data-theme] 蓋過系統設定。
+// preference 只有 'light' / 'dark' 兩種，一律用 [data-theme] 明確指定。
+// 沒有「跟系統」這個中間狀態：兩顆按鈕各自獨立、不經過系統解讀，
+// 才不會走回「深色 OS 上永遠按不回淺色」那條死路。
 function applyTheme(preference) {
-    if (preference === 'light' || preference === 'dark') {
-        document.documentElement.dataset.theme = preference;
-    } else {
-        delete document.documentElement.dataset.theme;
-    }
+    document.documentElement.dataset.theme = preference;
 
     const meta = document.querySelector('meta[name="color-scheme"]');
 
     if (meta !== null) {
-        meta.content = preference === 'light' || preference === 'dark' ? preference : 'light dark';
+        meta.content = preference;
     }
 
     for (const button of document.querySelectorAll('.theme-switcher-option')) {
@@ -18480,11 +18559,11 @@ function wireThemeSwitcher() {
     try {
         const stored = localStorage.getItem(THEME_STORAGE_KEY);
 
-        if (stored === 'light' || stored === 'dark' || stored === 'system') {
+        if (stored === 'light' || stored === 'dark') {
             themePreference = stored;
         }
     } catch {
-        // 讀不到 localStorage 就用預設的「系統」，不擋畫面。
+        // 讀不到 localStorage 就用預設的淺色，不擋畫面。
     }
 
     applyTheme(themePreference);
@@ -18498,15 +18577,6 @@ function wireThemeSwitcher() {
                 localStorage.setItem(THEME_STORAGE_KEY, themePreference);
             } catch {
                 // 存不進去就只影響這次瀏覽，不影響這次切換本身。
-            }
-        });
-    }
-
-    // 偏好是「系統」時即時跟著 OS 深色模式切換，不用重新整理頁面。
-    if (typeof window.matchMedia === 'function') {
-        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-            if (themePreference === 'system') {
-                applyTheme('system');
             }
         });
     }

@@ -16,16 +16,18 @@
                 <h1 id="page-heading">個股成交值排行</h1>
             </div>
             <div class="page-title-tools" aria-label="頁首工具">
-                <button type="button" class="refresh-button" id="refresh"
-                        data-hint="問伺服器有沒有更新的快照。有的話直接換成新的，下面的數字跟著更新。">
-                    <span class="refresh-icon" aria-hidden="true">↻</span><span>檢查更新</span>
-                </button>
-                <span class="refresh-status" id="refresh-status"></span>
-                <div class="theme-switcher" id="theme-switcher" role="group" aria-label="外觀">
-                    <button type="button" class="theme-switcher-option" data-theme-value="system"
-                            aria-pressed="false" title="外觀：跟隨系統">
-                        <span aria-hidden="true">◑</span><span class="sr-only">跟隨系統</span>
+                <div class="refresh-status" id="refresh-status">
+                    <button type="button" class="refresh-button" id="refresh"
+                            aria-expanded="false"
+                            data-hint="問伺服器有沒有更新的快照。有的話直接換成新的，下面的數字跟著更新。">
+                        <span class="refresh-icon" aria-hidden="true">↻</span><span>檢查更新</span>
                     </button>
+                    <section class="refresh-status-panel" id="refresh-status-panel"
+                             aria-labelledby="refresh-status-message" hidden>
+                        <p id="refresh-status-message"></p>
+                    </section>
+                </div>
+                <div class="theme-switcher" id="theme-switcher" role="group" aria-label="外觀">
                     <button type="button" class="theme-switcher-option" data-theme-value="light"
                             aria-pressed="false" title="外觀：淺色">
                         <span aria-hidden="true">☀</span><span class="sr-only">淺色</span>
@@ -330,13 +332,6 @@
 <div class="revenue-backdrop" id="revenue-backdrop" hidden></div>
 <section class="revenue-popover" id="revenue-popover" role="dialog"
          aria-modal="false" aria-labelledby="revenue-title" hidden></section>
-
-<div class="status-popup-backdrop" id="status-popup-backdrop" hidden></div>
-<section class="status-popup" id="status-popup" role="alertdialog"
-         aria-modal="false" aria-labelledby="status-popup-message" hidden>
-    <p id="status-popup-message"></p>
-    <button type="button" class="status-popup-close" id="status-popup-close">關閉</button>
-</section>
 
 <script src="hint.js"></script>
 <script src="site.js"></script>

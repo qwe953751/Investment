@@ -9,7 +9,7 @@
     },
     {
       "name": "static-site",
-      "runtimeExecutable": "python3",
+      "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "5199", "--directory", "publish/site"],
       "port": 5199
     }

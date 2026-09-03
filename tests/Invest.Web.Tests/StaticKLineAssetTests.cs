@@ -90,29 +90,33 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 外觀切換一定要留著淺色選項()
+    public void 外觀切換只留淺色與深色兩個獨立選項()
     {
         // 2026-09-02 迴歸：有人以「多餘」為由把 data-theme-value="light" 那顆按鈕拿掉，
-        // 只留系統／深色。但「系統」在深色模式的 macOS 上解出來就是深色，於是深色
-        // 使用者按遍所有按鈕都還是深色，完全沒有回到淺色的路徑。三個選項缺一不可：
-        // 沒有淺色，深色系統的人被鎖死；沒有深色，淺色系統的人被鎖死。
+        // 只留系統／深色。但「系統」在深色模式的 OS 上解出來就是深色，於是深色
+        // 使用者按遍所有按鈕都還是深色，完全沒有回到淺色的路徑。
+        //
+        // 這一輪是另一種改法，不是走回頭路：把「系統」整個拿掉，只留淺色／深色
+        // 兩顆互相獨立、直接指定的按鈕。兩顆都不經過系統解讀，所以不會重現上面
+        // 那條死路——沒有「系統」這個中間狀態，就沒有「系統剛好解成同一種顏色」
+        // 這回事；淺色永遠一鍵回得去，深色也是。
         var html = ReadAsset("index.html");
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
-        foreach (var value in new[] { "system", "light", "dark" })
-        {
-            Assert.Contains($"data-theme-value=\"{value}\"", html, StringComparison.Ordinal);
-        }
+        Assert.Contains("data-theme-value=\"light\"", html, StringComparison.Ordinal);
+        Assert.Contains("data-theme-value=\"dark\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-theme-value=\"system\"", html, StringComparison.Ordinal);
 
-        // CSS 兩邊都要有：[data-theme="dark"] 讓淺色系統的人選得到深色，
-        // 媒體查詢裡的 :not([data-theme="light"]) 讓深色系統的人選得回淺色。
-        Assert.Contains("@media (prefers-color-scheme: dark)", styles, StringComparison.Ordinal);
-        Assert.Contains(":root:not([data-theme=\"light\"])", styles, StringComparison.Ordinal);
+        // 沒有按鈕會再讓畫面停在「沒設 [data-theme]」這個中間狀態，
+        // 舊的系統跟隨媒體查詢分支已經是死碼，確認一併拿掉了。
+        Assert.DoesNotContain("@media (prefers-color-scheme: dark)", styles, StringComparison.Ordinal);
         Assert.Contains(":root[data-theme=\"dark\"]", styles, StringComparison.Ordinal);
 
         Assert.Contains("function applyTheme(preference)", script, StringComparison.Ordinal);
-        Assert.Contains("preference === 'light' || preference === 'dark'", script, StringComparison.Ordinal);
+        Assert.Contains("document.documentElement.dataset.theme = preference;", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("delete document.documentElement.dataset.theme", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("matchMedia('(prefers-color-scheme: dark)')", script, StringComparison.Ordinal);
     }
 
     [Fact]
