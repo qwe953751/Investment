@@ -17991,6 +17991,10 @@ function topicEditDetailText(edit) {
         return edit.aliases.join('、') || '—';
     }
 
+    if (edit.action === '改名') {
+        return edit.aliases[0] || '—';
+    }
+
     if (edit.tickers.length === 0) {
         return '—';
     }
