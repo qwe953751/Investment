@@ -29,11 +29,11 @@
                 </div>
                 <div class="theme-switcher" id="theme-switcher" role="group" aria-label="外觀">
                     <button type="button" class="theme-switcher-option" data-theme-value="light"
-                            aria-pressed="false" title="外觀：淺色">
+                            aria-pressed="false" data-hint="外觀：淺色">
                         <span aria-hidden="true">☀</span><span class="sr-only">淺色</span>
                     </button>
                     <button type="button" class="theme-switcher-option" data-theme-value="dark"
-                            aria-pressed="false" title="外觀：深色">
+                            aria-pressed="false" data-hint="外觀：深色">
                         <span aria-hidden="true">☾</span><span class="sr-only">深色</span>
                     </button>
                 </div>
@@ -74,42 +74,14 @@
                         <input type="password" id="access-bar-password" placeholder="密碼" autocomplete="current-password" />
                         <button type="submit">登入</button>
                     </form>
-                    <button type="button" class="access-bar-logout" id="access-bar-logout" hidden>登出</button>
+                    <button type="button" class="access-bar-logout" id="access-bar-logout" hidden
+                            data-hint="登出目前這個權限，回到訪客視角。">登出</button>
                     <span class="access-bar-error" id="access-bar-error" hidden></span>
                 </div>
             </div>
         </div>
         <div class="view-switch" id="view-options"></div>
 
-        <p data-view="daily">
-            資料來源為證交所與櫃買中心的每日收盤行情，只計一般交易、只收個股（不含 ETF 與權證），
-            所有數字都由原始成交值算出；摘要同時顯示加權與櫃買指數收盤值及漲跌幅。
-        </p>
-        <p data-view="intraday">
-            資料來源為證交所盤中即時行情，依頁面顯示的排程收集。成交額是用現價乘上累計成交量推算的，
-            不是官方數字；摘要的加權與櫃買指數及漲跌幅則直接取盤中指數頻道。收盤後一律以盤後行情為準。
-        </p>
-        <p data-view="custom" data-custom-source="daily">
-            瀏覽單一交易日的全部上市櫃個股，不建立預設排行；可選日期與成交值下限，
-            表格預設依股票代號排列，超過 100 檔時分頁顯示。
-        </p>
-        <p data-view="custom" data-custom-source="intraday">
-            瀏覽最新一輪的全部上市櫃盤中資料，不建立預設排行；資料會即時更新，
-            交易日選擇器會停用，表格預設依股票代號排列，超過 100 檔時分頁顯示。
-        </p>
-        <p data-view="topics">
-            把個股的市場成交比依族群重新加總，回答「錢正在往哪一段供應鏈流」。族群樹與概念股成員都來自
-            Google Sheet，熱度一律由排行榜的既有數字聚合，不另外算一套成交值。同一檔股票掛在幾個族群，
-            每個族群就都完整計一次——這裡看的是資金流向，不是把一檔股票切成幾份。
-        </p>
-        <p data-view="notes">
-            記錄功能想法、Bug 與待驗證項目。筆記直接存在資料庫，任何裝置打開這個網址都看得到、也能編輯——
-            這代表任何知道網址的人都能改筆記，公開網站沒有登入邊界，這是刻意的取捨。
-        </p>
-        <p data-view="assets">
-            自己維護的帳戶與持倉。使用者、帳戶、現金與持倉存在資料庫，換一台裝置打開這個網址就看得到；
-            券商截圖只在瀏覽器內辨識，不會上傳保存，辨識結果要你核對過才會寫進持倉。
-        </p>
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
     </header>
 

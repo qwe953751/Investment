@@ -1438,8 +1438,8 @@ function defaultViewPreferences() {
 }
 
 const state = {
-    view: 'daily',
-    period: DEFAULT_PERIOD.daily,
+    view: 'intraday',
+    period: DEFAULT_PERIOD.intraday,
     comparisonMode: 'range',
     date: '',      // 交易日，start() 從 manifest 取最新的一天。
     customSource: 'daily',
@@ -16874,6 +16874,11 @@ const TOPIC_NODE_ACTIONS = [
         hint: '同一個族群的另一種寫法。加了以後搜尋與概念對應都認得這個名字。'
     },
     {
+        key: '改名',
+        text: '改名字',
+        hint: '把這個族群換一個顯示名稱；舊名字會保留成別名，還是找得到，也不影響底下的子節點與成員。'
+    },
+    {
         key: '移除',
         text: '移除這個族群',
         hint: '只有空節點刪得掉：底下還有成員或子節點時這一筆不會生效，'
@@ -16888,7 +16893,7 @@ let topicEditsError = '';
 
 // 兩張表單各自的暫存。存檔或重新載入都會把整個面板重畫，
 // 不記著的話使用者打到一半的字會被清掉。
-let topicNodeDraft = { action: '移到', node: '', parent: '', aliases: '', note: '' };
+let topicNodeDraft = { action: '移到', node: '', parent: '', aliases: '', rename: '', note: '' };
 let topicMemberDraft = { stock: '', node: '', note: '' };
 let topicNodeStatus = '';
 let topicMemberStatus = '';
@@ -17163,7 +17168,7 @@ function makeTopicNodeEditor() {
 
     const intro = document.createElement('p');
     intro.className = 'topic-intro';
-    intro.textContent = '把一個族群搬到別的大類底下、幫它加一個別名，或把用不到的空族群收起來。'
+    intro.textContent = '把一個族群搬到別的大類底下、幫它加一個別名、換一個顯示名稱，或把用不到的空族群收起來。'
         + '族群欄可以直接打字，也可以按右邊的箭頭從目前樹上的節點裡挑，選單第二行是它現在掛在哪。';
     box.append(intro);
 
@@ -17184,6 +17189,7 @@ function makeTopicNodeEditor() {
     const node = makeTopicEditInput(topicNodeDraft.node, '打字或從選單挑一個族群', TOPIC_NODE_LIST_ID);
     const parent = makeTopicEditInput(topicNodeDraft.parent, '留白＝變成頂層大類', TOPIC_NODE_LIST_ID);
     const aliases = makeTopicEditInput(topicNodeDraft.aliases, '多個別名用頓號或逗號分開');
+    const rename = makeTopicEditInput(topicNodeDraft.rename ?? '', '這個族群的新名稱');
     const note = makeTopicEditInput(topicNodeDraft.note, '為什麼這樣改，會留在紀錄裡');
 
     const actionField = makeTopicEditField(
@@ -17196,6 +17202,7 @@ function makeTopicNodeEditor() {
         parent,
         '新的父節點。留白代表把它拉出來自己當一個頂層大類。');
     const aliasField = makeTopicEditField('別名', aliases, '這個族群的其他寫法，例如「砷化鎵」與「GaAs」。');
+    const renameField = makeTopicEditField('新名字', rename, '這個族群改叫什麼；舊名字會保留成別名，還是找得到。');
     const noteField = makeTopicEditField('說明', note, '寫給以後的自己看的。');
 
     const actions = document.createElement('div');
@@ -17211,13 +17218,14 @@ function makeTopicNodeEditor() {
     status.textContent = topicNodeStatus;
 
     actions.append(submit, status);
-    form.append(actionField, nodeField, parentField, aliasField, noteField, actions);
+    form.append(actionField, nodeField, parentField, aliasField, renameField, noteField, actions);
 
-    // 用不到的欄位直接收起來，不是變灰：三個動作各自只用得到其中一欄，
+    // 用不到的欄位直接收起來，不是變灰：每個動作各自只用得到其中一欄，
     // 全部攤開的話每次都得先想「這次要填哪幾格」。
     const syncFields = () => {
         parentField.hidden = action.value !== '移到';
         aliasField.hidden = action.value !== '別名';
+        renameField.hidden = action.value !== '改名';
     };
 
     const rememberDraft = () => {
@@ -17226,6 +17234,7 @@ function makeTopicNodeEditor() {
             node: node.value,
             parent: parent.value,
             aliases: aliases.value,
+            rename: rename.value,
             note: note.value
         };
     };
@@ -17235,7 +17244,7 @@ function makeTopicNodeEditor() {
         rememberDraft();
     });
 
-    for (const input of [node, parent, aliases, note]) {
+    for (const input of [node, parent, aliases, rename, note]) {
         input.addEventListener('input', rememberDraft);
     }
 
@@ -17270,10 +17279,23 @@ function makeTopicNodeEditor() {
         }
 
         const aliasList = action.value === '別名' ? splitTopicList(aliases.value) : [];
+        const newName = rename.value.trim();
 
         if (action.value === '別名' && aliasList.length === 0) {
             status.textContent = '請先寫一個別名。';
             aliases.focus();
+            return;
+        }
+
+        if (action.value === '改名' && newName === '') {
+            status.textContent = '請先寫新名字。';
+            rename.focus();
+            return;
+        }
+
+        if (action.value === '改名' && newName === nodeName) {
+            status.textContent = '新名字跟原本的名字一樣，沒有要改的東西。';
+            rename.focus();
             return;
         }
 
@@ -17285,12 +17307,12 @@ function makeTopicNodeEditor() {
             node: nodeName,
             parent: action.value === '移到' ? parentName : '',
             tickers: [],
-            aliases: aliasList,
+            aliases: action.value === '改名' ? [newName] : aliasList,
             note: note.value.trim()
         })
             .then(() => {
                 topicNodeStatus = `已存下「${nodeName}　${action.value}」，下一次更新後生效。`;
-                topicNodeDraft = { action: action.value, node: '', parent: '', aliases: '', note: '' };
+                topicNodeDraft = { action: action.value, node: '', parent: '', aliases: '', rename: '', note: '' };
                 return refreshTopicEdits(true);
             })
             .catch(() => {

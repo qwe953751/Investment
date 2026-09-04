@@ -25,7 +25,8 @@ public static class TopicTreeOverrideLoader
 
     /// <summary>
     /// 一筆調整。每個動作只用得到其中幾個欄位：
-    /// <paramref name="Parent"/> 只有「移到」用，<paramref name="Aliases"/> 只有「別名」用，
+    /// <paramref name="Parent"/> 只有「移到」用，<paramref name="Aliases"/> 「別名」用（可能好幾個）
+    /// 與「改名」用（借用第一個元素當新名字，兩個表面上都是文字改動，欄位形狀剛好通用），
     /// <paramref name="Tickers"/> 與 <paramref name="NeedsReview"/> 只有「加入」用，其餘留空。
     /// </summary>
     public sealed record TreeOverride(
@@ -41,6 +42,7 @@ public static class TopicTreeOverrideLoader
     public const string RemoveAction = "移除";
     public const string AliasAction = "別名";
     public const string JoinAction = "加入";
+    public const string RenameAction = "改名";
 
     /// <summary>
     /// 只有資料表上的人工編輯用得到（db/017_topic_edits.sql）。

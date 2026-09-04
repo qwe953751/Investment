@@ -1726,7 +1726,9 @@ public sealed class StaticKLineAssetTests
     [Fact]
     public void 資產截圖代號模糊比對不得覆蓋已知合法代號且短名不給容忍下限()
     {
-        var script = ReadAsset("site.js");
+        // 這份快照在 repo 裡是 CRLF；這裡兩段斷言字串跨了好幾行，用 \n 硬寫會在
+        // core.autocrlf=true 的簽出上踩到 CRLF 對不起來，先正規化再比對。
+        var script = ReadAsset("site.js").Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains("function assetOcrNamesLikelyMatch(left, right)", script, StringComparison.Ordinal);
         Assert.Contains("const limit = Math.floor(shorter * 0.34);", script, StringComparison.Ordinal);

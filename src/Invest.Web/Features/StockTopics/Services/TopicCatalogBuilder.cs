@@ -393,6 +393,10 @@ public static class TopicCatalogBuilder
                         AddAliases(item, warnings);
                         break;
 
+                    case TopicTreeOverrideLoader.RenameAction:
+                        Rename(item, warnings);
+                        break;
+
                     case TopicTreeOverrideLoader.JoinAction:
                         Join(item, links, warnings);
                         break;
@@ -531,6 +535,50 @@ public static class TopicCatalogBuilder
                 // 別名也要能反查回節點，否則補了等於沒補。
                 _byName.TryAdd(TopicIdFactory.Normalize(alias), node.Id);
             }
+
+            if (item.Note.Length > 0)
+            {
+                node.MappingNotes.Add(item.Note);
+            }
+        }
+
+        /// <summary>
+        /// 把一個節點換一個顯示名稱。新名字借用 <see cref="TopicTreeOverrideLoader.TreeOverride.Aliases"/>
+        /// 的第一個元素（跟「別名」共用同一個資料表欄位，見 db/038_topic_edits_rename_action.sql）。
+        /// </summary>
+        private void Rename(TopicTreeOverrideLoader.TreeOverride item, List<string> warnings)
+        {
+            if (FindByName(item.Node) is not { } node)
+            {
+                warnings.Add($"族群樹調整：樹上找不到節點「{item.Node}」，這一筆「改名」沒有套用。");
+                return;
+            }
+
+            var newName = item.Aliases.Count > 0 ? item.Aliases[0] : "";
+
+            if (newName.Length == 0)
+            {
+                warnings.Add($"族群樹調整：節點「{item.Node}」的「改名」沒有寫新名字，這一筆沒有套用。");
+                return;
+            }
+
+            if (FindByName(newName) is { } existing && existing.Id != node.Id)
+            {
+                warnings.Add(
+                    $"族群樹調整：節點「{item.Node}」想改名成「{newName}」，"
+                    + "但這個名字已經被別的節點用了，這一筆沒有套用。");
+                return;
+            }
+
+            var oldName = node.Name;
+            node.Name = newName;
+
+            // 「節點自己的名字一定在自己的 Aliases 裡」是全樹的隱含不變量（Ensure() 建樹時
+            // 就這樣做，Remove() 清 _byName 也是直接走 Aliases 清）；兩個名字都要加，
+            // 只加舊名字會讓這個節點日後被移除時，_byName 留下指到新名字的孤兒項。
+            node.Aliases.Add(oldName);
+            node.Aliases.Add(newName);
+            _byName[TopicIdFactory.Normalize(newName)] = node.Id;
 
             if (item.Note.Length > 0)
             {
@@ -806,7 +854,10 @@ public static class TopicCatalogBuilder
     {
         public string Id { get; } = id;
 
-        public string Name { get; } = name;
+        // 建樹當下就固定的雜湊來源；「改名」動作只改 Name，不動 Id
+        // （見 TopicIdFactory.cs 檔頭：永久 Id 是之後才要解的事，目前的
+        // workaround 就是讓 Id 繼續釘住原始名字、只有顯示用的 Name 會變）。
+        public string Name { get; set; } = name;
 
         public int Depth { get; set; } = depth;
 
