@@ -28,6 +28,9 @@ const CUSTOM_INTRADAY_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window
 // 本機專用：不連資料庫也能檢查筆記的永久編號與版面。只影響筆記頁，資產頁一律讀寫資料庫。
 const NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'review-20260826-notes-v1';
+// 本機專用 Podcast UI 樣版：只展示明確標示的示意資料，不讀寫正式資料庫。
+const PODCAST_NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && PREVIEW_QUERY === 'podcast-notes-v1';
 // 本機專用 UI 原型：回答「一檔股票目前掛在哪些族群，怎麼分層編輯」；
 // 只在 localhost 顯示，不讀寫正式分類，也不帶進正式網站。
 const TOPIC_EDITOR_PROTOTYPE_V1 = ['localhost', '127.0.0.1'].includes(window.location.hostname)
@@ -512,7 +515,7 @@ const ALERT_REFRESH_MS = 5 * 60_000;
 let lastAlertsLoadedAt = 0;
 
 async function loadAlerts() {
-    if (supabase === null) {
+    if (supabase === null || PODCAST_NOTES_LOCAL_PREVIEW) {
         return [];
     }
 
@@ -876,6 +879,10 @@ function renderDevicePresencePanel() {
 }
 
 async function loadDevicePresence(force = false) {
+    if (PODCAST_NOTES_LOCAL_PREVIEW) {
+        return;
+    }
+
     const endpoint = devicePresenceEndpoint();
 
     if (SITE_ACCESS !== 'admin' || endpoint === null || devicePresenceLoading) {
@@ -970,7 +977,7 @@ function wireDevicePresence() {
 }
 
 function startDevicePresenceHeartbeat() {
-    if (supabase === null || devicePresenceHeartbeatTimer !== null) {
+    if (supabase === null || PODCAST_NOTES_LOCAL_PREVIEW || devicePresenceHeartbeatTimer !== null) {
         return;
     }
 
@@ -1410,6 +1417,182 @@ const NOTES_LOCAL_PREVIEW_ITEMS = [
     }
 ];
 
+const PODCAST_PREVIEW_VARIANTS = [
+    { key: 'a', label: 'A 工作／研究分層' },
+    { key: 'b', label: 'B 股癌直接子頁籤（推薦）' },
+    { key: 'c', label: 'C Podcast 資料庫' }
+];
+
+// 僅供 podcast-notes-v1 本機預覽閱讀；內容是排版用示意資料。
+const PODCAST_PREVIEW_EPISODES = [
+    {
+        id: 'gooaye-018',
+        episode: 'EP 示意 018',
+        date: '2026/08/30',
+        title: 'AI 基礎設施供應鏈瓶頸與軟體價值重分配',
+        takeaway: 'AI 硬體競爭從跑分轉向產能與供應鏈掌控，企業私有數據也讓 SaaS 仍具價值。',
+        stance: '偏多',
+        tags: ['光通訊', 'ABF 載板', 'AI 伺服器', '企業軟體'],
+        conclusions: 5,
+        followUps: 2,
+        corePoints: [
+            'AI 供應鏈的瓶頸已從晶片效能轉為 CoWoS、光通訊與載板產能。',
+            'ASIC 與 GPU 會共存，替代架構將擴大周邊零組件的需求。',
+            '企業私有數據、資料隱私與法遵仍是 SaaS 的護城河。'
+        ],
+        catalysts: ['XPU／ASIC 放量', '光互連需求增加', 'HBM 規格調整帶動載板需求'],
+        risks: ['產能取得不如預期', '高估值與供應鏈循環', '模型合作的利潤分配變化'],
+        verify: ['光通訊與 ABF 供應鏈訂單', 'HBM 堆疊規格與載板需求', 'CRM 與 Anthropic 合作模式'],
+        supplement: '我的補充：把「產業方向」「個股標的」「可驗證數據」分開追蹤，不把節目觀點直接當成買賣訊號。',
+        originalAnalysis: '原始分析（示意）：AI 硬體的核心競爭從單一晶片效能轉為供應鏈產能；企業數據則讓 SaaS 在 AI 時代仍有重新估值的空間。'
+    },
+    {
+        id: 'gooaye-017',
+        episode: 'EP 示意 017',
+        date: '2026/08/23',
+        title: '內需與現金流：景氣沒有想像中差，但分化會更明顯',
+        takeaway: '內需不是單一方向，品牌力、通路效率與現金流會拉開公司之間的差距。',
+        stance: '偏多',
+        tags: ['內需', '現金流', '消費'],
+        conclusions: 4,
+        followUps: 1,
+        corePoints: [
+            '總體數字平穩不代表所有公司都受惠，應回到單店與產品結構。',
+            '現金流穩定的公司在需求波動時，調整成本的空間較大。'
+        ],
+        catalysts: ['旺季銷售優於預期', '庫存週轉改善', '新通路貢獻營收'],
+        risks: ['消費降級持續', '促銷侵蝕毛利', '租金與人力成本上升'],
+        verify: ['同店營收與毛利率是否同步改善', '營運現金流是否連續為正'],
+        supplement: '我的補充：這一則適合放進觀察清單，等下一次財報用相同欄位回看，不先下結論。',
+        originalAnalysis: '原始分析（示意）：內需保持韌性，但市場會更重視企業自身的營運效率。'
+    },
+    {
+        id: 'gooaye-016',
+        episode: 'EP 示意 016',
+        date: '2026/08/16',
+        title: '高基期電子股：成長還在，估值容錯率卻變低',
+        takeaway: '基本面沒有立刻反轉，但只要成長低於預期，股價修正可能先發生。',
+        stance: '偏空',
+        tags: ['電子', '估值', '高基期'],
+        conclusions: 3,
+        followUps: 2,
+        corePoints: [
+            '高基期公司需要更高的實際增速，才能支撐相同的估值。',
+            '市場在等待下一個可驗證的成長催化，而不是重複舊敘事。'
+        ],
+        catalysts: ['新產品出貨超預期', '客戶集中度下降', '評價重新上修'],
+        risks: ['成長率自然回落', '同業競爭加劇', '高估值遇到利率變化'],
+        verify: ['新產品營收占比', '毛利率與營益率是否守住'],
+        supplement: '我的補充：先觀察估值與預期的距離，避免只因產業長期方向正確就忽略短期價格風險。',
+        originalAnalysis: '原始分析（示意）：高基期電子仍有長期題材，但短期估值對失望的反應會更快。'
+    },
+    {
+        id: 'gooaye-015',
+        episode: 'EP 示意 015',
+        date: '2026/08/09',
+        title: '金融股的利差、資產品質與股利：要追蹤的是變化速度',
+        takeaway: '金融股的重點不只在殖利率，而是利差、資產品質與配息能力能否一起維持。',
+        stance: '待驗證',
+        tags: ['金融', '利差', '股利'],
+        conclusions: 4,
+        followUps: 3,
+        corePoints: [
+            '殖利率是結果，仍要往前拆解獲利來源與資產品質。',
+            '利差變化與信用成本需要搭配景氣位置一起看。'
+        ],
+        catalysts: ['信用成本低於預期', '投資收益回升', '股利政策穩定'],
+        risks: ['利差收窄', '逾放與備抵增加', '金融市場波動擴大'],
+        verify: ['淨利差與信用成本趨勢', '配息率與資本適足率是否平衡'],
+        supplement: '我的補充：把「高股利」改寫成可驗證問題，下一次財報再補上數字。',
+        originalAnalysis: '原始分析（示意）：金融股需要把股利吸引力放回獲利品質與資本條件中檢視。'
+    }
+];
+
+const PODCAST_PREVIEW_HISTORY = [
+    {
+        date: '2026/08/30',
+        episode: 'EP 示意 018',
+        groups: '光通訊、ABF 載板、AI 伺服器',
+        targets: 'Marvell (MRVL)、Salesforce (CRM)',
+        market: '硬體瓶頸轉為產能與供應鏈掌控；企業私有數據讓 SaaS 仍具價值。',
+        stance: '偏多'
+    },
+    {
+        date: '2026/08/23',
+        episode: 'EP 示意 017',
+        groups: '內需、消費',
+        targets: '示意標的 C',
+        market: '內需仍有韌性；品牌力與通路效率將拉開差距。',
+        stance: '偏多'
+    },
+    {
+        date: '2026/08/16',
+        episode: 'EP 示意 016',
+        groups: '電子',
+        targets: '示意標的 D',
+        market: '成長仍在，但高基期降低估值容錯率。',
+        stance: '偏空'
+    },
+    {
+        date: '2026/08/09',
+        episode: 'EP 示意 015',
+        groups: '金融',
+        targets: '示意標的 E',
+        market: '利差、資產品質與股利能力仍待後續數據驗證。',
+        stance: '待驗證'
+    }
+];
+
+const PODCAST_PREVIEW_GENERATED_SAMPLE = {
+    coreTheme: 'AI 基礎設施供應鏈瓶頸與軟體生態系價值重分配',
+    groups: ['光通訊', 'ABF 載板', 'AI 伺服器', '企業軟體'],
+    targets: ['Marvell (MRVL)', 'Salesforce (CRM)'],
+    points: [
+        '企業私有數據與法遵能力，使 SaaS 與模型形成合作而非被取代。',
+        'AI 硬體競爭從晶片跑分轉為 CoWoS、光通訊與載板的產能掌控。',
+        'ASIC 與 GPU 將共存，替代架構會擴大周邊零組件的需求。'
+    ],
+    market: 'AI 供應鏈的瓶頸轉向產能與供應鏈管理；企業數據讓 SaaS 在 AI 時代仍有重新估值的空間。',
+    followUps: [
+        'Marvell 的 XPU／Scale-up 光互連需求是否延續。',
+        'HBM 堆疊規格與 ABF 載板供需是否出現變化。',
+        'Salesforce 與 Anthropic 的合作拆帳與定價權如何分配。'
+    ],
+    stance: '偏多'
+};
+
+const PODCAST_PREVIEW_MY_NOTES = [
+    {
+        id: 'my-note-003',
+        date: '2026/08/30',
+        title: '把 AI 伺服器需求與現金流拆開追蹤',
+        takeaway: '建立「產業方向／個股兌現／估值位置」三欄，避免一個結論包辦全部判斷。',
+        tags: ['AI 伺服器', '追蹤清單'],
+        stance: '待驗證'
+    },
+    {
+        id: 'my-note-002',
+        date: '2026/08/24',
+        title: '內需觀察清單的回看欄位',
+        takeaway: '下次財報固定回看同店、毛利率與營運現金流，不用每次重新定義問題。',
+        tags: ['內需', '財報'],
+        stance: '偏多'
+    },
+    {
+        id: 'my-note-001',
+        date: '2026/08/17',
+        title: '高基期電子股的估值容錯',
+        takeaway: '把「長期看好」與「目前值得買」分成兩個不同欄位。',
+        tags: ['估值', '電子'],
+        stance: '偏空'
+    }
+];
+
+let podcastPreviewEventsWired = false;
+let podcastPreviewNotice = '';
+let podcastPreviewQuery = '';
+let podcastPreviewFilter = 'all';
+
 // 筆記要跨裝置看得到彼此的變化，但不必到秒等級——比警報鈴鐺（5 分鐘）勤一點，
 // 一分鐘足以讓「換一台裝置補筆記」的場景感覺得到，又不會把 PostgREST 打太兇。
 const NOTES_REFRESH_MS = 60_000;
@@ -1733,7 +1916,7 @@ const ACCESS_TIER_ACCOUNTS = [
 const AUTH_STORAGE_KEY = 'invest.auth';
 
 async function authRequest(grantType, body) {
-    if (supabase === null) {
+    if (supabase === null || PODCAST_NOTES_LOCAL_PREVIEW) {
         return null;
     }
 
@@ -1787,6 +1970,10 @@ function logout() {
 
 // 同裝置登入過就自動恢復，靠 refresh token 換一組新的 session，不用再輸入密碼。
 async function restoreSession() {
+    if (PODCAST_NOTES_LOCAL_PREVIEW) {
+        return;
+    }
+
     let stored;
 
     try {
@@ -2423,6 +2610,18 @@ async function loadNotes() {
 async function refreshNotes() {
     lastNotesLoadedAt = Date.now();
 
+    if (PODCAST_NOTES_LOCAL_PREVIEW) {
+        notes = podcastPreviewTabKey() === 'my'
+            ? NOTES_LOCAL_PREVIEW_ITEMS.map(note => ({ ...note }))
+            : [];
+        notesLoadError = null;
+        notesLoaded = true;
+        selectedNoteId = podcastPreviewTabKey() === 'my'
+            ? notes[0]?.id ?? null
+            : null;
+        return;
+    }
+
     if (NOTES_LOCAL_PREVIEW) {
         notes = NOTES_LOCAL_PREVIEW_ITEMS.map(note => ({ ...note }));
         notesLoadError = null;
@@ -2860,6 +3059,14 @@ function makeNotePill(text, className) {
 }
 
 function notesStorageNoteText() {
+    if (PODCAST_NOTES_LOCAL_PREVIEW && podcastPreviewTabKey() === 'my') {
+        return '本機預覽資料 · 我的筆記沿用原本設計；新增、編輯與刪除都不會寫入資料庫';
+    }
+
+    if (PODCAST_NOTES_LOCAL_PREVIEW) {
+        return '本機 Podcast UI 樣版 · 示意資料，只供確認排版；不會讀寫正式資料庫';
+    }
+
     if (NOTES_LOCAL_PREVIEW) {
         return '本機預覽資料 · #編號僅用於確認版面；新增、編輯與刪除都不會寫入資料庫';
     }
@@ -2884,6 +3091,43 @@ function renderNotes() {
 
     if (!page) {
         return;
+    }
+
+    const podcastPreview = el('podcast-notes-preview');
+    const podcastSubtabs = el('podcast-notes-subtabs');
+    const legacyLayout = el('legacy-notes-layout');
+
+    if (PODCAST_NOTES_LOCAL_PREVIEW) {
+        const podcastTab = podcastPreviewTabKey();
+
+        if (podcastSubtabs) {
+            podcastSubtabs.hidden = false;
+            podcastSubtabs.replaceChildren(podcastPreviewMakeSubtabs(podcastTab));
+        }
+
+        if (podcastPreview && legacyLayout && podcastTab === 'gooaye') {
+            legacyLayout.hidden = true;
+            podcastPreview.hidden = false;
+            renderPodcastNotesPreview();
+            return;
+        }
+
+        if (podcastPreview) {
+            podcastPreview.hidden = true;
+        }
+
+        if (legacyLayout) {
+            legacyLayout.hidden = false;
+        }
+
+        wireNotes();
+    } else if (podcastSubtabs) {
+        podcastSubtabs.hidden = true;
+        podcastSubtabs.replaceChildren();
+    }
+
+    if (legacyLayout) {
+        legacyLayout.hidden = false;
     }
 
     el('notes-storage-note').textContent = notesStorageNoteText();
@@ -3093,6 +3337,10 @@ function renderNoteEditor() {
 }
 
 function wireNotes() {
+    if (PODCAST_NOTES_LOCAL_PREVIEW && podcastPreviewTabKey() !== 'my') {
+        return;
+    }
+
     if (notesControlsWired) {
         return;
     }
@@ -3337,6 +3585,923 @@ function wireNotes() {
             })
             .finally(renderNotes);
     });
+}
+
+function podcastPreviewElement(tag, className, text) {
+    const element = document.createElement(tag);
+
+    if (className) {
+        element.className = className;
+    }
+
+    if (text !== undefined) {
+        element.textContent = text;
+    }
+
+    return element;
+}
+
+function podcastPreviewButton(text, className, onClick) {
+    const button = podcastPreviewElement('button', className, text);
+    button.type = 'button';
+
+    if (onClick) {
+        button.addEventListener('click', onClick);
+    }
+
+    return button;
+}
+
+function podcastPreviewSetUrl(changes) {
+    const url = new URL(window.location.href);
+
+    for (const [key, value] of Object.entries(changes)) {
+        if (value === null || value === '') {
+            url.searchParams.delete(key);
+        } else {
+            url.searchParams.set(key, value);
+        }
+    }
+
+    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+}
+
+function podcastPreviewVariantKey() {
+    const key = new URLSearchParams(window.location.search).get('variant');
+    return PODCAST_PREVIEW_VARIANTS.some(variant => variant.key === key) ? key : 'b';
+}
+
+function podcastPreviewTabKey() {
+    return new URLSearchParams(window.location.search).get('notesTab') === 'my'
+        ? 'my'
+        : 'gooaye';
+}
+
+function podcastPreviewSectionKey() {
+    return new URLSearchParams(window.location.search).get('podcastSection') === 'sources'
+        ? 'sources'
+        : 'analysis';
+}
+
+function podcastPreviewEpisode() {
+    const id = new URLSearchParams(window.location.search).get('episode');
+    return PODCAST_PREVIEW_EPISODES.find(episode => episode.id === id) ?? null;
+}
+
+function podcastPreviewSetVariant(key) {
+    if (!PODCAST_PREVIEW_VARIANTS.some(variant => variant.key === key)) {
+        return;
+    }
+
+    podcastPreviewSetUrl({ variant: key, episode: null });
+    podcastPreviewNotice = '';
+    renderPodcastNotesPreview();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function podcastPreviewOpenEpisode(id) {
+    podcastPreviewSetUrl({ episode: id, podcastSection: 'analysis' });
+    podcastPreviewNotice = '';
+    renderPodcastNotesPreview();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function podcastPreviewCloseEpisode() {
+    podcastPreviewSetUrl({ episode: null, podcastSection: 'analysis' });
+    podcastPreviewNotice = '';
+    renderPodcastNotesPreview();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function podcastPreviewActionNotice(text) {
+    podcastPreviewNotice = text;
+    renderPodcastNotesPreview();
+}
+
+function podcastPreviewWireEvents() {
+    if (podcastPreviewEventsWired) {
+        return;
+    }
+
+    podcastPreviewEventsWired = true;
+
+    document.addEventListener('keydown', event => {
+        if (!PODCAST_NOTES_LOCAL_PREVIEW || event.target instanceof HTMLInputElement
+            || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) {
+            return;
+        }
+
+        const current = podcastPreviewVariantKey();
+        const index = PODCAST_PREVIEW_VARIANTS.findIndex(variant => variant.key === current);
+
+        if (event.key === 'ArrowLeft' && index > 0) {
+            event.preventDefault();
+            podcastPreviewSetVariant(PODCAST_PREVIEW_VARIANTS[index - 1].key);
+        }
+
+        if (event.key === 'ArrowRight' && index < PODCAST_PREVIEW_VARIANTS.length - 1) {
+            event.preventDefault();
+            podcastPreviewSetVariant(PODCAST_PREVIEW_VARIANTS[index + 1].key);
+        }
+    });
+}
+
+function podcastPreviewMakeNotice() {
+    if (!podcastPreviewNotice) {
+        return null;
+    }
+
+    const notice = podcastPreviewElement('div', 'podcast-preview-notice', podcastPreviewNotice);
+    notice.setAttribute('role', 'status');
+    notice.append(podcastPreviewButton('×', 'podcast-preview-notice-close', () => {
+        podcastPreviewNotice = '';
+        renderPodcastNotesPreview();
+    }));
+    return notice;
+}
+
+function podcastPreviewMakeSubtabs(active) {
+    const nav = podcastPreviewElement('nav', 'podcast-preview-subtabs');
+    nav.setAttribute('aria-label', '筆記來源');
+
+    const items = [
+        { key: 'my', label: '我的筆記', count: '3' },
+        { key: 'gooaye', label: '股癌', count: String(PODCAST_PREVIEW_EPISODES.length) }
+    ];
+
+    for (const item of items) {
+        const button = podcastPreviewButton('', 'podcast-preview-subtab' + (item.key === active ? ' is-active' : ''), () => {
+            podcastPreviewSetUrl({ notesTab: item.key, episode: null });
+            podcastPreviewQuery = '';
+            podcastPreviewFilter = 'all';
+            podcastPreviewNotice = '';
+
+            if (PODCAST_NOTES_LOCAL_PREVIEW && item.key === 'my') {
+                notes = NOTES_LOCAL_PREVIEW_ITEMS.map(note => ({ ...note }));
+                notesLoadError = null;
+                notesLoaded = true;
+                selectedNoteId = notes[0]?.id ?? null;
+            }
+
+            renderNotes();
+        });
+        button.setAttribute('aria-pressed', item.key === active ? 'true' : 'false');
+        button.append(
+            podcastPreviewElement('span', '', item.label),
+            podcastPreviewElement('span', 'podcast-preview-count', item.count));
+        nav.append(button);
+    }
+
+    return nav;
+}
+
+function podcastPreviewMakeTags(tags) {
+    const host = podcastPreviewElement('div', 'podcast-preview-tags');
+
+    for (const tag of tags) {
+        host.append(podcastPreviewElement('span', 'podcast-preview-tag', tag));
+    }
+
+    return host;
+}
+
+function podcastPreviewMakeMetric(value, label, tone) {
+    const card = podcastPreviewElement('div', 'podcast-preview-metric');
+    if (tone) {
+        card.classList.add('is-' + tone);
+    }
+    card.append(
+        podcastPreviewElement('strong', 'podcast-preview-metric-value', value),
+        podcastPreviewElement('span', 'podcast-preview-metric-label', label));
+    return card;
+}
+
+function podcastPreviewMakeEpisodeCard(episode, compact) {
+    const card = podcastPreviewElement('article', compact
+        ? 'podcast-preview-episode-card is-compact'
+        : 'podcast-preview-episode-card');
+    card.dataset.podcastEpisodeCard = 'true';
+    card.dataset.podcastSearch = [
+        episode.episode,
+        episode.title,
+        episode.takeaway,
+        episode.tags.join(' ')
+    ].join(' ').toLocaleLowerCase();
+    card.dataset.podcastStance = episode.stance;
+
+    const header = podcastPreviewElement('div', 'podcast-preview-episode-header');
+    header.append(
+        podcastPreviewElement('span', 'podcast-preview-episode-kicker', episode.episode),
+        podcastPreviewElement('time', 'podcast-preview-episode-date', episode.date));
+
+    const title = podcastPreviewElement('h3', 'podcast-preview-episode-title', episode.title);
+    const takeaway = podcastPreviewElement('p', 'podcast-preview-episode-takeaway', episode.takeaway);
+    const footer = podcastPreviewElement('div', 'podcast-preview-episode-footer');
+    const stats = podcastPreviewElement('span', 'podcast-preview-episode-stats',
+        episode.conclusions + ' 個結論 · ' + episode.followUps + ' 個追蹤');
+    const read = podcastPreviewButton('閱讀分析', 'podcast-preview-read-button', () => {
+        podcastPreviewOpenEpisode(episode.id);
+    });
+
+    footer.append(
+        podcastPreviewMakeTags(episode.tags),
+        stats,
+        read);
+    card.append(header, title, takeaway, footer);
+    return card;
+}
+
+function podcastPreviewEpisodeMatches(episode) {
+    const query = podcastPreviewQuery.trim().toLocaleLowerCase();
+    const textMatches = query.length === 0
+        || [episode.episode, episode.title, episode.takeaway, episode.tags.join(' ')].join(' ')
+            .toLocaleLowerCase().includes(query);
+    const filterMatches = podcastPreviewFilter === 'all'
+        || episode.stance === podcastPreviewFilter;
+    return textMatches && filterMatches;
+}
+
+function podcastPreviewApplyEpisodeFilters(host) {
+    const cards = host.querySelectorAll('[data-podcast-episode-card]');
+    let count = 0;
+
+    for (const card of cards) {
+        const episode = PODCAST_PREVIEW_EPISODES.find(item => item.id === card.dataset.podcastEpisodeId);
+        const matches = episode ? podcastPreviewEpisodeMatches(episode) : true;
+        card.hidden = !matches;
+        if (matches) {
+            count += 1;
+        }
+    }
+
+    const countLabel = host.querySelector('[data-podcast-result-count]');
+    if (countLabel) {
+        countLabel.textContent = '顯示 ' + count + ' / ' + PODCAST_PREVIEW_EPISODES.length;
+    }
+}
+
+function podcastPreviewMakeFilterBar() {
+    const wrapper = podcastPreviewElement('div', 'podcast-preview-filter-wrap');
+    const filters = podcastPreviewElement('div', 'podcast-preview-filter-row');
+    const label = podcastPreviewElement('span', 'podcast-preview-filter-label', '觀點');
+    const keys = [
+        { key: 'all', label: '全部' },
+        { key: '偏多', label: '偏多' },
+        { key: '偏空', label: '偏空' },
+        { key: '待驗證', label: '待驗證' }
+    ];
+
+    filters.append(label);
+
+    for (const item of keys) {
+        const button = podcastPreviewButton(item.label,
+            'podcast-preview-filter-button' + (item.key === podcastPreviewFilter ? ' is-active' : ''),
+            () => {
+                podcastPreviewFilter = item.key;
+                renderPodcastNotesPreview();
+            });
+        button.setAttribute('aria-pressed', item.key === podcastPreviewFilter ? 'true' : 'false');
+        filters.append(button);
+    }
+
+    const search = podcastPreviewElement('input', 'podcast-preview-search');
+    search.type = 'search';
+    search.placeholder = '搜尋股癌筆記';
+    search.value = podcastPreviewQuery;
+    search.autocomplete = 'off';
+    search.setAttribute('aria-label', '搜尋股癌筆記');
+    search.addEventListener('input', event => {
+        podcastPreviewQuery = event.target.value;
+        const host = event.target.closest('.podcast-preview-root');
+        if (host) {
+            podcastPreviewApplyEpisodeFilters(host);
+        }
+    });
+
+    wrapper.append(filters, search);
+    return wrapper;
+}
+
+function podcastPreviewMakeListHeader(title, description) {
+    const header = podcastPreviewElement('div', 'podcast-preview-list-header');
+    const copy = podcastPreviewElement('div', '');
+    copy.append(
+        podcastPreviewElement('h2', '', title),
+        podcastPreviewElement('p', '', description));
+    header.append(copy);
+    return header;
+}
+
+function podcastPreviewMakeEpisodeList() {
+    const section = podcastPreviewElement('section', 'podcast-preview-list-section');
+    section.append(
+        podcastPreviewMakeListHeader('股癌', '每一集 Podcast 都是一個子頁籤，進入後直接看該集的分析。'));
+
+    const meta = podcastPreviewElement('div', 'podcast-preview-list-meta');
+    meta.append(
+        podcastPreviewElement('span', '', '最近同步：08/30'),
+        podcastPreviewButton('＋ 匯入結論', 'podcast-preview-primary-button', () => {
+            podcastPreviewActionNotice('本機樣版：匯入流程只展示按鈕狀態，尚未連接正式資料庫。');
+        }));
+    section.append(meta);
+
+    const controls = podcastPreviewMakeFilterBar();
+    section.append(controls);
+
+    const result = podcastPreviewElement('div', 'podcast-preview-result-line');
+    result.dataset.podcastResultCount = 'true';
+    section.append(result);
+
+    const list = podcastPreviewElement('div', 'podcast-preview-episode-list');
+    for (const episode of PODCAST_PREVIEW_EPISODES) {
+        const card = podcastPreviewMakeEpisodeCard(episode, false);
+        card.dataset.podcastEpisodeId = episode.id;
+        list.append(card);
+    }
+    section.append(list);
+    podcastPreviewApplyEpisodeFilters(section);
+    return section;
+}
+
+function podcastPreviewMakeMyNotes() {
+    const section = podcastPreviewElement('section', 'podcast-preview-list-section');
+    section.append(
+        podcastPreviewMakeListHeader('我的筆記', '把 Podcast 的原始分析轉成自己的追蹤問題與補充。'));
+
+    const meta = podcastPreviewElement('div', 'podcast-preview-list-meta');
+    meta.append(
+        podcastPreviewElement('span', '', '最近更新：08/30'),
+        podcastPreviewButton('＋ 新增補充', 'podcast-preview-primary-button', () => {
+            podcastPreviewActionNotice('本機樣版：新增補充尚未保存，等你確認排版後再接資料流程。');
+        }));
+    section.append(meta);
+
+    const list = podcastPreviewElement('div', 'podcast-preview-my-list');
+    for (const item of PODCAST_PREVIEW_MY_NOTES) {
+        const card = podcastPreviewElement('article', 'podcast-preview-my-card');
+        const head = podcastPreviewElement('div', 'podcast-preview-episode-header');
+        head.append(
+            podcastPreviewElement('span', 'podcast-preview-episode-kicker', '我的補充'),
+            podcastPreviewElement('time', 'podcast-preview-episode-date', item.date));
+        card.append(
+            head,
+            podcastPreviewElement('h3', 'podcast-preview-episode-title', item.title),
+            podcastPreviewElement('p', 'podcast-preview-episode-takeaway', item.takeaway),
+            podcastPreviewMakeTags(item.tags),
+            podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance), item.stance));
+        list.append(card);
+    }
+    section.append(list);
+    return section;
+}
+
+function podcastPreviewStanceClass(stance) {
+    return stance === '偏多' ? 'up' : stance === '偏空' ? 'down' : 'verify';
+}
+
+function podcastPreviewMakeBulletSection(title, items, className) {
+    const section = podcastPreviewElement('section', 'podcast-preview-detail-section' + (className ? ' ' + className : ''));
+    section.append(podcastPreviewElement('h3', '', title));
+    const list = podcastPreviewElement('ul', '');
+
+    for (const item of items) {
+        list.append(podcastPreviewElement('li', '', item));
+    }
+
+    section.append(list);
+    return section;
+}
+
+function podcastPreviewMakeDetail(episode) {
+    const article = podcastPreviewElement('article', 'podcast-preview-detail');
+    const back = podcastPreviewButton('← 回到股癌列表', 'podcast-preview-back-button', podcastPreviewCloseEpisode);
+    const header = podcastPreviewElement('header', 'podcast-preview-detail-header');
+    const kicker = podcastPreviewElement('div', 'podcast-preview-detail-kicker');
+    kicker.append(
+        podcastPreviewElement('span', 'podcast-preview-episode-kicker', episode.episode),
+        podcastPreviewElement('time', 'podcast-preview-episode-date', episode.date),
+        podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(episode.stance), episode.stance));
+    header.append(
+        kicker,
+        podcastPreviewElement('h2', '', episode.title),
+        podcastPreviewMakeTags(episode.tags));
+
+    const takeaway = podcastPreviewElement('blockquote', 'podcast-preview-takeaway-block');
+    takeaway.append(
+        podcastPreviewElement('span', 'podcast-preview-eyebrow', '一句話結論'),
+        podcastPreviewElement('p', '', episode.takeaway));
+
+    const grid = podcastPreviewElement('div', 'podcast-preview-detail-grid');
+    grid.append(
+        podcastPreviewMakeBulletSection('核心觀察', episode.corePoints),
+        podcastPreviewMakeBulletSection('可能催化', episode.catalysts),
+        podcastPreviewMakeBulletSection('風險／反方', episode.risks, 'is-risk'),
+        podcastPreviewMakeBulletSection('待驗證', episode.verify, 'is-verify'));
+
+    const supplement = podcastPreviewElement('section', 'podcast-preview-supplement');
+    supplement.append(
+        podcastPreviewElement('div', 'podcast-preview-section-label', '我的補充'),
+        podcastPreviewElement('p', '', episode.supplement),
+        podcastPreviewButton('＋ 新增追蹤問題', 'podcast-preview-secondary-button', () => {
+            podcastPreviewActionNotice('本機樣版：追蹤問題會先留在畫面狀態，不會寫入資料庫。');
+        }));
+
+    const raw = podcastPreviewElement('details', 'podcast-preview-raw');
+    raw.append(
+        podcastPreviewElement('summary', '', '查看原始分析（唯讀）'),
+        podcastPreviewElement('p', '', episode.originalAnalysis));
+
+    article.append(back, header, takeaway, grid, supplement, raw);
+    return article;
+}
+
+function podcastPreviewMakeVariantTabs() {
+    const tabs = podcastPreviewElement('div', 'podcast-preview-variant-tabs');
+    const current = podcastPreviewVariantKey();
+
+    for (const variant of PODCAST_PREVIEW_VARIANTS) {
+        const button = podcastPreviewButton(variant.label,
+            'podcast-preview-variant-tab' + (variant.key === current ? ' is-active' : ''),
+            () => podcastPreviewSetVariant(variant.key));
+        button.setAttribute('aria-pressed', variant.key === current ? 'true' : 'false');
+        tabs.append(button);
+    }
+
+    const hint = podcastPreviewElement('span', 'podcast-preview-variant-hint', '← → 切換版本');
+    tabs.append(hint);
+    return tabs;
+}
+
+function podcastPreviewRenderVariantB(host) {
+    const tab = podcastPreviewTabKey();
+    host.append(podcastPreviewMakeSubtabs(tab));
+
+    if (tab === 'my') {
+        host.append(podcastPreviewMakeMyNotes());
+        return;
+    }
+
+    const episode = podcastPreviewEpisode();
+    host.append(episode ? podcastPreviewMakeDetail(episode) : podcastPreviewMakeEpisodeList());
+}
+
+function podcastPreviewMakeHistoryTable() {
+    const section = podcastPreviewElement('section', 'podcast-preview-history');
+    const tableWrap = podcastPreviewElement('div', 'podcast-preview-history-table-wrap');
+    const table = document.createElement('table');
+    table.className = 'podcast-preview-history-table';
+    table.setAttribute('aria-label', 'Podcast 來源資料表');
+
+    const caption = podcastPreviewElement('caption', '', 'Podcast 來源資料表');
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    for (const label of ['日期', '集數', '看好族群', '標的', '市場內容', '觀點']) {
+        headerRow.append(podcastPreviewElement('th', '', label));
+    }
+    thead.append(headerRow);
+
+    const tbody = document.createElement('tbody');
+    for (const item of PODCAST_PREVIEW_HISTORY) {
+        const row = document.createElement('tr');
+        row.append(
+            podcastPreviewElement('td', 'podcast-preview-history-date', item.date),
+            podcastPreviewElement('td', 'podcast-preview-history-episode', item.episode),
+            podcastPreviewElement('td', '', item.groups),
+            podcastPreviewElement('td', '', item.targets),
+            podcastPreviewElement('td', 'podcast-preview-history-market', item.market));
+        const stanceCell = podcastPreviewElement('td', '');
+        stanceCell.append(podcastPreviewElement(
+            'span',
+            'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
+            item.stance));
+        row.append(stanceCell);
+        tbody.append(row);
+    }
+
+    table.append(caption, thead, tbody);
+    tableWrap.append(table);
+    section.append(tableWrap);
+    return section;
+}
+
+function podcastPreviewDateValue(value) {
+    const [year, month, day] = value.split('/').map(Number);
+    return Date.UTC(year, month - 1, day);
+}
+
+function podcastPreviewTimeWeight(date) {
+    const latest = Math.max(...PODCAST_PREVIEW_HISTORY.map(item => podcastPreviewDateValue(item.date)));
+    const days = Math.max(0, Math.round((latest - podcastPreviewDateValue(date)) / 86400000));
+    return Math.max(20, 100 - days * 2);
+}
+
+function podcastPreviewMakeTimeWeightChart() {
+    const card = podcastPreviewElement('section', 'podcast-preview-analysis-card');
+    card.append(
+        podcastPreviewElement('h2', '', '時效權重'),
+        podcastPreviewElement('p', '', '以最新一筆資料為 100%，資料越舊權重越低。'));
+
+    const chart = podcastPreviewElement('div', 'podcast-preview-weight-chart');
+    for (const item of PODCAST_PREVIEW_HISTORY) {
+        const weight = podcastPreviewTimeWeight(item.date);
+        const row = podcastPreviewElement('div', 'podcast-preview-weight-row');
+        const meta = podcastPreviewElement('div', 'podcast-preview-weight-meta');
+        meta.append(
+            podcastPreviewElement('span', 'podcast-preview-weight-label', item.date),
+            podcastPreviewElement('span', 'podcast-preview-weight-value', weight + '%'));
+
+        const track = podcastPreviewElement('div', 'podcast-preview-weight-track');
+        track.setAttribute('role', 'img');
+        track.setAttribute('aria-label', item.date + ' 時效權重 ' + weight + '%');
+        const fill = podcastPreviewElement('div', 'podcast-preview-weight-fill');
+        fill.style.width = weight + '%';
+        track.append(fill);
+
+        row.append(
+            meta,
+            track,
+            podcastPreviewElement('span', 'podcast-preview-weight-episode', item.episode));
+        chart.append(row);
+    }
+    card.append(chart);
+    return card;
+}
+
+function podcastPreviewMakeFavoredTable() {
+    const card = podcastPreviewElement('section', 'podcast-preview-analysis-card');
+    card.append(podcastPreviewElement('h2', '', '看好族群與標的'));
+
+    const tableWrap = podcastPreviewElement('div', 'podcast-preview-analysis-table-wrap');
+    const table = document.createElement('table');
+    table.className = 'podcast-preview-analysis-table';
+    table.setAttribute('aria-label', '看好族群與標的');
+    table.append(podcastPreviewElement('caption', '', '看好族群與標的'));
+
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    for (const label of ['族群', '標的', '資料日期', '時效權重', '觀點']) {
+        headerRow.append(podcastPreviewElement('th', '', label));
+    }
+    thead.append(headerRow);
+
+    const tbody = document.createElement('tbody');
+    for (const item of PODCAST_PREVIEW_HISTORY.filter(history => history.stance === '偏多')) {
+        const row = document.createElement('tr');
+        row.append(
+            podcastPreviewElement('td', '', item.groups),
+            podcastPreviewElement('td', '', item.targets),
+            podcastPreviewElement('td', 'podcast-preview-history-date', item.date),
+            podcastPreviewElement('td', '', podcastPreviewTimeWeight(item.date) + '%'));
+        const stanceCell = podcastPreviewElement('td', '');
+        stanceCell.append(podcastPreviewElement(
+            'span',
+            'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
+            item.stance));
+        row.append(stanceCell);
+        tbody.append(row);
+    }
+
+    table.append(thead, tbody);
+    tableWrap.append(table);
+    card.append(tableWrap);
+    return card;
+}
+
+function podcastPreviewMakeMarketContent() {
+    const card = podcastPreviewElement('section', 'podcast-preview-market-card');
+    card.append(podcastPreviewElement('h2', '', '市場內容'));
+
+    const list = podcastPreviewElement('div', 'podcast-preview-market-list');
+    for (const item of PODCAST_PREVIEW_HISTORY) {
+        const row = podcastPreviewElement('article', 'podcast-preview-market-row');
+        const meta = podcastPreviewElement('div', 'podcast-preview-market-meta');
+        meta.append(
+            podcastPreviewElement('time', '', item.date),
+            podcastPreviewElement('span', '', item.episode));
+        row.append(
+            meta,
+            podcastPreviewElement('p', 'podcast-preview-market-content', item.market));
+
+        const stance = podcastPreviewElement(
+            'span',
+            'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
+            item.stance);
+        row.append(stance);
+        list.append(row);
+    }
+    card.append(list);
+    return card;
+}
+
+function podcastPreviewMakeAnalysisDashboard() {
+    const dashboard = podcastPreviewElement('div', 'podcast-preview-analysis-dashboard');
+    const grid = podcastPreviewElement('div', 'podcast-preview-analysis-grid');
+    grid.append(podcastPreviewMakeTimeWeightChart(), podcastPreviewMakeFavoredTable());
+    dashboard.append(grid, podcastPreviewMakeMarketContent());
+    return dashboard;
+}
+
+function podcastPreviewMakeImportRow(number, onRemove) {
+    const row = podcastPreviewElement('div', 'podcast-preview-import-row');
+    const numberLabel = podcastPreviewElement('span', 'podcast-preview-import-number',
+        String(number).padStart(2, '0'));
+    const fields = podcastPreviewElement('div', 'podcast-preview-import-fields');
+
+    const timeField = podcastPreviewElement('label', 'podcast-preview-import-field');
+    timeField.append(podcastPreviewElement('span', '', '時間'));
+    const timeInput = podcastPreviewElement('input', '');
+    timeInput.type = 'datetime-local';
+    timeInput.required = true;
+    timeInput.setAttribute('aria-label', '時間');
+    timeField.append(timeInput);
+
+    const episodeField = podcastPreviewElement('label', 'podcast-preview-import-field');
+    episodeField.append(podcastPreviewElement('span', '', '集數'));
+    const episodeInput = podcastPreviewElement('input', '');
+    episodeInput.type = 'text';
+    episodeInput.placeholder = '例如 EP 018';
+    episodeInput.required = true;
+    episodeInput.setAttribute('aria-label', '集數');
+    episodeField.append(episodeInput);
+
+    const analysisField = podcastPreviewElement('label', 'podcast-preview-import-field is-analysis');
+    analysisField.append(podcastPreviewElement('span', '', 'Gemini Notebook 逐字稿分析'));
+    const analysisInput = podcastPreviewElement('textarea', '');
+    analysisInput.rows = 7;
+    analysisInput.placeholder = '貼上 Gemini Notebook 的逐字稿分析（可含 Markdown）';
+    analysisInput.required = true;
+    analysisInput.setAttribute('aria-label', 'Gemini Notebook 逐字稿分析');
+    analysisField.append(analysisInput);
+
+    fields.append(timeField, episodeField, analysisField);
+    row.append(numberLabel, fields);
+
+    if (onRemove) {
+        row.append(podcastPreviewButton('移除', 'podcast-preview-remove-import', onRemove));
+    }
+
+    return row;
+}
+
+function podcastPreviewMakeGeneratedPreview() {
+    const section = podcastPreviewElement('section', 'podcast-preview-generated-preview');
+    section.append(
+        podcastPreviewElement('h3', '', '產出欄位預覽'),
+        podcastPreviewElement('p', 'podcast-preview-generated-description',
+            '以下用你提供的逐字稿示範產出；正式匯入時會依每筆內容更新。'));
+
+    const grid = podcastPreviewElement('div', 'podcast-preview-generated-grid');
+    const core = podcastPreviewElement('div', 'podcast-preview-generated-item is-wide');
+    core.append(
+        podcastPreviewElement('span', 'podcast-preview-generated-label', '核心主題'),
+        podcastPreviewElement('strong', '', PODCAST_PREVIEW_GENERATED_SAMPLE.coreTheme));
+
+    const groups = podcastPreviewElement('div', 'podcast-preview-generated-item');
+    groups.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '看好族群'));
+    const groupTags = podcastPreviewElement('div', 'podcast-preview-generated-tags');
+    for (const group of PODCAST_PREVIEW_GENERATED_SAMPLE.groups) {
+        groupTags.append(podcastPreviewElement('span', 'podcast-preview-tag', group));
+    }
+    groups.append(groupTags);
+
+    const targets = podcastPreviewElement('div', 'podcast-preview-generated-item');
+    targets.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '標的'));
+    const targetTags = podcastPreviewElement('div', 'podcast-preview-generated-tags');
+    for (const target of PODCAST_PREVIEW_GENERATED_SAMPLE.targets) {
+        targetTags.append(podcastPreviewElement('span', 'podcast-preview-tag', target));
+    }
+    targets.append(targetTags);
+
+    const points = podcastPreviewElement('div', 'podcast-preview-generated-item is-wide');
+    points.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '主要論點'));
+    const pointList = document.createElement('ul');
+    for (const point of PODCAST_PREVIEW_GENERATED_SAMPLE.points) {
+        pointList.append(podcastPreviewElement('li', '', point));
+    }
+    points.append(pointList);
+
+    const market = podcastPreviewElement('div', 'podcast-preview-generated-item is-wide');
+    market.append(
+        podcastPreviewElement('span', 'podcast-preview-generated-label', '市場內容'),
+        podcastPreviewElement('p', '', PODCAST_PREVIEW_GENERATED_SAMPLE.market));
+
+    const followUps = podcastPreviewElement('div', 'podcast-preview-generated-item is-wide');
+    followUps.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '後續追蹤'));
+    const followUpList = document.createElement('ul');
+    for (const followUp of PODCAST_PREVIEW_GENERATED_SAMPLE.followUps) {
+        followUpList.append(podcastPreviewElement('li', '', followUp));
+    }
+    followUps.append(followUpList);
+
+    const stance = podcastPreviewElement('div', 'podcast-preview-generated-item');
+    stance.append(
+        podcastPreviewElement('span', 'podcast-preview-generated-label', '節目觀點'),
+        podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(
+            PODCAST_PREVIEW_GENERATED_SAMPLE.stance), PODCAST_PREVIEW_GENERATED_SAMPLE.stance));
+
+    grid.append(core, groups, targets, points, market, followUps, stance);
+    section.append(grid);
+    return section;
+}
+
+function podcastPreviewMakeSourcePanel() {
+    const page = podcastPreviewElement('section', 'podcast-preview-source-page');
+    const heading = podcastPreviewElement('header', 'podcast-preview-source-page-heading');
+    const headingCopy = podcastPreviewElement('div', '');
+    headingCopy.append(
+        podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '來源管理'),
+        podcastPreviewElement('h1', '', 'Podcast 來源'));
+    const toggle = podcastPreviewButton('＋ 多筆匯入', 'podcast-preview-primary-button');
+    heading.append(headingCopy, toggle);
+    page.append(heading);
+
+    const importPanel = podcastPreviewElement('section', 'podcast-preview-import-panel');
+    importPanel.hidden = true;
+    const importHeading = podcastPreviewElement('div', 'podcast-preview-import-heading');
+    importHeading.append(podcastPreviewElement('div', ''));
+    importHeading.firstChild.append(
+        podcastPreviewElement('h2', '', '多筆匯入'),
+        podcastPreviewElement('p', '', '只需輸入時間、集數與 Gemini Notebook 逐字稿分析，其餘欄位由系統產生。'));
+    const rows = podcastPreviewElement('div', 'podcast-preview-import-rows');
+
+    const appendRow = () => {
+        const row = podcastPreviewMakeImportRow(rows.children.length + 1, () => {
+            if (rows.children.length > 1) {
+                row.remove();
+            }
+        });
+        rows.append(row);
+    };
+    appendRow();
+    appendRow();
+
+    const readRows = () => Array.from(rows.children).map(row =>
+        Array.from(row.querySelectorAll('input, textarea')).map(input => input.value.trim()));
+    const generatedPreview = podcastPreviewMakeGeneratedPreview();
+    const importActions = podcastPreviewElement('div', 'podcast-preview-import-actions');
+    importActions.append(
+        podcastPreviewButton('＋ 再加一筆', 'podcast-preview-secondary-button', appendRow),
+        podcastPreviewButton('預覽產出', 'podcast-preview-secondary-button', () => {
+            const values = readRows();
+            const completeRows = values.filter(row => row.every(Boolean)).length;
+            const touchedRows = values.filter(row => row.some(Boolean)).length;
+            if (touchedRows > completeRows) {
+                podcastPreviewActionNotice('請補齊每筆的時間、集數與逐字稿分析。');
+                return;
+            }
+            podcastPreviewActionNotice(
+                completeRows > 0
+                    ? '本機樣版：已產生 ' + completeRows + ' 筆分析欄位預覽。'
+                    : '本機樣版：目前顯示你提供的逐字稿產出範例。');
+        }),
+        podcastPreviewButton('匯入分析結果', 'podcast-preview-primary-button', () => {
+            const values = readRows();
+            const completeRows = values.filter(row => row.every(Boolean)).length;
+            const touchedRows = values.filter(row => row.some(Boolean)).length;
+            if (touchedRows !== completeRows || completeRows === 0) {
+                podcastPreviewActionNotice(
+                    touchedRows > 0 ? '請補齊每筆的時間、集數與逐字稿分析。' : '請先填寫要匯入的分析內容。');
+                return;
+            }
+            podcastPreviewActionNotice(
+                '本機樣版：已模擬匯入 ' + completeRows + ' 筆分析結果；其餘欄位由系統產生，尚未寫入資料庫。');
+        }));
+    importPanel.append(importHeading, rows, generatedPreview, importActions);
+    page.append(importPanel, podcastPreviewMakeHistoryTable());
+
+    toggle.addEventListener('click', () => {
+        importPanel.hidden = !importPanel.hidden;
+        toggle.textContent = importPanel.hidden ? '＋ 多筆匯入' : '收合匯入';
+    });
+
+    return page;
+}
+
+function podcastPreviewRenderVariantA(host) {
+    const layout = podcastPreviewElement('div', 'podcast-preview-workspace');
+    const rail = podcastPreviewElement('aside', 'podcast-preview-workspace-rail');
+    rail.setAttribute('aria-label', '研究分析與 Podcast 來源');
+
+    const activeSection = podcastPreviewSectionKey();
+    const railItems = [
+        { key: 'analysis', label: '研究分析' },
+        { key: 'sources', label: 'Podcast 來源' }
+    ];
+    const railNav = podcastPreviewElement('nav', 'podcast-preview-rail-nav');
+    for (const item of railItems) {
+        railNav.append(podcastPreviewButton(item.label,
+            'podcast-preview-rail-button' + (item.key === activeSection ? ' is-active' : ''),
+            () => {
+                podcastPreviewSetUrl({ podcastSection: item.key, episode: null });
+                podcastPreviewNotice = '';
+                renderPodcastNotesPreview();
+            }));
+    }
+    rail.append(railNav);
+
+    const main = podcastPreviewElement('main', 'podcast-preview-workspace-main');
+    const episode = podcastPreviewEpisode();
+    if (episode) {
+        main.append(podcastPreviewMakeDetail(episode));
+    } else if (activeSection === 'sources') {
+        main.append(podcastPreviewMakeSourcePanel());
+    } else {
+        const heading = podcastPreviewElement('header', 'podcast-preview-workspace-heading');
+        heading.append(
+            podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '研究分析'),
+            podcastPreviewElement('h1', '', '研究分析'),
+            podcastPreviewElement('p', 'podcast-preview-workspace-description',
+                '依資料時效整理族群、標的與市場內容。'));
+        main.append(heading, podcastPreviewMakeAnalysisDashboard());
+    }
+
+    layout.append(rail, main);
+    host.append(layout);
+}
+
+function podcastPreviewRenderVariantC(host) {
+    const page = podcastPreviewElement('div', 'podcast-preview-database');
+    const episode = podcastPreviewEpisode();
+    const heading = podcastPreviewElement('header', 'podcast-preview-database-heading');
+    heading.append(
+        podcastPreviewElement('div', '', ''),
+        podcastPreviewButton('＋ 匯入 Podcast', 'podcast-preview-primary-button', () => {
+            podcastPreviewActionNotice('本機樣版：來源匯入尚未接上正式資料流程。');
+        }));
+    heading.firstChild.append(
+        podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '來源管理'),
+        podcastPreviewElement('h1', '', 'Podcast 資料庫'));
+    page.append(heading);
+
+    const metrics = podcastPreviewElement('div', 'podcast-preview-database-metrics');
+    metrics.append(
+        podcastPreviewMakeMetric('1', '來源'),
+        podcastPreviewMakeMetric('4', '集數', 'accent'),
+        podcastPreviewMakeMetric('16', '原始結論'),
+        podcastPreviewMakeMetric('7', '待追蹤', 'warning'));
+    page.append(metrics);
+
+    if (episode) {
+        page.append(podcastPreviewMakeDetail(episode));
+        host.append(page);
+        return;
+    }
+
+    const source = podcastPreviewElement('section', 'podcast-preview-source-card');
+    const sourceHead = podcastPreviewElement('div', 'podcast-preview-source-head');
+    sourceHead.append(
+        podcastPreviewElement('div', '', ''),
+        podcastPreviewElement('span', 'podcast-preview-source-status', '已同步'));
+    sourceHead.firstChild.append(
+        podcastPreviewElement('span', 'podcast-preview-source-icon', '股'),
+        podcastPreviewElement('div', '', ''));
+    sourceHead.firstChild.lastChild.append(
+        podcastPreviewElement('h2', '', '股癌'),
+        podcastPreviewElement('p', '', 'Podcast · 最近同步 08/30'));
+    source.append(sourceHead);
+
+    const table = podcastPreviewElement('div', 'podcast-preview-database-table');
+    const tableHeader = podcastPreviewElement('div', 'podcast-preview-database-row is-header');
+    tableHeader.append(
+        podcastPreviewElement('span', '', '集數'),
+        podcastPreviewElement('span', '', '標題'),
+        podcastPreviewElement('span', '', '觀點'),
+        podcastPreviewElement('span', '', '日期'));
+    table.append(tableHeader);
+
+    for (const item of PODCAST_PREVIEW_EPISODES) {
+        const row = podcastPreviewElement('button', 'podcast-preview-database-row');
+        row.type = 'button';
+        row.addEventListener('click', () => podcastPreviewOpenEpisode(item.id));
+        row.append(
+            podcastPreviewElement('span', 'podcast-preview-episode-kicker', item.episode),
+            podcastPreviewElement('strong', '', item.title),
+            podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance), item.stance),
+            podcastPreviewElement('time', '', item.date));
+        table.append(row);
+    }
+
+    source.append(table);
+    page.append(source);
+    host.append(page);
+}
+
+function renderPodcastNotesPreview() {
+    const host = el('podcast-notes-preview');
+
+    if (!host) {
+        return;
+    }
+
+    host.replaceChildren();
+    host.className = 'podcast-preview-root podcast-preview-variant-a';
+
+    const notice = podcastPreviewMakeNotice();
+    if (notice) {
+        host.append(notice);
+    }
+
+    podcastPreviewRenderVariantA(host);
 }
 
 // 資產。使用者、帳戶與持倉都存在資料庫（db/019_assets.sql），不放瀏覽器 localStorage：
@@ -18409,11 +19574,13 @@ function renderSnapshotNote() {
     }
 
     if (state.view === 'notes') {
-        el('snapshot-note').textContent = NOTES_LOCAL_PREVIEW
-            ? '本機預覽筆記：用來確認永久編號版面，不會讀寫資料庫。'
-            : supabase === null
-                ? '筆記需要資料庫連線；離線快照看不到筆記。'
-                : `筆記存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(NOTES_REFRESH_MS / 1000)} 秒自動重讀一次。`;
+        el('snapshot-note').textContent = PODCAST_NOTES_LOCAL_PREVIEW
+            ? '一次性 UI 比較 · 內容皆為示意資料，不會讀寫正式資料庫。'
+            : NOTES_LOCAL_PREVIEW
+                ? '本機預覽筆記：用來確認永久編號版面，不會讀寫資料庫。'
+                : supabase === null
+                    ? '筆記需要資料庫連線；離線快照看不到筆記。'
+                    : `筆記存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(NOTES_REFRESH_MS / 1000)} 秒自動重讀一次。`;
         return;
     }
 
