@@ -28,7 +28,7 @@ const CUSTOM_INTRADAY_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window
 // 本機專用：不連資料庫也能檢查筆記的永久編號與版面。只影響筆記頁，資產頁一律讀寫資料庫。
 const NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'review-20260826-notes-v1';
-// 本機專用 Podcast UI 樣版：只展示明確標示的示意資料，不讀寫正式資料庫。
+// 本機專用 Podcast UI 樣版入口：只展示明確標示的示意資料，不讀寫正式資料庫。
 const PODCAST_NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'podcast-notes-v1';
 // 本機專用 UI 原型：回答「一檔股票目前掛在哪些族群，怎麼分層編輯」；
@@ -1423,7 +1423,7 @@ const PODCAST_PREVIEW_VARIANTS = [
     { key: 'c', label: 'C Podcast 資料庫' }
 ];
 
-// 僅供 podcast-notes-v1 本機預覽閱讀；內容是排版用示意資料。
+// Podcast UI 樣版資料：正式頁的股癌子頁籤也沿用這組明確標示的示意內容。
 const PODCAST_PREVIEW_EPISODES = [
     {
         id: 'gooaye-018',
@@ -2610,7 +2610,7 @@ async function loadNotes() {
 async function refreshNotes() {
     lastNotesLoadedAt = Date.now();
 
-    if (PODCAST_NOTES_LOCAL_PREVIEW) {
+    if (isPodcastNotesStaticView()) {
         notes = podcastPreviewTabKey() === 'my'
             ? NOTES_LOCAL_PREVIEW_ITEMS.map(note => ({ ...note }))
             : [];
@@ -3067,6 +3067,10 @@ function notesStorageNoteText() {
         return '本機 Podcast UI 樣版 · 示意資料，只供確認排版；不會讀寫正式資料庫';
     }
 
+    if (isPodcastNotesStaticView()) {
+        return '股癌研究分析樣版 · 示意資料，只供確認版面；目前不會寫入資料庫';
+    }
+
     if (NOTES_LOCAL_PREVIEW) {
         return '本機預覽資料 · #編號僅用於確認版面；新增、編輯與刪除都不會寫入資料庫';
     }
@@ -3097,38 +3101,33 @@ function renderNotes() {
     const podcastSubtabs = el('podcast-notes-subtabs');
     const legacyLayout = el('legacy-notes-layout');
 
-    if (PODCAST_NOTES_LOCAL_PREVIEW) {
-        const podcastTab = podcastPreviewTabKey();
+    const podcastTab = podcastPreviewTabKey();
 
-        if (podcastSubtabs) {
-            podcastSubtabs.hidden = false;
-            podcastSubtabs.replaceChildren(podcastPreviewMakeSubtabs(podcastTab));
-        }
+    if (podcastSubtabs) {
+        podcastSubtabs.hidden = false;
+        podcastSubtabs.replaceChildren(podcastPreviewMakeSubtabs(podcastTab));
+    }
 
-        if (podcastPreview && legacyLayout && podcastTab === 'gooaye') {
+    if (isPodcastNotesStaticView() && podcastTab === 'gooaye') {
+        if (legacyLayout) {
             legacyLayout.hidden = true;
+        }
+        if (podcastPreview) {
             podcastPreview.hidden = false;
             renderPodcastNotesPreview();
-            return;
         }
+        return;
+    }
 
-        if (podcastPreview) {
-            podcastPreview.hidden = true;
-        }
-
-        if (legacyLayout) {
-            legacyLayout.hidden = false;
-        }
-
-        wireNotes();
-    } else if (podcastSubtabs) {
-        podcastSubtabs.hidden = true;
-        podcastSubtabs.replaceChildren();
+    if (podcastPreview) {
+        podcastPreview.hidden = true;
     }
 
     if (legacyLayout) {
         legacyLayout.hidden = false;
     }
+
+    wireNotes();
 
     el('notes-storage-note').textContent = notesStorageNoteText();
 
@@ -3337,7 +3336,7 @@ function renderNoteEditor() {
 }
 
 function wireNotes() {
-    if (PODCAST_NOTES_LOCAL_PREVIEW && podcastPreviewTabKey() !== 'my') {
+    if (isPodcastNotesStaticView() && podcastPreviewTabKey() !== 'my') {
         return;
     }
 
@@ -3632,9 +3631,21 @@ function podcastPreviewVariantKey() {
 }
 
 function podcastPreviewTabKey() {
-    return new URLSearchParams(window.location.search).get('notesTab') === 'my'
-        ? 'my'
-        : 'gooaye';
+    const tab = new URLSearchParams(window.location.search).get('notesTab');
+    if (tab === 'gooaye') {
+        return 'gooaye';
+    }
+
+    if (tab === 'my') {
+        return 'my';
+    }
+
+    return PODCAST_NOTES_LOCAL_PREVIEW ? 'gooaye' : 'my';
+}
+
+function isPodcastNotesStaticView() {
+    return PODCAST_NOTES_LOCAL_PREVIEW
+        || new URLSearchParams(window.location.search).get('notesTab') === 'gooaye';
 }
 
 function podcastPreviewSectionKey() {
@@ -3736,14 +3747,26 @@ function podcastPreviewMakeSubtabs(active) {
             podcastPreviewFilter = 'all';
             podcastPreviewNotice = '';
 
-            if (PODCAST_NOTES_LOCAL_PREVIEW && item.key === 'my') {
-                notes = NOTES_LOCAL_PREVIEW_ITEMS.map(note => ({ ...note }));
-                notesLoadError = null;
-                notesLoaded = true;
-                selectedNoteId = notes[0]?.id ?? null;
+            if (item.key === 'my') {
+                if (PODCAST_NOTES_LOCAL_PREVIEW) {
+                    notes = NOTES_LOCAL_PREVIEW_ITEMS.map(note => ({ ...note }));
+                    notesLoadError = null;
+                    notesLoaded = true;
+                    selectedNoteId = notes[0]?.id ?? null;
+                } else {
+                    notesLoadError = null;
+                    notesLoaded = false;
+                    selectedNoteId = null;
+                    void refreshNotes().then(() => {
+                        if (podcastPreviewTabKey() === 'my') {
+                            renderNotes();
+                        }
+                    });
+                }
             }
 
             renderNotes();
+            renderSnapshotNote();
         });
         button.setAttribute('aria-pressed', item.key === active ? 'true' : 'false');
         button.append(
@@ -3901,7 +3924,7 @@ function podcastPreviewMakeEpisodeList() {
     meta.append(
         podcastPreviewElement('span', '', '最近同步：08/30'),
         podcastPreviewButton('＋ 匯入結論', 'podcast-preview-primary-button', () => {
-            podcastPreviewActionNotice('本機樣版：匯入流程只展示按鈕狀態，尚未連接正式資料庫。');
+            podcastPreviewActionNotice('展示樣版：匯入流程只展示按鈕狀態，尚未連接正式資料庫。');
         }));
     section.append(meta);
 
@@ -3932,7 +3955,7 @@ function podcastPreviewMakeMyNotes() {
     meta.append(
         podcastPreviewElement('span', '', '最近更新：08/30'),
         podcastPreviewButton('＋ 新增補充', 'podcast-preview-primary-button', () => {
-            podcastPreviewActionNotice('本機樣版：新增補充尚未保存，等你確認排版後再接資料流程。');
+            podcastPreviewActionNotice('展示樣版：新增補充尚未保存，等你確認排版後再接資料流程。');
         }));
     section.append(meta);
 
@@ -4003,7 +4026,7 @@ function podcastPreviewMakeDetail(episode) {
         podcastPreviewElement('div', 'podcast-preview-section-label', '我的補充'),
         podcastPreviewElement('p', '', episode.supplement),
         podcastPreviewButton('＋ 新增追蹤問題', 'podcast-preview-secondary-button', () => {
-            podcastPreviewActionNotice('本機樣版：追蹤問題會先留在畫面狀態，不會寫入資料庫。');
+            podcastPreviewActionNotice('展示樣版：追蹤問題會先留在畫面狀態，不會寫入資料庫。');
         }));
 
     const raw = podcastPreviewElement('details', 'podcast-preview-raw');
@@ -4351,8 +4374,8 @@ function podcastPreviewMakeSourcePanel() {
             }
             podcastPreviewActionNotice(
                 completeRows > 0
-                    ? '本機樣版：已產生 ' + completeRows + ' 筆分析欄位預覽。'
-                    : '本機樣版：目前顯示你提供的逐字稿產出範例。');
+                    ? '展示樣版：已產生 ' + completeRows + ' 筆分析欄位預覽。'
+                    : '展示樣版：目前顯示你提供的逐字稿產出範例。');
         }),
         podcastPreviewButton('匯入分析結果', 'podcast-preview-primary-button', () => {
             const values = readRows();
@@ -4364,7 +4387,7 @@ function podcastPreviewMakeSourcePanel() {
                 return;
             }
             podcastPreviewActionNotice(
-                '本機樣版：已模擬匯入 ' + completeRows + ' 筆分析結果；其餘欄位由系統產生，尚未寫入資料庫。');
+                '展示樣版：已模擬匯入 ' + completeRows + ' 筆分析結果；其餘欄位由系統產生，尚未寫入資料庫。');
         }));
     importPanel.append(importHeading, rows, generatedPreview, importActions);
     page.append(importPanel, podcastPreviewMakeHistoryTable());
@@ -4426,7 +4449,7 @@ function podcastPreviewRenderVariantC(host) {
     heading.append(
         podcastPreviewElement('div', '', ''),
         podcastPreviewButton('＋ 匯入 Podcast', 'podcast-preview-primary-button', () => {
-            podcastPreviewActionNotice('本機樣版：來源匯入尚未接上正式資料流程。');
+            podcastPreviewActionNotice('展示樣版：來源匯入尚未接上正式資料流程。');
         }));
     heading.firstChild.append(
         podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '來源管理'),
@@ -19578,13 +19601,15 @@ function renderSnapshotNote() {
     }
 
     if (state.view === 'notes') {
-        el('snapshot-note').textContent = PODCAST_NOTES_LOCAL_PREVIEW
-            ? '一次性 UI 比較 · 內容皆為示意資料，不會讀寫正式資料庫。'
-            : NOTES_LOCAL_PREVIEW
-                ? '本機預覽筆記：用來確認永久編號版面，不會讀寫資料庫。'
-                : supabase === null
-                    ? '筆記需要資料庫連線；離線快照看不到筆記。'
-                    : `筆記存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(NOTES_REFRESH_MS / 1000)} 秒自動重讀一次。`;
+        el('snapshot-note').textContent = isPodcastNotesStaticView() && podcastPreviewTabKey() === 'gooaye'
+            ? '股癌研究分析樣版 · 內容皆為示意資料，目前不會寫入資料庫。'
+            : PODCAST_NOTES_LOCAL_PREVIEW
+                ? '一次性 UI 比較 · 內容皆為示意資料，不會讀寫正式資料庫。'
+                : NOTES_LOCAL_PREVIEW
+                    ? '本機預覽筆記：用來確認永久編號版面，不會讀寫資料庫。'
+                    : supabase === null
+                        ? '筆記需要資料庫連線；離線快照看不到筆記。'
+                        : `筆記存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(NOTES_REFRESH_MS / 1000)} 秒自動重讀一次。`;
         return;
     }
 
