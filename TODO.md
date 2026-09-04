@@ -1,4 +1,4 @@
-# 待辦事項（15 件）
+# 待辦事項（16 件）
 
 這份檔案是討論的存放處，不是進度表。每次要談某件事之前先讀這裡，
 就不用把前幾次的結論重講一遍。
@@ -27,6 +27,7 @@
 | 13 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-13) | 🟡 等資料 |
 | 14 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-14) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 15 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-15) | 🟡 已改走 CDN，等 8/31 量實際流量 |
+| 16 | [D+ AI OCR：Golden Set、Validator 與正式 Worker](#todo-16) | 🔵 Phase 1 核心已完成，等真實 CLI／評估 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1125,3 +1126,26 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 
 - 8/25 那筆 34,880 次 REST 請求是平常的 6 倍，原因還沒查出來。
   如果是某種重試風暴，換到 CDN 之後會原封不動複製過去。
+
+---
+
+<a id="todo-16"></a>
+## 🔵 16. D+ AI OCR：Golden Set、Validator 與正式 Worker
+
+[↑ 回到 TODO 列表](#快速跳轉)
+
+**狀態：Phase 1 核心已完成，等待 Claude／Codex 真實 CLI 與 Golden Set 評估；本輪依使用者指示不安裝或設定 Claude CLI。**
+
+### 已討論
+
+- 方向確定為 D+：AI 主要辨識、第二遍稽核、確定性驗證與人工確認；不讓 OCR 結果直接寫入正式持倉。
+- 本輪已加入 `OcrAgentContracts`、`ClaudeCodeCliRunner`、`CodexCliRunner`、`AgentCliResultClassifier`、`AgentQuotaRouter`、`AiOcrOrchestrator`、`OcrPocRunner` 與 `ocr-poc` 命令。
+- 主要 Agent 額度不足時改跑另一個 Agent；兩者都判定額度不足時丟 `OcrAllAgentsQuotaExhaustedException`，不改走付費 API、不忙等重試。
+- Release build 0 警告／0 錯誤，.NET 10 測試 372/372 通過；沒有送出真實圖片，也沒有建立 Supabase migration、Storage、Queue 或 Windows Worker。
+
+### 尚未討論
+
+- 私有 Golden Set 標準答案、兩遍 Prompt／Schema 的版本凍結與三次重跑矩陣。
+- `RecognitionDraft`、股票名冊／數值／兩遍一致性 Validator、去識別化評估指標與 95%／90% gate。
+- Claude CLI 的安裝、Pro 登入、版本與 headless smoke test；完成前不宣稱雙 Agent 已可在本機正式執行。
+- `ocr-worker --once`／`--loop`、Supabase Auth／RLS／Queue、Windows 長駐部署與圖片清理。

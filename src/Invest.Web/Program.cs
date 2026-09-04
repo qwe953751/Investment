@@ -1,11 +1,13 @@
 using Invest.Web.Components;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.Assets.Ocr.Services;
 using Invest.Web.Features.Revenue;
 using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.StockTopics.Services;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.Database;
+using Invest.Web.Infrastructure.Ai.Cli;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.CorporateActions;
 using Invest.Web.Infrastructure.MarketData.ForeignExchange;
@@ -38,12 +40,13 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- revenue [--backfill 月數]
 //   dotnet run --project src/Invest.Web -- alert   <來源> <error|warning> <訊息> [連結]
 //   dotnet run --project src/Invest.Web -- alert-clear <來源>
+//   dotnet run --project src/Invest.Web -- ocr-poc --input <圖片目錄> --truth <標準答案.json> --output <報告目錄>
 // 這種位置引數不符合 CommandLineConfigurationProvider 的格式，會讓它丟例外，
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "export" or "intraday" or "backfill-intraday-heat"
-        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear";
+        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -112,6 +115,16 @@ builder.Services.AddTransient<UsMarketDataDownloader>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
 builder.Services.AddTransient<StaticSiteExporter>();
+builder.Services.AddSingleton<ClaudeCodeCliRunner>();
+builder.Services.AddSingleton<CodexCliRunner>();
+builder.Services.AddSingleton<AgentQuotaRouter>(services =>
+    new AgentQuotaRouter(
+        [
+            services.GetRequiredService<ClaudeCodeCliRunner>(),
+            services.GetRequiredService<CodexCliRunner>()
+        ],
+        OcrAgentRouterOptions.FromEnvironment()));
+builder.Services.AddTransient<OcrPocRunner>();
 
 var app = builder.Build();
 
@@ -220,6 +233,38 @@ if (command is "revenue")
 if (command is "material-events")
 {
     await RunMaterialEventAsync(app.Services, args);
+    return;
+}
+
+if (command is "ocr-poc")
+{
+    try
+    {
+        var runner = app.Services.GetRequiredService<OcrPocRunner>();
+        await runner.RunAsync(args);
+    }
+    catch (OcrAllAgentsQuotaExhaustedException exception)
+    {
+        Console.Error.WriteLine($"OCR 暫停：Claude 與 Codex 訂閱額度都不足（Pass={exception.Pass}）。");
+        if (exception.RetryAfter is { } retryAfter)
+        {
+            Console.Error.WriteLine($"可於約 {retryAfter.LocalDateTime:yyyy-MM-dd HH:mm:ss} 後重試。");
+        }
+
+        Environment.ExitCode = 32;
+    }
+    catch (OcrNoAvailableAgentException exception)
+    {
+        Console.Error.WriteLine($"OCR 沒有可用的訂閱 Agent（Pass={exception.Pass}）：{string.Join(", ", exception.Reasons.Values)}");
+        Environment.ExitCode = 33;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"OCR POC 失敗：{exception.Message}");
+        Console.Error.WriteLine(exception);
+        Environment.ExitCode = 1;
+    }
+
     return;
 }
 

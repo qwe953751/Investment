@@ -2,7 +2,7 @@
 
 > 日期：2026-09-04
 >
-> 狀態：**方案 D+ 與 Claude Code／Codex CLI 雙 Agent 已核准；Mac POC 與 Windows Worker 實作規劃完成，尚未進入實作**
+> 狀態：**方案 D+ 與 Claude Code／Codex CLI 雙 Agent 已核准；Mac POC Phase 1 核心已開始實作，尚未跑 Golden Set 真實圖片**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -257,22 +257,23 @@ Windows `ocr-worker` 主動向外 claim 工作
 Windows Worker 只建立向外的 HTTPS 連線，不開放入站連接埠。即使瀏覽器關閉，工作仍可完成；
 Worker 離線則保留在 `queued`，不會改由網站偷偷執行不一致的流程。
 
-### 6.3 專案內規劃位置
+### 6.3 專案內模組位置與目前狀態
 
-維持目前單一 Solution、單一 Web Project，預計新增：
+維持目前單一 Solution、單一 Web Project；下列是本輪已建立與後續待補的模組：
 
-- `Features/Assets/Ocr/Models/RecognitionDraft.cs`：模型原始結果、驗證後草稿與評估結果。
-- `Features/Assets/Ocr/Services/AiOcrOrchestrator.cs`：兩遍辨識流程與重試邊界。
-- `Features/Assets/Ocr/Services/AgentQuotaRouter.cs`：Pass 排序、額度冷卻與雙 Agent 切換。
-- `Features/Assets/Ocr/Services/OcrDraftValidator.cs`：股票名冊、數值、兩遍一致性與狀態判定。
-- `Features/Assets/Ocr/Services/OcrEvaluationService.cs`：Golden Set 指標與報告。
-- `Infrastructure/Ai/Cli/IAgentCliRunner.cs`：兩個 CLI 共用的圖片與 JSON Schema 執行契約。
-- `Infrastructure/Ai/Cli/ClaudeCodeCliRunner.cs`：Claude Code 訂閱 CLI Adapter。
-- `Infrastructure/Ai/Cli/CodexCliRunner.cs`：Codex 訂閱 CLI Adapter。
-- `Infrastructure/Ai/Cli/AgentCliResultClassifier.cs`：將退出碼與脫敏輸出分類為成功、額度、登入、暫時性或內容錯誤。
+- `Features/Assets/Ocr/Services/AiOcrOrchestrator.cs`：**已完成**兩遍辨識流程與 Pass checkpoint 邊界。
+- `Features/Assets/Ocr/Services/AgentQuotaRouter.cs`：**已完成** Pass 排序、額度冷卻與雙 Agent 切換。
+- `Features/Assets/Ocr/Services/OcrPocRunner.cs`：**已完成** Mac 私有圖片 staging、雙 Pass 報告與 `ocr-poc` 選項解析。
+- `Features/Assets/Ocr/Models/RecognitionDraft.cs`：待完成；目前 POC 先保留兩個 CLI 的原始 JSON，不寫正式草稿模型。
+- `Features/Assets/Ocr/Services/OcrDraftValidator.cs`：待完成；股票名冊、數值、兩遍一致性與狀態判定仍未接線。
+- `Features/Assets/Ocr/Services/OcrEvaluationService.cs`：待完成；`--truth` 目前只驗證標準答案檔存在，尚未計算 Golden Set 指標。
+- `Infrastructure/Ai/Cli/OcrAgentContracts.cs`：**已完成**兩個 CLI 共用的圖片、Prompt、JSON Schema、結果與 checkpoint 契約。
+- `Infrastructure/Ai/Cli/ClaudeCodeCliRunner.cs`：**已完成** Claude Code 訂閱 CLI Adapter。
+- `Infrastructure/Ai/Cli/CodexCliRunner.cs`：**已完成** Codex 訂閱 CLI Adapter。
+- `Infrastructure/Ai/Cli/AgentCliResultClassifier.cs`：**已完成**將退出碼與脫敏輸出分類為成功、額度、登入、暫時性、內容或不可用。
 - `Infrastructure/Database/OcrJobStore.cs`：正式階段才加入的 Edge／Queue 工作協定。
-- 既有 `Program.cs` 增加 `ocr-poc`、`ocr-worker --once`、`ocr-worker --loop` 命令入口。
-- 既有 `tests/Invest.Web.Tests` 增加 Schema、解析、驗證、租約與冪等測試。
+- 既有 `Program.cs`：**已完成** `ocr-poc` 命令入口；`ocr-worker --once`、`ocr-worker --loop` 留待正式階段。
+- 既有 `tests/Invest.Web.Tests`：**已完成** Router、CLI 分類與 checkpoint 單元測試；Schema、解析、Validator、租約與冪等測試留待後續。
 
 UI 不直接依賴模型名稱、Prompt 或 Storage。辨識與驗證的概念介面如下：
 
@@ -312,10 +313,11 @@ B 可用 → 執行 B
 雙方額度不足，恢復後只重跑稽核遍，不能浪費額度重做擷取遍。
 
 CLI 結果統一分類為 `Success`、`QuotaExhausted`、`AuthenticationRequired`、
-`TransientFailure`、`InvalidOutput`、`Fatal`。只有 `QuotaExhausted` 能觸發本節的額度切換與
-`OcrAllAgentsQuotaExhaustedException`；未安裝 CLI 或登入過期屬設定／登入錯誤，不能偽裝成
-額度不足。因 CLI 訊息可能改版，分類器要以脫敏的實際錯誤 fixture 做測試，並同時記錄 CLI
-版本與退出碼，不只比對一段固定字串。
+`TransientFailure`、`InvalidOutput`、`Unavailable`、`Fatal`。`QuotaExhausted` 會觸發本節的
+額度切換與 `OcrAllAgentsQuotaExhaustedException`；未安裝 CLI 或登入過期可嘗試另一個 Agent，
+但兩者都不可用時丟設定／登入例外，不能偽裝成額度不足。timeout、網路、無效 JSON 與其他
+內容錯誤目前不做盲目 fallback。因 CLI 訊息可能改版，分類器要以脫敏的實際錯誤 fixture 做測試，
+並同時記錄 CLI 版本與退出碼，不只比對一段固定字串。
 
 ## 七、D+ 辨識契約與確定性驗證
 
@@ -391,14 +393,16 @@ Structured Outputs 只能保證資料形狀，不保證內容真實。
 
 ### 8.1 執行方式
 
-POC 需要 .NET 10、已安裝的 Claude Code／Codex CLI，以及分別以 Claude Pro／ChatGPT Plus
-完成的互動式登入；**不需要也不接受 AI API Key 作為預設備援**。預計從 repo 根目錄執行：
+POC 需要 .NET 10，以及至少一個已完成訂閱登入的 Agent CLI；**不需要也不接受 AI API Key
+作為預設備援**。本輪依使用者指示不安裝、不設定或實際啟動 Claude CLI，因此可先以 Codex
+CLI 路徑和 fake runner 測試驗證 Router／checkpoint／報告骨架；兩個 CLI 的交叉 smoke test
+留待 Claude CLI 由使用者另行準備後再做。目前已提供下列命令入口，從 repo 根目錄執行：
 
 2026-09-04 實查目前 Mac：.NET SDK 為 `10.0.302`；Codex CLI 為
 `0.150.0-alpha.12.2` 且顯示使用 ChatGPT 登入；雖已安裝 Claude 桌面 App，但目前 shell 的
-`PATH` 找不到 `claude` 指令，因此不能把它視為 Claude Code CLI 已就緒。Phase 1 開始前要先
-安裝 Claude Code CLI 或確認其實際位置、加入專用執行路徑，再以 Claude Pro 登入並重跑
-preflight；本文件更新不自行安裝或變更登入狀態。
+`PATH` 找不到 `claude` 指令，因此不能把它視為 Claude Code CLI 已就緒。Claude CLI 的安裝、
+實際位置確認與 Claude Pro 登入本輪暫不處理；日後若要啟用雙 Agent，再由使用者準備後重跑
+preflight，文件與程式不會自行變更登入狀態。
 
 ```bash
 dotnet run --project src/Invest.Web -- \
@@ -613,10 +617,10 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
 
 ### Phase 1：Mac AI OCR POC
 
-- 建立私有 Golden Set 標準答案、Schema、兩遍 Prompt、Claude／Codex Adapter 與 Validator。
-- 加入 `AgentQuotaRouter`、CLI 結果分類器、`OcrAllAgentsQuotaExhaustedException`、`ocr-poc`
-  命令、單元測試及去識別化評估報告。
-- 交叉 Agent 與兩個單 Agent fallback 路徑各跑三次，取得品質、延遲與訂閱額度消耗基準。
+- **已完成核心**：Schema、兩遍 Prompt、Claude／Codex Adapter、`AgentQuotaRouter`、CLI 結果分類器、
+  `OcrAllAgentsQuotaExhaustedException`、`ocr-poc` 命令、單元測試與 staging 清理。
+- **待完成**：私有 Golden Set 標準答案、確定性 Validator、去識別化評估指標，以及實際 CLI smoke test。
+- 交叉 Agent 與兩個單 Agent fallback 路徑各跑三次，取得品質、延遲與訂閱額度消耗基準；目前尚未執行。
 
 ### Phase 2：POC Gate 與設計凍結
 
@@ -708,9 +712,11 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
 - 公司資安與個資政策是否允許此用途。
 - Golden Set 擴充後，95%／90% 門檻是否仍足以支援試用；危險假陽性 0 筆不降低。
 
-下一個建議動作只實作 **Phase 1：Mac AI OCR POC**。這一步使用既有訂閱 CLI，不構成 AI API
-花費；本規劃也不構成正式 Supabase migration、圖片上傳、Windows 軟體安裝、網站發布、
-commit 或 push 的授權。
+目前已開始 **Phase 1：Mac AI OCR POC**。依使用者指示，Claude CLI 安裝／設定與真實啟動暫緩；
+下一個可執行動作是先用 Codex CLI（或 fake runner）建立私有 Golden Set、接上 Validator 與
+評估報告，待 Claude CLI 日後備妥再補雙 Agent 交叉 smoke test。這一步使用既有訂閱 CLI，不
+構成 AI API 花費；本規劃仍不構成正式 Supabase migration、圖片上傳、Windows 軟體安裝或網站
+發布的授權。
 
 ## 十四、參考資料
 
