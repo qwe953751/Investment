@@ -1,8 +1,11 @@
 # Podcast／NotebookLM 資料整合與筆記 UI 討論報告
 
-**報告日期：** 2026-09-04  
-**專案：** [qwe953751/Investment](https://github.com/qwe953751/Investment/tree/main)  
-**現行網站：** [frank-invest.github.io/admin888](https://frank-invest.github.io/admin888/)  
+**報告日期：** 2026-09-04
+
+**專案：** [qwe953751/Investment](https://github.com/qwe953751/Investment/tree/main)
+
+**現行網站：** [frank-invest.github.io/admin888](https://frank-invest.github.io/admin888/)
+
 **文件目的：** 整理本次聊天的需求演變、已確認方向、技術研究、UI 決策、未決事項與後續實作順序，供下一次討論與開發直接延續。
 
 ---
