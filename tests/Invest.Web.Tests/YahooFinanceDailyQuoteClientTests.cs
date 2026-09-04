@@ -68,6 +68,24 @@ public sealed class YahooFinanceDailyQuoteClientTests
     }
 
     [Fact]
+    public async Task indicators或quote缺漏時回傳空字典而不拋例外()
+    {
+        var client = new YahooFinanceDailyQuoteClient(
+            new HttpClient(new CannedResponseHandler(HttpStatusCode.OK, """
+                {"chart":{"result":[{
+                    "meta":{"exchangeTimezoneName":"America/New_York"},
+                    "timestamp":[1755518400],
+                    "indicators":{"quote":[]}
+                }],"error":null}}
+                """)),
+            NullLogger<YahooFinanceDailyQuoteClient>.Instance);
+
+        var series = await client.GetDailyTimeSeriesAsync("WEIRD", "格式異常代號");
+
+        Assert.Empty(series);
+    }
+
+    [Fact]
     public async Task 查無代號時404回傳空字典而不中止()
     {
         var client = new YahooFinanceDailyQuoteClient(

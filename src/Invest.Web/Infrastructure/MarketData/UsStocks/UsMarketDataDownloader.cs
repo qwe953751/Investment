@@ -93,8 +93,12 @@ public sealed class UsMarketDataDownloader(
                 report.SkippedDueToQuota += ordered.Length - report.ProcessedTickers;
                 break;
             }
-            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException
+                or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
             {
+                // 最後三種例外對應 YahooFinanceDailyQuoteClient 檔頭的警語：這支端點沒有官方
+                // 文件，回應形狀可能改版或個別 ticker 回傳異常內容。單一檔壞掉只算這檔失敗，
+                // 不能讓整批回補中止、白白丟掉其他檔已經抓到、還在記憶體緩衝區裡的資料。
                 logger.LogError(exception, "回補 {Ticker} 失敗。", entry.Ticker);
                 report.FailedTickers.Add(entry.Ticker);
                 report.ProcessedTickers++;

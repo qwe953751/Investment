@@ -80,7 +80,18 @@ public sealed class YahooFinanceDailyQuoteClient(
             return quotes;
         }
 
-        var quote = series.GetProperty("indicators").GetProperty("quote")[0];
+        // 這支端點沒有官方文件，`indicators.quote` 這層形狀理論上可能改版或缺漏；
+        // 用 TryGetProperty／長度檢查取代直接索引，缺這層時當成查無資料處理，
+        // 不要讓單一檔股票的格式異常整批中止 UsMarketDataDownloader 的回補。
+        if (!series.TryGetProperty("indicators", out var indicators)
+            || !indicators.TryGetProperty("quote", out var quoteArray)
+            || quoteArray.ValueKind != JsonValueKind.Array
+            || quoteArray.GetArrayLength() == 0)
+        {
+            return quotes;
+        }
+
+        var quote = quoteArray[0];
         var opens = ReadDecimalArray(quote, "open");
         var highs = ReadDecimalArray(quote, "high");
         var lows = ReadDecimalArray(quote, "low");
