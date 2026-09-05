@@ -1141,7 +1141,7 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 - 方向確定為 D+：AI 主要辨識、第二遍稽核、確定性驗證與人工確認；不讓 OCR 結果直接寫入正式持倉。
 - 本輪已加入 `OcrAgentContracts`、`ClaudeCodeCliRunner`、`CodexCliRunner`、`AgentCliResultClassifier`、`AgentQuotaRouter`、`AiOcrOrchestrator`、`OcrPocRunner` 與 `ocr-poc` 命令。
 - 主要 Agent 額度不足時改跑另一個 Agent；兩者都判定額度不足時丟 `OcrAllAgentsQuotaExhaustedException`，不改走付費 API、不忙等重試。
-- Release build 0 警告／0 錯誤，.NET 10 測試 372/372 通過；沒有送出真實圖片，也沒有建立 Supabase migration、Storage、Queue 或 Windows Worker。
+- Release build 0 警告／0 錯誤，.NET 10 測試 364/364 通過；沒有送出真實圖片，也沒有建立 Supabase migration、Storage、Queue 或 Windows Worker。
 
 ### 尚未討論
 

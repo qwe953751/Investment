@@ -102,7 +102,7 @@ GitHub 組織，不含原始帳號名稱）。打開就是**訪客（檢視）�
 - 筆記可附加最多 6 張 JPG／PNG／GIF／WebP 圖片；超過 5 MB 時先在瀏覽器壓縮到約 4.5 MB，再預覽及上傳 Supabase Storage，重新開啟或換裝置仍看得到。HEIC／HEIF 只有在目前瀏覽器能原生解碼時才可轉成 JPEG；不支援時會在選檔階段明確顯示原因。
 - 筆記存於 Supabase `notes` 表；正在編輯時背景重讀不會覆蓋草稿。
 - 儲存或刪除成功後，較早發出的背景讀取會因清單版本已變更而被捨棄，不會把剛寫入的筆記從清單覆蓋掉；下一輪背景同步仍會取得其他裝置的更新。
-- Podcast／股癌樣版放在筆記子頁籤：進入 `?view=notes&notesTab=gooaye` 可查看「研究分析」與「Podcast 來源」。來源頁只要求輸入時間、集數與 Gemini Notebook 逐字稿分析；其餘欄位目前為展示產出，不會寫入資料庫。
+- Podcast／股癌樣版放在筆記子頁籤：進入 `?view=notes&notesTab=gooaye` 可查看「研究分析」與「Podcast 來源」。來源頁只要求輸入時間、集數與 Gemini Notebook 逐字稿分析；來源可在目前瀏覽器本機新增、編輯、移除，其餘欄位由本機內容解析產生預覽，不會寫入 Supabase，尚未串接正式 Gemini API。
 
 `db/023_notes_images.sql` 已套用正式 Supabase；`note-images` bucket、`notes.attachments` 與三條 Storage policy 均已查證存在，匿名上傳／刪除測試皆回 HTTP 200。它沿用目前筆記的公開 anon 模型，請勿上傳含帳號、密碼或敏感金融資訊的原始截圖。
 

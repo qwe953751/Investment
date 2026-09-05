@@ -28,7 +28,7 @@ const CUSTOM_INTRADAY_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window
 // 本機專用：不連資料庫也能檢查筆記的永久編號與版面。只影響筆記頁，資產頁一律讀寫資料庫。
 const NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'review-20260826-notes-v1';
-// 本機專用 Podcast UI 樣版入口：只展示明確標示的示意資料，不讀寫正式資料庫。
+// 本機專用 Podcast UI 樣版入口：只影響本機預覽，來源草稿存於瀏覽器 localStorage。
 const PODCAST_NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'podcast-notes-v1';
 // 本機專用 UI 原型：回答「一檔股票目前掛在哪些族群，怎麼分層編輯」；
@@ -1423,175 +1423,17 @@ const PODCAST_PREVIEW_VARIANTS = [
     { key: 'c', label: 'C Podcast 資料庫' }
 ];
 
-// Podcast UI 樣版資料：正式頁的股癌子頁籤也沿用這組明確標示的示意內容。
-const PODCAST_PREVIEW_EPISODES = [
-    {
-        id: 'gooaye-018',
-        episode: 'EP 示意 018',
-        date: '2026/08/30',
-        title: 'AI 基礎設施供應鏈瓶頸與軟體價值重分配',
-        takeaway: 'AI 硬體競爭從跑分轉向產能與供應鏈掌控，企業私有數據也讓 SaaS 仍具價值。',
-        stance: '偏多',
-        tags: ['光通訊', 'ABF 載板', 'AI 伺服器', '企業軟體'],
-        conclusions: 5,
-        followUps: 2,
-        corePoints: [
-            'AI 供應鏈的瓶頸已從晶片效能轉為 CoWoS、光通訊與載板產能。',
-            'ASIC 與 GPU 會共存，替代架構將擴大周邊零組件的需求。',
-            '企業私有數據、資料隱私與法遵仍是 SaaS 的護城河。'
-        ],
-        catalysts: ['XPU／ASIC 放量', '光互連需求增加', 'HBM 規格調整帶動載板需求'],
-        risks: ['產能取得不如預期', '高估值與供應鏈循環', '模型合作的利潤分配變化'],
-        verify: ['光通訊與 ABF 供應鏈訂單', 'HBM 堆疊規格與載板需求', 'CRM 與 Anthropic 合作模式'],
-        supplement: '我的補充：把「產業方向」「個股標的」「可驗證數據」分開追蹤，不把節目觀點直接當成買賣訊號。',
-        originalAnalysis: '原始分析（示意）：AI 硬體的核心競爭從單一晶片效能轉為供應鏈產能；企業數據則讓 SaaS 在 AI 時代仍有重新估值的空間。'
-    },
-    {
-        id: 'gooaye-017',
-        episode: 'EP 示意 017',
-        date: '2026/08/23',
-        title: '內需與現金流：景氣沒有想像中差，但分化會更明顯',
-        takeaway: '內需不是單一方向，品牌力、通路效率與現金流會拉開公司之間的差距。',
-        stance: '偏多',
-        tags: ['內需', '現金流', '消費'],
-        conclusions: 4,
-        followUps: 1,
-        corePoints: [
-            '總體數字平穩不代表所有公司都受惠，應回到單店與產品結構。',
-            '現金流穩定的公司在需求波動時，調整成本的空間較大。'
-        ],
-        catalysts: ['旺季銷售優於預期', '庫存週轉改善', '新通路貢獻營收'],
-        risks: ['消費降級持續', '促銷侵蝕毛利', '租金與人力成本上升'],
-        verify: ['同店營收與毛利率是否同步改善', '營運現金流是否連續為正'],
-        supplement: '我的補充：這一則適合放進觀察清單，等下一次財報用相同欄位回看，不先下結論。',
-        originalAnalysis: '原始分析（示意）：內需保持韌性，但市場會更重視企業自身的營運效率。'
-    },
-    {
-        id: 'gooaye-016',
-        episode: 'EP 示意 016',
-        date: '2026/08/16',
-        title: '高基期電子股：成長還在，估值容錯率卻變低',
-        takeaway: '基本面沒有立刻反轉，但只要成長低於預期，股價修正可能先發生。',
-        stance: '偏空',
-        tags: ['電子', '估值', '高基期'],
-        conclusions: 3,
-        followUps: 2,
-        corePoints: [
-            '高基期公司需要更高的實際增速，才能支撐相同的估值。',
-            '市場在等待下一個可驗證的成長催化，而不是重複舊敘事。'
-        ],
-        catalysts: ['新產品出貨超預期', '客戶集中度下降', '評價重新上修'],
-        risks: ['成長率自然回落', '同業競爭加劇', '高估值遇到利率變化'],
-        verify: ['新產品營收占比', '毛利率與營益率是否守住'],
-        supplement: '我的補充：先觀察估值與預期的距離，避免只因產業長期方向正確就忽略短期價格風險。',
-        originalAnalysis: '原始分析（示意）：高基期電子仍有長期題材，但短期估值對失望的反應會更快。'
-    },
-    {
-        id: 'gooaye-015',
-        episode: 'EP 示意 015',
-        date: '2026/08/09',
-        title: '金融股的利差、資產品質與股利：要追蹤的是變化速度',
-        takeaway: '金融股的重點不只在殖利率，而是利差、資產品質與配息能力能否一起維持。',
-        stance: '待驗證',
-        tags: ['金融', '利差', '股利'],
-        conclusions: 4,
-        followUps: 3,
-        corePoints: [
-            '殖利率是結果，仍要往前拆解獲利來源與資產品質。',
-            '利差變化與信用成本需要搭配景氣位置一起看。'
-        ],
-        catalysts: ['信用成本低於預期', '投資收益回升', '股利政策穩定'],
-        risks: ['利差收窄', '逾放與備抵增加', '金融市場波動擴大'],
-        verify: ['淨利差與信用成本趨勢', '配息率與資本適足率是否平衡'],
-        supplement: '我的補充：把「高股利」改寫成可驗證問題，下一次財報再補上數字。',
-        originalAnalysis: '原始分析（示意）：金融股需要把股利吸引力放回獲利品質與資本條件中檢視。'
-    }
-];
-
-const PODCAST_PREVIEW_HISTORY = [
-    {
-        date: '2026/08/30',
-        episode: 'EP 示意 018',
-        groups: '光通訊、ABF 載板、AI 伺服器',
-        targets: 'Marvell (MRVL)、Salesforce (CRM)',
-        market: '硬體瓶頸轉為產能與供應鏈掌控；企業私有數據讓 SaaS 仍具價值。',
-        stance: '偏多'
-    },
-    {
-        date: '2026/08/23',
-        episode: 'EP 示意 017',
-        groups: '內需、消費',
-        targets: '示意標的 C',
-        market: '內需仍有韌性；品牌力與通路效率將拉開差距。',
-        stance: '偏多'
-    },
-    {
-        date: '2026/08/16',
-        episode: 'EP 示意 016',
-        groups: '電子',
-        targets: '示意標的 D',
-        market: '成長仍在，但高基期降低估值容錯率。',
-        stance: '偏空'
-    },
-    {
-        date: '2026/08/09',
-        episode: 'EP 示意 015',
-        groups: '金融',
-        targets: '示意標的 E',
-        market: '利差、資產品質與股利能力仍待後續數據驗證。',
-        stance: '待驗證'
-    }
-];
-
-const PODCAST_PREVIEW_GENERATED_SAMPLE = {
-    coreTheme: 'AI 基礎設施供應鏈瓶頸與軟體生態系價值重分配',
-    groups: ['光通訊', 'ABF 載板', 'AI 伺服器', '企業軟體'],
-    targets: ['Marvell (MRVL)', 'Salesforce (CRM)'],
-    points: [
-        '企業私有數據與法遵能力，使 SaaS 與模型形成合作而非被取代。',
-        'AI 硬體競爭從晶片跑分轉為 CoWoS、光通訊與載板的產能掌控。',
-        'ASIC 與 GPU 將共存，替代架構會擴大周邊零組件的需求。'
-    ],
-    market: 'AI 供應鏈的瓶頸轉向產能與供應鏈管理；企業數據讓 SaaS 在 AI 時代仍有重新估值的空間。',
-    followUps: [
-        'Marvell 的 XPU／Scale-up 光互連需求是否延續。',
-        'HBM 堆疊規格與 ABF 載板供需是否出現變化。',
-        'Salesforce 與 Anthropic 的合作拆帳與定價權如何分配。'
-    ],
-    stance: '偏多'
-};
-
-const PODCAST_PREVIEW_MY_NOTES = [
-    {
-        id: 'my-note-003',
-        date: '2026/08/30',
-        title: '把 AI 伺服器需求與現金流拆開追蹤',
-        takeaway: '建立「產業方向／個股兌現／估值位置」三欄，避免一個結論包辦全部判斷。',
-        tags: ['AI 伺服器', '追蹤清單'],
-        stance: '待驗證'
-    },
-    {
-        id: 'my-note-002',
-        date: '2026/08/24',
-        title: '內需觀察清單的回看欄位',
-        takeaway: '下次財報固定回看同店、毛利率與營運現金流，不用每次重新定義問題。',
-        tags: ['內需', '財報'],
-        stance: '偏多'
-    },
-    {
-        id: 'my-note-001',
-        date: '2026/08/17',
-        title: '高基期電子股的估值容錯',
-        takeaway: '把「長期看好」與「目前值得買」分成兩個不同欄位。',
-        tags: ['估值', '電子'],
-        stance: '偏空'
-    }
-];
+// 股癌沒有預先建立的補充資料，所有內容都必須由使用者匯入或後續新增。
+const PODCAST_PREVIEW_MY_NOTES = [];
 
 let podcastPreviewEventsWired = false;
 let podcastPreviewNotice = '';
 let podcastPreviewQuery = '';
 let podcastPreviewFilter = 'all';
+const PODCAST_PREVIEW_SOURCES_KEY = 'invest.podcast.gooaye.sources.v1';
+let podcastPreviewEditingId = '';
+let podcastPreviewImportOpen = false;
+let podcastPreviewGeneratedDraft = null;
 
 // 筆記要跨裝置看得到彼此的變化，但不必到秒等級——比警報鈴鐺（5 分鐘）勤一點，
 // 一分鐘足以讓「換一台裝置補筆記」的場景感覺得到，又不會把 PostgREST 打太兇。
@@ -3064,11 +2906,11 @@ function notesStorageNoteText() {
     }
 
     if (PODCAST_NOTES_LOCAL_PREVIEW) {
-        return '本機 Podcast UI 樣版 · 示意資料，只供確認排版；不會讀寫正式資料庫';
+        return '本機 Podcast UI 樣版 · 股癌來源只顯示本機已匯入資料，不會讀寫正式資料庫';
     }
 
     if (isPodcastNotesStaticView()) {
-        return '股癌研究分析樣版 · 示意資料，只供確認版面；目前不會寫入資料庫';
+        return '股癌研究分析 · 來源資料只保存在本機瀏覽器，尚未寫入正式資料庫';
     }
 
     if (NOTES_LOCAL_PREVIEW) {
@@ -3611,6 +3453,198 @@ function podcastPreviewButton(text, className, onClick) {
     return button;
 }
 
+function podcastPreviewNewId() {
+    return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : 'podcast-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+}
+
+function podcastPreviewSourceDate(value) {
+    const match = String(value ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return match ? `${match[1]}/${match[2]}/${match[3]}` : String(value ?? '').replace(/-/g, '/');
+}
+
+function podcastPreviewCleanText(value) {
+    return String(value ?? '')
+        .replace(/\*\*/g, '')
+        .replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '')
+        .trim();
+}
+
+function podcastPreviewExtractLabel(text, labels) {
+    const match = String(text ?? '').match(
+        new RegExp('(?:' + labels.join('|') + ')\\s*[：:]\\s*([^\\r\\n]+)', 'i'));
+    return match ? podcastPreviewCleanText(match[1]) : '';
+}
+
+function podcastPreviewSplitGeneratedList(value) {
+    return String(value ?? '')
+        .split(/[、,，／/|；;]/)
+        .map(podcastPreviewCleanText)
+        .filter(Boolean)
+        .slice(0, 8);
+}
+
+function podcastPreviewGenerateAnalysis(text) {
+    const source = String(text ?? '').trim();
+    const lines = source.split(/\r?\n/).map(podcastPreviewCleanText).filter(Boolean);
+    const coreTheme = podcastPreviewExtractLabel(source, ['核心議題', '核心主題', '核心觀點'])
+        || lines.find(line => !line.startsWith('【') && line !== '---')
+        || '待整理';
+    const market = podcastPreviewExtractLabel(source, ['市場背景', '市場內容'])
+        || lines.find(line => /市場|景氣|供應鏈|需求/.test(line) && line !== coreTheme)
+        || '待整理';
+    const explicitGroups = podcastPreviewExtractLabel(source, ['看好族群', '關聯族群', '相關族群']);
+    const inferredGroups = lines
+        .filter(line => /族群|產業/.test(line) && /[：:]/.test(line) && !/具體|個股/.test(line))
+        .map(line => line.split(/[：:]/)[0])
+        .join('、');
+    const groups = podcastPreviewSplitGeneratedList(explicitGroups || inferredGroups);
+    const targets = Array.from(new Set(Array.from(source.matchAll(
+        /([A-Za-z][A-Za-z0-9.&/-]*(?:\s+[A-Za-z][A-Za-z0-9.&/-]*){0,2})\s*\(([A-Z][A-Z0-9.-]{1,6})\)/g),
+        match => `${match[1].trim()} (${match[2]})`)));
+    const points = lines
+        .filter(line => /^(?:關鍵觀點|觀點)\s*[一二三四五六七八九十\d]*\s*[：:]/.test(line)
+            || /^\d+[.、)]\s*/.test(line))
+        .slice(0, 6);
+    const followUps = lines
+        .filter(line => !/市場背景|市場內容/.test(line)
+            && /待驗證|需觀察|關注|留意|建立.*日誌|追蹤/.test(line))
+        .slice(0, 6);
+    const explicitStance = source.match(/(?:節目觀點|整體觀點|觀點)\s*[：:]\s*(偏多|偏空|待驗證|中性)/);
+    const stance = explicitStance?.[1]
+        || (/偏多|看好|多頭/.test(source) ? '偏多' : /偏空|看壞/.test(source) ? '偏空' : '待驗證');
+
+    return { coreTheme, groups, targets, points, market, followUps, stance };
+}
+
+function podcastPreviewNormalizeGenerated(value, analysis) {
+    const fallback = podcastPreviewGenerateAnalysis(analysis);
+    const candidate = value && typeof value === 'object' ? value : {};
+    const strings = (items, fallbackItems) => Array.isArray(items)
+        ? items.filter(item => typeof item === 'string')
+        : fallbackItems;
+    return {
+        coreTheme: typeof candidate.coreTheme === 'string' ? candidate.coreTheme : fallback.coreTheme,
+        groups: strings(candidate.groups, fallback.groups),
+        targets: strings(candidate.targets, fallback.targets),
+        points: strings(candidate.points, fallback.points),
+        market: typeof candidate.market === 'string' ? candidate.market : fallback.market,
+        followUps: strings(candidate.followUps, fallback.followUps),
+        stance: typeof candidate.stance === 'string' ? candidate.stance : fallback.stance
+    };
+}
+
+function podcastPreviewReadSources() {
+    try {
+        const raw = window.localStorage.getItem(PODCAST_PREVIEW_SOURCES_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed)
+            ? parsed
+                .filter(source => source && typeof source === 'object'
+                    && typeof source.id === 'string'
+                    && typeof source.time === 'string'
+                    && typeof source.episode === 'string'
+                    && typeof source.analysis === 'string')
+                .map(source => ({
+                    ...source,
+                    date: source.date || podcastPreviewSourceDate(source.time),
+                    generated: podcastPreviewNormalizeGenerated(source.generated, source.analysis)
+                }))
+            : [];
+    } catch {
+        return [];
+    }
+}
+
+function podcastPreviewWriteSources(sources) {
+    try {
+        window.localStorage.setItem(PODCAST_PREVIEW_SOURCES_KEY, JSON.stringify(sources));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function podcastPreviewSources() {
+    return podcastPreviewReadSources().sort((left, right) =>
+        String(right.time).localeCompare(String(left.time)));
+}
+
+function podcastPreviewSourceFromInput(values, id) {
+    const [time, episode, analysis] = values;
+    return {
+        id: id || podcastPreviewNewId(),
+        time,
+        date: podcastPreviewSourceDate(time),
+        episode,
+        analysis,
+        generated: podcastPreviewGenerateAnalysis(analysis),
+        updatedAt: new Date().toISOString()
+    };
+}
+
+function podcastPreviewSourceToEpisode(source) {
+    const generated = source.generated || podcastPreviewGenerateAnalysis(source.analysis);
+    return {
+        id: source.id,
+        episode: source.episode,
+        date: source.date,
+        title: generated.coreTheme,
+        takeaway: generated.coreTheme,
+        stance: generated.stance,
+        tags: [...generated.groups, ...generated.targets].slice(0, 8),
+        conclusions: generated.points.length,
+        followUps: generated.followUps.length,
+        corePoints: generated.points,
+        catalysts: generated.followUps,
+        risks: [],
+        verify: generated.followUps,
+        supplement: '尚未加入個人補充。',
+        originalAnalysis: source.analysis
+    };
+}
+
+function podcastPreviewEpisodes() {
+    return podcastPreviewSources().map(podcastPreviewSourceToEpisode);
+}
+
+function podcastPreviewBeginEdit(id) {
+    const source = podcastPreviewSources().find(item => item.id === id);
+    if (!source) {
+        return;
+    }
+
+    podcastPreviewEditingId = id;
+    podcastPreviewImportOpen = true;
+    podcastPreviewGeneratedDraft = source.generated || podcastPreviewGenerateAnalysis(source.analysis);
+    podcastPreviewNotice = '';
+    renderPodcastNotesPreview();
+}
+
+function podcastPreviewRemoveSource(id) {
+    const source = podcastPreviewSources().find(item => item.id === id);
+    if (!source || !window.confirm(`確定移除「${source.episode}」嗎？`)) {
+        return;
+    }
+
+    const sources = podcastPreviewReadSources().filter(item => item.id !== id);
+    if (!podcastPreviewWriteSources(sources)) {
+        podcastPreviewNotice = '本機儲存失敗，來源尚未移除。';
+        renderPodcastNotesPreview();
+        return;
+    }
+
+    if (podcastPreviewEditingId === id) {
+        podcastPreviewEditingId = '';
+        podcastPreviewImportOpen = false;
+        podcastPreviewGeneratedDraft = null;
+    }
+    podcastPreviewSetUrl({ episode: null });
+    podcastPreviewNotice = `已移除 ${source.episode}。`;
+    renderPodcastNotesPreview();
+}
+
 function podcastPreviewSetUrl(changes) {
     const url = new URL(window.location.href);
 
@@ -3656,7 +3690,8 @@ function podcastPreviewSectionKey() {
 
 function podcastPreviewEpisode() {
     const id = new URLSearchParams(window.location.search).get('episode');
-    return PODCAST_PREVIEW_EPISODES.find(episode => episode.id === id) ?? null;
+    const source = podcastPreviewSources().find(item => item.id === id);
+    return source ? podcastPreviewSourceToEpisode(source) : null;
 }
 
 function podcastPreviewSetVariant(key) {
@@ -3736,8 +3771,8 @@ function podcastPreviewMakeSubtabs(active) {
     nav.setAttribute('aria-label', '筆記來源');
 
     const items = [
-        { key: 'my', label: '我的筆記', count: '3' },
-        { key: 'gooaye', label: '股癌', count: String(PODCAST_PREVIEW_EPISODES.length) }
+        { key: 'my', label: '我的筆記' },
+        { key: 'gooaye', label: '股癌' }
     ];
 
     for (const item of items) {
@@ -3769,9 +3804,7 @@ function podcastPreviewMakeSubtabs(active) {
             renderSnapshotNote();
         });
         button.setAttribute('aria-pressed', item.key === active ? 'true' : 'false');
-        button.append(
-            podcastPreviewElement('span', '', item.label),
-            podcastPreviewElement('span', 'podcast-preview-count', item.count));
+        button.append(podcastPreviewElement('span', '', item.label));
         nav.append(button);
     }
 
@@ -3846,10 +3879,11 @@ function podcastPreviewEpisodeMatches(episode) {
 
 function podcastPreviewApplyEpisodeFilters(host) {
     const cards = host.querySelectorAll('[data-podcast-episode-card]');
+    const episodes = podcastPreviewEpisodes();
     let count = 0;
 
     for (const card of cards) {
-        const episode = PODCAST_PREVIEW_EPISODES.find(item => item.id === card.dataset.podcastEpisodeId);
+        const episode = episodes.find(item => item.id === card.dataset.podcastEpisodeId);
         const matches = episode ? podcastPreviewEpisodeMatches(episode) : true;
         card.hidden = !matches;
         if (matches) {
@@ -3859,7 +3893,7 @@ function podcastPreviewApplyEpisodeFilters(host) {
 
     const countLabel = host.querySelector('[data-podcast-result-count]');
     if (countLabel) {
-        countLabel.textContent = '顯示 ' + count + ' / ' + PODCAST_PREVIEW_EPISODES.length;
+        countLabel.textContent = '顯示 ' + count + ' / ' + episodes.length;
     }
 }
 
@@ -3936,7 +3970,7 @@ function podcastPreviewMakeEpisodeList() {
     section.append(result);
 
     const list = podcastPreviewElement('div', 'podcast-preview-episode-list');
-    for (const episode of PODCAST_PREVIEW_EPISODES) {
+    for (const episode of podcastPreviewEpisodes()) {
         const card = podcastPreviewMakeEpisodeCard(episode, false);
         card.dataset.podcastEpisodeId = episode.id;
         list.append(card);
@@ -4078,26 +4112,45 @@ function podcastPreviewMakeHistoryTable() {
     const caption = podcastPreviewElement('caption', '', 'Podcast 來源資料表');
     const thead = document.createElement('thead');
     const headerRow = document.createElement('tr');
-    for (const label of ['日期', '集數', '看好族群', '標的', '市場內容', '觀點']) {
+    for (const label of ['日期', '集數', '看好族群', '標的', '市場內容', '觀點', '操作']) {
         headerRow.append(podcastPreviewElement('th', '', label));
     }
     thead.append(headerRow);
 
     const tbody = document.createElement('tbody');
-    for (const item of PODCAST_PREVIEW_HISTORY) {
+    const sources = podcastPreviewSources();
+    if (sources.length === 0) {
+        const row = document.createElement('tr');
+        const empty = podcastPreviewElement('td', 'podcast-preview-history-empty',
+            '目前尚未匯入 Podcast 來源。');
+        empty.colSpan = 7;
+        row.append(empty);
+        tbody.append(row);
+    }
+
+    for (const source of sources) {
+        const generated = source.generated || podcastPreviewGenerateAnalysis(source.analysis);
         const row = document.createElement('tr');
         row.append(
-            podcastPreviewElement('td', 'podcast-preview-history-date', item.date),
-            podcastPreviewElement('td', 'podcast-preview-history-episode', item.episode),
-            podcastPreviewElement('td', '', item.groups),
-            podcastPreviewElement('td', '', item.targets),
-            podcastPreviewElement('td', 'podcast-preview-history-market', item.market));
+            podcastPreviewElement('td', 'podcast-preview-history-date', source.date),
+            podcastPreviewElement('td', 'podcast-preview-history-episode', source.episode),
+            podcastPreviewElement('td', '', generated.groups.join('、') || '待分析'),
+            podcastPreviewElement('td', '', generated.targets.join('、') || '待分析'),
+            podcastPreviewElement('td', 'podcast-preview-history-market', generated.market || '待分析'));
         const stanceCell = podcastPreviewElement('td', '');
         stanceCell.append(podcastPreviewElement(
             'span',
-            'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
-            item.stance));
-        row.append(stanceCell);
+            'podcast-preview-stance is-' + podcastPreviewStanceClass(generated.stance),
+            generated.stance));
+        const actionCell = podcastPreviewElement('td', 'podcast-preview-history-actions');
+        actionCell.append(
+            podcastPreviewButton('編輯', 'podcast-preview-history-action', () => {
+                podcastPreviewBeginEdit(source.id);
+            }),
+            podcastPreviewButton('移除', 'podcast-preview-history-action is-danger', () => {
+                podcastPreviewRemoveSource(source.id);
+            }));
+        row.append(stanceCell, actionCell);
         tbody.append(row);
     }
 
@@ -4108,12 +4161,18 @@ function podcastPreviewMakeHistoryTable() {
 }
 
 function podcastPreviewDateValue(value) {
-    const [year, month, day] = value.split('/').map(Number);
-    return Date.UTC(year, month - 1, day);
+    const [year, month, day] = String(value ?? '').split('/').map(Number);
+    return Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)
+        ? Date.UTC(year, month - 1, day)
+        : 0;
 }
 
-function podcastPreviewTimeWeight(date) {
-    const latest = Math.max(...PODCAST_PREVIEW_HISTORY.map(item => podcastPreviewDateValue(item.date)));
+function podcastPreviewTimeWeight(date, sources = podcastPreviewSources()) {
+    if (sources.length === 0) {
+        return 0;
+    }
+
+    const latest = Math.max(...sources.map(item => podcastPreviewDateValue(item.date)));
     const days = Math.max(0, Math.round((latest - podcastPreviewDateValue(date)) / 86400000));
     return Math.max(20, 100 - days * 2);
 }
@@ -4125,17 +4184,24 @@ function podcastPreviewMakeTimeWeightChart() {
         podcastPreviewElement('p', '', '以最新一筆資料為 100%，資料越舊權重越低。'));
 
     const chart = podcastPreviewElement('div', 'podcast-preview-weight-chart');
-    for (const item of PODCAST_PREVIEW_HISTORY) {
-        const weight = podcastPreviewTimeWeight(item.date);
+    const sources = podcastPreviewSources();
+    if (sources.length === 0) {
+        chart.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
+            '尚未匯入 Podcast 來源，沒有可計算的時效權重。'));
+    }
+
+    for (const source of sources) {
+        const generated = source.generated || podcastPreviewGenerateAnalysis(source.analysis);
+        const weight = podcastPreviewTimeWeight(source.date, sources);
         const row = podcastPreviewElement('div', 'podcast-preview-weight-row');
         const meta = podcastPreviewElement('div', 'podcast-preview-weight-meta');
         meta.append(
-            podcastPreviewElement('span', 'podcast-preview-weight-label', item.date),
+            podcastPreviewElement('span', 'podcast-preview-weight-label', source.date),
             podcastPreviewElement('span', 'podcast-preview-weight-value', weight + '%'));
 
         const track = podcastPreviewElement('div', 'podcast-preview-weight-track');
         track.setAttribute('role', 'img');
-        track.setAttribute('aria-label', item.date + ' 時效權重 ' + weight + '%');
+        track.setAttribute('aria-label', source.date + ' 時效權重 ' + weight + '%');
         const fill = podcastPreviewElement('div', 'podcast-preview-weight-fill');
         fill.style.width = weight + '%';
         track.append(fill);
@@ -4143,7 +4209,8 @@ function podcastPreviewMakeTimeWeightChart() {
         row.append(
             meta,
             track,
-            podcastPreviewElement('span', 'podcast-preview-weight-episode', item.episode));
+            podcastPreviewElement('span', 'podcast-preview-weight-episode',
+                source.episode + ' · ' + (generated.coreTheme || '待整理')));
         chart.append(row);
     }
     card.append(chart);
@@ -4168,18 +4235,31 @@ function podcastPreviewMakeFavoredTable() {
     thead.append(headerRow);
 
     const tbody = document.createElement('tbody');
-    for (const item of PODCAST_PREVIEW_HISTORY.filter(history => history.stance === '偏多')) {
+    const sources = podcastPreviewSources();
+    const favored = sources.filter(source =>
+        (source.generated || podcastPreviewGenerateAnalysis(source.analysis)).stance === '偏多');
+    if (favored.length === 0) {
+        const row = document.createElement('tr');
+        const empty = podcastPreviewElement('td', 'podcast-preview-history-empty',
+            sources.length === 0 ? '尚未匯入 Podcast 來源。' : '目前沒有偏多的分析資料。');
+        empty.colSpan = 5;
+        row.append(empty);
+        tbody.append(row);
+    }
+
+    for (const source of favored) {
+        const generated = source.generated || podcastPreviewGenerateAnalysis(source.analysis);
         const row = document.createElement('tr');
         row.append(
-            podcastPreviewElement('td', '', item.groups),
-            podcastPreviewElement('td', '', item.targets),
-            podcastPreviewElement('td', 'podcast-preview-history-date', item.date),
-            podcastPreviewElement('td', '', podcastPreviewTimeWeight(item.date) + '%'));
+            podcastPreviewElement('td', '', generated.groups.join('、') || '待分析'),
+            podcastPreviewElement('td', '', generated.targets.join('、') || '待分析'),
+            podcastPreviewElement('td', 'podcast-preview-history-date', source.date),
+            podcastPreviewElement('td', '', podcastPreviewTimeWeight(source.date, sources) + '%'));
         const stanceCell = podcastPreviewElement('td', '');
         stanceCell.append(podcastPreviewElement(
             'span',
-            'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
-            item.stance));
+            'podcast-preview-stance is-' + podcastPreviewStanceClass(generated.stance),
+            generated.stance));
         row.append(stanceCell);
         tbody.append(row);
     }
@@ -4195,20 +4275,27 @@ function podcastPreviewMakeMarketContent() {
     card.append(podcastPreviewElement('h2', '', '市場內容'));
 
     const list = podcastPreviewElement('div', 'podcast-preview-market-list');
-    for (const item of PODCAST_PREVIEW_HISTORY) {
+    const sources = podcastPreviewSources();
+    if (sources.length === 0) {
+        list.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
+            '尚未匯入 Podcast 來源，沒有可呈現的市場內容。'));
+    }
+
+    for (const source of sources) {
+        const generated = source.generated || podcastPreviewGenerateAnalysis(source.analysis);
         const row = podcastPreviewElement('article', 'podcast-preview-market-row');
         const meta = podcastPreviewElement('div', 'podcast-preview-market-meta');
         meta.append(
-            podcastPreviewElement('time', '', item.date),
-            podcastPreviewElement('span', '', item.episode));
+            podcastPreviewElement('time', '', source.date),
+            podcastPreviewElement('span', '', source.episode));
         row.append(
             meta,
-            podcastPreviewElement('p', 'podcast-preview-market-content', item.market));
+            podcastPreviewElement('p', 'podcast-preview-market-content', generated.market || '待分析'));
 
         const stance = podcastPreviewElement(
             'span',
-            'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
-            item.stance);
+            'podcast-preview-stance is-' + podcastPreviewStanceClass(generated.stance),
+            generated.stance);
         row.append(stance);
         list.append(row);
     }
@@ -4266,61 +4353,82 @@ function podcastPreviewMakeImportRow(number, onRemove) {
     return row;
 }
 
-function podcastPreviewMakeGeneratedPreview() {
+function podcastPreviewMakeGeneratedPreview(generated) {
     const section = podcastPreviewElement('section', 'podcast-preview-generated-preview');
     section.append(
         podcastPreviewElement('h3', '', '產出欄位預覽'),
         podcastPreviewElement('p', 'podcast-preview-generated-description',
-            '以下用你提供的逐字稿示範產出；正式匯入時會依每筆內容更新。'));
+            generated
+                ? '先依你提供的逐字稿建立可編輯草稿；正式 Gemini 產出流程尚未接通。'
+                : '填寫時間、集數與逐字稿後按「預覽產出」，這裡會顯示依內容整理的欄位。'));
+
+    if (!generated) {
+        section.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
+            '尚未產生分析預覽。'));
+        return section;
+    }
 
     const grid = podcastPreviewElement('div', 'podcast-preview-generated-grid');
     const core = podcastPreviewElement('div', 'podcast-preview-generated-item is-wide');
     core.append(
         podcastPreviewElement('span', 'podcast-preview-generated-label', '核心主題'),
-        podcastPreviewElement('strong', '', PODCAST_PREVIEW_GENERATED_SAMPLE.coreTheme));
+        podcastPreviewElement('strong', '', generated.coreTheme || '待整理'));
 
     const groups = podcastPreviewElement('div', 'podcast-preview-generated-item');
     groups.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '看好族群'));
     const groupTags = podcastPreviewElement('div', 'podcast-preview-generated-tags');
-    for (const group of PODCAST_PREVIEW_GENERATED_SAMPLE.groups) {
+    for (const group of (Array.isArray(generated.groups) ? generated.groups : [])) {
         groupTags.append(podcastPreviewElement('span', 'podcast-preview-tag', group));
+    }
+    if (groupTags.children.length === 0) {
+        groupTags.append(podcastPreviewElement('span', 'podcast-preview-empty-inline', '尚未辨識'));
     }
     groups.append(groupTags);
 
     const targets = podcastPreviewElement('div', 'podcast-preview-generated-item');
     targets.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '標的'));
     const targetTags = podcastPreviewElement('div', 'podcast-preview-generated-tags');
-    for (const target of PODCAST_PREVIEW_GENERATED_SAMPLE.targets) {
+    for (const target of (Array.isArray(generated.targets) ? generated.targets : [])) {
         targetTags.append(podcastPreviewElement('span', 'podcast-preview-tag', target));
+    }
+    if (targetTags.children.length === 0) {
+        targetTags.append(podcastPreviewElement('span', 'podcast-preview-empty-inline', '尚未辨識'));
     }
     targets.append(targetTags);
 
     const points = podcastPreviewElement('div', 'podcast-preview-generated-item is-wide');
     points.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '主要論點'));
     const pointList = document.createElement('ul');
-    for (const point of PODCAST_PREVIEW_GENERATED_SAMPLE.points) {
+    for (const point of (Array.isArray(generated.points) ? generated.points : [])) {
         pointList.append(podcastPreviewElement('li', '', point));
+    }
+    if (pointList.children.length === 0) {
+        pointList.append(podcastPreviewElement('li', '', '尚未辨識'));
     }
     points.append(pointList);
 
     const market = podcastPreviewElement('div', 'podcast-preview-generated-item is-wide');
     market.append(
         podcastPreviewElement('span', 'podcast-preview-generated-label', '市場內容'),
-        podcastPreviewElement('p', '', PODCAST_PREVIEW_GENERATED_SAMPLE.market));
+        podcastPreviewElement('p', '', generated.market || '尚未辨識'));
 
     const followUps = podcastPreviewElement('div', 'podcast-preview-generated-item is-wide');
     followUps.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '後續追蹤'));
     const followUpList = document.createElement('ul');
-    for (const followUp of PODCAST_PREVIEW_GENERATED_SAMPLE.followUps) {
+    for (const followUp of (Array.isArray(generated.followUps) ? generated.followUps : [])) {
         followUpList.append(podcastPreviewElement('li', '', followUp));
+    }
+    if (followUpList.children.length === 0) {
+        followUpList.append(podcastPreviewElement('li', '', '尚未辨識'));
     }
     followUps.append(followUpList);
 
     const stance = podcastPreviewElement('div', 'podcast-preview-generated-item');
+    const stanceText = generated.stance || '待驗證';
     stance.append(
         podcastPreviewElement('span', 'podcast-preview-generated-label', '節目觀點'),
         podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(
-            PODCAST_PREVIEW_GENERATED_SAMPLE.stance), PODCAST_PREVIEW_GENERATED_SAMPLE.stance));
+            stanceText), stanceText));
 
     grid.append(core, groups, targets, points, market, followUps, stance);
     section.append(grid);
@@ -4329,71 +4437,135 @@ function podcastPreviewMakeGeneratedPreview() {
 
 function podcastPreviewMakeSourcePanel() {
     const page = podcastPreviewElement('section', 'podcast-preview-source-page');
+    const editingSource = podcastPreviewEditingId
+        ? podcastPreviewSources().find(source => source.id === podcastPreviewEditingId)
+        : null;
+    const isEditing = Boolean(editingSource);
     const heading = podcastPreviewElement('header', 'podcast-preview-source-page-heading');
     const headingCopy = podcastPreviewElement('div', '');
     headingCopy.append(
         podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '來源管理'),
         podcastPreviewElement('h1', '', 'Podcast 來源'));
-    const toggle = podcastPreviewButton('＋ 多筆匯入', 'podcast-preview-primary-button');
+    const toggle = podcastPreviewButton(
+        podcastPreviewImportOpen || isEditing ? '收合匯入' : '＋ 多筆匯入',
+        'podcast-preview-primary-button');
     heading.append(headingCopy, toggle);
     page.append(heading);
 
     const importPanel = podcastPreviewElement('section', 'podcast-preview-import-panel');
-    importPanel.hidden = true;
+    importPanel.hidden = !(podcastPreviewImportOpen || isEditing);
     const importHeading = podcastPreviewElement('div', 'podcast-preview-import-heading');
     importHeading.append(podcastPreviewElement('div', ''));
     importHeading.firstChild.append(
-        podcastPreviewElement('h2', '', '多筆匯入'),
-        podcastPreviewElement('p', '', '只需輸入時間、集數與 Gemini Notebook 逐字稿分析，其餘欄位由系統產生。'));
+        podcastPreviewElement('h2', '', isEditing ? '編輯 Podcast 來源' : '多筆匯入'),
+        podcastPreviewElement('p', '',
+            '只需輸入時間、集數與 Gemini Notebook 逐字稿分析；其餘欄位先由內容解析產生，資料只保存在本機瀏覽器。'));
     const rows = podcastPreviewElement('div', 'podcast-preview-import-rows');
 
-    const appendRow = () => {
-        const row = podcastPreviewMakeImportRow(rows.children.length + 1, () => {
+    const appendRow = values => {
+        const row = podcastPreviewMakeImportRow(rows.children.length + 1, isEditing ? null : () => {
             if (rows.children.length > 1) {
                 row.remove();
             }
         });
+        if (values) {
+            const inputs = row.querySelectorAll('input, textarea');
+            inputs[0].value = values[0];
+            inputs[1].value = values[1];
+            inputs[2].value = values[2];
+        }
         rows.append(row);
     };
-    appendRow();
-    appendRow();
+    if (editingSource) {
+        appendRow([editingSource.time, editingSource.episode, editingSource.analysis]);
+    } else {
+        appendRow();
+        appendRow();
+    }
 
     const readRows = () => Array.from(rows.children).map(row =>
         Array.from(row.querySelectorAll('input, textarea')).map(input => input.value.trim()));
-    const generatedPreview = podcastPreviewMakeGeneratedPreview();
+    let generatedPreview = podcastPreviewMakeGeneratedPreview(podcastPreviewGeneratedDraft);
+    const updateGeneratedPreview = generated => {
+        const next = podcastPreviewMakeGeneratedPreview(generated);
+        generatedPreview.replaceWith(next);
+        generatedPreview = next;
+    };
+    const importMessage = podcastPreviewElement('p', 'podcast-preview-import-message');
+    importMessage.hidden = true;
+    const setImportMessage = text => {
+        importMessage.textContent = text;
+        importMessage.hidden = !text;
+    };
     const importActions = podcastPreviewElement('div', 'podcast-preview-import-actions');
-    importActions.append(
-        podcastPreviewButton('＋ 再加一筆', 'podcast-preview-secondary-button', appendRow),
-        podcastPreviewButton('預覽產出', 'podcast-preview-secondary-button', () => {
-            const values = readRows();
-            const completeRows = values.filter(row => row.every(Boolean)).length;
-            const touchedRows = values.filter(row => row.some(Boolean)).length;
-            if (touchedRows > completeRows) {
-                podcastPreviewActionNotice('請補齊每筆的時間、集數與逐字稿分析。');
-                return;
-            }
-            podcastPreviewActionNotice(
-                completeRows > 0
-                    ? '展示樣版：已產生 ' + completeRows + ' 筆分析欄位預覽。'
-                    : '展示樣版：目前顯示你提供的逐字稿產出範例。');
-        }),
-        podcastPreviewButton('匯入分析結果', 'podcast-preview-primary-button', () => {
-            const values = readRows();
-            const completeRows = values.filter(row => row.every(Boolean)).length;
-            const touchedRows = values.filter(row => row.some(Boolean)).length;
-            if (touchedRows !== completeRows || completeRows === 0) {
-                podcastPreviewActionNotice(
-                    touchedRows > 0 ? '請補齊每筆的時間、集數與逐字稿分析。' : '請先填寫要匯入的分析內容。');
-                return;
-            }
-            podcastPreviewActionNotice(
-                '展示樣版：已模擬匯入 ' + completeRows + ' 筆分析結果；其餘欄位由系統產生，尚未寫入資料庫。');
+    if (!isEditing) {
+        importActions.append(podcastPreviewButton('＋ 再加一筆', 'podcast-preview-secondary-button', () => {
+            appendRow();
         }));
-    importPanel.append(importHeading, rows, generatedPreview, importActions);
+    }
+    importActions.append(podcastPreviewButton('預覽產出', 'podcast-preview-secondary-button', () => {
+            const values = readRows();
+            const completeRows = values.filter(row => row.every(Boolean));
+            const touchedRows = values.filter(row => row.some(Boolean));
+            if (touchedRows.length !== completeRows.length || completeRows.length === 0) {
+                setImportMessage(touchedRows.length > 0
+                    ? '請補齊每筆的時間、集數與逐字稿分析。'
+                    : '請先填寫要預覽的分析內容。');
+                return;
+            }
+            podcastPreviewGeneratedDraft = podcastPreviewGenerateAnalysis(completeRows[0][2]);
+            updateGeneratedPreview(podcastPreviewGeneratedDraft);
+            setImportMessage('已依第一筆逐字稿產生欄位預覽；儲存後會更新來源清單。');
+        }));
+    if (isEditing) {
+        importActions.append(podcastPreviewButton('取消編輯', 'podcast-preview-secondary-button', () => {
+                podcastPreviewEditingId = '';
+                podcastPreviewImportOpen = false;
+                podcastPreviewGeneratedDraft = null;
+                renderPodcastNotesPreview();
+            }));
+    }
+    importActions.append(podcastPreviewButton(isEditing ? '更新分析結果' : '儲存分析結果',
+            'podcast-preview-primary-button', () => {
+                const values = readRows();
+                const completeRows = values.filter(row => row.every(Boolean));
+                const touchedRows = values.filter(row => row.some(Boolean));
+                if (touchedRows.length !== completeRows.length || completeRows.length === 0) {
+                    setImportMessage(touchedRows.length > 0
+                        ? '請補齊每筆的時間、集數與逐字稿分析。'
+                        : '請先填寫要儲存的分析內容。');
+                    return;
+                }
+                if (isEditing && completeRows.length !== 1) {
+                    setImportMessage('編輯時只能保存一筆來源。');
+                    return;
+                }
+
+                const currentSources = podcastPreviewReadSources();
+                const nextSources = isEditing
+                    ? currentSources.map(source => source.id === editingSource.id
+                        ? podcastPreviewSourceFromInput(completeRows[0], editingSource.id)
+                        : source)
+                    : currentSources.concat(completeRows.map(row => podcastPreviewSourceFromInput(row)));
+                if (!podcastPreviewWriteSources(nextSources)) {
+                    setImportMessage('本機儲存失敗，請確認瀏覽器允許網站保存資料。');
+                    return;
+                }
+
+                podcastPreviewEditingId = '';
+                podcastPreviewImportOpen = false;
+                podcastPreviewGeneratedDraft = null;
+                podcastPreviewNotice = isEditing
+                    ? `已更新 ${editingSource.episode}。`
+                    : `已儲存 ${completeRows.length} 筆 Podcast 來源。`;
+                renderPodcastNotesPreview();
+            }));
+    importPanel.append(importHeading, rows, generatedPreview, importMessage, importActions);
     page.append(importPanel, podcastPreviewMakeHistoryTable());
 
     toggle.addEventListener('click', () => {
         importPanel.hidden = !importPanel.hidden;
+        podcastPreviewImportOpen = !importPanel.hidden;
         toggle.textContent = importPanel.hidden ? '＋ 多筆匯入' : '收合匯入';
     });
 
@@ -4492,7 +4664,7 @@ function podcastPreviewRenderVariantC(host) {
         podcastPreviewElement('span', '', '日期'));
     table.append(tableHeader);
 
-    for (const item of PODCAST_PREVIEW_EPISODES) {
+    for (const item of podcastPreviewEpisodes()) {
         const row = podcastPreviewElement('button', 'podcast-preview-database-row');
         row.type = 'button';
         row.addEventListener('click', () => podcastPreviewOpenEpisode(item.id));
@@ -19602,7 +19774,7 @@ function renderSnapshotNote() {
 
     if (state.view === 'notes') {
         el('snapshot-note').textContent = isPodcastNotesStaticView() && podcastPreviewTabKey() === 'gooaye'
-            ? '股癌研究分析樣版 · 內容皆為示意資料，目前不會寫入資料庫。'
+            ? '股癌研究分析 · 只顯示本機瀏覽器已匯入的資料，尚未寫入正式資料庫。'
             : PODCAST_NOTES_LOCAL_PREVIEW
                 ? '一次性 UI 比較 · 內容皆為示意資料，不會讀寫正式資料庫。'
                 : NOTES_LOCAL_PREVIEW
