@@ -1071,9 +1071,9 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 [↑ 回到 TODO 列表](#快速跳轉)
 
 **狀態：AI-first 前端、正式 Supabase 私有佇列、Validator、Mac Worker、重載恢復、submit 冪等、
-fallback 受控取回與獨立逾期清理已整合；本輪 `main` 推送後仍要跑 publish-only，並由正式最高
-權限帳號做瀏覽器驗收。Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0，以及公司
-Windows 實機仍待驗收。依使用者指示，不自行安裝或設定 Claude CLI。**
+fallback 受控取回與獨立逾期清理已整合並發布；仍需由正式最高權限帳號做瀏覽器實際上傳驗收。
+Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0，以及公司 Windows 實機仍待驗收。依
+使用者指示，不自行安裝或設定 Claude CLI。**
 
 ### 已討論
 
@@ -1101,8 +1101,8 @@ Windows 實機仍待驗收。依使用者指示，不自行安裝或設定 Claud
 
 ### 本輪已完成與仍待外部驗收
 
-1. 發布 `main` 後跑 `daily-snapshot.yml` 的 `publish-only=true`，確認公開 `site.js` 含 `ocr-jobs`、
-   `fallback_required` 與重載恢復文案；再由正式最高權限帳號做 AI Worker 在線／離線兩條瀏覽器路徑。
+1. 公開 `site.js` 已由 `daily-snapshot.yml` 的 `publish-only=true` 發布並含 `ocr-jobs`、
+   `fallback_required` 與重載恢復文案；仍需由正式最高權限帳號做 AI Worker 在線／離線兩條瀏覽器路徑。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
    把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。
 3. 在公司 Windows 以非管理員帳號驗證 .NET 10、SecretManagement、登入時排程、鎖屏／重開機、

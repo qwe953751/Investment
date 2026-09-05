@@ -2,7 +2,7 @@
 
 > 日期：2026-09-05
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列、Mac Worker、冪等／重載恢復／fallback 取回與逾期清理已整合；公開網站待本輪 publish-only 完成，Golden Set 與 Windows 實機仍待驗收**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列、Mac Worker、冪等／重載恢復／fallback 取回與逾期清理已整合並發布；正式帳號瀏覽器、Golden Set 與 Windows 實機仍待驗收**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -751,7 +751,7 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
 Worker Auth、Edge Function、Mac `ocr-worker`、Codex 真實雙 Pass、Validator、AI-first 前端、
 submit 冪等／input hash、頁面重載恢復、fallback signed URL 與每 5 分鐘 cleanup cron 已做過
 正式驗證。使用者已在 2026-09-05 明確授權敏感圖片短期上傳與正式網站測試；Claude CLI 仍依指示
-不安裝。公開網站切換仍要等本輪 `main` commit 的 publish-only Action。
+不安裝。公開網站已由本輪 `main` commit 的 publish-only Action 發布；正式最高權限帳號實際上傳圖片仍待驗收。
 
 ## 十四、換模型接手前的預計修正與驗收清單
 

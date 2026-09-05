@@ -9,8 +9,8 @@
 截圖辨識的目標架構採 D+ AI-first：Mac／Windows Worker 在線且至少一個訂閱 CLI 可用時，圖片短期進入
 Supabase 私有佇列並由 AI 兩遍辨識；否則自動在瀏覽器回退 Tesseract。辨識後會先列出「覆蓋／新增／移除」差異，
 每一項都必須人工核對並勾選才會套用。相同代號直接覆蓋，移除項目預設不勾選。檢視權限不顯示此頁籤；
-密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收。**D+ 後端、AI-first 前端與
-Mac Worker 已整合；正式網站發布要等本次 `main` commit 的 publish-only Action 完成。**限制與下一步見
+密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收。**D+ 後端、AI-first 前端、Mac
+Worker 與正式網站已整合發布。**正式最高權限登入／實際圖片、Golden Set 與 Windows 實機仍待驗收，限制與下一步見
 [TODO.md](TODO.md)。
 
 ## 文件導覽
@@ -168,7 +168,7 @@ publish-only run [33509783439](https://github.com/qwe953751/Investment/actions/r
 
 ### D+ OCR Worker
 
-本節描述已整合到 `main` 的 D+ 實作。正式 Supabase 後端、Mac 單張 E2E、重載恢復、submit
+本節描述已整合到 `main` 並發布到正式網站的 D+ 實作。正式 Supabase 後端、Mac 單張 E2E、重載恢復、submit
 冪等、受控 fallback 取回與每 5 分鐘逾期清理已驗證；Golden Set 的正確率門檻與公司 Windows
 實機仍是外部驗收，不會因管線成功就宣稱達到九成。
 
@@ -195,8 +195,8 @@ scripts\run-ocr-worker-windows.ps1
 
 筆記 #21 的 ETF 行情、資產帳戶與盤中交易日防呆已由功能程式碼 commit `85e0504b`
 推送並以 `publish-only=true` 發布。`db/032`～`db/035` 已於 2026-09-02 依獨立 migration
-流程套用正式 Supabase；資產變化折線圖、持倉唯三可編輯欄位與本輪 OCR 長表修正仍是本機修改，
-尚未推送或發布。ETF／美股歷史行情回補也仍是資料分支操作，本輪不以假資料代替。
+流程套用正式 Supabase；資產變化折線圖、持倉唯三可編輯欄位與本輪 D+ OCR 長表修正已隨本次
+`main` 推送並由 publish-only 發布。ETF／美股歷史行情回補仍是資料分支操作，本輪不以假資料代替。
 美股快照在 `imports-us` 實際有新資料時會自動委派既有 `daily-snapshot.yml` 的
 `publish-only=true` 發布，不在美股 workflow 直接修改 `gh-pages`。
 
