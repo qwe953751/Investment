@@ -71,6 +71,8 @@ function holdingSort() {
     const context = {};
     vm.createContext(context);
     vm.runInContext([
+        "const ASSET_HOLDING_SORT_NUMERIC_KEYS = new Set(['priceChange', 'quantity', 'cost', 'marketValue', 'unrealized']);",
+        "const ASSET_HOLDING_SORT_TEXT_KEYS = new Set(['name', 'source']);",
         functionSource('assetNumber'),
         functionSource('assetHoldingTicker'),
         functionSource('assetSortHoldings'),

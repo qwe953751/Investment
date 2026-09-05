@@ -4768,6 +4768,15 @@ const ASSET_ACCOUNT_VALUE_SNAPSHOTS_TABLE = 'asset_account_value_snapshots';
 const ASSET_EXCHANGE_RATES_TABLE = 'exchange_rates';
 const ASSET_LATEST_US_QUOTES_VIEW = 'latest_us_quotes';
 const ASSET_MARKETS = ['台股', '美股', '其他'];
+const ASSET_TREND_PERIODS = [
+    { key: '1W', label: '1W' },
+    { key: '1M', label: '1M' },
+    { key: '3M', label: '3M' },
+    { key: 'YTD', label: 'YTD' },
+    { key: '1Y', label: '1Y' },
+    { key: 'Max', label: 'Max' }
+];
+const ASSET_DEFAULT_TREND_PERIOD = '3M';
 
 // 資產不像盤中報價那樣一直變，但兩台裝置各填一半時要看得到對方寫進去的東西。
 const ASSETS_REFRESH_MS = 60_000;
@@ -4792,6 +4801,7 @@ let assetTickerQuotes = new Map();
 let assetIntradayQuotes = new Map();
 let assetHoldingSortKey = 'ticker';
 let assetHoldingSortDirection = 'asc';
+const assetTrendPeriodByKey = new Map();
 
 function assetNumber(value) {
     if (value === null || value === undefined || value === '') {
@@ -5030,6 +5040,46 @@ function assetTimeText(value) {
     const date = new Date(value);
 
     return Number.isNaN(date.getTime()) ? '時間不明' : toTaipeiText(date.toISOString());
+}
+
+function assetTrendPeriodStartDate(endDate, period) {
+    if (period === 'Max') {
+        return null;
+    }
+
+    const date = new Date(`${endDate}T00:00:00Z`);
+
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+
+    if (period === 'YTD') {
+        return `${date.getUTCFullYear()}-01-01`;
+    }
+
+    if (period === '1W') {
+        date.setUTCDate(date.getUTCDate() - 6);
+    } else {
+        const months = period === '1M' ? -1 : period === '3M' ? -3 : -12;
+        const day = date.getUTCDate();
+        date.setUTCDate(1);
+        date.setUTCMonth(date.getUTCMonth() + months);
+        const lastDay = new Date(Date.UTC(
+            date.getUTCFullYear(),
+            date.getUTCMonth() + 1,
+            0)).getUTCDate();
+        date.setUTCDate(Math.min(day, lastDay));
+    }
+
+    return date.toISOString().slice(0, 10);
+}
+
+function assetTrendRowsForPeriod(rows, period = ASSET_DEFAULT_TREND_PERIOD) {
+    const startDate = assetTrendPeriodStartDate(rows.at(-1)?.date, period);
+
+    return startDate === null
+        ? rows
+        : rows.filter(row => row.date >= startDate);
 }
 
 async function loadAssets() {
@@ -5938,8 +5988,7 @@ function assetValueTrendRows(ownerId, currentTotal) {
 
     return [...byDate.values()]
         .filter(row => /^\d{4}-\d{2}-\d{2}$/.test(row.date) && row.value !== null)
-        .sort((left, right) => left.date.localeCompare(right.date))
-        .slice(-120);
+        .sort((left, right) => left.date.localeCompare(right.date));
 }
 
 // owner 層級（Dashboard 總覽）與 account 層級（帳戶明細）的資產變化圖是同一份畫圖
@@ -5948,6 +5997,9 @@ function assetValueTrendRows(ownerId, currentTotal) {
 function makeAssetValueTrendCard(rows, options) {
     const card = document.createElement('section');
     card.className = 'asset-value-trend-card';
+    const periodKey = options.periodKey ?? 'asset-trend';
+    const selectedPeriod = assetTrendPeriodByKey.get(periodKey) ?? ASSET_DEFAULT_TREND_PERIOD;
+    const visibleRows = assetTrendRowsForPeriod(rows, selectedPeriod);
     const heading = document.createElement('div');
     heading.className = 'asset-value-trend-heading';
     const title = document.createElement('h2');
@@ -5955,9 +6007,9 @@ function makeAssetValueTrendCard(rows, options) {
     const detail = document.createElement('span');
     // 尚未啟用時 rows 仍有「今天」這個即時算出的點（見 assetValueTrendRows），
     // 但歷史表根本讀不到，不該顯示交易／紀錄日數，否則會跟下面的停用提示互相矛盾。
-    detail.textContent = !options.available || rows.length === 0
+    detail.textContent = !options.available || visibleRows.length === 0
         ? '尚無完整資料'
-        : `${rows[0].date.replaceAll('-', '/')} ～ ${rows.at(-1).date.replaceAll('-', '/')} · ${rows.length} 個交易／紀錄日`;
+        : `${visibleRows[0].date.replaceAll('-', '/')} ～ ${visibleRows.at(-1).date.replaceAll('-', '/')} · ${visibleRows.length} 個交易／紀錄日`;
     heading.append(title, detail);
     card.append(heading);
 
@@ -5969,7 +6021,7 @@ function makeAssetValueTrendCard(rows, options) {
         return card;
     }
 
-    if (rows.length === 0) {
+    if (visibleRows.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'asset-local-only-note';
         empty.textContent = options.emptyHint;
@@ -5983,7 +6035,7 @@ function makeAssetValueTrendCard(rows, options) {
     const right = width - 24;
     const top = 24;
     const bottom = height - 42;
-    const values = rows.map(row => row.value);
+    const values = visibleRows.map(row => row.value);
     let minimum = Math.min(...values);
     let maximum = Math.max(...values);
 
@@ -5997,17 +6049,17 @@ function makeAssetValueTrendCard(rows, options) {
         maximum += padding;
     }
 
-    const x = index => rows.length === 1
+    const x = index => visibleRows.length === 1
         ? (left + right) / 2
-        : left + (right - left) * index / (rows.length - 1);
+        : left + (right - left) * index / (visibleRows.length - 1);
     const y = value => bottom - (value - minimum) / (maximum - minimum) * (bottom - top);
     const svg = svgElement('svg', {
         class: 'asset-value-trend-svg',
         viewBox: `0 0 ${width} ${height}`,
         role: 'img',
-        'aria-label': `資產變化折線圖，共 ${rows.length} 個日期`
+        'aria-label': `資產變化折線圖（${selectedPeriod}），共 ${visibleRows.length} 個日期`
     });
-    svg.append(svgElement('title', {}, `資產變化：${assetCurrency(rows.at(-1).value)}`));
+    svg.append(svgElement('title', {}, `資產變化（${selectedPeriod}）：${assetCurrency(visibleRows.at(-1).value)}`));
 
     for (let index = 0; index < 3; index += 1) {
         const ratio = index / 2;
@@ -6029,33 +6081,51 @@ function makeAssetValueTrendCard(rows, options) {
             }, assetCurrency(value)));
     }
 
-    const path = rows.map((row, index) => `${index === 0 ? 'M' : 'L'} ${x(index)} ${y(row.value)}`).join(' ');
+    const path = visibleRows.map((row, index) => `${index === 0 ? 'M' : 'L'} ${x(index)} ${y(row.value)}`).join(' ');
     svg.append(svgElement('path', { class: 'asset-value-trend-line', d: path }));
 
-    rows.forEach((row, index) => {
+    visibleRows.forEach((row, index) => {
         const point = svgElement('circle', {
-            class: index === rows.length - 1
+            class: index === visibleRows.length - 1
                 ? 'asset-value-trend-point is-latest'
                 : 'asset-value-trend-point',
             cx: x(index),
             cy: y(row.value),
-            r: index === rows.length - 1 ? 5 : 3
+            r: index === visibleRows.length - 1 ? 5 : 3
         });
         point.append(svgElement('title', {}, `${row.date} ${assetCurrency(row.value)}`));
         svg.append(point);
     });
 
-    const dateIndices = [...new Set([0, Math.floor((rows.length - 1) / 2), rows.length - 1])];
+    const dateIndices = [...new Set([0, Math.floor((visibleRows.length - 1) / 2), visibleRows.length - 1])];
     for (const index of dateIndices) {
         svg.append(svgElement('text', {
             class: 'asset-value-trend-axis',
             x: x(index),
             y: height - 14,
-            'text-anchor': index === 0 ? 'start' : index === rows.length - 1 ? 'end' : 'middle'
-        }, rows[index].date.slice(5).replace('-', '/')));
+            'text-anchor': index === 0 ? 'start' : index === visibleRows.length - 1 ? 'end' : 'middle'
+        }, visibleRows[index].date.slice(5).replace('-', '/')));
     }
 
     card.append(svg);
+    const periods = document.createElement('div');
+    periods.className = 'asset-value-trend-periods';
+    periods.setAttribute('role', 'group');
+    periods.setAttribute('aria-label', '資產變化期間');
+
+    for (const period of ASSET_TREND_PERIODS) {
+        const button = assetButton(
+            period.label,
+            `asset-value-trend-period${period.key === selectedPeriod ? ' is-selected' : ''}`,
+            () => {
+                assetTrendPeriodByKey.set(periodKey, period.key);
+                renderAssetsDashboard();
+            });
+        button.setAttribute('aria-pressed', String(period.key === selectedPeriod));
+        periods.append(button);
+    }
+
+    card.append(periods);
     const note = document.createElement('p');
     note.className = 'asset-local-only-note';
     note.textContent = '折線以台幣顯示；今天使用目前最新行情即時計算，過去日期讀取資料庫每日快照。';
@@ -6067,6 +6137,7 @@ function makeAssetValueTrend(owner, summary) {
     return makeAssetValueTrendCard(
         assetValueTrendRows(owner.id, summary.incomplete ? null : summary.totalValue),
         {
+            periodKey: `owner:${owner.id}`,
             available: assetValueSnapshotsAvailable,
             unavailableHint: '資產歷史尚未啟用，請先由管理者套用 db/035_asset_value_snapshots.sql。',
             emptyHint: '等所有帳戶都有行情與匯率後，系統會從當天開始每天保存一個資產總值。'
@@ -6089,14 +6160,14 @@ function assetAccountValueTrendRows(accountId, currentTotal) {
 
     return [...byDate.values()]
         .filter(row => /^\d{4}-\d{2}-\d{2}$/.test(row.date) && row.value !== null)
-        .sort((left, right) => left.date.localeCompare(right.date))
-        .slice(-120);
+        .sort((left, right) => left.date.localeCompare(right.date));
 }
 
 function makeAssetAccountValueTrend(view) {
     return makeAssetValueTrendCard(
         assetAccountValueTrendRows(view.id, view.incomplete ? null : view.twdTotalValue),
         {
+            periodKey: `account:${view.id}`,
             available: assetAccountValueSnapshotsAvailable,
             unavailableHint: '這個帳戶的資產歷史尚未啟用，請先由管理者套用 db/037_asset_account_value_snapshots.sql。',
             emptyHint: '等這個帳戶有完整行情與匯率後，系統會從當天開始每天保存一個資產總值。'

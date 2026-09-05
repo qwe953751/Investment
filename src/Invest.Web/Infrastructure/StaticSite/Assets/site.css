@@ -1437,6 +1437,38 @@ body {
     overflow: visible;
 }
 
+.asset-value-trend-periods {
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.asset-value-trend-period {
+    min-width: 54px;
+    padding: 8px 10px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-value-trend-period:hover,
+.asset-value-trend-period:focus-visible {
+    border-color: var(--border);
+    background: var(--surface-hover);
+    color: var(--text);
+    text-decoration: none;
+}
+
+.asset-value-trend-period.is-selected {
+    border-color: var(--surface-alt);
+    background: var(--surface-alt);
+    color: var(--text);
+    font-weight: 600;
+}
+
 .asset-value-trend-grid {
     stroke: #e5eaf1;
     stroke-width: 1;
@@ -1782,6 +1814,14 @@ body {
 .asset-dual-currency-primary {
     color: var(--text);
     font-weight: 700;
+}
+
+/* 帳戶列表的主幣別行要跟台股單行數字共用父層的顏色與字重；美元次行
+   仍保留次要灰字。這樣美股的正負數會跟著同一個 td.positive／negative
+   顯示，不會被雙幣別包裝固定成黑色粗體。 */
+.asset-preview-table .asset-dual-currency-primary {
+    color: inherit;
+    font-weight: inherit;
 }
 
 .asset-dual-currency-secondary {
