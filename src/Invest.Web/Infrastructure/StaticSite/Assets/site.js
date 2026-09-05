@@ -271,17 +271,11 @@ const availableTopicTabs = () => {
 // 舊版 manifest 沒有這欄時才退回目前的 2 分鐘，避免前端失去更新能力。
 const DEFAULT_INTRADAY_REFRESH_MS = 2 * 60_000;
 
-// 台股連續交易 09:00–13:30，共 270 分鐘。預估收盤成交額是用「已經過的時段比例」
-// 當分母把目前累計值推到收盤。
-//
-// 這個分母之後要換掉：真正該用的是「量通常跑了幾成」，不是「時間過了幾成」。
-// 那條曲線要靠 intraday_curve 自己累積，累積夠了再換（見 TODO.md 的盤中預估）。
+// 台股連續交易 09:00–13:30，共 270 分鐘。這個線性時間比例只用來畫「時段進度」那一格
+// 文字說明（見 renderSummary 的 current.progress），不是預估收盤成交額的分母——
+// 那個分母改用校準過的量能曲線 f(t)，見下面的 turnoverFraction()（筆記 #42）。
 const SESSION_START_MINUTE = 9 * 60;
 const SESSION_MINUTES = 270;
-
-// 開盤前十幾分鐘不給預估值。09:05 時間只過了 1.85%，分母小到任何誤差都被放大 54 倍，
-// 加上開盤集合競價一次就打掉全日的 3~5%，推出來的數字大到只會誤導人。
-const MIN_PROGRESS_FOR_ESTIMATE = 0.1;
 
 const TAIPEI_CLOCK = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false
@@ -300,12 +294,59 @@ function isTaiwanIntradaySession() {
     return now >= '09:00' && now <= end;
 }
 
-/// 這一輪走到整個交易時段的幾成。收盤後固定是 1，此時預估值等於實際值。
+/// 這一輪走到整個交易時段的幾成（線性時間比例）。收盤後固定是 1。
+/// 只給畫面上的「時段進度」文字用；預估收盤成交額請用 turnoverFraction()，
+/// 兩者刻意分開，不要合併回同一個數字（筆記 #42 修的就是這兩者曾經是同一個數字）。
 function sessionProgress(capturedAtIso) {
     const [hour, minute] = TAIPEI_CLOCK.format(new Date(capturedAtIso)).split(':').map(Number);
     const elapsed = hour * 60 + minute - SESSION_START_MINUTE;
 
     return Math.min(Math.max(elapsed / SESSION_MINUTES, 0), 1);
+}
+
+// f(t) 低於這個值才不給預估數字。必須跟 C# 的 IntradayTurnoverProjection.MinimumFraction
+// 一致，但係數本身不算「桶表」，兩邊各自寫一份常數是可以接受的重複（跟 MinimumFraction
+// 一樣是設計決策，不是從 manifest 算出來的資料）。
+const INTRADAY_TURNOVER_MIN_FRACTION = 0.15;
+
+function parseHourMinute(text) {
+    const [hour, minute] = text.split(':').map(Number);
+
+    return hour * 60 + minute;
+}
+
+/// 校準過的日內量能曲線 f(t)：t 時刻全市場累計成交額通常已經跑掉的比例。
+/// 桶表只有一份，來自 manifest 的 curve（C# IntradayTurnoverCalibration 算好的），
+/// 這裡只做夾住＋線性內插，不得寫死任何係數或桶表。
+/// manifest 沒有 curve（舊快取）時回傳 null，呼叫端一律不給預估數字，
+/// 不退回舊版的線性時間比例——寧可不給數字，也不要用兩套口徑各自漂移。
+function turnoverFraction(capturedAtIso) {
+    if (!Array.isArray(curve) || curve.length < 2) {
+        return null;
+    }
+
+    const minute = parseHourMinute(TAIPEI_CLOCK.format(new Date(capturedAtIso)));
+    const points = curve.map(point => ({ minute: parseHourMinute(point.time), ratio: point.ratio }));
+    const clamped = Math.min(Math.max(minute, points[0].minute), points[points.length - 1].minute);
+
+    if (clamped <= points[0].minute) {
+        return points[0].ratio;
+    }
+
+    for (let i = 1; i < points.length; i++) {
+        if (clamped > points[i].minute) {
+            continue;
+        }
+
+        const { minute: t0, ratio: r0 } = points[i - 1];
+        const { minute: t1, ratio: r1 } = points[i];
+        const span = t1 - t0;
+        const progress = span <= 0 ? 0 : (clamped - t0) / span;
+
+        return r0 + (r1 - r0) * progress;
+    }
+
+    return points[points.length - 1].ratio;
 }
 
 // 門檻的按鈕金額與文字都來自 manifest，單位是平均每日成交值（key 為萬元），
@@ -1675,6 +1716,16 @@ const snapshotExportedAtMs = () => {
 // manifest 給不出來（舊版 manifest）時就當成沒有記憶功能，一律用預設選項。
 let schedule = null;
 let intradayRefreshMs = DEFAULT_INTRADAY_REFRESH_MS;
+
+// 校準過的日內量能曲線 f(t)。唯一的定義處在 C# 的 IntradayTurnoverCalibration，
+// 這裡只是讀過來做內插，刻意不放任何係數或桶表（筆記 #42）。
+// manifest 給不出來（舊版 manifest）時就是 null，預估值一律不給，不退回舊的線性時間比例。
+let curve = null;
+
+// 「資金加速」排行的收縮量比係數與當期流動性門檻。唯一的定義處在 C# 的
+// AccelerationRules，這裡只是讀過來用，刻意不放任何係數字面量（筆記 #10）。
+// manifest 給不出來（舊版 manifest）時就是 null，資金加速的收縮與門檻一律不計算。
+let accelerationCoefficients = null;
 
 // 既有功能（筆記、資產、提醒、營收等）直接讀資料庫的連線資訊（公開金鑰，只有讀取權限）。
 // 盤中資料若有 intradayCdn 則不使用這組連線；舊 manifest 才降級為原本的只讀查詢。
@@ -11304,14 +11355,6 @@ const order = selector => (left, right) => {
     return left.ticker < right.ticker ? -1 : left.ticker > right.ticker ? 1 : 0;
 };
 
-// 這一列平常一天成交多少（20 日中位數）。量比 = 本期 ÷ 這個值，反過來就能還原。
-// 算不出量比（回看不滿 20 天）時回傳 null，不能當成「量很小」。
-function baselineOf(row) {
-    return missing(row.volumeRatio) || row.volumeRatio === 0
-        ? null
-        : row.value / row.volumeRatio;
-}
-
 function median(sortedValues) {
     const count = sortedValues.length;
 
@@ -11323,26 +11366,50 @@ function median(sortedValues) {
     return count % 2 === 1 ? sortedValues[mid] : (sortedValues[mid - 1] + sortedValues[mid]) / 2;
 }
 
+// 「資金加速」排行的收縮量比與當期流動性門檻。唯一的定義處在 C# 的
+// AccelerationRules（筆記 #10），這裡只是照抄公式，係數一律從 manifest.acceleration
+// 讀，不得寫死字面量。manifest 給不出係數（舊版 manifest）時一律回傳 null，
+// 上層要自己決定 null 代表「這個模式算不出來、別排序」。
+function shrunkVolumeRatio(current, baseline, marketMedianBaseline) {
+    if (!accelerationCoefficients || missing(marketMedianBaseline) || marketMedianBaseline <= 0) {
+        return null;
+    }
+
+    const k = accelerationCoefficients.shrinkageCoefficient * marketMedianBaseline;
+    const denominator = (baseline ?? 0) + k;
+
+    return denominator > 0 ? (current + k) / denominator : null;
+}
+
+// 全市場當期成交值的中位數 × CurrentLiquidityFloorRatio。跟 C# 的
+// currentLiquidityFloor 同一套規則：篩的是「當期」有沒有量，不是「過去」平常有沒有量，
+// 這樣平常沒量、今天爆量的股票才不會被誤殺。
+function currentLiquidityFloor(values) {
+    if (!accelerationCoefficients) {
+        return null;
+    }
+
+    const sorted = values.filter(value => !missing(value)).sort((a, b) => a - b);
+    return sorted.length === 0 ? null : median(sorted) * accelerationCoefficients.currentLiquidityFloorRatio;
+}
+
 // 依市場與門檻篩選，再依模式排名。
 function rankRows(data) {
     const acceleration = state.mode === 'accel';
     const sortKey = row => (acceleration ? row.volumeRatio : row.value);
     const previousSortKey = row => (acceleration ? row.previousVolumeRatio : row.previousValue);
 
-    // 資金加速專用的鳥量股門檻：平常一天成交都不到「全市場中位數 60%」的股票，
-    // 量比稍微放大就是好幾十倍，會把排行榜洗成一片沒人在意的殭屍股。
-    // 跟 TradingValueRankingCalculator 的 accelerationBaselineFloor 同一套規則，
-    // 用全市場（不受下面的市場、門檻篩選影響）算中位數。
+    // 資金加速專用的當期流動性門檻：篩掉當期成交值不到「全市場當期中位數 60%」的股票，
+    // 量比稍微放大就是好幾十倍，會把排行榜洗成一片沒人在意的殭屍股。用全市場
+    // （不受下面的市場、門檻篩選影響）算中位數，跟 C# 的 currentLiquidityFloor 一致。
     const accelerationFloor = acceleration
-        ? median(data.rows.map(baselineOf).filter(value => value !== null).sort((a, b) => a - b)) * 0.6
+        ? currentLiquidityFloor(data.rows.map(row => row.value))
         : null;
 
     const candidates = data.rows.filter(row =>
         (state.market === 'all' || row.market === state.market)
         && row.value >= state.threshold
-        // 只濾掉「量得出平常量、而且確定很小」的股票。算不出平常量（例如新上市）
-        // 不是確定的鳥量股，維持原本沉到最後、但仍顯示的規則。
-        && (accelerationFloor === null || (baselineOf(row) ?? accelerationFloor) >= accelerationFloor));
+        && (accelerationFloor === null || row.value >= accelerationFloor));
 
     const previousRanks = new Map([...candidates]
         .sort(order(previousSortKey))
@@ -11355,14 +11422,20 @@ function rankRows(data) {
 
     const rows = ranked.slice(0, TOP_COUNT).map((row, index) => {
         const rank = index + 1;
+        const previousRank = previousRanks.get(row.ticker);
 
         // 前期完全沒有成交值時，前期排名沒有意義，寧可顯示「—」也不要給一個假的名次。
-        const comparable = !missing(previousSortKey(row)) && (acceleration || row.previousValue > 0);
+        // 資金加速模式另外限制：候選有上千檔，前期名次超過 maxPreviousRankForDisplay
+        // 只是雜訊帶裡的隨機數，一律當作「算不出前期名次」，跟 C# 端同一套規則。
+        const comparable = !missing(previousSortKey(row))
+            && (acceleration || row.previousValue > 0)
+            && (!acceleration || !accelerationCoefficients
+                || previousRank <= accelerationCoefficients.maxPreviousRankForDisplay);
 
         return {
             ...row,
             rank,
-            rankChange: comparable ? previousRanks.get(row.ticker) - rank : null
+            rankChange: comparable ? previousRank - rank : null
         };
     });
 
@@ -13839,7 +13912,7 @@ function renderMarketHeat(heat, index) {
         turnoverDetail,
         toTrendClass(turnoverChangeRate),
         isIntraday
-            ? '全市場預估成交額是同一輪上市與上櫃個股的現價 × 累計成交量加總，再依交易時段進度線性推估至 13:30。量能分數與下方較前一交易日的比較，都使用同一個今日預估收盤成交額；09:27 前不顯示。'
+            ? '全市場預估成交額是同一輪上市與上櫃個股的現價 × 累計成交量加總，再用校準過的日內量能曲線（依過去交易日官方成交額回推的時段分佈，非線性時間比例）換算至全日 13:30 的預估值。量能分數與下方較前一交易日的比較，都使用同一個今日預估收盤成交額；曲線分佈太小或樣本不足時不顯示。'
             : '全市場成交額是上市與上櫃一般交易的正式合計；下方比較正式成交額相較前一交易日的增減率與增減金額。');
 
     panel.append(overview, indicators, indices, meta);
@@ -14250,15 +14323,15 @@ async function ensureIntradaySnapshot(silent = false, force = false, loadSupport
 }
 
 function mapIntradayRows(raw, summary, includeEstimate = false) {
-    const progress = sessionProgress(summary.captured_at);
-    const estimable = progress >= MIN_PROGRESS_FOR_ESTIMATE;
+    const fraction = turnoverFraction(summary.captured_at);
+    const estimable = fraction !== null && fraction >= INTRADAY_TURNOVER_MIN_FRACTION;
 
     return raw.map(row => ({
         ticker: row.symbol,
         name: row.name,
         market: row.market.toLowerCase(),
         value: Number(row.turnover),
-        estimate: includeEstimate && estimable ? Number(row.turnover) / progress : null,
+        estimate: includeEstimate && estimable ? Number(row.turnover) / fraction : null,
         priceChange: missing(row.change_percent) ? null : Number(row.change_percent) / 100,
         close: missing(row.price) ? null : Number(row.price),
         liveKLine: {
@@ -14351,10 +14424,29 @@ async function loadIntraday(silent = false, force = false) {
             : null;
     }
 
-    // 盤中原本沒套用成交門檻，鳥量股靠成交比雜訊就能衝進榜單——跟盤後同一套門檻篩選。
+    // 資金加速的分子分母都是「市場成交比」，跟盤後用 AverageDailyTradingValue
+    // 同一個尺度換成 share 而已；marketMedianShare 是對照期全市場的成交比中位數，
+    // 對應 C# 的 marketMedianBaseline（唯一定義處是 AccelerationRules.ShrunkRatio）。
+    const marketMedianShare = median([...referenceByTicker.values()]
+        .map(pastRow => pastRow.share)
+        .filter(value => !missing(value))
+        .sort((a, b) => a - b));
+
+    for (const row of rows) {
+        const past = referenceByTicker.get(row.ticker);
+        row.volumeRatio = shrunkVolumeRatio(row.share, past?.share, marketMedianShare);
+    }
+
+    // 資金加速專用的當期流動性門檻：盤中原本沒套用任何成交門檻，鳥量股的成交比
+    // 稍微放大就是好幾十倍，靠雜訊就能衝進榜單——跟盤後同一套 currentLiquidityFloor 規則。
+    const accelerationFloor = state.mode === 'accel'
+        ? currentLiquidityFloor(rows.map(row => row.value))
+        : null;
+
     const candidates = rows.filter(row =>
         (state.market === 'all' || row.market === state.market)
-        && row.value >= state.threshold);
+        && row.value >= state.threshold
+        && (accelerationFloor === null || row.value >= accelerationFloor));
     const marketTurnovers = {
         twse: rows.filter(row => row.market === 'twse')
             .reduce((total, row) => total + row.value, 0),
@@ -14362,9 +14454,11 @@ async function loadIntraday(silent = false, force = false) {
             .reduce((total, row) => total + row.value, 0)
     };
 
-    // 資金加速看的是成交比變化，不是預估值：分子分母同一輪，早盤也不會失真。
+    // 資金加速看的是收縮量比，不是絕對成交比變化、也不是預估值：分子分母同一輪，
+    // 早盤也不會失真；用倍數而不是百分點差，才不會被大型股用絕對量體主導排序
+    // （筆記 #10）。唯一定義處在 AccelerationRules.ShrunkRatio，係數讀 manifest。
     const ranked = [...candidates].sort(
-        order(state.mode === 'accel' ? row => row.shareChange : row => row.value));
+        order(state.mode === 'accel' ? row => row.volumeRatio : row => row.value));
 
     // 盤中的「前期排名」是同一批候選在對照期間裡的名次——盤後拿前一段期間比，
     // 盤中就拿過去那段期間比。兩份名次都在同一個候選集合上算，
@@ -14372,8 +14466,12 @@ async function loadIntraday(silent = false, force = false) {
     //
     // 名次是相對的，所以「今天只走了半天」不影響：半天的量排出來的順序，
     // 跟整天的平均排出來的順序可以直接比，和市場成交比是同一個道理。
+    //
+    // 資金加速模式直接借用對照日當天匯出的 volumeRatio——那是對照日自己一輪
+    // 已經算好的收縮量比（伺服器端一律計算、不受匯出模式影響），不必在這裡
+    // 重算一次「比例的比例」。
     const pastSortKey = state.mode === 'accel'
-        ? row => referenceByTicker.get(row.ticker)?.shareChange ?? null
+        ? row => referenceByTicker.get(row.ticker)?.volumeRatio ?? null
         : row => referenceByTicker.get(row.ticker)?.value ?? null;
 
     const previousRanks = new Map([...candidates]
@@ -14408,13 +14506,18 @@ async function loadIntraday(silent = false, force = false) {
             const rank = index + 1;
 
             // 對照期間裡查無此股（新上市、或那段期間完全沒成交）就沒有前期名次可言，
-            // 顯示「—」比給一個假的名次誠實。
-            const comparable = !missing(pastSortKey(row));
+            // 顯示「—」比給一個假的名次誠實。資金加速模式另外限制：候選有上千檔，
+            // 前期名次超過 maxPreviousRankForDisplay 只是雜訊帶裡的隨機數，
+            // 一律當作「算不出前期名次」，跟盤後 rankRows()／C# 端同一套規則。
+            const previousRank = previousRanks.get(row.ticker);
+            const comparable = !missing(pastSortKey(row))
+                && (state.mode !== 'accel' || !accelerationCoefficients
+                    || previousRank <= accelerationCoefficients.maxPreviousRankForDisplay);
 
             return {
                 ...row,
                 rank,
-                rankChange: comparable ? previousRanks.get(row.ticker) - rank : null
+                rankChange: comparable ? previousRank - rank : null
             };
         }),
         rankByTicker: new Map(ranked.map((row, index) => [row.ticker, index + 1]))
@@ -20018,6 +20121,8 @@ async function start() {
     latestTradingDate = manifest.latestTradingDate;
     schedule = manifest.schedule ?? null;
     configureIntradayRefresh();
+    curve = manifest.curve ?? null;
+    accelerationCoefficients = manifest.acceleration ?? null;
     supabase = manifest.supabase ?? null;
     intradayCdn = manifest.intradayCdn ?? null;
     dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));

@@ -152,9 +152,11 @@ public sealed class MarketHeatCalculatorTests
             ]
         }).ToArray();
 
-        // 本輪實際累計只有 20；10:30 的預估全日成交額應為 20 ÷ (90 / 270) = 60。
+        // 退回表 11:00 校準過的 f(t) 是 0.542（見 IntradayTurnoverCalibration.Fallback）；
+        // 本輪實際累計 32.52，預估全日成交額為 32.52 ÷ 0.542 = 60。
         // 這個值要同時驅動量能與「較前一交易日」比較，不能一邊用累計、一邊用預估。
-        var projectedTurnover = IntradayTurnoverProjection.Estimate(20m, new TimeOnly(10, 30));
+        var projectedTurnover = IntradayTurnoverProjection.Estimate(
+            32.52m, new TimeOnly(11, 0), IntradayTurnoverCalibration.Fallback);
         var result = MarketHeatCalculator.Calculate(trading, indices, dates[^1], projectedTurnover);
 
         Assert.NotNull(result);
@@ -216,6 +218,9 @@ public sealed class MarketHeatCalculatorTests
     [Fact]
     public void 盤中預估總成交額在早盤門檻前不造值()
     {
-        Assert.Null(IntradayTurnoverProjection.Estimate(20m, new TimeOnly(9, 20)));
+        // 09:05 落在退回表的 09:00(0.0) 與 09:15(0.229) 之間，內插後 f(t) ≈ 0.076，
+        // 低於 MinimumFraction(0.15)，此時還不給數字。
+        Assert.Null(IntradayTurnoverProjection.Estimate(
+            20m, new TimeOnly(9, 5), IntradayTurnoverCalibration.Fallback));
     }
 }

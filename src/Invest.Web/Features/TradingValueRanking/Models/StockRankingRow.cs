@@ -1,4 +1,5 @@
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.TradingValueRanking.Services;
 
 namespace Invest.Web.Features.TradingValueRanking.Models;
 
@@ -55,18 +56,25 @@ public sealed class StockRankingRow
     /// </summary>
     public decimal? PreviousBaselineDailyTradingValue { get; init; }
 
-    /// <summary>
-    /// 量比：本期平均每日成交值 ÷ 基準日均。1 代表跟平常一樣，3 代表是平常的三倍。
-    /// 資金加速模式就是照這個數字排序。基準算不出來時為 null。
-    /// </summary>
-    public decimal? VolumeRatio => BaselineDailyTradingValue is > 0m
-        ? AverageDailyTradingValue / BaselineDailyTradingValue.Value
-        : null;
+    /// <summary>全市場本期基準中位數。收縮量比的常數 k 用它算，定義見 <see cref="AccelerationRules"/>。</summary>
+    public decimal? MarketMedianBaseline { get; init; }
 
-    /// <summary>前期的量比。資金加速的前期排名照這個排。</summary>
-    public decimal? PreviousVolumeRatio => PreviousBaselineDailyTradingValue is > 0m
-        ? PreviousAverageDailyTradingValue / PreviousBaselineDailyTradingValue.Value
-        : null;
+    /// <summary>全市場前期基準中位數。前期收縮量比用它算。</summary>
+    public decimal? PreviousMarketMedianBaseline { get; init; }
+
+    /// <summary>
+    /// 收縮過的量比：(本期 + k) / (基準 + k)，k = 係數 × 全市場基準中位數
+    /// （筆記 #10，公式與係數唯一定義處是 <see cref="AccelerationRules"/>）。
+    /// 1 代表跟平常一樣，3 代表是平常的三倍；資金加速模式就是照這個數字排序。
+    /// 大型股的 k 遠小於基準，倍數幾乎不受影響；迷你股的 k 遠大於基準，
+    /// 倍數被壓回 1 附近，避免「迷你分母」把倍數炸開。
+    /// </summary>
+    public decimal? VolumeRatio => AccelerationRules.ShrunkRatio(
+        AverageDailyTradingValue, BaselineDailyTradingValue, MarketMedianBaseline);
+
+    /// <summary>前期的收縮量比。資金加速的前期排名照這個排。</summary>
+    public decimal? PreviousVolumeRatio => AccelerationRules.ShrunkRatio(
+        PreviousAverageDailyTradingValue, PreviousBaselineDailyTradingValue, PreviousMarketMedianBaseline);
 
     /// <summary>
     /// 本期成交值佔全市場（上市＋上櫃）的比例。

@@ -84,11 +84,18 @@ public sealed class TradingValueRankingCalculator
         var baselines = Medians(_byTicker, Preceding(dates, currentPeriodDays));
         var previousBaselines = Medians(_byTicker, Preceding(dates, currentPeriodDays + periodDays));
 
-        // 資金加速專用的鳥量股門檻：平常一天成交都不到「全市場中位數的 60%」的股票，
-        // 稍微放大就是好幾十倍的量比，會把排行榜洗成一片沒人在意的殭屍股。
-        // 不寫死金額——這裡的 60% 是量出來對到「排除後段四成」的結果，金額本身隨市場每天变。
-        var accelerationBaselineFloor = query.Mode == RankingMode.CapitalAcceleration
-            ? Median(baselines.Values) * 0.6m
+        // 全市場基準中位數：收縮常數 k 用它算（見 AccelerationRules.ShrunkRatio）。
+        // VolumeRatio 這個欄位兩種模式都會顯示，所以不論 query.Mode 一律算出來。
+        var marketMedianBaseline = Median(baselines.Values);
+        var previousMarketMedianBaseline = Median(previousBaselines.Values);
+
+        // 資金加速專用的當期流動性門檻（筆記 #10，唯一定義處在 AccelerationRules）：
+        // 本期成交值低於「全市場本期中位數」的這個比例就直接排除。門檻刻意用「當期」
+        // 而不是「過去」——過去的規則會誤殺「平常沒量、今天爆量」的個股，
+        // 那恰恰是資金加速要抓的東西。
+        var currentLiquidityFloor = query.Mode == RankingMode.CapitalAcceleration
+            ? Median([.. currentStats.Values.Select(stat => stat.AverageDailyTradingValue)])
+                * AccelerationRules.CurrentLiquidityFloorRatio
             : (decimal?)null;
 
         // 分母一律是上市＋上櫃一般股票，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
@@ -122,9 +129,9 @@ public sealed class TradingValueRankingCalculator
 
             var baseline = baselines.TryGetValue(ticker, out var baselineValue) ? baselineValue : (decimal?)null;
 
-            // 只濾掉「量得出平常量、而且確定很小」的股票。回看不滿 20 天算不出平常量
-            // （例如新上市）是另一回事——不是確定的鳥量股，維持原本沉到最後、但仍顯示的規則。
-            if (accelerationBaselineFloor is { } floor && baseline is { } knownBaseline && knownBaseline < floor)
+            // 當期成交值低於當期流動性門檻就直接排除——本期成交值一定算得出來，
+            // 不像過去的基準門檻還要考慮「基準算不出來就不篩」的情況。
+            if (currentLiquidityFloor is { } floor && stats.AverageDailyTradingValue < floor)
             {
                 continue;
             }
@@ -142,7 +149,9 @@ public sealed class TradingValueRankingCalculator
                 Baseline = baseline,
                 PreviousBaseline = previousBaselines.TryGetValue(ticker, out var previousBaseline)
                     ? previousBaseline
-                    : null
+                    : null,
+                MarketMedianBaseline = marketMedianBaseline,
+                PreviousMarketMedianBaseline = previousMarketMedianBaseline
             });
         }
 
@@ -159,12 +168,22 @@ public sealed class TradingValueRankingCalculator
                     _adjustmentsByTicker.GetValueOrDefault(candidate.Stock.Ticker, []),
                     current[^1]);
 
+                // 候選有上千檔，前期名次超過 MaxPreviousRankForDisplay 只是雜訊帶裡的隨機數，
+                // 顯示出來的「±1900」只會誤導人，不如顯示「新」。只有資金加速模式會踩到這個問題——
+                // 成交熱度模式的名次本來就跟成交值同一個尺度，不會出現這種雜訊。
+                var previousRank = candidate.HasPreviousRank(query.Mode)
+                    ? previousRanks[candidate.Stock.Ticker]
+                    : (int?)null;
+                var displayPreviousRank = previousRank is { } rank
+                    && (query.Mode != RankingMode.CapitalAcceleration
+                        || rank <= AccelerationRules.MaxPreviousRankForDisplay)
+                    ? rank
+                    : (int?)null;
+
                 return new StockRankingRow
                 {
                     Rank = index + 1,
-                    PreviousRank = candidate.HasPreviousRank(query.Mode)
-                        ? previousRanks[candidate.Stock.Ticker]
-                        : null,
+                    PreviousRank = displayPreviousRank,
                     Ticker = candidate.Stock.Ticker,
                     Name = candidate.Stock.Name,
                     Market = candidate.Stock.Market,
@@ -174,6 +193,8 @@ public sealed class TradingValueRankingCalculator
                     PreviousTradingValueChangeRate = candidate.PreviousChangeRate,
                     BaselineDailyTradingValue = candidate.Baseline,
                     PreviousBaselineDailyTradingValue = candidate.PreviousBaseline,
+                    MarketMedianBaseline = candidate.MarketMedianBaseline,
+                    PreviousMarketMedianBaseline = candidate.PreviousMarketMedianBaseline,
                     MarketShare = Share(candidate.Current.TotalTradingValue, marketTotal),
                     PreviousMarketShare = Share(candidate.Previous.TotalTradingValue, previousMarketTotal),
                     PriceChangeRate = candidate.Current.PriceChangeRate,
@@ -393,9 +414,10 @@ public sealed class TradingValueRankingCalculator
     }
 
     /// <summary>
-    /// 一組數字的中位數。用來把「全市場個股平常一天成交多少」濃縮成一個代表值，
-    /// 資金加速模式拿它的 60% 當鳥量股門檻——見 <see cref="Calculate"/> 裡的
-    /// <c>accelerationBaselineFloor</c>。
+    /// 一組數字的中位數。用來把「全市場個股平常一天成交多少」或「全市場個股當期成交多少」
+    /// 濃縮成一個代表值，分別餵給 <see cref="AccelerationRules.ShrunkRatio"/> 的收縮常數 k
+    /// 與資金加速模式的當期流動性門檻——見 <see cref="Calculate"/> 裡的
+    /// <c>marketMedianBaseline</c> 與 <c>currentLiquidityFloor</c>。
     /// </summary>
     private static decimal Median(IReadOnlyCollection<decimal> values)
     {
@@ -640,14 +662,18 @@ public sealed class TradingValueRankingCalculator
         /// <summary>前期分子之前 20 個交易日的中位數日成交值。</summary>
         public decimal? PreviousBaseline { get; init; }
 
-        /// <summary>量比：本期日均成交值 ÷ 基準日均。基準算不出來時為 null，排在最後。</summary>
-        public decimal? VolumeRatio => Baseline is > 0m
-            ? Current.AverageDailyTradingValue / Baseline.Value
-            : null;
+        /// <summary>全市場本期基準中位數。收縮量比的常數 k 用它算，定義見 <see cref="AccelerationRules"/>。</summary>
+        public decimal? MarketMedianBaseline { get; init; }
 
-        public decimal? PreviousVolumeRatio => PreviousBaseline is > 0m
-            ? Previous.AverageDailyTradingValue / PreviousBaseline.Value
-            : null;
+        /// <summary>全市場前期基準中位數。</summary>
+        public decimal? PreviousMarketMedianBaseline { get; init; }
+
+        /// <summary>收縮過的量比，公式與係數唯一定義處是 <see cref="AccelerationRules"/>。</summary>
+        public decimal? VolumeRatio => AccelerationRules.ShrunkRatio(
+            Current.AverageDailyTradingValue, Baseline, MarketMedianBaseline);
+
+        public decimal? PreviousVolumeRatio => AccelerationRules.ShrunkRatio(
+            Previous.AverageDailyTradingValue, PreviousBaseline, PreviousMarketMedianBaseline);
 
         public decimal? SortKey(RankingMode mode) => mode == RankingMode.CapitalAcceleration
             ? VolumeRatio

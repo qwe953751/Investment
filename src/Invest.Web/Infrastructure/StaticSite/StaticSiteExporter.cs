@@ -37,6 +37,7 @@ public sealed class StaticSiteExporter(
     MaterialEventStore materialEvents,
     IntradaySnapshotPublisher snapshotPublisher,
     UsDailyQuoteStore usDailyQuotes,
+    IntradayCurveStore curveStore,
     ILogger<StaticSiteExporter> logger,
     IConfiguration configuration)
 {
@@ -232,6 +233,8 @@ public sealed class StaticSiteExporter(
 
         progress?.Report($"處置中的個股：{dispositions.Count} 檔，全額交割：{alteredTrading.Count} 檔");
 
+        var turnoverCalibration = await LoadTurnoverCalibrationAsync(cancellationToken);
+
         await WriteJsonAsync(
             Path.Combine(outputDirectory, "manifest.json"),
             new ManifestExport(
@@ -249,7 +252,9 @@ public sealed class StaticSiteExporter(
                 ToSupabaseExport(),
                 await ToIntradayCdnExportAsync(cancellationToken),
                 ToDispositionExports(dispositions),
-                [.. alteredTrading]),
+                [.. alteredTrading],
+                ToCurveExport(turnoverCalibration),
+                ToAccelerationExport()),
             cancellationToken);
 
         var topicReport = await WriteTopicsAsync(
@@ -1208,6 +1213,47 @@ public sealed class StaticSiteExporter(
             CollectionSchedule.DailyRefresh.ToString("HH:mm", CultureInfo.InvariantCulture));
 
     /// <summary>
+    /// 讀不到（本機沒接 Supabase、樣本天數不足）就退回寫死的實測表，不讓匯出整個中斷——
+    /// 跟 <see cref="LoadMaterialEventsAsync"/> 讀重大訊息失敗時降級的道理一樣。
+    /// </summary>
+    private async Task<IntradayTurnoverCalibration> LoadTurnoverCalibrationAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var samples = await curveStore.LoadCalibrationSamplesAsync(cancellationToken: cancellationToken);
+
+            return IntradayTurnoverCalibration.Build(samples);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "讀取成交額校準曲線失敗，manifest 這次會帶退回表。");
+
+            return IntradayTurnoverCalibration.Fallback;
+        }
+    }
+
+    /// <summary>
+    /// 把 <see cref="IntradayTurnoverCalibration"/> 的桶表原封不動搬給前端。
+    /// 這是 f(t) 唯一的定義處——C# 算好之後推給 site.js，前端不得另外寫一份係數或桶表
+    /// （見 <see cref="IntradayTurnoverProjection"/> 的類別說明；筆記 #42）。
+    /// </summary>
+    private static IReadOnlyList<CurvePointExport> ToCurveExport(IntradayTurnoverCalibration calibration)
+        => [.. calibration.Points.Select(point => new CurvePointExport(
+            point.Time.ToString("HH:mm", CultureInfo.InvariantCulture),
+            Math.Round(point.Ratio, 4)))];
+
+    /// <summary>
+    /// 「資金加速」排行的收縮量比係數與門檻原封不動搬給前端。這是筆記 #10 的唯一定義處
+    /// （見 <see cref="AccelerationRules"/> 的類別說明），site.js 的 <c>rankRows()</c> 與
+    /// <c>loadIntraday()</c> 都要讀這裡，不得各自寫死字面量。
+    /// </summary>
+    private static AccelerationExport ToAccelerationExport()
+        => new(
+            AccelerationRules.ShrinkageCoefficient,
+            AccelerationRules.CurrentLiquidityFloorRatio,
+            AccelerationRules.MaxPreviousRankForDisplay);
+
+    /// <summary>
     /// 盤中頁不經過這支程式：瀏覽器拿著這組公開金鑰直接讀 Supabase。
     /// 靜態網站沒有伺服器可以代打，而盤中資料每 2 分鐘就變一次，
     /// 走「重新匯出再發佈」根本追不上。
@@ -1303,7 +1349,15 @@ public sealed class StaticSiteExporter(
         IReadOnlyList<DispositionExport> Dispositions,
 
         // 目前被變更交易方法（全額交割）的個股。買賣都要先付足款券，願意接手的人本來就少。
-        IReadOnlyList<string> AlteredTrading);
+        IReadOnlyList<string> AlteredTrading,
+
+        // 校準過的日內量能曲線 f(t)（筆記 #42）。site.js 的 sessionProgress() 拿它內插，
+        // 取代舊版的線性時間比例；不得在前端另外寫一份係數或桶表。
+        IReadOnlyList<CurvePointExport> Curve,
+
+        // 「資金加速」排行的收縮量比係數與當期流動性門檻（筆記 #10）。
+        // site.js 的 rankRows() 與 loadIntraday() 都要讀這裡，不得各自寫死字面量。
+        AccelerationExport Acceleration);
 
     private sealed record ThresholdExport(int Key, string Text);
 
@@ -1383,6 +1437,17 @@ public sealed class StaticSiteExporter(
         string IntradayEnd,
         int IntradayIntervalMinutes,
         string DailyRefresh);
+
+    /// <summary>f(t) 曲線上的一個桶：時刻與該時刻累計成交額通常已經跑掉的比例。</summary>
+    private sealed record CurvePointExport(string Time, double Ratio);
+
+    /// <summary>
+    /// 資金加速排行的收縮量比係數與門檻，唯一定義處是 <see cref="AccelerationRules"/>。
+    /// </summary>
+    private sealed record AccelerationExport(
+        decimal ShrinkageCoefficient,
+        decimal CurrentLiquidityFloorRatio,
+        int MaxPreviousRankForDisplay);
 
     private sealed record RankingExport(
         string Key,

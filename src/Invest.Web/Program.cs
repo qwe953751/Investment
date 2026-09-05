@@ -346,6 +346,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var topicClient = scope.ServiceProvider.GetRequiredService<GoogleSheetTopicClient>();
     var topicHeatStore = scope.ServiceProvider.GetRequiredService<IntradayTopicHeatStore>();
     var snapshotPublisher = scope.ServiceProvider.GetRequiredService<IntradaySnapshotPublisher>();
+    var curveStore = scope.ServiceProvider.GetRequiredService<IntradayCurveStore>();
 
     using var cts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, eventArgs) =>
@@ -371,6 +372,9 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     // 市場熱絡只用前收、成交值與指數，與權息還原無關。不能經由排行榜資料集載入，
     // 否則 TPEx 除權息來源暫時失敗會讓一整場即時報價根本無法開始收集。
     var historicalDataSet = await LoadMarketHeatHistoryAsync(dailyQuoteStore, cts.Token);
+
+    // 成交額預估的校準曲線活過整個交易時段就好，不必每一輪重新查一次資料庫。
+    var turnoverCalibration = await LoadTurnoverCalibrationAsync(curveStore, cts.Token);
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
@@ -464,7 +468,8 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
                     snapshot = snapshot with
                     {
-                        MarketHeat = CalculateIntradayMarketHeat(historicalDataSet, snapshot, capturedAt)
+                        MarketHeat = CalculateIntradayMarketHeat(
+                            historicalDataSet, snapshot, capturedAt, turnoverCalibration)
                     };
 
                     var result = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);
@@ -710,7 +715,9 @@ static async Task RunIntradayHeatBackfillAsync(IServiceProvider services, string
     var historicalDataSet = await LoadMarketHeatHistoryAsync(dailyQuoteStore);
     var capturedAt = stored?.CapturedAt ?? publicSnapshot?.CapturedAt
         ?? throw new InvalidOperationException("盤中快照缺少收集時間，無法回填預估成交額。");
-    var heat = CalculateIntradayMarketHeat(historicalDataSet, snapshot, capturedAt);
+    var curveStore = services.GetRequiredService<IntradayCurveStore>();
+    var turnoverCalibration = await LoadTurnoverCalibrationAsync(curveStore);
+    var heat = CalculateIntradayMarketHeat(historicalDataSet, snapshot, capturedAt, turnoverCalibration);
 
     if (heat?.Score is null)
     {
@@ -769,13 +776,34 @@ static async Task<MarketDataSet> LoadMarketHeatHistoryAsync(
 }
 
 /// <summary>
+/// 載入成交額預估用的校準曲線。Supabase 連不上或樣本天數不足時退回寫死的
+/// <see cref="IntradayTurnoverCalibration.Fallback"/>，不能讓收集器因此整場中止。
+/// </summary>
+static async Task<IntradayTurnoverCalibration> LoadTurnoverCalibrationAsync(
+    IntradayCurveStore curveStore,
+    CancellationToken cancellationToken = default)
+{
+    try
+    {
+        var samples = await curveStore.LoadCalibrationSamplesAsync(cancellationToken: cancellationToken);
+        return IntradayTurnoverCalibration.Build(samples);
+    }
+    catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+    {
+        Console.WriteLine($"讀取成交額校準曲線失敗，改用退回表：{exception.Message}");
+        return IntradayTurnoverCalibration.Fallback;
+    }
+}
+
+/// <summary>
 /// 將盤中最新值接到「交易日前」的盤後歷史後再算分數。
 /// 同一天的盤後收盤資料即使已經存在，也不能混入，否則回填結果會與當時的盤中快照不同。
 /// </summary>
 static MarketHeatMetrics? CalculateIntradayMarketHeat(
     MarketDataSet historicalDataSet,
     IntradaySnapshot snapshot,
-    DateTimeOffset capturedAt)
+    DateTimeOffset capturedAt,
+    IntradayTurnoverCalibration turnoverCalibration)
 {
     var history = historicalDataSet.DailyTrading
         .Where(row => row.TradingDate < snapshot.TradeDate);
@@ -803,7 +831,8 @@ static MarketHeatMetrics? CalculateIntradayMarketHeat(
     var capturedAtTaipei = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTime(capturedAt, taipei).DateTime);
     var projectedTurnover = IntradayTurnoverProjection.Estimate(
         snapshot.Quotes.Sum(quote => quote.EstimatedTradingValue),
-        capturedAtTaipei);
+        capturedAtTaipei,
+        turnoverCalibration);
 
     return MarketHeatCalculator.Calculate(
         [.. history, .. currentTrading],
@@ -1160,13 +1189,13 @@ static async Task RunStatusAsync(IServiceProvider services, string[] args)
         $"| 盤中量能曲線 | {curveDays} 個交易日 |",
     };
 
-    // 曲線是拿來把成交額預估的分母從時間比例換成量能比例的，夠了要提醒一次。
-    // 這個檔案每天自動覆寫並發佈，所以提醒放在這裡才會真的被看到。
-    if (curveDays >= IntradayCurveStore.DaysForCalibration)
+    // 成交額預估已改用 IntradayTurnoverCalibration 的官方口徑校準（筆記 #42）。
+    // 天數不夠門檻時該類別會自動退回寫死的 Fallback 表，這裡提醒一次避免忘記。
+    if (curveDays < IntradayCurveStore.DaysForCalibration)
     {
         lines.Add("");
-        lines.Add($"> 盤中量能曲線已累積 {curveDays} 個交易日，可以討論把當日成交額預估的分母換成 f(t) 了。"
-            + "跑 `dotnet run --project src/Invest.Web -- curve` 看曲線，細節在 TODO.md 的「盤中成交額預估」。");
+        lines.Add($"> 盤中量能曲線只有 {curveDays} 個交易日，還沒到校準門檻 {IntradayCurveStore.DaysForCalibration} 天，"
+            + "成交額預估目前用寫死的退回表（IntradayTurnoverCalibration.Fallback），不是即時校準值。");
     }
 
     // 快取比資料庫多是正常的（資料庫只留最近 N 天），少了才是出事。
@@ -1849,9 +1878,10 @@ static async Task RunCurveAsync(IServiceProvider services)
     }
 
     Console.WriteLine();
-    Console.WriteLine(days >= IntradayCurveStore.DaysForCalibration
-        ? $"已經累積 {days} 天，可以討論把預估的分母換成 f(t) 了。"
-        : $"再累積 {IntradayCurveStore.DaysForCalibration - days} 個交易日就夠拿來校正預估值。");
+    Console.WriteLine(
+        "這份報表用「自算 ÷ 當天自己最後一輪」的比例畫形狀，只供診斷用。"
+        + "成交額預估實際用的分母改用官方口徑校準，見 IntradayTurnoverCalibration"
+        + "（分母是當天官方 daily_quotes 總額，不是自己的最後一輪）。");
 }
 
 internal sealed record PublishedManifest

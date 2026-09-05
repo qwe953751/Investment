@@ -239,13 +239,16 @@ public class TradingValueRankingCalculatorTests
         // 成交熱度看絕對量：2330 的 2000 大於 1101 的 1500。
         Assert.Equal(["2330", "1101"], heat.Rows.Select(row => row.Ticker));
 
-        // 資金加速看「比自己平常放大幾倍」：1101 的 3 倍勝過 2330 的 2 倍，
-        // 即使 2330 的絕對量還是比較大。量比不看誰大，只看誰異常。
+        // 資金加速看「比自己平常放大幾倍」（收縮過，見 AccelerationRules）：
+        // 兩檔的基準中位數分別是 500、1000，全市場基準中位數 750，k = 0.25 × 750 = 187.5。
+        // 1101 = (1500+187.5)/(500+187.5) ≈ 2.4545、2330 = (2000+187.5)/(1000+187.5) ≈ 1.8421，
+        // 1101 仍然勝過 2330，即使 2330 的絕對量還是比較大——量比不看誰大，只看誰異常。
         Assert.Equal(["1101", "2330"], acceleration.Rows.Select(row => row.Ticker));
-        Assert.Equal(3m, Row(acceleration, "1101").VolumeRatio);
-        Assert.Equal(2m, Row(acceleration, "2330").VolumeRatio);
+        Assert.Equal(AccelerationRules.ShrunkRatio(1500m, 500m, 750m), Row(acceleration, "1101").VolumeRatio);
+        Assert.Equal(AccelerationRules.ShrunkRatio(2000m, 1000m, 750m), Row(acceleration, "2330").VolumeRatio);
 
-        // 前期排名同樣用量比算：前期 2330 的 3 倍勝過 1101 的 1 倍。
+        // 前期排名同樣用收縮量比算：前期 1101 是本身的 1 倍（分子分母相同，收縮不改變比值),
+        // 2330 收縮後約 2.68 倍，仍然勝過 1101 的 1 倍。
         Assert.Equal(2, Row(acceleration, "1101").PreviousRank);
         Assert.Equal(1, Row(acceleration, "1101").RankChange);
         Assert.Equal(1, Row(acceleration, "2330").PreviousRank);
@@ -267,8 +270,12 @@ public class TradingValueRankingCalculatorTests
 
         Assert.Equal(100m, Row(twoDays, "1101").BaselineDailyTradingValue);
         Assert.Equal(100m, Row(oneDay, "1101").BaselineDailyTradingValue);
-        Assert.Equal(9m, Row(twoDays, "1101").VolumeRatio);
-        Assert.Equal(9m, Row(oneDay, "1101").VolumeRatio);
+
+        // 兩種期間長度下 1101、2330 的基準都是 100，全市場基準中位數同樣是 100，
+        // k = 0.25 × 100 = 25。收縮後的量比是 (900+25)/(100+25) = 7.4，不是原始的 9 倍，
+        // 但兩種期間長度看到同一個分母、同一個收縮結果，這條測試要驗證的重點沒變。
+        Assert.Equal(AccelerationRules.ShrunkRatio(900m, 100m, 100m), Row(twoDays, "1101").VolumeRatio);
+        Assert.Equal(AccelerationRules.ShrunkRatio(900m, 100m, 100m), Row(oneDay, "1101").VolumeRatio);
     }
 
     [Fact]
@@ -283,7 +290,10 @@ public class TradingValueRankingCalculatorTests
         var row = Row(_calculator.Calculate(dataSet, Query(mode: RankingMode.CapitalAcceleration)), "1101");
 
         Assert.Equal(100m, row.BaselineDailyTradingValue);
-        Assert.Equal(3m, row.VolumeRatio);
+
+        // 只有這一檔股票，全市場基準中位數就是它自己的 100，k = 25。
+        // 收縮後的量比是 (300+25)/(100+25) = 2.6，不是原始的 3 倍。
+        Assert.Equal(AccelerationRules.ShrunkRatio(300m, 100m, 100m), row.VolumeRatio);
     }
 
     [Fact]
@@ -300,14 +310,19 @@ public class TradingValueRankingCalculatorTests
             "1101");
 
         Assert.Equal(100m, row.BaselineDailyTradingValue);
-        Assert.Equal(5m, row.VolumeRatio);
+
+        // 只有這一檔股票，全市場基準中位數就是它自己的 100，k = 25。
+        // 收縮後的量比是 (500+25)/(100+25) = 4.2，不是原始的 5 倍。
+        Assert.Equal(AccelerationRules.ShrunkRatio(500m, 100m, 100m), row.VolumeRatio);
     }
 
     [Fact]
-    public void 資金加速模式濾掉平常量不到全市場中位數六成的鳥量股()
+    public void 資金加速模式濾掉當期成交值不到全市場當期中位數六成的鳥量股()
     {
-        // 三檔的 20 日平常量（中位數）：1101=1000、2330=100、6488=10。
-        // 三者中位數是 100，門檻＝60 → 6488（10）被濾掉，2330（100）保留、1101（1000）保留。
+        // 三檔全程量都是常數（1101=1000、2330=100、6488=10），所以「當期」門檻
+        // 跟舊版「過去」門檻在這組資料上算出同一個結果，但篩選依據已經是本期成交值，
+        // 不是本期之前 20 個交易日的中位數（筆記 #10：門檻要用當期，才抓得到
+        // 「平常沒量、今天爆量」的個股）。當期中位數是 100，門檻＝60，6488（10）被濾掉。
         var dataSet = new MarketDataSetBuilder()
             .Days(1, 22, "1101", 1000).Days(23, 24, "1101", 1000)
             .Days(1, 22, "2330", 100).Days(23, 24, "2330", 100)
@@ -325,37 +340,47 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
-    public void 回看不滿二十天算不出平常量的股票不會被鳥量股規則濾掉()
+    public void 平常沒量今天爆量的個股不會被當期門檻濾掉且基準當作零計算()
     {
-        // 6488 完全沒有歷史，量比顯示 —，但資金加速模式仍要讓它出現、沉到最後，
-        // 不能因為「算不出平常量」就被誤判成「確定是鳥量股」而整檔消失。
+        // 6488 在基準區間（第 3~22 天）完全沒有成交紀錄，20 日中位數是 0，
+        // BaselineDailyTradingValue 顯示 —；但本期（第 23、24 天）成交值 1200，
+        // 高於當期門檻（當期中位數 1100 的六成＝660），不會被濾掉。
+        // 基準抓不到時 AccelerationRules.ShrunkRatio 把分母當成 0 + k 處理，
+        // 量比因此是 (1200+250)/(0+250) = 5.8——比「平常」是 1000 的 1101 高，
+        // 這正是筆記 #10 要抓的「平常沒量、今天爆量」，不能因為基準是 null 就消失或沉到最後。
         var dataSet = new MarketDataSetBuilder()
             .Days(1, 22, "1101", 1000).Days(23, 24, "1101", 1000)
-            .Days(23, 24, "6488", 5000)
+            .Days(23, 24, "6488", 1200)
             .Build();
 
         var result = _calculator.Calculate(dataSet, Query(mode: RankingMode.CapitalAcceleration));
 
-        Assert.Equal(["1101", "6488"], result.Rows.Select(row => row.Ticker));
-        Assert.Null(Row(result, "6488").VolumeRatio);
+        Assert.Equal(["6488", "1101"], result.Rows.Select(row => row.Ticker));
+        Assert.Null(Row(result, "6488").BaselineDailyTradingValue);
+        Assert.Equal(AccelerationRules.ShrunkRatio(1200m, null, 1000m), Row(result, "6488").VolumeRatio);
+        Assert.Equal(1m, Row(result, "1101").VolumeRatio);
     }
 
     [Fact]
-    public void 無法計算量比的個股在資金加速模式排在最後而不是被當成零()
+    public void 全市場基準都算不出來時量比是null不會除以零()
     {
+        // 兩檔股票在基準區間（第 3~22 天）的成交值都是 0（只是為了湊出完整的
+        // 交易日曆），本期（第 23、24 天）才開始有量。兩檔的 20 日中位數都是 0，
+        // 全市場基準中位數 Median() 對空集合／全零集合回傳 0，
+        // AccelerationRules.ShrunkRatio 對非正的全市場基準一律回傳 null，
+        // 不會拿 0 當分母除出無限大。
         var dataSet = new MarketDataSetBuilder()
-            .Days(1, 22, "1101", 100).Days(23, 24, "1101", 50)
-            // 2330 只有最後四天有量，基準區間過半沒成交，中位數是 0，量比算不出來。
-            .Days(21, 24, "2330", 900)
+            .Days(1, 22, "1101", 0).Days(23, 24, "1101", 1000)
+            .Days(1, 22, "2330", 0).Days(23, 24, "2330", 800)
             .Build();
 
         var result = _calculator.Calculate(dataSet, Query(mode: RankingMode.CapitalAcceleration));
 
-        // 1101 的量比只有 0.5 倍（比平常還冷），仍然排在「算不出來」的 2330 前面。
         Assert.Equal(["1101", "2330"], result.Rows.Select(row => row.Ticker));
-        Assert.Equal(0.5m, Row(result, "1101").VolumeRatio);
-        Assert.Null(Row(result, "2330").BaselineDailyTradingValue);
+        Assert.Null(Row(result, "1101").VolumeRatio);
         Assert.Null(Row(result, "2330").VolumeRatio);
+        Assert.Null(Row(result, "1101").PreviousRank);
+        Assert.Null(Row(result, "2330").PreviousRank);
     }
 
     [Fact]
