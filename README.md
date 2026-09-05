@@ -6,9 +6,12 @@
 不延伸成持倉管理、投資建議或買賣訊號。
 
 最高權限頁籤提供「資產 Dashboard → 帳戶明細」兩層；使用者、帳戶與已確認持倉存於 Supabase。
-截圖只在瀏覽器內辨識、不會上傳或保存；辨識後會先列出「覆蓋／新增／移除」差異，
+截圖辨識的目標架構採 D+ AI-first：Mac／Windows Worker 在線且至少一個訂閱 CLI 可用時，圖片短期進入
+Supabase 私有佇列並由 AI 兩遍辨識；否則自動在瀏覽器回退 Tesseract。辨識後會先列出「覆蓋／新增／移除」差異，
 每一項都必須人工核對並勾選才會套用。相同代號直接覆蓋，移除項目預設不勾選。檢視權限不顯示此頁籤；
-密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收，限制與下一步見 [TODO.md](TODO.md)。
+密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收。**D+ 後端、AI-first 前端與
+Mac Worker 已整合；正式網站發布要等本次 `main` commit 的 publish-only Action 完成。**限制與下一步見
+[TODO.md](TODO.md)。
 
 ## 文件導覽
 
@@ -51,10 +54,14 @@ GitHub 組織，不含原始帳號名稱）。打開就是**訪客（檢視）�
 並每 60 秒重讀。檢視權限不顯示此頁籤。這是公開網站的刻意取捨：沒有登入邊界，知道網址的人也可能修改筆記，
 密碼登入會在網址下限之上提升權限；在 RLS 收回匿名寫入前，資料表仍沿用公開 anon 模型。
 
-「資產」可在 Dashboard 與帳戶明細間切換、新增使用者／帳戶，並用本機 OCR 讀券商未實現損益截圖。
-使用者可一次選最多 20 張，逐張最長辨識 10 秒；完成後會列出和既有持倉的覆蓋／新增／移除差異，
+「資產」可在 Dashboard 與帳戶明細間切換、新增使用者／帳戶，並以 D+ AI-first 讀券商未實現損益截圖。
+網站先查兩分鐘內的 Worker 心跳及 Agent 登入／額度狀態；AI 可用才把圖片放入 `ocr-private`，
+完成後立即刪除，異常時最長 60 分鐘清理。AI 不可用時圖片不離開瀏覽器，直接由 Tesseract 備援；
+若工作建立後才耗盡額度，也會回傳 `fallback_required` 再用原頁記憶體中的圖片執行備援。
+使用者可一次選最多 20 張；Tesseract 每張最長辨識 10 秒。完成後會列出和既有持倉的覆蓋／新增／移除差異，
 逐項核對並勾選再套用。同代號直接覆蓋，移除預設不勾選；只有確認的持倉數字寫入 Supabase，
-原始截圖不會上傳、保存或送往券商。資產頁保留上方主頁籤，方便切回其他功能頁；匿名 RLS 收權限仍待驗收。
+原始截圖不會寫入持倉資料，也不會送往券商；AI 路徑會由本機訂閱 CLI 送至其模型服務。
+資產頁保留上方主頁籤，方便切回其他功能頁；匿名 RLS 收權限仍待驗收。
 深色台股畫面若只有「市值／現價／成本均價／投資成本」，會在總額與單價誤差不超過 0.6% 時補回唯一的
 正整數股數；若券商把股數拆成「昨日餘額／今買成交／今賣成交」，則以昨日＋買進−賣出計算。不能通過
 這些限制的列保持空白等待人工修正，不以欄位位置硬猜。
@@ -158,6 +165,33 @@ publish-only run [33509783439](https://github.com/qwe953751/Investment/actions/r
 - 發布流程已將 `publish-only=true` 與完整快照分開併發鎖；完整快照正在回補／備份時，純畫面發布不必取消資料流程或等待它結束。
 - 資產截圖可一次選最多 20 張，逐張最長辨識 10 秒；OCR 結果先列出覆蓋／新增／移除差異，逐項核對並勾選後才可套用。同代號直接覆蓋，移除預設不勾選，避免 OCR 漏列誤刪持倉。
 - 台股 ETF 以證交所／櫃買中心官方名冊判定：保留在資產名冊與日 K，排除一般股票成交值排行及市場成交值分母；可用 `backfill-etfs` 補齊既有快取。
+
+### D+ OCR Worker
+
+本節描述已整合到 `main` 的 D+ 實作。正式 Supabase 後端、Mac 單張 E2E、重載恢復、submit
+冪等、受控 fallback 取回與每 5 分鐘逾期清理已驗證；Golden Set 的正確率門檻與公司 Windows
+實機仍是外部驗收，不會因管線成功就宣稱達到九成。
+
+正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
+輪詢，拿到短效私有圖片 URL 後才啟動 CLI；程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、
+`ANTHROPIC_API_KEY`，不會偷偷改走按量 API。
+
+目前 Mac 已用 Codex CLI 實測，腳本已設為 executable：
+
+```bash
+cd <repo-root>
+scripts/run-ocr-worker-macos.sh
+```
+
+Windows 使用 PowerShell SecretManagement 保存 `InvestOcrWorkerPassword` 後，可由登入時排程執行：
+
+```powershell
+scripts\run-ocr-worker-windows.ps1
+```
+
+兩個腳本都只從 OS Secret Store 取 Worker 密碼，不把密碼、service role、Management token 或 AI API Key
+寫進 repository。完整狀態機、權限與 Windows 驗收清單見
+[規劃 AI OCR §14](Doc/技術文件/規劃AI%20OCR.md#十四換模型接手前的預計修正與驗收清單)。
 
 筆記 #21 的 ETF 行情、資產帳戶與盤中交易日防呆已由功能程式碼 commit `85e0504b`
 推送並以 `publish-only=true` 發布。`db/032`～`db/035` 已於 2026-09-02 依獨立 migration

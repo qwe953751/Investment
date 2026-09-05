@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：Golden Set、Validator 與正式 Worker](#todo-15) | 🔵 AI-first／Tesseract 備援規則已定，正式網站尚未接 AI |
+| 15 | [D+ AI OCR：Golden Set、Validator 與正式 Worker](#todo-15) | 🟡 管線已整合，等正式站／Golden Set／Windows 驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1070,8 +1070,10 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：Phase 1 核心與 AI-first／Tesseract fallback 決策已建立；正式網站仍使用 Tesseract，
-等待 Codex 真實 CLI、Golden Set、Validator、Worker 心跳與工作佇列。依使用者指示不安裝或設定 Claude CLI。**
+**狀態：AI-first 前端、正式 Supabase 私有佇列、Validator、Mac Worker、重載恢復、submit 冪等、
+fallback 受控取回與獨立逾期清理已整合；本輪 `main` 推送後仍要跑 publish-only，並由正式最高
+權限帳號做瀏覽器驗收。Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0，以及公司
+Windows 實機仍待驗收。依使用者指示，不自行安裝或設定 Claude CLI。**
 
 ### 已討論
 
@@ -1079,22 +1081,35 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
   上傳，直接跑現有瀏覽器 Tesseract。Tesseract 是可用性備援，不是 AI 前置篩選器。
 - AI 仍使用第二遍稽核、確定性驗證與人工確認；Tesseract fallback 必須標示來源與原因，不能
   冒充 AI 驗證結果，也不讓任一 OCR 結果直接寫入正式持倉。
-- 本輪已加入 `OcrAgentContracts`、`ClaudeCodeCliRunner`、`CodexCliRunner`、`AgentCliResultClassifier`、`AgentQuotaRouter`、`AiOcrOrchestrator`、`OcrPocRunner` 與 `ocr-poc` 命令。
+- 已加入 `OcrAgentContracts`、兩個 CLI Adapter、Router、兩遍 Orchestrator、Validator、`ocr-poc` 與 `ocr-worker [--once]`。
 - 主要 Agent 額度不足時改跑另一個 Agent；兩者都判定額度不足時，Router 丟
   `OcrAllAgentsQuotaExhaustedException`，外層轉為 Tesseract fallback，不改走付費 API、不忙等重試。
-- AI 工作建立後才需要 fallback 時，先標成 `fallback_required`，讓瀏覽器以仍在記憶體中的原圖
-  或期限內的受控短效存取執行 Tesseract；完成確認或 60 分鐘逾期後才刪除私有圖片，不能先刪圖
-  再要求 fallback。逾期後必須由使用者重新選圖。
+- AI 工作建立後才需要 fallback 時，先標成 `fallback_required`；原頁或重載後頁面都透過 owner
+  驗證的 10 分鐘 signed URL 取回圖片，再執行 Tesseract，完成確認後刪除私有圖片。
+- `localStorage` 只保存 job id／帳戶／檔名等非影像描述；重整後可恢復 queued／leased／succeeded，
+  fallback 取回失敗則保留工作讓下一次重整再試。`db/040_ocr_hardening.sql` 加入 input hash、
+  user-scoped idempotency index 與清理錯誤欄位；Supabase cron 每 5 分鐘呼叫受 secret 保護的 cleanup。
 - 已新增 `OcrEngineFallbackPolicy` 與單元測試，涵蓋有效／過期心跳、沒有已登入 Agent、雙額度
   不足、兩 CLI 都不可用，以及未知程式錯誤不得被靜默偽裝成 fallback。
 - 已新增 `OcrExecutionCoordinator`，把上傳前 Worker／登入預檢與 AI 執行中雙額度／無可用 Agent
   例外接到同一個 Tesseract fallback 結果；未知錯誤仍向上拋出。
-- Release build 0 警告／0 錯誤，.NET 10 測試 390/390 通過；OCR 專項測試 16/16 通過。沒有送出真實圖片，也沒有建立 Supabase migration、Storage、Queue 或 Windows Worker。
+- `db/039_ocr_jobs.sql`、`db/040_ocr_hardening.sql` 已套用正式 Supabase，`ocr-private` 為 private；
+  anon 無法讀工作、authenticated 無法 claim。`ocr-jobs` Edge Function 已部署為手動 JWT 驗證（含
+  cleanup secret）、admin／worker 分權；Supabase cron `ocr-expired-cleanup` 每 5 分鐘清理到期物件。
+- Codex CLI 已用 IMG_1604 真實執行兩遍並通過 Schema；正式佇列也完成 upload／lease／result／ack／刪圖，測試工作已清除。Worker 離線三分鐘時 readiness 實測回 `worker_offline`。
+- Release build 0 警告／0 錯誤，.NET 10 目前全套 394/394 通過；前端與 Edge Function 通過 JavaScript 語法檢查。
 
-### 尚未討論
+### 本輪已完成與仍待外部驗收
 
-- 私有 Golden Set 標準答案、兩遍 Prompt／Schema 的版本凍結與三次重跑矩陣。
-- `RecognitionDraft`、股票名冊／數值／兩遍一致性 Validator、去識別化評估指標與 95%／90% gate。
-- Claude CLI 的安裝、Pro 登入、版本與 headless smoke test；完成前不宣稱雙 Agent 已可在本機正式執行。
-- `ocr-worker --once`／`--loop`、Worker 心跳與 Agent 登入狀態、Supabase Auth／RLS／Queue、
-  `fallback_required` 回應與清理確認、Windows 長駐部署及逾期圖片清理。
+1. 發布 `main` 後跑 `daily-snapshot.yml` 的 `publish-only=true`，確認公開 `site.js` 含 `ocr-jobs`、
+   `fallback_required` 與重載恢復文案；再由正式最高權限帳號做 AI Worker 在線／離線兩條瀏覽器路徑。
+2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
+   把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。
+3. 在公司 Windows 以非管理員帳號驗證 .NET 10、SecretManagement、登入時排程、鎖屏／重開機、
+   網路、登入撤銷、程序重啟與 log 脫敏；Claude CLI 只有取得新的明確指示才安裝。
+
+### 仍待實機或使用者確認
+
+- Claude CLI 的安裝、Pro 登入、版本與 headless smoke test；完成前不宣稱雙 Agent 已可正式執行。
+- 公司資安是否允許持倉截圖短暫送往 Supabase Storage 與外部 AI 供應商。
+- Windows 長期運行後的 P95 延遲、訂閱額度消耗、quota recheck 間隔與 log 保存期限。

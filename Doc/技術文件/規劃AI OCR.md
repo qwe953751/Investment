@@ -2,7 +2,7 @@
 
 > 日期：2026-09-05
 >
-> 狀態：**方案 D+ 已修訂為 AI-first、Tesseract 自動備援；Phase 1 決策核心已實作，但正式網站仍只使用 Tesseract**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列、Mac Worker、冪等／重載恢復／fallback 取回與逾期清理已整合；公開網站待本輪 publish-only 完成，Golden Set 與 Windows 實機仍待驗收**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -16,10 +16,10 @@ Tesseract 不作為 AI 的前置關卡，也不以「Tesseract 有回傳資料�
 
 選定的漸進式落地方式如下：
 
-1. 先在目前 Mac 以同一個 .NET Web Project 新增 `ocr-poc` 命令，直接讀取本機私有樣本，並以既有 ChatGPT Plus 與 Claude Pro 登入的 Codex／Claude Code CLI 執行；預設路徑不需要 OpenAI 或 Anthropic API Key，此階段也不建 Supabase Storage、Queue 或正式 Worker。
+1. 目前 Mac 以同一個 .NET Web Project 的 `ocr-poc` 與 `ocr-worker` 執行；Codex CLI 已用 ChatGPT Plus 登入完成真實圖片雙 Pass，Claude CLI 依使用者指示本輪不安裝。預設路徑不需要 OpenAI 或 Anthropic API Key。
 2. 每張圖片由 AI 執行兩個不同任務的辨識：第一遍完整擷取，第二遍專門稽核漏列、錯列與遮擋；正常情況優先讓兩個不同 Agent 分工，兩遍不一致時不得標成 `verified`。
 3. AI 只擷取正式持倉真正需要的「股票身份、庫存數量、總成本」；現價、市值與未實現損益繼續由既有行情與 C#／前端既定公式重算。
-4. POC 達到驗收門檻後，才建立 Supabase 私有短期圖片、工作佇列與受控端點；網站只建立工作及讀取草稿，不能把 AI 結果直接寫入正式持倉。
+4. 已建立 Supabase 私有短期圖片、具租約工作佇列與受控 `ocr-jobs` Edge Function；網站只建立工作及讀取草稿，不能把 AI 結果直接寫入正式持倉。
 5. 同一套 `ocr-worker` 命令先在 Mac 做端到端模擬，之後搬到長期開機且連網的 Windows 公司電腦，以主動對外輪詢方式常駐，不開放任何對內連線埠。
 6. Windows Worker 不保存 Supabase service role、Management token、資料庫連線密碼或 AI API Key；Claude Code 與 Codex 分別使用 Claude Pro、ChatGPT Plus 的本機訂閱登入狀態。
 7. 網站先檢查 Worker 最近心跳，以及至少一個 CLI 是否已完成訂閱登入；條件不成立時不建立
@@ -247,7 +247,7 @@ AI 第二遍：專門稽核漏列、錯列、遮擋及 UI 雜訊
 這個階段只回答「D+ 對實際難例能否達標、兩個 CLI 如何分工、額度消耗與延遲是多少」。若
 辨識能力本身沒有通過，不先投入 Storage、Queue、RLS 與 Windows 佈署。
 
-### 6.2 正式目標：Supabase 非同步佇列 + Windows Worker
+### 6.2 正式架構：Supabase 非同步租約佇列 + Mac／Windows Worker
 
 ```text
 管理者網站 + Supabase Auth JWT
@@ -258,9 +258,9 @@ AI 第二遍：專門稽核漏列、錯列、遮擋及 UI 雜訊
         ↓
 `ocr-submit` Edge Function
         ↓
-私有 `ocr-private` bucket + `ocr_jobs` + Supabase Queue
+私有 `ocr-private` bucket + `ocr_jobs` 租約佇列
         ↓
-Windows `ocr-worker` 主動向外 claim 工作
+Mac／Windows `ocr-worker` 主動向外 claim 工作
         ↓
 短效下載至權限限縮暫存目錄 → 雙 CLI Router → AI 兩遍辨識 → 確定性驗證
   ├─ 成功 → `ocr-complete` Edge Function → 立即刪除原圖
@@ -272,9 +272,9 @@ Windows `ocr-worker` 主動向外 claim 工作
 Windows Worker 只建立向外的 HTTPS 連線，不開放入站連接埠。即使瀏覽器關閉，工作仍可完成；
 網站在上傳前若看到 Worker 離線，直接在本機回退 Tesseract。工作建立後 Worker 才失聯時，
 短暫保留至租約到期；工作確定不可由 AI 完成後才進入 `fallback_required`。原頁仍開啟時使用
-瀏覽器記憶體中的原始 `File` 跑 Tesseract；頁面已重載時，登入者可在 60 分鐘期限內透過受控
-短效存取取回自己的私有圖片再執行。Tesseract 完成後由網站確認清理；期限內沒有確認則由
-伺服器刪除圖片，之後只能要求使用者重新選圖。AI 與 Tesseract 不能同時競速寫回。
+瀏覽器記憶體中的原始 `File` 跑 Tesseract；首版頁面重載後不把私有原圖重新下傳至瀏覽器，
+而是要求使用者重新選圖。Tesseract 完成後由網站確認清理；期限內沒有確認則由 Edge Function
+在後續 status／heartbeat／readiness 請求清除。AI 與 Tesseract 不能同時競速寫回。
 
 ### 6.3 專案內模組位置與目前狀態
 
@@ -283,20 +283,22 @@ Windows Worker 只建立向外的 HTTPS 連線，不開放入站連接埠。即�
 - `Features/Assets/Ocr/Services/AiOcrOrchestrator.cs`：**已完成**兩遍辨識流程與 Pass checkpoint 邊界。
 - `Features/Assets/Ocr/Services/AgentQuotaRouter.cs`：**已完成** Pass 排序、額度冷卻與雙 Agent 切換。
 - `Features/Assets/Ocr/Services/OcrEngineFallbackPolicy.cs`：**已完成** Worker 心跳、已登入 Agent 與
-  雙額度例外轉 Tesseract 的純決策核心；尚未接網站／Worker 狀態 API。
+  雙額度例外轉 Tesseract 的純決策核心，並已接入隔離工作樹內的正式站候選程式／Worker 狀態 API。
 - `Features/Assets/Ocr/Services/OcrExecutionCoordinator.cs`：**已完成**把上傳前 readiness 預檢、AI
-  兩遍辨識與已知不可用例外接到同一個 Tesseract fallback 邊界；尚未接正式網站端點。
+  兩遍辨識與已知不可用例外接到同一個 Tesseract fallback 邊界。
 - `Features/Assets/Ocr/Services/OcrPocRunner.cs`：**已完成** Mac 私有圖片 staging、雙 Pass 報告與 `ocr-poc` 選項解析。
-- `Features/Assets/Ocr/Models/RecognitionDraft.cs`：待完成；目前 POC 先保留兩個 CLI 的原始 JSON，不寫正式草稿模型。
-- `Features/Assets/Ocr/Services/OcrDraftValidator.cs`：待完成；股票名冊、數值、兩遍一致性與狀態判定仍未接線。
+- `Features/Assets/Ocr/Services/OcrRecognitionValidator.cs`：**已完成**數值解析、兩遍列配對、一致性與 `verified` 判定；網站再以已載入股票名冊交叉驗證，不一致列標成需人工校對。
+- `Features/Assets/Ocr/Services/OcrWorkerApiClient.cs`：**已完成**專用 Auth 登入／refresh、心跳、claim、短效下載與 lease completion。
+- `Features/Assets/Ocr/Services/OcrWorkerRunner.cs`：**已完成** `ocr-worker [--once]`、CLI 登入探測、私有暫存、雙 Pass、結果回寫及 AI 失敗轉 `fallback_required`。
 - `Features/Assets/Ocr/Services/OcrEvaluationService.cs`：待完成；`--truth` 目前只驗證標準答案檔存在，尚未計算 Golden Set 指標。
 - `Infrastructure/Ai/Cli/OcrAgentContracts.cs`：**已完成**兩個 CLI 共用的圖片、Prompt、JSON Schema、結果與 checkpoint 契約。
 - `Infrastructure/Ai/Cli/ClaudeCodeCliRunner.cs`：**已完成** Claude Code 訂閱 CLI Adapter。
 - `Infrastructure/Ai/Cli/CodexCliRunner.cs`：**已完成** Codex 訂閱 CLI Adapter。
 - `Infrastructure/Ai/Cli/AgentCliResultClassifier.cs`：**已完成**將退出碼與脫敏輸出分類為成功、額度、登入、暫時性、內容或不可用。
-- `Infrastructure/Database/OcrJobStore.cs`：正式階段才加入的 Edge／Queue 工作協定。
-- 既有 `Program.cs`：**已完成** `ocr-poc` 命令入口；`ocr-worker --once`、`ocr-worker --loop` 留待正式階段。
-- 既有 `tests/Invest.Web.Tests`：**已完成** Router、CLI 分類與 checkpoint 單元測試；Schema、解析、Validator、租約與冪等測試留待後續。
+- `db/039_ocr_jobs.sql`：**已完成並套用正式 Supabase**；建立 private bucket、`ocr_workers`、`ocr_jobs`、原子 claim／complete RPC，anon／authenticated 不可直讀或 claim。
+- `supabase/functions/ocr-jobs/index.js`：**已部署**；admin 與 `ocr_worker` JWT 分流，管理 upload／status／ack、heartbeat／claim／complete 及逾期清理。
+- 既有 `Program.cs`：**已完成** `ocr-poc` 與 `ocr-worker [--once]` 命令入口。
+- 既有 `tests/Invest.Web.Tests`：**已完成** Router、CLI 分類、checkpoint、fallback 協調器、Validator 與前端候選接線契約測試；Golden Set 指標仍待擴充。
 
 UI 不直接依賴模型名稱、Prompt 或 Storage。辨識與驗證的概念介面如下：
 
@@ -518,61 +520,54 @@ Supabase secret key／service role 會繞過 RLS，若放進長期開機的公�
 
 ### 9.2 資料表、Queue 與 Storage
 
-- `ocr_batches`：一次 1～20 張上傳的批次、帳戶、擁有者、進度與過期時間。
-- `ocr_jobs`：每張圖一個工作，含 `user_id`、`storage_path`、`status`、`attempt_count`、
-  `lease_owner`、`lease_until`、`idempotency_key`、`input_hash`、模型／Prompt／Schema 版本、
-  `execution_mode`、驗證後草稿、警告、錯誤碼、`next_attempt_at` 與時間戳。
-- `ocr_job_passes`：擷取／稽核各自的 checkpoint，含 Agent、CLI／模型版本、嘗試次數、分類後
-  狀態及脫敏錯誤碼；不保存完整 CLI 對話。完成一遍後立即保存，重派時只續跑缺少的 Pass。
-- `ocr_workers`：Worker id、版本、平台、最後心跳、狀態及目前工作；不保存任何 Secret。
-- Supabase Queue：訊息只放 `job_id`，不放圖片、完整辨識結果或個資。
-- 私有 bucket `ocr-private`：建議路徑 `{user_id}/{batch_id}/{job_id}.{ext}`，只能由受控端點
-  產生短效上傳／下載權限。
+- `ocr_jobs`：每張圖一個工作，含 owner、帳戶、私有 path、status、attempt count、lease owner／token／期限、驗證後草稿、fallback／錯誤碼與最長 60 分鐘期限。
+- `ocr_workers`：Worker Auth user id、版本、平台、最後心跳及各 Agent 登入／quota 冷卻狀態；不保存任何 Secret。
+- 首版不用 `pgmq`，改由 `ocr_claim_job()` 在單一 transaction 內用 `FOR UPDATE SKIP LOCKED`
+  claim 最舊工作並寫入租約。對目前單一長駐 Worker，這與訊息佇列同樣能避免重複取件，卻少一套
+  extension 版本與 visibility timeout 維護；未來吞吐量需要多 Worker 時再量測是否改 pgmq。
+- 私有 bucket `ocr-private` 使用 `{user_id}/{job_id}.{ext}`；只有 Edge Function 的 service role
+  可上傳、簽短效 Worker 下載 URL 與刪除，瀏覽器／Worker JWT 都不能直接列 bucket。
 
-初始限制為每批最多 20 張、每張最多 10 MB，只接受實際解碼成功的 JPEG／PNG／WebP；上傳
-端不只相信副檔名或瀏覽器傳入的 MIME type。
+初始限制為網站每批最多 20 張、每張最多 10 MB；Edge Function 以 PNG／JPEG／WebP magic bytes
+重新決定 MIME 與副檔名，不相信瀏覽器檔名。完整像素解碼仍由 Worker／模型階段驗證。
 
 ### 9.3 Edge Function 邊界
 
-- `ocr-submit`、`ocr-status`、`ocr-cancel`：驗證管理者 JWT 與工作擁有權。
-- `ocr-claim`、`ocr-complete`、`ocr-heartbeat`：只接受專用 Worker JWT，並在伺服器端限制可讀、
-  可改欄位。
+- 單一 `ocr-jobs` Edge Function 依 action 提供 readiness／submit／status／acknowledge／cancel，
+  驗證管理者 JWT 與工作擁有權；heartbeat／claim／complete 只接受專用 `ocr_worker` JWT。
 - Queue 不直接暴露給瀏覽器；前端也不能指定任意 Storage path 或替工作偽造完成結果。
 - `ocr-complete` 必須驗證租約、工作狀態與冪等鍵；相同完成請求重送應得到同一結果。
 
 ### 9.4 狀態、租約、重試與清理
 
 ```text
-queued → leased → processing → succeeded
-                              ↘ needs_review
-                              ↘ failed
-                              ↘ fallback_required ──Tesseract 完成──→ succeeded_fallback
-                                                   └─逾期──→ expired
-queued／leased／processing → expired／cancelled
+queued → leased → succeeded
+                ↘ failed
+                ↘ fallback_required ──Tesseract 完成／取消──→ 清圖並清除結果
+queued／leased／fallback_required → expired／cancelled
 ```
 
 第一版預設值如下，實作後可由 POC 與公司網路實測調整：
 
-- 租約 180 秒；Worker 定期延長。Windows 當機或重啟後，租約逾時即可安全重派。
-- 單一 CLI timeout／網路錯誤先做有上限的退避重試；拒答或無效 Schema 可再詢問一次，仍失敗
-  則轉 `needs_review` 或 `failed`。這些錯誤不冒充額度不足，也不無限消耗訂閱額度。
+- 首版租約 600 秒；單張兩個 Pass 各有 4 分鐘上限。Windows 當機或重啟後，租約逾時可由另一輪安全重派，最多 10 次。
+- 目標行為是單一 CLI timeout／網路錯誤只做有上限的退避重試；拒答或無效 Schema 可再詢問
+  一次。**目前 Worker 對 timeout／網路錯誤採工作邊界 fallback，並保留明確錯誤碼**；不得把這些
+  錯誤冒充額度不足，也不得無限消耗訂閱額度。
 - 協調器確認兩個 Agent 都是 `QuotaExhausted` 後丟出
   `OcrAllAgentsQuotaExhaustedException`；`ocr-poc` 在最外層將它轉成清楚訊息與非零退出碼，
   `ocr-worker` 則在工作邊界捕捉，寫入 `status=fallback_required` 與
   `last_error_code=all_agents_quota_exhausted`，通知瀏覽器跑 Tesseract。若原頁仍開啟就使用其
-  記憶體中的原始 `File`；若頁面已重載，登入者只能在保存期限內透過受控短效存取取回自己的
-  私有圖片。此路徑不等待額度恢復，也不改走付費 API。
+  記憶體中的原始 `File`；重載後則由 owner 驗證的短效 signed URL 取回自己的私有圖片。此路徑
+  不等待額度恢復，也不改走付費 API。
 - 每個 Agent 的可用狀態為 `available`、`quota_exhausted`、`authentication_required`、
   `unavailable`。額度訊息若有可信重設時間就採用；沒有時依
   `OCR_AGENT_QUOTA_RECHECK_MINUTES` 延後，初始預設 30 分鐘，不能在 loop 中忙等。
-- Worker 每 30 秒心跳；超過 2 分鐘未更新，網站在上傳前及等待中顯示離線。
-- AI 成功、取消或瀏覽器確認 Tesseract 完成後立即刪除圖片；`fallback_required`、失敗、過期或
-  Worker 消失時，由伺服器清理程序保證最晚 60 分鐘刪除。若 fallback 圖片已逾期，禁止延長
-  公開存取，改要求使用者重新選圖。辨識草稿初始保存 24 小時，之後清除或只留去識別化統計。
-- `input_hash` + `idempotency_key` 防止網路重送造成重複計費或重複工作，但不能跨不同使用者
-  暴露「相同圖片存在」的資訊。
-- Queue 只傳 `job_id`，不把圖片、完整辨識內容或 Agent 登入資訊放入訊息；暫時性網路錯誤仍可
-  有上限地重試，但 Agent 離線／未登入或雙額度不足不排入長時間等待，直接進入 fallback。
+- Worker 閒置時預設每 5 秒心跳／輪詢；超過 2 分鐘未更新，網站在上傳前判定離線並不上傳。
+- AI 成功、取消或瀏覽器確認 Tesseract 完成後立即刪除圖片；Edge Function 另由 Supabase Cron
+  `ocr-expired-cleanup` 每 5 分鐘執行 secret-protected cleanup，Worker／瀏覽器都離線時仍會清理。
+  若 fallback 圖片已逾期，禁止延長存取，改要求重新選圖。
+- 工作主鍵與租約 token 防止不同 Worker 完成同一個 lease；`db/040_ocr_hardening.sql` 以 user-scoped
+  idempotency key／SHA-256 input hash 防止網路重送建立第二份工作。
 
 圖片清理不能只靠 Windows Worker，否則電腦離線正是最容易造成敏感圖片殘留的時候。
 
@@ -601,9 +596,10 @@ Anthropic 建立對外 HTTPS，不開本機 Web Server、不做路由器 port fo
 Worker 所需設定：
 
 - `OCR_WORKER_EMAIL`、`OCR_WORKER_PASSWORD`。
-- `OCR_SUPABASE_URL`、`OCR_SUPABASE_PUBLISHABLE_KEY`。
-- `OCR_AGENT_PRIMARY=claude|codex`、`OCR_AGENT_TIMEOUT_SECONDS`、
-  `OCR_AGENT_QUOTA_RECHECK_MINUTES`。
+- `OCR_SUPABASE_URL`、`OCR_SUPABASE_ANON_KEY`；未設定時讀既有 `Supabase:Url`／`Supabase:AnonKey`。
+- `OCR_WORKER_NAME`、`OCR_WORKER_POLL_SECONDS`；輪詢預設 5 秒，允許 2～60 秒。
+- `OCR_AGENT_PRIMARY=claude|codex`、`OCR_AGENT_QUOTA_RECHECK_MINUTES`。
+- 可選的 `OCR_CLAUDE_PATH`、`OCR_CODEX_PATH`；Windows 排程建議使用已驗證的完整路徑。
 - 可選的 `OCR_CLAUDE_MODEL`、`OCR_CODEX_MODEL`；只能選該訂閱與 CLI 當下實際可用的模型，
   不因找不到指定模型自動改用 API。
 - 專用 Windows 帳號下已完成並驗證的 Claude Pro／ChatGPT Plus CLI 登入。
@@ -613,7 +609,7 @@ Worker 所需設定：
 - `SUPABASE_DB_URL`。
 - Supabase service role／secret key。
 - `SUPABASE_ACCESS_TOKEN` 或其他 Management token。
-- `OPENAI_API_KEY`、`CODEX_API_KEY`、`ANTHROPIC_API_KEY`；即使全域環境已有，啟動 CLI
+- `OPENAI_API_KEY`、`CODEX_API_KEY`、`ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`；即使全域環境已有，啟動 CLI
   子行程時也必須移除，不能讓 fallback 產生額外 API 帳單。
 
 圖片以短效 URL 下載到每個工作的權限限縮暫存目錄，交給 CLI 後在 `finally` 刪除原圖、裁切圖、
@@ -646,15 +642,15 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
 
 - D+、Claude Code／Codex 雙 CLI、額度切換、Mac POC、Windows 常駐 Worker 與人工套用邊界
   已確認。
-- 預設路徑不購買或呼叫 AI API；尚未授權 Supabase migration、正式圖片上傳或 Windows 安裝。
+- 預設路徑不購買或呼叫 AI API；2026-09-05 已明確授權 Supabase migration、正式圖片短期上傳與網站測試，Windows 公司電腦安裝仍待到該機執行。
 
-### Phase 1：Mac AI OCR POC
+### Phase 1：Mac AI OCR POC（核心與真實 CLI smoke test 已完成）
 
 - **已完成核心**：Schema、兩遍 Prompt、Claude／Codex Adapter、`AgentQuotaRouter`、CLI 結果分類器、
   `OcrAllAgentsQuotaExhaustedException`、`OcrEngineFallbackPolicy`、`OcrExecutionCoordinator`、
   `ocr-poc` 命令、單元測試與 staging 清理。
-- **待完成**：私有 Golden Set 標準答案、確定性 Validator、去識別化評估指標，以及實際 CLI smoke test。
-- 交叉 Agent 與兩個單 Agent fallback 路徑各跑三次，取得品質、延遲與訂閱額度消耗基準；目前尚未執行。
+- **已完成**：確定性 Validator；Codex CLI 以 IMG_1604 實跑兩個 Pass，兩份皆通過 JSON Schema，單次約 20～22 秒。
+- **待完成**：私有 Golden Set 標準答案與去識別化評估指標；Claude 未安裝，因此跨 Agent 與 Claude fallback 矩陣未執行。
 
 ### Phase 2：POC Gate 與設計凍結
 
@@ -663,20 +659,21 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
   與 quota recheck 間隔。
 - 未達標就停止於此，不建立正式雲端工作流。
 
-### Phase 3：Auth／RLS／Queue 基礎建設
+### Phase 3：Auth／RLS／Queue 基礎建設（已完成）
 
-- 另開明確授權的 migration：收回相關 anon 權限、新增私有 bucket、工作表、Queue 與 Worker
-  Auth 身分。
-- 實作 Edge Function 權限、租約、冪等、限流與伺服器端清理。
+- `db/039_ocr_jobs.sql` 已依明確授權套用：新增 private bucket、工作／心跳表、原子租約 RPC 與 Worker Auth 身分；anon／authenticated 不具資料表與 claim 權限。
+- `ocr-jobs` Edge Function 已部署；圖片內容與大小由伺服器驗證，owner status／ack 與 worker claim／complete 分權，請求時與 Worker 心跳時清理逾期物件。
 - 增加 Worker 心跳／已登入 Agent 狀態、擷取／稽核 Pass checkpoint 與 `fallback_required`，但
   不把 CLI OAuth 或任何 AI Token 存進 Supabase。
 - DDL 必須走獨立 migration／驗收流程，不能混入一般網站發布或使用假資料通過。
 
-### Phase 4：Mac 端到端模擬
+### Phase 4：Mac 端到端模擬（主要成功／離線路徑已完成）
 
-- 實作 `ocr-worker --once` 與 `--loop`，在 Mac 模擬 Windows 長駐行為。
-- 驗證斷網、關閉瀏覽器、重複完成、租約逾時、Worker 中止、重啟、取消與清理。
-- 驗證 Worker 離線或沒有已登入 Agent 時不上傳圖片、Claude 額度不足切 Codex、Codex 額度不足
+- 已實作 `ocr-worker [--once]`，並在 Mac 以常駐迴圈模擬 Windows 行為。
+- 正式佇列已用 IMG_1604 驗證 `upload → queued → leased → Codex 雙 Pass → succeeded → acknowledge`；結果 6 列，測試後 Storage path 與結果已清除，測試工作亦已刪除。
+- 將心跳調舊三分鐘後，readiness 實測回 `ready=false / worker_offline`；重啟 Worker 後恢復 Codex ready。
+- **待補齊**：驗證斷網、關閉／重載瀏覽器、重複完成、租約逾時、Worker 中止、重啟、取消與獨立排程清理。
+- **待補齊**：驗證 Worker 離線或沒有已登入 Agent 時不上傳圖片、Claude 額度不足切 Codex、Codex 額度不足
   切 Claude、兩者不足由專用例外轉成 Tesseract fallback，以及已上傳圖片在 Tesseract 完成確認
   或 60 分鐘逾期後確實清理。
 - 網站只顯示草稿與差異；此階段仍不得讓 OCR 直接改正式持倉。
@@ -710,14 +707,14 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
 | 主要 Agent 額度不足 | 標記該 Agent 冷卻，立即改跑另一個 Agent |
 | Claude 與 Codex 額度都不足 | Router 丟 `OcrAllAgentsQuotaExhaustedException`；工作進入 `fallback_required` 並通知瀏覽器執行 Tesseract，完成確認或 60 分鐘逾期後清理原圖 |
 | CLI 未安裝或訂閱登入失效 | 另一個 Agent 可用時進入單 Agent 模式；兩者都不可用時不上傳或終止工作並回退 Tesseract |
-| CLI timeout／網路錯誤 | 有上限的退避重試；保留同一冪等工作，不自動套用 |
+| CLI timeout／網路錯誤 | 轉 `fallback_required`；保留錯誤碼，不自動套用 |
 | CLI 回傳無效 JSON／Schema | 同一 Agent 最多修正重試一次；仍失敗則由另一 Agent 或 `needs_review` 處理，不當成 quota |
 | 兩遍 AI 不一致 | `needs_review`，清楚列出差異，不挑一個看似合理的答案 |
 | 代號不存在或算術矛盾 | `rejected` 或 `needs_review`，不得成為可直接勾選的 verified 列 |
-| 網路重送或重複按上傳 | 由 input hash、冪等鍵與狀態機避免重複計費／完成 |
-| 瀏覽器關閉 | 工作與草稿保留至期限內；重新登入可恢復進度，若已轉 fallback 可用受控短效存取取回自己的圖片；圖片逾期後必須重新選圖 |
+| 網路重送或重複按上傳 | user-scoped idempotency key／input hash 去重；相同內容回傳既有 job，不重複消耗 Agent |
+| 瀏覽器關閉 | AI 工作可繼續；前端保存非影像 job descriptor，重載後恢復輪詢，fallback 以 owner signed URL 取回 |
 | Windows 重啟／當機 | 舊租約逾時後重派；完成端點重送不產生第二份結果 |
-| 圖片刪除失敗 | 工作標記清理待辦；伺服器排程在最長保存期限內再次刪除並告警 |
+| 圖片刪除失敗 | cleanup cron 每 5 分鐘重試並記錄 `cleanup_attempts`／`cleanup_last_error`，不延長 signed URL |
 | 模型或 Prompt 漂移 | 固定並記錄版本；任何變更先跑 Golden Set regression |
 | 公司資安不允許 Worker | 停止佈署；只有另行核准 API 與政策後才評估 Edge Function，不關閉或繞過公司防護 |
 
@@ -750,15 +747,55 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
 - 公司資安與個資政策是否允許此用途。
 - Golden Set 擴充後，95%／90% 門檻是否仍足以支援試用；危險假陽性 0 筆不降低。
 
-目前已開始 **Phase 1：Mac AI OCR POC**，並已加入可測試的 `OcrEngineFallbackPolicy` 與
-`OcrExecutionCoordinator`；正式網站
-仍只有瀏覽器 Tesseract，尚未具備 Worker 心跳 API、私有圖片、Queue 或結果輪詢，所以部署後
-不會出現 AI 效果。依使用者指示，Claude CLI 安裝／設定與真實啟動暫緩；下一個可執行動作是
-先用 Codex CLI（或 fake runner）建立私有 Golden Set、接上 Validator 與評估報告。正式接站仍
-需要另行核准 Supabase migration、敏感圖片短期上傳與 Worker Auth；本次修訂本身不構成這些
-外部變更或網站發布的授權。
+目前已完成 **Phase 3 與 Phase 4 的主要路徑**：Supabase migration、私有 Storage、租約佇列、
+Worker Auth、Edge Function、Mac `ocr-worker`、Codex 真實雙 Pass、Validator、AI-first 前端、
+submit 冪等／input hash、頁面重載恢復、fallback signed URL 與每 5 分鐘 cleanup cron 已做過
+正式驗證。使用者已在 2026-09-05 明確授權敏感圖片短期上傳與正式網站測試；Claude CLI 仍依指示
+不安裝。公開網站切換仍要等本輪 `main` commit 的 publish-only Action。
 
-## 十四、參考資料
+## 十四、換模型接手前的預計修正與驗收清單
+
+這一節記錄本輪接手後已完成的工程項目，以及仍必須在外部裝置／正式網址驗收的項目；不得把
+「管線已完成」與「Golden Set 已達標」混為一件事。
+
+### 14.1 目前可驗證狀態（2026-09-05）
+
+- D+ 已在隔離工作樹整合最新 `origin/main`，保留主工作樹其他功能 WIP；正式 commit 前仍會逐檔檢查 staged diff。
+- 正式 Supabase 已套用 `db/039_ocr_jobs.sql` 與 `db/040_ocr_hardening.sql`；`ocr-private` 是 private
+  bucket，`ocr-jobs` Edge Function v2 使用手動 JWT／cleanup secret，cron `ocr-expired-cleanup`
+  每 5 分鐘執行。
+- Mac 已用 Codex CLI 跑通 Worker heartbeat／claim；無 Claude CLI 時 readiness 仍會拒絕 admin AI 工作，
+  前端會走 Tesseract fallback。IMG_1604 既有結果為 6 列、`verifiedCount=0`，**不代表正確率達標**。
+- 本輪 .NET 10.0.302 Release build 0 警告／0 錯誤，測試 394/394；`site.js` 與 Edge Function Node 語法檢查通過。
+
+### 14.2 本輪已完成的功能缺口
+
+1. **程式與文件整合**：D+ `site.js`／`site.css`、`Program.cs`、Worker、Validator、migration、
+   Edge Function、Mac／Windows 腳本與測試已在隔離工作樹整合最新 `main`。
+2. **AI-first 與文案**：只有 admin、readiness 可用且 Worker 心跳／Agent 登入額度符合條件才送圖；
+   UI 已區分 AI、fallback 與原因，舊的「永不上傳」文案已移除。
+3. **重載恢復與受控取回**：瀏覽器只保存非影像 job descriptor；owner 驗證的 download action 只對
+   `fallback_required` 回傳 10 分鐘 signed URL，完成／取消／到期都會清理。
+4. **submit 冪等與獨立清理**：`db/040_ocr_hardening.sql` 加入 user-scoped idempotency／SHA-256；
+   cron `ocr-expired-cleanup` 每 5 分鐘呼叫 secret-protected cleanup。
+5. **安全矩陣基礎驗證**：未登入 401、worker 角色呼叫 admin action 403、worker claim 200、cleanup
+   錯誤 secret 401／正確 secret 200 已實測；檔案 magic bytes、大小與 owner 條件由 Edge Function 強制。
+
+### 14.3 合併、發布與正式網站驗收
+
+1. 已在最新 `origin/main` 上解決衝突；.NET 10 Release build／394 個測試、Node `site.js`／Edge
+   Function 語法、安全 endpoint 與 cleanup cron 已驗證。
+2. 只 stage D+ 與同步文件，逐檔檢查 staged diff；確認沒有 Secret、私有圖片、POC 報告、暫存目錄
+   或別的工作內容後 commit、push `main`。
+3. 程式進入 `main` 後，以 `daily-snapshot.yml` 的 `publish-only=true` 發布，不手改 `gh-pages`；
+   Actions 的 `headSha` 必須是剛推送的 commit。
+4. 發布後以正式 `https://frank-invest.github.io/` 的最高權限帳號做瀏覽器驗收：Worker 在線時實際
+   出現 AI 工作與草稿；停止 Worker 後不送圖並回退 Tesseract；再驗證 public `site.js` 確實包含
+   `ocr-jobs`／`fallback_required`，公開 manifest、`gh-pages` 與 `main` 版本一致。
+5. Golden Set 三次重跑與公司 Windows 實機仍待使用者／外部環境提供；在此之前文件只標示「管線已完成」，
+   不標示正確率達九成。
+
+## 十五、參考資料
 
 ### 專案內文件與程式
 
@@ -804,4 +841,5 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
 
 ---
 
-本文件是設計與決策依據，不代表已核准 AI 供應商、資料上傳政策、資料庫 migration、正式實作或發布。
+本文件同時記錄決策與接手狀態。Supabase migration、私有 Storage、Worker Auth、Edge Function、
+AI-first 前端與 Mac Worker 已整合；正式網址 publish-only、Golden Set 與 Windows 實機是剩餘驗收。
