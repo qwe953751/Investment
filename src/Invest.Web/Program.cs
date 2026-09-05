@@ -124,6 +124,10 @@ builder.Services.AddSingleton<AgentQuotaRouter>(services =>
             services.GetRequiredService<CodexCliRunner>()
         ],
         OcrAgentRouterOptions.FromEnvironment()));
+builder.Services.AddSingleton<OcrEngineFallbackPolicy>();
+builder.Services.AddTransient<IOcrPassCheckpointStore, InMemoryOcrPassCheckpointStore>();
+builder.Services.AddTransient<IAiOcrRecognizer, AiOcrOrchestrator>();
+builder.Services.AddTransient<OcrExecutionCoordinator>();
 builder.Services.AddTransient<OcrPocRunner>();
 
 var app = builder.Build();

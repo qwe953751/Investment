@@ -1134,18 +1134,31 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：Phase 1 核心已完成，等待 Claude／Codex 真實 CLI 與 Golden Set 評估；本輪依使用者指示不安裝或設定 Claude CLI。**
+**狀態：Phase 1 核心與 AI-first／Tesseract fallback 決策已建立；正式網站仍使用 Tesseract，
+等待 Codex 真實 CLI、Golden Set、Validator、Worker 心跳與工作佇列。依使用者指示不安裝或設定 Claude CLI。**
 
 ### 已討論
 
-- 方向確定為 D+：AI 主要辨識、第二遍稽核、確定性驗證與人工確認；不讓 OCR 結果直接寫入正式持倉。
+- 方向修訂為 D+ AI-first：Worker 兩分鐘內有心跳且至少一個 CLI 已登入時優先 AI；否則圖片不
+  上傳，直接跑現有瀏覽器 Tesseract。Tesseract 是可用性備援，不是 AI 前置篩選器。
+- AI 仍使用第二遍稽核、確定性驗證與人工確認；Tesseract fallback 必須標示來源與原因，不能
+  冒充 AI 驗證結果，也不讓任一 OCR 結果直接寫入正式持倉。
 - 本輪已加入 `OcrAgentContracts`、`ClaudeCodeCliRunner`、`CodexCliRunner`、`AgentCliResultClassifier`、`AgentQuotaRouter`、`AiOcrOrchestrator`、`OcrPocRunner` 與 `ocr-poc` 命令。
-- 主要 Agent 額度不足時改跑另一個 Agent；兩者都判定額度不足時丟 `OcrAllAgentsQuotaExhaustedException`，不改走付費 API、不忙等重試。
-- Release build 0 警告／0 錯誤，.NET 10 測試 364/364 通過；沒有送出真實圖片，也沒有建立 Supabase migration、Storage、Queue 或 Windows Worker。
+- 主要 Agent 額度不足時改跑另一個 Agent；兩者都判定額度不足時，Router 丟
+  `OcrAllAgentsQuotaExhaustedException`，外層轉為 Tesseract fallback，不改走付費 API、不忙等重試。
+- AI 工作建立後才需要 fallback 時，先標成 `fallback_required`，讓瀏覽器以仍在記憶體中的原圖
+  或期限內的受控短效存取執行 Tesseract；完成確認或 60 分鐘逾期後才刪除私有圖片，不能先刪圖
+  再要求 fallback。逾期後必須由使用者重新選圖。
+- 已新增 `OcrEngineFallbackPolicy` 與單元測試，涵蓋有效／過期心跳、沒有已登入 Agent、雙額度
+  不足、兩 CLI 都不可用，以及未知程式錯誤不得被靜默偽裝成 fallback。
+- 已新增 `OcrExecutionCoordinator`，把上傳前 Worker／登入預檢與 AI 執行中雙額度／無可用 Agent
+  例外接到同一個 Tesseract fallback 結果；未知錯誤仍向上拋出。
+- Release build 0 警告／0 錯誤，.NET 10 測試 390/390 通過；OCR 專項測試 16/16 通過。沒有送出真實圖片，也沒有建立 Supabase migration、Storage、Queue 或 Windows Worker。
 
 ### 尚未討論
 
 - 私有 Golden Set 標準答案、兩遍 Prompt／Schema 的版本凍結與三次重跑矩陣。
 - `RecognitionDraft`、股票名冊／數值／兩遍一致性 Validator、去識別化評估指標與 95%／90% gate。
 - Claude CLI 的安裝、Pro 登入、版本與 headless smoke test；完成前不宣稱雙 Agent 已可在本機正式執行。
-- `ocr-worker --once`／`--loop`、Supabase Auth／RLS／Queue、Windows 長駐部署與圖片清理。
+- `ocr-worker --once`／`--loop`、Worker 心跳與 Agent 登入狀態、Supabase Auth／RLS／Queue、
+  `fallback_required` 回應與清理確認、Windows 長駐部署及逾期圖片清理。

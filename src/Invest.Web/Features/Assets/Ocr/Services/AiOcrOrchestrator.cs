@@ -4,7 +4,7 @@ namespace Invest.Web.Features.Assets.Ocr.Services;
 
 public sealed class AiOcrOrchestrator(
     AgentQuotaRouter router,
-    IOcrPassCheckpointStore checkpointStore)
+    IOcrPassCheckpointStore checkpointStore) : IAiOcrRecognizer
 {
     public async Task<OcrTwoPassResult> RecognizeAsync(
         OcrAgentRequest extractionRequest,
