@@ -1136,7 +1136,7 @@ v9 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 W
 
 1. 公開 `site.js` 的 AI-first 管線、名稱反查、progress UI、用量觀測與單次 AI 辨識已完成；正式
   `db/041_ocr_progress.sql` 與 `ocr-jobs` v9 也已部署。使用者已確認網站可正常上傳；最新 `main` 已由
-   publish-only Action `34032339976` 全綠發布為快照 `1788696729`。後續持續做 Golden Set 與修復後的
+   publish-only Action `34058234190` 全綠發布為快照 `1788726737`。後續持續做 Golden Set 與修復後的
    手機新圖片 AI 外部驗收。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
    把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。
