@@ -126,6 +126,12 @@ GitHub 組織，不含原始帳號名稱）。打開就是**訪客（檢視）�
 
 ## 最新已發布版本
 
+最新 `main` commit `78933cbe` 已由
+[`daily-snapshot.yml` publish-only run 34032339976](https://github.com/qwe953751/Investment/actions/runs/34032339976)
+完成全套測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788696729`、最新交易日
+`2026/09/04`；公開 manifest 已與 `gh-pages` 同版，線上 `site.js` 已驗證包含 D+ 名稱反查、進度階段、
+AI 名稱候選及每圖 progressbar。本次純發布沒有回補行情、寫入 `data` 或重跑 Supabase migration。
+
 本次最新發布包含 A｜極簡動作列、密碼登入三層權限、券商 OCR 漏列修正、美股帳戶與
 USD/TWD 匯率支援、台美股持倉 K 線與出入金成本，以及筆記 #21 的 ETF 名冊／日 K、
 持倉批次編輯／排序／行情顏色與美股資產雙幣別。`daily-snapshot.yml`
