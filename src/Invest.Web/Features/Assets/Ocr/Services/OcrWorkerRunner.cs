@@ -86,7 +86,7 @@ public sealed class OcrWorkerRunner(
             await api.DownloadAsync(job.DownloadUrl, imagePath, cancellationToken);
             await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
 
-            var requests = CreateRequests(imagePath, schemaPath, directory.FullName, job.Market);
+            var request = CreateRequest(imagePath, schemaPath, directory.FullName, job.Market);
             var readiness = new OcrWorkerReadiness(
                 DateTimeOffset.UtcNow,
                 agentStates
@@ -99,17 +99,13 @@ public sealed class OcrWorkerRunner(
             var coordinator = new OcrExecutionCoordinator(
                 fallbackPolicy,
                 new AiOcrOrchestrator(router, new InMemoryOcrPassCheckpointStore()));
-            await UpdateProgressSafeAsync(api, job, "extraction", 25, null, cancellationToken);
+            await UpdateProgressSafeAsync(api, job, "ai_recognition", 25, null, cancellationToken);
             var execution = await coordinator.RecognizeAsync(
                 readiness,
-                requests.Extraction,
-                requests.Audit,
+                request,
                 cancellationToken);
 
-            var usage = new[] { execution.AiResult?.Extraction.Result.Usage, execution.AiResult?.Audit.Result.Usage }
-                .Where(value => value is not null)
-                .Cast<OcrAgentUsage>()
-                .Aggregate<OcrAgentUsage, OcrAgentUsage?>(null, (total, value) => total is null ? value : total + value);
+            var usage = execution.AiResult?.Execution.Result.Usage;
 
             if (execution.UsesTesseract)
             {
@@ -183,20 +179,16 @@ public sealed class OcrWorkerRunner(
 
     private static void WriteUsageSummary(OcrClaimedJob job, OcrExecutionResult execution)
     {
-        var passes = new[] { execution.AiResult?.Extraction, execution.AiResult?.Audit }
-            .Where(value => value is not null)
-            .Cast<OcrAgentExecution>();
-        foreach (var pass in passes)
-        {
-            var usage = pass.Result.Usage;
-            Console.WriteLine(
-                $"OCR 工作 {job.Id} {pass.Pass} pass：agent={pass.Agent} duration={pass.Result.Duration.TotalSeconds:0.0}s "
-                + $"input={usage?.InputTokens ?? 0} cached={usage?.CachedInputTokens ?? 0} "
-                + $"output={usage?.OutputTokens ?? 0} reasoning={usage?.ReasoningOutputTokens ?? 0}");
-        }
+        var executionResult = execution.AiResult?.Execution;
+        var usage = executionResult?.Result.Usage;
+        Console.WriteLine(
+            $"OCR 工作 {job.Id} 單次 AI：agent={executionResult?.Agent} fallback={executionResult?.UsedFallback} "
+            + $"duration={executionResult?.Result.Duration.TotalSeconds:0.0}s "
+            + $"input={usage?.InputTokens ?? 0} cached={usage?.CachedInputTokens ?? 0} "
+            + $"output={usage?.OutputTokens ?? 0} reasoning={usage?.ReasoningOutputTokens ?? 0}");
     }
 
-    private static (OcrAgentRequest Extraction, OcrAgentRequest Audit) CreateRequests(
+    private static OcrAgentRequest CreateRequest(
         string imagePath,
         string schemaPath,
         string workingDirectory,
@@ -207,27 +199,14 @@ public sealed class OcrWorkerRunner(
             : market == "台股"
                 ? "帳戶市場是台股；股數通常是非負整數，成本幣別通常是 TWD。"
                 : "帳戶市場未限定；只能抄錄畫面，不得自行推測市場。";
-        var shared = $"{context} 圖片是券商持倉截圖。只擷取股票身份、庫存股數與總成本；不得使用目前持倉名單，不得由市值或損益反推，不得猜測看不清楚的字。";
-        return (
-            CreateRequest(imagePath, schemaPath, workingDirectory, "extraction.json",
-                $"{shared} 從上到下完整擷取每一列可見持股，排除頁首、時間、按鈕、合計與彈窗。"),
-            CreateRequest(imagePath, schemaPath, workingDirectory, "audit.json",
-                $"{shared} 獨立重新閱讀圖片，專門檢查漏列、重複列、遮擋與 UI 雜訊；不要參考另一個 Agent 的答案。"));
-    }
-
-    private static OcrAgentRequest CreateRequest(
-        string imagePath,
-        string schemaPath,
-        string workingDirectory,
-        string outputName,
-        string prompt)
-        => new(
+        return new(
             imagePath,
-            prompt,
+            $"{context} 圖片是券商持倉截圖。從上到下完整擷取每一列可見持股，排除頁首、時間、按鈕、合計與彈窗。只擷取股票身份、庫存股數與總成本；代號缺少時保留名稱，名稱缺少時保留代號；看不清楚填 null 並加入 warnings，不得猜測或由市值、損益反推。",
             schemaPath,
             workingDirectory,
-            OutputPath: Path.Combine(workingDirectory, outputName),
+            OutputPath: Path.Combine(workingDirectory, "ai-result.json"),
             Timeout: TimeSpan.FromMinutes(4));
+    }
 
     private async Task<IReadOnlyDictionary<string, OcrWorkerAgentState>> ProbeAgentsAsync(
         CancellationToken cancellationToken)

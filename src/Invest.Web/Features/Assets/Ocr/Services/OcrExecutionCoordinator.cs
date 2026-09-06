@@ -3,14 +3,13 @@ using Invest.Web.Infrastructure.Ai.Cli;
 namespace Invest.Web.Features.Assets.Ocr.Services;
 
 /// <summary>
-/// AI 兩遍辨識的抽象邊界，讓正式 Worker 可以在不依賴具體 checkpoint 儲存方式的情況下
+/// AI 單次辨識的抽象邊界，讓正式 Worker 可以在不依賴具體 checkpoint 儲存方式的情況下
 /// 套用同一套 fallback 規則。
 /// </summary>
 public interface IAiOcrRecognizer
 {
-    Task<OcrTwoPassResult> RecognizeAsync(
-        OcrAgentRequest extractionRequest,
-        OcrAgentRequest auditRequest,
+    Task<OcrSinglePassResult> RecognizeAsync(
+        OcrAgentRequest request,
         CancellationToken cancellationToken = default);
 }
 
@@ -27,11 +26,11 @@ public enum OcrExecutionMode
 public sealed record OcrExecutionResult(
     OcrExecutionMode Mode,
     OcrTesseractFallbackReason? FallbackReason = null,
-    OcrTwoPassResult? AiResult = null)
+    OcrSinglePassResult? AiResult = null)
 {
     public bool UsesTesseract => Mode == OcrExecutionMode.TesseractFallback;
 
-    public static OcrExecutionResult FromAi(OcrTwoPassResult result)
+    public static OcrExecutionResult FromAi(OcrSinglePassResult result)
         => new(OcrExecutionMode.Ai, AiResult: result);
 
     public static OcrExecutionResult FromTesseract(OcrTesseractFallbackReason reason)
@@ -48,8 +47,7 @@ public sealed class OcrExecutionCoordinator(
 {
     public async Task<OcrExecutionResult> RecognizeAsync(
         OcrWorkerReadiness? readiness,
-        OcrAgentRequest extractionRequest,
-        OcrAgentRequest auditRequest,
+        OcrAgentRequest request,
         CancellationToken cancellationToken = default)
     {
         var preflight = fallbackPolicy.DecideBeforeAi(readiness);
@@ -61,8 +59,7 @@ public sealed class OcrExecutionCoordinator(
         try
         {
             var aiResult = await aiRecognizer.RecognizeAsync(
-                extractionRequest,
-                auditRequest,
+                request,
                 cancellationToken);
             return OcrExecutionResult.FromAi(aiResult);
         }

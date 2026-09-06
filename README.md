@@ -7,14 +7,14 @@
 
 最高權限頁籤提供「資產 Dashboard → 帳戶明細」兩層；使用者、帳戶與已確認持倉存於 Supabase。
 截圖辨識的目標架構採 D+ AI-first：Mac／Windows Worker 在線且至少一個訂閱 CLI 可用時，圖片短期進入
-Supabase 私有佇列並由 AI 兩遍辨識；否則自動在瀏覽器回退 Tesseract。辨識後會先列出「覆蓋／新增／移除」差異，
+Supabase 私有佇列並由單一 AI Agent 辨識；主要 Agent 登入／額度不可用時自動切換另一個，兩者都不可用才在瀏覽器回退 Tesseract。辨識後會先列出「覆蓋／新增／移除」差異，
 每一項都必須人工核對並勾選才會套用。相同代號直接覆蓋，移除項目預設不勾選。檢視權限不顯示此頁籤；
 密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收。**D+ 後端、AI-first 前端、Mac
-Worker 與正式網站已整合發布。**正式最高權限手機已確認兩張圖片由 D+ AI 完成（70／78 秒）；
-本輪已加入名稱唯一反查、非阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、兩 Pass 單工作並行、
+ Worker 與正式網站已整合發布。**正式最高權限手機已確認兩張圖片由 D+ AI 完成（70／78 秒）；
+本輪已加入名稱唯一反查、非阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、單次 AI 辨識、
 單實例鎖與 Mac／Windows 背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs`
-Edge Function 已更新為 v7；Golden Set、圖片／模型效能調校、多圖 concurrency 與 Windows 實機仍待
-驗收，限制與下一步見 [TODO.md](TODO.md)。
+Edge Function 已更新為 v7；公司 Windows Worker 的背景排程與正式心跳已驗收。Golden Set、圖片／模型
+效能調校、多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收，限制與下一步見 [TODO.md](TODO.md)。
 
 ## 文件導覽
 
@@ -178,13 +178,13 @@ publish-only run [33509783439](https://github.com/qwe953751/Investment/actions/r
 ### D+ OCR Worker
 
 本節描述已整合到 `main` 並發布到正式網站的 D+ 實作。正式 Supabase 後端、Mac 單張 E2E、重載恢復、submit
-冪等、受控 fallback 取回與每 5 分鐘逾期清理已驗證；Golden Set 的正確率門檻與公司 Windows
-實機仍是外部驗收，不會因管線成功就宣稱達到九成。
+冪等、受控 fallback 取回與每 5 分鐘逾期清理已驗證；公司 Windows Worker 的背景排程與正式心跳也已驗證。
+Golden Set 的正確率門檻與修復後的新手機圖片 AI 成功仍是外部驗收，不會因管線成功就宣稱達到九成。
 
-**目前狀態（2026-09-06）**：前端、佇列、Worker claim 與 CLI 路徑接線已生效。健康探測與實際
-Runner 共用 `OcrAgentExecutableResolver`，新版 Mac Worker 已在正式 Supabase 回報 Codex 已安裝、
-已登入且有額度；請重啟舊 Worker 後重新選圖確認 AI 工作 `succeeded`。原先的
-`no_available_agent` 是舊版接線缺陷，詳見
+**目前狀態（2026-09-07）**：前端、佇列、Worker claim 與 CLI 路徑接線已生效。健康探測與實際
+Runner 共用 `OcrAgentExecutableResolver`；公司 Windows 的專用 Worker 已在正式 Supabase 持續回報 Codex
+已安裝、已登入且有額度，網站的兩分鐘 readiness 條件已具備。原先手機走 Tesseract 的直接原因是 Windows
+沒有可用的背景 Worker 心跳，不是前端把 AI 功能關掉。修正後仍應重新選一張圖片確認工作 `succeeded`，詳見
 [規劃 AI OCR §14.4](Doc/技術文件/規劃AI%20OCR.md#144-2026-09-06-正式瀏覽器驗收發現的阻塞與修正已完成正式-ai-草稿待重試)。
 
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
@@ -198,14 +198,18 @@ cd <repo-root>
 scripts/run-ocr-worker-macos.sh
 ```
 
-Windows 使用 PowerShell SecretManagement 保存 `InvestOcrWorkerPassword` 後，可由登入時排程執行：
+Windows 專用帳號的密碼使用目前登入使用者的 DPAPI 保護，檔案只存在
+`%LOCALAPPDATA%\Investment\ocr-worker-windows.credential.clixml`，不進 repository。首次受控設定時，
+以記憶體中的 `PSCredential` 呼叫 `scripts\set-ocr-worker-windows-credential.ps1`；之後由登入時排程啟動：
 
 ```powershell
-scripts\run-ocr-worker-windows.ps1
+scripts\register-ocr-worker-task-windows.ps1
 ```
 
-兩個腳本都只從 OS Secret Store 取 Worker 密碼，不把密碼、service role、Management token 或 AI API Key
-寫進 repository。完整狀態機、權限與 Windows 驗收清單見
+排程與 DPAPI 憑證必須屬於完成 `codex login` 的**同一個 Windows 使用者**；腳本會優先使用該使用者的
+.NET 10 路徑，避免 Task Scheduler 沒有互動式 PATH 時直接失敗。Mac 使用 Keychain、Windows 使用 DPAPI；
+兩邊都不把密碼、service role、Management token 或 AI API Key 寫進 repository。完整狀態機、權限與
+Windows 驗收清單見
 [規劃 AI OCR §14](Doc/技術文件/規劃AI%20OCR.md#十四換模型接手前的預計修正與驗收清單)。
 
 筆記 #21 的 ETF 行情、資產帳戶與盤中交易日防呆已由功能程式碼 commit `85e0504b`

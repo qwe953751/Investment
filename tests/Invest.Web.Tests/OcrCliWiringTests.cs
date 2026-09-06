@@ -6,7 +6,8 @@ public sealed class OcrCliWiringTests
     public void 健康檢查與實際Runner共用相同Cli路徑解析器()
     {
         var root = FindRepositoryRoot();
-        var program = File.ReadAllText(Path.Combine(root, "src", "Invest.Web", "Program.cs"));
+        var program = File.ReadAllText(Path.Combine(root, "src", "Invest.Web", "Program.cs"))
+            .ReplaceLineEndings("\n");
         var worker = File.ReadAllText(Path.Combine(
             root,
             "src",
@@ -18,11 +19,11 @@ public sealed class OcrCliWiringTests
             "OcrWorkerRunner.cs"));
 
         Assert.Contains(
-            "new ClaudeCodeCliRunner(\n    OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude))",
+            "builder.Services.AddSingleton(_ => new ClaudeCodeCliRunner(\n    OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude))",
             program,
             StringComparison.Ordinal);
         Assert.Contains(
-            "new CodexCliRunner(\n    OcrAgentExecutableResolver.Resolve(OcrAgentKind.Codex))",
+            "builder.Services.AddSingleton(_ => new CodexCliRunner(\n    OcrAgentExecutableResolver.Resolve(OcrAgentKind.Codex))",
             program,
             StringComparison.Ordinal);
         Assert.Contains(

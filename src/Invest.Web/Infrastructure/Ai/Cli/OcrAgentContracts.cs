@@ -22,8 +22,7 @@ public enum OcrAgentRunStatus
 
 public enum OcrPassKind
 {
-    Extraction,
-    Audit
+    Extraction
 }
 
 public sealed record OcrAgentRequest(
@@ -33,7 +32,9 @@ public sealed record OcrAgentRequest(
     string WorkingDirectory,
     string? Model = null,
     string? OutputPath = null,
-    TimeSpan? Timeout = null)
+    TimeSpan? Timeout = null,
+    string? ReasoningEffort = null,
+    string? ServiceTier = null)
 {
     public TimeSpan EffectiveTimeout => Timeout ?? TimeSpan.FromMinutes(2);
 }
@@ -132,8 +133,13 @@ public sealed record OcrAgentRouterOptions(
     TimeSpan? QuotaCooldown = null,
     TimeProvider? TimeProvider = null,
     string? ClaudeModel = null,
-    string? CodexModel = null)
+    string? CodexModel = null,
+    string ClaudeEffort = "max",
+    string CodexReasoningEffort = "max",
+    string CodexServiceTier = "priority")
 {
+    public const string DefaultClaudeModel = "claude-sonnet-5";
+    public const string DefaultCodexModel = "gpt-5.6-luna";
     public TimeSpan EffectiveQuotaCooldown => QuotaCooldown ?? TimeSpan.FromMinutes(30);
 
     public TimeProvider EffectiveTimeProvider => TimeProvider ?? System.TimeProvider.System;
@@ -156,12 +162,23 @@ public sealed record OcrAgentRouterOptions(
             primaryAgent,
             TimeSpan.FromMinutes(cooldownMinutes),
             null,
-            Environment.GetEnvironmentVariable("OCR_CLAUDE_MODEL"),
-            Environment.GetEnvironmentVariable("OCR_CODEX_MODEL"));
+            DefaultClaudeModel,
+            DefaultCodexModel,
+            "max",
+            "max",
+            "priority");
     }
 
     public string? ModelFor(OcrAgentKind agent)
-        => agent == OcrAgentKind.Claude ? ClaudeModel : CodexModel;
+        => agent == OcrAgentKind.Claude
+            ? ClaudeModel ?? DefaultClaudeModel
+            : CodexModel ?? DefaultCodexModel;
+
+    public string? EffortFor(OcrAgentKind agent)
+        => agent == OcrAgentKind.Claude ? ClaudeEffort : CodexReasoningEffort;
+
+    public string? ServiceTierFor(OcrAgentKind agent)
+        => agent == OcrAgentKind.Codex ? CodexServiceTier : null;
 }
 
 public sealed class OcrAllAgentsQuotaExhaustedException : Exception
@@ -170,7 +187,7 @@ public sealed class OcrAllAgentsQuotaExhaustedException : Exception
         OcrPassKind pass,
         IReadOnlyDictionary<OcrAgentKind, string> reasons,
         DateTimeOffset? retryAfter = null)
-        : base($"OCR {pass} pass 的 Claude 與 Codex 訂閱額度都不足。")
+        : base($"OCR 單次辨識的 Claude 與 Codex 訂閱額度都不足。")
     {
         Pass = pass;
         Reasons = reasons;
@@ -189,7 +206,7 @@ public sealed class OcrNoAvailableAgentException : Exception
     public OcrNoAvailableAgentException(
         OcrPassKind pass,
         IReadOnlyDictionary<OcrAgentKind, string> reasons)
-        : base($"OCR {pass} pass 沒有可用的訂閱 Agent。")
+        : base($"OCR 單次辨識沒有可用的訂閱 Agent。")
     {
         Pass = pass;
         Reasons = reasons;
@@ -200,11 +217,9 @@ public sealed class OcrNoAvailableAgentException : Exception
     public IReadOnlyDictionary<OcrAgentKind, string> Reasons { get; }
 }
 
-public sealed record OcrTwoPassResult(
-    OcrAgentExecution Extraction,
-    OcrAgentExecution Audit)
+public sealed record OcrSinglePassResult(OcrAgentExecution Execution)
 {
-    public string ExecutionMode => Extraction.Agent == Audit.Agent
+    public string ExecutionMode => Execution.UsedFallback
         ? "single_agent_fallback"
-        : "cross_agent";
+        : "single_agent";
 }
