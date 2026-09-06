@@ -23,8 +23,9 @@ public sealed class OcrWorkerRunner(
         }
 
         var options = OcrWorkerOptions.FromEnvironment(configuration);
+        using var singleInstance = OcrWorkerSingleInstance.Acquire();
         var api = new OcrWorkerApiClient(httpClientFactory.CreateClient(nameof(OcrWorkerApiClient)), options);
-        Console.WriteLine($"D+ OCR Worker 啟動：{options.Name}（輪詢 {options.PollInterval.TotalSeconds:0} 秒）");
+        Console.WriteLine($"D+ OCR Worker 啟動：{options.Name}（輪詢 {options.PollInterval.TotalSeconds:0} 秒；單實例鎖：{singleInstance.Path}）");
 
         do
         {
@@ -81,6 +82,7 @@ public sealed class OcrWorkerRunner(
                 };
             var imagePath = Path.Combine(directory.FullName, $"input{extension}");
             var schemaPath = Path.Combine(directory.FullName, "recognition-schema.json");
+            await UpdateProgressSafeAsync(api, job, "downloading", 15, null, cancellationToken);
             await api.DownloadAsync(job.DownloadUrl, imagePath, cancellationToken);
             await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
 
@@ -97,14 +99,21 @@ public sealed class OcrWorkerRunner(
             var coordinator = new OcrExecutionCoordinator(
                 fallbackPolicy,
                 new AiOcrOrchestrator(router, new InMemoryOcrPassCheckpointStore()));
+            await UpdateProgressSafeAsync(api, job, "extraction", 25, null, cancellationToken);
             var execution = await coordinator.RecognizeAsync(
                 readiness,
                 requests.Extraction,
                 requests.Audit,
                 cancellationToken);
 
+            var usage = new[] { execution.AiResult?.Extraction.Result.Usage, execution.AiResult?.Audit.Result.Usage }
+                .Where(value => value is not null)
+                .Cast<OcrAgentUsage>()
+                .Aggregate<OcrAgentUsage, OcrAgentUsage?>(null, (total, value) => total is null ? value : total + value);
+
             if (execution.UsesTesseract)
             {
+                await UpdateProgressSafeAsync(api, job, "fallback", 90, usage, cancellationToken);
                 await api.CompleteAsync(
                     job,
                     "fallback_required",
@@ -118,12 +127,16 @@ public sealed class OcrWorkerRunner(
 
             try
             {
+                await UpdateProgressSafeAsync(api, job, "validating", 90, usage, cancellationToken);
                 var draft = validator.Validate(execution.AiResult!);
+                await UpdateProgressSafeAsync(api, job, "completed", 100, usage, cancellationToken);
                 await api.CompleteAsync(job, "succeeded", draft, null, null, cancellationToken);
                 Console.WriteLine($"OCR 工作 {job.Id} 完成：{draft.Rows.Count} 列");
+                WriteUsageSummary(job, execution);
             }
             catch (OcrRecognitionValidationException exception)
             {
+                await UpdateProgressSafeAsync(api, job, "failed", 100, usage, cancellationToken);
                 await api.CompleteAsync(
                     job,
                     "fallback_required",
@@ -135,6 +148,7 @@ public sealed class OcrWorkerRunner(
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
+            await UpdateProgressSafeAsync(api, job, "failed", 100, null, cancellationToken);
             await api.CompleteAsync(
                 job,
                 "fallback_required",
@@ -146,6 +160,39 @@ public sealed class OcrWorkerRunner(
         finally
         {
             directory.Delete(recursive: true);
+        }
+    }
+
+    private static async Task UpdateProgressSafeAsync(
+        OcrWorkerApiClient api,
+        OcrClaimedJob job,
+        string stage,
+        int percent,
+        OcrAgentUsage? usage,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await api.UpdateProgressAsync(job, stage, percent, usage, cancellationToken);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine($"OCR 工作 {job.Id} 進度回報失敗：{Safe(exception.Message)}");
+        }
+    }
+
+    private static void WriteUsageSummary(OcrClaimedJob job, OcrExecutionResult execution)
+    {
+        var passes = new[] { execution.AiResult?.Extraction, execution.AiResult?.Audit }
+            .Where(value => value is not null)
+            .Cast<OcrAgentExecution>();
+        foreach (var pass in passes)
+        {
+            var usage = pass.Result.Usage;
+            Console.WriteLine(
+                $"OCR 工作 {job.Id} {pass.Pass} pass：agent={pass.Agent} duration={pass.Result.Duration.TotalSeconds:0.0}s "
+                + $"input={usage?.InputTokens ?? 0} cached={usage?.CachedInputTokens ?? 0} "
+                + $"output={usage?.OutputTokens ?? 0} reasoning={usage?.ReasoningOutputTokens ?? 0}");
         }
     }
 
@@ -187,11 +234,11 @@ public sealed class OcrWorkerRunner(
     {
         var now = DateTimeOffset.UtcNow;
         var claude = await ProbeAsync(
-            Environment.GetEnvironmentVariable("OCR_CLAUDE_PATH") ?? "claude",
+            OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude),
             ["auth", "status"],
             cancellationToken);
         var codex = await ProbeAsync(
-            Environment.GetEnvironmentVariable("OCR_CODEX_PATH") ?? "codex",
+            OcrAgentExecutableResolver.Resolve(OcrAgentKind.Codex),
             ["login", "status"],
             cancellationToken);
 

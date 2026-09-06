@@ -322,10 +322,15 @@ async function handleSubmit(request, user) {
 }
 
 async function ownJob(userId, jobId) {
-    const response = await serviceFetch(
-        `/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(jobId)}`
-        + `&user_id=eq.${encodeURIComponent(userId)}`
-        + '&select=id,status,result,fallback_reason,error_code,created_at,updated_at,completed_at,expires_at,storage_path&limit=1');
+    const base = `/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(jobId)}`
+        + `&user_id=eq.${encodeURIComponent(userId)}`;
+    let response = await serviceFetch(
+        `${base}&select=id,status,result,fallback_reason,error_code,created_at,updated_at,completed_at,expires_at,storage_path,progress_stage,progress_percent,progress_updated_at,usage_summary&limit=1`);
+    // migration 041 可分開套用；在正式資料庫尚未套用前，維持既有 OCR status／fallback 正常工作。
+    if (!response.ok) {
+        response = await serviceFetch(
+            `${base}&select=id,status,result,fallback_reason,error_code,created_at,updated_at,completed_at,expires_at,storage_path&limit=1`);
+    }
     if (!response.ok) {
         return null;
     }
@@ -352,7 +357,11 @@ async function handleStatus(request, user, jobId) {
         fallbackReason: job.fallback_reason,
         errorCode: job.error_code,
         completedAt: job.completed_at,
-        expiresAt: job.expires_at
+        expiresAt: job.expires_at,
+        progressStage: job.progress_stage ?? 'queued',
+        progressPercent: job.progress_percent ?? 5,
+        progressUpdatedAt: job.progress_updated_at ?? job.updated_at,
+        usageSummary: job.usage_summary ?? null
     });
 }
 
@@ -497,6 +506,52 @@ async function handleClaim(request, user) {
     });
 }
 
+async function handleProgress(request, user, body) {
+    const jobId = String(body?.jobId ?? '');
+    const leaseToken = String(body?.leaseToken ?? '');
+    const stage = String(body?.progressStage ?? '');
+    const percent = Number(body?.progressPercent);
+    if (!/^[0-9a-f-]{36}$/i.test(jobId)
+        || !/^[0-9a-f-]{36}$/i.test(leaseToken)
+        || !['uploading', 'queued', 'claiming', 'downloading', 'extraction', 'audit', 'validating', 'fallback', 'completed', 'failed'].includes(stage)
+        || !Number.isInteger(percent) || percent < 0 || percent > 100) {
+        return json(request, 400, { error: 'invalid_progress' });
+    }
+
+    const rawUsage = body?.usageSummary;
+    const usageSummary = rawUsage && typeof rawUsage === 'object'
+        ? {
+            inputTokens: finiteNonNegativeInteger(rawUsage.inputTokens),
+            cachedInputTokens: finiteNonNegativeInteger(rawUsage.cachedInputTokens),
+            outputTokens: finiteNonNegativeInteger(rawUsage.outputTokens),
+            reasoningTokens: finiteNonNegativeInteger(rawUsage.reasoningTokens ?? rawUsage.reasoningOutputTokens)
+        }
+        : null;
+
+    const response = await serviceFetch('/rest/v1/rpc/ocr_update_progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            p_worker_id: user.id,
+            p_job_id: jobId,
+            p_lease_token: leaseToken,
+            p_progress_stage: stage,
+            p_progress_percent: percent,
+            p_usage_summary: usageSummary
+        })
+    });
+    if (!response.ok || await response.json() !== true) {
+        return json(request, 409, { error: 'lease_lost' });
+    }
+
+    return json(request, 200, { ok: true });
+}
+
+function finiteNonNegativeInteger(value) {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+}
+
 async function handleComplete(request, user, body) {
     const jobId = String(body?.jobId ?? '');
     const leaseToken = String(body?.leaseToken ?? '');
@@ -562,7 +617,7 @@ Deno.serve(async request => {
         const { action, body } = await parseAction(request);
         const role = accessRole(user);
         const adminAction = ['readiness', 'submit', 'status', 'download', 'acknowledge', 'cancel'].includes(action);
-        const workerAction = ['heartbeat', 'claim', 'complete'].includes(action);
+        const workerAction = ['heartbeat', 'claim', 'progress', 'complete'].includes(action);
         if ((adminAction && role !== 'admin') || (workerAction && role !== 'ocr_worker')) {
             return json(request, 403, { error: 'forbidden' });
         }
@@ -574,6 +629,7 @@ Deno.serve(async request => {
         if (action === 'acknowledge' || action === 'cancel') return await handleAcknowledge(request, user, { ...body, action });
         if (action === 'heartbeat') return await handleHeartbeat(request, user, body);
         if (action === 'claim') return await handleClaim(request, user);
+        if (action === 'progress') return await handleProgress(request, user, body);
         if (action === 'complete') return await handleComplete(request, user, body);
         return json(request, 404, { error: 'unknown_action' });
     } catch (error) {

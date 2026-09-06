@@ -116,8 +116,10 @@ builder.Services.AddTransient<UsMarketDataDownloader>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
 builder.Services.AddTransient<StaticSiteExporter>();
-builder.Services.AddSingleton<ClaudeCodeCliRunner>();
-builder.Services.AddSingleton<CodexCliRunner>();
+builder.Services.AddSingleton(_ => new ClaudeCodeCliRunner(
+    OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude)));
+builder.Services.AddSingleton(_ => new CodexCliRunner(
+    OcrAgentExecutableResolver.Resolve(OcrAgentKind.Codex)));
 builder.Services.AddSingleton<AgentQuotaRouter>(services =>
     new AgentQuotaRouter(
         [

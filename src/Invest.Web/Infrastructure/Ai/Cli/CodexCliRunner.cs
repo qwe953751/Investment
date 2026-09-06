@@ -30,6 +30,7 @@ public sealed class CodexCliRunner(
         startInfo.ArgumentList.Add("--ignore-user-config");
         startInfo.ArgumentList.Add("--ignore-rules");
         startInfo.ArgumentList.Add("--skip-git-repo-check");
+        startInfo.ArgumentList.Add("--json");
         startInfo.ArgumentList.Add("--image");
         startInfo.ArgumentList.Add(request.ImagePath);
         startInfo.ArgumentList.Add("--output-schema");

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace Invest.Web.Infrastructure.Ai.Cli;
 
@@ -69,7 +70,8 @@ public abstract class ProcessCliRunnerBase(
                 "process_timeout",
                 "CLI 執行逾時。",
                 process.ExitCode,
-                TimeProvider.GetElapsedTime(startedAt));
+                TimeProvider.GetElapsedTime(startedAt),
+                Usage: ParseUsage(standardOutputTask.Result));
         }
         catch (OperationCanceledException)
         {
@@ -79,12 +81,13 @@ public abstract class ProcessCliRunnerBase(
 
         await Task.WhenAll(standardOutputTask, standardErrorTask);
         var output = await ReadOutputFileAsync(request.OutputPath, standardOutputTask.Result);
-        return AgentCliResultClassifier.Classify(
+        var result = AgentCliResultClassifier.Classify(
             Agent,
             process.ExitCode,
             output,
             standardErrorTask.Result,
             TimeProvider.GetElapsedTime(startedAt));
+        return result with { Usage = ParseUsage(standardOutputTask.Result) };
     }
 
     protected static void RemoveApiKeyEnvironmentVariables(ProcessStartInfo startInfo)
@@ -123,6 +126,104 @@ public abstract class ProcessCliRunnerBase(
         {
             return standardOutput;
         }
+    }
+
+    private static OcrAgentUsage? ParseUsage(string output)
+    {
+        OcrAgentUsage? total = null;
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                if (!TryFindUsage(document.RootElement, out var usage))
+                {
+                    continue;
+                }
+
+                total = total is null ? usage : total + usage;
+            }
+            catch (JsonException)
+            {
+                // Codex --json 的 stdout 可能混有非 JSON 的診斷行；忽略後仍保留 OCR 結果。
+            }
+        }
+
+        return total;
+    }
+
+    private static bool TryFindUsage(JsonElement root, out OcrAgentUsage usage)
+    {
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in root.EnumerateObject())
+            {
+                if (property.NameEquals("usage") || property.NameEquals("token_usage"))
+                {
+                    if (property.Value.ValueKind == JsonValueKind.Object
+                        && TryReadUsage(property.Value, out usage))
+                    {
+                        return true;
+                    }
+                }
+
+                if (TryFindUsage(property.Value, out usage))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (root.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in root.EnumerateArray())
+            {
+                if (TryFindUsage(item, out usage))
+                {
+                    return true;
+                }
+            }
+        }
+
+        usage = new OcrAgentUsage(0, 0, 0, 0);
+        return false;
+    }
+
+    private static bool TryReadUsage(JsonElement value, out OcrAgentUsage usage)
+    {
+        var input = ReadLong(value, "input_tokens", "inputTokens");
+        var cached = ReadLong(value, "cached_input_tokens", "cachedInputTokens", "cache_read_input_tokens");
+        var output = ReadLong(value, "output_tokens", "outputTokens");
+        var reasoning = ReadLong(value, "reasoning_output_tokens", "reasoningOutputTokens", "reasoning_tokens", "reasoningTokens");
+
+        if (value.TryGetProperty("input_tokens_details", out var inputDetails)
+            || value.TryGetProperty("inputTokensDetails", out inputDetails))
+        {
+            cached = Math.Max(cached, ReadLong(inputDetails, "cached_tokens", "cachedTokens"));
+        }
+
+        if (value.TryGetProperty("output_tokens_details", out var outputDetails)
+            || value.TryGetProperty("outputTokensDetails", out outputDetails))
+        {
+            reasoning = Math.Max(reasoning, ReadLong(outputDetails, "reasoning_tokens", "reasoningTokens"));
+        }
+
+        usage = new OcrAgentUsage(input, cached, output, reasoning);
+        return input > 0 || cached > 0 || output > 0 || reasoning > 0;
+    }
+
+    private static long ReadLong(JsonElement value, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (value.TryGetProperty(name, out var property)
+                && property.TryGetInt64(out var result)
+                && result >= 0)
+            {
+                return result;
+            }
+        }
+
+        return 0;
     }
 
     private static void TryKill(Process process)

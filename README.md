@@ -10,8 +10,10 @@
 Supabase 私有佇列並由 AI 兩遍辨識；否則自動在瀏覽器回退 Tesseract。辨識後會先列出「覆蓋／新增／移除」差異，
 每一項都必須人工核對並勾選才會套用。相同代號直接覆蓋，移除項目預設不勾選。檢視權限不顯示此頁籤；
 密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收。**D+ 後端、AI-first 前端、Mac
-Worker 與正式網站已整合發布。**正式最高權限登入／實際圖片、Golden Set 與 Windows 實機仍待驗收，限制與下一步見
-[TODO.md](TODO.md)。
+Worker 與正式網站已整合發布。**正式最高權限手機已確認兩張圖片由 D+ AI 完成（70／78 秒）；
+本輪已加入名稱唯一反查、非阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、兩 Pass 單工作並行、
+單實例鎖與 Mac／Windows 背景啟動腳本。`db/041_ocr_progress.sql` 尚未套用正式 Supabase；Golden Set、
+圖片／模型效能調校、多圖 concurrency 與 Windows 實機仍待驗收，限制與下一步見 [TODO.md](TODO.md)。
 
 ## 文件導覽
 
@@ -171,6 +173,12 @@ publish-only run [33509783439](https://github.com/qwe953751/Investment/actions/r
 本節描述已整合到 `main` 並發布到正式網站的 D+ 實作。正式 Supabase 後端、Mac 單張 E2E、重載恢復、submit
 冪等、受控 fallback 取回與每 5 分鐘逾期清理已驗證；Golden Set 的正確率門檻與公司 Windows
 實機仍是外部驗收，不會因管線成功就宣稱達到九成。
+
+**目前狀態（2026-09-06）**：前端、佇列、Worker claim 與 CLI 路徑接線已生效。健康探測與實際
+Runner 共用 `OcrAgentExecutableResolver`，新版 Mac Worker 已在正式 Supabase 回報 Codex 已安裝、
+已登入且有額度；請重啟舊 Worker 後重新選圖確認 AI 工作 `succeeded`。原先的
+`no_available_agent` 是舊版接線缺陷，詳見
+[規劃 AI OCR §14.4](Doc/技術文件/規劃AI%20OCR.md#144-2026-09-06-正式瀏覽器驗收發現的阻塞與修正已完成正式-ai-草稿待重試)。
 
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
 輪詢，拿到短效私有圖片 URL 後才啟動 CLI；程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、

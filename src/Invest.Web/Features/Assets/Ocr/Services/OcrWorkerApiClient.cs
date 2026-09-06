@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Invest.Web.Infrastructure.Ai.Cli;
 using Microsoft.Extensions.Configuration;
 
 namespace Invest.Web.Features.Assets.Ocr.Services;
@@ -93,6 +94,33 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
             errorCode
         }, cancellationToken);
         await EnsureSuccessAsync(response, "complete");
+    }
+
+    public async Task UpdateProgressAsync(
+        OcrClaimedJob job,
+        string stage,
+        int percent,
+        OcrAgentUsage? usage,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendJsonAsync(new
+        {
+            action = "progress",
+            jobId = job.Id,
+            leaseToken = job.LeaseToken,
+            progressStage = stage,
+            progressPercent = Math.Clamp(percent, 0, 100),
+            usageSummary = usage is null
+                ? null
+                : new
+                {
+                    inputTokens = usage.InputTokens,
+                    cachedInputTokens = usage.CachedInputTokens,
+                    outputTokens = usage.OutputTokens,
+                    reasoningOutputTokens = usage.ReasoningOutputTokens
+                }
+        }, cancellationToken);
+        await EnsureSuccessAsync(response, "progress");
     }
 
     public async Task DownloadAsync(
