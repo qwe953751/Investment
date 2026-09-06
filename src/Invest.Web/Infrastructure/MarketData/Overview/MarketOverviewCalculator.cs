@@ -30,8 +30,31 @@ public static class MarketOverviewCalculator
         var daily = series.Count >= 2
             ? PercentChange(series[^2].ClosePrice, latest.ClosePrice)
             : null;
+        var yearToDate = YearToDateChangePercent(series, latest.Date, latest.ClosePrice);
 
-        return new MarketOverviewIndexResult(name, latest.ClosePrice, daily);
+        return new MarketOverviewIndexResult(name, symbol, latest.ClosePrice, daily, yearToDate);
+    }
+
+    /// <summary>
+    /// 比照 <see cref="MarketIndexPerformanceCalculator.YearToDateChangePercent"/> 的原則：
+    /// 只在去年 12 月找基準收盤，找不到就回 null，不往回抓更早的資料充數。
+    /// </summary>
+    private static decimal? YearToDateChangePercent(
+        IReadOnlyList<(DateOnly Date, decimal ClosePrice, decimal TradingValue)> series,
+        DateOnly endDate,
+        decimal endingClose)
+    {
+        var previousYear = endDate.Year - 1;
+        var lowerBound = new DateOnly(previousYear, 12, 1);
+        var upperBound = new DateOnly(previousYear, 12, 31);
+
+        var baseline = series
+            .Where(point => point.Date >= lowerBound && point.Date <= upperBound)
+            .OrderByDescending(point => point.Date)
+            .Select(point => (decimal?)point.ClosePrice)
+            .FirstOrDefault();
+
+        return baseline is { } value ? PercentChange(value, endingClose) : null;
     }
 
     /// <summary>
@@ -70,6 +93,7 @@ public static class MarketOverviewCalculator
         return [.. symbols
             .Where(symbol => changes.ContainsKey(symbol.Symbol))
             .Select(symbol => new MarketOverviewSectorResult(
+                symbol.Symbol,
                 symbol.DisplayName,
                 changes[symbol.Symbol],
                 total > 0m ? decimal.Round(averages[symbol.Symbol] / total * 100m, 2) : 0m))];
@@ -160,10 +184,13 @@ public static class MarketOverviewCalculator
 
 public sealed record MarketOverviewIndexResult(
     string Name,
+    string Symbol,
     decimal Value,
-    decimal? DailyChangePercent);
+    decimal? DailyChangePercent,
+    decimal? YearToDateChangePercent);
 
 public sealed record MarketOverviewSectorResult(
+    string Symbol,
     string Name,
     decimal? ChangePercent,
     decimal Weight);

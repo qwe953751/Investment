@@ -14,7 +14,8 @@ public static class MarketOverviewCatalog
     [
         new("^DJI", "道瓊工業指數"),
         new("^GSPC", "S&P 500"),
-        new("^IXIC", "那斯達克綜合指數")
+        new("^IXIC", "那斯達克綜合指數"),
+        new("^SOX", "費城半導體指數")
     ];
 
     public static readonly MarketOverviewSymbol UsVix = new("^VIX", "VIX 恐慌指數");

@@ -296,8 +296,14 @@ public sealed class StaticSiteExporter(
             }
             else
             {
-                us = ToGroupExport(history, MarketOverviewCatalog.UsIndices, MarketOverviewCatalog.UsSectors, MarketOverviewCatalog.UsVix);
-                crypto = ToGroupExport(history, MarketOverviewCatalog.CryptoIndices, MarketOverviewCatalog.CryptoHeatmap, null);
+                // VIX 跟其他指數一起用小卡呈現，不再另立情緒指標區塊；加密貨幣沒有對應標的。
+                us = ToGroupExport(history, [.. MarketOverviewCatalog.UsIndices, MarketOverviewCatalog.UsVix], MarketOverviewCatalog.UsSectors);
+                crypto = ToGroupExport(history, MarketOverviewCatalog.CryptoIndices, MarketOverviewCatalog.CryptoHeatmap);
+
+                await WriteMarketOverviewKLineExportsAsync(
+                    Path.Combine(dataDirectory, "kline"),
+                    history,
+                    cancellationToken);
             }
         }
         catch (Exception exception)
@@ -314,49 +320,107 @@ public sealed class StaticSiteExporter(
     private static MarketOverviewGroupExport ToGroupExport(
         IReadOnlyList<MarketOverviewSnapshot> history,
         IReadOnlyList<MarketOverviewSymbol> indices,
-        IReadOnlyList<MarketOverviewSymbol> sectors,
-        MarketOverviewSymbol? sentiment)
+        IReadOnlyList<MarketOverviewSymbol> sectors)
     {
         var indexResults = indices
             .Select(symbol => MarketOverviewCalculator.CalculateIndex(history, symbol.Symbol, symbol.DisplayName))
             .Where(result => result is not null)
-            .Select(result => new MarketOverviewIndexExport(result!.Name, result.Value, result.DailyChangePercent))
+            .Select(result => new MarketOverviewIndexExport(
+                result!.Name,
+                result.Symbol,
+                result.Value,
+                result.DailyChangePercent,
+                result.YearToDateChangePercent))
             .ToArray();
 
         var sectorResults = MarketOverviewCalculator.CalculateSectors(history, sectors)
-            .Select(result => new MarketOverviewSectorExport(result.Name, result.ChangePercent, result.Weight))
+            .Select(result => new MarketOverviewSectorExport(result.Symbol, result.Name, result.ChangePercent, result.Weight))
             .ToArray();
 
         var heatScore = MarketOverviewCalculator.CalculateHeatScore(history, sectors);
 
-        var sentimentCards = sentiment is null
-            ? []
-            : ToSentimentExports(history, sentiment);
-
-        return new MarketOverviewGroupExport(heatScore, indexResults, sectorResults, sentimentCards);
+        return new MarketOverviewGroupExport(heatScore, indexResults, sectorResults);
     }
 
     /// <summary>
-    /// 目前只有 VIX 一張情緒卡，score 用區間內插（10 以下最低、40 以上最高）表達恐慌程度，
-    /// 跟畫面上既有的 0-10 分制一致，不是官方定義的分數。
+    /// 市場切換總覽的每個 symbol（指數／VIX／類股 ETF／幣種）各自的三個月日 K，
+    /// 寫法照抄 <see cref="WriteUsKLineExportsAsync"/>：檔名沿用 symbol 本身，
+    /// 前端點指數／類股／幣種小卡時走既有的 toggleKLine／data/kline 管線，不必另建一套。
     /// </summary>
-    private static IReadOnlyList<MarketOverviewSentimentExport> ToSentimentExports(
-        IReadOnlyList<MarketOverviewSnapshot> history,
-        MarketOverviewSymbol vix)
+    private static async Task<int> WriteMarketOverviewKLineExportsAsync(
+        string directory,
+        IReadOnlyList<MarketOverviewSnapshot> snapshots,
+        CancellationToken cancellationToken)
     {
-        var result = MarketOverviewCalculator.CalculateIndex(history, vix.Symbol, vix.DisplayName);
+        var rows = snapshots
+            .SelectMany(snapshot => snapshot.Quotes.Select(quote => new DailyStockTrading
+            {
+                TradingDate = snapshot.TradingDate,
+                Ticker = quote.Symbol,
+                OpenPrice = quote.OpenPrice,
+                HighPrice = quote.HighPrice,
+                LowPrice = quote.LowPrice,
+                ClosePrice = quote.ClosePrice,
+                TradingValue = quote.TradingValue
+            }))
+            .ToArray();
 
-        if (result is null)
+        if (rows.Length == 0)
         {
-            return [];
+            return 0;
         }
 
-        var score = decimal.Round(Math.Clamp((result.Value - 10m) / 30m * 10m, 0m, 10m), 1);
-        var detail = result.DailyChangePercent is { } daily
-            ? $"較前一交易日{(daily >= 0 ? "上升" : "下降")} {Math.Abs(daily):0.00}"
-            : "尚無前一交易日資料可比較";
+        Directory.CreateDirectory(directory);
+        var count = 0;
 
-        return [new MarketOverviewSentimentExport(vix.DisplayName, score, result.Value.ToString("0.00"), detail)];
+        foreach (var trading in rows
+            .GroupBy(row => row.Ticker, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var ticker = trading.Key;
+            var endDate = trading.Max(row => row.TradingDate);
+            var startDate = endDate.AddMonths(-DailyKLineSelector.DefaultMonths);
+            var points = DailyKLineCalculator.Calculate(
+                trading,
+                [],
+                ticker,
+                startDate,
+                endDate,
+                endDate);
+
+            if (points.Count == 0)
+            {
+                continue;
+            }
+
+            var export = new KLineExport(
+                "US",
+                "raw-us-daily",
+                endDate.ToString("yyyy-MM-dd"),
+                0,
+                [.. points.Select(point => new KLineBarExport(
+                    point.TradingDate.ToString("yyyy-MM-dd"),
+                    RoundKLine(point.Open),
+                    RoundKLine(point.High),
+                    RoundKLine(point.Low),
+                    RoundKLine(point.Close),
+                    RoundKLine(point.PreviousClose),
+                    RoundKLine(point.Ma5),
+                    RoundKLine(point.Ma10),
+                    RoundKLine(point.Ma20),
+                    RoundKLine(point.Ma60),
+                    RoundKLine(point.Ma240),
+                    RoundKLine(point.TradingVolume)))]);
+
+            await WriteJsonAsync(
+                Path.Combine(directory, ticker + ".json"),
+                export,
+                cancellationToken);
+            count++;
+        }
+
+        return count;
     }
 
     private async Task<IReadOnlyDictionary<string, int>?> PreviousTopicRanksAsync(
@@ -1475,14 +1539,11 @@ public sealed class StaticSiteExporter(
     private sealed record MarketOverviewGroupExport(
         decimal? HeatScore,
         IReadOnlyList<MarketOverviewIndexExport> Indices,
-        IReadOnlyList<MarketOverviewSectorExport> Sectors,
-        IReadOnlyList<MarketOverviewSentimentExport> SentimentCards);
+        IReadOnlyList<MarketOverviewSectorExport> Sectors);
 
-    private sealed record MarketOverviewIndexExport(string Name, decimal Value, decimal? Daily);
+    private sealed record MarketOverviewIndexExport(string Name, string Symbol, decimal Value, decimal? Daily, decimal? Ytd);
 
-    private sealed record MarketOverviewSectorExport(string Name, decimal? Change, decimal Weight);
-
-    private sealed record MarketOverviewSentimentExport(string Title, decimal? Score, string Value, string Detail);
+    private sealed record MarketOverviewSectorExport(string Symbol, string Name, decimal? Change, decimal Weight);
 
     private sealed record KLineExport(
         string Market,

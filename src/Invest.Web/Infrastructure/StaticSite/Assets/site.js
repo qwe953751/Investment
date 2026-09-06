@@ -12565,7 +12565,7 @@ async function loadKLineData(ticker) {
 
     if (!klinePromises.has(ticker)) {
         klinePromises.set(ticker, (async () => {
-            const response = await fetch(`${KLINE_DIRECTORY}/${ticker}.json?v=${version}`);
+            const response = await fetch(`${KLINE_DIRECTORY}/${encodeURIComponent(ticker)}.json?v=${version}`);
 
             if (!response.ok) {
                 throw new Error(String(response.status));
@@ -13720,7 +13720,7 @@ function renderKLinePopover(ticker, name, anchor) {
         const message = document.createElement('p');
         message.className = 'daily-kline-empty';
         message.textContent = isUs
-            ? '尚無可用的美股日 K；請先將代號加入美股觀察清單並完成行情回補。'
+            ? '尚無可用的日 K 資料，請稍後再試或重新產生靜態網站。'
             : '讀不到已驗證的還原權息日 K，請重新產生靜態網站。';
         card.append(message);
     } else if (!klineData.has(ticker)) {
@@ -13766,6 +13766,9 @@ function setKLineButtonStates() {
     });
     document.querySelectorAll('[data-index-market]').forEach(button => {
         button.setAttribute('aria-expanded', String(button.dataset.indexMarket === expandedIndexMarket));
+    });
+    document.querySelectorAll('[data-msp-ticker]').forEach(button => {
+        button.setAttribute('aria-expanded', String(button.dataset.mspTicker === expandedTicker));
     });
 }
 
@@ -21171,31 +21174,6 @@ function mspBuildViewTabs(proto) {
     return wrap;
 }
 
-function mspBuildIndicatorCard(item) {
-    const card = document.createElement('div');
-    card.className = 'market-heat-card';
-
-    const cardTitle = document.createElement('div');
-    cardTitle.className = 'market-heat-card-title';
-    cardTitle.append(item.title);
-
-    const cardScore = document.createElement('strong');
-    cardScore.className = 'market-heat-card-score';
-    cardScore.textContent = `${item.score} 分`;
-    cardTitle.append(cardScore);
-
-    const value = document.createElement('div');
-    value.className = 'market-heat-card-value';
-    value.textContent = item.value;
-
-    const detail = document.createElement('div');
-    detail.className = 'msp-card-detail';
-    detail.textContent = item.detail;
-
-    card.append(cardTitle, value, detail);
-    return card;
-}
-
 // 美股指數印小數兩位（跟公開行情慣例一致），加密貨幣用 $ 前綴、大額數字不印小數。
 function mspFormatIndexValue(market, value) {
     if (missing(value)) {
@@ -21223,18 +21201,33 @@ function mspBuildIndices(group, market) {
     }
 
     for (const index of group.indices) {
-        const tile = document.createElement('div');
+        const tile = document.createElement('button');
+        tile.type = 'button';
         tile.className = 'msp-index-tile';
+        tile.dataset.mspTicker = index.symbol;
+        tile.dataset.hint = '點擊開啟這檔指數最近三個月的日 K';
+        tile.setAttribute('aria-expanded', String(expandedTicker === index.symbol));
+        tile.addEventListener('click', () => toggleKLine(index.symbol, index.name, tile, {
+            market: market === 'crypto' ? '加密貨幣' : '美股',
+            latest: true
+        }));
+
         const name = document.createElement('span');
         name.className = 'msp-index-tile-name';
         name.textContent = index.name;
         const value = document.createElement('strong');
         value.className = 'msp-index-tile-value';
         value.textContent = mspFormatIndexValue(market, index.value);
+        const changes = document.createElement('div');
+        changes.className = 'msp-index-tile-changes';
         const daily = document.createElement('span');
         daily.className = `msp-index-tile-daily ${toTrendClass(index.daily ?? 0)}`;
         daily.textContent = missing(index.daily) ? '日 —' : `日 ${toSignedPercentText(index.daily / 100, 2)}`;
-        tile.append(name, value, daily);
+        const ytd = document.createElement('span');
+        ytd.className = `msp-index-tile-ytd ${toTrendClass(index.ytd ?? 0)}`;
+        ytd.textContent = missing(index.ytd) ? '今年 —' : `今年 ${toSignedPercentText(index.ytd / 100, 2)}`;
+        changes.append(daily, ytd);
+        tile.append(name, value, changes);
         section.append(tile);
     }
     return section;
@@ -21320,7 +21313,7 @@ function mspBuildSectorsSection(group, market, proto, paint) {
     hint.textContent = '方塊大小＝近 20 日平均成交值占比（資金關注度），不是市值權重。';
     section.append(hint);
 
-    section.append(proto.sectorView === 'list' ? mspBuildSectorsList(group) : mspBuildSectorsHeatmap(group));
+    section.append(proto.sectorView === 'list' ? mspBuildSectorsList(group, market) : mspBuildSectorsHeatmap(group, market));
     return section;
 }
 
@@ -21359,7 +21352,27 @@ function mspHexToRgb(hex) {
     return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
 }
 
-function mspBuildSectorsHeatmap(group) {
+// 點擊熱力圖方塊／列表項開啟該檔的三個月日 K，跟指數小卡共用同一套 toggleKLine 管線。
+function mspMakeTickerClickable(element, symbol, name, market) {
+    element.tabIndex = 0;
+    element.setAttribute('role', 'button');
+    element.dataset.mspTicker = symbol;
+    element.setAttribute('aria-expanded', String(expandedTicker === symbol));
+    element.dataset.hint = '點擊開啟這檔標的最近三個月的日 K';
+    const open = () => toggleKLine(symbol, name, element, {
+        market: market === 'crypto' ? '加密貨幣' : '美股',
+        latest: true
+    });
+    element.addEventListener('click', open);
+    element.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            open();
+        }
+    });
+}
+
+function mspBuildSectorsHeatmap(group, market) {
     const grid = document.createElement('div');
     grid.className = 'msp-heatmap-grid';
 
@@ -21373,6 +21386,7 @@ function mspBuildSectorsHeatmap(group) {
         const trend = toTrendClass(sector.change ?? 0);
         const tile = document.createElement('div');
         tile.className = `msp-heatmap-tile msp-heatmap-tile-${tier}`;
+        mspMakeTickerClickable(tile, sector.symbol, sector.name, market);
 
         // 顏色深淺依漲跌幅大小：跌幅/漲幅越大越飽和，越接近平盤越淡，
         // 呼應附件參考圖裡「小波動偏暗、大波動鮮豔」的視覺效果。
@@ -21393,12 +21407,13 @@ function mspBuildSectorsHeatmap(group) {
     return grid;
 }
 
-function mspBuildSectorsList(group) {
+function mspBuildSectorsList(group, market) {
     const list = document.createElement('ul');
     list.className = 'msp-sector-list';
     const sorted = [...group.sectors].sort((a, b) => (b.change ?? 0) - (a.change ?? 0));
     for (const sector of sorted) {
         const item = document.createElement('li');
+        mspMakeTickerClickable(item, sector.symbol, sector.name, market);
         const name = document.createElement('span');
         name.textContent = sector.name;
         const change = document.createElement('strong');
@@ -21408,15 +21423,6 @@ function mspBuildSectorsList(group) {
         list.append(item);
     }
     return list;
-}
-
-function mspBuildSentimentGrid(group) {
-    const indicators = document.createElement('div');
-    indicators.className = 'market-heat-indicators';
-    for (const item of group.sentimentCards) {
-        indicators.append(mspBuildIndicatorCard(item));
-    }
-    return indicators;
 }
 
 // 標題＋內容包一層 section，統一用緊湊列表樣式（只有上緣分隔線，沒有卡片感）。
@@ -21430,17 +21436,15 @@ function mspSection(titleText, contentEl) {
     return section;
 }
 
-// 整體版面：指數→市場熱絡度→類股/幣種熱力圖→情緒指標，依序往下排。
-// 財報行事曆／漲跌家數比／恐懼貪婪指數這輪沒有資料來源，整塊不顯示（不是留假資料）。
+// 整體版面：指數（含 VIX）→市場熱絡度→類股/幣種熱力圖，依序往下排。
+// VIX 併入指數小卡，不再另立情緒指標區塊；財報行事曆／漲跌家數比／恐懼貪婪指數
+// 這輪沒有資料來源，整塊不顯示（不是留假資料）。
 function mspBuildDashboard(group, market, proto, paint) {
     const dashboard = document.createElement('div');
     dashboard.className = 'msp-dashboard';
     dashboard.append(mspSection('指數', mspBuildIndices(group, market)));
     dashboard.append(mspBuildHeatPanel(group, market));
     dashboard.append(mspBuildSectorsSection(group, market, proto, paint));
-    if (group.sentimentCards.length > 0) {
-        dashboard.append(mspSection('情緒指標', mspBuildSentimentGrid(group)));
-    }
     return dashboard;
 }
 
@@ -21491,10 +21495,17 @@ function injectMarketSwitchStyle() {
     border-radius: 8px;
     border: 1px solid var(--border);
     background: var(--surface-alt);
+    appearance: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
 }
+.msp-index-tile:hover { border-color: var(--text-muted); }
 .msp-index-tile-name { font-size: 12px; color: var(--text-muted); }
 .msp-index-tile-value { font-size: 15px; font-weight: 700; }
-.msp-index-tile-daily { font-size: 12px; font-weight: 600; }
+.msp-index-tile-changes { display: flex; gap: 8px; }
+.msp-index-tile-daily, .msp-index-tile-ytd { font-size: 12px; font-weight: 600; }
 .msp-market-segmented {
     display: inline-flex;
     padding: 4px;
@@ -21556,6 +21567,7 @@ function injectMarketSwitchStyle() {
     flex-direction: column;
     justify-content: space-between;
     overflow: hidden;
+    cursor: pointer;
 }
 .msp-heatmap-tile-name { font-size: 12px; font-weight: 600; }
 .msp-heatmap-tile-change { font-size: 14px; font-weight: 700; }
@@ -21575,6 +21587,7 @@ function injectMarketSwitchStyle() {
     padding: 9px 4px;
     font-size: 13px;
     border-bottom: 1px solid var(--border);
+    cursor: pointer;
 }
 .msp-sector-list li:last-child { border-bottom: none; }
 .msp-overview-notice { margin-top: 12px; }

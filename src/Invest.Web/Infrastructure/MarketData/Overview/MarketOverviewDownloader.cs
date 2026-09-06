@@ -77,7 +77,10 @@ public sealed class MarketOverviewDownloader(
                     Symbol = symbol.Symbol,
                     Name = symbol.DisplayName,
                     ClosePrice = quote.ClosePrice ?? 0m,
-                    TradingValue = quote.TradingValue
+                    TradingValue = quote.TradingValue,
+                    OpenPrice = quote.OpenPrice,
+                    HighPrice = quote.HighPrice,
+                    LowPrice = quote.LowPrice
                 };
             }
 

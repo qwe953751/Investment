@@ -46,6 +46,34 @@ public sealed class MarketOverviewCalculatorTests
     }
 
     [Fact]
+    public void 去年十二月有基準價時今年漲跌幅用該基準價計算()
+    {
+        var history = new[]
+        {
+            Snapshot(new DateOnly(2025, 12, 31), ("^GSPC", 100m, 0m)),
+            Snapshot(new DateOnly(2026, 9, 5), ("^GSPC", 120m, 0m))
+        };
+
+        var result = MarketOverviewCalculator.CalculateIndex(history, "^GSPC", "S&P 500");
+
+        Assert.Equal(20m, result!.YearToDateChangePercent);
+    }
+
+    [Fact]
+    public void 去年十二月沒有任何資料時今年漲跌幅是空值而不是往更早的年份找()
+    {
+        var history = new[]
+        {
+            Snapshot(new DateOnly(2024, 12, 31), ("^GSPC", 90m, 0m)),
+            Snapshot(new DateOnly(2026, 9, 5), ("^GSPC", 120m, 0m))
+        };
+
+        var result = MarketOverviewCalculator.CalculateIndex(history, "^GSPC", "S&P 500");
+
+        Assert.Null(result!.YearToDateChangePercent);
+    }
+
+    [Fact]
     public void 類股權重是成交值占合計的比例且加總為百分之百()
     {
         var symbols = new[]

@@ -34,4 +34,13 @@ public sealed record MarketOverviewQuote
     /// （Yahoo 不直接提供成交金額）。指數本身沒有成交量，這裡會是 0。
     /// </summary>
     public decimal TradingValue { get; init; }
+
+    /// <summary>
+    /// 開高低價，只給前端畫 K 線用；Yahoo 本來就隨每日收盤一起回傳，不必額外呼叫。
+    /// </summary>
+    public decimal? OpenPrice { get; init; }
+
+    public decimal? HighPrice { get; init; }
+
+    public decimal? LowPrice { get; init; }
 }
