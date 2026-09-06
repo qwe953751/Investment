@@ -1057,8 +1057,8 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange)", customColumns, StringComparison.Ordinal);
     }
 
-    // 資產頁只在最高權限網址出現，檢視權限不能透過 view 參數開啟。
-    // 金額存資料庫，但原始截圖不存：辨識在瀏覽器裡跑完就把 blob 收掉。
+    // 資產頁只在最高權限登入後出現，檢視權限不能透過 view 參數開啟。
+    // D+ AI 只做短期私有暫存，且每個結果仍要經人工差異確認。
     [Fact]
     public void 資產頁只在最高權限出現且不保存原始截圖()
     {
@@ -1074,7 +1074,12 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("＋ 新增帳戶", script, StringComparison.Ordinal);
         Assert.Contains("input.type = 'file'", script, StringComparison.Ordinal);
         Assert.Contains("套用到持倉", script, StringComparison.Ordinal);
-        Assert.Contains("不會上傳、也不會保存", script, StringComparison.Ordinal);
+        Assert.Contains("D+ 採 AI-first", script, StringComparison.Ordinal);
+        Assert.Contains("Supabase 私有空間", script, StringComparison.Ordinal);
+        Assert.Contains("最長保存 60 分鐘", script, StringComparison.Ordinal);
+        Assert.Contains("assetAiOcrReadiness()", script, StringComparison.Ordinal);
+        Assert.Contains("preflightFallbackReason", script, StringComparison.Ordinal);
+        Assert.Contains("已回退 Tesseract", script, StringComparison.Ordinal);
 
         // 離開資產頁一定要 revoke，否則 blob 會一路留到重新整理。
         Assert.Contains("for (const screenshot of assetScreenshotDraft?.screenshots ?? [])", script, StringComparison.Ordinal);
@@ -1611,7 +1616,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("assetOcrDeadline(worker.recognize(canvas), remainingForRecognition)", script, StringComparison.Ordinal);
         Assert.Contains("await resetAssetOcrWorker();", script, StringComparison.Ordinal);
         Assert.Contains("assetOcrWorker === null", script, StringComparison.Ordinal);
-        Assert.Contains("重新準備辨識引擎", script, StringComparison.Ordinal);
+        Assert.Contains("重新準備 Tesseract 備援", script, StringComparison.Ordinal);
         Assert.Contains("每張最多 10 秒", script, StringComparison.Ordinal);
     }
 

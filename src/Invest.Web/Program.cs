@@ -41,12 +41,13 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- alert   <來源> <error|warning> <訊息> [連結]
 //   dotnet run --project src/Invest.Web -- alert-clear <來源>
 //   dotnet run --project src/Invest.Web -- ocr-poc --input <圖片目錄> --truth <標準答案.json> --output <報告目錄>
+//   OCR_WORKER_PASSWORD=<本機 Secret> dotnet run --project src/Invest.Web -- ocr-worker [--once]
 // 這種位置引數不符合 CommandLineConfigurationProvider 的格式，會讓它丟例外，
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "export" or "intraday" or "backfill-intraday-heat"
-        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc";
+        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -129,6 +130,8 @@ builder.Services.AddTransient<IOcrPassCheckpointStore, InMemoryOcrPassCheckpoint
 builder.Services.AddTransient<IAiOcrRecognizer, AiOcrOrchestrator>();
 builder.Services.AddTransient<OcrExecutionCoordinator>();
 builder.Services.AddTransient<OcrPocRunner>();
+builder.Services.AddSingleton<OcrRecognitionValidator>();
+builder.Services.AddTransient<OcrWorkerRunner>();
 
 var app = builder.Build();
 
@@ -267,6 +270,38 @@ if (command is "ocr-poc")
         Console.Error.WriteLine($"OCR POC 失敗：{exception.Message}");
         Console.Error.WriteLine(exception);
         Environment.ExitCode = 1;
+    }
+
+    return;
+}
+
+if (command is "ocr-worker")
+{
+    using var cancellation = new CancellationTokenSource();
+    ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cancellation.Cancel();
+    };
+    Console.CancelKeyPress += cancelHandler;
+
+    try
+    {
+        var runner = app.Services.GetRequiredService<OcrWorkerRunner>();
+        await runner.RunAsync(args, cancellation.Token);
+    }
+    catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+    {
+        Console.WriteLine("D+ OCR Worker 已停止。");
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"D+ OCR Worker 啟動失敗：{exception.Message}");
+        Environment.ExitCode = 1;
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
     }
 
     return;

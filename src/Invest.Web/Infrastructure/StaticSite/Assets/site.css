@@ -2064,6 +2064,20 @@ body {
     line-height: 1.5;
 }
 
+.asset-holding-diff-content > .asset-ai-badge {
+    justify-self: start;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: #fff1d5;
+    color: #8a5500;
+    font-weight: 700;
+}
+
+.asset-holding-diff-content > .asset-ai-badge.is-verified {
+    background: #e5f6ea;
+    color: #176b35;
+}
+
 .asset-holding-diff-fields {
     display: flex;
     flex-wrap: wrap;
@@ -2214,6 +2228,14 @@ body {
 .asset-review-table input {
     width: 100%;
     min-width: 0;
+}
+
+.asset-review-table .asset-ai-row-review {
+    background: #fffaf0;
+}
+
+.asset-review-table .asset-ai-row-verified {
+    background: #f3fbf5;
 }
 
 .checkbox-row {
