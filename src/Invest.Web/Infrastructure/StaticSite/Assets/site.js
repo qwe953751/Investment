@@ -21048,7 +21048,7 @@ function startIntradayTimer() {
 // ---- 市場切換（台股／美股／加密貨幣）----
 // 只有 initMarketSwitch() 這一支入口會被 start() 呼叫；其餘都是它的內部建構函式。
 // 台股維持既有頁面完全不重畫——切到美股／加密貨幣時只是用 CSS 把 .ranking-page
-// 整塊隱藏，改顯示這裡建立的樣板面板；切回台股就是把 .ranking-page 顯示回來，
+// 整塊隱藏，改顯示這裡建立的假資料面板；切回台股就是把 .ranking-page 顯示回來，
 // 台股本身的渲染／初始化流程完全不受影響。
 // 美股／加密貨幣目前仍是 MARKET_SWITCH_MOCK 假資料，真實資料來源之後再接。
 
@@ -21067,7 +21067,7 @@ const MARKET_SWITCH_MOCK = {
             { title: '成交量能', score: 6, value: '較 20 日均量 +12%', detail: '三大指數合計成交金額估算' }
         ],
         sectorsTitle: '11 大類股表現',
-        // weight 是該類股占大盤市值的概略比重（％，樣板數值參考真實 S&P 500 權重量級），
+        // weight 是該類股占大盤市值的概略比重（％，假設數值參考真實 S&P 500 權重量級），
         // 熱力圖用它決定方塊大小——權重越高方塊越大，不是漲跌幅越大方塊越大。
         sectors: [
             { name: '資訊科技', change: 1.8, weight: 32 }, { name: '通訊服務', change: 1.2, weight: 9 },
@@ -21079,7 +21079,7 @@ const MARKET_SWITCH_MOCK = {
         ],
         sentimentCards: [
             { title: 'VIX 恐慌指數', score: 3, value: '14.2', detail: '低於 20，波動偏低' },
-            { title: '恐懼與貪婪指數', score: 7, value: '68 · 貪婪', detail: 'CNN Fear & Greed（樣板數值）' }
+            { title: '恐懼與貪婪指數', score: 7, value: '68 · 貪婪', detail: 'CNN Fear & Greed（假設數值）' }
         ],
         eventsTitle: '近期財報行事曆',
         events: [
@@ -21101,7 +21101,7 @@ const MARKET_SWITCH_MOCK = {
             { title: '合約未平倉變化', score: 5, value: '+6%', detail: 'BTC／ETH 永續合約' }
         ],
         sectorsTitle: '主題賽道表現',
-        // weight 同樣是概略市值佔比（樣板數值），熱力圖方塊大小依這個決定。
+        // weight 同樣是概略市值佔比（假設數值），熱力圖方塊大小依這個決定。
         sectors: [
             { name: 'Layer 1', change: 3.2, weight: 40 }, { name: 'DeFi', change: 2.1, weight: 15 },
             { name: 'AI 概念', change: 1.6, weight: 10 }, { name: 'Layer 2', change: 0.8, weight: 12 },
@@ -21110,8 +21110,8 @@ const MARKET_SWITCH_MOCK = {
         ],
         sentimentCards: [
             { title: 'BTC 主導率', score: 5, value: '54.8%', detail: '資金偏向主流幣，山寨幣相對弱勢' },
-            { title: '山寨幣季節指數', score: 6, value: '62 · 偏向山寨季', detail: '近 90 日內前 50 大幣種有 62% 漲幅超越 BTC；數字越高代表資金越往山寨幣輪動（Altcoin Season Index，樣板數值）' },
-            { title: '恐懼與貪婪指數', score: 7, value: '71 · 貪婪', detail: 'Crypto Fear & Greed（樣板數值）' }
+            { title: '山寨幣季節指數', score: 6, value: '62 · 偏向山寨季', detail: '近 90 日內前 50 大幣種有 62% 漲幅超越 BTC；數字越高代表資金越往山寨幣輪動（Altcoin Season Index，假設數值）' },
+            { title: '恐懼與貪婪指數', score: 7, value: '71 · 貪婪', detail: 'Crypto Fear & Greed（假設數值）' }
         ],
         eventsTitle: '資金與鏈上動向',
         events: [
@@ -21306,8 +21306,9 @@ function mspBuildSectorViewToggle(proto, paint) {
 // 這樣才是真正的「熱力圖」而不是把漲跌幅畫成大小的長條圖。
 function mspSectorTier(sector, sectors) {
     const maxWeight = Math.max(...sectors.map(s => s.weight));
-    if (sector.weight >= maxWeight * 0.6) return 'lg';
-    if (sector.weight >= maxWeight * 0.25) return 'md';
+    const weightRatio = sector.weight / maxWeight;
+    if (weightRatio >= 0.6) return 'lg';
+    if (weightRatio >= 0.25) return 'md';
     return 'sm';
 }
 
@@ -21568,7 +21569,7 @@ function injectMarketSwitchStyle() {
 }
 
 // 台股是預設市場，一進站什麼都不用做——.ranking-page 本來就顯示。
-// 切到美股／加密貨幣才加上 body class 隱藏 .ranking-page，並畫出樣板面板；
+// 切到美股／加密貨幣才加上 body class 隱藏 .ranking-page，並畫出假資料面板；
 // 切回台股就是把面板藏起來、拿掉 body class，.ranking-page 自己重新可見。
 // 全程不重畫、不重新初始化 .ranking-page 裡的任何內容。
 function initMarketSwitch() {
