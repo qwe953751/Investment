@@ -4,7 +4,7 @@ using Invest.Web.Infrastructure.Ai.Cli;
 namespace Invest.Web.Features.Assets.Ocr.Services;
 
 /// <summary>
-/// Mac Phase 1 的本機 POC。只負責圖片 staging、雙 Pass 與私有報告，尚未連 Supabase。
+/// Mac Phase 1 的本機 POC。只負責圖片 staging、單次 AI 與私有報告，尚未連 Supabase。
 /// </summary>
 public sealed class OcrPocRunner(AgentQuotaRouter router)
 {
@@ -68,32 +68,23 @@ public sealed class OcrPocRunner(AgentQuotaRouter router)
             var schemaPath = Path.Combine(stagingDirectory.FullName, "recognition-schema.json");
             await File.WriteAllTextAsync(schemaPath, RecognitionSchema, cancellationToken);
 
-            var extractionRequest = CreateRequest(
+            var request = CreateRequest(
                 stagedImagePath,
                 schemaPath,
                 stagingDirectory.FullName,
-                Path.Combine(stagingDirectory.FullName, "extraction.json"),
-                OcrPassKind.Extraction);
-            var auditRequest = CreateRequest(
-                stagedImagePath,
-                schemaPath,
-                stagingDirectory.FullName,
-                Path.Combine(stagingDirectory.FullName, "audit.json"),
-                OcrPassKind.Audit);
+                Path.Combine(stagingDirectory.FullName, "ai-result.json"));
 
             var orchestrator = new AiOcrOrchestrator(
                 router,
                 new InMemoryOcrPassCheckpointStore());
             var result = await orchestrator.RecognizeAsync(
-                extractionRequest,
-                auditRequest,
+                request,
                 cancellationToken);
 
             var report = new OcrPocImageReport(
                 sourceImagePath,
                 result.ExecutionMode,
-                ToReport(result.Extraction),
-                ToReport(result.Audit));
+                ToReport(result.Execution));
             await WriteImageReportAsync(report, outputDirectory, cancellationToken);
             return report;
         }
@@ -107,13 +98,10 @@ public sealed class OcrPocRunner(AgentQuotaRouter router)
         string imagePath,
         string schemaPath,
         string workingDirectory,
-        string outputPath,
-        OcrPassKind pass)
+        string outputPath)
         => new(
             imagePath,
-            pass == OcrPassKind.Extraction
-                ? $"讀取圖片 {imagePath}，從上到下擷取所有可見的券商持股區塊。只回傳符合 Schema 的原始欄位；看不清楚就填 null，不得猜測，也不要使用目前持倉資料。"
-                : $"重新讀取圖片 {imagePath}，專門稽核可見持股列數、漏列、重複列、遮擋與 UI 雜訊。不要參考任何其他 Agent 的答案，只回傳符合 Schema 的原始欄位；看不清楚就填 null。",
+            $"讀取圖片 {imagePath}，從上到下完整擷取所有可見券商持股列。只回傳符合 Schema 的股票身份、股數與總成本；代號缺少時保留名稱；看不清楚就填 null 並加入 warnings，不得猜測，也不要使用目前持倉資料。",
             schemaPath,
             workingDirectory,
             OutputPath: outputPath,
@@ -247,8 +235,7 @@ public sealed record OcrPocRunSummary(
 public sealed record OcrPocImageReport(
     string ImagePath,
     string ExecutionMode,
-    OcrPocAgentReport Extraction,
-    OcrPocAgentReport Audit);
+    OcrPocAgentReport Agent);
 
 public sealed record OcrPocAgentReport(
     OcrPassKind Pass,

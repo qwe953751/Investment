@@ -53,6 +53,12 @@ public sealed class ClaudeCodeCliRunner(
             startInfo.ArgumentList.Add(request.Model);
         }
 
+        if (!string.IsNullOrWhiteSpace(request.ReasoningEffort))
+        {
+            startInfo.ArgumentList.Add("--effort");
+            startInfo.ArgumentList.Add(request.ReasoningEffort);
+        }
+
         startInfo.ArgumentList.Add("-p");
         startInfo.ArgumentList.Add(request.Prompt);
 

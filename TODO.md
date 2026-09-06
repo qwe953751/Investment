@@ -1074,7 +1074,7 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 **狀態：AI-first 前端、正式 Supabase 私有佇列、Validator、Mac Worker、重載恢復、submit 冪等、
 fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並發布；正式最高權限手機已確認
 `IMG_1601.jpeg`／`IMG_1602.jpeg` 由 D+ AI `succeeded`，耗時 70／78 秒。本輪已實作市場限縮的名稱唯一
-反查、模糊候選不自選、單列不阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、兩 Pass 單工作並行、
+反查、模糊候選不自選、單列不阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、單次 AI 辨識、
 跨平台單實例鎖與背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs` 已更新為
 v7 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 Worker 已完成 DPAPI 憑證、
 登入時排程與正式心跳驗收。Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0、圖片／模型效能調校、
@@ -1082,11 +1082,16 @@ v7 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 W
 
 ### 已討論
 
+- **2026-09-06 單次辨識定案**：每張圖片只執行一次 AI request，不再跑 Extraction／Audit 第二遍，也不再顯示「兩遍一致」。
+  單次結果仍經過 JSON、欄位、數值、遮擋與正式股票名冊檢查，通過只代表可先列入候選，使用者仍須人工勾選。
+  主要 Agent 登入或額度不可用時才切換另一個；兩者都不可用才回退瀏覽器 Tesseract。
+  Codex 固定 `gpt-5.6-luna` + `max` + `priority/Fast`，Claude 固定 `claude-sonnet-5` + `max`；不走 API key。
+
 - 方向修訂為 D+ AI-first：Worker 兩分鐘內有心跳且至少一個 CLI 已登入時優先 AI；否則圖片不
   上傳，直接跑現有瀏覽器 Tesseract。Tesseract 是可用性備援，不是 AI 前置篩選器。
-- AI 仍使用第二遍稽核、確定性驗證與人工確認；Tesseract fallback 必須標示來源與原因，不能
+- AI 使用確定性驗證與人工確認；Tesseract fallback 必須標示來源與原因，不能
   冒充 AI 驗證結果，也不讓任一 OCR 結果直接寫入正式持倉。
-- 已加入 `OcrAgentContracts`、兩個 CLI Adapter、Router、兩遍 Orchestrator、Validator、`ocr-poc` 與 `ocr-worker [--once]`。
+- 已加入 `OcrAgentContracts`、兩個 CLI Adapter、Router、單次 Orchestrator、Validator、`ocr-poc` 與 `ocr-worker [--once]`。
 - 主要 Agent 額度不足時改跑另一個 Agent；兩者都判定額度不足時，Router 丟
   `OcrAllAgentsQuotaExhaustedException`，外層轉為 Tesseract fallback，不改走付費 API、不忙等重試。
 - AI 工作建立後才需要 fallback 時，先標成 `fallback_required`；原頁或重載後頁面都透過 owner
@@ -1110,9 +1115,8 @@ v7 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 W
   取得 AI 草稿。完整證據與後續驗收條件見規劃文件 §14.4～§14.5。
 - 正式 AI 草稿的 37 列都有名稱但沒有代號；本輪已把名稱反查接回 AI 後處理，只自動接受「市場內、
   正規化名稱完全相等、唯一對應」；模糊候選必須由使用者點選，無法解析只阻擋該列，不得阻擋其他已確定列。
-- 70／78 秒的現有路徑包含每圖兩個 `codex exec --ephemeral`；本輪已用 `--json` 彙總安全 usage，
-  並把同一工作的 Extraction／Audit 改為並行，仍保留兩遍。圖片減量、OCR 專用快速模型／低推理與多圖
-  共用 concurrency 2 必須等 Golden Set 基線後再決定，不以刪除 Audit Pass 換速度。
+- 70／78 秒的舊路徑每圖啟動兩個 `codex exec --ephemeral`；目前改為每圖一次 CLI，並用 `--json` 彙總安全 usage。
+  圖片減量、多圖 concurrency 與 Windows 實機仍需 Golden Set 驗收；不能把單次辨識的 `verified` 當成真實正確保證。
 - 進度 UI 與 Worker 回報已完成：前端顯示每圖階段、批次完成數與無障礙 progressbar，Edge Function
   以 worker 身分、租約擁有者與租約 token 驗證更新；`db/041_ocr_progress.sql` 已於 2026-09-06 依明確
   授權套用，跨重載可由 status API 還原正式資料庫保存的階段與百分比。匿名與一般登入者仍不能執行
@@ -1123,11 +1127,11 @@ v7 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 W
   正式 Supabase 連續心跳均已驗證 Codex 三項狀態為 `true`。Mac 仍未替使用者啟用；舊 Mac 程序不可用
   廣泛的 `killall dotnet` 處理。
 - 本機 `codex login status` 為 ChatGPT 登入，且 Worker 會移除 API key 環境變數；目前 OCR 消耗
-  ChatGPT Plus 內含的 Codex／agentic 額度，不是 OpenAI Platform API 帳單。兩張圖各兩遍即四次模型執行。
+  ChatGPT Plus 內含的 Codex／agentic 額度，不是 OpenAI Platform API 帳單。每張圖現在只執行一次模型任務。
 
 ### 本輪已完成與仍待外部驗收
 
-1. 公開 `site.js` 的 AI-first 管線、名稱反查、progress UI、用量觀測與兩 Pass 並行已完成；正式
+1. 公開 `site.js` 的 AI-first 管線、名稱反查、progress UI、用量觀測與單次 AI 辨識已完成；正式
    `db/041_ocr_progress.sql` 與 `ocr-jobs` v7 也已部署。使用者已確認網站可正常上傳；最新 `main` 已由
    publish-only Action `34032339976` 全綠發布為快照 `1788696729`。後續持續做 Golden Set 與修復後的
    手機新圖片 AI 外部驗收。

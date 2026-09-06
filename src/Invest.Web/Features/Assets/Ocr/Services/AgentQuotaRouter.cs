@@ -4,7 +4,7 @@ using System.Collections.Concurrent;
 namespace Invest.Web.Features.Assets.Ocr.Services;
 
 /// <summary>
-/// 每一個辨識 Pass 的唯一 Agent 選擇點。
+/// 每一張圖片的唯一 Agent 選擇點。
 /// 額度不足才觸發另一個 Agent；兩者都不足時丟專用例外。
 /// </summary>
 public sealed class AgentQuotaRouter
@@ -58,9 +58,16 @@ public sealed class AgentQuotaRouter
                 continue;
             }
 
-            var routedRequest = string.IsNullOrWhiteSpace(request.Model)
-                ? request with { Model = _options.ModelFor(agent) }
-                : request;
+            var routedRequest = request with
+            {
+                Model = string.IsNullOrWhiteSpace(request.Model) ? _options.ModelFor(agent) : request.Model,
+                ReasoningEffort = string.IsNullOrWhiteSpace(request.ReasoningEffort)
+                    ? _options.EffortFor(agent)
+                    : request.ReasoningEffort,
+                ServiceTier = string.IsNullOrWhiteSpace(request.ServiceTier)
+                    ? _options.ServiceTierFor(agent)
+                    : request.ServiceTier
+            };
             var result = await runner.RunAsync(routedRequest, cancellationToken);
             switch (result.Status)
             {
@@ -110,8 +117,6 @@ public sealed class AgentQuotaRouter
             ? OcrAgentKind.Codex
             : OcrAgentKind.Claude;
 
-        return pass == OcrPassKind.Audit
-            ? [other, _options.PrimaryAgent]
-            : [_options.PrimaryAgent, other];
+        return [_options.PrimaryAgent, other];
     }
 }

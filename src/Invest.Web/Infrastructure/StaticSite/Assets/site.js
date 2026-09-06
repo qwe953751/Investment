@@ -7741,8 +7741,8 @@ function makeAssetDraftRow(draft) {
     if (draft.recognitionEngine === 'ai') {
         row.className = draft.aiVerified ? 'asset-ai-row-verified' : 'asset-ai-row-review';
         row.title = draft.aiVerified
-            ? 'D+ 的兩個 Pass 在股票身份、股數與總成本一致；套用前仍需人工勾選。'
-            : (draft.aiWarnings ?? []).join(' ') || 'D+ 兩個 Pass 未完全一致，請人工校對。';
+            ? 'D+ 單一 AI Agent 的欄位與數值通過確定性檢查；套用前仍需人工勾選。'
+            : (draft.aiWarnings ?? []).join(' ') || 'D+ 單一 AI Agent 的結果需要人工校對。';
     }
 
     for (const field of ASSET_DRAFT_FIELDS) {
@@ -7837,7 +7837,7 @@ function makeAssetHoldingDiffItem(change, market, selected, onSelectionChange) {
     if (row.recognitionEngine === 'ai') {
         const badge = document.createElement('small');
         badge.className = row.aiVerified ? 'asset-ai-badge is-verified' : 'asset-ai-badge needs-review';
-        badge.textContent = row.aiVerified ? 'D+ 兩遍一致' : 'D+ 需人工校對';
+        badge.textContent = row.aiVerified ? 'D+ AI 已辨識' : 'D+ 需人工校對';
         if (row.aiWarnings?.length > 0) {
             badge.title = row.aiWarnings.join(' ');
         }
@@ -8190,8 +8190,8 @@ function assetAiDraftRows(result, market = '') {
         const warnings = Array.isArray(row.warnings) ? [...row.warnings] : [];
         let verified = row.verified === true;
 
-        // 兩個模型給出同一個答案仍可能是共同幻覺；正式網站載入的交易所／美股名冊是
-        // 第三道獨立防線。名冊沒有，或代號對到的官方名稱與圖片文字不像，就不能標綠。
+        // 單一 Agent 的輸出仍可能有幻覺；正式網站載入的交易所／美股名冊是獨立防線。
+        // 名冊沒有，或代號對到的官方名稱與圖片文字不像，就不能標綠。
         if (ticker === '' || knownName === '') {
             verified = false;
             warnings.push(identity.source === 'ticker_wrong_market'
@@ -11387,7 +11387,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             : 'Tesseract 備援';
     const prefix = `${engineText} 辨識出 ${assetScreenshotDraft.rows.length} 檔股票，請核對下方差異後勾選要套用的項目。`;
     const verificationNotice = aiTotalRows > 0
-        ? `AI 兩遍一致 ${aiVerifiedRows}/${aiTotalRows} 列；未一致的列仍必須人工修正。`
+        ? `AI 單次辨識通過 ${aiVerifiedRows}/${aiTotalRows} 列；所有列仍必須人工確認。`
         : '';
     const missingUsQuotes = market === '美股'
         ? assetScreenshotDraft.rows
@@ -11422,7 +11422,7 @@ function makeAssetScreenshotFlow(view) {
     heading.textContent = '上傳截圖更新帳戶持倉';
     const description = document.createElement('p');
     description.textContent = 'D+ 採 AI-first：Worker 與至少一個訂閱 Agent 可用時，截圖會暫存於 Supabase 私有空間，'
-        + '並交給該電腦已登入的 Codex／Claude CLI 做兩遍獨立辨識；完成後立即刪除，最長保存 60 分鐘。'
+        + '並交給該電腦已登入且額度可用的 Codex／Claude CLI 執行一次辨識；主要 Agent 不可用時自動切換另一個，完成後立即刪除，最長保存 60 分鐘。'
         + 'Worker 離線、Agent 未登入或額度不足時，圖片不會上傳；已建立工作若在重新整理後仍有效，'
         + '會從佇列恢復，AI 失敗則以短效簽名網址取回後改用這個瀏覽器內的 Tesseract。請把欄位標題一起截進來。'
         + (view.market === '美股'

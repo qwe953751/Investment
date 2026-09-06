@@ -42,6 +42,18 @@ public sealed class CodexCliRunner(
             startInfo.ArgumentList.Add(request.Model);
         }
 
+        if (!string.IsNullOrWhiteSpace(request.ReasoningEffort))
+        {
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add($"model_reasoning_effort=\"{request.ReasoningEffort}\"");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ServiceTier))
+        {
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add($"service_tier=\"{request.ServiceTier}\"");
+        }
+
         if (!string.IsNullOrWhiteSpace(request.OutputPath))
         {
             startInfo.ArgumentList.Add("-o");

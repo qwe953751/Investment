@@ -2,13 +2,23 @@
 
 > 日期：2026-09-05
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；正式手機已確認兩張圖片皆由 AI `succeeded`，名稱唯一反查、非阻斷差異、progress UI／Worker 回報、用量觀測、兩 Pass 單工作並行與單實例／背景腳本已在本輪加入；`db/041` 正式套用、Golden Set、效能調校、多圖 concurrency 與 Windows 實機仍待驗收**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 AI，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041` 已套用；Golden Set、效能調校、多圖 concurrency 與 Windows 實機仍待驗收**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
+## 目前生效的 2026-09-06 決策（覆蓋下方舊版雙 Pass 規劃）
+
+使用者已明確決定不跑兩遍。每張圖片只建立一個 AI request，由 Router 依主要 Agent 的登入與額度狀態選擇 Codex 或 Claude；主要 Agent 不可用才嘗試另一個，兩者都不可用才回退瀏覽器 Tesseract。這個「換 Agent」是故障切換，不是同一張圖片的第二遍辨識。
+
+- Codex 固定使用 `gpt-5.6-luna`、`max` reasoning、`priority`（Fast）服務層級。
+- Claude 固定使用 `claude-sonnet-5`、`max` effort。
+- 單次 AI JSON 仍會經過欄位、數值、遮擋、名稱／代號名冊交叉檢查；`verified` 只代表通過結構檢查，不能取代使用者人工核對。
+- 前端不再顯示「D+ 兩遍一致」或「AI 兩遍一致」，改顯示「D+ AI 已辨識」／「D+ 需人工校對」。
+- 下方標示兩遍的內容是歷史設計與既有驗收紀錄，不是目前執行契約；後續實作以本節、`README.md` 與 `TODO.md` 為準。
+
 ## 一、結論摘要
 
-2026-09-05 使用者將 D+ 修訂為 **AI-first：AI Worker 可用時優先由雙 Agent 辨識；Worker／
+2026-09-05 使用者將 D+ 修訂為 **AI-first：AI Worker 可用時優先由單一可用 Agent 辨識；Worker／
 Agent 不可用時，自動回退現有瀏覽器 Tesseract**，最後仍搭配確定性驗證及人工確認。
 Tesseract 不作為 AI 的前置關卡，也不以「Tesseract 有回傳資料」決定是否呼叫 AI；因此這與
 已否決的方案 C 不同。IMG_1604 已證明 Tesseract 可能回傳非零筆、卻同時漏掉真實持股並放出
@@ -16,15 +26,15 @@ Tesseract 不作為 AI 的前置關卡，也不以「Tesseract 有回傳資料�
 
 選定的漸進式落地方式如下：
 
-1. 目前 Mac 以同一個 .NET Web Project 的 `ocr-poc` 與 `ocr-worker` 執行；Codex CLI 已用 ChatGPT Plus 登入完成真實圖片雙 Pass，Claude CLI 依使用者指示本輪不安裝。預設路徑不需要 OpenAI 或 Anthropic API Key。
-2. 每張圖片由 AI 執行兩個不同任務的辨識：第一遍完整擷取，第二遍專門稽核漏列、錯列與遮擋；正常情況優先讓兩個不同 Agent 分工，兩遍不一致時不得標成 `verified`。
+1. 目前 Mac 以同一個 .NET Web Project 的 `ocr-poc` 與 `ocr-worker` 執行；Codex CLI 已用 ChatGPT Plus 登入完成真實圖片辨識，Claude CLI 依使用者指示本輪不安裝。預設路徑不需要 OpenAI 或 Anthropic API Key。
+2. 每張圖片只執行一次 AI 辨識；Router 只在主要 Agent 登入／額度不可用時切換另一個 Agent，不把切換視為第二遍稽核。
 3. AI 只擷取正式持倉真正需要的「股票身份、庫存數量、總成本」；現價、市值與未實現損益繼續由既有行情與 C#／前端既定公式重算。
 4. 已建立 Supabase 私有短期圖片、具租約工作佇列與受控 `ocr-jobs` Edge Function；網站只建立工作及讀取草稿，不能把 AI 結果直接寫入正式持倉。
 5. 同一套 `ocr-worker` 命令先在 Mac 做端到端模擬，之後搬到長期開機且連網的 Windows 公司電腦，以主動對外輪詢方式常駐，不開放任何對內連線埠。
 6. Windows Worker 不保存 Supabase service role、Management token、資料庫連線密碼或 AI API Key；Claude Code 與 Codex 分別使用 Claude Pro、ChatGPT Plus 的本機訂閱登入狀態。
 7. 網站先檢查 Worker 最近心跳，以及至少一個 CLI 是否已完成訂閱登入；條件不成立時不建立
    AI 工作、不上傳圖片，直接在瀏覽器跑現有 Tesseract。
-8. Worker 可用時，每一個尚未完成的 AI 辨識步驟都先跑設定的主要 Agent；若明確判定其訂閱
+8. Worker 可用時，每一張尚未完成的圖片都先跑設定的主要 Agent；若明確判定其訂閱
    額度不足，自動改跑另一個 Agent。兩者額度都不足時，Router 仍丟出
    `OcrAllAgentsQuotaExhaustedException`，但正式工作邊界會把它轉成 `fallback_required`，通知
    瀏覽器執行 Tesseract；瀏覽器確認完成或最長保存期限到期後才清理已上傳圖片，不得偷偷改走
@@ -882,7 +892,13 @@ Tesseract 路徑也有 `assetKnownTicker(name)` 與 `assetOcrResolveIdentity(dra
 以及單列待人工而不阻斷其他列。必要驗收仍是精確反查、兩字短名不模糊配對、名稱找不到時其他列可套用，
 並用本次 37 列重跑；要求可唯一對應的列不再顯示缺代號，危險假陽性仍為 0。
 
-#### B. 將 70～78 秒縮短，但不拆掉 D+ 兩遍驗證
+#### B. 將 70～78 秒縮短：目前每張只跑一次 AI
+
+本次已移除同一圖片的第二個 Audit request，Worker 每張只啟動一個 CLI。Router 的另一個 Agent 僅是登入／額度故障切換，不會再對同一張圖片重跑第二遍；因此模型任務數直接減半，預期牆上時間與訂閱用量同步下降。Codex Runner 仍以 `--json` 彙總 input／cached input／output／reasoning usage，Claude 使用 `--effort max`。
+
+下方原先以兩個 Pass 為前提的效能拆解保留作歷史紀錄，不再是目前實作契約。後續縮短時間仍必須先用相同 Mac、相同圖片建立三輪基線，再以 Golden Set A/B 驗證圖片減量、多圖有界 concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、成本 90%、危險假陽性 0，不能只為速度放寬人工確認。
+
+<!-- 歷史雙 Pass 方案（已由本節上方單次 AI 決策取代） -->
 
 現有資料只記錄每張總耗時，還無法把 70～78 秒分解為排隊、下載、CLI 啟動、擷取 Pass、
 稽核 Pass 或 Validator。已可從程式確認的結構是：
@@ -932,8 +948,8 @@ P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險�
 1. `db/041_ocr_progress.sql` 已新增 `progress_stage`、`progress_percent`、`progress_updated_at`；
    原有 `ocr_jobs` RLS／revoke 邊界不放寬。Worker 只能經 Edge Function 新增的 progress action，並以
    worker 身分、lease owner 與 lease token 同時驗證後更新自己 claim 的工作。
-2. 階段里程碑建議為：上傳 5%、排隊 10%、Worker 取件／下載 15%、Extraction 20～50%、
-   Audit 55～85%、Validator 90%、完成 100%。模型內部沒有可驗證的線性百分比，當前階段要用
+2. 階段里程碑建議為：上傳 5%、排隊 10%、Worker 取件／下載 15%、AI 辨識 20～85%、
+   Validator 90%、完成 100%。模型內部沒有可驗證的線性百分比，當前階段要用
    脈動動畫表示「仍在工作」，不假造 37%、38% 這類虛假精準數字。
 3. Codex `--json` 的 JSONL 事件只用來更新 `last_activity_at`與完成用量，不把推理文字傳到
    Supabase 或瀏覽器。如果 30 秒沒有新事件，畫面顯示「仍在執行，最後更新於…」，不立即誤判失敗。
@@ -949,8 +965,8 @@ P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險�
 
 本機唯讀執行 `codex login status` 顯示 `Logged in using ChatGPT`；程式在啟動 CLI 子程序前又會明確移除
 `OPENAI_API_KEY`、`CODEX_API_KEY`與 Anthropic API 變數。因此目前這些 OCR 呼叫消耗的是
-**ChatGPT Plus 內含的 Codex／agentic 使用額度**，不是 OpenAI Platform API 帳單。兩張圖、每張兩個
-Pass，本次對應四次 Codex 模型執行；`codex login status` 這類安裝／登入探測不是一次 OCR 模型任務。
+**ChatGPT Plus 內含的 Codex／agentic 使用額度**，不是 OpenAI Platform API 帳單。現在每張圖只執行一次
+模型任務；`codex login status` 這類安裝／登入探測不是一次 OCR 模型任務。
 
 官方 OpenAI 文件的計費邊界是：
 

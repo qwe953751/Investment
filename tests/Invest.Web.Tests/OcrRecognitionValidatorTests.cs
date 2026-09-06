@@ -7,115 +7,67 @@ namespace Invest.Web.Tests;
 public sealed class OcrRecognitionValidatorTests
 {
     [Fact]
-    public void 兩遍身份股數成本一致才標成Verified()
+    public void 單次有效結果標成Verified並保留Agent()
     {
-        var validator = new OcrRecognitionValidator();
-        var result = Result(
-            Document("6213", "聯茂", "1,000", "87,200"),
-            Document("6213", "聯茂", "1000", "87200"));
-
-        var draft = validator.Validate(result);
-
+        var draft = new OcrRecognitionValidator().Validate(Result(Document("6213", "聯茂", "1,000", "87,200")));
         var row = Assert.Single(draft.Rows);
         Assert.True(row.Verified);
         Assert.Equal("6213", row.Ticker);
+        Assert.Equal("聯茂", row.Name);
         Assert.Equal(1000m, row.Quantity);
         Assert.Equal(87200m, row.Cost);
-        Assert.Empty(row.Warnings);
+        Assert.Equal("codex", draft.Agent);
+        Assert.Equal("single_agent", draft.ExecutionMode);
     }
 
     [Fact]
-    public void 任一重要數字不一致就保留為人工確認列()
+    public void 缺少代號仍可依名稱保留資料()
     {
-        var validator = new OcrRecognitionValidator();
-        var result = Result(
-            Document("NVDA", "NVIDIA", "12.5", "2,000"),
-            Document("NVDA", "NVIDIA", "125", "2,000"));
-
-        var row = Assert.Single(validator.Validate(result).Rows);
-
-        Assert.False(row.Verified);
-        Assert.Contains(row.Warnings, warning => warning.Contains("股數不一致", StringComparison.Ordinal));
-        Assert.Equal(12.5m, row.Quantity);
+        var row = Assert.Single(new OcrRecognitionValidator().Validate(
+            Result(Document(null, "聯茂", "10", "10000"))).Rows);
+        Assert.True(row.Verified);
+        Assert.Equal("", row.Ticker);
+        Assert.Equal("聯茂", row.Name);
     }
 
     [Fact]
-    public void 稽核多找出的列不會遺失也不會假裝已驗證()
+    public void 無法解析數字或遮擋時必須人工確認()
     {
-        var validator = new OcrRecognitionValidator();
-        var extraction = Document("2330", "台積電", "10", "10,000");
-        var audit = JsonSerializer.Serialize(new
+        var document = JsonSerializer.Serialize(new
         {
-            schemaVersion = "1",
-            promptVersion = "1",
-            imageReadable = true,
-            visibleRowCount = 2,
-            rows = new object[]
-            {
-                Row(1, "2330", "台積電", "10", "10,000"),
-                Row(2, "6213", "聯茂", "20", "2,000")
-            },
+            schemaVersion = "1", promptVersion = "1", imageReadable = true, visibleRowCount = 1,
+            rows = new[] { new { rowIndex = 1, tickerText = "2330", nameText = "台積電", quantityText = "?", totalCostText = "10000", currency = "TWD", rowObscured = true, evidence = "partial" } },
             warnings = Array.Empty<string>()
         });
-
-        var draft = validator.Validate(Result(extraction, audit));
-
-        Assert.Equal(2, draft.Rows.Count);
-        Assert.False(draft.Rows[1].Verified);
-        Assert.Contains(draft.Rows[1].Warnings, warning => warning.Contains("只在稽核", StringComparison.Ordinal));
-        Assert.Contains(draft.Warnings, warning => warning.Contains("可見列數不同", StringComparison.Ordinal));
+        var row = Assert.Single(new OcrRecognitionValidator().Validate(Result(document)).Rows);
+        Assert.False(row.Verified);
+        Assert.Contains(row.Warnings, warning => warning.Contains("股數", StringComparison.Ordinal));
+        Assert.Contains(row.Warnings, warning => warning.Contains("遮擋", StringComparison.Ordinal));
     }
 
     [Fact]
     public void Agent非成功結果不會進入正式草稿()
     {
-        var validator = new OcrRecognitionValidator();
-        var result = Result(Document("2330", "台積電", "10", "10000"), "{}");
-        result = result with
+        var execution = Execution("{}") with
         {
-            Audit = result.Audit with
-            {
-                Result = result.Audit.Result with { Status = OcrAgentRunStatus.InvalidOutput }
-            }
+            Result = new OcrAgentRunResult(OcrAgentKind.Codex, OcrAgentRunStatus.InvalidOutput, "{}", null, null, 1, TimeSpan.Zero)
         };
-
-        var exception = Assert.Throws<OcrRecognitionValidationException>(() => validator.Validate(result));
-        Assert.Equal("audit_agent_invalidoutput", exception.ErrorCode);
+        var exception = Assert.Throws<OcrRecognitionValidationException>(() => new OcrRecognitionValidator().Validate(new(execution)));
+        Assert.Equal("ai_agent_invalidoutput", exception.ErrorCode);
     }
 
-    private static OcrTwoPassResult Result(string extraction, string audit)
-        => new(
-            Execution(OcrPassKind.Extraction, OcrAgentKind.Codex, extraction),
-            Execution(OcrPassKind.Audit, OcrAgentKind.Claude, audit));
+    private static OcrSinglePassResult Result(string document)
+        => new(Execution(document));
 
-    private static OcrAgentExecution Execution(OcrPassKind pass, OcrAgentKind agent, string output)
-        => new(
-            pass,
-            agent,
-            new OcrAgentRunResult(agent, OcrAgentRunStatus.Success, output, null, null, 0, TimeSpan.Zero),
-            false);
+    private static OcrAgentExecution Execution(string output)
+        => new(OcrPassKind.Extraction, OcrAgentKind.Codex,
+            new OcrAgentRunResult(OcrAgentKind.Codex, OcrAgentRunStatus.Success, output, null, null, 0, TimeSpan.Zero), false);
 
-    private static string Document(string ticker, string name, string quantity, string cost)
+    private static string Document(string? ticker, string name, string quantity, string cost)
         => JsonSerializer.Serialize(new
         {
-            schemaVersion = "1",
-            promptVersion = "1",
-            imageReadable = true,
-            visibleRowCount = 1,
-            rows = new[] { Row(1, ticker, name, quantity, cost) },
+            schemaVersion = "1", promptVersion = "1", imageReadable = true, visibleRowCount = 1,
+            rows = new[] { new { rowIndex = 1, tickerText = ticker, nameText = name, quantityText = quantity, totalCostText = cost, currency = "TWD", rowObscured = false, evidence = "visible" } },
             warnings = Array.Empty<string>()
         });
-
-    private static object Row(int index, string ticker, string name, string quantity, string cost)
-        => new
-        {
-            rowIndex = index,
-            tickerText = ticker,
-            nameText = name,
-            quantityText = quantity,
-            totalCostText = cost,
-            currency = "TWD",
-            rowObscured = false,
-            evidence = "visible"
-        };
 }
