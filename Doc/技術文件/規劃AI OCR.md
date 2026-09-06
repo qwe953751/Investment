@@ -860,6 +860,8 @@ Codex 路徑 fallback；沒有新增 Supabase migration、修改 Edge Function �
 單實例鎖與背景啟動腳本已加入程式；`db/041_ocr_progress.sql` 已於 2026-09-06 套用正式 Supabase，
 `ocr-jobs` Edge Function 已更新為 v9。Worker 取到工作後會立即接下一張，佇列超過 30 秒且短心跳確認
 Worker 不可用時會回退 Tesseract；Windows 排程改為直接啟動自包含 EXE，不依賴常駐 PowerShell。
+本次再修正 Edge Function 的 Worker 選擇：新鮮 Windows 為預設，其他平台只在 Windows 不在線時備援，
+readiness 同時回傳所選 `workerPlatform` 供診斷。
 圖片減量、模型／推理強度調校、多圖全域 concurrency、Golden Set 與 Windows 鎖屏／重開機／斷網仍必須
 驗收，不以本機 build 通過宣稱正確率或正式服務已完成。
 
@@ -1013,11 +1015,11 @@ quotaAvailable 都是 `true`。這充分滿足前端 readiness 的資料條件�
 1. **Mac POC**：新增可安裝／移除／查狀態的 LaunchAgent，以同一個 macOS 使用者在登入後
    `RunAtLoad`，失敗時 `KeepAlive`；參數只指向已驗證的 launcher、固定 working directory 與絕對路徑。
    Worker 密碼仍由 Keychain 取得，stdout／stderr 寫入權限受控且可輪替的本機 log，不開 Terminal 視窗。
-2. **Windows 正式機（已完成基本接線，需重新發布後實機驗收）**：先執行發布腳本產生自包含 EXE，
+2. **Windows 正式機（基本接線與本次重新註冊已完成；長期情境仍待驗收）**：先執行發布腳本產生自包含 EXE，
    Task Scheduler 安裝腳本由完成 Codex 訂閱登入的同一個非管理員使用者在登入時啟動，使用 `Interactive`、
    失敗自動重啟與 `IgnoreNew`，不使用 `SYSTEM` 或常駐 PowerShell。專用 Worker 密碼由該使用者的 DPAPI
    保護；另一個 Windows 帳號或 `SYSTEM` 即使看得到執行檔，也不能解密憑證或保證拿到登入狀態。已驗證
-   程式與腳本可建置；公司電腦需重新發布 EXE、重註冊排程，再驗證心跳、鎖屏／重開機／斷網復線。
+    程式與腳本可建置；公司電腦已重新發布 EXE、重註冊排程並驗證心跳，仍需驗證鎖屏／重開機／斷網復線。
 3. **登入前提**：仍需在該 OS 帳號下完成一次 `codex login`；官方文件說明 CLI 會快取登入並在使用期間
    自動更新 ChatGPT 憑證。仍要在每次啟動與心跳執行 `codex login status`；登入被撤銷時不 claim 新工作。
 4. **單一實例（已加入程式）**：Worker 程式加跨平台單實例鎖，Windows Task 設 `IgnoreNew`，Mac launcher
@@ -1029,7 +1031,28 @@ quotaAvailable 都是 `true`。這充分滿足前端 readiness 的資料條件�
    正式手機 AI 工作可完成；任一前提不成立時，網站必須自動回退 Tesseract，且 log 不可包含密碼、JWT、
    signed URL 或圖片內容。
 
-#### F. 下一個模型的修改範圍與驗收順序
+#### F. 公司 Windows 為預設 Worker 與再次離線根因（2026-09-07）
+
+使用者再次測試時仍看到 Tesseract。唯讀查驗先發現公司 Windows 沒有 `Invest D+ OCR Worker` 排程，
+也沒有 `Invest.Web.exe ocr-worker` 程序；Supabase 的 Windows 最後心跳約 13 分鐘前，已超過 120 秒
+readiness 門檻。這與前端契約一致：沒有新鮮 Worker 時不上傳圖片，直接在瀏覽器走 Tesseract，避免把
+截圖留在佇列等待或假裝 AI 已處理。
+
+已沿用既有 DPAPI 憑證重新註冊登入時排程，直接啟動自包含 EXE；排程回到 `Running`、單一程序，
+重新查 Supabase 約 4 秒後 Windows 心跳已新鮮，Codex 三項可用狀態均為 `true`。這只證明 Worker
+目前可服務，不等同於新的手機圖片 AI 成功率驗收。
+
+為使公司電腦成為明確預設節點，`ocr-jobs` 不再只取最新一筆 Worker，而是查詢最近 20 筆：先找平台名稱
+含 Windows 且心跳仍在目前 readiness／submit 門檻內的節點；找不到時才使用排序後最新的其他 Worker。
+這個選擇同時套用 readiness 與 submit，並在 readiness 回傳 `workerPlatform`。較簡單的「只重註冊排程」
+無法防止 Mac 重新上線後搶走預設；本次平台優先只增加一個查詢批次與現有欄位判斷，不改 schema、不加
+密碼設定、不新增依賴，並保留 Windows 離線時的備援。
+
+本節程式與回歸測試在本機完成後，仍須部署 Edge Function，再用正式最高權限手機新送一張圖片確認
+`succeeded`；網站發布必須等 `main` 推送後使用 `publish-only=true`，並以公開 manifest／`site.js` 驗證。
+鎖屏、重開機、斷網復線、CLI 登入撤銷、程序重啟、長期用量與 Golden Set 仍待外部驗收。
+
+#### G. 下一個模型的修改範圍與驗收順序
 
 1. 先將目前同時執行的 Worker 精確確認來源，保留一個；不可用模糊 `killall dotnet` 影響其他服務。
 2. **已完成**：依明確授權套用 `db/041_ocr_progress.sql`，並驗證四個欄位、兩個約束、RLS、RPC
@@ -1038,7 +1061,7 @@ quotaAvailable 都是 `true`。這充分滿足前端 readiness 的資料條件�
 3. 以 IMG_1601～1604 建立三輪 usage／duration 基線，再依 Golden Set A/B 選圖片減量、低推理或模型設定；
    尚未以速度換取未驗證的準確率。
 4. 驗收多圖全域 concurrency 2；若額度或速率限制不穩定，保持目前單工作單次 AI。
-5. 公司 Windows 重新發布自包含 EXE 並重註冊 Task Scheduler；接著驗證鎖屏／重開機／斷網／
+5. 公司 Windows 自包含 EXE 與 Task Scheduler 已重新發布／註冊；接著驗證鎖屏／重開機／斷網／
    登入撤銷與 log 脫敏。Mac LaunchAgent 仍未啟用。
 6. 每個階段都要跑 .NET 10 Release build／全測試、JavaScript 語法與相關前端契約測試；涉及 Supabase
    時再驗 admin／worker／owner 權限矩陣、租約 token、重載恢復與過期清理。最後才用正式手機重跑兩張圖。

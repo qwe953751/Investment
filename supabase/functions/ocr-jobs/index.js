@@ -101,16 +101,29 @@ function readinessHeartbeatAgeMs(request) {
     return Math.min(120, Math.max(15, value)) * 1000;
 }
 
-async function latestWorker() {
+function workerIsFresh(worker, maxHeartbeatAgeMs) {
+    const heartbeatAt = worker?.last_heartbeat_at ? Date.parse(worker.last_heartbeat_at) : NaN;
+    return Number.isFinite(heartbeatAt)
+        && Date.now() - heartbeatAt <= maxHeartbeatAgeMs;
+}
+
+function isWindowsWorker(worker) {
+    return /windows/i.test(String(worker?.platform ?? ''));
+}
+
+async function latestWorker(maxHeartbeatAgeMs = MAX_HEARTBEAT_AGE_MS) {
     const response = await serviceFetch(
         '/rest/v1/ocr_workers?select=id,name,platform,version,agent_status,last_heartbeat_at'
-        + '&order=last_heartbeat_at.desc&limit=1');
+        + '&order=last_heartbeat_at.desc&limit=20');
     if (!response.ok) {
         throw new Error(`worker_query_${response.status}`);
     }
 
     const rows = await response.json();
-    return rows[0] ?? null;
+    const workers = Array.isArray(rows) ? rows : [];
+    const preferredWindows = workers.find(worker =>
+        isWindowsWorker(worker) && workerIsFresh(worker, maxHeartbeatAgeMs));
+    return preferredWindows ?? workers[0] ?? null;
 }
 
 async function cleanupExpiredObjects() {
@@ -223,11 +236,9 @@ async function insertJob(job) {
 
 async function handleReadiness(request) {
     await cleanupExpiredObjects();
-    const worker = await latestWorker();
-    const heartbeatAt = worker?.last_heartbeat_at ? Date.parse(worker.last_heartbeat_at) : NaN;
     const maxHeartbeatAgeMs = readinessHeartbeatAgeMs(request);
-    const online = Number.isFinite(heartbeatAt)
-        && Date.now() - heartbeatAt <= maxHeartbeatAgeMs;
+    const worker = await latestWorker(maxHeartbeatAgeMs);
+    const online = workerIsFresh(worker, maxHeartbeatAgeMs);
     const agents = online ? availableAgents(worker.agent_status) : [];
 
     return json(request, 200, {
@@ -237,15 +248,14 @@ async function handleReadiness(request) {
         lastHeartbeatAt: worker?.last_heartbeat_at ?? null,
         maxHeartbeatAgeSeconds: maxHeartbeatAgeMs / 1000,
         workerName: online ? worker?.name ?? null : null,
+        workerPlatform: online ? worker?.platform ?? null : null,
         fallbackReason: !online ? 'worker_offline' : agents.length === 0 ? 'no_available_agent' : null
     });
 }
 
 async function handleSubmit(request, user) {
     const worker = await latestWorker();
-    const heartbeatAt = worker?.last_heartbeat_at ? Date.parse(worker.last_heartbeat_at) : NaN;
-    const online = Number.isFinite(heartbeatAt)
-        && Date.now() - heartbeatAt <= MAX_HEARTBEAT_AGE_MS;
+    const online = workerIsFresh(worker, MAX_HEARTBEAT_AGE_MS);
     const agents = online ? availableAgents(worker.agent_status) : [];
     if (!online || agents.length === 0) {
         return json(request, 409, {

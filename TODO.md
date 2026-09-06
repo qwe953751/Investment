@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 背景 Worker 已驗收；待 Golden Set／手機新圖片 AI 驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 背景 Worker 已恢復並固定為預設；待 Golden Set／手機新圖片 AI 驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🟢 已完成，待實機驗收發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1129,6 +1129,9 @@ v9 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 W
   新接線的實機驗收；`--once`、排程 Running、單一 Worker 程序與正式 Supabase 連續心跳均已驗證 Codex
   三項狀態為 `true`。Mac 仍未替使用者啟用；舊 Mac 程序不可用
   廣泛的 `killall dotnet` 處理。
+- 2026-09-07 再次查到公司 Windows 排程與 Worker 程序消失，造成心跳超過 120 秒、使用者測試回退
+  Tesseract；已沿用 DPAPI 憑證重新註冊並恢復 `Running`。`ocr-jobs` 現在查詢多筆 Worker，明確優先
+  新鮮 Windows，Windows 不在線時才使用其他平台備援；readiness 會回傳實際選到的 `workerPlatform`。
 - 本機 `codex login status` 為 ChatGPT 登入，且 Worker 會移除 API key 環境變數；目前 OCR 消耗
   ChatGPT Plus 內含的 Codex／agentic 額度，不是 OpenAI Platform API 帳單。每張圖現在只執行一次模型任務。
 

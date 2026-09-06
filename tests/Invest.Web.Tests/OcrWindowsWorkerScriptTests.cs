@@ -78,6 +78,24 @@ public sealed class OcrWindowsWorkerScriptTests
         Assert.Contains("Pop-Location", script, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void OCR佇列以新鮮WindowsWorker為預設並保留其他Worker備援()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "supabase",
+            "functions",
+            "ocr-jobs",
+            "index.js"));
+
+        Assert.Contains("async function latestWorker(maxHeartbeatAgeMs = MAX_HEARTBEAT_AGE_MS)", source, StringComparison.Ordinal);
+        Assert.Contains("&order=last_heartbeat_at.desc&limit=20", source, StringComparison.Ordinal);
+        Assert.Contains("const preferredWindows = workers.find(worker =>", source, StringComparison.Ordinal);
+        Assert.Contains("isWindowsWorker(worker) && workerIsFresh(worker, maxHeartbeatAgeMs)", source, StringComparison.Ordinal);
+        Assert.Contains("return preferredWindows ?? workers[0] ?? null;", source, StringComparison.Ordinal);
+        Assert.Contains("workerPlatform:", source, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
