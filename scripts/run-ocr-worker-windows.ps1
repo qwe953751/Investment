@@ -1,23 +1,51 @@
-param(
+﻿param(
     [switch] $Once
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$workerEmail = if ($env:OCR_WORKER_EMAIL) { $env:OCR_WORKER_EMAIL } else { 'ocr-worker@investment.local' }
-
-if (-not (Get-Command Get-Secret -ErrorAction SilentlyContinue)) {
-    throw '請先安裝並註冊 Microsoft.PowerShell.SecretManagement vault，再以名稱 InvestOcrWorkerPassword 保存 Worker 密碼。'
+$localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+if ([string]::IsNullOrWhiteSpace($localAppData)) {
+    throw '找不到目前 Windows 使用者的 LocalApplicationData；不會啟動 OCR Worker。'
 }
 
-$dotnetVersion = (& dotnet --version).Trim()
+$credentialDirectory = Join-Path $localAppData 'Investment'
+$credentialPath = Join-Path $credentialDirectory 'ocr-worker-windows.credential.clixml'
+
+if (-not (Test-Path -LiteralPath $credentialPath -PathType Leaf)) {
+    throw '找不到 Windows OCR Worker 的 DPAPI 憑證；請先以 set-ocr-worker-windows-credential.ps1 建立。'
+}
+
+$dotnetPath = $env:OCR_DOTNET_PATH
+if ([string]::IsNullOrWhiteSpace($dotnetPath)) {
+    $userDotnetPath = Join-Path $localAppData 'Microsoft\dotnet\dotnet.exe'
+    $dotnetPath = if (Test-Path -LiteralPath $userDotnetPath -PathType Leaf) {
+        $userDotnetPath
+    }
+    else {
+        $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+        if ($null -eq $dotnetCommand) {
+            throw '找不到 .NET SDK；請安裝 .NET 10 或設定 OCR_DOTNET_PATH。'
+        }
+
+        $dotnetCommand.Source
+    }
+}
+
+$dotnetVersion = (& $dotnetPath --version).Trim()
 if (-not $dotnetVersion.StartsWith('10.')) {
     throw "ocr-worker 只能用 .NET 10；目前是 $dotnetVersion。"
 }
 
-$workerPassword = Get-Secret -Name 'InvestOcrWorkerPassword' -AsPlainText
-if ([string]::IsNullOrWhiteSpace($workerPassword)) {
-    throw 'Secret vault 找不到 InvestOcrWorkerPassword。'
+$workerCredential = Import-Clixml -LiteralPath $credentialPath
+if ($workerCredential -isnot [System.Management.Automation.PSCredential]) {
+    throw 'Windows OCR Worker 憑證格式不正確；請重新建立 DPAPI 憑證。'
+}
+
+$workerEmail = $workerCredential.UserName
+$workerPassword = $workerCredential.GetNetworkCredential().Password
+if ([string]::IsNullOrWhiteSpace($workerEmail) -or [string]::IsNullOrWhiteSpace($workerPassword)) {
+    throw 'Windows OCR Worker 憑證沒有可用的帳號或密碼；請重新建立 DPAPI 憑證。'
 }
 
 $previousPassword = $env:OCR_WORKER_PASSWORD
@@ -32,7 +60,7 @@ try {
 
     Push-Location $repoRoot
     try {
-        & dotnet @workerArgs
+        & $dotnetPath @workerArgs
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     finally {
@@ -43,4 +71,5 @@ finally {
     $env:OCR_WORKER_PASSWORD = $previousPassword
     $env:OCR_WORKER_EMAIL = $previousEmail
     $workerPassword = $null
+    $workerCredential = $null
 }

@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 第一階段已實作，待正式 migration／Golden Set／Windows 驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 背景 Worker 已驗收；待 Golden Set／手機新圖片 AI 驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 已上正式網站，待接真實資料](#todo-16) | 🟡 等資料 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1076,9 +1076,9 @@ fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並
 `IMG_1601.jpeg`／`IMG_1602.jpeg` 由 D+ AI `succeeded`，耗時 70／78 秒。本輪已實作市場限縮的名稱唯一
 反查、模糊候選不自選、單列不阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、兩 Pass 單工作並行、
 跨平台單實例鎖與背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs` 已更新為
-v7 並驗證 Worker progress／租約邊界；Golden Set 的
-身份／數量 ≥95%、成本 ≥90%、危險假陽性 0、圖片／模型效能調校、多圖 concurrency 與公司 Windows
-實機仍待驗收。依使用者指示，不自行安裝或設定 Claude CLI。**
+v7 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 Worker 已完成 DPAPI 憑證、
+登入時排程與正式心跳驗收。Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0、圖片／模型效能調校、
+多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收。依使用者指示，不自行安裝或設定 Claude CLI。**
 
 ### 已討論
 
@@ -1117,9 +1117,11 @@ v7 並驗證 Worker progress／租約邊界；Golden Set 的
   以 worker 身分、租約擁有者與租約 token 驗證更新；`db/041_ocr_progress.sql` 已於 2026-09-06 依明確
   授權套用，跨重載可由 status API 還原正式資料庫保存的階段與百分比。匿名與一般登入者仍不能執行
   progress RPC，只有 `service_role` 可呼叫。
-- 免手動 Terminal 的 Mac LaunchAgent／Windows Task Scheduler 腳本與跨平台單實例鎖已提交；仍需一次
-  `codex login`，且尚未替使用者啟用。2026-09-06 唯讀檢查發現 Mac 同時有兩組 Worker；本輪沒有停止
-  程序，正式啟用前須精確保留一個，不可用 `killall dotnet`。
+- 免手動 Terminal 的 Mac LaunchAgent／Windows Task Scheduler 腳本與跨平台單實例鎖已提交。2026-09-07
+  公司 Windows 已建立獨立 `ocr_worker` 身分，密碼只在目前使用者的 DPAPI 保護區保存；`Invest D+ OCR Worker`
+  排程以同一個完成 `codex login` 的使用者、`Interactive` 與 `IgnoreNew` 運行。`--once`、排程 Running 與
+  正式 Supabase 連續心跳均已驗證 Codex 三項狀態為 `true`。Mac 仍未替使用者啟用；舊 Mac 程序不可用
+  廣泛的 `killall dotnet` 處理。
 - 本機 `codex login status` 為 ChatGPT 登入，且 Worker 會移除 API key 環境變數；目前 OCR 消耗
   ChatGPT Plus 內含的 Codex／agentic 額度，不是 OpenAI Platform API 帳單。兩張圖各兩遍即四次模型執行。
 
@@ -1127,17 +1129,20 @@ v7 並驗證 Worker progress／租約邊界；Golden Set 的
 
 1. 公開 `site.js` 的 AI-first 管線、名稱反查、progress UI、用量觀測與兩 Pass 並行已完成；正式
    `db/041_ocr_progress.sql` 與 `ocr-jobs` v7 也已部署。使用者已確認網站可正常上傳；最新 `main` 已由
-   publish-only Action `34032339976` 全綠發布為快照 `1788696729`。後續只持續做 Golden Set／Windows
-   外部驗收。
+   publish-only Action `34032339976` 全綠發布為快照 `1788696729`。後續持續做 Golden Set 與修復後的
+   手機新圖片 AI 外部驗收。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
    把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。
-3. 在公司 Windows 以非管理員帳號驗證 .NET 10、SecretManagement、登入時排程、鎖屏／重開機、
-   網路、登入撤銷、程序重啟與 log 脫敏；Claude CLI 只有取得新的明確指示才安裝。
+3. 公司 Windows 已以非管理員帳號驗證 .NET 10、DPAPI、登入時排程、Worker `--once`、持續心跳與
+   Codex readiness；尚待鎖屏／重開機、斷網復線、登入撤銷、程序重啟、長期用量與 log 保存期限驗收。
+   Claude CLI 只有取得新的明確指示才安裝。
 
 ### 仍待實機或使用者確認
 
 - Claude CLI 的安裝、Pro 登入、版本與 headless smoke test；完成前不宣稱雙 Agent 已可正式執行。
 - 公司資安是否允許持倉截圖短暫送往 Supabase Storage 與外部 AI 供應商。
+- 修復後以正式最高權限手機新送一張圖片，確認畫面顯示 D+ AI `succeeded` 而非 Tesseract；不拿測試或
+  假資料寫入正式持倉。
 - Windows 長期運行後的 P95 延遲、訂閱額度消耗、quota recheck 間隔與 log 保存期限。
 
 ---
