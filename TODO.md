@@ -1077,7 +1077,7 @@ fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並
 `IMG_1601.jpeg`／`IMG_1602.jpeg` 由 D+ AI `succeeded`，耗時 70／78 秒。本輪已實作市場限縮的名稱唯一
 反查、模糊候選不自選、單列不阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、單次 AI 辨識、
 跨平台單實例鎖與背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs` 已更新為
-v9 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 Worker 已完成 DPAPI 憑證、
+v10 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 Worker 已完成 DPAPI 憑證、
 登入時排程與正式心跳驗收。Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0、圖片／模型效能調校、
 多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收。依使用者指示，不自行安裝或設定 Claude CLI。**
 
@@ -1138,8 +1138,8 @@ v9 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 W
 ### 本輪已完成與仍待外部驗收
 
 1. 公開 `site.js` 的 AI-first 管線、名稱反查、progress UI、用量觀測與單次 AI 辨識已完成；正式
-  `db/041_ocr_progress.sql` 與 `ocr-jobs` v9 也已部署。使用者已確認網站可正常上傳；最新 `main` 已由
-   publish-only Action `34058795495` 全綠發布為快照 `1788727399`。後續持續做 Golden Set 與修復後的
+  `db/041_ocr_progress.sql` 與 `ocr-jobs` v10 也已部署。使用者已確認網站可正常上傳；最新 `main` 已由
+  publish-only Action `34061211033` 全綠發布為快照 `1788730222`。後續持續做 Golden Set 與修復後的
    手機新圖片 AI 外部驗收。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
    把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。

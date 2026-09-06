@@ -858,7 +858,7 @@ Codex 路徑 fallback；沒有新增 Supabase migration、修改 Edge Function �
 
 本節是本輪實作與下一階段驗收契約。名稱唯一反查、非阻斷差異、階段進度、用量觀測、單次 AI、
 單實例鎖與背景啟動腳本已加入程式；`db/041_ocr_progress.sql` 已於 2026-09-06 套用正式 Supabase，
-`ocr-jobs` Edge Function 已更新為 v9。Worker 取到工作後會立即接下一張，佇列超過 30 秒且短心跳確認
+`ocr-jobs` Edge Function 已更新為 v10。Worker 取到工作後會立即接下一張，佇列超過 30 秒且短心跳確認
 Worker 不可用時會回退 Tesseract；Windows 排程改為直接啟動自包含 EXE，不依賴常駐 PowerShell。
 本次再修正 Edge Function 的 Worker 選擇：新鮮 Windows 為預設，其他平台只在 Windows 不在線時備援，
 readiness 同時回傳所選 `workerPlatform` 供診斷。
@@ -944,7 +944,7 @@ P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險�
 
 現在前端原本只會在 `queued`／`leased` 之間切換文字；本輪已加入每圖原生 progressbar、階段文字、
 批次計數與 status 恢復欄位。`db/041_ocr_progress.sql` 已於 2026-09-06 依明確授權套用正式 Supabase，
-`ocr-jobs` Edge Function 已更新為 v9，因此跨重載可保存並還原真實階段；舊 status 相容查詢仍保留，
+`ocr-jobs` Edge Function 已更新為 v10，因此跨重載可保存並還原真實階段；舊 status 相容查詢仍保留，
 避免不同部署版本短暫交錯時中斷 AI fallback。
 
 選定的正式方案是「伺服器保存階段，前端顯示階段式進度」：
@@ -1048,15 +1048,16 @@ readiness 門檻。這與前端契約一致：沒有新鮮 Worker 時不上傳�
 無法防止 Mac 重新上線後搶走預設；本次平台優先只增加一個查詢批次與現有欄位判斷，不改 schema、不加
 密碼設定、不新增依賴，並保留 Windows 離線時的備援。
 
-本節程式與回歸測試在本機完成後，仍須部署 Edge Function，再用正式最高權限手機新送一張圖片確認
-`succeeded`；網站發布必須等 `main` 推送後使用 `publish-only=true`，並以公開 manifest／`site.js` 驗證。
-鎖屏、重開機、斷網復線、CLI 登入撤銷、程序重啟、長期用量與 Golden Set 仍待外部驗收。
+本節程式與回歸測試已完成；`ocr-jobs` v10 已部署，`main` commit
+`742d5e98e7cea1559f2563fd116bda492dae889f` 已推送，並以 `publish-only=true` 完成網站發布；公開
+manifest／`site.js` 已核對。仍須用正式最高權限手機新送一張圖片確認 `succeeded`；鎖屏、重開機、
+斷網復線、CLI 登入撤銷、程序重啟、長期用量與 Golden Set 仍待外部驗收。
 
 #### G. 下一個模型的修改範圍與驗收順序
 
 1. 先將目前同時執行的 Worker 精確確認來源，保留一個；不可用模糊 `killall dotnet` 影響其他服務。
 2. **已完成**：依明確授權套用 `db/041_ocr_progress.sql`，並驗證四個欄位、兩個約束、RLS、RPC
-   `SECURITY INVOKER` 與 execute 權限；正式 `ocr-jobs` v9 的 Worker progress 假租約得到預期
+   `SECURITY INVOKER` 與 execute 權限；正式 `ocr-jobs` v10 的 Worker progress 假租約得到預期
    `409 lease_lost`，沒有修改真實 OCR 工作。
 3. 以 IMG_1601～1604 建立三輪 usage／duration 基線，再依 Golden Set A/B 選圖片減量、低推理或模型設定；
    尚未以速度換取未驗證的準確率。

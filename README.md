@@ -7,14 +7,13 @@
 
 最高權限頁籤提供「資產 Dashboard → 帳戶明細」兩層；使用者、帳戶與已確認持倉存於 Supabase。
 截圖辨識的目標架構採 D+ AI-first：以公司 Windows Worker 為預設執行節點；Windows 在線且至少一個訂閱 CLI
-可用時，圖片短期進入
-Supabase 私有佇列並由單一 AI Agent 辨識；主要 Agent 登入／額度不可用時自動切換另一個，兩者都不可用才在瀏覽器回退 Tesseract。辨識後會先列出「覆蓋／新增／移除」差異，
+可用時，圖片短期進入 Supabase 私有佇列並由單一 AI Agent 辨識；主要 Agent 登入／額度不可用時自動切換另一個，兩者都不可用才在瀏覽器回退 Tesseract。辨識後會先列出「覆蓋／新增／移除」差異，
 每一項都必須人工核對並勾選才會套用。相同代號直接覆蓋，移除項目預設不勾選。檢視權限不顯示此頁籤；
 密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收。**D+ 後端、AI-first 前端、Mac
  Worker 與正式網站已整合發布。**正式最高權限手機已確認兩張圖片由 D+ AI 完成（70／78 秒）；
 本輪已加入名稱唯一反查、非阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、單次 AI 辨識、
 單實例鎖與 Mac／Windows 背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs`
-Edge Function 已更新並具備 Windows 優先的 Worker 選擇；公司 Windows Worker 的背景排程與正式心跳已驗收。Golden Set、圖片／模型
+Edge Function v10 已更新並具備 Windows 優先的 Worker 選擇；公司 Windows Worker 的背景排程與正式心跳已驗收。Golden Set、圖片／模型
 效能調校、多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收，限制與下一步見 [TODO.md](TODO.md)。
 
 ## 文件導覽
@@ -187,12 +186,17 @@ Runner 共用 `OcrAgentExecutableResolver`；公司 Windows 的專用 Worker 已
 已安裝、已登入且有額度，網站的兩分鐘 readiness 條件已具備。原先手機走 Tesseract 的直接原因是 Windows
 沒有可用的背景 Worker 心跳，不是前端把 AI 功能關掉。現在 `ocr-jobs` 會優先選取仍在線的 Windows Worker，
 只有 Windows 不在線才使用其他 Worker 備援；修正後仍應重新選一張圖片確認工作 `succeeded`，詳見
-[規劃 AI OCR §14.4](Doc/技術文件/規劃AI%20OCR.md#144-2026-09-06-正式瀏覽器驗收發現的阻塞與修正已完成正式-ai-草稿待重試)。
+[規劃 AI OCR §14.5](Doc/技術文件/規劃AI%20OCR.md#145-2026-09-07-正式-ai-成功後的名稱反查延遲進度與常駐第一階段已實作仍待外部驗收)。
 
 2026-09-07 公司 Windows 實機已重新發布自包含 EXE、重註冊登入時排程並驗證：從 repo 根目錄執行
 `run-ocr-worker-windows.ps1 -Once` exit code 0；排程直接啟動發布目錄的 `Invest.Web.exe`，維持
 `Interactive`／`IgnoreNew`，正式 Supabase 心跳持續更新。另已修正 DPAPI payload 小寫 JSON 欄位與
 一次性啟動工作目錄，避免登入成功後仍被誤判為缺少 Worker 設定。
+
+本次再發現排程曾消失，已重新註冊並將後端選擇規則固定為新鮮 Windows 優先；程式 commit
+`742d5e98e7cea1559f2563fd116bda492dae889f`、`ocr-jobs` v10 與 publish-only Action
+[`34061211033`](https://github.com/qwe953751/Investment/actions/runs/34061211033) 已完成。公開網站
+manifest version `1788730222` 與 `gh-pages` 同版，`site.js` 已驗證包含 OCR 佇列契約。
 
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
 輪詢，拿到短效私有圖片 URL 後才啟動 CLI；程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、
