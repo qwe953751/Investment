@@ -1,4 +1,5 @@
 using Invest.Web.Infrastructure.Ai.Cli;
+using System.Collections.Concurrent;
 
 namespace Invest.Web.Features.Assets.Ocr.Services;
 
@@ -10,7 +11,7 @@ public sealed class AgentQuotaRouter
 {
     private readonly IReadOnlyDictionary<OcrAgentKind, IAgentCliRunner> _runners;
     private readonly OcrAgentRouterOptions _options;
-    private readonly Dictionary<OcrAgentKind, DateTimeOffset> _quotaBlockedUntil = [];
+    private readonly ConcurrentDictionary<OcrAgentKind, DateTimeOffset> _quotaBlockedUntil = new();
 
     public AgentQuotaRouter(
         IEnumerable<IAgentCliRunner> runners,
@@ -64,7 +65,7 @@ public sealed class AgentQuotaRouter
             switch (result.Status)
             {
                 case OcrAgentRunStatus.Success:
-                    _quotaBlockedUntil.Remove(agent);
+                    _quotaBlockedUntil.TryRemove(agent, out _);
                     return new(pass, agent, result, index > 0);
 
                 case OcrAgentRunStatus.QuotaExhausted:

@@ -7749,6 +7749,21 @@ function makeAssetDraftRow(draft) {
         const cell = document.createElement('td');
         const input = makeAssetHoldingEditableInput(field, draft[field]);
         inputs.set(field, input);
+
+        if (field === 'ticker' && Array.isArray(draft.aiNameCandidates) && draft.aiNameCandidates.length > 0) {
+            const listId = `asset-ticker-candidates-${crypto.randomUUID()}`;
+            const list = document.createElement('datalist');
+            list.id = listId;
+            for (const candidate of draft.aiNameCandidates.slice(0, 3)) {
+                const option = document.createElement('option');
+                option.value = candidate.ticker;
+                option.label = candidate.name;
+                list.append(option);
+            }
+            input.setAttribute('list', listId);
+            cell.append(list);
+        }
+
         cell.append(input);
         row.append(cell);
     }
@@ -7927,14 +7942,18 @@ function makeAssetHoldingDiffInvalidRows(invalid) {
     const heading = document.createElement('h4');
     heading.textContent = `需要修正（${invalid.length} 項）`;
     const description = document.createElement('p');
-    description.textContent = '這些列不會套用；請展開下方「修改辨識結果」補上唯一代號後，再重新比較。';
+    description.textContent = '只有無法安全解析代號的列會暫停套用；其他已確定列仍可獨立勾選。請從名稱候選或下方編輯器補上唯一代號，再重新比較。';
     const list = document.createElement('ul');
 
     for (const item of invalid) {
         const row = document.createElement('li');
 
         if (item.kind === 'draftMissingTicker') {
-            row.textContent = `第 ${item.index + 1} 列「${String(item.draft.name ?? '').trim() || '未命名'}」缺少代號。`;
+            const candidates = Array.isArray(item.draft.aiNameCandidates)
+                ? item.draft.aiNameCandidates.map(candidate => `${candidate.ticker} ${candidate.name}`).join('、')
+                : '';
+            row.textContent = `第 ${item.index + 1} 列「${String(item.draft.name ?? '').trim() || '未命名'}」缺少唯一代號。`
+                + (candidates === '' ? '' : ` 名稱候選：${candidates}（請人工確認）。`);
         } else if (item.kind === 'draftDuplicate') {
             row.textContent = `截圖內的 ${item.ticker} 重複出現，請保留一列。`;
         } else if (item.kind === 'existingDuplicate') {
@@ -8112,10 +8131,61 @@ function assetAiOcrFallbackText(reason) {
     }
 }
 
-function assetAiDraftRows(result) {
+function assetAiProgressForStatus(status) {
+    switch (status) {
+        case 'queued': return { stage: '排隊等待中', percent: 10 };
+        case 'leased': return { stage: 'Worker 取件／AI 辨識中', percent: 20 };
+        case 'succeeded': return { stage: '完成', percent: 100 };
+        case 'fallback_required': return { stage: '切換 Tesseract 備援', percent: 90 };
+        case 'failed':
+        case 'expired':
+        case 'cancelled': return { stage: '工作已結束', percent: 100 };
+        default: return { stage: '等待 AI 回報', percent: 10 };
+    }
+}
+
+function updateAssetAiProgress(index, status, override = {}) {
+    if (assetScreenshotDraft === null) {
+        return;
+    }
+
+    const screenshot = assetScreenshotDraft.screenshots[index];
+    if (screenshot === undefined) {
+        return;
+    }
+
+    const fallback = assetAiProgressForStatus(status);
+    const percent = Math.max(0, Math.min(100, Number(override.percent ?? fallback.percent)));
+    screenshot.progressStage = String(override.stage ?? fallback.stage);
+    screenshot.progressPercent = percent;
+    screenshot.progressUpdatedAt = override.updatedAt ?? new Date().toISOString();
+    if (override.statusText) {
+        screenshot.status = override.statusText;
+    }
+
+    const item = document.querySelector(`[data-asset-screenshot-index="${index}"]`);
+    if (item === null) {
+        return;
+    }
+
+    const progress = item.querySelector('progress[data-asset-progress]');
+    if (progress !== null) {
+        progress.value = percent;
+        progress.setAttribute('aria-valuenow', String(percent));
+    }
+
+    const text = item.querySelector('[data-asset-progress-text]');
+    if (text !== null) {
+        text.textContent = `${screenshot.status || screenshot.progressStage}（${percent}%）`;
+    }
+}
+
+function assetAiDraftRows(result, market = '') {
     return (result?.rows ?? []).map(row => {
-        const ticker = String(row.ticker ?? '').trim().toUpperCase();
+        const rawTicker = String(row.ticker ?? '').trim().toUpperCase();
         const recognizedName = String(row.name ?? '').trim();
+        const identity = assetAiResolveIdentity(rawTicker, recognizedName, market);
+        const ticker = identity.ticker;
         const knownName = assetKnownStockName(ticker);
         const warnings = Array.isArray(row.warnings) ? [...row.warnings] : [];
         let verified = row.verified === true;
@@ -8124,13 +8194,20 @@ function assetAiDraftRows(result) {
         // 第三道獨立防線。名冊沒有，或代號對到的官方名稱與圖片文字不像，就不能標綠。
         if (ticker === '' || knownName === '') {
             verified = false;
-            warnings.push('股票代號不在目前權威名冊，必須人工確認。');
+            warnings.push(identity.source === 'ticker_wrong_market'
+                ? 'AI 代號不屬於目前帳戶市場，必須人工確認。'
+                : ticker === ''
+                ? (identity.candidates.length > 0
+                    ? `名稱無法唯一反查代號，請從候選中人工確認：${identity.candidates.map(candidate => candidate.ticker).join('、')}。`
+                    : '缺少可唯一反查的股票代號，必須人工確認。')
+                : '股票代號不在目前權威名冊，必須人工確認。');
         } else if (recognizedName !== '' && !assetOcrNamesLikelyMatch(recognizedName, knownName)) {
             verified = false;
             warnings.push('圖片中的名稱與代號對應的官方名稱不一致。');
         }
 
-        return assetDraftRowFrom({
+        return {
+            ...assetDraftRowFrom({
             ticker,
             name: knownName || recognizedName,
             quantity: row.quantity ?? '',
@@ -8140,7 +8217,10 @@ function assetAiDraftRows(result) {
             aiVerified: verified,
             aiWarnings: [...new Set(warnings)],
             recognitionEngine: 'ai'
-        });
+            }),
+            identityResolution: identity.source,
+            aiNameCandidates: identity.candidates
+        };
     });
 }
 
@@ -8150,6 +8230,7 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
 
     try {
         screenshot.status = '上傳至私有 AI 佇列…';
+        updateAssetAiProgress(index - 1, 'queued', { stage: '上傳至私有 AI 佇列', percent: 5 });
         setAssetOcrStatus(`第 ${index} / ${total} 張：上傳至私有 AI 佇列…`);
         const submitted = await assetAiOcrSubmit(file, accountId, market, idempotencyKey);
         jobId = submitted.jobId;
@@ -8176,10 +8257,12 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                 // 再跑一次 Tesseract。未清掉的結果會由 60 分鐘 expiry 回收。
                 await assetAiOcrAcknowledge(jobId).catch(() => {});
                 forgetAssetAiJob(jobId);
+                updateAssetAiProgress(index - 1, status.status, { statusText: 'D+ AI 完成' });
                 return { mode: 'ai', result: status.result };
             }
 
             if (status.status === 'fallback_required') {
+                updateAssetAiProgress(index - 1, status.status, { statusText: '正在切換 Tesseract…' });
                 return {
                     mode: 'tesseract',
                     jobId,
@@ -8188,6 +8271,7 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
             }
 
             if (['failed', 'expired', 'cancelled'].includes(status.status)) {
+                updateAssetAiProgress(index - 1, status.status, { statusText: 'AI 工作已結束' });
                 return {
                     mode: 'tesseract',
                     jobId,
@@ -8195,7 +8279,14 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                 };
             }
 
+            const progress = assetAiProgressForStatus(status.status);
             screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';
+            updateAssetAiProgress(index - 1, status.status, {
+                stage: status.progressStage ?? progress.stage,
+                percent: status.progressPercent ?? progress.percent,
+                updatedAt: status.progressUpdatedAt,
+                statusText: screenshot.status
+            });
             setAssetOcrStatus(`第 ${index} / ${total} 張：${screenshot.status}`);
             await new Promise(resolve => window.setTimeout(resolve, ASSET_AI_OCR_POLL_MS));
         }
@@ -8232,7 +8323,15 @@ async function resumeAssetAiJobs(accountId) {
         assetScreenshotDraft = {
             accountId,
             capturedAt: pending[0].createdAt ?? new Date().toISOString(),
-            screenshots: pending.map(job => ({ fileName: job.fileName || job.jobId, previewUrl: placeholder, status: '恢復中…', elapsedMs: null })),
+            screenshots: pending.map(job => ({
+                fileName: job.fileName || job.jobId,
+                previewUrl: placeholder,
+                status: '恢復中…',
+                elapsedMs: null,
+                progressStage: '恢復佇列工作',
+                progressPercent: 10,
+                progressUpdatedAt: new Date().toISOString()
+            })),
             scanning: true,
             rows: [],
             diff: null,
@@ -8258,15 +8357,23 @@ async function resumeAssetAiJobs(accountId) {
                         finalStatus = status;
                         break;
                     }
+                    const progress = assetAiProgressForStatus(status.status);
                     screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';
+                    updateAssetAiProgress(index, status.status, {
+                        stage: status.progressStage ?? progress.stage,
+                        percent: status.progressPercent ?? progress.percent,
+                        updatedAt: status.progressUpdatedAt,
+                        statusText: screenshot.status
+                    });
                     setAssetOcrStatus(`恢復第 ${index + 1} / ${pending.length} 張：${screenshot.status}`);
                     await new Promise(resolve => window.setTimeout(resolve, ASSET_AI_OCR_POLL_MS));
                 }
 
                 if (finalStatus?.status === 'succeeded') {
-                    rows.push(...assetEnrichOcrRows(assetAiDraftRows(finalStatus.result), view.market));
+                    rows.push(...assetEnrichOcrRows(assetAiDraftRows(finalStatus.result, view.market), view.market));
                     assetScreenshotDraft.usedAi = true;
                     screenshot.status = 'D+ AI 完成';
+                    updateAssetAiProgress(index, 'succeeded', { stage: '完成', percent: 100, statusText: screenshot.status });
                     await assetAiOcrAcknowledge(job.jobId).catch(() => {});
                     forgetAssetAiJob(job.jobId);
                     continue;
@@ -8276,11 +8383,13 @@ async function resumeAssetAiJobs(accountId) {
                     const file = await assetAiOcrDownload(job.jobId);
                     screenshot.previewUrl = URL.createObjectURL(file);
                     screenshot.status = '取回圖片，Tesseract 備援中…';
+                    updateAssetAiProgress(index, 'fallback_required', { stage: 'Tesseract 備援中', percent: 90, statusText: screenshot.status });
                     await getAssetOcrWorker();
                     const result = await recognizeAssetScreenshot(file, index + 1, pending.length);
                     rows.push(...assetEnrichOcrRows(result.rows, view.market));
                     assetScreenshotDraft.usedTesseract = true;
                     screenshot.status = `Tesseract 備援完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
+                    updateAssetAiProgress(index, 'succeeded', { stage: '完成（Tesseract 備援）', percent: 100, statusText: screenshot.status });
                     fallbackNotices.push(`第 ${index + 1} 張：${assetAiOcrFallbackText(finalStatus.fallbackReason)}`);
                     await assetAiOcrAcknowledge(job.jobId).catch(() => {});
                     forgetAssetAiJob(job.jobId);
@@ -8289,6 +8398,7 @@ async function resumeAssetAiJobs(accountId) {
 
                 if (['failed', 'expired', 'cancelled'].includes(finalStatus?.status)) {
                     screenshot.status = '工作已結束，改用手動補登';
+                    updateAssetAiProgress(index, finalStatus.status, { stage: '工作已結束', percent: 100, statusText: screenshot.status });
                     fallbackNotices.push(`第 ${index + 1} 張：AI 工作已${finalStatus.status === 'expired' ? '到期' : '結束'}`);
                     forgetAssetAiJob(job.jobId);
                 }
@@ -8324,6 +8434,7 @@ async function resumeAssetAiJobs(accountId) {
 // 這份名冊是 export 時隨站輸出的公開資料，只有使用者選圖時才讀取，不會向 Supabase
 // 發出額外請求，也不會包含或上傳截圖。
 const assetTickerByName = new Map();
+const assetTickersByName = new Map();
 const assetNameByTicker = new Map();
 let assetTickerCatalogLoading = null;
 let assetTickerCatalogLoaded = false;
@@ -9179,6 +9290,9 @@ function addAssetTickerNames(entries) {
         }
 
         assetNameByTicker.set(ticker, name);
+        const candidates = assetTickersByName.get(key) ?? new Set();
+        candidates.add(ticker);
+        assetTickersByName.set(key, candidates);
         const existing = assetTickerByName.get(key);
 
         // 同名股票若對到不同代號，不偷偷選其中一檔；留給使用者校對比誤寫安全。
@@ -9484,6 +9598,95 @@ function assetOcrResolveCloseWithIdentityHint(draft, closeIndex, identityText) {
 
 function assetKnownTicker(name) {
     return assetTickerByName.get(assetNameKey(name)) ?? '';
+}
+
+function assetTickerMatchesMarket(ticker, market) {
+    if (market === '' || market === '其他') {
+        return true;
+    }
+
+    const quoteMarket = String(assetTickerQuotes.get(ticker)?.market ?? '').trim();
+    if (quoteMarket !== '') {
+        return market === '台股'
+            ? ['TWSE', 'TPEX', 'TW', '台股'].includes(quoteMarket)
+            : market === '美股'
+                ? ['US', 'NASDAQ', 'NYSE', '美股'].includes(quoteMarket)
+                : true;
+    }
+
+    return market === '台股'
+        ? /^\d{4,6}$/.test(ticker)
+        : /^[A-Z][A-Z0-9.-]{0,9}$/.test(ticker);
+}
+
+function assetNameTickerCandidates(name, market = '') {
+    const key = assetNameKey(name);
+    if (key === '') {
+        return [];
+    }
+
+    return [...(assetTickersByName.get(key) ?? [])]
+        .filter(ticker => assetTickerMatchesMarket(ticker, market))
+        .map(ticker => ({ ticker, name: assetKnownStockName(ticker) }))
+        .filter(candidate => candidate.name !== '')
+        .sort((left, right) => left.ticker.localeCompare(right.ticker, 'en'));
+}
+
+function assetNameSearchCandidates(name, market = '') {
+    const normalized = assetNameKey(name);
+    if (normalized.length < 3) {
+        return [];
+    }
+
+    const scored = [];
+    for (const [ticker, officialName] of assetNameByTicker) {
+        if (!assetTickerMatchesMarket(ticker, market)) {
+            continue;
+        }
+
+        const candidateName = assetNameKey(officialName);
+        if (candidateName.length < 3) {
+            continue;
+        }
+
+        const distance = assetOcrTextDistance(normalized, candidateName);
+        const limit = Math.max(1, Math.floor(Math.min(normalized.length, candidateName.length) * 0.34));
+        if (distance > limit) {
+            continue;
+        }
+
+        scored.push({ ticker, name: officialName, distance, lengthDifference: Math.abs(normalized.length - candidateName.length) });
+    }
+
+    scored.sort((left, right) => left.distance - right.distance || left.lengthDifference - right.lengthDifference);
+    return scored.slice(0, 3).map(({ ticker, name }) => ({ ticker, name }));
+}
+
+function assetAiResolveIdentity(rawTicker, recognizedName, market = '') {
+    const ticker = String(rawTicker ?? '').trim().toUpperCase();
+    if (ticker !== '') {
+        if (!assetTickerMatchesMarket(ticker, market)) {
+            const candidates = assetNameTickerCandidates(recognizedName, market);
+            return { ticker: '', source: 'ticker_wrong_market', candidates };
+        }
+        return {
+            ticker,
+            source: assetKnownStockName(ticker) === '' ? 'unresolved_ticker' : 'ticker_direct',
+            candidates: []
+        };
+    }
+
+    const exact = assetNameTickerCandidates(recognizedName, market);
+    if (exact.length === 1) {
+        return { ticker: exact[0].ticker, source: 'name_exact_unique', candidates: exact };
+    }
+
+    const candidates = exact.length > 1 ? exact.slice(0, 3) : assetNameSearchCandidates(recognizedName, market);
+    return {
+        ticker: '',
+        source: candidates.length > 0 ? 'name_manual_candidate' : 'unresolved_name',
+        candidates
+    };
 }
 
 function assetOcrResolveIdentity(draft) {
@@ -11037,7 +11240,10 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             fileName: file.name,
             previewUrl: URL.createObjectURL(file),
             status: '等待中',
-            elapsedMs: null
+            elapsedMs: null,
+            progressStage: '準備中',
+            progressPercent: 0,
+            progressUpdatedAt: new Date().toISOString()
         })),
         scanning: true,
         rows: [],
@@ -11094,6 +11300,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         const index = zeroBasedIndex + 1;
         let pendingAiJobId = null;
         screenshot.status = '辨識中…';
+        updateAssetAiProgress(zeroBasedIndex, 'queued', { stage: '準備辨識', percent: 5, statusText: screenshot.status });
         setAssetOcrStatus(`第 ${index} / ${files.length} 張：準備辨識…`);
 
         try {
@@ -11108,7 +11315,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             }
 
             if (aiResult.mode === 'ai') {
-                const draftRows = assetAiDraftRows(aiResult.result);
+                const draftRows = assetAiDraftRows(aiResult.result, market);
                 aiTotalRows += draftRows.length;
                 aiVerifiedRows += draftRows.filter(row => row.aiVerified).length;
                 aiWarnings.push(...(aiResult.result?.warnings ?? []));
@@ -11116,6 +11323,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
                 assetScreenshotDraft.usedAi = true;
                 screenshot.elapsedMs = Math.round(performance.now() - startedAt);
                 screenshot.status = `D+ AI 完成 ${formatAssetOcrDuration(screenshot.elapsedMs)}`;
+                updateAssetAiProgress(zeroBasedIndex, 'succeeded', { stage: '完成', percent: 100, statusText: screenshot.status });
                 continue;
             }
 
@@ -11124,11 +11332,13 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             fallbackNotices.push(`第 ${index} 張：${reasonText}，已回退 Tesseract。`);
             assetScreenshotDraft.usedTesseract = true;
             setAssetOcrStatus(`第 ${index} / ${files.length} 張：${reasonText}，準備 Tesseract 備援…`);
+            updateAssetAiProgress(zeroBasedIndex, 'fallback_required', { stage: 'Tesseract 備援中', percent: 90, statusText: 'Tesseract 備援中…' });
 
             // 預先等本機備援引擎就緒，避免把 WASM／字庫暖機時間算進每張 10 秒辨識預算。
             await getAssetOcrWorker();
             const result = await recognizeAssetScreenshot(file, index, files.length);
             screenshot.status = `Tesseract 備援完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
+            updateAssetAiProgress(zeroBasedIndex, 'succeeded', { stage: '完成（Tesseract 備援）', percent: 100, statusText: screenshot.status });
             screenshot.elapsedMs = result.elapsedMs;
             rows.push(...assetEnrichOcrRows(result.rows, market));
             matchedHeader ||= result.matchedHeader;
@@ -11278,16 +11488,26 @@ function makeAssetScreenshotFlow(view) {
     const previews = document.createElement('div');
     previews.className = 'asset-screenshot-previews';
 
-    for (const screenshot of assetScreenshotDraft.screenshots) {
+    for (const [index, screenshot] of assetScreenshotDraft.screenshots.entries()) {
         const item = document.createElement('figure');
         item.className = 'asset-screenshot-preview-item';
+        item.dataset.assetScreenshotIndex = String(index);
         const preview = document.createElement('img');
         preview.className = 'asset-screenshot-preview';
         preview.src = screenshot.previewUrl;
         preview.alt = `帳戶截圖預覽：${screenshot.fileName}`;
         const detail = document.createElement('figcaption');
-        detail.textContent = `${screenshot.fileName} · ${screenshot.status}`;
-        item.append(preview, detail);
+        detail.dataset.assetProgressText = 'true';
+        detail.textContent = `${screenshot.fileName} · ${screenshot.status}（${screenshot.progressPercent ?? 0}%）`;
+        const progress = document.createElement('progress');
+        progress.dataset.assetProgress = 'true';
+        progress.max = 100;
+        progress.value = screenshot.progressPercent ?? 0;
+        progress.setAttribute('aria-label', `${screenshot.fileName} OCR 進度`);
+        progress.setAttribute('aria-valuemin', '0');
+        progress.setAttribute('aria-valuemax', '100');
+        progress.setAttribute('aria-valuenow', String(screenshot.progressPercent ?? 0));
+        item.append(preview, detail, progress);
         previews.append(item);
     }
 

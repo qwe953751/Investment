@@ -46,7 +46,22 @@ public sealed record OcrAgentRunResult(
     string? Diagnostic,
     int? ExitCode,
     TimeSpan Duration,
-    DateTimeOffset? QuotaResetAt = null);
+    DateTimeOffset? QuotaResetAt = null,
+    OcrAgentUsage? Usage = null);
+
+public sealed record OcrAgentUsage(
+    long InputTokens,
+    long CachedInputTokens,
+    long OutputTokens,
+    long ReasoningOutputTokens)
+{
+    public static OcrAgentUsage operator +(OcrAgentUsage left, OcrAgentUsage right)
+        => new(
+            left.InputTokens + right.InputTokens,
+            left.CachedInputTokens + right.CachedInputTokens,
+            left.OutputTokens + right.OutputTokens,
+            left.ReasoningOutputTokens + right.ReasoningOutputTokens);
+}
 
 public interface IAgentCliRunner
 {
@@ -84,13 +99,18 @@ public interface IOcrPassCheckpointStore
 public sealed class InMemoryOcrPassCheckpointStore : IOcrPassCheckpointStore
 {
     private readonly Dictionary<OcrPassKind, OcrPassCheckpoint> _checkpoints = [];
+    private readonly Lock _gate = new();
 
     public Task<OcrPassCheckpoint?> GetAsync(
         OcrPassKind pass,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        _checkpoints.TryGetValue(pass, out var checkpoint);
+        OcrPassCheckpoint? checkpoint;
+        lock (_gate)
+        {
+            _checkpoints.TryGetValue(pass, out checkpoint);
+        }
         return Task.FromResult(checkpoint);
     }
 
@@ -99,7 +119,10 @@ public sealed class InMemoryOcrPassCheckpointStore : IOcrPassCheckpointStore
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        _checkpoints[checkpoint.Execution.Pass] = checkpoint;
+        lock (_gate)
+        {
+            _checkpoints[checkpoint.Execution.Pass] = checkpoint;
+        }
         return Task.CompletedTask;
     }
 }

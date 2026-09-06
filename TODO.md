@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：Golden Set、Validator 與正式 Worker](#todo-15) | 🟡 管線已整合，等正式站／Golden Set／Windows 驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 第一階段已實作，待正式 migration／Golden Set／Windows 驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1066,16 +1066,17 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 ---
 
 <a id="todo-15"></a>
-## 🔵 15. D+ AI OCR：Golden Set、Validator 與正式 Worker
+## 🔵 15. D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
 **狀態：AI-first 前端、正式 Supabase 私有佇列、Validator、Mac Worker、重載恢復、submit 冪等、
-fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並發布；新版 Worker 心跳已驗證 Codex
-可用，仍需正式最高權限帳號重新上傳一張圖片確認 AI 工作 `succeeded`。先前的
-`no_available_agent` 為舊版 Runner 接線缺陷，已依規劃文件 §14.4 修正。
-Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0，以及公司 Windows 實機仍待驗收。依
-使用者指示，不自行安裝或設定 Claude CLI。**
+fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並發布；正式最高權限手機已確認
+`IMG_1601.jpeg`／`IMG_1602.jpeg` 由 D+ AI `succeeded`，耗時 70／78 秒。本輪已實作市場限縮的名稱唯一
+反查、模糊候選不自選、單列不阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、兩 Pass 單工作並行、
+跨平台單實例鎖與背景啟動腳本。`db/041_ocr_progress.sql` 尚未套用正式 Supabase；Golden Set 的
+身份／數量 ≥95%、成本 ≥90%、危險假陽性 0、圖片／模型效能調校、多圖 concurrency 與公司 Windows
+實機仍待驗收。依使用者指示，不自行安裝或設定 Claude CLI。**
 
 ### 已討論
 
@@ -1099,17 +1100,31 @@ Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0，以�
   anon 無法讀工作、authenticated 無法 claim。`ocr-jobs` Edge Function 已部署為手動 JWT 驗證（含
   cleanup secret）、admin／worker 分權；Supabase cron `ocr-expired-cleanup` 每 5 分鐘清理到期物件。
 - Codex CLI 已用 IMG_1604 真實執行兩遍並通過 Schema；正式佇列也完成 upload／lease／result／ack／刪圖，測試工作已清除。Worker 離線三分鐘時 readiness 實測回 `worker_offline`。
-- Release build 0 警告／0 錯誤，.NET 10 目前全套 399/399 通過；前端與 Edge Function 通過 JavaScript 語法檢查。
+- Release build 0 警告／0 錯誤；本輪加入單實例鎖測試後全套 400/400 通過。前端與 Edge Function 的
+  本機 JavaScript 語法檢查需待可用 Node／Deno runtime；本台 Mac 沒有該 runtime，不能把 build 當成語法驗證。
 - 2026-09-06 已建立共用 `OcrAgentExecutableResolver`、修正兩個 Runner 的 factory 註冊、讓 Worker
   heartbeat 使用同一解析器，並補 resolver／接線回歸測試；新版 `ocr-worker --once` 在正式 Supabase
-  回報 Codex 三項狀態為 `true`。不需要改 Supabase schema／Edge Function；仍待手機重新選圖確認 AI
-  `succeeded`。完整證據與驗收條件見規劃文件 §14.4。
+  回報 Codex 三項狀態為 `true`。不需要改 Supabase schema／Edge Function；其後正式手機兩張圖皆已
+  取得 AI 草稿。完整證據與後續驗收條件見規劃文件 §14.4～§14.5。
+- 正式 AI 草稿的 37 列都有名稱但沒有代號；本輪已把名稱反查接回 AI 後處理，只自動接受「市場內、
+  正規化名稱完全相等、唯一對應」；模糊候選必須由使用者點選，無法解析只阻擋該列，不得阻擋其他已確定列。
+- 70／78 秒的現有路徑包含每圖兩個 `codex exec --ephemeral`；本輪已用 `--json` 彙總安全 usage，
+  並把同一工作的 Extraction／Audit 改為並行，仍保留兩遍。圖片減量、OCR 專用快速模型／低推理與多圖
+  共用 concurrency 2 必須等 Golden Set 基線後再決定，不以刪除 Audit Pass 換速度。
+- 進度 UI 與 Worker 回報已完成：前端顯示每圖階段、批次完成數與無障礙 progressbar，Edge Function
+  以 worker 身分、租約擁有者與租約 token 驗證更新；`db/041_ocr_progress.sql` 尚未套用時，舊 status
+  查詢仍相容，但跨重載的真實進度要等明確授權後套 migration。
+- 免手動 Terminal 的 Mac LaunchAgent／Windows Task Scheduler 腳本與跨平台單實例鎖已提交；仍需一次
+  `codex login`，且尚未替使用者啟用。2026-09-06 唯讀檢查發現 Mac 同時有兩組 Worker；本輪沒有停止
+  程序，正式啟用前須精確保留一個，不可用 `killall dotnet`。
+- 本機 `codex login status` 為 ChatGPT 登入，且 Worker 會移除 API key 環境變數；目前 OCR 消耗
+  ChatGPT Plus 內含的 Codex／agentic 額度，不是 OpenAI Platform API 帳單。兩張圖各兩遍即四次模型執行。
 
 ### 本輪已完成與仍待外部驗收
 
-1. 公開 `site.js` 已由 `daily-snapshot.yml` 的 `publish-only=true` 發布並含 `ocr-jobs`、
-   `fallback_required` 與重載恢復文案；正式帳號已驗到工作建立與舊版 fallback，CLI 路徑已修正，
-   下一步重測 AI `succeeded` 草稿與 Worker 離線兩條瀏覽器路徑。
+1. 公開 `site.js` 的既有 AI-first 管線已由 `daily-snapshot.yml` 的 `publish-only=true` 發布；本輪程式
+   已加入名稱反查、progress UI、用量觀測、兩 Pass 並行與單實例／背景腳本，但尚未重新發布網站，也未套用
+   `db/041_ocr_progress.sql`。下一步是先完成 migration／Golden Set／Windows 外部驗收，再觸發 publish-only。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
    把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。
 3. 在公司 Windows 以非管理員帳號驗證 .NET 10、SecretManagement、登入時排程、鎖屏／重開機、
