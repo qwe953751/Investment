@@ -1471,10 +1471,22 @@ let podcastPreviewEventsWired = false;
 let podcastPreviewNotice = '';
 let podcastPreviewQuery = '';
 let podcastPreviewFilter = 'all';
+// 舊版 localStorage 鍵值仍保留常數名稱供歷史追溯；資料本體已改讀寫 db/039_podcast_sources.sql。
 const PODCAST_PREVIEW_SOURCES_KEY = 'invest.podcast.gooaye.sources.v1';
+const PODCAST_SOURCES_TABLE = 'podcast_sources';
 let podcastPreviewEditingId = '';
 let podcastPreviewImportOpen = false;
 let podcastPreviewGeneratedDraft = null;
+let podcastPreviewActiveModal = null;
+let podcastPreviewModalKeyHandler = null;
+
+// Podcast 來源跟筆記共用同一個「notes」頁籤的重讀節奏，見 refreshNotes()。
+let podcastSourceRows = [];
+let podcastSourcesLoaded = false;
+let podcastSourcesLoadError = null;
+let podcastSourcesRevision = 0;
+let lastPodcastSourcesLoadedAt = 0;
+const PODCAST_SOURCES_REFRESH_MS = 60_000;
 
 // 筆記要跨裝置看得到彼此的變化，但不必到秒等級——比警報鈴鐺（5 分鐘）勤一點，
 // 一分鐘足以讓「換一台裝置補筆記」的場景感覺得到，又不會把 PostgREST 打太兇。
@@ -2957,11 +2969,11 @@ function notesStorageNoteText() {
     }
 
     if (PODCAST_NOTES_LOCAL_PREVIEW) {
-        return '本機 Podcast UI 樣版 · 股癌來源只顯示本機已匯入資料，不會讀寫正式資料庫';
+        return podcastPreviewSourcesStatusText() ?? '本機 Podcast UI 樣版 · 股癌來源存在資料庫，任何裝置打開都看得到並可編輯';
     }
 
     if (isPodcastNotesStaticView()) {
-        return '股癌研究分析 · 來源資料只保存在本機瀏覽器，尚未寫入正式資料庫';
+        return podcastPreviewSourcesStatusText() ?? '股癌研究分析 · 來源存在資料庫，任何裝置打開網站都能看到並編輯';
     }
 
     if (NOTES_LOCAL_PREVIEW) {
@@ -3586,34 +3598,134 @@ function podcastPreviewNormalizeGenerated(value, analysis) {
     };
 }
 
+// 資料本體已經是 db/039_podcast_sources.sql，這裡只回傳目前的記憶體快取；
+// 真正的讀取在 loadPodcastSources()／refreshPodcastSources()（跟 notes 同一套節奏）。
 function podcastPreviewReadSources() {
-    try {
-        const raw = window.localStorage.getItem(PODCAST_PREVIEW_SOURCES_KEY);
-        const parsed = raw ? JSON.parse(raw) : [];
-        return Array.isArray(parsed)
-            ? parsed
-                .filter(source => source && typeof source === 'object'
-                    && typeof source.id === 'string'
-                    && typeof source.time === 'string'
-                    && typeof source.episode === 'string'
-                    && typeof source.analysis === 'string')
-                .map(source => ({
-                    ...source,
-                    date: source.date || podcastPreviewSourceDate(source.time),
-                    generated: podcastPreviewNormalizeGenerated(source.generated, source.analysis)
-                }))
-            : [];
-    } catch {
+    return podcastSourceRows;
+}
+
+async function loadPodcastSources() {
+    if (supabase === null) {
         return [];
+    }
+
+    const rows = await fetchAllRows(
+        PODCAST_SOURCES_TABLE,
+        'id,time,date,episode,analysis,generated,updated_at',
+        '&order=time.desc');
+
+    return rows
+        .filter(row => row !== null && typeof row === 'object')
+        .map(row => ({
+            id: String(row.id),
+            time: typeof row.time === 'string' ? row.time : '',
+            date: typeof row.date === 'string' && row.date
+                ? row.date
+                : podcastPreviewSourceDate(row.time),
+            episode: typeof row.episode === 'string' ? row.episode : '',
+            analysis: typeof row.analysis === 'string' ? row.analysis : '',
+            generated: podcastPreviewNormalizeGenerated(row.generated, row.analysis),
+            updatedAt: typeof row.updated_at === 'string' ? row.updated_at : new Date(0).toISOString()
+        }));
+}
+
+// 失敗時保留舊的快取陣列：不該因為一次讀取失敗就讓畫面誤以為「還沒匯入過任何來源」。
+async function refreshPodcastSources() {
+    lastPodcastSourcesLoadedAt = Date.now();
+
+    const revision = podcastSourcesRevision;
+
+    try {
+        const loaded = await loadPodcastSources();
+
+        if (revision !== podcastSourcesRevision) {
+            return;
+        }
+
+        podcastSourceRows = loaded;
+        podcastSourcesLoadError = null;
+    } catch {
+        if (revision !== podcastSourcesRevision) {
+            return;
+        }
+
+        podcastSourcesLoadError = '讀不到 Podcast 來源，可能是資料庫連線問題；稍後會自動重試。';
+    }
+
+    podcastSourcesLoaded = true;
+}
+
+function podcastSourcesIsStale() {
+    return Date.now() - lastPodcastSourcesLoadedAt >= PODCAST_SOURCES_REFRESH_MS;
+}
+
+// 列表沒有資料時，區分「本來就沒有」跟「還在載入／讀取失敗」，
+// 否則使用者匯入過的來源在讀取完成前會被誤看成從沒匯入過。
+function podcastPreviewSourcesStatusText() {
+    if (supabase === null) {
+        return '需要資料庫連線才能讀取 Podcast 來源。';
+    }
+
+    if (!podcastSourcesLoaded) {
+        return '載入中…';
+    }
+
+    if (podcastSourcesLoadError) {
+        return podcastSourcesLoadError;
+    }
+
+    return null;
+}
+
+async function savePodcastSourcesRemote(sourcesToInsert, sourceToUpdate) {
+    if (sourceToUpdate) {
+        const response = await fetch(
+            `${supabase.url}/rest/v1/${PODCAST_SOURCES_TABLE}?id=eq.${encodeURIComponent(sourceToUpdate.id)}`,
+            {
+                method: 'PATCH',
+                headers: { apikey: supabase.anonKey, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    time: sourceToUpdate.time,
+                    date: sourceToUpdate.date,
+                    episode: sourceToUpdate.episode,
+                    analysis: sourceToUpdate.analysis,
+                    generated: sourceToUpdate.generated,
+                    updated_at: sourceToUpdate.updatedAt
+                })
+            });
+
+        if (!response.ok) {
+            throw new Error(String(response.status));
+        }
+        return;
+    }
+
+    const response = await fetch(`${supabase.url}/rest/v1/${PODCAST_SOURCES_TABLE}`, {
+        method: 'POST',
+        headers: { apikey: supabase.anonKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify(sourcesToInsert.map(source => ({
+            id: source.id,
+            time: source.time,
+            date: source.date,
+            episode: source.episode,
+            analysis: source.analysis,
+            generated: source.generated,
+            updated_at: source.updatedAt
+        })))
+    });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
     }
 }
 
-function podcastPreviewWriteSources(sources) {
-    try {
-        window.localStorage.setItem(PODCAST_PREVIEW_SOURCES_KEY, JSON.stringify(sources));
-        return true;
-    } catch {
-        return false;
+async function deletePodcastSourceRemote(id) {
+    const response = await fetch(
+        `${supabase.url}/rest/v1/${PODCAST_SOURCES_TABLE}?id=eq.${encodeURIComponent(id)}`,
+        { method: 'DELETE', headers: { apikey: supabase.anonKey } });
+
+    if (!response.ok) {
+        throw new Error(String(response.status));
     }
 }
 
@@ -3679,21 +3791,33 @@ function podcastPreviewRemoveSource(id) {
         return;
     }
 
-    const sources = podcastPreviewReadSources().filter(item => item.id !== id);
-    if (!podcastPreviewWriteSources(sources)) {
-        podcastPreviewNotice = '本機儲存失敗，來源尚未移除。';
+    if (supabase === null) {
+        podcastPreviewNotice = '沒有資料庫連線，無法移除。';
         renderPodcastNotesPreview();
         return;
     }
 
-    if (podcastPreviewEditingId === id) {
-        podcastPreviewEditingId = '';
-        podcastPreviewImportOpen = false;
-        podcastPreviewGeneratedDraft = null;
-    }
-    podcastPreviewSetUrl({ episode: null });
-    podcastPreviewNotice = `已移除 ${source.episode}。`;
+    podcastPreviewNotice = '刪除中…';
     renderPodcastNotesPreview();
+
+    deletePodcastSourceRemote(id)
+        .then(() => {
+            podcastSourcesRevision += 1;
+            lastPodcastSourcesLoadedAt = Date.now();
+            podcastSourceRows = podcastSourceRows.filter(item => item.id !== id);
+
+            if (podcastPreviewEditingId === id) {
+                podcastPreviewEditingId = '';
+                podcastPreviewImportOpen = false;
+                podcastPreviewGeneratedDraft = null;
+            }
+            podcastPreviewSetUrl({ episode: null });
+            podcastPreviewNotice = `已移除 ${source.episode}。`;
+        })
+        .catch(() => {
+            podcastPreviewNotice = '刪除失敗，請檢查網路連線後重試。';
+        })
+        .finally(renderPodcastNotesPreview);
 }
 
 function podcastPreviewSetUrl(changes) {
@@ -4173,7 +4297,7 @@ function podcastPreviewMakeHistoryTable() {
     if (sources.length === 0) {
         const row = document.createElement('tr');
         const empty = podcastPreviewElement('td', 'podcast-preview-history-empty',
-            '目前尚未匯入 Podcast 來源。');
+            podcastPreviewSourcesStatusText() ?? '目前尚未匯入 Podcast 來源。');
         empty.colSpan = 7;
         row.append(empty);
         tbody.append(row);
@@ -4238,7 +4362,7 @@ function podcastPreviewMakeTimeWeightChart() {
     const sources = podcastPreviewSources();
     if (sources.length === 0) {
         chart.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
-            '尚未匯入 Podcast 來源，沒有可計算的時效權重。'));
+            podcastPreviewSourcesStatusText() ?? '尚未匯入 Podcast 來源，沒有可計算的時效權重。'));
     }
 
     for (const source of sources) {
@@ -4292,7 +4416,9 @@ function podcastPreviewMakeFavoredTable() {
     if (favored.length === 0) {
         const row = document.createElement('tr');
         const empty = podcastPreviewElement('td', 'podcast-preview-history-empty',
-            sources.length === 0 ? '尚未匯入 Podcast 來源。' : '目前沒有偏多的分析資料。');
+            sources.length === 0
+                ? podcastPreviewSourcesStatusText() ?? '尚未匯入 Podcast 來源。'
+                : '目前沒有偏多的分析資料。');
         empty.colSpan = 5;
         row.append(empty);
         tbody.append(row);
@@ -4329,26 +4455,42 @@ function podcastPreviewMakeMarketContent() {
     const sources = podcastPreviewSources();
     if (sources.length === 0) {
         list.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
-            '尚未匯入 Podcast 來源，沒有可呈現的市場內容。'));
+            podcastPreviewSourcesStatusText() ?? '尚未匯入 Podcast 來源，沒有可呈現的市場內容。'));
     }
 
     for (const source of sources) {
         const generated = source.generated || podcastPreviewGenerateAnalysis(source.analysis);
-        const row = podcastPreviewElement('article', 'podcast-preview-market-row');
+        const item = podcastPreviewElement('article', 'podcast-preview-market-item');
+        item.tabIndex = 0;
+        item.setAttribute('role', 'button');
+        item.setAttribute('aria-label', `查看 ${source.episode} 完整分析`);
+
+        const open = () => podcastPreviewOpenEpisode(source.id);
+        item.addEventListener('click', open);
+        item.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                open();
+            }
+        });
+
+        const head = podcastPreviewElement('div', 'podcast-preview-market-item-head');
         const meta = podcastPreviewElement('div', 'podcast-preview-market-meta');
         meta.append(
             podcastPreviewElement('time', '', source.date),
             podcastPreviewElement('span', '', source.episode));
-        row.append(
+        head.append(
             meta,
-            podcastPreviewElement('p', 'podcast-preview-market-content', generated.market || '待分析'));
+            podcastPreviewElement(
+                'span',
+                'podcast-preview-stance is-' + podcastPreviewStanceClass(generated.stance),
+                generated.stance));
 
-        const stance = podcastPreviewElement(
-            'span',
-            'podcast-preview-stance is-' + podcastPreviewStanceClass(generated.stance),
-            generated.stance);
-        row.append(stance);
-        list.append(row);
+        item.append(
+            head,
+            podcastPreviewElement('p', 'podcast-preview-market-content', generated.market || '待分析'),
+            podcastPreviewElement('span', 'podcast-preview-market-item-cta', '查看完整分析 →'));
+        list.append(item);
     }
     card.append(list);
     return card;
@@ -4510,7 +4652,7 @@ function podcastPreviewMakeSourcePanel() {
     importHeading.firstChild.append(
         podcastPreviewElement('h2', '', isEditing ? '編輯 Podcast 來源' : '多筆匯入'),
         podcastPreviewElement('p', '',
-            '只需輸入時間、集數與 Gemini Notebook 逐字稿分析；其餘欄位先由內容解析產生，資料只保存在本機瀏覽器。'));
+            '只需輸入時間、集數與 Gemini Notebook 逐字稿分析；其餘欄位先由內容解析產生，資料存在資料庫，任何裝置打開網站都看得到。'));
     const rows = podcastPreviewElement('div', 'podcast-preview-import-rows');
 
     const appendRow = values => {
@@ -4592,24 +4734,40 @@ function podcastPreviewMakeSourcePanel() {
                     return;
                 }
 
-                const currentSources = podcastPreviewReadSources();
-                const nextSources = isEditing
-                    ? currentSources.map(source => source.id === editingSource.id
-                        ? podcastPreviewSourceFromInput(completeRows[0], editingSource.id)
-                        : source)
-                    : currentSources.concat(completeRows.map(row => podcastPreviewSourceFromInput(row)));
-                if (!podcastPreviewWriteSources(nextSources)) {
-                    setImportMessage('本機儲存失敗，請確認瀏覽器允許網站保存資料。');
+                if (supabase === null) {
+                    setImportMessage('沒有資料庫連線，無法儲存。');
                     return;
                 }
 
-                podcastPreviewEditingId = '';
-                podcastPreviewImportOpen = false;
-                podcastPreviewGeneratedDraft = null;
-                podcastPreviewNotice = isEditing
-                    ? `已更新 ${editingSource.episode}。`
-                    : `已儲存 ${completeRows.length} 筆 Podcast 來源。`;
-                renderPodcastNotesPreview();
+                setImportMessage('儲存中…');
+
+                const updatedSource = isEditing
+                    ? podcastPreviewSourceFromInput(completeRows[0], editingSource.id)
+                    : null;
+                const newSources = isEditing
+                    ? []
+                    : completeRows.map(row => podcastPreviewSourceFromInput(row));
+
+                savePodcastSourcesRemote(newSources, updatedSource)
+                    .then(() => {
+                        podcastSourcesRevision += 1;
+                        lastPodcastSourcesLoadedAt = Date.now();
+                        podcastSourceRows = isEditing
+                            ? podcastSourceRows.map(source =>
+                                source.id === updatedSource.id ? updatedSource : source)
+                            : podcastSourceRows.concat(newSources);
+
+                        podcastPreviewEditingId = '';
+                        podcastPreviewImportOpen = false;
+                        podcastPreviewGeneratedDraft = null;
+                        podcastPreviewNotice = isEditing
+                            ? `已更新 ${editingSource.episode}。`
+                            : `已儲存 ${completeRows.length} 筆 Podcast 來源。`;
+                        renderPodcastNotesPreview();
+                    })
+                    .catch(() => {
+                        setImportMessage('儲存失敗，請檢查網路連線後重試。');
+                    });
             }));
     importPanel.append(importHeading, rows, generatedPreview, importMessage, importActions);
     page.append(importPanel, podcastPreviewMakeHistoryTable());
@@ -19806,7 +19964,7 @@ async function load() {
         el('assets-page').hidden = true;
         el('notes-page').hidden = false;
         renderNotes();
-        await refreshNotes();
+        await Promise.all([refreshNotes(), refreshPodcastSources()]);
 
         if (state.view === 'notes') {
             renderNotes();
@@ -19948,7 +20106,8 @@ function renderSnapshotNote() {
 
     if (state.view === 'notes') {
         el('snapshot-note').textContent = isPodcastNotesStaticView() && podcastPreviewTabKey() === 'gooaye'
-            ? '股癌研究分析 · 只顯示本機瀏覽器已匯入的資料，尚未寫入正式資料庫。'
+            ? podcastPreviewSourcesStatusText()
+                ?? `股癌研究分析 · 來源存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(PODCAST_SOURCES_REFRESH_MS / 1000)} 秒自動重讀一次。`
             : PODCAST_NOTES_LOCAL_PREVIEW
                 ? '一次性 UI 比較 · 內容皆為示意資料，不會讀寫正式資料庫。'
                 : NOTES_LOCAL_PREVIEW
@@ -20145,6 +20304,16 @@ function startIntradayTimer() {
             });
         }
 
+        // Podcast 來源同理：匯入面板開著時先不要重讀，避免蓋掉正在輸入的欄位
+        // （這個表單沒有像筆記那樣的草稿機制，重畫會直接清空 input）。
+        if (state.view === 'notes' && !document.hidden && podcastSourcesIsStale() && !podcastPreviewImportOpen) {
+            void refreshPodcastSources().then(() => {
+                if (state.view === 'notes' && !podcastPreviewImportOpen) {
+                    renderNotes();
+                }
+            });
+        }
+
         // 資產同理，另外多一個條件：有表單開著就先不要重讀。
         // 資產的表單沒有像筆記那樣的草稿機制，背景重畫會把正在打的數字清掉。
         if (state.view === 'assets' && !document.hidden && assetsAreStale() && !assetsAreEditing()) {
@@ -20254,7 +20423,7 @@ async function start() {
 
     if (state.view === 'notes') {
         renderNotes();
-        await refreshNotes();
+        await Promise.all([refreshNotes(), refreshPodcastSources()]);
 
         if (state.view === 'notes') {
             renderNotes();
