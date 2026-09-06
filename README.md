@@ -187,6 +187,11 @@ Runner 共用 `OcrAgentExecutableResolver`；公司 Windows 的專用 Worker 已
 沒有可用的背景 Worker 心跳，不是前端把 AI 功能關掉。修正後仍應重新選一張圖片確認工作 `succeeded`，詳見
 [規劃 AI OCR §14.4](Doc/技術文件/規劃AI%20OCR.md#144-2026-09-06-正式瀏覽器驗收發現的阻塞與修正已完成正式-ai-草稿待重試)。
 
+2026-09-07 公司 Windows 實機已重新發布自包含 EXE、重註冊登入時排程並驗證：從 repo 根目錄執行
+`run-ocr-worker-windows.ps1 -Once` exit code 0；排程直接啟動發布目錄的 `Invest.Web.exe`，維持
+`Interactive`／`IgnoreNew`，正式 Supabase 心跳持續更新。另已修正 DPAPI payload 小寫 JSON 欄位與
+一次性啟動工作目錄，避免登入成功後仍被誤判為缺少 Worker 設定。
+
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
 輪詢，拿到短效私有圖片 URL 後才啟動 CLI；程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、
 `ANTHROPIC_API_KEY`，不會偷偷改走按量 API。

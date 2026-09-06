@@ -1108,7 +1108,7 @@ v9 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 W
   anon 無法讀工作、authenticated 無法 claim。`ocr-jobs` Edge Function 已部署為手動 JWT 驗證（含
   cleanup secret）、admin／worker 分權；Supabase cron `ocr-expired-cleanup` 每 5 分鐘清理到期物件。
 - Codex CLI 已用 IMG_1604 真實執行兩遍並通過 Schema；正式佇列也完成 upload／lease／result／ack／刪圖，測試工作已清除。Worker 離線三分鐘時 readiness 實測回 `worker_offline`。
-- Release build 0 警告／0 錯誤；本輪加入單實例鎖測試後全套 400/400 通過。2026-09-06 收尾時另以
+- Release build 0 警告／0 錯誤；本輪加入 DPAPI payload 與自包含啟動目錄測試後全套 410/410 通過。2026-09-06 收尾時另以
   Codex 隨附 Node runtime 通過 `ocr-jobs/index.js` 語法檢查；專案本身仍不要求使用者安裝 Node。
 - 2026-09-06 已建立共用 `OcrAgentExecutableResolver`、修正兩個 Runner 的 factory 註冊、讓 Worker
   heartbeat 使用同一解析器，並補 resolver／接線回歸測試；新版 `ocr-worker --once` 在正式 Supabase
@@ -1124,10 +1124,10 @@ v9 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 W
   授權套用，跨重載可由 status API 還原正式資料庫保存的階段與百分比。匿名與一般登入者仍不能執行
   progress RPC，只有 `service_role` 可呼叫。
 - 免手動 Terminal 的 Mac LaunchAgent／Windows Task Scheduler 腳本與跨平台單實例鎖已提交。2026-09-07
-  公司 Windows 已建立獨立 `ocr_worker` 身分，密碼只在目前使用者的 DPAPI 保護區保存；本輪排程改為直接啟動
-  自包含 `Invest.Web.exe`，不再以常駐 PowerShell 包住 `dotnet run`。正式重新發布 EXE、重註冊排程後，才算完成
-  新接線的實機驗收；`--once`、排程 Running 與
-  正式 Supabase 連續心跳均已驗證 Codex 三項狀態為 `true`。Mac 仍未替使用者啟用；舊 Mac 程序不可用
+  公司 Windows 已建立獨立 `ocr_worker` 身分，密碼只在目前使用者的 DPAPI 保護區保存；排程改為直接啟動
+  自包含 `Invest.Web.exe`，不再以常駐 PowerShell 包住 `dotnet run`。本次已重新發布 EXE、重註冊排程並完成
+  新接線的實機驗收；`--once`、排程 Running、單一 Worker 程序與正式 Supabase 連續心跳均已驗證 Codex
+  三項狀態為 `true`。Mac 仍未替使用者啟用；舊 Mac 程序不可用
   廣泛的 `killall dotnet` 處理。
 - 本機 `codex login status` 為 ChatGPT 登入，且 Worker 會移除 API key 環境變數；目前 OCR 消耗
   ChatGPT Plus 內含的 Codex／agentic 額度，不是 OpenAI Platform API 帳單。每張圖現在只執行一次模型任務。
@@ -1140,9 +1140,8 @@ v9 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 W
    手機新圖片 AI 外部驗收。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
    把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。
-3. 公司 Windows 舊排程已驗證 .NET 10、DPAPI、登入時排程、Worker `--once`、持續心跳與 Codex readiness；
-   新自包含 EXE 接線須重新發布／註冊後驗證，並仍待鎖屏／重開機、斷網復線、登入撤銷、程序重啟、長期用量與
-   log 保存期限驗收。
+3. 公司 Windows 已驗證 .NET 10、DPAPI、登入時排程、Worker `--once`、自包含 EXE 直接啟動、持續心跳與
+   Codex readiness；仍待鎖屏／重開機、斷網復線、登入撤銷、程序重啟、長期用量與 log 保存期限驗收。
    Claude CLI 只有取得新的明確指示才安裝。
 
 ### 仍待實機或使用者確認

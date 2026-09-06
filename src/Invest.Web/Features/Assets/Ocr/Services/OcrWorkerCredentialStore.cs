@@ -42,7 +42,12 @@ public static class OcrWorkerCredentialStore
                 protectedBytes,
                 optionalEntropy: null,
                 DataProtectionScope.CurrentUser);
-            var credentials = JsonSerializer.Deserialize<OcrWorkerCredentials>(clearBytes);
+            // set-ocr-worker-windows-credential.ps1 writes lower-case JSON keys.
+            // Keep the reader compatible with that PowerShell payload even though the
+            // C# record uses PascalCase property names.
+            var credentials = JsonSerializer.Deserialize<OcrWorkerCredentials>(
+                clearBytes,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             if (credentials is null
                 || string.IsNullOrWhiteSpace(credentials.Email)
                 || string.IsNullOrWhiteSpace(credentials.Password))

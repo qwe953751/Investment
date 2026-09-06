@@ -15,8 +15,14 @@ $workerExecutable = Join-Path $publishDirectory 'Invest.Web.exe'
 if (Test-Path -LiteralPath $workerExecutable -PathType Leaf) {
     $workerArgs = @('ocr-worker')
     if ($Once) { $workerArgs += '--once' }
-    & $workerExecutable @workerArgs
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $exitCode = 1
+    Push-Location $publishDirectory
+    try {
+        & $workerExecutable @workerArgs
+        $exitCode = $LASTEXITCODE
+    }
+    finally { Pop-Location }
+    if ($exitCode -ne 0) { exit $exitCode }
     exit 0
 }
 
