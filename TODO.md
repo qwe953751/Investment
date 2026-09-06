@@ -1075,7 +1075,8 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並發布；正式最高權限手機已確認
 `IMG_1601.jpeg`／`IMG_1602.jpeg` 由 D+ AI `succeeded`，耗時 70／78 秒。本輪已實作市場限縮的名稱唯一
 反查、模糊候選不自選、單列不阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、兩 Pass 單工作並行、
-跨平台單實例鎖與背景啟動腳本。`db/041_ocr_progress.sql` 尚未套用正式 Supabase；Golden Set 的
+跨平台單實例鎖與背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs` 已更新為
+v7 並驗證 Worker progress／租約邊界；Golden Set 的
 身份／數量 ≥95%、成本 ≥90%、危險假陽性 0、圖片／模型效能調校、多圖 concurrency 與公司 Windows
 實機仍待驗收。依使用者指示，不自行安裝或設定 Claude CLI。**
 
@@ -1101,8 +1102,8 @@ fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並
   anon 無法讀工作、authenticated 無法 claim。`ocr-jobs` Edge Function 已部署為手動 JWT 驗證（含
   cleanup secret）、admin／worker 分權；Supabase cron `ocr-expired-cleanup` 每 5 分鐘清理到期物件。
 - Codex CLI 已用 IMG_1604 真實執行兩遍並通過 Schema；正式佇列也完成 upload／lease／result／ack／刪圖，測試工作已清除。Worker 離線三分鐘時 readiness 實測回 `worker_offline`。
-- Release build 0 警告／0 錯誤；本輪加入單實例鎖測試後全套 400/400 通過。前端與 Edge Function 的
-  本機 JavaScript 語法檢查需待可用 Node／Deno runtime；本台 Mac 沒有該 runtime，不能把 build 當成語法驗證。
+- Release build 0 警告／0 錯誤；本輪加入單實例鎖測試後全套 400/400 通過。2026-09-06 收尾時另以
+  Codex 隨附 Node runtime 通過 `ocr-jobs/index.js` 語法檢查；專案本身仍不要求使用者安裝 Node。
 - 2026-09-06 已建立共用 `OcrAgentExecutableResolver`、修正兩個 Runner 的 factory 註冊、讓 Worker
   heartbeat 使用同一解析器，並補 resolver／接線回歸測試；新版 `ocr-worker --once` 在正式 Supabase
   回報 Codex 三項狀態為 `true`。不需要改 Supabase schema／Edge Function；其後正式手機兩張圖皆已
@@ -1113,8 +1114,9 @@ fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並
   並把同一工作的 Extraction／Audit 改為並行，仍保留兩遍。圖片減量、OCR 專用快速模型／低推理與多圖
   共用 concurrency 2 必須等 Golden Set 基線後再決定，不以刪除 Audit Pass 換速度。
 - 進度 UI 與 Worker 回報已完成：前端顯示每圖階段、批次完成數與無障礙 progressbar，Edge Function
-  以 worker 身分、租約擁有者與租約 token 驗證更新；`db/041_ocr_progress.sql` 尚未套用時，舊 status
-  查詢仍相容，但跨重載的真實進度要等明確授權後套 migration。
+  以 worker 身分、租約擁有者與租約 token 驗證更新；`db/041_ocr_progress.sql` 已於 2026-09-06 依明確
+  授權套用，跨重載可由 status API 還原正式資料庫保存的階段與百分比。匿名與一般登入者仍不能執行
+  progress RPC，只有 `service_role` 可呼叫。
 - 免手動 Terminal 的 Mac LaunchAgent／Windows Task Scheduler 腳本與跨平台單實例鎖已提交；仍需一次
   `codex login`，且尚未替使用者啟用。2026-09-06 唯讀檢查發現 Mac 同時有兩組 Worker；本輪沒有停止
   程序，正式啟用前須精確保留一個，不可用 `killall dotnet`。
@@ -1123,9 +1125,9 @@ fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並
 
 ### 本輪已完成與仍待外部驗收
 
-1. 公開 `site.js` 的既有 AI-first 管線已由 `daily-snapshot.yml` 的 `publish-only=true` 發布；本輪程式
-   已加入名稱反查、progress UI、用量觀測、兩 Pass 並行與單實例／背景腳本，但尚未重新發布網站，也未套用
-   `db/041_ocr_progress.sql`。下一步是先完成 migration／Golden Set／Windows 外部驗收，再觸發 publish-only。
+1. 公開 `site.js` 的 AI-first 管線、名稱反查、progress UI、用量觀測與兩 Pass 並行已完成；正式
+   `db/041_ocr_progress.sql` 與 `ocr-jobs` v7 也已部署。使用者已確認網站可正常上傳；本 Session 仍需以
+   最新 `main` 完成一次全綠 publish-only，並持續做 Golden Set／Windows 外部驗收。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
    把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。
 3. 在公司 Windows 以非管理員帳號驗證 .NET 10、SecretManagement、登入時排程、鎖屏／重開機、

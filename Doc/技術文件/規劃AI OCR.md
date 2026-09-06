@@ -846,9 +846,9 @@ Codex 路徑 fallback；沒有新增 Supabase migration、修改 Edge Function �
 不是網站又回到舊 Tesseract。
 
 本節是本輪實作與下一階段驗收契約。名稱唯一反查、非阻斷差異、階段進度、用量觀測、兩遍並行、
-單實例鎖與背景啟動腳本已加入程式；`db/041_ocr_progress.sql` 只提交在 repository，尚未套用正式
-Supabase。圖片減量、模型／推理強度調校、多圖全域 concurrency、Golden Set 與 Windows 實機仍必須
-先驗收再改預設，不以本機 build 通過宣稱正確率或正式服務已完成。
+單實例鎖與背景啟動腳本已加入程式；`db/041_ocr_progress.sql` 已於 2026-09-06 套用正式 Supabase，
+`ocr-jobs` Edge Function 已更新為 v7。圖片減量、模型／推理強度調校、多圖全域 concurrency、
+Golden Set 與 Windows 實機仍必須先驗收再改預設，不以本機 build 通過宣稱正確率或正式服務已完成。
 
 #### A. 缺少代號時改以名稱解析，不阻斷整批
 
@@ -923,8 +923,9 @@ P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險�
 #### C. 等待時加入可恢復的階段進度條
 
 現在前端原本只會在 `queued`／`leased` 之間切換文字；本輪已加入每圖原生 progressbar、階段文字、
-批次計數與 status 恢復欄位。要跨重載保存真實階段，仍需先以明確授權套用 `db/041_ocr_progress.sql`；
-在 migration 尚未套用時，Edge Function 會維持舊 status 查詢／AI fallback 相容，但 progress RPC 不會寫入。
+批次計數與 status 恢復欄位。`db/041_ocr_progress.sql` 已於 2026-09-06 依明確授權套用正式 Supabase，
+`ocr-jobs` Edge Function 已更新為 v7，因此跨重載可保存並還原真實階段；舊 status 相容查詢仍保留，
+避免不同部署版本短暫交錯時中斷 AI fallback。
 
 選定的正式方案是「伺服器保存階段，前端顯示階段式進度」：
 
@@ -994,7 +995,9 @@ Pass，本次對應四次 Codex 模型執行；`codex login status` 這類安裝
 #### F. 下一個模型的修改範圍與驗收順序
 
 1. 先將目前同時執行的 Worker 精確確認來源，保留一個；不可用模糊 `killall dotnet` 影響其他服務。
-2. 套用 `db/041_ocr_progress.sql` 前重新核對正式 schema／RLS 並取得明確授權；目前只在 repository。
+2. **已完成**：依明確授權套用 `db/041_ocr_progress.sql`，並驗證四個欄位、兩個約束、RLS、RPC
+   `SECURITY INVOKER` 與 execute 權限；正式 `ocr-jobs` v7 的 Worker progress 假租約得到預期
+   `409 lease_lost`，沒有修改真實 OCR 工作。
 3. 以 IMG_1601～1604 建立三輪 usage／duration 基線，再依 Golden Set A/B 選圖片減量、低推理或模型設定；
    尚未以速度換取未驗證的準確率。
 4. 驗收多圖全域 concurrency 2；若額度或速率限制不穩定，保持目前單工作兩 Pass 並行。

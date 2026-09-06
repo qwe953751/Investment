@@ -30,8 +30,8 @@ create or replace function public.ocr_update_progress(
 )
 returns boolean
 language plpgsql
-security definer
-set search_path = public, pg_temp
+security invoker
+set search_path = ''
 as $$
 declare
     v_updated integer;

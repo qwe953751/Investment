@@ -12,8 +12,9 @@ Supabase 私有佇列並由 AI 兩遍辨識；否則自動在瀏覽器回退 Tes
 密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收。**D+ 後端、AI-first 前端、Mac
 Worker 與正式網站已整合發布。**正式最高權限手機已確認兩張圖片由 D+ AI 完成（70／78 秒）；
 本輪已加入名稱唯一反查、非阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、兩 Pass 單工作並行、
-單實例鎖與 Mac／Windows 背景啟動腳本。`db/041_ocr_progress.sql` 尚未套用正式 Supabase；Golden Set、
-圖片／模型效能調校、多圖 concurrency 與 Windows 實機仍待驗收，限制與下一步見 [TODO.md](TODO.md)。
+單實例鎖與 Mac／Windows 背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs`
+Edge Function 已更新為 v7；Golden Set、圖片／模型效能調校、多圖 concurrency 與 Windows 實機仍待
+驗收，限制與下一步見 [TODO.md](TODO.md)。
 
 ## 文件導覽
 
