@@ -12,6 +12,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "5199", "--directory", "publish/site"],
       "port": 5199
+    },
+    {
+      "name": "static-site-assets",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "5200", "--directory", "src/Invest.Web/Infrastructure/StaticSite/Assets"],
+      "port": 5200
     }
   ]
 }
