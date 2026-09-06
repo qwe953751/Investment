@@ -42,12 +42,6 @@ const TOPIC_EDITOR_PROTOTYPE_V3 = ['localhost', '127.0.0.1'].includes(window.loc
 const TOPIC_EDITOR_PROTOTYPE = TOPIC_EDITOR_PROTOTYPE_V1
     || TOPIC_EDITOR_PROTOTYPE_V2
     || TOPIC_EDITOR_PROTOTYPE_V3;
-// 本機專用 UI 原型：市場切換（台股／美股／加密貨幣）＋非台股「總覽」內容樣板。
-// 內容樣板已定案採用原本的 v3 內容組合（指數＋熱絡程度＋類股/賽道熱力圖＋情緒指標＋事件），
-// 全部走假資料，正式網站不會進入這個分支，也完全不影響台股既有頁面
-//（台股切回原本六個頁籤，內容維持現況）。
-const MARKET_SWITCH_PROTOTYPE = ['localhost', '127.0.0.1'].includes(window.location.hostname)
-    && PREVIEW_QUERY === 'market-switch';
 let assetDashboardScreen = 'dashboard';
 let assetSelectedAccountId = '';
 let assetEditorMode = '';
@@ -21051,14 +21045,14 @@ function startIntradayTimer() {
     }
 }
 
-// ---- 市場切換樣板（MARKET_SWITCH_PROTOTYPE）----
-// 只有 renderMarketSwitchPrototype() 這一支入口會被 start() 呼叫；其餘都是它的內部
-// 建構函式。全部資料寫死在 MARKET_SWITCH_MOCK，拿掉 MARKET_SWITCH_PROTOTYPE 這個
-// 開關與這整段就能乾淨移除，不會留下殘留的呼叫點。
-// 版面已定案（市場切換＝分段控制、指數＝小方塊、整體版面＝緊湊列表），
-// 這裡不再保留其他樣式的分支或選擇器 UI。
+// ---- 市場切換（台股／美股／加密貨幣）----
+// 只有 initMarketSwitch() 這一支入口會被 start() 呼叫；其餘都是它的內部建構函式。
+// 台股維持既有頁面完全不重畫——切到美股／加密貨幣時只是用 CSS 把 .ranking-page
+// 整塊隱藏，改顯示這裡建立的樣板面板；切回台股就是把 .ranking-page 顯示回來，
+// 台股本身的渲染／初始化流程完全不受影響。
+// 美股／加密貨幣目前仍是 MARKET_SWITCH_MOCK 假資料，真實資料來源之後再接。
 
-// 台股沒有列在這裡：切到台股時樣板直接顯示提示文字，不重畫台股內容。
+// 台股沒有列在這裡：切到台股時顯示的是真實的既有頁面，不是這份假資料。
 const MARKET_SWITCH_MOCK = {
     us: {
         heatTitle: '市場熱絡程度 · 美股',
@@ -21127,13 +21121,6 @@ const MARKET_SWITCH_MOCK = {
         ]
     }
 };
-
-function mspBuildBanner() {
-    const banner = document.createElement('div');
-    banner.className = 'msp-banner';
-    banner.textContent = '本機樣板・內容皆為假資料，尚未接上真實來源。拿掉網址的 ?preview 可回到正式頁面。';
-    return banner;
-}
 
 const MSP_MARKETS = [
     { key: 'tw', text: '台股' },
@@ -21432,7 +21419,7 @@ function mspBuildDashboard(mock, proto, paint) {
     return dashboard;
 }
 
-function injectMarketSwitchPrototypeStyle() {
+function injectMarketSwitchStyle() {
     if (document.getElementById('msp-style') !== null) {
         return;
     }
@@ -21441,6 +21428,12 @@ function injectMarketSwitchPrototypeStyle() {
     style.id = 'msp-style';
     style.textContent = `
 .market-switch-prototype-active .ranking-page { display: none; }
+.msp-market-bar {
+    display: flex;
+    justify-content: center;
+    padding: 12px 16px 0;
+    background: var(--bg);
+}
 .market-switch-prototype {
     max-width: 1200px;
     margin: 0 auto;
@@ -21448,20 +21441,6 @@ function injectMarketSwitchPrototypeStyle() {
     color: var(--text);
     background: var(--bg);
     min-height: 100vh;
-}
-.msp-banner {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 14px;
-    margin-bottom: 16px;
-    border: 1px solid var(--warning);
-    background: var(--warning-bg);
-    color: var(--warning);
-    border-radius: 8px;
-    font-size: 13px;
 }
 .msp-market-panel {
     border: 1px solid var(--border);
@@ -21471,7 +21450,6 @@ function injectMarketSwitchPrototypeStyle() {
     margin-top: 12px;
     margin-bottom: 16px;
 }
-.msp-note { color: var(--text-muted); }
 .msp-dashboard { display: flex; flex-direction: column; gap: 14px; }
 .msp-card-detail { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
 .msp-section-title { margin: 0 0 10px; font-size: 15px; }
@@ -21589,49 +21567,55 @@ function injectMarketSwitchPrototypeStyle() {
     document.head.append(style);
 }
 
-function renderMarketSwitchPrototype() {
-    document.body.classList.add('market-switch-prototype-active');
-    injectMarketSwitchPrototypeStyle();
+// 台股是預設市場，一進站什麼都不用做——.ranking-page 本來就顯示。
+// 切到美股／加密貨幣才加上 body class 隱藏 .ranking-page，並畫出樣板面板；
+// 切回台股就是把面板藏起來、拿掉 body class，.ranking-page 自己重新可見。
+// 全程不重畫、不重新初始化 .ranking-page 裡的任何內容。
+function initMarketSwitch() {
+    const rankingPage = document.querySelector('.ranking-page');
 
-    const root = document.createElement('div');
-    root.className = 'market-switch-prototype';
-    document.body.prepend(root);
+    if (rankingPage === null) {
+        return;
+    }
 
-    // 預設先開在美股，不然一進來看到的還是「台股照舊」那句提示，看不到新樣板。
+    injectMarketSwitchStyle();
+
     const proto = {
-        market: 'us',
+        market: 'tw',
         sectorView: 'heatmap'
     };
 
-    const paint = () => {
-        root.replaceChildren();
-        root.append(mspBuildBanner());
-        root.append(mspBuildMarketTabs(proto, paint));
+    const bar = document.createElement('div');
+    bar.className = 'msp-market-bar';
+    document.body.prepend(bar);
 
-        const panel = document.createElement('div');
-        panel.className = 'msp-market-panel';
-        panel.append(mspBuildViewTabs(proto));
+    const panel = document.createElement('div');
+    panel.className = 'market-switch-prototype';
+    panel.hidden = true;
+    bar.after(panel);
+
+    const render = () => {
+        bar.replaceChildren(mspBuildMarketTabs(proto, render));
+        document.body.classList.toggle('market-switch-prototype-active', proto.market !== 'tw');
 
         if (proto.market === 'tw') {
-            const note = document.createElement('p');
-            note.className = 'msp-note';
-            note.textContent = '台股頁籤與內容維持現況，這裡不重畫；切到美股或加密貨幣看新樣板內容。';
-            panel.append(note);
-        } else {
-            panel.append(mspBuildDashboard(MARKET_SWITCH_MOCK[proto.market], proto, paint));
+            panel.hidden = true;
+            return;
         }
 
-        root.append(panel);
+        panel.hidden = false;
+        const inner = document.createElement('div');
+        inner.className = 'msp-market-panel';
+        inner.append(mspBuildViewTabs(proto));
+        inner.append(mspBuildDashboard(MARKET_SWITCH_MOCK[proto.market], proto, render));
+        panel.replaceChildren(inner);
     };
 
-    paint();
+    render();
 }
 
 async function start() {
-    if (MARKET_SWITCH_PROTOTYPE) {
-        renderMarketSwitchPrototype();
-        return;
-    }
+    initMarketSwitch();
 
     // manifest 一定要拿到最新的一份，否則版本號就失去意義，
     // 所以這支檔案自己不進快取。
