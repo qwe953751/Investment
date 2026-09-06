@@ -172,6 +172,12 @@ publish-only run [33509783439](https://github.com/qwe953751/Investment/actions/r
 冪等、受控 fallback 取回與每 5 分鐘逾期清理已驗證；Golden Set 的正確率門檻與公司 Windows
 實機仍是外部驗收，不會因管線成功就宣稱達到九成。
 
+**目前狀態（2026-09-06）**：前端、佇列、Worker claim 與 CLI 路徑接線已生效。健康探測與實際
+Runner 共用 `OcrAgentExecutableResolver`，新版 Mac Worker 已在正式 Supabase 回報 Codex 已安裝、
+已登入且有額度；請重啟舊 Worker 後重新選圖確認 AI 工作 `succeeded`。原先的
+`no_available_agent` 是舊版接線缺陷，詳見
+[規劃 AI OCR §14.4](Doc/技術文件/規劃AI%20OCR.md#144-2026-09-06-正式瀏覽器驗收發現的阻塞與修正已完成正式-ai-草稿待重試)。
+
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
 輪詢，拿到短效私有圖片 URL 後才啟動 CLI；程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、
 `ANTHROPIC_API_KEY`，不會偷偷改走按量 API。

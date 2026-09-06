@@ -25,7 +25,19 @@ fi
 export OCR_WORKER_EMAIL="${worker_email}"
 export OCR_WORKER_PASSWORD="${worker_password}"
 export OCR_AGENT_PRIMARY="${OCR_AGENT_PRIMARY:-codex}"
-export OCR_CODEX_PATH="${OCR_CODEX_PATH:-$(command -v codex || true)}"
+
+if [[ -z "${OCR_CODEX_PATH:-}" ]]; then
+    if command -v codex >/dev/null 2>&1; then
+        OCR_CODEX_PATH="$(command -v codex)"
+    elif [[ -x "/Applications/ChatGPT.app/Contents/Resources/codex" ]]; then
+        OCR_CODEX_PATH="/Applications/ChatGPT.app/Contents/Resources/codex"
+    else
+        OCR_CODEX_PATH="codex"
+    fi
+fi
+export OCR_CODEX_PATH
+
+printf 'Codex CLI 路徑：%s\n' "${OCR_CODEX_PATH}"
 
 cd "${repository_root}"
 exec dotnet run --project src/Invest.Web -c Release -- ocr-worker "$@"

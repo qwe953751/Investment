@@ -1071,7 +1071,9 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 [↑ 回到 TODO 列表](#快速跳轉)
 
 **狀態：AI-first 前端、正式 Supabase 私有佇列、Validator、Mac Worker、重載恢復、submit 冪等、
-fallback 受控取回與獨立逾期清理已整合並發布；仍需由正式最高權限帳號做瀏覽器實際上傳驗收。
+fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並發布；新版 Worker 心跳已驗證 Codex
+可用，仍需正式最高權限帳號重新上傳一張圖片確認 AI 工作 `succeeded`。先前的
+`no_available_agent` 為舊版 Runner 接線缺陷，已依規劃文件 §14.4 修正。
 Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0，以及公司 Windows 實機仍待驗收。依
 使用者指示，不自行安裝或設定 Claude CLI。**
 
@@ -1097,12 +1099,17 @@ Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0，以�
   anon 無法讀工作、authenticated 無法 claim。`ocr-jobs` Edge Function 已部署為手動 JWT 驗證（含
   cleanup secret）、admin／worker 分權；Supabase cron `ocr-expired-cleanup` 每 5 分鐘清理到期物件。
 - Codex CLI 已用 IMG_1604 真實執行兩遍並通過 Schema；正式佇列也完成 upload／lease／result／ack／刪圖，測試工作已清除。Worker 離線三分鐘時 readiness 實測回 `worker_offline`。
-- Release build 0 警告／0 錯誤，.NET 10 目前全套 394/394 通過；前端與 Edge Function 通過 JavaScript 語法檢查。
+- Release build 0 警告／0 錯誤，.NET 10 目前全套 399/399 通過；前端與 Edge Function 通過 JavaScript 語法檢查。
+- 2026-09-06 已建立共用 `OcrAgentExecutableResolver`、修正兩個 Runner 的 factory 註冊、讓 Worker
+  heartbeat 使用同一解析器，並補 resolver／接線回歸測試；新版 `ocr-worker --once` 在正式 Supabase
+  回報 Codex 三項狀態為 `true`。不需要改 Supabase schema／Edge Function；仍待手機重新選圖確認 AI
+  `succeeded`。完整證據與驗收條件見規劃文件 §14.4。
 
 ### 本輪已完成與仍待外部驗收
 
 1. 公開 `site.js` 已由 `daily-snapshot.yml` 的 `publish-only=true` 發布並含 `ocr-jobs`、
-   `fallback_required` 與重載恢復文案；仍需由正式最高權限帳號做 AI Worker 在線／離線兩條瀏覽器路徑。
+   `fallback_required` 與重載恢復文案；正式帳號已驗到工作建立與舊版 fallback，CLI 路徑已修正，
+   下一步重測 AI `succeeded` 草稿與 Worker 離線兩條瀏覽器路徑。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
    把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。
 3. 在公司 Windows 以非管理員帳號驗證 .NET 10、SecretManagement、登入時排程、鎖屏／重開機、

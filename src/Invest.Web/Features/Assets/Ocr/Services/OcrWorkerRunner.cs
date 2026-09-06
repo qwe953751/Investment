@@ -187,11 +187,11 @@ public sealed class OcrWorkerRunner(
     {
         var now = DateTimeOffset.UtcNow;
         var claude = await ProbeAsync(
-            Environment.GetEnvironmentVariable("OCR_CLAUDE_PATH") ?? "claude",
+            OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude),
             ["auth", "status"],
             cancellationToken);
         var codex = await ProbeAsync(
-            Environment.GetEnvironmentVariable("OCR_CODEX_PATH") ?? "codex",
+            OcrAgentExecutableResolver.Resolve(OcrAgentKind.Codex),
             ["login", "status"],
             cancellationToken);
 

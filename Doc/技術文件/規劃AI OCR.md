@@ -2,7 +2,7 @@
 
 > 日期：2026-09-05
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列、Mac Worker、冪等／重載恢復／fallback 取回與逾期清理已整合並發布；正式帳號瀏覽器、Golden Set 與 Windows 實機仍待驗收**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；新 Worker 心跳已確認 Codex 可用，正式手機 AI `succeeded` 重試、Golden Set 與 Windows 實機仍待驗收**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -758,15 +758,17 @@ submit 冪等／input hash、頁面重載恢復、fallback signed URL 與每 5 �
 這一節記錄本輪接手後已完成的工程項目，以及仍必須在外部裝置／正式網址驗收的項目；不得把
 「管線已完成」與「Golden Set 已達標」混為一件事。
 
-### 14.1 目前可驗證狀態（2026-09-05）
+### 14.1 目前可驗證狀態（2026-09-06）
 
 - D+ 已在隔離工作樹整合最新 `origin/main`，保留主工作樹其他功能 WIP；正式 commit 前仍會逐檔檢查 staged diff。
 - 正式 Supabase 已套用 `db/039_ocr_jobs.sql` 與 `db/040_ocr_hardening.sql`；`ocr-private` 是 private
   bucket，`ocr-jobs` Edge Function v2 使用手動 JWT／cleanup secret，cron `ocr-expired-cleanup`
   每 5 分鐘執行。
-- Mac 已用 Codex CLI 跑通 Worker heartbeat／claim；無 Claude CLI 時 readiness 仍會拒絕 admin AI 工作，
-  前端會走 Tesseract fallback。IMG_1604 既有結果為 6 列、`verifiedCount=0`，**不代表正確率達標**。
-- 本輪 .NET 10.0.302 Release build 0 警告／0 錯誤，測試 394/394；`site.js` 與 Edge Function Node 語法檢查通過。
+- 2026-09-06 已修正 Worker 的 CLI 路徑接線：健康探測與實際 Runner 共用
+  `OcrAgentExecutableResolver`，明確設定 `OCR_CODEX_PATH` 後兩者都使用同一個完整路徑；Mac 新版
+  `ocr-worker --once` 實測心跳回報 Codex `installed/authenticated/quotaAvailable` 全為 `true`。
+  Claude CLI 仍未安裝，符合使用者指示。
+- 本輪 .NET 10.0.302 Release build 0 警告／0 錯誤，測試 399/399；`site.js` 與 Edge Function Node 語法檢查通過。
 
 ### 14.2 本輪已完成的功能缺口
 
@@ -789,11 +791,50 @@ submit 冪等／input hash、頁面重載恢復、fallback signed URL 與每 5 �
    或別的工作內容後 commit、push `main`。
 3. 程式進入 `main` 後，以 `daily-snapshot.yml` 的 `publish-only=true` 發布，不手改 `gh-pages`；
    Actions 的 `headSha` 必須是剛推送的 commit。
-4. 發布後以正式 `https://frank-invest.github.io/` 的最高權限帳號做瀏覽器驗收：Worker 在線時實際
-   出現 AI 工作與草稿；停止 Worker 後不送圖並回退 Tesseract；再驗證 public `site.js` 確實包含
-   `ocr-jobs`／`fallback_required`，公開 manifest、`gh-pages` 與 `main` 版本一致。
+4. 已以正式 `https://frank-invest.github.io/` 的最高權限帳號確認公開前端可建立 AI 工作、Worker 可
+   claim；CLI 路徑接線已修正並以新 Worker 心跳驗證。仍需由使用者重新選一張圖片確認工作變成
+   `succeeded` 並取得 AI 草稿，接著停止 Worker 驗證不上傳且回退 Tesseract；public `site.js` 已確認
+   包含 `ocr-jobs`／`fallback_required`，公開 manifest、`gh-pages` 與 `main` 同版。
 5. Golden Set 三次重跑與公司 Windows 實機仍待使用者／外部環境提供；在此之前文件只標示「管線已完成」，
    不標示正確率達九成。
+
+### 14.4 2026-09-06 正式瀏覽器驗收發現的阻塞與修正（已完成；正式 AI 草稿待重試）
+
+正式最高權限帳號從手機送出截圖後，工作 `5302126b-3608-422d-ba5e-efd92855c302` 已成功建立、
+由 Mac Worker claim 一次，最後進入 `fallback_required / no_available_agent`。同時間正式
+`ocr_workers` 心跳只有數秒，且在明確指定 ChatGPT App 內的 Codex 執行檔後回報
+`codex.installed=true`、`authenticated=true`、`quotaAvailable=true`；直接執行同一支
+`codex login status` 也成功顯示使用 ChatGPT 登入。因此已排除舊版前端、Worker 離線、
+Supabase 佇列、Codex 登入與訂閱額度，根因在本機 Worker 的 executable path 接線不一致：
+
+1. `OcrWorkerRunner.ProbeAgentsAsync()` 會讀 `OCR_CODEX_PATH`／`OCR_CLAUDE_PATH`，所以心跳判定
+   Agent 可用，網站允許上傳。
+2. `Program.cs` 卻用 `AddSingleton<CodexCliRunner>()`／`AddSingleton<ClaudeCodeCliRunner>()`
+   建立實際 Runner；兩個 Runner 因此取得建構子的預設字串 `codex`／`claude`，沒有使用前述環境變數。
+3. 正常 Terminal 的 `PATH` 找不到裸指令 `codex` 時，實際辨識被分類為 `cli_unavailable`；Claude
+   本來就未安裝，Router 最後丟 `OcrNoAvailableAgentException`，工作邊界依規格要求瀏覽器跑
+   Tesseract。這次畫面出現「Tesseract 備援完成」正是新版 D+ fallback，不是仍在走舊架構。
+
+本次已實作修正：
+
+1. 在 `Infrastructure/Ai/Cli` 建立單一 CLI executable resolver；Codex 與 Claude 都先取各自的
+   `OCR_*_PATH`，空白值視為未設定，再退回 `codex`／`claude`。
+2. `Program.cs` 改用 factory 建立兩個 Runner，將 resolver 的結果明確傳入建構子；
+   `OcrWorkerRunner.ProbeAgentsAsync()` 也改用同一個 resolver，禁止健康檢查與實際執行各讀一套。
+3. 強化 `scripts/run-ocr-worker-macos.sh`：依序採用使用者明確指定值、`command -v codex`、
+   `/Applications/ChatGPT.app/Contents/Resources/codex`，並在啟動時只顯示執行檔位置與可用狀態，
+   不輸出 OAuth、Worker 密碼或任何 Token。Windows 腳本仍以排程帳號下已驗證的完整路徑為優先。
+4. 補回歸測試：空白設定的 fallback、兩個 Agent 的明確路徑、DI Runner 與 heartbeat 共用解析器，
+   以及「`PATH` 沒有 `codex`、但 `OCR_CODEX_PATH` 是有效完整路徑」時實際 Runner 仍能啟動。
+5. 已跑 .NET 10 Release 全套測試，再停止舊 Worker 並以新 DLL 啟動 `--once`；正式心跳已確認
+   Codex 三項 `true`。下一步重新選圖建立新工作，驗收成功條件是工作變成 `succeeded`、
+   手機顯示 AI 草稿而非 `Tesseract fallback`。接著停止 Worker，另驗證不上傳且瀏覽器 Tesseract
+   仍可用。這個修正不需要新 Supabase migration 或重部署 Edge Function。
+
+本次修正新增 `OcrAgentExecutableResolver`、兩個 resolver／接線回歸測試，並更新 macOS 腳本的
+Codex 路徑 fallback；沒有新增 Supabase migration、修改 Edge Function 或改動正式前端。新 Worker
+心跳已在正式 Supabase 唯讀查詢確認；正式手機 AI 草稿仍需使用者重新選圖，不能把心跳成功誤稱為
+完整 OCR 成功。原始 `no_available_agent` 工作仍是歷史 fallback 記錄，不會自動重跑。
 
 ## 十五、參考資料
 
@@ -842,4 +883,5 @@ submit 冪等／input hash、頁面重載恢復、fallback signed URL 與每 5 �
 ---
 
 本文件同時記錄決策與接手狀態。Supabase migration、私有 Storage、Worker Auth、Edge Function、
-AI-first 前端與 Mac Worker 已整合；正式網址 publish-only、Golden Set 與 Windows 實機是剩餘驗收。
+AI-first 前端、Mac Worker 與 CLI 路徑接線修正已整合；正式手機 AI 草稿重試、Golden Set 與 Windows
+實機仍是後續驗收。
