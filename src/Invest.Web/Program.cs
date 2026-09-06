@@ -12,6 +12,7 @@ using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.CorporateActions;
 using Invest.Web.Infrastructure.MarketData.ForeignExchange;
 using Invest.Web.Infrastructure.MarketData.Intraday;
+using Invest.Web.Infrastructure.MarketData.Overview;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
 using Invest.Web.Infrastructure.MarketData.UsStocks;
@@ -29,6 +30,7 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- backfill-etfs [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- verify-kline-cache [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-us
+//   dotnet run --project src/Invest.Web -- backfill-overview
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
@@ -46,7 +48,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "export" or "intraday" or "backfill-intraday-heat"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "export" or "intraday" or "backfill-intraday-heat"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -100,6 +102,7 @@ builder.Services.AddHttpClient<AlphaVantageDailyQuoteClient>(
 
 builder.Services.AddSingleton<DailyQuoteStore>();
 builder.Services.AddSingleton<UsDailyQuoteStore>();
+builder.Services.AddSingleton<MarketOverviewStore>();
 builder.Services.AddSingleton<IntradayQuoteStore>();
 builder.Services.AddSingleton<IntradayCurveStore>();
 builder.Services.AddSingleton<IntradayTopicHeatStore>();
@@ -113,6 +116,7 @@ builder.Services.AddSingleton<SchemaMigrations>();
 builder.Services.AddSingleton<ExchangeRateStore>();
 builder.Services.AddTransient<MarketDataDownloader>();
 builder.Services.AddTransient<UsMarketDataDownloader>();
+builder.Services.AddTransient<MarketOverviewDownloader>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
 builder.Services.AddTransient<StaticSiteExporter>();
@@ -164,6 +168,12 @@ if (command is "verify-kline-cache")
 if (command is "backfill-us")
 {
     await RunUsBackfillAsync(app.Services);
+    return;
+}
+
+if (command is "backfill-overview")
+{
+    await RunMarketOverviewBackfillAsync(app.Services);
     return;
 }
 
@@ -1451,6 +1461,55 @@ static async Task RunUsBackfillAsync(IServiceProvider services)
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。已處理的股票資料都保留在快取。");
+    }
+}
+
+/// <summary>
+/// 回補市場切換總覽（美股／加密貨幣）的指數、VIX、類股 ETF 與主力幣種（data/imports-overview）。
+/// 名冊固定在 <see cref="MarketOverviewCatalog"/>，不必先讀 Supabase。
+/// </summary>
+static async Task RunMarketOverviewBackfillAsync(IServiceProvider services)
+{
+    using var scope = services.CreateScope();
+    var downloader = scope.ServiceProvider.GetRequiredService<MarketOverviewDownloader>();
+    var store = scope.ServiceProvider.GetRequiredService<MarketOverviewStore>();
+
+    Console.WriteLine($"快取位置：{store.Directory}");
+    Console.WriteLine("逐 symbol 呼叫 Yahoo Finance（禮貌性節流，無已知配額）。");
+    Console.WriteLine();
+
+    var progress = new Progress<string>(Console.WriteLine);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        var report = await downloader.BackfillAsync(progress, cts.Token);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            $"完成。處理 {report.ProcessedSymbols} 檔（成功 {report.SuccessCount}）、"
+            + $"寫入 {report.DatesWritten.Count} 個交易日。");
+
+        if (report.SkippedDueToQuota > 0)
+        {
+            Console.WriteLine($"因額度限制略過 {report.SkippedDueToQuota} 檔，會留到下次排程繼續。");
+        }
+
+        if (report.FailedSymbols.Count > 0)
+        {
+            Console.WriteLine($"失敗 {report.FailedSymbols.Count} 檔：{string.Join(", ", report.FailedSymbols)}");
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine();
+        Console.WriteLine("已中斷。已處理的資料都保留在快取。");
     }
 }
 

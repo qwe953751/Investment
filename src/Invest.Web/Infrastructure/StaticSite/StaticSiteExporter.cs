@@ -10,6 +10,7 @@ using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.Intraday;
+using Invest.Web.Infrastructure.MarketData.Overview;
 using Invest.Web.Infrastructure.MarketData.UsStocks;
 using Invest.Web.Infrastructure.StockTopics;
 
@@ -37,6 +38,7 @@ public sealed class StaticSiteExporter(
     MaterialEventStore materialEvents,
     IntradaySnapshotPublisher snapshotPublisher,
     UsDailyQuoteStore usDailyQuotes,
+    MarketOverviewStore marketOverview,
     IntradayCurveStore curveStore,
     ILogger<StaticSiteExporter> logger,
     IConfiguration configuration)
@@ -257,6 +259,8 @@ public sealed class StaticSiteExporter(
                 ToAccelerationExport()),
             cancellationToken);
 
+        await WriteMarketOverviewAsync(dataDirectory, cancellationToken);
+
         var topicReport = await WriteTopicsAsync(
             dataDirectory,
             latestRankings,
@@ -269,6 +273,90 @@ public sealed class StaticSiteExporter(
         progress?.Report($"已寫出頁面檔案：{string.Join("、", assetNames)}");
 
         return new StaticSiteExportReport(outputDirectory, fileCount, selectableDates.Count, tradingDates.Length);
+    }
+
+    /// <summary>
+    /// 市場切換總覽（美股／加密貨幣）的指數、類股熱力圖與 VIX，寫成 data/market-overview.json。
+    /// 跟族群分類一樣是附加功能：抓不到資料就寫一份帶 warning 的空殼檔，
+    /// 讓前端分得清「還沒發佈」與「這次沒抓到」，絕不能讓它擋掉整份排行榜發布。
+    /// </summary>
+    private async Task WriteMarketOverviewAsync(string dataDirectory, CancellationToken cancellationToken)
+    {
+        var warnings = new List<string>();
+        MarketOverviewGroupExport? us = null;
+        MarketOverviewGroupExport? crypto = null;
+
+        try
+        {
+            var history = await marketOverview.LoadAllAsync(cancellationToken);
+
+            if (history.Count == 0)
+            {
+                warnings.Add("尚未回補市場總覽資料（data/imports-overview 是空的）。");
+            }
+            else
+            {
+                us = ToGroupExport(history, MarketOverviewCatalog.UsIndices, MarketOverviewCatalog.UsSectors, MarketOverviewCatalog.UsVix);
+                crypto = ToGroupExport(history, MarketOverviewCatalog.CryptoIndices, MarketOverviewCatalog.CryptoHeatmap, null);
+            }
+        }
+        catch (Exception exception)
+        {
+            warnings.Add($"讀取市場總覽資料時發生錯誤：{exception.Message}");
+        }
+
+        await WriteJsonAsync(
+            Path.Combine(dataDirectory, "market-overview.json"),
+            new MarketOverviewExport(warnings, us, crypto),
+            cancellationToken);
+    }
+
+    private static MarketOverviewGroupExport ToGroupExport(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        IReadOnlyList<MarketOverviewSymbol> indices,
+        IReadOnlyList<MarketOverviewSymbol> sectors,
+        MarketOverviewSymbol? sentiment)
+    {
+        var indexResults = indices
+            .Select(symbol => MarketOverviewCalculator.CalculateIndex(history, symbol.Symbol, symbol.DisplayName))
+            .Where(result => result is not null)
+            .Select(result => new MarketOverviewIndexExport(result!.Name, result.Value, result.DailyChangePercent))
+            .ToArray();
+
+        var sectorResults = MarketOverviewCalculator.CalculateSectors(history, sectors)
+            .Select(result => new MarketOverviewSectorExport(result.Name, result.ChangePercent, result.Weight))
+            .ToArray();
+
+        var heatScore = MarketOverviewCalculator.CalculateHeatScore(history, sectors);
+
+        var sentimentCards = sentiment is null
+            ? []
+            : ToSentimentExports(history, sentiment);
+
+        return new MarketOverviewGroupExport(heatScore, indexResults, sectorResults, sentimentCards);
+    }
+
+    /// <summary>
+    /// 目前只有 VIX 一張情緒卡，score 用區間內插（10 以下最低、40 以上最高）表達恐慌程度，
+    /// 跟畫面上既有的 0-10 分制一致，不是官方定義的分數。
+    /// </summary>
+    private static IReadOnlyList<MarketOverviewSentimentExport> ToSentimentExports(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        MarketOverviewSymbol vix)
+    {
+        var result = MarketOverviewCalculator.CalculateIndex(history, vix.Symbol, vix.DisplayName);
+
+        if (result is null)
+        {
+            return [];
+        }
+
+        var score = decimal.Round(Math.Clamp((result.Value - 10m) / 30m * 10m, 0m, 10m), 1);
+        var detail = result.DailyChangePercent is { } daily
+            ? $"較前一交易日{(daily >= 0 ? "上升" : "下降")} {Math.Abs(daily):0.00}"
+            : "尚無前一交易日資料可比較";
+
+        return [new MarketOverviewSentimentExport(vix.DisplayName, score, result.Value.ToString("0.00"), detail)];
     }
 
     private async Task<IReadOnlyDictionary<string, int>?> PreviousTopicRanksAsync(
@@ -1374,6 +1462,27 @@ public sealed class StaticSiteExporter(
         string Year,
         decimal? TwseIndex,
         decimal? TpexIndex);
+
+    /// <summary>
+    /// 市場切換總覽（美股／加密貨幣），寫成獨立的 data/market-overview.json。
+    /// 跟排行榜用的 manifest.json 分開，因為兩者的更新／失效節奏完全無關。
+    /// </summary>
+    private sealed record MarketOverviewExport(
+        IReadOnlyList<string> Warnings,
+        MarketOverviewGroupExport? Us,
+        MarketOverviewGroupExport? Crypto);
+
+    private sealed record MarketOverviewGroupExport(
+        decimal? HeatScore,
+        IReadOnlyList<MarketOverviewIndexExport> Indices,
+        IReadOnlyList<MarketOverviewSectorExport> Sectors,
+        IReadOnlyList<MarketOverviewSentimentExport> SentimentCards);
+
+    private sealed record MarketOverviewIndexExport(string Name, decimal Value, decimal? Daily);
+
+    private sealed record MarketOverviewSectorExport(string Name, decimal? Change, decimal Weight);
+
+    private sealed record MarketOverviewSentimentExport(string Title, decimal? Score, string Value, string Detail);
 
     private sealed record KLineExport(
         string Market,

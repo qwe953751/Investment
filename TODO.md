@@ -27,7 +27,7 @@
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 第一階段已實作，待正式 migration／Golden Set／Windows 驗收 |
-| 16 | [市場切換（台股／美股／加密貨幣）：UI 已上正式網站，待接真實資料](#todo-16) | 🟡 等資料 |
+| 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🟢 已完成，待實機驗收發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1143,15 +1143,15 @@ v7 並驗證 Worker progress／租約邊界；Golden Set 的
 ---
 
 <a id="todo-16"></a>
-## 🟡 16. 市場切換（台股／美股／加密貨幣）：UI 已上正式網站，待接真實資料
+## 🟢 16. 市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
 **狀態：`MARKET_SWITCH_PROTOTYPE` 這個 localhost 限定開關已拿掉，市場切換頁籤
 現在是正式網站永久功能，所有使用者都看得到。台股維持真實內容、完全沒有重畫
 （`initMarketSwitch()` 只在切到美股／加密貨幣時用 CSS 隱藏 `.ranking-page`，
-`start()` 主流程一行都沒動）。美股／加密貨幣的內容仍是 `MARKET_SWITCH_MOCK`
-假資料，尚未接上真實資料來源。**
+`start()` 主流程一行都沒動）。美股／加密貨幣已接上真實 Yahoo Finance 資料，
+`MARKET_SWITCH_MOCK` 已刪除。**
 
 ### 已討論並定案
 
@@ -1178,8 +1178,36 @@ v7 並驗證 Worker progress／租約邊界；Golden Set 的
   CSS 規則把台股整塊藏起來，改顯示樣板面板；切回台股就是把 class 拿掉，
   `.ranking-page` 自己重新可見，沒有重新初始化或重畫任何台股內容。
 
+### 已上線：真實資料（美股／加密貨幣）
+
+沿用既有 `YahooFinanceDailyQuoteClient`（`?range=2y&interval=1d`），沒有引入新的
+外部資料商——指數、類股 ETF、加密貨幣都是同一支端點：
+
+- **抓取層**（`src/Invest.Web/Infrastructure/MarketData/Overview/`）：
+  `MarketOverviewCatalog`（24 檔 symbol 固定名冊：美股三大指數＋VIX＋11 大類股
+  ETF；加密貨幣三大主力幣＋6 檔次要幣）、`MarketOverviewStore`（比照
+  `UsDailyQuoteStore`，每交易日一個 JSON 檔存 `data/imports-overview/`，
+  gitignore／獨立於主線版控）、`MarketOverviewDownloader`（錯誤處理比照
+  `UsMarketDataDownloader`：429 就停、單檔格式異常只算該檔失敗）。CLI：
+  `dotnet run --project src/Invest.Web -- backfill-overview`。
+- **計算層**：`MarketOverviewCalculator`（純函式，見
+  `tests/Invest.Web.Tests/MarketOverviewCalculatorTests.cs`）——日漲跌幅缺資料
+  一律回 `null`（不往回找最近有值那天）；類股／幣種 `weight` 是近 20 日平均
+  成交值占合計比例（**資金關注度，不是市值權重**，文案已對應調整）；
+  `heatScore`（0-10）＝上漲家數占比 50%＋成交值相對 20 日均量 50%（樣本只有
+  11～9 檔，做不出可信的廣度分數，跟台股既有算法分開）。
+- **匯出層**：`StaticSiteExporter` 在 `manifest.json` 之後多寫一份
+  `data/market-overview.json`，抓不到資料時仍寫出帶 `warnings` 欄位的檔案，
+  不擋主排行榜發布。
+- **前端**：`site.js` 的 `mspBuild*`／`initMarketSwitch()` 改成使用者第一次切離
+  台股才 `fetch`（此時 `version` 已就緒），Promise 去重＋失敗可重試，三態渲染
+  （載入中／成功／失敗），台股路徑完全沒動一行。這輪範圍只有指數＋類股熱力圖
+  ＋VIX；漲跌家數比、恐懼貪婪指數、財報行事曆這輪不做，對應區塊整塊不顯示。
+- **排程**：`.github/workflows/us-daily-snapshot.yml` 在 `backfill-us` 之後
+  加了 `backfill-overview` 步驟，快取跟 `imports-us` 一起 commit 到 `data` 分支。
+
 ### 尚未討論
 
-- 真實資料來源：美股指數／類股、加密貨幣指數／賽道的數據要接哪個 API 或
-  既有的 Supabase／靜態站管線，還沒討論（使用者已明確表示現階段不用做）。
 - 台股要不要也套用同一套小方塊／緊湊列表版型，還沒決定——目前維持完全不動。
+- 加密貨幣只用 Yahoo Finance，拿不到全市場總市值／BTC 主導率／賽道分類——若要
+  這些指標需另外接 CoinGecko 之類的資料商，目前刻意不做（見規劃討論）。

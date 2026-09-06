@@ -4,7 +4,7 @@
 # 合併只會讓兩邊互相牽制。
 #
 # 行情快取放在同一個 repo 的 data 分支，跟台股快照共用同一個分支，
-# 但目錄各自獨立（data/imports-us/ vs data/imports/），互不覆蓋。
+# 但目錄各自獨立（data/imports-us/ vs data/imports/ vs data/imports-overview/），互不覆蓋。
 #
 # 美股沒有獨立排行頁；但資產頁的 K 線與代號名冊讀靜態快照。因此只要 imports-us
 # 有新資料，就交給既有 daily-snapshot.yml 的 publish-only 路徑重新輸出／發布；不在
@@ -81,11 +81,16 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- backfill-us
 
+      # 市場切換總覽（美股／加密貨幣指數、類股、VIX）跟 us_watchlist 無關、不需要
+      # Supabase，名冊固定在 MarketOverviewCatalog，共用同一支 Yahoo Finance client。
+      - name: 回補市場切換總覽（美股／加密貨幣）
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-overview
+
       - name: 保存行情快取
         id: cache
         working-directory: data
         run: |
-          git add -A imports-us
+          git add -A imports-us imports-overview
 
           # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
           # 也不要把「刪掉歷史」這件事推上去。
@@ -103,7 +108,7 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -qm "美股行情快取 $(date +%Y-%m-%d)"
+          git commit -qm "美股與市場總覽行情快取 $(date +%Y-%m-%d)"
           git push -q
           echo "changed=true" >> "$GITHUB_OUTPUT"
 

@@ -7741,8 +7741,8 @@ function makeAssetDraftRow(draft) {
     if (draft.recognitionEngine === 'ai') {
         row.className = draft.aiVerified ? 'asset-ai-row-verified' : 'asset-ai-row-review';
         row.title = draft.aiVerified
-            ? 'D+ 的兩個 Pass 在股票身份、股數與總成本一致；套用前仍需人工勾選。'
-            : (draft.aiWarnings ?? []).join(' ') || 'D+ 兩個 Pass 未完全一致，請人工校對。';
+            ? 'D+ 單一 AI Agent 的欄位與數值通過確定性檢查；套用前仍需人工勾選。'
+            : (draft.aiWarnings ?? []).join(' ') || 'D+ 單一 AI Agent 的結果需要人工校對。';
     }
 
     for (const field of ASSET_DRAFT_FIELDS) {
@@ -7837,7 +7837,7 @@ function makeAssetHoldingDiffItem(change, market, selected, onSelectionChange) {
     if (row.recognitionEngine === 'ai') {
         const badge = document.createElement('small');
         badge.className = row.aiVerified ? 'asset-ai-badge is-verified' : 'asset-ai-badge needs-review';
-        badge.textContent = row.aiVerified ? 'D+ 兩遍一致' : 'D+ 需人工校對';
+        badge.textContent = row.aiVerified ? 'D+ AI 已辨識' : 'D+ 需人工校對';
         if (row.aiWarnings?.length > 0) {
             badge.title = row.aiWarnings.join(' ');
         }
@@ -8190,8 +8190,8 @@ function assetAiDraftRows(result, market = '') {
         const warnings = Array.isArray(row.warnings) ? [...row.warnings] : [];
         let verified = row.verified === true;
 
-        // 兩個模型給出同一個答案仍可能是共同幻覺；正式網站載入的交易所／美股名冊是
-        // 第三道獨立防線。名冊沒有，或代號對到的官方名稱與圖片文字不像，就不能標綠。
+        // 單一 Agent 的輸出仍可能有幻覺；正式網站載入的交易所／美股名冊是獨立防線。
+        // 名冊沒有，或代號對到的官方名稱與圖片文字不像，就不能標綠。
         if (ticker === '' || knownName === '') {
             verified = false;
             warnings.push(identity.source === 'ticker_wrong_market'
@@ -11387,7 +11387,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             : 'Tesseract 備援';
     const prefix = `${engineText} 辨識出 ${assetScreenshotDraft.rows.length} 檔股票，請核對下方差異後勾選要套用的項目。`;
     const verificationNotice = aiTotalRows > 0
-        ? `AI 兩遍一致 ${aiVerifiedRows}/${aiTotalRows} 列；未一致的列仍必須人工修正。`
+        ? `AI 單次辨識通過 ${aiVerifiedRows}/${aiTotalRows} 列；所有列仍必須人工確認。`
         : '';
     const missingUsQuotes = market === '美股'
         ? assetScreenshotDraft.rows
@@ -11422,7 +11422,7 @@ function makeAssetScreenshotFlow(view) {
     heading.textContent = '上傳截圖更新帳戶持倉';
     const description = document.createElement('p');
     description.textContent = 'D+ 採 AI-first：Worker 與至少一個訂閱 Agent 可用時，截圖會暫存於 Supabase 私有空間，'
-        + '並交給該電腦已登入的 Codex／Claude CLI 做兩遍獨立辨識；完成後立即刪除，最長保存 60 分鐘。'
+        + '並交給該電腦已登入且額度可用的 Codex／Claude CLI 執行一次辨識；主要 Agent 不可用時自動切換另一個，完成後立即刪除，最長保存 60 分鐘。'
         + 'Worker 離線、Agent 未登入或額度不足時，圖片不會上傳；已建立工作若在重新整理後仍有效，'
         + '會從佇列恢復，AI 失敗則以短效簽名網址取回後改用這個瀏覽器內的 Tesseract。請把欄位標題一起截進來。'
         + (view.market === '美股'
@@ -21050,76 +21050,46 @@ function startIntradayTimer() {
 // 台股維持既有頁面完全不重畫——切到美股／加密貨幣時只是用 CSS 把 .ranking-page
 // 整塊隱藏，改顯示這裡建立的假資料面板；切回台股就是把 .ranking-page 顯示回來，
 // 台股本身的渲染／初始化流程完全不受影響。
-// 美股／加密貨幣目前仍是 MARKET_SWITCH_MOCK 假資料，真實資料來源之後再接。
+// 美股／加密貨幣讀 data/market-overview.json（見 StaticSiteExporter.WriteMarketOverviewAsync），
+// 台股沒有這份檔案：切到台股時顯示的是真實的既有頁面，不需要也不會去讀它。
+// 這份檔案在使用者第一次切離台股時才 fetch（見 ensureMarketOverviewData），
+// 因為它要用到 manifest 載入後才會設定的 version 做快取破壞。
 
-// 台股沒有列在這裡：切到台股時顯示的是真實的既有頁面，不是這份假資料。
-const MARKET_SWITCH_MOCK = {
-    us: {
-        heatTitle: '市場熱絡程度 · 美股',
-        heatScore: 7,
-        indices: [
-            { name: '道瓊工業指數', value: '42,863.86', daily: 0.62, ytd: 9.8 },
-            { name: 'S&P 500', value: '6,481.40', daily: 0.91, ytd: 14.2 },
-            { name: '那斯達克綜合指數', value: '21,590.14', daily: 1.35, ytd: 16.7 }
-        ],
-        heatCards: [
-            { title: '漲跌家數比', score: 7, value: '1.8 : 1', detail: 'S&P 500 上漲 312 檔／下跌 173 檔' },
-            { title: '成交量能', score: 6, value: '較 20 日均量 +12%', detail: '三大指數合計成交金額估算' }
-        ],
-        sectorsTitle: '11 大類股表現',
-        // weight 是該類股占大盤市值的概略比重（％，假設數值參考真實 S&P 500 權重量級），
-        // 熱力圖用它決定方塊大小——權重越高方塊越大，不是漲跌幅越大方塊越大。
-        sectors: [
-            { name: '資訊科技', change: 1.8, weight: 32 }, { name: '通訊服務', change: 1.2, weight: 9 },
-            { name: '非必需消費', change: 0.9, weight: 10 }, { name: '工業', change: 0.4, weight: 8 },
-            { name: '金融', change: 0.3, weight: 13 }, { name: '醫療保健', change: -0.1, weight: 11 },
-            { name: '必需消費', change: -0.3, weight: 6 }, { name: '原物料', change: -0.4, weight: 2 },
-            { name: '能源', change: -0.8, weight: 3.5 }, { name: '公用事業', change: -1.0, weight: 2.5 },
-            { name: '不動產', change: -1.3, weight: 2.2 }
-        ],
-        sentimentCards: [
-            { title: 'VIX 恐慌指數', score: 3, value: '14.2', detail: '低於 20，波動偏低' },
-            { title: '恐懼與貪婪指數', score: 7, value: '68 · 貪婪', detail: 'CNN Fear & Greed（假設數值）' }
-        ],
-        eventsTitle: '近期財報行事曆',
-        events: [
-            { date: '09/08 盤後', text: 'Oracle（ORCL）' },
-            { date: '09/10 盤前', text: 'Adobe（ADBE）' },
-            { date: '09/11 盤後', text: 'RH（RH）' }
-        ]
-    },
-    crypto: {
-        heatTitle: '市場熱絡程度 · 加密貨幣',
-        heatScore: 6,
-        indices: [
-            { name: 'BTC 比特幣', value: '$61,240', daily: 2.1, ytd: 38.4 },
-            { name: 'ETH 以太幣', value: '$2,684', daily: 1.4, ytd: 12.6 },
-            { name: '全市場總市值', value: '$2.31T', daily: 1.8, ytd: 29.7 }
-        ],
-        heatCards: [
-            { title: '24H 成交量變化', score: 6, value: '+18%', detail: '主要交易所現貨＋合約合計' },
-            { title: '合約未平倉變化', score: 5, value: '+6%', detail: 'BTC／ETH 永續合約' }
-        ],
-        sectorsTitle: '主題賽道表現',
-        // weight 同樣是概略市值佔比（假設數值），熱力圖方塊大小依這個決定。
-        sectors: [
-            { name: 'Layer 1', change: 3.2, weight: 40 }, { name: 'DeFi', change: 2.1, weight: 15 },
-            { name: 'AI 概念', change: 1.6, weight: 10 }, { name: 'Layer 2', change: 0.8, weight: 12 },
-            { name: 'RWA', change: 0.2, weight: 8 }, { name: 'Meme', change: -1.5, weight: 10 },
-            { name: 'GameFi', change: -2.3, weight: 5 }
-        ],
-        sentimentCards: [
-            { title: 'BTC 主導率', score: 5, value: '54.8%', detail: '資金偏向主流幣，山寨幣相對弱勢' },
-            { title: '山寨幣季節指數', score: 6, value: '62 · 偏向山寨季', detail: '近 90 日內前 50 大幣種有 62% 漲幅超越 BTC；數字越高代表資金越往山寨幣輪動（Altcoin Season Index，假設數值）' },
-            { title: '恐懼與貪婪指數', score: 7, value: '71 · 貪婪', detail: 'Crypto Fear & Greed（假設數值）' }
-        ],
-        eventsTitle: '資金與鏈上動向',
-        events: [
-            { date: '09/07 03:00', text: 'BTC 資金費率轉正，年化 +11%' },
-            { date: '09/06 21:40', text: '交易所 BTC 淨流出約 3,200 顆' },
-            { date: '09/06 15:10', text: 'ETH 合約未平倉創近 30 日新高' }
-        ]
+let marketOverviewData = null;
+let marketOverviewLoadError = null;
+let marketOverviewPromise = null;
+
+async function ensureMarketOverviewData() {
+    if (marketOverviewData !== null) {
+        return;
     }
+
+    if (marketOverviewPromise === null) {
+        marketOverviewPromise = (async () => {
+            const response = await fetch(`data/market-overview.json?v=${version}`, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            marketOverviewData = await response.json();
+        })();
+    }
+
+    try {
+        await marketOverviewPromise;
+        marketOverviewLoadError = null;
+    } catch (error) {
+        console.warn('市場總覽資料讀取失敗', error);
+        marketOverviewLoadError = '美股／加密貨幣資料讀取失敗，請重新整理再試一次。';
+    } finally {
+        // 失敗時清掉 promise 讓下一次切換頁籤可以重試；成功時 marketOverviewData
+        // 已經有值，ensureMarketOverviewData 一開始的檢查會直接短路，不會重抓。
+        marketOverviewPromise = null;
+    }
+}
+
+const MSP_SECTOR_TITLE = {
+    us: '11 大類股表現',
+    crypto: '主力幣種表現'
 };
 
 const MSP_MARKETS = [
@@ -21190,11 +21160,33 @@ function mspBuildIndicatorCard(item) {
     return card;
 }
 
+// 美股指數印小數兩位（跟公開行情慣例一致），加密貨幣用 $ 前綴、大額數字不印小數。
+function mspFormatIndexValue(market, value) {
+    if (missing(value)) {
+        return '—';
+    }
+
+    const number = Number(value);
+
+    return market === 'crypto'
+        ? `$${number.toLocaleString('en-US', { maximumFractionDigits: number >= 100 ? 0 : 2 })}`
+        : number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 // 指數用小方塊樣式，比原本的大卡片版緊湊，一行就能放下三檔指數。
-function mspBuildIndices(mock) {
+function mspBuildIndices(group, market) {
     const section = document.createElement('div');
     section.className = 'msp-index-tile-grid';
-    for (const index of mock.indices) {
+
+    if (group.indices.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'msp-card-detail';
+        empty.textContent = '指數資料暫缺。';
+        section.append(empty);
+        return section;
+    }
+
+    for (const index of group.indices) {
         const tile = document.createElement('div');
         tile.className = 'msp-index-tile';
         const name = document.createElement('span');
@@ -21202,29 +21194,32 @@ function mspBuildIndices(mock) {
         name.textContent = index.name;
         const value = document.createElement('strong');
         value.className = 'msp-index-tile-value';
-        value.textContent = index.value;
+        value.textContent = mspFormatIndexValue(market, index.value);
         const daily = document.createElement('span');
-        daily.className = `msp-index-tile-daily ${toTrendClass(index.daily)}`;
-        daily.textContent = `日 ${toSignedPercentText(index.daily / 100, 2)}`;
+        daily.className = `msp-index-tile-daily ${toTrendClass(index.daily ?? 0)}`;
+        daily.textContent = missing(index.daily) ? '日 —' : `日 ${toSignedPercentText(index.daily / 100, 2)}`;
         tile.append(name, value, daily);
         section.append(tile);
     }
     return section;
 }
 
-function mspBuildHeatPanel(mock) {
+// heatScore 用「上漲類股占比 50% ＋ 成交值相對 20 日均量 50%」算，只有 11 檔類股／幾檔幣種
+// 可用，樣本太小做不出可信的漲跌家數比／量能拆解卡片，所以這輪只顯示總分，不顯示子項卡片。
+function mspBuildHeatPanel(group, market) {
     const panel = document.createElement('section');
     panel.className = 'market-heat-panel';
 
-    const [level, levelClass] = heatLevel(mock.heatScore);
+    const [level, levelClass] = heatLevel(group.heatScore);
+    const marketLabel = MSP_MARKETS.find(item => item.key === market)?.text ?? '';
 
     const title = document.createElement('span');
     title.className = 'market-heat-title';
-    title.textContent = mock.heatTitle;
+    title.textContent = `市場熱絡程度 · ${marketLabel}`;
 
     const score = document.createElement('strong');
     score.className = 'market-heat-score';
-    score.textContent = `${mock.heatScore}/10`;
+    score.textContent = missing(group.heatScore) ? '—/10' : `${group.heatScore}/10`;
 
     const levelTag = document.createElement('span');
     levelTag.className = `market-heat-level ${levelClass}`;
@@ -21238,7 +21233,7 @@ function mspBuildHeatPanel(mock) {
     progress.className = 'market-heat-progress';
     const progressFill = document.createElement('span');
     progressFill.className = `market-heat-progress-fill ${levelClass}`;
-    progressFill.style.width = `${mock.heatScore * 10}%`;
+    progressFill.style.width = `${missing(group.heatScore) ? 0 : group.heatScore * 10}%`;
     progress.append(progressFill);
 
     const scale = document.createElement('div');
@@ -21258,19 +21253,13 @@ function mspBuildHeatPanel(mock) {
     overview.className = 'market-heat-overview';
     overview.append(heading, progress, scale);
 
-    const indicators = document.createElement('div');
-    indicators.className = 'market-heat-indicators';
-    for (const item of mock.heatCards) {
-        indicators.append(mspBuildIndicatorCard(item));
-    }
-
-    panel.append(overview, indicators);
+    panel.append(overview);
     return panel;
 }
 
 // 類股／賽道區塊有熱力圖跟列表兩種檢視，切換狀態存在 proto.sectorView，
 // 標題列右側放一組小圖示 toggle（參考手機 App 熱力圖頁籤右上角那組）。
-function mspBuildSectorsSection(mock, proto, paint) {
+function mspBuildSectorsSection(group, market, proto, paint) {
     const section = document.createElement('section');
     section.className = 'msp-section msp-section-compact';
 
@@ -21278,11 +21267,24 @@ function mspBuildSectorsSection(mock, proto, paint) {
     header.className = 'msp-section-header';
     const title = document.createElement('h2');
     title.className = 'msp-section-title';
-    title.textContent = mock.sectorsTitle;
+    title.textContent = MSP_SECTOR_TITLE[market] ?? '';
     header.append(title, mspBuildSectorViewToggle(proto, paint));
     section.append(header);
 
-    section.append(proto.sectorView === 'list' ? mspBuildSectorsList(mock) : mspBuildSectorsHeatmap(mock));
+    if (group.sectors.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'msp-card-detail';
+        empty.textContent = '類股資料暫缺。';
+        section.append(empty);
+        return section;
+    }
+
+    const hint = document.createElement('p');
+    hint.className = 'msp-card-detail';
+    hint.textContent = '方塊大小＝近 20 日平均成交值占比（資金關注度），不是市值權重。';
+    section.append(hint);
+
+    section.append(proto.sectorView === 'list' ? mspBuildSectorsList(group) : mspBuildSectorsHeatmap(group));
     return section;
 }
 
@@ -21302,7 +21304,7 @@ function mspBuildSectorViewToggle(proto, paint) {
     return wrap;
 }
 
-// 方塊大小依市值權重分三級（大／中／小），跟漲跌幅無關——
+// 方塊大小依近 20 日平均成交值占比（資金關注度）分三級（大／中／小），跟漲跌幅無關——
 // 這樣才是真正的「熱力圖」而不是把漲跌幅畫成大小的長條圖。
 function mspSectorTier(sector, sectors) {
     const maxWeight = Math.max(...sectors.map(s => s.weight));
@@ -21321,7 +21323,7 @@ function mspHexToRgb(hex) {
     return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
 }
 
-function mspBuildSectorsHeatmap(mock) {
+function mspBuildSectorsHeatmap(group) {
     const grid = document.createElement('div');
     grid.className = 'msp-heatmap-grid';
 
@@ -21330,15 +21332,15 @@ function mspBuildSectorsHeatmap(mock) {
     const downRgb = mspHexToRgb(rootStyle.getPropertyValue('--down-fill'));
     const neutralRgb = mspHexToRgb(rootStyle.getPropertyValue('--border'));
 
-    for (const sector of mock.sectors) {
-        const tier = mspSectorTier(sector, mock.sectors);
-        const trend = toTrendClass(sector.change);
+    for (const sector of group.sectors) {
+        const tier = mspSectorTier(sector, group.sectors);
+        const trend = toTrendClass(sector.change ?? 0);
         const tile = document.createElement('div');
         tile.className = `msp-heatmap-tile msp-heatmap-tile-${tier}`;
 
         // 顏色深淺依漲跌幅大小：跌幅/漲幅越大越飽和，越接近平盤越淡，
         // 呼應附件參考圖裡「小波動偏暗、大波動鮮豔」的視覺效果。
-        const intensity = Math.min(1, 0.35 + Math.abs(sector.change) / 6);
+        const intensity = Math.min(1, 0.35 + Math.abs(sector.change ?? 0) / 6);
         const [r, g, b] = trend === 'negative' ? downRgb : trend === 'positive' ? upRgb : neutralRgb;
         tile.style.background = `rgba(${r}, ${g}, ${b}, ${intensity})`;
         tile.style.color = intensity > 0.55 ? '#fff' : 'var(--text)';
@@ -21348,53 +21350,37 @@ function mspBuildSectorsHeatmap(mock) {
         name.textContent = sector.name;
         const change = document.createElement('strong');
         change.className = 'msp-heatmap-tile-change';
-        change.textContent = toSignedPercentText(sector.change / 100, 2);
+        change.textContent = missing(sector.change) ? '—' : toSignedPercentText(sector.change / 100, 2);
         tile.append(name, change);
         grid.append(tile);
     }
     return grid;
 }
 
-function mspBuildSectorsList(mock) {
+function mspBuildSectorsList(group) {
     const list = document.createElement('ul');
     list.className = 'msp-sector-list';
-    const sorted = [...mock.sectors].sort((a, b) => b.change - a.change);
+    const sorted = [...group.sectors].sort((a, b) => (b.change ?? 0) - (a.change ?? 0));
     for (const sector of sorted) {
         const item = document.createElement('li');
         const name = document.createElement('span');
         name.textContent = sector.name;
         const change = document.createElement('strong');
-        change.className = toTrendClass(sector.change);
-        change.textContent = toSignedPercentText(sector.change / 100, 2);
+        change.className = toTrendClass(sector.change ?? 0);
+        change.textContent = missing(sector.change) ? '—' : toSignedPercentText(sector.change / 100, 2);
         item.append(name, change);
         list.append(item);
     }
     return list;
 }
 
-function mspBuildSentimentGrid(mock) {
+function mspBuildSentimentGrid(group) {
     const indicators = document.createElement('div');
     indicators.className = 'market-heat-indicators';
-    for (const item of mock.sentimentCards) {
+    for (const item of group.sentimentCards) {
         indicators.append(mspBuildIndicatorCard(item));
     }
     return indicators;
-}
-
-function mspBuildEventsList(mock) {
-    const list = document.createElement('ul');
-    list.className = 'msp-events-list';
-    for (const event of mock.events) {
-        const item = document.createElement('li');
-        const date = document.createElement('span');
-        date.className = 'msp-events-date';
-        date.textContent = event.date;
-        const text = document.createElement('span');
-        text.textContent = event.text;
-        item.append(date, text);
-        list.append(item);
-    }
-    return list;
 }
 
 // 標題＋內容包一層 section，統一用緊湊列表樣式（只有上緣分隔線，沒有卡片感）。
@@ -21408,15 +21394,17 @@ function mspSection(titleText, contentEl) {
     return section;
 }
 
-// 整體版面：指數→市場熱絡度→類股/賽道熱力圖→情緒指標→事件列表，依序往下排。
-function mspBuildDashboard(mock, proto, paint) {
+// 整體版面：指數→市場熱絡度→類股/幣種熱力圖→情緒指標，依序往下排。
+// 財報行事曆／漲跌家數比／恐懼貪婪指數這輪沒有資料來源，整塊不顯示（不是留假資料）。
+function mspBuildDashboard(group, market, proto, paint) {
     const dashboard = document.createElement('div');
     dashboard.className = 'msp-dashboard';
-    dashboard.append(mspSection('指數', mspBuildIndices(mock)));
-    dashboard.append(mspBuildHeatPanel(mock));
-    dashboard.append(mspBuildSectorsSection(mock, proto, paint));
-    dashboard.append(mspSection('情緒指標', mspBuildSentimentGrid(mock)));
-    dashboard.append(mspSection(mock.eventsTitle, mspBuildEventsList(mock)));
+    dashboard.append(mspSection('指數', mspBuildIndices(group, market)));
+    dashboard.append(mspBuildHeatPanel(group, market));
+    dashboard.append(mspBuildSectorsSection(group, market, proto, paint));
+    if (group.sentimentCards.length > 0) {
+        dashboard.append(mspSection('情緒指標', mspBuildSentimentGrid(group)));
+    }
     return dashboard;
 }
 
@@ -21553,17 +21541,7 @@ function injectMarketSwitchStyle() {
     border-bottom: 1px solid var(--border);
 }
 .msp-sector-list li:last-child { border-bottom: none; }
-.msp-events-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.msp-events-list li {
-    display: flex;
-    gap: 12px;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-alt);
-    font-size: 13px;
-}
-.msp-events-date { color: var(--text-muted); white-space: nowrap; }
+.msp-overview-notice { margin-top: 12px; }
 `;
     document.head.append(style);
 }
@@ -21608,7 +21586,28 @@ function initMarketSwitch() {
         const inner = document.createElement('div');
         inner.className = 'msp-market-panel';
         inner.append(mspBuildViewTabs(proto));
-        inner.append(mspBuildDashboard(MARKET_SWITCH_MOCK[proto.market], proto, render));
+
+        if (marketOverviewLoadError !== null) {
+            const notice = document.createElement('section');
+            notice.className = 'notice warning msp-overview-notice';
+            notice.textContent = marketOverviewLoadError;
+            inner.append(notice);
+        } else if (marketOverviewData === null) {
+            const notice = document.createElement('section');
+            notice.className = 'notice msp-overview-notice';
+            notice.textContent = '載入中…';
+            inner.append(notice);
+            ensureMarketOverviewData().then(render);
+        } else if (marketOverviewData[proto.market] == null) {
+            const notice = document.createElement('section');
+            notice.className = 'notice warning msp-overview-notice';
+            notice.textContent = (marketOverviewData.warnings ?? []).join(' ')
+                || '這個市場目前還沒有可顯示的資料。';
+            inner.append(notice);
+        } else {
+            inner.append(mspBuildDashboard(marketOverviewData[proto.market], proto.market, proto, render));
+        }
+
         panel.replaceChildren(inner);
     };
 
