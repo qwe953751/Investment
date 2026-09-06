@@ -101,7 +101,7 @@ public sealed class OcrPocRunner(AgentQuotaRouter router)
         string outputPath)
         => new(
             imagePath,
-            $"讀取圖片 {imagePath}，從上到下完整擷取所有可見券商持股列。只回傳符合 Schema 的股票身份、股數與總成本；代號缺少時保留名稱；看不清楚就填 null 並加入 warnings，不得猜測，也不要使用目前持倉資料。",
+            $"讀取圖片 {imagePath}，從上到下完整擷取所有可見券商持股列。只回傳符合 Schema 的股票身份、股數與總成本，不要輸出幣別或逐列證據欄位；代號缺少時保留名稱；看不清楚就填 null 並加入 warnings，不得猜測，也不要使用目前持倉資料。",
             schemaPath,
             workingDirectory,
             OutputPath: outputPath,
@@ -211,11 +211,9 @@ public sealed class OcrPocRunner(AgentQuotaRouter router)
                   "nameText": { "type": ["string", "null"] },
                   "quantityText": { "type": ["string", "null"] },
                   "totalCostText": { "type": ["string", "null"] },
-                  "currency": { "type": ["string", "null"] },
-                  "rowObscured": { "type": "boolean" },
-                  "evidence": { "type": ["string", "null"] }
+                  "rowObscured": { "type": "boolean" }
                 },
-                "required": ["rowIndex", "tickerText", "nameText", "quantityText", "totalCostText", "currency", "rowObscured", "evidence"]
+                "required": ["rowIndex", "tickerText", "nameText", "quantityText", "totalCostText", "rowObscured"]
               }
             },
             "warnings": { "type": "array", "items": { "type": "string" } }

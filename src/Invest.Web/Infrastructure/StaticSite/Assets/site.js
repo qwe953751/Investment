@@ -7998,6 +7998,7 @@ const ASSET_OCR_WARMUP_TIMEOUT_MS = 20_000;
 const ASSET_OCR_MAX_FILES = 20;
 const ASSET_AI_OCR_FUNCTION = 'ocr-jobs';
 const ASSET_AI_OCR_POLL_MS = 1_500;
+const ASSET_AI_OCR_QUEUE_GRACE_MS = 30_000;
 const ASSET_AI_OCR_TIMEOUT_MS = 9 * 60_000;
 const ASSET_AI_PENDING_JOBS_KEY = 'invest.assetAiOcrJobs.v1';
 
@@ -8071,9 +8072,23 @@ async function assetAiOcrJson(response, operation) {
     return body;
 }
 
-async function assetAiOcrReadiness() {
-    const response = await assetAiOcrRequest('readiness', { method: 'GET' });
+async function assetAiOcrReadiness(maxAgeSeconds = null) {
+    const query = maxAgeSeconds === null ? '' : `&maxAgeSeconds=${encodeURIComponent(maxAgeSeconds)}`;
+    const response = await assetAiOcrRequest('readiness', { method: 'GET', query });
     return assetAiOcrJson(response, '檢查 AI Worker');
+}
+
+async function assetAiQueuedWorkerUnavailable(queuedAt) {
+    if (Date.now() - queuedAt < ASSET_AI_OCR_QUEUE_GRACE_MS) {
+        return null;
+    }
+
+    try {
+        const readiness = await assetAiOcrReadiness(30);
+        return readiness?.ready === true ? null : (readiness?.fallbackReason ?? 'worker_offline');
+    } catch {
+        return 'ai_execution_failed';
+    }
 }
 
 async function assetAiOcrSubmit(file, accountId, market, idempotencyKey) {
@@ -8244,6 +8259,7 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
             expiresAt: submitted.expiresAt ?? null
         });
         const deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
+        const queuedAt = Date.now();
 
         while (Date.now() < deadline) {
             if (assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
@@ -8277,6 +8293,18 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                     jobId,
                     reason: status.fallbackReason ?? status.errorCode ?? 'ai_execution_failed'
                 };
+            }
+
+            if (status.status === 'queued') {
+                const unavailableReason = await assetAiQueuedWorkerUnavailable(queuedAt);
+                if (unavailableReason !== null) {
+                    updateAssetAiProgress(index - 1, 'fallback_required', {
+                        stage: 'Worker 離線，切換 Tesseract',
+                        percent: 90,
+                        statusText: 'Worker 離線，切換 Tesseract…'
+                    });
+                    return { mode: 'tesseract', jobId, reason: unavailableReason };
+                }
             }
 
             const progress = assetAiProgressForStatus(status.status);
@@ -8349,6 +8377,7 @@ async function resumeAssetAiJobs(accountId) {
         for (const [index, job] of pending.entries()) {
             const screenshot = assetScreenshotDraft.screenshots[index];
             let finalStatus = null;
+            const queuedAt = Date.parse(job.createdAt ?? '') || Date.now();
             try {
                 const deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
                 while (Date.now() < deadline) {
@@ -8356,6 +8385,13 @@ async function resumeAssetAiJobs(accountId) {
                     if (['succeeded', 'fallback_required', 'failed', 'expired', 'cancelled'].includes(status.status)) {
                         finalStatus = status;
                         break;
+                    }
+                    if (status.status === 'queued') {
+                        const unavailableReason = await assetAiQueuedWorkerUnavailable(queuedAt);
+                        if (unavailableReason !== null) {
+                            finalStatus = { ...status, status: 'fallback_required', fallbackReason: unavailableReason };
+                            break;
+                        }
                     }
                     const progress = assetAiProgressForStatus(status.status);
                     screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';

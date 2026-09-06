@@ -199,17 +199,19 @@ scripts/run-ocr-worker-macos.sh
 ```
 
 Windows 專用帳號的密碼使用目前登入使用者的 DPAPI 保護，檔案只存在
-`%LOCALAPPDATA%\Investment\ocr-worker-windows.credential.clixml`，不進 repository。首次受控設定時，
-以記憶體中的 `PSCredential` 呼叫 `scripts\set-ocr-worker-windows-credential.ps1`；之後由登入時排程啟動：
+`%LOCALAPPDATA%\Investment\ocr-worker-windows.credential.dpapi`，不進 repository。首次受控設定時，
+以記憶體中的 `PSCredential` 呼叫 `scripts\set-ocr-worker-windows-credential.ps1`；先發布自包含 Worker，
+再由登入時排程直接啟動 `Invest.Web.exe`：
 
 ```powershell
+scripts\publish-ocr-worker-windows.ps1
 scripts\register-ocr-worker-task-windows.ps1
 ```
 
-排程與 DPAPI 憑證必須屬於完成 `codex login` 的**同一個 Windows 使用者**；腳本會優先使用該使用者的
-.NET 10 路徑，避免 Task Scheduler 沒有互動式 PATH 時直接失敗。Mac 使用 Keychain、Windows 使用 DPAPI；
-兩邊都不把密碼、service role、Management token 或 AI API Key 寫進 repository。完整狀態機、權限與
-Windows 驗收清單見
+排程與 DPAPI 憑證必須屬於完成 `codex login` 的**同一個 Windows 使用者**；排程執行期間不需要常駐
+PowerShell，也不依賴互動式 PATH。自包含 EXE 從目前使用者的 DPAPI 檔案解密憑證，只在記憶體中建立
+Supabase 登入請求。Mac 使用 Keychain、Windows 使用 DPAPI；兩邊都不把密碼、service role、Management
+token 或 AI API Key 寫進 repository。完整狀態機、權限與 Windows 驗收清單見
 [規劃 AI OCR §14](Doc/技術文件/規劃AI%20OCR.md#十四換模型接手前的預計修正與驗收清單)。
 
 筆記 #21 的 ETF 行情、資產帳戶與盤中交易日防呆已由功能程式碼 commit `85e0504b`

@@ -25,6 +25,15 @@ public sealed record OcrWorkerOptions(
         var email = Environment.GetEnvironmentVariable("OCR_WORKER_EMAIL")
             ?? "ocr-worker@investment.local";
         var password = Environment.GetEnvironmentVariable("OCR_WORKER_PASSWORD");
+        if (OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(password))
+        {
+            var stored = OcrWorkerCredentialStore.TryLoad();
+            if (stored is not null)
+            {
+                email = stored.Email;
+                password = stored.Password;
+            }
+        }
         var name = Environment.GetEnvironmentVariable("OCR_WORKER_NAME")
             ?? Environment.MachineName;
         var pollSeconds = int.TryParse(
@@ -39,7 +48,7 @@ public sealed record OcrWorkerOptions(
             || string.IsNullOrWhiteSpace(password))
         {
             throw new InvalidOperationException(
-                "ocr-worker 需要 Supabase URL／anon key 與 OCR_WORKER_EMAIL、OCR_WORKER_PASSWORD；密碼只能放本機 Secret，不可寫入 repository。");
+                "ocr-worker 需要 Supabase URL／anon key 與 OCR_WORKER_EMAIL、OCR_WORKER_PASSWORD；Windows 也可從目前使用者的 DPAPI 憑證檔讀取，密碼不可寫入 repository。");
         }
 
         return new(url.TrimEnd('/'), anonKey, email, password, name, TimeSpan.FromSeconds(pollSeconds));

@@ -10,7 +10,7 @@ if ([string]::IsNullOrWhiteSpace($localAppData)) {
 }
 
 $credentialDirectory = Join-Path $localAppData 'Investment'
-$credentialPath = Join-Path $credentialDirectory 'ocr-worker-windows.credential.clixml'
+$credentialPath = Join-Path $credentialDirectory 'ocr-worker-windows.credential.dpapi'
 $workerPassword = $Credential.GetNetworkCredential().Password
 
 try {
@@ -19,9 +19,21 @@ try {
     }
 
     New-Item -ItemType Directory -Path $credentialDirectory -Force | Out-Null
-    $Credential | Export-Clixml -LiteralPath $credentialPath -Force
-    Write-Output '已在目前 Windows 使用者的 DPAPI 保護區建立 OCR Worker 憑證。'
+    $payload = [ordered]@{
+        email = $Credential.UserName
+        password = $workerPassword
+    } | ConvertTo-Json -Compress
+    $clearBytes = [Text.Encoding]::UTF8.GetBytes($payload)
+    $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
+        $clearBytes,
+        $null,
+        [Security.Cryptography.DataProtectionScope]::CurrentUser)
+    [IO.File]::WriteAllText($credentialPath, [Convert]::ToBase64String($protectedBytes), [Text.Encoding]::ASCII)
+    Write-Output '已在目前 Windows 使用者的 DPAPI 保護區建立 OCR Worker 憑證（.dpapi）。'
 }
 finally {
+    $payload = $null
+    $clearBytes = $null
+    $protectedBytes = $null
     $workerPassword = $null
 }

@@ -29,6 +29,7 @@ public sealed class OcrWorkerRunner(
 
         do
         {
+            var processedJob = false;
             try
             {
                 var agents = await ProbeAgentsAsync(cancellationToken);
@@ -38,6 +39,7 @@ public sealed class OcrWorkerRunner(
                     var job = await api.ClaimAsync(cancellationToken);
                     if (job is not null)
                     {
+                        processedJob = true;
                         await ProcessJobAsync(api, job, agents, cancellationToken);
                     }
                 }
@@ -55,7 +57,7 @@ public sealed class OcrWorkerRunner(
                 }
             }
 
-            if (!once)
+            if (!once && !processedJob)
             {
                 await Task.Delay(options.PollInterval, cancellationToken);
             }
@@ -201,7 +203,7 @@ public sealed class OcrWorkerRunner(
                 : "帳戶市場未限定；只能抄錄畫面，不得自行推測市場。";
         return new(
             imagePath,
-            $"{context} 圖片是券商持倉截圖。從上到下完整擷取每一列可見持股，排除頁首、時間、按鈕、合計與彈窗。只擷取股票身份、庫存股數與總成本；代號缺少時保留名稱，名稱缺少時保留代號；看不清楚填 null 並加入 warnings，不得猜測或由市值、損益反推。",
+            $"{context} 圖片是券商持倉截圖。從上到下完整擷取每一列可見持股，排除頁首、時間、按鈕、合計與彈窗。只輸出股票身份、庫存股數與總成本；不要輸出幣別或逐列證據欄位。代號缺少時保留名稱，名稱缺少時保留代號；看不清楚填 null 並加入 warnings，不得猜測或由市值、損益反推。",
             schemaPath,
             workingDirectory,
             OutputPath: Path.Combine(workingDirectory, "ai-result.json"),
@@ -329,11 +331,9 @@ public static class OcrRecognitionContract
                   "nameText": { "type": ["string", "null"] },
                   "quantityText": { "type": ["string", "null"] },
                   "totalCostText": { "type": ["string", "null"] },
-                  "currency": { "type": ["string", "null"] },
-                  "rowObscured": { "type": "boolean" },
-                  "evidence": { "type": ["string", "null"] }
+                  "rowObscured": { "type": "boolean" }
                 },
-                "required": ["rowIndex", "tickerText", "nameText", "quantityText", "totalCostText", "currency", "rowObscured", "evidence"]
+                "required": ["rowIndex", "tickerText", "nameText", "quantityText", "totalCostText", "rowObscured"]
               }
             },
             "warnings": { "type": "array", "items": { "type": "string" } }

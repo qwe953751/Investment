@@ -1,8 +1,8 @@
 # 規劃 AI OCR
 
-> 日期：2026-09-05
+> 日期：2026-09-07
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 AI，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041` 已套用；Golden Set、效能調校、多圖 concurrency 與 Windows 實機仍待驗收**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 AI，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041` 已套用；本輪加入佇列短心跳回退、Worker 取件後立即接續與 Windows 自包含 EXE 排程；Golden Set、圖片／模型效能調校、多圖 concurrency 與 Windows 新接線實機仍待驗收**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -187,8 +187,8 @@ Tesseract 能可靠判斷自己是否成功。IMG_1604 證明「非零筆」與�
 
 ### 5.4 方案 D+：AI-first 辨識，Tesseract 只做可用性備援（已選定）
 
-AI 是優先文字／版面辨識器；「+」代表仍有第二遍 AI 稽核、股票名冊、數值解析、兩遍一致性、
-重複列、總額與人工確認等非機率性防線。只有 Worker 最近有心跳且至少一個 Agent 已登入時，
+AI 是優先文字／版面辨識器；「+」代表股票名冊、數值解析、重複列、總額與人工確認等非機率性防線，
+不是同一張圖片的第二次 AI 呼叫。只有 Worker 最近有心跳且至少一個 Agent 已登入時，
 網站才建立 AI 工作；否則在圖片離開瀏覽器前直接改跑 Tesseract。Structured Outputs 只用來
 限制資料形狀，不把「符合 JSON Schema」誤當成「內容正確」。
 
@@ -206,11 +206,11 @@ Claude Pro 與 ChatGPT Plus 訂閱額度；預設不呼叫按量計費 API。主
 
 ### 5.5 單一 CLI 與雙 Agent 的取捨
 
-較簡單的替代方案，是只選 Claude Code 或 Codex 其中一個 CLI，以兩組獨立 Prompt 跑兩遍。
-它的登入、版本與錯誤分類較少，但訂閱額度會成為單點，而且兩遍錯誤較容易高度相關。
+較簡單的替代方案，是只選 Claude Code 或 Codex 其中一個 CLI；它的登入、版本與錯誤分類較少，
+但訂閱額度會成為單點。本案仍保留雙 CLI 故障切換，但每張圖片只呼叫其中一個可用 Agent。
 
 本案選擇雙 Agent，原因是使用者已有兩個訂閱，且明確要求額度不足時自動切換；正常情況也可
-用不同供應商交叉稽核。代價是必須維護兩個 CLI 版本、登入狀態與錯誤分類，因此 Router 只
+用不同供應商作故障切換。代價是必須維護兩個 CLI 版本、登入狀態與錯誤分類，因此 Router 只
 處理「選擇執行器與故障切換」，辨識契約與 Validator 仍維持單一份。
 
 ### 5.6 執行位置：付費 API 與 Windows Worker 的取捨
@@ -243,13 +243,11 @@ Claude Pro 與 ChatGPT Plus 訂閱額度；預設不呼叫按量計費 API。主
         ↓
 同一個 .NET Web Project 的 `ocr-poc`
         ↓
-Agent Router：依 Pass 與可用額度排序 Claude／Codex
+Agent Router：依主要 Agent 登入／額度選擇單一可用 Claude／Codex
         ↓
-AI 第一遍：完整擷取
+單次 AI：完整擷取身份、股數、成本
         ↓
-AI 第二遍：專門稽核漏列、錯列、遮擋及 UI 雜訊
-        ↓
-確定性解析、兩遍比對與股票名冊驗證
+確定性解析、股票名冊驗證與人工確認
         ↓
 私有評估報告（不記錄原圖、Base64 或完整 OCR 文字）
 ```
@@ -272,7 +270,7 @@ AI 第二遍：專門稽核漏列、錯列、遮擋及 UI 雜訊
         ↓
 Mac／Windows `ocr-worker` 主動向外 claim 工作
         ↓
-短效下載至權限限縮暫存目錄 → 雙 CLI Router → AI 兩遍辨識 → 確定性驗證
+短效下載至權限限縮暫存目錄 → 雙 CLI Router → 單次 AI 辨識 → 確定性驗證
   ├─ 成功 → `ocr-complete` Edge Function → 立即刪除原圖
   └─ 兩 Agent 額度皆不足／皆不可用 → `fallback_required` → 瀏覽器 Tesseract → 確認清理
         ↓
@@ -290,16 +288,16 @@ Windows Worker 只建立向外的 HTTPS 連線，不開放入站連接埠。即�
 
 維持目前單一 Solution、單一 Web Project；下列是本輪已建立與後續待補的模組：
 
-- `Features/Assets/Ocr/Services/AiOcrOrchestrator.cs`：**已完成**兩遍辨識流程與 Pass checkpoint 邊界。
+- `Features/Assets/Ocr/Services/AiOcrOrchestrator.cs`：**已完成**單次辨識流程與 Agent quota fallback 邊界。
 - `Features/Assets/Ocr/Services/AgentQuotaRouter.cs`：**已完成** Pass 排序、額度冷卻與雙 Agent 切換。
 - `Features/Assets/Ocr/Services/OcrEngineFallbackPolicy.cs`：**已完成** Worker 心跳、已登入 Agent 與
   雙額度例外轉 Tesseract 的純決策核心，並已接入隔離工作樹內的正式站候選程式／Worker 狀態 API。
 - `Features/Assets/Ocr/Services/OcrExecutionCoordinator.cs`：**已完成**把上傳前 readiness 預檢、AI
-  兩遍辨識與已知不可用例外接到同一個 Tesseract fallback 邊界。
-- `Features/Assets/Ocr/Services/OcrPocRunner.cs`：**已完成** Mac 私有圖片 staging、雙 Pass 報告與 `ocr-poc` 選項解析。
-- `Features/Assets/Ocr/Services/OcrRecognitionValidator.cs`：**已完成**數值解析、兩遍列配對、一致性與 `verified` 判定；網站再以已載入股票名冊交叉驗證，不一致列標成需人工校對。
+  單次辨識與已知不可用例外接到同一個 Tesseract fallback 邊界。
+- `Features/Assets/Ocr/Services/OcrPocRunner.cs`：**已完成** Mac 私有圖片 staging、單次 AI 報告與 `ocr-poc` 選項解析。
+- `Features/Assets/Ocr/Services/OcrRecognitionValidator.cs`：**已完成**數值解析、單次列驗證與 `verified` 判定；網站再以已載入股票名冊交叉驗證，不一致列標成需人工校對。
 - `Features/Assets/Ocr/Services/OcrWorkerApiClient.cs`：**已完成**專用 Auth 登入／refresh、心跳、claim、短效下載與 lease completion。
-- `Features/Assets/Ocr/Services/OcrWorkerRunner.cs`：**已完成** `ocr-worker [--once]`、CLI 登入探測、私有暫存、雙 Pass、結果回寫及 AI 失敗轉 `fallback_required`。
+- `Features/Assets/Ocr/Services/OcrWorkerRunner.cs`：**已完成** `ocr-worker [--once]`、CLI 登入探測、私有暫存、單次 AI、結果回寫、佇列立即接續及 AI 失敗轉 `fallback_required`。
 - `Features/Assets/Ocr/Services/OcrEvaluationService.cs`：待完成；`--truth` 目前只驗證標準答案檔存在，尚未計算 Golden Set 指標。
 - `Infrastructure/Ai/Cli/OcrAgentContracts.cs`：**已完成**兩個 CLI 共用的圖片、Prompt、JSON Schema、結果與 checkpoint 契約。
 - `Infrastructure/Ai/Cli/ClaudeCodeCliRunner.cs`：**已完成** Claude Code 訂閱 CLI Adapter。
@@ -403,7 +401,10 @@ Structured Outputs 只能保證資料形狀，不保證內容真實。
 畫面上的平均成本、現價、市值、未實現損益與報酬率可作為稽核證據，但不直接寫回；現價與
 衍生數值繼續由既有行情及公式重算，避免同一個錯字同時污染多個欄位。
 
-### 7.2 兩遍 AI 的責任不同
+### 7.2 歷史雙 Pass 設計（目前不執行）
+
+以下內容保留作早期方案的決策背景，不是目前程式契約。使用者已定案每張圖片只跑一個 AI Agent；
+目前的防線是確定性 Validator、股票名冊交叉檢查、進度／用量觀測與人工確認。
 
 - 擷取遍：由上到下列出每一個可見持股區塊及原始欄位，不看目前資料庫持倉。
 - 稽核遍：專門回報可見列數、遺漏列、重複列、通知／時間等 UI 數字，以及遮擋是否影響欄位。
@@ -690,8 +691,8 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
 
 ### Phase 5：Windows 佈署驗收
 
-- 發布 .NET 10 Windows x64 版本，在非管理員專用帳號安裝／登入兩個 CLI，建立登入時啟動的
-  工作排程與最小權限設定。
+- 發布 .NET 10 Windows x64 自包含 EXE，在非管理員專用帳號安裝／登入兩個 CLI，建立登入時直接啟動
+  EXE 的工作排程與最小權限設定；PowerShell 僅負責一次性發布／註冊，不作常駐父程序。
 - 驗證公司網路、鎖定畫面、重開機後重新登入、心跳離線提示、訂閱登入撤銷及 log 脫敏。
 
 ### Phase 6：管理者限定試用
@@ -719,7 +720,7 @@ Edge Function；它不是使用目前兩個訂閱的免費備援，也不是繞�
 | CLI 未安裝或訂閱登入失效 | 另一個 Agent 可用時進入單 Agent 模式；兩者都不可用時不上傳或終止工作並回退 Tesseract |
 | CLI timeout／網路錯誤 | 轉 `fallback_required`；保留錯誤碼，不自動套用 |
 | CLI 回傳無效 JSON／Schema | 同一 Agent 最多修正重試一次；仍失敗則由另一 Agent 或 `needs_review` 處理，不當成 quota |
-| 兩遍 AI 不一致 | `needs_review`，清楚列出差異，不挑一個看似合理的答案 |
+| 單次 AI 結果格式／數值不安全 | `fallback_required` 或列級人工確認；不把結構通過誤稱為真實正確 |
 | 代號不存在或算術矛盾 | `rejected` 或 `needs_review`，不得成為可直接勾選的 verified 列 |
 | 網路重送或重複按上傳 | user-scoped idempotency key／input hash 去重；相同內容回傳既有 job，不重複消耗 Agent |
 | 瀏覽器關閉 | AI 工作可繼續；前端保存非影像 job descriptor，重載後恢復輪詢，fallback 以 owner signed URL 取回 |
@@ -848,17 +849,19 @@ Codex 路徑 fallback；沒有新增 Supabase migration、修改 Edge Function �
 自動重跑。其後正式手機重送兩張圖皆已取得 AI 草稿，證明本節接線修正有效；新發現的名稱反查、
 延遲、進度與常駐問題改由 §14.5 接續規劃。
 
-### 14.5 2026-09-06 正式 AI 成功後的名稱反查、延遲、進度與常駐（第一階段已實作，仍待外部驗收）
+### 14.5 2026-09-07 正式 AI 成功後的名稱反查、延遲、進度與常駐（第一階段已實作，仍待外部驗收）
 
 使用者以正式手機上傳 `IMG_1601.jpeg`、`IMG_1602.jpeg`，兩張都顯示 D+ AI 完成，
 耗時分別為 70 秒與 78 秒；草稿共有 37 列能讀到名稱與數值，但都被前端列為「缺少代號」。
 這證明上一節的 CLI 路徑問題已解決，現在的主要問題是 **AI 結果後處理與使用者等待體驗**，
 不是網站又回到舊 Tesseract。
 
-本節是本輪實作與下一階段驗收契約。名稱唯一反查、非阻斷差異、階段進度、用量觀測、兩遍並行、
+本節是本輪實作與下一階段驗收契約。名稱唯一反查、非阻斷差異、階段進度、用量觀測、單次 AI、
 單實例鎖與背景啟動腳本已加入程式；`db/041_ocr_progress.sql` 已於 2026-09-06 套用正式 Supabase，
-`ocr-jobs` Edge Function 已更新為 v7。圖片減量、模型／推理強度調校、多圖全域 concurrency、
-Golden Set 與 Windows 實機仍必須先驗收再改預設，不以本機 build 通過宣稱正確率或正式服務已完成。
+`ocr-jobs` Edge Function 已更新為 v9。Worker 取到工作後會立即接下一張，佇列超過 30 秒且短心跳確認
+Worker 不可用時會回退 Tesseract；Windows 排程改為直接啟動自包含 EXE，不依賴常駐 PowerShell。
+圖片減量、模型／推理強度調校、多圖全域 concurrency、Golden Set 與 Windows 鎖屏／重開機／斷網仍必須
+驗收，不以本機 build 通過宣稱正確率或正式服務已完成。
 
 #### A. 缺少代號時改以名稱解析，不阻斷整批
 
@@ -896,22 +899,26 @@ Tesseract 路徑也有 `assetKnownTicker(name)` 與 `assetOcrResolveIdentity(dra
 
 本次已移除同一圖片的第二個 Audit request，Worker 每張只啟動一個 CLI。Router 的另一個 Agent 僅是登入／額度故障切換，不會再對同一張圖片重跑第二遍；因此模型任務數直接減半，預期牆上時間與訂閱用量同步下降。Codex Runner 仍以 `--json` 彙總 input／cached input／output／reasoning usage，Claude 使用 `--effort max`。
 
-下方原先以兩個 Pass 為前提的效能拆解保留作歷史紀錄，不再是目前實作契約。後續縮短時間仍必須先用相同 Mac、相同圖片建立三輪基線，再以 Golden Set A/B 驗證圖片減量、多圖有界 concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、成本 90%、危險假陽性 0，不能只為速度放寬人工確認。
+後續縮短時間仍必須先用相同 Mac、相同圖片建立三輪基線，再以 Golden Set A/B 驗證圖片減量、多圖有界
+concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、成本 90%、危險假陽性 0，不能只為速度放寬
+人工確認。本輪已先做不改辨識語意的安全優化：工作完成後不再額外睡一個輪詢週期，AI Schema 移除不使用
+的 `currency`／`evidence` 輸出，降低輸出負擔；沒有在未量測前加入圖片縮放或多工作並行。
 
 <!-- 歷史雙 Pass 方案（已由本節上方單次 AI 決策取代） -->
 
 現有資料只記錄每張總耗時，還無法把 70～78 秒分解為排隊、下載、CLI 啟動、擷取 Pass、
 稽核 Pass 或 Validator。已可從程式確認的結構是：
 
-- 每張圖一定啟動兩次全新的 `codex exec --ephemeral`，擷取與稽核目前串行。
-- 前端的多張圖也是一張完成後才送下一張，Worker 每輪只 claim 一件，輪詢預設再加 5 秒。
-- 每個 Pass 最長可跑 4 分鐘，瀏覽器對單件工作等待上限為 9 分鐘。
-- 現行 Runner 把 stdout／stderr 整段讀完才處理，沒有收集 Pass 即時事件與 token usage。
+- 每張圖只啟動一次全新的 `codex exec --ephemeral`；主要 Agent 額度／登入失效才切換另一個 Agent。
+- 前端的多張圖仍是一張完成後才送下一張；Worker 每輪只 claim 一件，但取到工作後會立即 claim 下一件，
+  只有空佇列才等待預設 5 秒。
+- 單次 AI 最長可跑 4 分鐘，瀏覽器對單件工作等待上限為 9 分鐘；Worker 取到工作後不再額外等待輪詢週期。
+- 現行 Runner 把 stdout／stderr 整段讀完才處理，沒有收集 CLI 即時事件；只保留完成後的安全 token usage 彙總。
 
 實作順序：
 
 1. **先量測（已完成安全子集）**：Codex Runner 已增加 `--json` 並解析完成輸出的 JSONL usage；Worker
-   只記錄每個 Pass 的 agent、model、duration、input／cached input／output／reasoning token 總數與錯誤碼，
+   只記錄單次 AI 的 agent、model、duration、input／cached input／output／reasoning token 總數與錯誤碼，
    不記錄原圖、Prompt、推理內容或完整 OCR 文字。仍需用相同圖片重跑 3 次建立基線。
    原規劃的「以 JSONL 串流讀取 `turn.started`、`turn.completed` 與
    `usage`；Worker 只記錄每個 Pass 的 agent、model、duration、input／cached input／output／reasoning
@@ -920,19 +927,14 @@ Tesseract 路徑也有 `assetKnownTicker(name)` 與 `assetOcrResolveIdentity(dra
    原圖與縮圖要用 Golden Set A/B 比較，不可只以 JPEG 檔案變小就宣稱 token 或延遲一定降低。
 3. **固定 OCR 用模型與推理強度**：新增明確的 OCR-only 設定，先測試當前訂閱可用的快速視覺模型與
    `low` 推理強度；只有 Golden Set 準確率不下降才改預設。不在文件寫死未來可能下架的模型名稱。
-4. **兩遍並行（已完成單工作上限）**：Extraction 與 Audit 本來就被要求互不參考，Worker 已在同一工作內
-   並行執行兩個 Pass，並以線程安全 quota 狀態保護同一個 Router。全域多工作 concurrency 尚未開啟，
-   因此不會把多張圖片的訂閱用量無界放大。
-   原規劃的「先做全域 concurrency
-   上限 2、線程安全的 quota 冷卻與單工作 checkpoint。當只有 Codex 時，同 Agent 並行必須由設定開啟，
-   若出現速率限制就退回串行；並行只降低牆上時間，不會自動減少 token。
-5. **多圖有界並行（尚未開啟）**：前端先建立所有工作，Worker 共用同一個全域 concurrency budget，上限仍為 2；
+4. **多圖有界並行（尚未開啟）**：前端先建立所有工作，Worker 共用同一個全域 concurrency budget，上限仍為 2；
    不可因允許 20 張就同時啟動 40 個 CLI Pass。一件完成後若佇列還有工作，立即再 claim，
    無工作時才等下一個輪詢間隔。
-6. 只有量測證明「每次啟動 CLI」佔比很高，才進一步評估常駐 Codex App Server；這個方案複雜度與
+5. 只有量測證明「每次啟動 CLI」佔比很高，才進一步評估常駐 Codex App Server；這個方案複雜度與
    憑證攻擊面較大，不是第一批修正。
 
-不採「只留一個 AI Pass」的最簡單做法，因為它會直接拆掉 D+ 用來找漏列與錯列的核心安全層。
+不採「同一張圖跑兩遍模型」的最簡單安全說法，因為使用者已定案每張圖只跑一個 AI Agent；
+安全性由 JSON／數值／名冊 Validator 與人工勾選維持，而不是第二次模型呼叫。
 效能驗收先以相同 Mac、相同圖片三輪中位數至少縮短 30% 為門檻，目標是單張 P50 ≤ 45 秒、
 P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險假陽性 0 的前提下達標，必須優先保留準確率並如實顯示預估等待時間。
 
@@ -940,7 +942,7 @@ P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險�
 
 現在前端原本只會在 `queued`／`leased` 之間切換文字；本輪已加入每圖原生 progressbar、階段文字、
 批次計數與 status 恢復欄位。`db/041_ocr_progress.sql` 已於 2026-09-06 依明確授權套用正式 Supabase，
-`ocr-jobs` Edge Function 已更新為 v7，因此跨重載可保存並還原真實階段；舊 status 相容查詢仍保留，
+`ocr-jobs` Edge Function 已更新為 v9，因此跨重載可保存並還原真實階段；舊 status 相容查詢仍保留，
 避免不同部署版本短暫交錯時中斷 AI fallback。
 
 選定的正式方案是「伺服器保存階段，前端顯示階段式進度」：
@@ -990,7 +992,8 @@ P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險�
 網站不能把它喚醒，只能依 D+ 規格改跑 Tesseract。
 
 本輪已加入單實例檔案鎖、Mac LaunchAgent 安裝／移除腳本、背景 launcher，以及 Windows Task Scheduler
-註冊／移除 PowerShell 腳本。2026-09-07 已在公司 Windows 實裝專用 Worker；Mac LaunchAgent 仍未替使用者啟用。
+註冊／移除 PowerShell 腳本。2026-09-07 已在公司 Windows 實裝專用 Worker；本輪再將排程改成直接啟動
+自包含 `Invest.Web.exe`，PowerShell 只在發布／註冊／一次性診斷時使用；Mac LaunchAgent 仍未替使用者啟用。
 
 **公司 Windows 實機結果（2026-09-07）**：手機落到 Tesseract 的直接原因不是前端關閉 AI，而是公司機器沒有
 `Invest D+ OCR Worker` 排程，正式 Supabase 因而沒有兩分鐘內可用的 Windows Worker 心跳。設定時另發現三個
@@ -999,8 +1002,8 @@ P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險�
 
 採用的最小修正如下：建立一個只帶 `ocr_worker` app metadata 的 Windows 專用 Auth 身分；密碼只在建立當下的
 記憶體中出現，隨即以目前 Windows 使用者的 DPAPI 寫到 `%LOCALAPPDATA%\Investment`，不寫入 repository、log
-或文件。Worker 腳本以使用者 profile 的 LocalApplicationData 尋找憑證與 .NET 10，再退回明確設定／PATH；排程以
-同一個完成 Codex 登入的使用者、`Interactive`、`IgnoreNew` 執行。`ocr-worker --once` 成功，排程持續為
+或文件。Worker 自包含 EXE 以目前使用者的 DPAPI 解密憑證；排程以同一個完成 Codex 登入的使用者、
+`Interactive`、`IgnoreNew` 執行，常駐期間不再依賴 PowerShell 視窗。`ocr-worker --once` 成功，排程持續為
 `Running`，正式 Supabase 在相隔多個輪詢週期的查驗中都回報新鮮心跳，且 Codex 的 installed／authenticated／
 quotaAvailable 都是 `true`。這充分滿足前端 readiness 的資料條件；但尚未以新手機圖片建立真實工作，所以不能
 把這次心跳驗證宣稱為新的 OCR 成功率證據。
@@ -1010,10 +1013,11 @@ quotaAvailable 都是 `true`。這充分滿足前端 readiness 的資料條件�
 1. **Mac POC**：新增可安裝／移除／查狀態的 LaunchAgent，以同一個 macOS 使用者在登入後
    `RunAtLoad`，失敗時 `KeepAlive`；參數只指向已驗證的 launcher、固定 working directory 與絕對路徑。
    Worker 密碼仍由 Keychain 取得，stdout／stderr 寫入權限受控且可輪替的本機 log，不開 Terminal 視窗。
-2. **Windows 正式機（已完成基本驗收）**：Task Scheduler 安裝腳本由完成 Codex 訂閱登入的同一個
-   非管理員使用者在登入時啟動，使用 `Interactive`、失敗自動重啟與 `IgnoreNew`，不使用 `SYSTEM`。
-   專用 Worker 密碼由該使用者的 DPAPI 保護；另一個 Windows 帳號或 `SYSTEM` 即使看得到執行檔，也不能
-   解密憑證或保證拿到登入狀態。已驗證 `--once`、排程 Running 與正式心跳；鎖屏／重開機／斷網復線仍待。
+2. **Windows 正式機（已完成基本接線，需重新發布後實機驗收）**：先執行發布腳本產生自包含 EXE，
+   Task Scheduler 安裝腳本由完成 Codex 訂閱登入的同一個非管理員使用者在登入時啟動，使用 `Interactive`、
+   失敗自動重啟與 `IgnoreNew`，不使用 `SYSTEM` 或常駐 PowerShell。專用 Worker 密碼由該使用者的 DPAPI
+   保護；另一個 Windows 帳號或 `SYSTEM` 即使看得到執行檔，也不能解密憑證或保證拿到登入狀態。已驗證
+   程式與腳本可建置；公司電腦需重新發布 EXE、重註冊排程，再驗證心跳、鎖屏／重開機／斷網復線。
 3. **登入前提**：仍需在該 OS 帳號下完成一次 `codex login`；官方文件說明 CLI 會快取登入並在使用期間
    自動更新 ChatGPT 憑證。仍要在每次啟動與心跳執行 `codex login status`；登入被撤銷時不 claim 新工作。
 4. **單一實例（已加入程式）**：Worker 程式加跨平台單實例鎖，Windows Task 設 `IgnoreNew`，Mac launcher
@@ -1029,12 +1033,12 @@ quotaAvailable 都是 `true`。這充分滿足前端 readiness 的資料條件�
 
 1. 先將目前同時執行的 Worker 精確確認來源，保留一個；不可用模糊 `killall dotnet` 影響其他服務。
 2. **已完成**：依明確授權套用 `db/041_ocr_progress.sql`，並驗證四個欄位、兩個約束、RLS、RPC
-   `SECURITY INVOKER` 與 execute 權限；正式 `ocr-jobs` v7 的 Worker progress 假租約得到預期
+   `SECURITY INVOKER` 與 execute 權限；正式 `ocr-jobs` v9 的 Worker progress 假租約得到預期
    `409 lease_lost`，沒有修改真實 OCR 工作。
 3. 以 IMG_1601～1604 建立三輪 usage／duration 基線，再依 Golden Set A/B 選圖片減量、低推理或模型設定；
    尚未以速度換取未驗證的準確率。
-4. 驗收多圖全域 concurrency 2；若額度或速率限制不穩定，保持目前單工作兩 Pass 並行。
-5. 公司 Windows 已實跑 Task Scheduler、確認 DPAPI／.NET 10／持續心跳；接著驗證鎖屏／重開機／斷網／
+4. 驗收多圖全域 concurrency 2；若額度或速率限制不穩定，保持目前單工作單次 AI。
+5. 公司 Windows 重新發布自包含 EXE 並重註冊 Task Scheduler；接著驗證鎖屏／重開機／斷網／
    登入撤銷與 log 脫敏。Mac LaunchAgent 仍未啟用。
 6. 每個階段都要跑 .NET 10 Release build／全測試、JavaScript 語法與相關前端契約測試；涉及 Supabase
    時再驗 admin／worker／owner 權限矩陣、租約 token、重載恢復與過期清理。最後才用正式手機重跑兩張圖。

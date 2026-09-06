@@ -95,6 +95,12 @@ function availableAgents(agentStatus) {
         .map(([name]) => name);
 }
 
+function readinessHeartbeatAgeMs(request) {
+    const value = Number(new URL(request.url).searchParams.get('maxAgeSeconds'));
+    if (!Number.isFinite(value)) return MAX_HEARTBEAT_AGE_MS;
+    return Math.min(120, Math.max(15, value)) * 1000;
+}
+
 async function latestWorker() {
     const response = await serviceFetch(
         '/rest/v1/ocr_workers?select=id,name,platform,version,agent_status,last_heartbeat_at'
@@ -219,8 +225,9 @@ async function handleReadiness(request) {
     await cleanupExpiredObjects();
     const worker = await latestWorker();
     const heartbeatAt = worker?.last_heartbeat_at ? Date.parse(worker.last_heartbeat_at) : NaN;
+    const maxHeartbeatAgeMs = readinessHeartbeatAgeMs(request);
     const online = Number.isFinite(heartbeatAt)
-        && Date.now() - heartbeatAt <= MAX_HEARTBEAT_AGE_MS;
+        && Date.now() - heartbeatAt <= maxHeartbeatAgeMs;
     const agents = online ? availableAgents(worker.agent_status) : [];
 
     return json(request, 200, {
@@ -228,6 +235,7 @@ async function handleReadiness(request) {
         online,
         agents,
         lastHeartbeatAt: worker?.last_heartbeat_at ?? null,
+        maxHeartbeatAgeSeconds: maxHeartbeatAgeMs / 1000,
         workerName: online ? worker?.name ?? null : null,
         fallbackReason: !online ? 'worker_offline' : agents.length === 0 ? 'no_available_agent' : null
     });
