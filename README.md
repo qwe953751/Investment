@@ -178,7 +178,7 @@ publish-only run [33509783439](https://github.com/qwe953751/Investment/actions/r
 ### D+ OCR Worker
 
 本節描述已整合到 `main` 並發布到正式網站的 D+ 實作。正式 Supabase 後端、Mac 單張 E2E、重載恢復、submit
-冪等、受控 fallback 取回與每 5 分鐘逾期清理已驗證；公司 Windows Worker 的背景排程與正式心跳也已驗證。
+冪等、受控 fallback 取回與每 5 分鐘逾期清理已驗證；公司 Windows Worker 的隱藏背景排程與正式心跳也已驗證。
 Golden Set 的正確率門檻與修復後的新手機圖片 AI 成功仍是外部驗收，不會因管線成功就宣稱達到九成。
 
 **目前狀態（2026-09-07）**：前端、佇列、Worker claim 與 CLI 路徑接線已生效。健康探測與實際
@@ -189,9 +189,10 @@ Runner 共用 `OcrAgentExecutableResolver`；公司 Windows 的專用 Worker 已
 [規劃 AI OCR §14.5](Doc/技術文件/規劃AI%20OCR.md#145-2026-09-07-正式-ai-成功後的名稱反查延遲進度與常駐第一階段已實作仍待外部驗收)。
 
 2026-09-07 公司 Windows 實機已重新發布自包含 EXE、重註冊登入時排程並驗證：從 repo 根目錄執行
-`run-ocr-worker-windows.ps1 -Once` exit code 0；排程直接啟動發布目錄的 `Invest.Web.exe`，維持
-`Interactive`／`IgnoreNew`，正式 Supabase 心跳持續更新。另已修正 DPAPI payload 小寫 JSON 欄位與
-一次性啟動工作目錄，避免登入成功後仍被誤判為缺少 Worker 設定。
+`run-ocr-worker-windows.ps1 -Once` exit code 0；排程改由 `powershell.exe -WindowStyle Hidden`
+同步等待發布目錄的 `Invest.Web.exe`，維持 `Interactive`／`IgnoreNew`，並增加每 2 分鐘的無期限補啟動
+trigger。隱藏 host 的主控台視窗 handle 為 0、只有一個 Worker，正式 Supabase 心跳持續更新；另已修正
+DPAPI payload 小寫 JSON 欄位與一次性啟動工作目錄，避免登入成功後仍被誤判為缺少 Worker 設定。
 
 本次再發現排程曾消失，已重新註冊並將後端選擇規則固定為新鮮 Windows 優先；程式 commit
 `742d5e98e7cea1559f2563fd116bda492dae889f`、`ocr-jobs` v10 與 publish-only Action
@@ -212,17 +213,18 @@ scripts/run-ocr-worker-macos.sh
 Windows 專用帳號的密碼使用目前登入使用者的 DPAPI 保護，檔案只存在
 `%LOCALAPPDATA%\Investment\ocr-worker-windows.credential.dpapi`，不進 repository。首次受控設定時，
 以記憶體中的 `PSCredential` 呼叫 `scripts\set-ocr-worker-windows-credential.ps1`；先發布自包含 Worker，
-再由登入時排程直接啟動 `Invest.Web.exe`：
+再由登入時排程建立隱藏啟動器並等待 `Invest.Web.exe`：
 
 ```powershell
 scripts\publish-ocr-worker-windows.ps1
 scripts\register-ocr-worker-task-windows.ps1
 ```
 
-排程與 DPAPI 憑證必須屬於完成 `codex login` 的**同一個 Windows 使用者**；排程執行期間不需要常駐
-PowerShell，也不依賴互動式 PATH。自包含 EXE 從目前使用者的 DPAPI 檔案解密憑證，只在記憶體中建立
-Supabase 登入請求。Mac 使用 Keychain、Windows 使用 DPAPI；兩邊都不把密碼、service role、Management
-token 或 AI API Key 寫進 repository。完整狀態機、權限與 Windows 驗收清單見
+排程與 DPAPI 憑證必須屬於完成 `codex login` 的**同一個 Windows 使用者**；常駐期間使用的是不可見的
+PowerShell host，不依賴使用者開啟的 CMD／PowerShell 視窗，也不依賴互動式 PATH。Worker 自包含 EXE
+從目前使用者的 DPAPI 檔案解密憑證，只在記憶體中建立 Supabase 登入請求。Mac 使用 Keychain、Windows
+使用 DPAPI；兩邊都不把密碼、service role、Management token 或 AI API Key 寫進 repository。完整狀態機、
+權限與 Windows 驗收清單見
 [規劃 AI OCR §14](Doc/技術文件/規劃AI%20OCR.md#十四換模型接手前的預計修正與驗收清單)。
 
 筆記 #21 的 ETF 行情、資產帳戶與盤中交易日防呆已由功能程式碼 commit `85e0504b`

@@ -35,12 +35,17 @@ if (-not (Test-Path -LiteralPath $workerExecutable -PathType Leaf)) {
     throw "找不到已發布的 Worker：$workerExecutable；請先執行 publish-ocr-worker-windows.ps1。"
 }
 
-# 註冊時才執行 PowerShell；常駐期間工作排程直接啟動 EXE，關閉 PowerShell 視窗不會影響 Worker。
-$action = New-ScheduledTaskAction -Execute $workerExecutable -Argument 'ocr-worker' -WorkingDirectory $PublishDirectory
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+# 用隱藏 PowerShell 同步等待自包含 EXE，避免 WindowsCui Worker 建立可被使用者關閉的主控台視窗。
+$scriptPath = Join-Path $repoRoot 'scripts\run-ocr-worker-windows.ps1'
+$actionArguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -PublishDirectory `"$PublishDirectory`""
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArguments -WorkingDirectory $PublishDirectory
+$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+$recoveryTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) `
+    -RepetitionInterval (New-TimeSpan -Minutes 2)
+$triggers = @($logonTrigger, $recoveryTrigger)
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 9 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -Hidden
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
-Write-Output "已註冊並啟動 $taskName（使用者：$user；直接啟動 $workerExecutable；MultipleInstances=IgnoreNew）。"
+Write-Output "已註冊並啟動 $taskName（使用者：$user；隱藏啟動器；每 2 分鐘補啟動；MultipleInstances=IgnoreNew）。"

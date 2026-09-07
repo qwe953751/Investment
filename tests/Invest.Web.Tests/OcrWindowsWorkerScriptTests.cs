@@ -7,13 +7,20 @@ namespace Invest.Web.Tests;
 public sealed class OcrWindowsWorkerScriptTests
 {
     [Fact]
-    public void Windows排程直接啟動自包含Exe而非常駐PowerShell()
+    public void Windows排程使用隱藏啟動器並週期補啟動()
     {
         var script = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "scripts", "register-ocr-worker-task-windows.ps1"));
 
-        Assert.Contains("New-ScheduledTaskAction -Execute $workerExecutable", script, StringComparison.Ordinal);
+        Assert.Contains("New-ScheduledTaskAction -Execute 'powershell.exe'", script, StringComparison.Ordinal);
+        Assert.Contains("-WindowStyle Hidden", script, StringComparison.Ordinal);
+        Assert.Contains("run-ocr-worker-windows.ps1", script, StringComparison.Ordinal);
+        Assert.Contains("-PublishDirectory", script, StringComparison.Ordinal);
         Assert.Contains("-WorkingDirectory $PublishDirectory", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("-Execute 'powershell.exe'", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("New-ScheduledTaskTrigger -Once", script, StringComparison.Ordinal);
+        Assert.Contains("-RepetitionInterval (New-TimeSpan -Minutes 2)", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("-RepetitionDuration", script, StringComparison.Ordinal);
+        Assert.Contains("-MultipleInstances IgnoreNew", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("New-ScheduledTaskAction -Execute $workerExecutable", script, StringComparison.Ordinal);
         Assert.Contains("ocr-worker-windows.credential.dpapi", script, StringComparison.Ordinal);
     }
 
@@ -73,6 +80,7 @@ public sealed class OcrWindowsWorkerScriptTests
     {
         var script = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "scripts", "run-ocr-worker-windows.ps1"));
 
+        Assert.Contains("[string] $PublishDirectory", script, StringComparison.Ordinal);
         Assert.Contains("Push-Location $publishDirectory", script, StringComparison.Ordinal);
         Assert.Contains("& $workerExecutable @workerArgs", script, StringComparison.Ordinal);
         Assert.Contains("Pop-Location", script, StringComparison.Ordinal);

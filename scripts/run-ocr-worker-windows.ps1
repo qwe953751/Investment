@@ -1,14 +1,20 @@
 ﻿param(
-    [switch] $Once
+    [switch] $Once,
+    [string] $PublishDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$publishDirectory = if ([string]::IsNullOrWhiteSpace($env:OCR_WORKER_PUBLISH_DIR)) {
-    Join-Path $repoRoot 'publish\ocr-worker-win-x64'
+$publishDirectory = if ([string]::IsNullOrWhiteSpace($PublishDirectory)) {
+    if ([string]::IsNullOrWhiteSpace($env:OCR_WORKER_PUBLISH_DIR)) {
+        Join-Path $repoRoot 'publish\ocr-worker-win-x64'
+    }
+    else {
+        $env:OCR_WORKER_PUBLISH_DIR
+    }
 }
 else {
-    $env:OCR_WORKER_PUBLISH_DIR
+    $PublishDirectory
 }
 $workerExecutable = Join-Path $publishDirectory 'Invest.Web.exe'
 
@@ -26,7 +32,7 @@ if (Test-Path -LiteralPath $workerExecutable -PathType Leaf) {
     exit 0
 }
 
-# 只保留給開發／一次性診斷使用；正式排程直接啟動自包含 EXE，不會走這條路。
+# 發布目錄有 EXE 時正式排程與一次性診斷都使用自包含 EXE；以下 fallback 只保留給開發／診斷。
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $dotnetPath = $env:OCR_DOTNET_PATH
 if ([string]::IsNullOrWhiteSpace($dotnetPath)) {

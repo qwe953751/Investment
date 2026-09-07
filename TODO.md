@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 背景 Worker 已恢復並固定為預設；待 Golden Set／手機新圖片 AI 驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；待外部情境／Golden Set／手機新圖片 AI 驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🟢 已完成，待實機驗收發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1124,10 +1124,11 @@ v10 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
   授權套用，跨重載可由 status API 還原正式資料庫保存的階段與百分比。匿名與一般登入者仍不能執行
   progress RPC，只有 `service_role` 可呼叫。
 - 免手動 Terminal 的 Mac LaunchAgent／Windows Task Scheduler 腳本與跨平台單實例鎖已提交。2026-09-07
-  公司 Windows 已建立獨立 `ocr_worker` 身分，密碼只在目前使用者的 DPAPI 保護區保存；排程改為直接啟動
-  自包含 `Invest.Web.exe`，不再以常駐 PowerShell 包住 `dotnet run`。本次已重新發布 EXE、重註冊排程並完成
-  新接線的實機驗收；`--once`、排程 Running、單一 Worker 程序與正式 Supabase 連續心跳均已驗證 Codex
-  三項狀態為 `true`。Mac 仍未替使用者啟用；舊 Mac 程序不可用
+  公司 Windows 已建立獨立 `ocr_worker` 身分，密碼只在目前使用者的 DPAPI 保護區保存；前一版排程直接啟動
+  WindowsCui `Invest.Web.exe`，後續已改為 `powershell.exe -WindowStyle Hidden` 同步等待既有自包含 EXE，
+  並加入每 2 分鐘的無期限補啟動 trigger。`--once`、排程 Running、隱藏 host、單一 Worker 程序、
+  `IgnoreNew` 略過重複 trigger 與正式 Supabase 連續心跳均已實機驗證，Codex 三項狀態為 `true`。
+  Mac 仍未替使用者啟用；舊 Mac 程序不可用
   廣泛的 `killall dotnet` 處理。
 - 2026-09-07 再次查到公司 Windows 排程與 Worker 程序消失，造成心跳超過 120 秒、使用者測試回退
   Tesseract；已沿用 DPAPI 憑證重新註冊並恢復 `Running`。`ocr-jobs` 現在查詢多筆 Worker，明確優先
@@ -1143,8 +1144,9 @@ v10 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
    手機新圖片 AI 外部驗收。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能
    把品質標示為通過。目前 IMG_1604 的既有結果仍是 6 列、`verifiedCount=0`，不可宣稱九成。
-3. 公司 Windows 已驗證 .NET 10、DPAPI、登入時排程、Worker `--once`、自包含 EXE 直接啟動、持續心跳與
-   Codex readiness；仍待鎖屏／重開機、斷網復線、登入撤銷、程序重啟、長期用量與 log 保存期限驗收。
+3. 公司 Windows 已驗證 .NET 10、DPAPI、登入時排程、Worker `--once`、隱藏啟動器、自包含 EXE、每 2 分鐘
+   補啟動、持續心跳與 Codex readiness；仍待實際關閉可見終端機、鎖屏／重開機、斷網復線、登入撤銷、
+   程序被終止後的復原、長期用量與 log 保存期限驗收。
    Claude CLI 只有取得新的明確指示才安裝。
 
 ### 仍待實機或使用者確認

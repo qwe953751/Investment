@@ -1005,7 +1005,8 @@ P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險�
 採用的最小修正如下：建立一個只帶 `ocr_worker` app metadata 的 Windows 專用 Auth 身分；密碼只在建立當下的
 記憶體中出現，隨即以目前 Windows 使用者的 DPAPI 寫到 `%LOCALAPPDATA%\Investment`，不寫入 repository、log
 或文件。Worker 自包含 EXE 以目前使用者的 DPAPI 解密憑證；排程以同一個完成 Codex 登入的使用者、
-`Interactive`、`IgnoreNew` 執行，常駐期間不再依賴 PowerShell 視窗。`ocr-worker --once` 成功，排程持續為
+`Interactive`、`IgnoreNew` 執行，常駐期間由 `powershell.exe -WindowStyle Hidden` 同步等待 Worker，
+不依賴使用者保留可見的 PowerShell 視窗。`ocr-worker --once` 成功，排程持續為
 `Running`，正式 Supabase 在相隔多個輪詢週期的查驗中都回報新鮮心跳，且 Codex 的 installed／authenticated／
 quotaAvailable 都是 `true`。這充分滿足前端 readiness 的資料條件；但尚未以新手機圖片建立真實工作，所以不能
 把這次心跳驗證宣稱為新的 OCR 成功率證據。
@@ -1017,7 +1018,8 @@ quotaAvailable 都是 `true`。這充分滿足前端 readiness 的資料條件�
    Worker 密碼仍由 Keychain 取得，stdout／stderr 寫入權限受控且可輪替的本機 log，不開 Terminal 視窗。
 2. **Windows 正式機（基本接線與本次重新註冊已完成；長期情境仍待驗收）**：先執行發布腳本產生自包含 EXE，
    Task Scheduler 安裝腳本由完成 Codex 訂閱登入的同一個非管理員使用者在登入時啟動，使用 `Interactive`、
-   失敗自動重啟與 `IgnoreNew`，不使用 `SYSTEM` 或常駐 PowerShell。專用 Worker 密碼由該使用者的 DPAPI
+   隱藏 PowerShell host、每 2 分鐘無期限補啟動、失敗自動重啟與 `IgnoreNew`，不使用 `SYSTEM` 或可見的
+   手動 PowerShell。專用 Worker 密碼由該使用者的 DPAPI
    保護；另一個 Windows 帳號或 `SYSTEM` 即使看得到執行檔，也不能解密憑證或保證拿到登入狀態。已驗證
     程式與腳本可建置；公司電腦已重新發布 EXE、重註冊排程並驗證心跳，仍需驗證鎖屏／重開機／斷網復線。
 3. **登入前提**：仍需在該 OS 帳號下完成一次 `codex login`；官方文件說明 CLI 會快取登入並在使用期間
@@ -1053,7 +1055,28 @@ readiness 門檻。這與前端契約一致：沒有新鮮 Worker 時不上傳�
 manifest／`site.js` 已核對。仍須用正式最高權限手機新送一張圖片確認 `succeeded`；鎖屏、重開機、
 斷網復線、CLI 登入撤銷、程序重啟、長期用量與 Golden Set 仍待外部驗收。
 
-#### G. 下一個模型的修改範圍與驗收順序
+#### G. 隱藏啟動器與週期復原（2026-09-07）
+
+前一版把排程 action 改成直接啟動 `Invest.Web.exe`，只移除了常駐 PowerShell 父程序，沒有改變 EXE
+仍是 `WindowsCui` 主控台程式的事實；關閉承載 Worker 的主控台後，工作排程會留下但程序以
+`0xC000013A` 結束，心跳超過 120 秒後網站便正確回退 Tesseract。這次不改 C# Worker，也不增加第三方
+依賴，改由排程以 `powershell.exe -WindowStyle Hidden` 執行既有
+`scripts/run-ocr-worker-windows.ps1`，傳入完整發布目錄並同步等待自包含 EXE；使用者關閉可見的
+CMD／PowerShell 不會關閉這個隱藏 host。
+
+同一個 Task Scheduler 定義保留登入 trigger，另加入每 2 分鐘的無期限 time trigger；`IgnoreNew` 讓
+Worker 正常運行時不產生第二個 instance，Worker／host 意外結束後由下一輪補啟動。重複 trigger 的 duration
+刻意省略，因 Windows Task Scheduler schema 以未指定 duration 表示無期限；使用 `TimeSpan.MaxValue` 會被
+轉成超出 XML 範圍的值而拒絕註冊。
+
+本機回歸測試先在舊腳本上以 2 個失敗案例確認紅燈，修正後 Windows Worker 腳本契約測試 5/5 通過；兩支
+PowerShell 腳本解析通過。公司 Windows 實機註冊後確認排程 `Running`、action 為隱藏 PowerShell、隱藏
+host 的主控台 handle 為 0、Worker 只有 1 個，週期 trigger 為 `PT2M` 且 duration 空白；Task Scheduler
+也記錄下一輪 trigger 因 `IgnoreNew` 正確略過，正式 Windows 心跳恢復為 3 秒、Codex
+`installed`／`authenticated`／`quotaAvailable` 均為 `true`。仍待使用者實際關閉所有可見終端機、鎖屏、重開機、
+斷網復線與正式手機新圖 `succeeded` 驗收。
+
+#### H. 下一個模型的修改範圍與驗收順序
 
 1. 先將目前同時執行的 Worker 精確確認來源，保留一個；不可用模糊 `killall dotnet` 影響其他服務。
 2. **已完成**：依明確授權套用 `db/041_ocr_progress.sql`，並驗證四個欄位、兩個約束、RLS、RPC
@@ -1062,8 +1085,8 @@ manifest／`site.js` 已核對。仍須用正式最高權限手機新送一張�
 3. 以 IMG_1601～1604 建立三輪 usage／duration 基線，再依 Golden Set A/B 選圖片減量、低推理或模型設定；
    尚未以速度換取未驗證的準確率。
 4. 驗收多圖全域 concurrency 2；若額度或速率限制不穩定，保持目前單工作單次 AI。
-5. 公司 Windows 自包含 EXE 與 Task Scheduler 已重新發布／註冊；接著驗證鎖屏／重開機／斷網／
-   登入撤銷與 log 脫敏。Mac LaunchAgent 仍未啟用。
+5. 公司 Windows 隱藏啟動器與每 2 分鐘補啟動已重新發布／註冊；接著驗證關閉可見終端機、鎖屏／重開機／
+   斷網／登入撤銷與 log 脫敏。Mac LaunchAgent 仍未啟用。
 6. 每個階段都要跑 .NET 10 Release build／全測試、JavaScript 語法與相關前端契約測試；涉及 Supabase
    時再驗 admin／worker／owner 權限矩陣、租約 token、重載恢復與過期清理。最後才用正式手機重跑兩張圖。
 
