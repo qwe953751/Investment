@@ -132,7 +132,7 @@ public sealed class InMemoryOcrPassCheckpointStore : IOcrPassCheckpointStore
 }
 
 public sealed record OcrAgentRouterOptions(
-    OcrAgentKind PrimaryAgent = OcrAgentKind.Claude,
+    OcrAgentKind PrimaryAgent = OcrAgentKind.Codex,
     TimeSpan? QuotaCooldown = null,
     TimeProvider? TimeProvider = null,
     string? ClaudeModel = null,
@@ -152,8 +152,8 @@ public sealed record OcrAgentRouterOptions(
         var primary = Environment.GetEnvironmentVariable("OCR_AGENT_PRIMARY");
         var primaryAgent = primary?.Trim().ToLowerInvariant() switch
         {
-            "codex" => OcrAgentKind.Codex,
-            _ => OcrAgentKind.Claude
+            "claude" => OcrAgentKind.Claude,
+            _ => OcrAgentKind.Codex
         };
 
         var cooldown = Environment.GetEnvironmentVariable("OCR_AGENT_QUOTA_RECHECK_MINUTES");

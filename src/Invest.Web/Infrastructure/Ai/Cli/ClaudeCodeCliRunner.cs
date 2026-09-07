@@ -35,32 +35,10 @@ public sealed class ClaudeCodeCliRunner(
             CreateNoWindow = true
         };
 
-        // restricted 會隔離工作目錄、停用命令執行與專案設定；Read 是唯一需要的內建工具。
-        startInfo.ArgumentList.Add("--restricted");
-        startInfo.ArgumentList.Add("--tools");
-        startInfo.ArgumentList.Add("Read");
-        startInfo.ArgumentList.Add("--permission-prompts");
-        startInfo.ArgumentList.Add("none");
-        startInfo.ArgumentList.Add("--no-session-persistence");
-        startInfo.ArgumentList.Add("--output-format");
-        startInfo.ArgumentList.Add("json");
-        startInfo.ArgumentList.Add("--json-schema");
-        startInfo.ArgumentList.Add(schema);
-
-        if (!string.IsNullOrWhiteSpace(request.Model))
+        foreach (var argument in BuildArguments(request, schema))
         {
-            startInfo.ArgumentList.Add("--model");
-            startInfo.ArgumentList.Add(request.Model);
+            startInfo.ArgumentList.Add(argument);
         }
-
-        if (!string.IsNullOrWhiteSpace(request.ReasoningEffort))
-        {
-            startInfo.ArgumentList.Add("--effort");
-            startInfo.ArgumentList.Add(request.ReasoningEffort);
-        }
-
-        startInfo.ArgumentList.Add("-p");
-        startInfo.ArgumentList.Add(request.Prompt);
 
         var result = await RunProcessAsync(startInfo, request, cancellationToken);
         return result.Status == OcrAgentRunStatus.Success
@@ -68,7 +46,56 @@ public sealed class ClaudeCodeCliRunner(
             : result;
     }
 
-    private static OcrAgentRunResult UnwrapStructuredOutput(OcrAgentRunResult result)
+    /// <summary>
+    /// 組出實際要傳給 CLI 的參數列表；抽出來讓測試能在不啟動真實程序的情況下
+    /// 驗證旗標名稱與圖片路徑是否正確送出（見 ClaudeCodeCliRunnerTests）。
+    /// </summary>
+    internal static IReadOnlyList<string> BuildArguments(OcrAgentRequest request, string schema)
+    {
+        // restricted 會隔離工作目錄、停用命令執行與專案設定；Read 是唯一需要的內建工具。
+        // dontAsk 搭配 permission-prompts none：無人值守時一律拒絕未授權動作，不重試等待核准。
+        var arguments = new List<string>
+        {
+            "--restricted",
+            "--allowedTools",
+            "Read",
+            "--permission-mode",
+            "dontAsk",
+            "--permission-prompts",
+            "none",
+            "--no-session-persistence",
+            "--output-format",
+            "json",
+            "--json-schema",
+            schema
+        };
+
+        if (!string.IsNullOrWhiteSpace(request.Model))
+        {
+            arguments.Add("--model");
+            arguments.Add(request.Model);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ReasoningEffort))
+        {
+            arguments.Add("--effort");
+            arguments.Add(request.ReasoningEffort);
+        }
+
+        arguments.Add("-p");
+        arguments.Add(BuildPrompt(request.ImagePath, request.Prompt));
+
+        return arguments;
+    }
+
+    /// <summary>
+    /// Claude CLI 沒有 Codex `--image` 這種專用參數；圖片改用允許的 Read 工具讀取，
+    /// 所以必須在 prompt 裡明講絕對路徑並要求先讀取，否則 Claude 只會收到純文字指示。
+    /// </summary>
+    private static string BuildPrompt(string imagePath, string instructions)
+        => $"請先使用 Read 工具讀取這個路徑的圖片檔案：{imagePath}\n\n讀取後，{instructions}";
+
+    internal static OcrAgentRunResult UnwrapStructuredOutput(OcrAgentRunResult result)
     {
         if (string.IsNullOrWhiteSpace(result.Output))
         {

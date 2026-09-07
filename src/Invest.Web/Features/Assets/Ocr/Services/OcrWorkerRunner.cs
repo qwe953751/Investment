@@ -305,7 +305,7 @@ public sealed class OcrWorkerRunner(
         var now = DateTimeOffset.UtcNow;
         var claude = await ProbeAsync(
             OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude),
-            ["auth", "status"],
+            ["auth", "status", "--text"],
             cancellationToken);
         var codex = await ProbeAsync(
             OcrAgentExecutableResolver.Resolve(OcrAgentKind.Codex),

@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace Invest.Web.Infrastructure.Ai.Cli;
@@ -15,35 +16,65 @@ public static partial class AgentCliResultClassifier
         string? error,
         TimeSpan duration)
     {
-        var combined = string.Join('\n', output, error).Trim();
-
-        if (HasQuotaMarker(combined))
-        {
-            return Create(agent, OcrAgentRunStatus.QuotaExhausted, output, "quota_exhausted", exitCode, duration, combined);
-        }
-
-        if (HasAuthenticationMarker(combined))
-        {
-            return Create(agent, OcrAgentRunStatus.AuthenticationRequired, output, "authentication_required", exitCode, duration, combined);
-        }
-
+        // CLI 正常結束且已有內容即視為成功，必須最先判斷；不可再用內容關鍵字覆寫，
+        // 否則券商截圖辨識結果裡的數字（例如總成本 14290、股數 429）會被誤判成配額或認證錯誤。
         if (exitCode == 0 && !string.IsNullOrWhiteSpace(output))
         {
             return Create(agent, OcrAgentRunStatus.Success, output, null, exitCode, duration, null);
         }
 
-        if (HasTransientMarker(combined))
+        // 只有失敗時才需要判斷原因；只掃 stderr 與 stdout 中「非 JSON」的診斷行，
+        // 不掃已讀回的辨識結果內容（即使該次失敗，`output` 仍可能是 ai-result.json 的 JSON 內容）。
+        var diagnosticText = BuildDiagnosticText(output, error);
+
+        if (HasQuotaMarker(diagnosticText))
         {
-            return Create(agent, OcrAgentRunStatus.TransientFailure, output, "transient_failure", exitCode, duration, combined);
+            return Create(agent, OcrAgentRunStatus.QuotaExhausted, output, "quota_exhausted", exitCode, duration, diagnosticText);
+        }
+
+        if (HasAuthenticationMarker(diagnosticText))
+        {
+            return Create(agent, OcrAgentRunStatus.AuthenticationRequired, output, "authentication_required", exitCode, duration, diagnosticText);
+        }
+
+        if (HasTransientMarker(diagnosticText))
+        {
+            return Create(agent, OcrAgentRunStatus.TransientFailure, output, "transient_failure", exitCode, duration, diagnosticText);
         }
 
         if (string.IsNullOrWhiteSpace(output))
         {
-            return Create(agent, OcrAgentRunStatus.InvalidOutput, output, "empty_output", exitCode, duration, combined);
+            return Create(agent, OcrAgentRunStatus.InvalidOutput, output, "empty_output", exitCode, duration, diagnosticText);
         }
 
-        return Create(agent, OcrAgentRunStatus.Fatal, output, "cli_failure", exitCode, duration, combined);
+        return Create(agent, OcrAgentRunStatus.Fatal, output, "cli_failure", exitCode, duration, diagnosticText);
     }
+
+    /// <summary>
+    /// 組出只用來判斷 CLI 狀態的文字：完整 stderr，加上 stdout 中看起來不是 JSON 的行。
+    /// Codex `--json` 的 stdout 可能混有非 JSON 診斷行；排除 JSON 行可避免把辨識結果
+    /// （或已寫回的 ai-result.json 內容）誤當成配額／認證／暫時性錯誤的關鍵字來源。
+    /// </summary>
+    private static string BuildDiagnosticText(string? output, string? error)
+    {
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            lines.Add(error);
+        }
+
+        if (!string.IsNullOrWhiteSpace(output))
+        {
+            lines.AddRange(output
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(line => !LooksLikeJson(line)));
+        }
+
+        return string.Join('\n', lines).Trim();
+    }
+
+    private static bool LooksLikeJson(string line)
+        => line.Length > 0 && line[0] is '{' or '[';
 
     public static OcrAgentRunResult Unavailable(
         OcrAgentKind agent,
@@ -86,7 +117,7 @@ public static partial class AgentCliResultClassifier
             || normalized.Contains("agent sdk credit", StringComparison.Ordinal)
             || normalized.Contains("monthly limit", StringComparison.Ordinal)
             || normalized.Contains("too many requests", StringComparison.Ordinal)
-            || normalized.Contains("429", StringComparison.Ordinal)
+            || Http429Pattern().IsMatch(normalized)
             || normalized.Contains("budget limit reached", StringComparison.Ordinal);
     }
 
@@ -100,7 +131,7 @@ public static partial class AgentCliResultClassifier
             || normalized.Contains("oauth", StringComparison.Ordinal)
             || normalized.Contains("credentials", StringComparison.Ordinal)
             || normalized.Contains("api key", StringComparison.Ordinal)
-            || normalized.Contains("401", StringComparison.Ordinal);
+            || Http401Pattern().IsMatch(normalized);
     }
 
     private static bool HasTransientMarker(string value)
@@ -112,9 +143,7 @@ public static partial class AgentCliResultClassifier
             || normalized.Contains("network", StringComparison.Ordinal)
             || normalized.Contains("overloaded", StringComparison.Ordinal)
             || normalized.Contains("temporarily unavailable", StringComparison.Ordinal)
-            || normalized.Contains("502", StringComparison.Ordinal)
-            || normalized.Contains("503", StringComparison.Ordinal)
-            || normalized.Contains("504", StringComparison.Ordinal)
+            || Http5xxPattern().IsMatch(normalized)
             || normalized.Contains("econnreset", StringComparison.Ordinal);
     }
 
@@ -131,4 +160,15 @@ public static partial class AgentCliResultClassifier
 
     [GeneratedRegex("(?i)(api[_ -]?key|token|bearer)\\s*[:=]\\s*[^\\s,;]+")]
     private static partial Regex ApiKeyPattern();
+
+    // 裸數字 HTTP 狀態碼要求前後不是數字，避免命中辨識結果或診斷文字中的股數／金額
+    // （例如總成本 14290、股價 1429.5）；不用 \b 是因為 \b 在全形或非 ASCII 邊界前後行為不穩定。
+    [GeneratedRegex(@"(?<!\d)429(?!\d)")]
+    private static partial Regex Http429Pattern();
+
+    [GeneratedRegex(@"(?<!\d)401(?!\d)")]
+    private static partial Regex Http401Pattern();
+
+    [GeneratedRegex(@"(?<!\d)50[234](?!\d)")]
+    private static partial Regex Http5xxPattern();
 }

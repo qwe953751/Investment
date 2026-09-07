@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；Max／Low／人工答案評估資料接線已完成；待外部情境／Golden Set／手機新圖片 AI 驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；Max／Low／人工答案評估資料接線已完成；Agent 優先序改回 Codex 優先、CLI 分類器誤判與 Claude Adapter 缺陷已修正、Claude CLI 已裝妥；待使用者完成 Claude Pro 登入與外部情境／Golden Set／手機新圖片 AI 驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🟢 已完成，待實機驗收發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1079,7 +1079,10 @@ fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並
 跨平台單實例鎖與背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs` 已更新為
 v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 Worker 已完成 DPAPI 憑證、
 登入時排程與正式心跳驗收。Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0、圖片／模型效能調校、
-多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收。依使用者指示，不自行安裝或設定 Claude CLI。**
+多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收。2026-09-07 使用者明確要求安裝 Claude CLI 並修好
+雙 Agent 三層降級（Codex 主要 → 額度／權限不足切 Claude → 兩者都不行才 Tesseract）；已修正 Agent 優先序
+預設值、CLI 分類器誤判、Claude Adapter 從未送出圖片等既有缺陷，並在公司 Windows 裝妥 Claude CLI
+`2.1.263`，但 **Claude Pro 訂閱登入需使用者自行以互動方式完成，本輪尚未登入，雙 Agent 仍未完整驗收**。**
 
 ### 已討論
 
@@ -1151,11 +1154,23 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
 3. 公司 Windows 已驗證 .NET 10、DPAPI、登入時排程、Worker `--once`、隱藏啟動器、自包含 EXE、每 2 分鐘
    補啟動、持續心跳與 Codex readiness；仍待實際關閉可見終端機、鎖屏／重開機、斷網復線、登入撤銷、
    程序被終止後的復原、長期用量與 log 保存期限驗收。
-   Claude CLI 只有取得新的明確指示才安裝。
+4. 2026-09-07：修正 Agent 優先序預設值（Codex 優先，比照 Mac launcher）、`AgentCliResultClassifier`
+   誤判辨識結果數字為配額／認證錯誤、`ClaudeCodeCliRunner` 從未送出圖片／旗標名稱錯誤／缺少
+   `--permission-mode dontAsk` 等既有缺陷；新增 14 個回歸測試，`dotnet test` 429/429 全綠。公司
+   Windows 已用官方原生安裝器裝上 Claude Code CLI `2.1.263`（真正 exe，非 npm shim），並釘選
+   `OCR_CLAUDE_PATH`／`OCR_CODEX_PATH`／`OCR_AGENT_PRIMARY=codex` 為使用者環境變數；重新發布 Worker
+   並以 `-Once` 驗證 exit code 0，排程重啟後恢復 `Running`。完整脈絡見
+   [規劃 AI OCR §14.6](技術文件/規劃AI%20OCR.md#146-2026-09-07-windows-agent-優先序修正與-claude-cli-安裝第一階段已實作仍待登入與外部驗收)。
 
 ### 仍待實機或使用者確認
 
-- Claude CLI 的安裝、Pro 登入、版本與 headless smoke test；完成前不宣稱雙 Agent 已可正式執行。
+- **Claude Pro 訂閱登入**：需使用者自行執行 `claude auth login`（互動完成瀏覽器 OAuth）；這一步
+  無法由 AI agent 代為完成。登入前 Claude 探測會持續回報 `authenticated=false`，Router 正確略過
+  Claude 只用 Codex，不影響現有單 Agent 運作。
+- 登入完成後，需要用真實持倉截圖驗證 Claude 能透過 Read 工具讀到圖片、`structured_output` 符合
+  Schema；完成前不宣稱雙 Agent 已可正式執行。
+- 三層降級鏈的完整驗收（暫時讓 `OCR_CODEX_PATH` 失效確認自動切 Claude、兩者都失效確認網站正確
+  回報 Tesseract fallback）本輪只驗證了 Codex 單獨可用的部分。
 - 公司資安是否允許持倉截圖短暫送往 Supabase Storage 與外部 AI 供應商。
 - 修復後以正式最高權限手機新送一張圖片，確認畫面顯示 D+ AI `succeeded` 而非 Tesseract；不拿測試或
   假資料寫入正式持倉。

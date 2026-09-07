@@ -18,6 +18,27 @@ else {
 }
 $workerExecutable = Join-Path $publishDirectory 'Invest.Web.exe'
 
+# 比照 scripts/run-ocr-worker-macos.sh：主要 Agent 固定 Codex，並盡量固定絕對路徑，
+# 避免排程以 -NoProfile 啟動時的 PATH 差異讓心跳與實際執行看到不同的可執行檔。
+if ([string]::IsNullOrWhiteSpace($env:OCR_AGENT_PRIMARY)) {
+    $env:OCR_AGENT_PRIMARY = 'codex'
+}
+if ([string]::IsNullOrWhiteSpace($env:OCR_CODEX_PATH)) {
+    $codexCommand = Get-Command codex -ErrorAction SilentlyContinue
+    if ($null -ne $codexCommand) {
+        $env:OCR_CODEX_PATH = $codexCommand.Source
+    }
+}
+if ([string]::IsNullOrWhiteSpace($env:OCR_CLAUDE_PATH)) {
+    $claudeCommand = Get-Command claude -ErrorAction SilentlyContinue
+    if ($null -ne $claudeCommand) {
+        $env:OCR_CLAUDE_PATH = $claudeCommand.Source
+    }
+}
+Write-Output "OCR_AGENT_PRIMARY=$($env:OCR_AGENT_PRIMARY)"
+Write-Output "OCR_CODEX_PATH=$($env:OCR_CODEX_PATH)"
+Write-Output "OCR_CLAUDE_PATH=$($env:OCR_CLAUDE_PATH)"
+
 if (Test-Path -LiteralPath $workerExecutable -PathType Leaf) {
     $workerArgs = @('ocr-worker')
     if ($Once) { $workerArgs += '--once' }

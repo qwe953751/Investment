@@ -1129,6 +1129,87 @@ Max 工作依 Worker 的 `OCR_EVALUATION_SAMPLE_RATE` 決定是否進入背景�
 或只看平均值升級的路徑。`db/042_ocr_evaluation.sql` 已套用正式 Supabase，`ocr-jobs` Edge Function v11
 已部署；本輪只更新資料庫／Edge／Worker／前端與文件，沒有發布靜態網站。
 
+### 14.6 2026-09-07 Windows Agent 優先序修正與 Claude CLI 安裝（第一階段已實作，仍待登入與外部驗收）
+
+使用者要求確認公司 Windows 機器的 AI OCR 現況，並比對 Codex／Claude 是否都能正常運作。診斷發現
+AI OCR 確實在跑，但只靠 Codex 一條腿，且現況與使用者原始三層降級設計（**Codex 主要 → 流量／權限
+不足才切 Claude → 兩者都不行才回退瀏覽器 Tesseract**）相反；使用者確認設計意圖後，本輪決定安裝
+Claude CLI 並修好雙 Agent 接線，而不是繼續維持「不裝 Claude」的舊指示。
+
+**發現的問題（依嚴重度）：**
+
+1. **Agent 優先序預設值與設計相反。** `OcrAgentRouterOptions.FromEnvironment()` 在 `OCR_AGENT_PRIMARY`
+   未設定時預設 `Claude`；Mac launcher（`run-ocr-worker-macos.sh`）有 `export OCR_AGENT_PRIMARY=codex`
+   救回這個預設，但 Windows 的 `run-ocr-worker-windows.ps1` 完全沒有設定任何 `OCR_*` 環境變數。這台
+   Windows 機器上 `OCR_*` 一個都沒設，於是每次辨識都先啟動一個注定失敗的 `claude`（未安裝）→
+   `Win32Exception` → `Unavailable` → 才 fallback 到 Codex；Codex 雖然成功，但被記成
+   `UsedFallback=true`／`single_agent_fallback`，污染了剛建立的 OCR Max/Low 評估資料集。
+2. **`AgentCliResultClassifier` 會把辨識結果內容誤判成配額或認證錯誤。** 分類邏輯原本「先掃配額／
+   認證關鍵字，最後才判斷成功」，且掃描對象包含已讀回的 `ai-result.json` 完整內容；券商截圖辨識
+   結果中的股數、金額很容易含有裸數字 `429`／`401`（例如總成本 `14290`、股數 `429`），會被
+   `Contains("429")` 之類的裸子字串比對命中，讓一次成功辨識被誤判成 `QuotaExhausted`，觸發 30 分鐘
+   冷卻並嘗試 Claude；兩者都「額度不足」時甚至會誤降級到 Tesseract。
+3. **`ClaudeCodeCliRunner` 從未把圖片交給 Claude。** 對照 `CodexCliRunner` 有 `--image <path>`，
+   `ClaudeCodeCliRunner.RunAsync` 驗證了 `request.ImagePath` 非空卻完全沒有使用它，`prompt` 也只有
+   辨識指示文字、沒有檔案路徑。這條路徑在本輪之前**不可能成功過**，與既有文件「Claude CLI 尚未送出
+   真實圖片」的記載一致。另外命令列使用 `--tools Read`（應為 `--allowedTools "Read"`），且缺少
+   `--permission-mode dontAsk`，無人值守排程情境下容易卡在權限詢問。
+4. **`AgentQuotaRouter` 只有 `AuthenticationRequired`／`Unavailable` 會換下一個 Agent**；
+   `InvalidOutput`／`TransientFailure`／`Fatal` 會直接讓整個 Pass 失敗，不會再嘗試下一個 Agent。
+   這與使用者「流量／權限不足才換 Agent」的原始描述一致，本輪**刻意維持現狀不擴大切換條件**——
+   如果之後 Claude 的輸出格式問題頻繁觸發 `InvalidOutput` 導致整批失敗，才需要另外討論是否放寬。
+
+**本輪已修正：**
+
+- `OcrAgentContracts.cs`：`OcrAgentRouterOptions.PrimaryAgent` 預設值與 `FromEnvironment()` 未設定時
+  的預設值都改為 `Codex`；`OCR_AGENT_PRIMARY=claude` 才會切回 Claude。
+- `run-ocr-worker-windows.ps1`：比照 Mac launcher，在啟動 Worker 前自動釘選
+  `OCR_AGENT_PRIMARY=codex`、並以 `Get-Command codex`／`Get-Command claude` 補上
+  `OCR_CODEX_PATH`／`OCR_CLAUDE_PATH`（若尚未由環境變數指定），並印出三者供診斷。
+- `AgentCliResultClassifier.cs`：`exitCode==0 且 output 非空` 一律先判為 `Success`，不會再被內容關鍵字
+  覆寫；配額／認證／暫時性錯誤的判斷改成只掃 stderr 加上 stdout 中「看起來不是 JSON」的行
+  （`BuildDiagnosticText`／`LooksLikeJson`），避免掃到已讀回的辨識結果；`429`／`401`／`502-504` 的裸
+  數字比對改用 `(?<!\d)429(?!\d)` 這類邊界限制的正規表示式，不再誤判 `14290`、`1429.5` 這類數字。
+- `ClaudeCodeCliRunner.cs`：命令列改用 `--allowedTools "Read"`（原本是 `--tools Read`），新增
+  `--permission-mode dontAsk`；prompt 改由新的 `BuildPrompt()` 組成，明確要求「請先使用 Read 工具
+  讀取這個路徑的圖片檔案：`<ImagePath>`」再接原本的辨識指示文字，修正圖片從未送出的缺陷。命令列組裝
+  抽成 `internal static BuildArguments()`、`UnwrapStructuredOutput` 改為 `internal`，新增
+  `ClaudeCodeCliRunnerTests.cs`（旗標名稱、`--permission-mode`、prompt 內含圖片路徑、`--model`／
+  `--effort` 條件式加入、`--json-schema` 整段傳入、`structured_output` 解析／缺欄位／空輸出／非 JSON
+  的完整覆蓋）。`OcrWorkerRunner.cs` 的 Claude 探測指令加上 `--text`（`claude auth status --text`）。
+- `AgentCliResultClassifierTests.cs` 新增回歸測試：成功結果內含 `429`／`14290`／`credentials`／
+  `api key` 等字樣不會被誤判；失敗時已讀回的 JSON 結果不會被掃描、只掃 stderr；stderr 裡的裸數字
+  `14290` 不會誤判為 Quota，但真正的 `status 429` 訊息仍正確分類。
+
+**公司 Windows 實機驗證：**
+
+- `dotnet build -c Release`（`%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe`，10.0.302）0 警告／0 錯誤；
+  `dotnet test` 429/429 全綠（含本輪新增的 14 個回歸測試）。
+- 以官方原生安裝器（`irm https://claude.ai/install.ps1 | iex`）安裝 Claude Code CLI，版本 `2.1.263`，
+  安裝路徑 `%USERPROFILE%\.local\bin\claude.exe`——確認是真正的 `.exe`，不是 npm 產生的 `.cmd` shim，
+  不受 `CreateProcess`（`UseShellExecute=false`）無法直接執行 `.cmd`／不查 `PATHEXT` 的限制影響。
+- 將 `%USERPROFILE%\.local\bin` 加入使用者 PATH（持久），並把 `OCR_CLAUDE_PATH`、`OCR_CODEX_PATH`、
+  `OCR_AGENT_PRIMARY=codex` 釘選為使用者環境變數（`[Environment]::SetEnvironmentVariable(...,'User')`），
+  不依賴排程 `-NoProfile` 啟動時的 PATH 解析時機。
+- `claude auth status --text` 目前回報 `Not logged in`（exit code 1）——**這是預期狀態，Claude Pro
+  訂閱登入需要使用者以互動方式親自完成（開瀏覽器完成 OAuth），本輪未代為登入，也不應該代為登入。**
+- 停止排程 → 重新 `publish-ocr-worker-windows.ps1` 產生新的自包含 EXE → `run-ocr-worker-windows.ps1
+  -Once` 診斷 exit code 0，且輸出正確顯示 `OCR_AGENT_PRIMARY=codex`、`OCR_CODEX_PATH`、
+  `OCR_CLAUDE_PATH` 三行 → 重新啟動排程，確認 `State=Running` 且只有一個 `Invest.Web` 程序。
+
+**仍待外部驗收：**
+
+- 使用者需自行執行 `claude auth login`（或互動執行 `claude` 完成瀏覽器 OAuth）完成 Claude Pro 訂閱
+  登入；完成前 Claude 探測會持續回報 `authenticated=false`，Router 會正確略過 Claude 只用 Codex，
+  不影響現有 Codex 單 Agent 的運作。
+- 登入完成後需要用真實持倉截圖驗證 Claude 真的能透過 Read 工具讀到圖片、`structured_output` 格式
+  符合 Schema；`-p` 模式下 Claude 是否會依 prompt 內路徑自動呼叫 Read、Windows 路徑格式是否需要
+  額外處理，官方文件未明確保證，必須實測確認。
+- 暫時讓 `OCR_CODEX_PATH` 指向不存在的路徑，驗證會自動切到 Claude；兩者都不可用時網站確實回報
+  Tesseract fallback（三層降級鏈的完整驗收，本輪只驗證了 Codex 單獨可用）。
+- Schema 驗證失敗時 Claude CLI 的 exit code 與輸出形狀仍待實測，才能確認 `AgentCliResultClassifier`
+  會把它分類到哪一種狀態。
+
 ## 十五、參考資料
 
 ### 專案內文件與程式
