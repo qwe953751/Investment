@@ -132,14 +132,16 @@ Dashboard 的資產圓餅圖中心會依格式化後金額的字元長度縮放�
 市場導覽正式採用 U1 版型：市場切換與主頁籤、子頁籤分層排列，主頁籤與子頁籤同為 16px，
 工具列固定在右上角；台股、美股、加密貨幣共用內容外框與手機響應規則，導覽與標題卡之間不繪製整條橫線。
 資產／筆記在三種市場間維持聯動；本輪發布資訊記於 [版本紀錄](Doc/版本紀錄.md)。
+筆記 #56／#54／#50 已完成手機小控件最上層、裝置清單重複狀態清理，以及其他市場彈出式 K 線標題的 MoneyDJ 連結；
+正式 Edge Function 與網站版本的驗證結果見 [版本紀錄](Doc/版本紀錄.md) 最新一節。
 
 ## 最新已發布版本
 
-本次發布所用的 `main` commit `bcfd438bb67ccdd0cdc2f3a1f1d88d997bf6446e` 已由
-[`daily-snapshot.yml` publish-only run 34105570183](https://github.com/qwe953751/Investment/actions/runs/34105570183)
-完成全套測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788772984`、最新交易日
-`2026/09/04`、產生時間 `2026-09-07 17:23`；公開 manifest 已與 `gh-pages` 同版，線上 `site.js`
-已驗證包含 U1 預設、`border-bottom: 0` 且不含 U2。
+本次發布所用的 `main` commit `a56d7a345d91e07a118c04c75f5c84edc60ab561` 已由
+[`daily-snapshot.yml` publish-only run 34115199019](https://github.com/qwe953751/Investment/actions/runs/34115199019)
+完成全套測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788779471`、最新交易日
+`2026/09/07`、產生時間 `2026-09-07 19:11`；公開 manifest 在 CDN 延遲後已與 `gh-pages` 同版，線上 `site.js`
+已驗證包含 `z-index: 40`、`moneyDjStockUrl` 與 K 線標題連結。
 本次純發布沒有回補行情、寫入 `data` 或重跑 Supabase migration。
 
 本次最新發布包含 A｜極簡動作列、密碼登入三層權限、券商 OCR 漏列修正、美股帳戶與

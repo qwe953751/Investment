@@ -1,0 +1,5 @@
+# device-presence is intentionally kept as JavaScript for compatibility with
+# the existing Edge Function source and its verified deployment behavior.
+[functions.device-presence]
+entrypoint = './functions/device-presence/index.js'
+verify_jwt = true
