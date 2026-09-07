@@ -1198,6 +1198,9 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
   `.market-switch-prototype-active .ranking-page { display: none; }` 這條
   CSS 規則把台股整塊藏起來，改顯示樣板面板；切回台股就是把 class 拿掉，
   `.ranking-page` 自己重新可見，沒有重新初始化或重畫任何台股內容。
+- 市場導覽已採用正式 E2 版型：市場／子頁籤分兩列、工具列固定在右上角、標題卡緊接導覽，
+  中間不繪製整條交界線；資產／筆記不因切換市場而鎖定。本輪程式已完成本機驗證，待本次
+  commit、push 與 publish-only Pages 發布後補上線上版本資訊。
 
 ### 已上線：真實資料（美股／加密貨幣）
 
