@@ -15790,7 +15790,10 @@ function initializeIntradayBroadcastChannel() {
             return;
         }
 
-        applyIntradaySnapshot(document, false);
+        if (!applyIntradaySnapshot(document, false)) {
+            return;
+        }
+
         renderReceivedIntradaySnapshot();
     });
 
@@ -15870,15 +15873,34 @@ async function fetchIntradayCdnSnapshot() {
 }
 
 function applyIntradaySnapshot(document, broadcast = true) {
+    const nextRunId = Number.isInteger(document.runId) ? document.runId : null;
+    const currentRunId = Number.isInteger(intradaySnapshotRunId)
+        ? intradaySnapshotRunId
+        : null;
+    const nextCapturedAt = Date.parse(document.summary?.captured_at ?? '');
+    const currentCapturedAt = Date.parse(intradaySummary?.captured_at ?? '');
+
+    // 多個喚醒事件可能同時抓到不同輪次；請求完成順序不代表資料新舊順序。
+    // CDN 有 runId，資料庫 fallback 沒有，因此兩者都用可取得的時間欄位擋住倒退。
+    if ((nextRunId !== null && currentRunId !== null && nextRunId <= currentRunId)
+        || (Number.isFinite(nextCapturedAt)
+            && Number.isFinite(currentCapturedAt)
+            && nextCapturedAt <= currentCapturedAt)) {
+        return false;
+    }
+
     intradayRaw = document.rows;
     intradaySummary = document.summary;
-    intradaySnapshotRunId = Number.isInteger(document.runId) ? document.runId : null;
+    // fallback 沒有 runId 時保留已知版本，避免下一個舊 CDN 回應重新取得套用資格。
+    intradaySnapshotRunId = nextRunId ?? intradaySnapshotRunId;
     intradaySnapshotTopicHeat = document.topicHeat ?? null;
     intradayRawLoadedAt = Date.now();
     lastIntradayLoadedAt = intradayRawLoadedAt;
     if (broadcast) {
         publishIntradaySnapshotToSiblingTabs(document);
     }
+
+    return true;
 }
 
 async function ensureIntradaySnapshot(silent = false, force = false, loadSupportingData = false) {
