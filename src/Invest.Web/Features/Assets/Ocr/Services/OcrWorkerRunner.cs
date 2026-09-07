@@ -13,6 +13,10 @@ public sealed class OcrWorkerRunner(
     OcrRecognitionValidator validator)
 {
     private static readonly string[] SupportedExtensions = [".png", ".jpg", ".jpeg", ".webp"];
+    private static readonly TimeSpan ProbeCacheTtl = TimeSpan.FromSeconds(60);
+
+    private IReadOnlyDictionary<string, OcrWorkerAgentState>? _probeCache;
+    private DateTimeOffset _probeCacheAt;
 
     public async Task RunAsync(string[] args, CancellationToken cancellationToken = default)
     {
@@ -25,7 +29,9 @@ public sealed class OcrWorkerRunner(
         var options = OcrWorkerOptions.FromEnvironment(configuration);
         using var singleInstance = OcrWorkerSingleInstance.Acquire();
         var api = new OcrWorkerApiClient(httpClientFactory.CreateClient(nameof(OcrWorkerApiClient)), options);
-        Console.WriteLine($"D+ OCR Worker 啟動：{options.Name}（輪詢 {options.PollInterval.TotalSeconds:0} 秒；評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
+        Console.WriteLine(
+            $"D+ OCR Worker 啟動：{options.Name}（輪詢 {options.PollInterval.TotalSeconds:0} 秒；"
+            + $"並行上限 {options.MaxConcurrency}；評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
 
         do
         {
@@ -36,11 +42,21 @@ public sealed class OcrWorkerRunner(
                 await api.HeartbeatAsync(agents, cancellationToken);
                 if (agents.Values.Any(agent => agent.Authenticated && agent.QuotaAvailable))
                 {
-                    var job = await api.ClaimAsync(cancellationToken);
-                    if (job is not null)
+                    var jobs = new List<OcrClaimedJob>();
+                    for (var claimed = 0; claimed < options.MaxConcurrency; claimed++)
+                    {
+                        var job = await api.ClaimAsync(cancellationToken);
+                        if (job is null)
+                        {
+                            break;
+                        }
+                        jobs.Add(job);
+                    }
+
+                    if (jobs.Count > 0)
                     {
                         processedWork = true;
-                        await ProcessJobAsync(api, job, agents, options, cancellationToken);
+                        await Task.WhenAll(jobs.Select(job => ProcessJobAsync(api, job, agents, options, cancellationToken)));
                     }
                     else
                     {
@@ -82,6 +98,7 @@ public sealed class OcrWorkerRunner(
         CancellationToken cancellationToken)
     {
         var directory = Directory.CreateTempSubdirectory("invest-ocr-worker-");
+        var totalStopwatch = Stopwatch.StartNew();
         try
         {
             var extension = SupportedExtensions.FirstOrDefault(value =>
@@ -95,7 +112,9 @@ public sealed class OcrWorkerRunner(
             var imagePath = Path.Combine(directory.FullName, $"input{extension}");
             var schemaPath = Path.Combine(directory.FullName, "recognition-schema.json");
             await UpdateProgressSafeAsync(api, job, "downloading", 15, null, cancellationToken);
+            var downloadStopwatch = Stopwatch.StartNew();
             await api.DownloadAsync(job.DownloadUrl, imagePath, cancellationToken);
+            downloadStopwatch.Stop();
             await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
 
             var request = CreateRequest(imagePath, schemaPath, directory.FullName, job.Market, "max");
@@ -112,10 +131,15 @@ public sealed class OcrWorkerRunner(
                 fallbackPolicy,
                 new AiOcrOrchestrator(router, new InMemoryOcrPassCheckpointStore()));
             await UpdateProgressSafeAsync(api, job, "ai_recognition", 25, null, cancellationToken);
+            var recognitionStopwatch = Stopwatch.StartNew();
             var execution = await coordinator.RecognizeAsync(
                 readiness,
                 request,
                 cancellationToken);
+            recognitionStopwatch.Stop();
+            Console.WriteLine(
+                $"OCR 工作 {job.Id} 分段耗時：下載={downloadStopwatch.Elapsed.TotalSeconds:0.0}s "
+                + $"辨識={recognitionStopwatch.Elapsed.TotalSeconds:0.0}s");
 
             var usage = execution.AiResult?.Execution.Result.Usage;
 
@@ -181,6 +205,8 @@ public sealed class OcrWorkerRunner(
         }
         finally
         {
+            totalStopwatch.Stop();
+            Console.WriteLine($"OCR 工作 {job.Id} 總耗時：{totalStopwatch.Elapsed.TotalSeconds:0.0}s");
             directory.Delete(recursive: true);
         }
     }
@@ -303,6 +329,19 @@ public sealed class OcrWorkerRunner(
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
+
+        // 每張圖都要 spawn 兩個 CLI 子行程確認登入狀態，是每輪固定的秒級開銷；登入
+        // 狀態變化很慢（通常是人工登出才會變），加短 TTL 快取即可，額度狀態
+        // （會隨每張圖即時變化）仍在下面用 WithQuota 即時疊加，不會被快取蓋掉。
+        if (_probeCache is not null && now - _probeCacheAt < ProbeCacheTtl)
+        {
+            return new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["claude"] = WithQuota(_probeCache["claude"], OcrAgentKind.Claude, now),
+                ["codex"] = WithQuota(_probeCache["codex"], OcrAgentKind.Codex, now)
+            };
+        }
+
         var claude = await ProbeAsync(
             OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude),
             ["auth", "status", "--text"],
@@ -311,6 +350,13 @@ public sealed class OcrWorkerRunner(
             OcrAgentExecutableResolver.Resolve(OcrAgentKind.Codex),
             ["login", "status"],
             cancellationToken);
+
+        _probeCache = new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["claude"] = claude,
+            ["codex"] = codex
+        };
+        _probeCacheAt = now;
 
         return new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase)
         {

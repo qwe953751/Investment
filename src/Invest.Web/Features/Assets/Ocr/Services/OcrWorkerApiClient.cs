@@ -17,7 +17,8 @@ public sealed record OcrWorkerOptions(
     string Password,
     string Name,
     TimeSpan PollInterval,
-    double EvaluationSampleRate)
+    double EvaluationSampleRate,
+    int MaxConcurrency)
 {
     public static OcrWorkerOptions FromEnvironment(IConfiguration configuration)
     {
@@ -43,7 +44,7 @@ public sealed record OcrWorkerOptions(
             Environment.GetEnvironmentVariable("OCR_WORKER_POLL_SECONDS"),
             out var parsed) && parsed is >= 2 and <= 60
                 ? parsed
-                : 5;
+                : 2;
         var evaluationSampleRate = double.TryParse(
             Environment.GetEnvironmentVariable("OCR_EVALUATION_SAMPLE_RATE"),
             NumberStyles.Float,
@@ -51,6 +52,11 @@ public sealed record OcrWorkerOptions(
             out var parsedRate) && parsedRate is >= 0 and <= 1
                 ? parsedRate
                 : 0.1;
+        var maxConcurrency = int.TryParse(
+            Environment.GetEnvironmentVariable("OCR_WORKER_MAX_CONCURRENCY"),
+            out var parsedConcurrency) && parsedConcurrency is >= 1 and <= 6
+                ? parsedConcurrency
+                : 3;
 
         if (string.IsNullOrWhiteSpace(url)
             || string.IsNullOrWhiteSpace(anonKey)
@@ -68,7 +74,8 @@ public sealed record OcrWorkerOptions(
             password,
             name,
             TimeSpan.FromSeconds(pollSeconds),
-            evaluationSampleRate);
+            evaluationSampleRate,
+            maxConcurrency);
     }
 
     public bool ShouldCaptureEvaluation(Guid jobId)
@@ -85,6 +92,7 @@ public sealed record OcrWorkerOptions(
 public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions options)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly SemaphoreSlim _authLock = new(1, 1);
     private string? _accessToken;
     private string? _refreshToken;
 
@@ -205,6 +213,7 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
     private async Task<HttpResponseMessage> SendJsonAsync(object body, CancellationToken cancellationToken)
     {
         await EnsureAuthenticatedAsync(cancellationToken);
+        var tokenUsed = _accessToken;
         var response = await SendOnceAsync(body, cancellationToken);
         if (response.StatusCode != HttpStatusCode.Unauthorized)
         {
@@ -212,8 +221,28 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         }
 
         response.Dispose();
-        await AuthenticateAsync(useRefreshToken: true, cancellationToken);
+        await RefreshIfTokenUnchangedAsync(tokenUsed, cancellationToken);
         return await SendOnceAsync(body, cancellationToken);
+    }
+
+    // 並行處理多件工作時，多個請求可能同時撞到 401；用鎖序列化實際的登入／換發
+    // 呼叫，並在拿到鎖後比對 token 是否已被其他並行呼叫換新，避免對 Supabase Auth
+    // 重複刷新（refresh token 一次性，重複送出會讓其他並行呼叫失敗）。
+    private async Task RefreshIfTokenUnchangedAsync(string? tokenUsed, CancellationToken cancellationToken)
+    {
+        await _authLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_accessToken != tokenUsed)
+            {
+                return;
+            }
+            await AuthenticateAsync(useRefreshToken: true, cancellationToken);
+        }
+        finally
+        {
+            _authLock.Release();
+        }
     }
 
     private async Task<HttpResponseMessage> SendOnceAsync(object body, CancellationToken cancellationToken)
@@ -229,8 +258,25 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
 
     private Task EnsureAuthenticatedAsync(CancellationToken cancellationToken)
         => string.IsNullOrWhiteSpace(_accessToken)
-            ? AuthenticateAsync(useRefreshToken: false, cancellationToken)
+            ? AuthenticateSerializedAsync(cancellationToken)
             : Task.CompletedTask;
+
+    private async Task AuthenticateSerializedAsync(CancellationToken cancellationToken)
+    {
+        await _authLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_accessToken))
+            {
+                return;
+            }
+            await AuthenticateAsync(useRefreshToken: false, cancellationToken);
+        }
+        finally
+        {
+            _authLock.Release();
+        }
+    }
 
     private async Task AuthenticateAsync(bool useRefreshToken, CancellationToken cancellationToken)
     {

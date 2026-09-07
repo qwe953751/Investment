@@ -59,6 +59,14 @@ function text(value, maxLength, fallback = '') {
         : fallback;
 }
 
+// 只接受安全字元，避免這個值之後被拼進 PostgREST 的 `in.(...)` 過濾器時
+// 帶入 `(` `)` `'` 等特殊字元、影響去重清理的刪除條件。
+const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+
+function isValidDeviceId(value) {
+    return typeof value === 'string' && DEVICE_ID_PATTERN.test(value);
+}
+
 function requestIp(request) {
     const candidates = [
         request.headers.get('cf-connecting-ip'),
@@ -109,7 +117,7 @@ async function register(request) {
 
     const deviceId = text(body?.device_id, 128);
 
-    if (deviceId.length < 16) {
+    if (!isValidDeviceId(deviceId)) {
         return json(request, { error: 'invalid device id' }, 400);
     }
 
@@ -140,21 +148,39 @@ async function register(request) {
     return json(request, { ok: true });
 }
 
-function deduplicateDeviceSessions(devices) {
-    const seen = new Set();
+// 兩台不同裝置若都還沒被使用者命名，會共用預設名稱「未知裝置」；此時名稱不足以
+// 辨識裝置身分，跳過去重，避免把不同裝置誤判為重複而刪掉。
+const UNKNOWN_DEVICE_NAME = '未知裝置';
+
+// 只清掉夠舊的重複列，確保仍在使用中的裝置（即使比對鍵曾經撞在一起）不會被誤刪。
+const DEVICE_DEDUPE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+
+function deduplicateDeviceSessions(devices, now = Date.now()) {
+    const seen = new Map();
     const duplicateIds = [];
     const uniqueDevices = [];
 
     for (const device of devices) {
-        const key = [device.device_name, device.ip_address, device.access_level].join('\u0000');
-
-        if (seen.has(key)) {
-            duplicateIds.push(device.device_id);
+        if (device.device_name === UNKNOWN_DEVICE_NAME) {
+            uniqueDevices.push(device);
             continue;
         }
 
-        seen.add(key);
-        uniqueDevices.push(device);
+        const key = [device.device_name, device.ip_address, device.access_level, device.user_agent].join('\u0000');
+
+        if (!seen.has(key)) {
+            seen.set(key, device);
+            uniqueDevices.push(device);
+            continue;
+        }
+
+        const age = now - new Date(device.last_seen_at).getTime();
+
+        if (Number.isFinite(age) && age > DEVICE_DEDUPE_MIN_AGE_MS) {
+            duplicateIds.push(device.device_id);
+        } else {
+            uniqueDevices.push(device);
+        }
     }
 
     return { duplicateIds, uniqueDevices };
@@ -166,7 +192,7 @@ async function list(request) {
     }
 
     const response = await databaseRequest(
-        'device_sessions?select=device_id,device_name,ip_address,access_level,status,first_seen_at,last_seen_at'
+        'device_sessions?select=device_id,device_name,ip_address,access_level,status,first_seen_at,last_seen_at,user_agent'
             + '&order=last_seen_at.desc&limit=1000'
     );
 
@@ -176,6 +202,7 @@ async function list(request) {
     }
 
     const { duplicateIds, uniqueDevices } = deduplicateDeviceSessions(await response.json());
+    let cleanupWarning;
 
     if (duplicateIds.length > 0) {
         const duplicateFilter = duplicateIds.map(id => encodeURIComponent(id)).join(',');
@@ -186,11 +213,13 @@ async function list(request) {
 
         if (!cleanupResponse.ok) {
             console.error('device_sessions duplicate cleanup failed', cleanupResponse.status, await cleanupResponse.text());
-            return json(request, { error: 'duplicate device sessions could not be cleaned' }, 502);
+            cleanupWarning = 'duplicate device sessions could not be cleaned';
         }
     }
 
-    return json(request, { devices: uniqueDevices });
+    return json(request, cleanupWarning
+        ? { devices: uniqueDevices, warning: cleanupWarning }
+        : { devices: uniqueDevices });
 }
 
 Deno.serve(async request => {

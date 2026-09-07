@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；Max／Low／人工答案評估資料接線已完成；Agent 優先序改回 Codex 優先、CLI 分類器誤判與 Claude Adapter 缺陷已修正、Claude CLI 已裝妥；待使用者完成 Claude Pro 登入與外部情境／Golden Set／手機新圖片 AI 驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；Max／Low／人工答案評估資料接線已完成；Agent 優先序改回 Codex 優先、CLI 分類器誤判與 Claude Adapter 缺陷已修正、Claude CLI 已裝妥；筆記 #52 前端＋Worker 並行化與分段計時已實作（`max` 不動）；待使用者完成 Claude Pro 登入、外部情境／Golden Set／手機新圖片 AI 驗收，以及筆記 #52 的 Windows 實機每張 ≤30 秒驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🟢 已完成，待實機驗收發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1161,6 +1161,17 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
    `OCR_CLAUDE_PATH`／`OCR_CODEX_PATH`／`OCR_AGENT_PRIMARY=codex` 為使用者環境變數；重新發布 Worker
    並以 `-Once` 驗證 exit code 0，排程重啟後恢復 `Running`。完整脈絡見
    [規劃 AI OCR §14.6](技術文件/規劃AI%20OCR.md#146-2026-09-07-windows-agent-優先序修正與-claude-cli-安裝第一階段已實作仍待登入與外部驗收)。
+5. 2026-09-07（筆記 #52）：根因是前端逐張序列 `for...of` 與 Worker 單一 `do` 迴圈雙層序列化，DB
+   `FOR UPDATE SKIP LOCKED` 早已支援並行、不是瓶頸。已實作：Worker 每輪依 `OCR_WORKER_MAX_CONCURRENCY`
+   （預設 3）並行 claim／處理多件工作；`OcrWorkerApiClient` 用 `SemaphoreSlim` 序列化認證換發，
+   避免並行請求同時撞 401 重複刷新 refresh token；前端 `scanAssetScreenshots` 改共用游標 worker pool
+   （`ASSET_AI_OCR_CONCURRENCY = 3`），Tesseract 備援仍序列化；`ProbeAgentsAsync` 加 60 秒快取；
+   `ProcessJobAsync` 新增下載／辨識／總耗時分段 log，供後續量測固定開銷占比。reasoning effort 依
+   使用者決定維持 `max` 不動，圖片壓縮（縮圖降 token）本輪未做，需要正式環境分段量測與
+   `ocr_evaluations` 正確率一起驗證才能安全調整。新增 4 個 JS 測試（`device-presence-dedupe.test.mjs`
+   驗證去重不誤刪不同裝置）與 4 個 C# 測試（`OcrWorkerApiClientTests.cs` 驗證並行上限解析與並行
+   401 只觸發一次刷新），`dotnet test` 433/433 全綠。**尚未實機驗證**：需要 Windows Worker 正式環境
+   用真實截圖跑一次，確認整批 wall clock 與每張分段耗時是否達到「每張 ≤30 秒」目標。
 
 ### 仍待實機或使用者確認
 

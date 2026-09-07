@@ -8599,10 +8599,21 @@ const ASSET_OCR_TIMEOUT_MS = 10_000;
 const ASSET_OCR_WARMUP_TIMEOUT_MS = 20_000;
 const ASSET_OCR_MAX_FILES = 20;
 const ASSET_AI_OCR_FUNCTION = 'ocr-jobs';
-const ASSET_AI_OCR_POLL_MS = 1_500;
+// 剛送出時輪詢快一點，能更早發現完成；等超過這個時間還沒好，代表還在排隊或
+// AI 辨識中，拉長間隔以免無謂地打 Edge Function。
+const ASSET_AI_OCR_POLL_FAST_MS = 700;
+const ASSET_AI_OCR_POLL_FAST_WINDOW_MS = 10_000;
+const ASSET_AI_OCR_POLL_SLOW_MS = 1_500;
 const ASSET_AI_OCR_QUEUE_GRACE_MS = 30_000;
 const ASSET_AI_OCR_TIMEOUT_MS = 9 * 60_000;
+const ASSET_AI_OCR_CONCURRENCY = 3;
 const ASSET_AI_PENDING_JOBS_KEY = 'invest.assetAiOcrJobs.v1';
+
+function assetAiOcrPollDelayMs(queuedAt) {
+    return Date.now() - queuedAt < ASSET_AI_OCR_POLL_FAST_WINDOW_MS
+        ? ASSET_AI_OCR_POLL_FAST_MS
+        : ASSET_AI_OCR_POLL_SLOW_MS;
+}
 
 function readAssetAiPendingJobs() {
     try {
@@ -8929,7 +8940,7 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                 statusText: screenshot.status
             });
             setAssetOcrStatus(`第 ${index} / ${total} 張：${screenshot.status}`);
-            await new Promise(resolve => window.setTimeout(resolve, ASSET_AI_OCR_POLL_MS));
+            await new Promise(resolve => window.setTimeout(resolve, assetAiOcrPollDelayMs(queuedAt)));
         }
 
         return { mode: 'tesseract', jobId, reason: 'ai_execution_failed' };
@@ -9017,7 +9028,7 @@ async function resumeAssetAiJobs(accountId) {
                         statusText: screenshot.status
                     });
                     setAssetOcrStatus(`恢復第 ${index + 1} / ${pending.length} 張：${screenshot.status}`);
-                    await new Promise(resolve => window.setTimeout(resolve, ASSET_AI_OCR_POLL_MS));
+                    await new Promise(resolve => window.setTimeout(resolve, assetAiOcrPollDelayMs(queuedAt)));
                 }
 
                 if (finalStatus?.status === 'succeeded') {
@@ -11950,9 +11961,17 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
     let aiTotalRows = 0;
     let matchedHeader = false;
 
-    for (const [zeroBasedIndex, file] of files.entries()) {
-        if (assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
-            setAssetOcrStatus('');
+    // 多張截圖平行送出辨識，而不是一張做完才做下一張；上限跟著私有 Worker 端的
+    // OCR_WORKER_MAX_CONCURRENCY 一致（預設 3），避免佇列被灌爆或撞到訂閱速率限制。
+    // Tesseract 備援是本機單一 WASM worker，並行反而互搶，仍用共用佇列序列化。
+    let aborted = false;
+    let completedCount = 0;
+    let cursor = 0;
+    let tesseractQueue = Promise.resolve();
+
+    async function processScreenshot(zeroBasedIndex, file) {
+        if (aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
+            aborted = true;
             return;
         }
 
@@ -11961,7 +11980,6 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         let pendingAiJobId = null;
         screenshot.status = '辨識中…';
         updateAssetAiProgress(zeroBasedIndex, 'queued', { stage: '準備辨識', percent: 5, statusText: screenshot.status });
-        setAssetOcrStatus(`第 ${index} / ${files.length} 張：準備辨識…`);
 
         try {
             const startedAt = performance.now();
@@ -11970,7 +11988,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
                 : { mode: 'tesseract', jobId: null, reason: preflightFallbackReason };
 
             if (aiResult === null) {
-                setAssetOcrStatus('');
+                aborted = true;
                 return;
             }
 
@@ -11986,24 +12004,29 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
                 screenshot.elapsedMs = Math.round(performance.now() - startedAt);
                 screenshot.status = `D+ AI 完成 ${formatAssetOcrDuration(screenshot.elapsedMs)}`;
                 updateAssetAiProgress(zeroBasedIndex, 'succeeded', { stage: '完成', percent: 100, statusText: screenshot.status });
-                continue;
+                return;
             }
 
             const reasonText = assetAiOcrFallbackText(aiResult.reason);
             pendingAiJobId = aiResult.jobId;
             fallbackNotices.push(`第 ${index} 張：${reasonText}，已回退 Tesseract。`);
             assetScreenshotDraft.usedTesseract = true;
-            setAssetOcrStatus(`第 ${index} / ${files.length} 張：${reasonText}，準備 Tesseract 備援…`);
             updateAssetAiProgress(zeroBasedIndex, 'fallback_required', { stage: 'Tesseract 備援中', percent: 90, statusText: 'Tesseract 備援中…' });
 
-            // 預先等本機備援引擎就緒，避免把 WASM／字庫暖機時間算進每張 10 秒辨識預算。
-            await getAssetOcrWorker();
-            const result = await recognizeAssetScreenshot(file, index, files.length);
-            screenshot.status = `Tesseract 備援完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
-            updateAssetAiProgress(zeroBasedIndex, 'succeeded', { stage: '完成（Tesseract 備援）', percent: 100, statusText: screenshot.status });
-            screenshot.elapsedMs = result.elapsedMs;
-            rows.push(...assetEnrichOcrRows(result.rows, market));
-            matchedHeader ||= result.matchedHeader;
+            const runTesseract = async () => {
+                // 預先等本機備援引擎就緒，避免把 WASM／字庫暖機時間算進每張 10 秒辨識預算。
+                await getAssetOcrWorker();
+                const result = await recognizeAssetScreenshot(file, index, files.length);
+                screenshot.status = `Tesseract 備援完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
+                updateAssetAiProgress(zeroBasedIndex, 'succeeded', { stage: '完成（Tesseract 備援）', percent: 100, statusText: screenshot.status });
+                screenshot.elapsedMs = result.elapsedMs;
+                rows.push(...assetEnrichOcrRows(result.rows, market));
+                matchedHeader ||= result.matchedHeader;
+            };
+            // 用 .then(onFulfilled, onRejected) 讓佇列在前一張失敗時仍繼續往下跑；
+            // 這一張自己的錯誤會反映在下面 await tesseractQueue 上，走原本的 catch。
+            tesseractQueue = tesseractQueue.then(runTesseract, runTesseract);
+            await tesseractQueue;
 
             if (aiResult.jobId !== null) {
                 await assetAiOcrAcknowledge(aiResult.jobId).catch(() => {});
@@ -12017,10 +12040,28 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             if (pendingAiJobId !== null) {
                 await assetAiOcrAcknowledge(pendingAiJobId).catch(() => {});
             }
+            completedCount += 1;
+            if (!aborted) {
+                setAssetOcrStatus(`辨識中：${completedCount} / ${files.length} 張已完成…`);
+            }
         }
     }
 
-    if (assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
+    async function screenshotWorker() {
+        while (!aborted) {
+            const zeroBasedIndex = cursor++;
+            if (zeroBasedIndex >= files.length) {
+                return;
+            }
+            await processScreenshot(zeroBasedIndex, files[zeroBasedIndex]);
+        }
+    }
+
+    setAssetOcrStatus(`辨識中：0 / ${files.length} 張已完成…`);
+    await Promise.all(
+        Array.from({ length: Math.min(ASSET_AI_OCR_CONCURRENCY, files.length) }, screenshotWorker));
+
+    if (aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
         setAssetOcrStatus('');
         return;
     }
