@@ -135,7 +135,7 @@ commit `92ced062` 已推送，publish-only run [`34096584708`](https://github.co
 
 ## 最新已發布版本
 
-最新 `main` commit `db5a59ec6de0316d3c5d958574cca505b99ba9a5` 已由
+本次發布所用的 `main` commit `db5a59ec6de0316d3c5d958574cca505b99ba9a5` 已由
 [`daily-snapshot.yml` publish-only run 34098538669](https://github.com/qwe953751/Investment/actions/runs/34098538669)
 完成全套測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788768282`、最新交易日
 `2026/09/04`、產生時間 `2026-09-07 16:04`；公開 manifest 已與 `gh-pages` 同版，線上 `site.js`
