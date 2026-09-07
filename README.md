@@ -127,6 +127,11 @@ AI 不可用時圖片不離開瀏覽器，直接由 Tesseract 備援；
 
 本機預覽：<http://127.0.0.1:5228/?access=admin&view=topics&preview=topic-bubble-v2>；預覽使用本機既有樣本資料，不代表正式行情。
 
+市場導覽正式採用 E2 卡片式版型：市場切換與子頁籤分兩列、工具列固定在右上角、標題卡直接接續導覽，
+交界處不繪製整條橫線；資產／筆記在台股、美股、加密貨幣間維持聯動。程式 commit `6b9aa062`、文件
+commit `92ced062` 已推送，publish-only run [`34096584708`](https://github.com/qwe953751/Investment/actions/runs/34096584708)
+成功，正式 manifest 為 `1788766731`，公開 `site.js` 已驗證包含 E2 預設與無交界線樣式。
+
 ## 最新已發布版本
 
 最新 `main` commit `78933cbe` 已由
