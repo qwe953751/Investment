@@ -134,11 +134,11 @@ Dashboard 的資產圓餅圖中心會依格式化後金額的字元長度縮放�
 
 ## 最新已發布版本
 
-本次發布所用的 `main` commit `db5a59ec6de0316d3c5d958574cca505b99ba9a5` 已由
-[`daily-snapshot.yml` publish-only run 34098538669](https://github.com/qwe953751/Investment/actions/runs/34098538669)
-完成全套測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788768282`、最新交易日
-`2026/09/04`、產生時間 `2026-09-07 16:04`；公開 manifest 已與 `gh-pages` 同版，線上 `site.js`
-已驗證包含筆記 #51 的 `assetDonutFontSize`，`site.css` 已驗證包含 68% 內圈與左右 6px 留白。
+本次發布所用的 `main` commit `bcfd438bb67ccdd0cdc2f3a1f1d88d997bf6446e` 已由
+[`daily-snapshot.yml` publish-only run 34105570183](https://github.com/qwe953751/Investment/actions/runs/34105570183)
+完成全套測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788772984`、最新交易日
+`2026/09/04`、產生時間 `2026-09-07 17:23`；公開 manifest 已與 `gh-pages` 同版，線上 `site.js`
+已驗證包含 U1 預設、`border-bottom: 0` 且不含 U2。
 本次純發布沒有回補行情、寫入 `data` 或重跑 Supabase migration。
 
 本次最新發布包含 A｜極簡動作列、密碼登入三層權限、券商 OCR 漏列修正、美股帳戶與
