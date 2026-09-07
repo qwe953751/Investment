@@ -54,6 +54,19 @@ public sealed class OcrAgentQuotaRouterTests
         Assert.Empty(codex.Requests);
     }
 
+    [Fact]
+    public async Task 背景評估的Low設定會原樣傳給訂閱Agent()
+    {
+        var claude = new FakeRunner(OcrAgentKind.Claude, Result(OcrAgentKind.Claude, OcrAgentRunStatus.Success, output: "{}"));
+        var request = Request with { ReasoningEffort = "low" };
+
+        var execution = await CreateRouter(claude).RunPassAsync(OcrPassKind.Extraction, request);
+
+        Assert.Equal("low", claude.Requests[0].ReasoningEffort);
+        Assert.Equal("low", execution.ReasoningEffort);
+        Assert.Equal("claude-test", execution.Model);
+    }
+
     private static AgentQuotaRouter CreateRouter(params IAgentCliRunner[] runners)
         => new(runners, new OcrAgentRouterOptions(PrimaryAgent: OcrAgentKind.Claude, QuotaCooldown: TimeSpan.Zero, TimeProvider: TimeProvider.System, ClaudeModel: "claude-test", CodexModel: "codex-test"));
 

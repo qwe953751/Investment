@@ -153,6 +153,18 @@ async function cleanupExpiredObjects() {
                     updated_at: new Date().toISOString()
                 })
             });
+            await serviceFetch(`/rest/v1/ocr_evaluations?source_job_id=eq.${encodeURIComponent(job.id)}&low_status=in.(queued,leased)`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+                body: JSON.stringify({
+                    low_status: 'expired',
+                    low_lease_owner: null,
+                    low_lease_token: null,
+                    low_lease_until: null,
+                    low_error_code: 'source_job_expired',
+                    updated_at: new Date().toISOString()
+                })
+            });
             if (marked.ok) cleaned += 1;
         } catch (error) {
             await serviceFetch(`/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(job.id)}`, {
@@ -399,12 +411,18 @@ async function handleAcknowledge(request, user, body) {
         return json(request, 409, { error: 'job_not_terminal' });
     }
 
-    await removeObject(job.storage_path);
+    const evaluationResponse = await serviceFetch(
+        `/rest/v1/ocr_evaluations?source_job_id=eq.${encodeURIComponent(jobId)}`
+        + '&low_status=in.(queued,leased)&select=id&limit=1');
+    const evaluationPending = evaluationResponse.ok && (await evaluationResponse.json()).length > 0;
+    if (!evaluationPending) {
+        await removeObject(job.storage_path);
+    }
     await serviceFetch(`/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(user.id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
         body: JSON.stringify({
-            storage_path: null,
+            storage_path: evaluationPending ? job.storage_path : null,
             result: null,
             status: body?.action === 'cancel' ? 'cancelled' : job.status,
             lease_owner: null,
@@ -570,6 +588,147 @@ function finiteNonNegativeInteger(value) {
     return Number.isSafeInteger(number) && number >= 0 ? number : 0;
 }
 
+function boundedText(value, maxLength, fallback = null) {
+    const text = String(value ?? '').trim();
+    return text === '' ? fallback : text.slice(0, maxLength);
+}
+
+function finiteDecimal(value) {
+    if (value === null || value === undefined || String(value).trim() === '') {
+        return null;
+    }
+
+    const number = Number(value);
+    return Number.isFinite(number) && Math.abs(number) <= 1e15 ? number : null;
+}
+
+function safeEvaluationUsage(value) {
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+
+    return {
+        inputTokens: finiteNonNegativeInteger(value.inputTokens),
+        cachedInputTokens: finiteNonNegativeInteger(value.cachedInputTokens),
+        outputTokens: finiteNonNegativeInteger(value.outputTokens),
+        reasoningOutputTokens: finiteNonNegativeInteger(
+            value.reasoningOutputTokens ?? value.reasoningTokens)
+    };
+}
+
+function safeEvaluationMetadata(value, expectedMode) {
+    if (!value || typeof value !== 'object'
+        || String(value.mode ?? '').toLowerCase() !== expectedMode) {
+        return null;
+    }
+
+    return {
+        mode: expectedMode,
+        agent: boundedText(value.agent, 40, 'unknown'),
+        model: boundedText(value.model, 100),
+        reasoningEffort: boundedText(value.reasoningEffort, 40),
+        serviceTier: boundedText(value.serviceTier, 40),
+        durationMs: finiteNonNegativeInteger(value.durationMs),
+        usage: safeEvaluationUsage(value.usage)
+    };
+}
+
+function normalizeTruthRows(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.slice(0, 500)
+        .filter(row => row && typeof row === 'object')
+        .map(row => ({
+            ticker: String(row.ticker ?? '').trim().toUpperCase().slice(0, 40),
+            name: String(row.name ?? '').trim().slice(0, 120),
+            quantity: finiteDecimal(row.quantity),
+            cost: finiteDecimal(row.cost)
+        }))
+        .filter(row => row.ticker !== '' || row.name !== '');
+}
+
+function normalizeConfirmedChanges(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.slice(0, 500)
+        .filter(change => change && typeof change === 'object')
+        .map(change => ({
+            kind: ['update', 'addition', 'removal'].includes(change.kind)
+                ? change.kind
+                : 'update',
+            ticker: String(change.ticker ?? '').trim().toUpperCase().slice(0, 40),
+            fields: Array.isArray(change.fields)
+                ? change.fields.slice(0, 8).map(field => ({
+                    field: String(field?.field ?? '').slice(0, 40),
+                    before: field?.before === null || field?.before === undefined
+                        ? null
+                        : String(field.before).slice(0, 120),
+                    after: field?.after === null || field?.after === undefined
+                        ? null
+                        : String(field.after).slice(0, 120)
+                }))
+                : []
+        }));
+}
+
+async function findEvaluationSourceJob(jobId) {
+    const response = await serviceFetch(
+        `/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(jobId)}`
+        + '&select=id,user_id,account_id,market,input_hash,storage_path&limit=1');
+    if (!response.ok) {
+        return null;
+    }
+
+    const rows = await response.json();
+    return rows[0] ?? null;
+}
+
+async function queueEvaluation(sourceJob, result, metadata) {
+    if (!sourceJob
+        || !/^[0-9a-f]{64}$/.test(String(sourceJob.input_hash ?? ''))
+        || !sourceJob.storage_path
+        || !result
+        || typeof result !== 'object') {
+        return false;
+    }
+
+    const response = await serviceFetch('/rest/v1/ocr_evaluations', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=ignore-duplicates,return=minimal'
+        },
+        body: JSON.stringify({
+            source_job_id: sourceJob.id,
+            user_id: sourceJob.user_id,
+            account_id: sourceJob.account_id,
+            market: sourceJob.market,
+            input_hash: sourceJob.input_hash,
+            max_result: result,
+            max_metadata: metadata
+        })
+    });
+    if (response.ok) {
+        return true;
+    }
+
+    // 重試同一個 lease 時，第一個完成請求可能已經建立評估列；只要它仍存在，
+    // 就保留原圖讓背景 Low 可以繼續，不把使用者的 Max 結果退回 Tesseract。
+    const existing = await serviceFetch(
+        `/rest/v1/ocr_evaluations?source_job_id=eq.${encodeURIComponent(sourceJob.id)}`
+        + '&select=id,low_status&limit=1');
+    if (!existing.ok) {
+        return false;
+    }
+
+    const rows = await existing.json();
+    return rows.length > 0 && !['expired'].includes(rows[0]?.low_status);
+}
+
 async function handleComplete(request, user, body) {
     const jobId = String(body?.jobId ?? '');
     const leaseToken = String(body?.leaseToken ?? '');
@@ -578,6 +737,18 @@ async function handleComplete(request, user, body) {
         || !['succeeded', 'fallback_required', 'failed'].includes(status)) {
         return json(request, 400, { error: 'invalid_completion' });
     }
+
+    const evaluation = body?.evaluation === null || body?.evaluation === undefined
+        ? null
+        : safeEvaluationMetadata(body.evaluation, 'max');
+    if (body?.evaluation !== null && body?.evaluation !== undefined && evaluation === null) {
+        return json(request, 400, { error: 'invalid_evaluation_metadata' });
+    }
+
+    const sourceJob = evaluation === null ? null : await findEvaluationSourceJob(jobId);
+    const evaluationQueued = evaluation !== null
+        && sourceJob !== null
+        && await queueEvaluation(sourceJob, body?.result, evaluation);
 
     const response = await serviceFetch('/rest/v1/rpc/ocr_complete_job', {
         method: 'POST',
@@ -596,7 +767,7 @@ async function handleComplete(request, user, body) {
         return json(request, 409, { error: 'lease_lost' });
     }
 
-    if (status !== 'fallback_required') {
+    if (status !== 'fallback_required' && !evaluationQueued) {
         const job = await serviceFetch(`/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(jobId)}&select=storage_path&limit=1`);
         if (job.ok) {
             const rows = await job.json();
@@ -609,7 +780,152 @@ async function handleComplete(request, user, body) {
         }
     }
 
+    return json(request, 200, { ok: true, evaluationQueued });
+}
+
+async function handleEvaluationClaim(request, user) {
+    const response = await serviceFetch('/rest/v1/rpc/ocr_claim_evaluation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_worker_id: user.id, p_lease_seconds: 600 })
+    });
+    if (!response.ok) {
+        return json(request, 502, { error: 'evaluation_claim_failed' });
+    }
+
+    const evaluation = await response.json();
+    if (!evaluation) {
+        return json(request, 200, { evaluation: null });
+    }
+
+    const signed = await serviceFetch(
+        `/storage/v1/object/sign/${OCR_BUCKET}/${encodeStoragePath(evaluation.storagePath)}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expiresIn: 600 })
+        });
+    if (!signed.ok) {
+        return json(request, 502, { error: 'evaluation_signed_url_failed' });
+    }
+
+    const signedBody = await signed.json();
+    const signedPath = signedBody.signedURL ?? signedBody.signedUrl;
+    return json(request, 200, {
+        evaluation: {
+            id: evaluation.id,
+            sourceJobId: evaluation.sourceJobId,
+            market: evaluation.market,
+            contentType: evaluation.contentType,
+            originalFileName: evaluation.originalFileName,
+            leaseToken: evaluation.leaseToken,
+            downloadUrl: signedPath?.startsWith('http')
+                ? signedPath
+                : `${SUPABASE_URL}/storage/v1${signedPath}`
+        }
+    });
+}
+
+async function handleEvaluationComplete(request, user, body) {
+    const evaluationId = String(body?.evaluationId ?? '');
+    const leaseToken = String(body?.leaseToken ?? '');
+    const status = String(body?.status ?? '');
+    if (!/^[0-9a-f-]{36}$/i.test(evaluationId)
+        || !/^[0-9a-f-]{36}$/i.test(leaseToken)
+        || !['succeeded', 'failed'].includes(status)) {
+        return json(request, 400, { error: 'invalid_evaluation_completion' });
+    }
+
+    const metadata = safeEvaluationMetadata(body?.metadata, 'low');
+        if (metadata === null) {
+        return json(request, 400, { error: 'invalid_evaluation_metadata' });
+    }
+    if (status === 'succeeded' && (!body?.result || typeof body.result !== 'object')) {
+        return json(request, 400, { error: 'invalid_evaluation_result' });
+    }
+
+    const response = await serviceFetch('/rest/v1/rpc/ocr_complete_evaluation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            p_worker_id: user.id,
+            p_evaluation_id: evaluationId,
+            p_lease_token: leaseToken,
+            p_status: status,
+            p_result: body?.result ?? null,
+            p_metadata: metadata,
+            p_error_code: body?.errorCode ? String(body.errorCode).slice(0, 100) : null
+        })
+    });
+    if (!response.ok || await response.json() !== true) {
+        return json(request, 409, { error: 'evaluation_lease_lost' });
+    }
+
+    const evaluation = await serviceFetch(
+        `/rest/v1/ocr_evaluations?id=eq.${encodeURIComponent(evaluationId)}&select=source_job_id&limit=1`);
+    if (evaluation.ok) {
+        const rows = await evaluation.json();
+        const sourceJobId = rows[0]?.source_job_id;
+        if (sourceJobId) {
+            const job = await serviceFetch(
+                `/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(sourceJobId)}&select=storage_path&limit=1`);
+            if (job.ok) {
+                const jobRows = await job.json();
+                await removeObject(jobRows[0]?.storage_path);
+                await serviceFetch(`/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(sourceJobId)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+                    body: JSON.stringify({ storage_path: null, updated_at: new Date().toISOString() })
+                });
+            }
+        }
+    }
+
     return json(request, 200, { ok: true });
+}
+
+async function handleEvaluationTruth(request, user, body) {
+    const jobId = String(body?.jobId ?? '');
+    if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
+        return json(request, 400, { error: 'invalid_job_id' });
+    }
+
+    const evaluation = await serviceFetch(
+        `/rest/v1/ocr_evaluations?source_job_id=eq.${encodeURIComponent(jobId)}`
+        + `&user_id=eq.${encodeURIComponent(user.id)}&select=id&limit=1`);
+    if (!evaluation.ok) {
+        return json(request, 502, { error: 'evaluation_truth_query_failed' });
+    }
+
+    const rows = await evaluation.json();
+    const evaluationId = rows[0]?.id;
+    if (!evaluationId) {
+        return json(request, 404, { error: 'evaluation_not_found' });
+    }
+
+    const truthRows = normalizeTruthRows(body?.truthRows ?? body?.rows);
+    const confirmedChanges = normalizeConfirmedChanges(body?.confirmedChanges);
+    const response = await serviceFetch(
+        `/rest/v1/ocr_evaluations?id=eq.${encodeURIComponent(evaluationId)}`
+        + `&user_id=eq.${encodeURIComponent(user.id)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+            body: JSON.stringify({
+                human_truth: {
+                    source: 'user_apply',
+                    rows: truthRows,
+                    confirmedChanges
+                },
+                human_truth_complete: body?.complete === true,
+                human_confirmed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            })
+        });
+    if (!response.ok) {
+        return json(request, 502, { error: 'evaluation_truth_save_failed' });
+    }
+
+    return json(request, 200, { ok: true, rowCount: truthRows.length });
 }
 
 Deno.serve(async request => {
@@ -634,8 +950,8 @@ Deno.serve(async request => {
 
         const { action, body } = await parseAction(request);
         const role = accessRole(user);
-        const adminAction = ['readiness', 'submit', 'status', 'download', 'acknowledge', 'cancel'].includes(action);
-        const workerAction = ['heartbeat', 'claim', 'progress', 'complete'].includes(action);
+        const adminAction = ['readiness', 'submit', 'status', 'download', 'acknowledge', 'cancel', 'evaluation-truth'].includes(action);
+        const workerAction = ['heartbeat', 'claim', 'progress', 'complete', 'evaluation-claim', 'evaluation-complete'].includes(action);
         if ((adminAction && role !== 'admin') || (workerAction && role !== 'ocr_worker')) {
             return json(request, 403, { error: 'forbidden' });
         }
@@ -645,10 +961,13 @@ Deno.serve(async request => {
         if (action === 'status') return await handleStatus(request, user, new URL(request.url).searchParams.get('jobId') ?? '');
         if (action === 'download') return await handleDownload(request, user, new URL(request.url).searchParams.get('jobId') ?? '');
         if (action === 'acknowledge' || action === 'cancel') return await handleAcknowledge(request, user, { ...body, action });
+        if (action === 'evaluation-truth') return await handleEvaluationTruth(request, user, body);
         if (action === 'heartbeat') return await handleHeartbeat(request, user, body);
         if (action === 'claim') return await handleClaim(request, user);
         if (action === 'progress') return await handleProgress(request, user, body);
         if (action === 'complete') return await handleComplete(request, user, body);
+        if (action === 'evaluation-claim') return await handleEvaluationClaim(request, user);
+        if (action === 'evaluation-complete') return await handleEvaluationComplete(request, user, body);
         return json(request, 404, { error: 'unknown_action' });
     } catch (error) {
         console.error('ocr-jobs failed', error instanceof Error ? error.message : 'unknown');

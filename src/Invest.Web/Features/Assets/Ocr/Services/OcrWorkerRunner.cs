@@ -25,11 +25,11 @@ public sealed class OcrWorkerRunner(
         var options = OcrWorkerOptions.FromEnvironment(configuration);
         using var singleInstance = OcrWorkerSingleInstance.Acquire();
         var api = new OcrWorkerApiClient(httpClientFactory.CreateClient(nameof(OcrWorkerApiClient)), options);
-        Console.WriteLine($"D+ OCR Worker 啟動：{options.Name}（輪詢 {options.PollInterval.TotalSeconds:0} 秒；單實例鎖：{singleInstance.Path}）");
+        Console.WriteLine($"D+ OCR Worker 啟動：{options.Name}（輪詢 {options.PollInterval.TotalSeconds:0} 秒；評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
 
         do
         {
-            var processedJob = false;
+            var processedWork = false;
             try
             {
                 var agents = await ProbeAgentsAsync(cancellationToken);
@@ -39,8 +39,17 @@ public sealed class OcrWorkerRunner(
                     var job = await api.ClaimAsync(cancellationToken);
                     if (job is not null)
                     {
-                        processedJob = true;
-                        await ProcessJobAsync(api, job, agents, cancellationToken);
+                        processedWork = true;
+                        await ProcessJobAsync(api, job, agents, options, cancellationToken);
+                    }
+                    else
+                    {
+                        var evaluation = await api.ClaimEvaluationAsync(cancellationToken);
+                        if (evaluation is not null)
+                        {
+                            processedWork = true;
+                            await ProcessEvaluationAsync(api, evaluation, cancellationToken);
+                        }
                     }
                 }
             }
@@ -57,7 +66,7 @@ public sealed class OcrWorkerRunner(
                 }
             }
 
-            if (!once && !processedJob)
+            if (!once && !processedWork)
             {
                 await Task.Delay(options.PollInterval, cancellationToken);
             }
@@ -69,6 +78,7 @@ public sealed class OcrWorkerRunner(
         OcrWorkerApiClient api,
         OcrClaimedJob job,
         IReadOnlyDictionary<string, OcrWorkerAgentState> agentStates,
+        OcrWorkerOptions options,
         CancellationToken cancellationToken)
     {
         var directory = Directory.CreateTempSubdirectory("invest-ocr-worker-");
@@ -88,7 +98,7 @@ public sealed class OcrWorkerRunner(
             await api.DownloadAsync(job.DownloadUrl, imagePath, cancellationToken);
             await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
 
-            var request = CreateRequest(imagePath, schemaPath, directory.FullName, job.Market);
+            var request = CreateRequest(imagePath, schemaPath, directory.FullName, job.Market, "max");
             var readiness = new OcrWorkerReadiness(
                 DateTimeOffset.UtcNow,
                 agentStates
@@ -118,6 +128,7 @@ public sealed class OcrWorkerRunner(
                     null,
                     ToFallbackCode(execution.FallbackReason),
                     null,
+                    null,
                     cancellationToken);
                 Console.WriteLine($"OCR 工作 {job.Id} 改由瀏覽器 Tesseract：{ToFallbackCode(execution.FallbackReason)}");
                 return;
@@ -128,7 +139,18 @@ public sealed class OcrWorkerRunner(
                 await UpdateProgressSafeAsync(api, job, "validating", 90, usage, cancellationToken);
                 var draft = validator.Validate(execution.AiResult!);
                 await UpdateProgressSafeAsync(api, job, "completed", 100, usage, cancellationToken);
-                await api.CompleteAsync(job, "succeeded", draft, null, null, cancellationToken);
+                var executionResult = execution.AiResult!.Execution;
+                var evaluation = options.ShouldCaptureEvaluation(job.Id)
+                    ? OcrEvaluationMetadata.From("max", executionResult)
+                    : null;
+                await api.CompleteAsync(
+                    job,
+                    "succeeded",
+                    draft,
+                    null,
+                    null,
+                    evaluation,
+                    cancellationToken);
                 Console.WriteLine($"OCR 工作 {job.Id} 完成：{draft.Rows.Count} 列");
                 WriteUsageSummary(job, execution);
             }
@@ -141,6 +163,7 @@ public sealed class OcrWorkerRunner(
                     null,
                     "ai_invalid_output",
                     exception.ErrorCode,
+                    null,
                     cancellationToken);
             }
         }
@@ -153,7 +176,71 @@ public sealed class OcrWorkerRunner(
                 null,
                 "ai_execution_failed",
                 SafeCode(exception),
+                null,
                 cancellationToken);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    private async Task ProcessEvaluationAsync(
+        OcrWorkerApiClient api,
+        OcrClaimedEvaluation evaluation,
+        CancellationToken cancellationToken)
+    {
+        var directory = Directory.CreateTempSubdirectory("invest-ocr-evaluation-");
+        try
+        {
+            var extension = SupportedExtensions.FirstOrDefault(value =>
+                    evaluation.OriginalFileName.EndsWith(value, StringComparison.OrdinalIgnoreCase))
+                ?? evaluation.ContentType switch
+                {
+                    "image/png" => ".png",
+                    "image/webp" => ".webp",
+                    _ => ".jpg"
+                };
+            var imagePath = Path.Combine(directory.FullName, $"input{extension}");
+            var schemaPath = Path.Combine(directory.FullName, "recognition-schema.json");
+            await api.DownloadAsync(evaluation.DownloadUrl, imagePath, cancellationToken);
+            await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
+
+            var request = CreateRequest(imagePath, schemaPath, directory.FullName, evaluation.Market, "low");
+            var recognizer = new AiOcrOrchestrator(router, new InMemoryOcrPassCheckpointStore());
+            var result = await recognizer.RecognizeAsync(request, cancellationToken);
+            var draft = validator.Validate(result);
+            await api.CompleteEvaluationAsync(
+                evaluation,
+                "succeeded",
+                draft,
+                OcrEvaluationMetadata.From("low", result.Execution),
+                null,
+                cancellationToken);
+            Console.WriteLine($"OCR 評估 {evaluation.Id} 完成 Low：{draft.Rows.Count} 列");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                await api.CompleteEvaluationAsync(
+                    evaluation,
+                    "failed",
+                    null,
+                    new OcrEvaluationMetadata("low", "unknown", null, "low", null, 0, null),
+                    SafeCode(exception),
+                    cancellationToken);
+            }
+            catch (Exception completionException) when (!cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"OCR 評估 {evaluation.Id} 失敗結果回寫失敗：{Safe(completionException.Message)}");
+            }
+
+            Console.Error.WriteLine($"OCR 評估 {evaluation.Id} Low 失敗：{Safe(exception.Message)}");
         }
         finally
         {
@@ -194,7 +281,8 @@ public sealed class OcrWorkerRunner(
         string imagePath,
         string schemaPath,
         string workingDirectory,
-        string market)
+        string market,
+        string reasoningEffort)
     {
         var context = market == "美股"
             ? "帳戶市場是美股；股數可有小數，成本幣別通常是 USD。"
@@ -207,7 +295,8 @@ public sealed class OcrWorkerRunner(
             schemaPath,
             workingDirectory,
             OutputPath: Path.Combine(workingDirectory, "ai-result.json"),
-            Timeout: TimeSpan.FromMinutes(4));
+            Timeout: TimeSpan.FromMinutes(4),
+            ReasoningEffort: reasoningEffort);
     }
 
     private async Task<IReadOnlyDictionary<string, OcrWorkerAgentState>> ProbeAgentsAsync(

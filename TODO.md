@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；待外部情境／Golden Set／手機新圖片 AI 驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；Max／Low／人工答案評估資料接線已完成；待外部情境／Golden Set／手機新圖片 AI 驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🟢 已完成，待實機驗收發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1077,7 +1077,7 @@ fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並
 `IMG_1601.jpeg`／`IMG_1602.jpeg` 由 D+ AI `succeeded`，耗時 70／78 秒。本輪已實作市場限縮的名稱唯一
 反查、模糊候選不自選、單列不阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、單次 AI 辨識、
 跨平台單實例鎖與背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs` 已更新為
-v10 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 Worker 已完成 DPAPI 憑證、
+v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 Worker 已完成 DPAPI 憑證、
 登入時排程與正式心跳驗收。Golden Set 的身份／數量 ≥95%、成本 ≥90%、危險假陽性 0、圖片／模型效能調校、
 多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收。依使用者指示，不自行安裝或設定 Claude CLI。**
 
@@ -1135,11 +1135,15 @@ v10 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
   新鮮 Windows，Windows 不在線時才使用其他平台備援；readiness 會回傳實際選到的 `workerPlatform`。
 - 本機 `codex login status` 為 ChatGPT 登入，且 Worker 會移除 API key 環境變數；目前 OCR 消耗
   ChatGPT Plus 內含的 Codex／agentic 額度，不是 OpenAI Platform API 帳單。每張圖現在只執行一次模型任務。
+- 2026-09-07 已定案並實作 Max／Low／人工答案三方評估：`db/042_ocr_evaluation.sql` 建立私有
+  `ocr_evaluations` 與 Low 租約 RPC；成功 Max 依 Worker `OCR_EVALUATION_SAMPLE_RATE`（預設 10%）
+  抽樣保存，Low 只在一般佇列沒有工作時背景執行，人工按套用後由 admin action 保存校對列。Low 不會
+  替換 Max，也不會被當成人工答案；多圖來源不明時保存但標記 `human_truth_complete=false`。
 
 ### 本輪已完成與仍待外部驗收
 
-1. 公開 `site.js` 的 AI-first 管線、名稱反查、progress UI、用量觀測與單次 AI 辨識已完成；正式
-  `db/041_ocr_progress.sql` 與 `ocr-jobs` v10 也已部署。使用者已確認網站可正常上傳；最新 `main` 已由
+1. 公開 `site.js` 的 AI-first 管線、名稱反查、progress UI、用量觀測與單次 AI 辨識已完成；Max／Low／
+  人工答案評估接線、正式 `db/042_ocr_evaluation.sql` 與 `ocr-jobs` v11 也已部署。使用者已確認網站可正常上傳；最新 `main` 已由
   publish-only Action `34061211033` 全綠發布為快照 `1788730222`。後續持續做 Golden Set 與修復後的
    手機新圖片 AI 外部驗收。
 2. 以 IMG_1601～1604 私有 truth 重跑至少 3 次；身份／數量 ≥95%、成本 ≥90%、危險假陽性 0 才能

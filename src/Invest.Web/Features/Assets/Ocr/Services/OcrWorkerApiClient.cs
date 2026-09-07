@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Invest.Web.Infrastructure.Ai.Cli;
@@ -14,7 +16,8 @@ public sealed record OcrWorkerOptions(
     string Email,
     string Password,
     string Name,
-    TimeSpan PollInterval)
+    TimeSpan PollInterval,
+    double EvaluationSampleRate)
 {
     public static OcrWorkerOptions FromEnvironment(IConfiguration configuration)
     {
@@ -41,6 +44,13 @@ public sealed record OcrWorkerOptions(
             out var parsed) && parsed is >= 2 and <= 60
                 ? parsed
                 : 5;
+        var evaluationSampleRate = double.TryParse(
+            Environment.GetEnvironmentVariable("OCR_EVALUATION_SAMPLE_RATE"),
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out var parsedRate) && parsedRate is >= 0 and <= 1
+                ? parsedRate
+                : 0.1;
 
         if (string.IsNullOrWhiteSpace(url)
             || string.IsNullOrWhiteSpace(anonKey)
@@ -51,7 +61,24 @@ public sealed record OcrWorkerOptions(
                 "ocr-worker 需要 Supabase URL／anon key 與 OCR_WORKER_EMAIL、OCR_WORKER_PASSWORD；Windows 也可從目前使用者的 DPAPI 憑證檔讀取，密碼不可寫入 repository。");
         }
 
-        return new(url.TrimEnd('/'), anonKey, email, password, name, TimeSpan.FromSeconds(pollSeconds));
+        return new(
+            url.TrimEnd('/'),
+            anonKey,
+            email,
+            password,
+            name,
+            TimeSpan.FromSeconds(pollSeconds),
+            evaluationSampleRate);
+    }
+
+    public bool ShouldCaptureEvaluation(Guid jobId)
+    {
+        if (EvaluationSampleRate <= 0) return false;
+        if (EvaluationSampleRate >= 1) return true;
+
+        var hash = SHA256.HashData(jobId.ToByteArray());
+        var bucket = BitConverter.ToUInt32(hash, 0) / (double)uint.MaxValue;
+        return bucket < EvaluationSampleRate;
     }
 }
 
@@ -90,6 +117,7 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         OcrRecognitionDraft? result,
         string? fallbackReason,
         string? errorCode,
+        OcrEvaluationMetadata? evaluationMetadata,
         CancellationToken cancellationToken)
     {
         using var response = await SendJsonAsync(new
@@ -100,9 +128,39 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
             status,
             result,
             fallbackReason,
-            errorCode
+            errorCode,
+            evaluation = evaluationMetadata
         }, cancellationToken);
         await EnsureSuccessAsync(response, "complete");
+    }
+
+    public async Task<OcrClaimedEvaluation?> ClaimEvaluationAsync(CancellationToken cancellationToken)
+    {
+        using var response = await SendJsonAsync(new { action = "evaluation-claim" }, cancellationToken);
+        await EnsureSuccessAsync(response, "evaluation_claim");
+        var body = await response.Content.ReadFromJsonAsync<OcrEvaluationClaimResponse>(JsonOptions, cancellationToken);
+        return body?.Evaluation;
+    }
+
+    public async Task CompleteEvaluationAsync(
+        OcrClaimedEvaluation evaluation,
+        string status,
+        OcrRecognitionDraft? result,
+        OcrEvaluationMetadata metadata,
+        string? errorCode,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendJsonAsync(new
+        {
+            action = "evaluation-complete",
+            evaluationId = evaluation.Id,
+            leaseToken = evaluation.LeaseToken,
+            status,
+            result,
+            metadata,
+            errorCode
+        }, cancellationToken);
+        await EnsureSuccessAsync(response, "evaluation_complete");
     }
 
     public async Task UpdateProgressAsync(
@@ -211,11 +269,41 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         [property: JsonPropertyName("access_token")] string AccessToken,
         [property: JsonPropertyName("refresh_token")] string RefreshToken);
     private sealed record OcrClaimResponse(OcrClaimedJob? Job);
+    private sealed record OcrEvaluationClaimResponse(OcrClaimedEvaluation? Evaluation);
+}
+
+public sealed record OcrEvaluationMetadata(
+    string Mode,
+    string Agent,
+    string? Model,
+    string? ReasoningEffort,
+    string? ServiceTier,
+    long DurationMs,
+    OcrAgentUsage? Usage)
+{
+    public static OcrEvaluationMetadata From(string mode, OcrAgentExecution execution)
+        => new(
+            mode,
+            execution.Agent.ToString().ToLowerInvariant(),
+            execution.Model,
+            execution.ReasoningEffort,
+            execution.ServiceTier,
+            Math.Max(0, (long)Math.Round(execution.Result.Duration.TotalMilliseconds)),
+            execution.Result.Usage);
 }
 
 public sealed record OcrClaimedJob(
     Guid Id,
     Guid AccountId,
+    string Market,
+    string ContentType,
+    string OriginalFileName,
+    Guid LeaseToken,
+    string DownloadUrl);
+
+public sealed record OcrClaimedEvaluation(
+    Guid Id,
+    Guid SourceJobId,
     string Market,
     string ContentType,
     string OriginalFileName,

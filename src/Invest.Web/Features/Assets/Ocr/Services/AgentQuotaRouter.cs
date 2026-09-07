@@ -73,7 +73,14 @@ public sealed class AgentQuotaRouter
             {
                 case OcrAgentRunStatus.Success:
                     _quotaBlockedUntil.TryRemove(agent, out _);
-                    return new(pass, agent, result, index > 0);
+                    return new(
+                        pass,
+                        agent,
+                        result,
+                        index > 0,
+                        routedRequest.Model,
+                        routedRequest.ReasoningEffort,
+                        routedRequest.ServiceTier);
 
                 case OcrAgentRunStatus.QuotaExhausted:
                     var retryAfter = result.QuotaResetAt

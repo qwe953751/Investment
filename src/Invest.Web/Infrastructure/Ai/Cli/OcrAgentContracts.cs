@@ -77,7 +77,10 @@ public sealed record OcrAgentExecution(
     OcrPassKind Pass,
     OcrAgentKind Agent,
     OcrAgentRunResult Result,
-    bool UsedFallback);
+    bool UsedFallback,
+    string? Model = null,
+    string? ReasoningEffort = null,
+    string? ServiceTier = null);
 
 public sealed record OcrPassCheckpoint(
     OcrAgentExecution Execution,

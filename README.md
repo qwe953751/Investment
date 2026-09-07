@@ -13,7 +13,9 @@
  Worker 與正式網站已整合發布。**正式最高權限手機已確認兩張圖片由 D+ AI 完成（70／78 秒）；
 本輪已加入名稱唯一反查、非阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、單次 AI 辨識、
 單實例鎖與 Mac／Windows 背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs`
-Edge Function v10 已更新並具備 Windows 優先的 Worker 選擇；公司 Windows Worker 的背景排程與正式心跳已驗收。Golden Set、圖片／模型
+Edge Function v11 已更新並具備 Windows 優先的 Worker 選擇；公司 Windows Worker 的背景排程與正式心跳已驗收。本輪另加入
+Max／Low／人工答案三方評估資料集：預設抽樣約 10%，Low 只在背景執行、不會替換 Max；`db/042_ocr_evaluation.sql` 已套用正式 Supabase。
+Golden Set、圖片／模型
 效能調校、多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收，限制與下一步見 [TODO.md](TODO.md)。
 
 ## 文件導覽
@@ -58,8 +60,9 @@ GitHub 組織，不含原始帳號名稱）。打開就是**訪客（檢視）�
 密碼登入會在網址下限之上提升權限；在 RLS 收回匿名寫入前，資料表仍沿用公開 anon 模型。
 
 「資產」可在 Dashboard 與帳戶明細間切換、新增使用者／帳戶，並以 D+ AI-first 讀券商未實現損益截圖。
-網站先查兩分鐘內的 Worker 心跳及 Agent 登入／額度狀態，優先選取新鮮的 Windows Worker；AI 可用才把圖片放入 `ocr-private`，
-完成後立即刪除，異常時最長 60 分鐘清理。AI 不可用時圖片不離開瀏覽器，直接由 Tesseract 備援；
+網站先查兩分鐘內的 Worker 心跳及 Agent 登入／額度狀態，優先選取新鮮的 Windows Worker；AI 可用才把圖片放入 `ocr-private`。
+未抽樣的 Max 完成後立即刪除；抽樣工作會保留到背景 Low 完成／失敗，異常時最長 60 分鐘清理。
+AI 不可用時圖片不離開瀏覽器，直接由 Tesseract 備援；
 若工作建立後才耗盡額度，也會回傳 `fallback_required` 再用原頁記憶體中的圖片執行備援。
 使用者可一次選最多 20 張；Tesseract 每張最長辨識 10 秒。完成後會列出和既有持倉的覆蓋／新增／移除差異，
 逐項核對並勾選再套用。同代號直接覆蓋，移除預設不勾選；只有確認的持倉數字寫入 Supabase，
@@ -198,6 +201,10 @@ DPAPI payload 小寫 JSON 欄位與一次性啟動工作目錄，避免登入成
 `742d5e98e7cea1559f2563fd116bda492dae889f`、`ocr-jobs` v10 與 publish-only Action
 [`34061211033`](https://github.com/qwe953751/Investment/actions/runs/34061211033) 已完成。公開網站
 manifest version `1788730222` 與 `gh-pages` 同版，`site.js` 已驗證包含 OCR 佇列契約。
+
+本輪的 Max／Low／人工答案評估接線已在 `main` 完成，正式 `ocr-jobs` 已部署 v11；因本輪沒有要求發布靜態網站，
+公開 Pages 仍維持上方記載的版本。Windows Worker 未設定時預設抽樣率為 10%；要全量建立評估資料集，
+才在 Worker 環境明確設定 `OCR_EVALUATION_SAMPLE_RATE=1`。Low 結果只進私有評估表，不會在網站上突然替換 Max。
 
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
 輪詢，拿到短效私有圖片 URL 後才啟動 CLI；程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、

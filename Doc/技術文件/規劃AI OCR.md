@@ -2,7 +2,7 @@
 
 > 日期：2026-09-07
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 AI，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041` 已套用；本輪加入佇列短心跳回退、Worker 取件後立即接續與 Windows 自包含 EXE 排程；Golden Set、圖片／模型效能調校、多圖 concurrency 與 Windows 新接線實機仍待驗收**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max AI，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續與 Windows 自包含 EXE 排程；Low 只在背景抽樣，不會替換畫面上的 Max；Golden Set、圖片／模型效能調校、多圖 concurrency 與 Windows 新接線實機仍待驗收**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -271,11 +271,16 @@ Agent Router：依主要 Agent 登入／額度選擇單一可用 Claude／Codex
 Mac／Windows `ocr-worker` 主動向外 claim 工作
         ↓
 短效下載至權限限縮暫存目錄 → 雙 CLI Router → 單次 AI 辨識 → 確定性驗證
-  ├─ 成功 → `ocr-complete` Edge Function → 立即刪除原圖
+  ├─ 成功 → `ocr-complete` Edge Function → 回傳 Max；抽中評估時保留原圖給背景 Low
   └─ 兩 Agent 額度皆不足／皆不可用 → `fallback_required` → 瀏覽器 Tesseract → 確認清理
         ↓
 網站取得 AI 草稿，或在本機執行 Tesseract → 顯示來源與既有持倉差異 → 人工確認套用
 ```
+
+抽中的成功工作會在 `ocr_evaluations` 同時保存 Max JSON 與安全的模型／用量 metadata；Worker
+在沒有一般 OCR 工作時才取一筆 Low 評估，完成或失敗後才清理同一張私有圖片。Low 結果永遠不回到
+目前使用者畫面，也不會覆蓋 Max。預設以 `OCR_EVALUATION_SAMPLE_RATE=0.1` 抽樣約 10%，若要建立完整
+資料集可在 Worker 明確設定為 `1`；這會增加訂閱額度與處理時間，仍不產生額外 API 帳單。
 
 Windows Worker 只建立向外的 HTTPS 連線，不開放入站連接埠。即使瀏覽器關閉，工作仍可完成；
 網站在上傳前若看到 Worker 離線，直接在本機回退 Tesseract。工作建立後 Worker 才失聯時，
@@ -298,13 +303,16 @@ Windows Worker 只建立向外的 HTTPS 連線，不開放入站連接埠。即�
 - `Features/Assets/Ocr/Services/OcrRecognitionValidator.cs`：**已完成**數值解析、單次列驗證與 `verified` 判定；網站再以已載入股票名冊交叉驗證，不一致列標成需人工校對。
 - `Features/Assets/Ocr/Services/OcrWorkerApiClient.cs`：**已完成**專用 Auth 登入／refresh、心跳、claim、短效下載與 lease completion。
 - `Features/Assets/Ocr/Services/OcrWorkerRunner.cs`：**已完成** `ocr-worker [--once]`、CLI 登入探測、私有暫存、單次 AI、結果回寫、佇列立即接續及 AI 失敗轉 `fallback_required`。
+- `Features/Assets/Ocr/Services/OcrWorkerApiClient.cs`／`OcrWorkerRunner.cs`：**已完成** Max 評估抽樣、背景 Low claim／complete、模型／推理強度／用量 metadata 回寫；Low 失敗不影響 Max。
 - `Features/Assets/Ocr/Services/OcrEvaluationService.cs`：待完成；`--truth` 目前只驗證標準答案檔存在，尚未計算 Golden Set 指標。
 - `Infrastructure/Ai/Cli/OcrAgentContracts.cs`：**已完成**兩個 CLI 共用的圖片、Prompt、JSON Schema、結果與 checkpoint 契約。
 - `Infrastructure/Ai/Cli/ClaudeCodeCliRunner.cs`：**已完成** Claude Code 訂閱 CLI Adapter。
 - `Infrastructure/Ai/Cli/CodexCliRunner.cs`：**已完成** Codex 訂閱 CLI Adapter。
 - `Infrastructure/Ai/Cli/AgentCliResultClassifier.cs`：**已完成**將退出碼與脫敏輸出分類為成功、額度、登入、暫時性、內容或不可用。
 - `db/039_ocr_jobs.sql`：**已完成並套用正式 Supabase**；建立 private bucket、`ocr_workers`、`ocr_jobs`、原子 claim／complete RPC，anon／authenticated 不可直讀或 claim。
+- `db/042_ocr_evaluation.sql`：**已完成並套用正式 Supabase**；建立 `ocr_evaluations`、Low 評估租約 RPC、人工答案欄位與 service-role-only 權限，沒有永久保存原圖的設計。
 - `supabase/functions/ocr-jobs/index.js`：**已部署**；admin 與 `ocr_worker` JWT 分流，管理 upload／status／ack、heartbeat／claim／complete 及逾期清理。
+- `supabase/functions/ocr-jobs/index.js`：**已更新為 v11**；新增 `evaluation-claim`、`evaluation-complete`、`evaluation-truth`，並在 Low 結束前保留抽樣圖片。
 - 既有 `Program.cs`：**已完成** `ocr-poc` 與 `ocr-worker [--once]` 命令入口。
 - 既有 `tests/Invest.Web.Tests`：**已完成** Router、CLI 分類、checkpoint、fallback 協調器、Validator 與前端候選接線契約測試；Golden Set 指標仍待擴充。
 
@@ -533,6 +541,7 @@ Supabase secret key／service role 會繞過 RLS，若放進長期開機的公�
 
 - `ocr_jobs`：每張圖一個工作，含 owner、帳戶、私有 path、status、attempt count、lease owner／token／期限、驗證後草稿、fallback／錯誤碼與最長 60 分鐘期限。
 - `ocr_workers`：Worker Auth user id、版本、平台、最後心跳及各 Agent 登入／quota 冷卻狀態；不保存任何 Secret。
+- `ocr_evaluations`：一張成功 Max 工作的一筆評估資料，保存 `max_result`、Max metadata、Low 狀態／結果／metadata、錯誤碼與人工確認的 `human_truth`；以 `source_job_id` 唯一關聯，不開放瀏覽器直接讀寫。
 - 首版不用 `pgmq`，改由 `ocr_claim_job()` 在單一 transaction 內用 `FOR UPDATE SKIP LOCKED`
   claim 最舊工作並寫入租約。對目前單一長駐 Worker，這與訊息佇列同樣能避免重複取件，卻少一套
   extension 版本與 visibility timeout 維護；未來吞吐量需要多 Worker 時再量測是否改 pgmq。
@@ -545,9 +554,12 @@ Supabase secret key／service role 會繞過 RLS，若放進長期開機的公�
 ### 9.3 Edge Function 邊界
 
 - 單一 `ocr-jobs` Edge Function 依 action 提供 readiness／submit／status／acknowledge／cancel，
-  驗證管理者 JWT 與工作擁有權；heartbeat／claim／complete 只接受專用 `ocr_worker` JWT。
+  驗證管理者 JWT 與工作擁有權；heartbeat／claim／complete／evaluation-claim／evaluation-complete 只接受專用 `ocr_worker` JWT；`evaluation-truth` 只接受管理者 JWT 並限制為本人評估列。
 - Queue 不直接暴露給瀏覽器；前端也不能指定任意 Storage path 或替工作偽造完成結果。
 - `ocr-complete` 必須驗證租約、工作狀態與冪等鍵；相同完成請求重送應得到同一結果。
+- Max 完成時若被抽樣，Edge 先建立評估列再完成 job；前端 acknowledge 只清 Max 草稿，直到 Low
+  完成／失敗或 60 分鐘期限到期才清理原圖。使用者套用持倉後，前端將人工校對後的列與勾選變更送到
+  `evaluation-truth`；寫入失敗只提示，不回滾已成功套用的持倉。
 
 ### 9.4 狀態、租約、重試與清理
 
@@ -574,7 +586,8 @@ queued／leased／fallback_required → expired／cancelled
   `unavailable`。額度訊息若有可信重設時間就採用；沒有時依
   `OCR_AGENT_QUOTA_RECHECK_MINUTES` 延後，初始預設 30 分鐘，不能在 loop 中忙等。
 - Worker 閒置時預設每 5 秒心跳／輪詢；超過 2 分鐘未更新，網站在上傳前判定離線並不上傳。
-- AI 成功、取消或瀏覽器確認 Tesseract 完成後立即刪除圖片；Edge Function 另由 Supabase Cron
+- 未抽樣的 AI 成功、取消或瀏覽器確認 Tesseract 完成後立即刪除圖片；抽樣成功工作要等 Low
+  結束／失敗後才刪除。Edge Function 另由 Supabase Cron
   `ocr-expired-cleanup` 每 5 分鐘執行 secret-protected cleanup，Worker／瀏覽器都離線時仍會清理。
   若 fallback 圖片已逾期，禁止延長存取，改要求重新選圖。
 - 工作主鍵與租約 token 防止不同 Worker 完成同一個 lease；`db/040_ocr_hardening.sql` 以 user-scoped
@@ -858,10 +871,13 @@ Codex 路徑 fallback；沒有新增 Supabase migration、修改 Edge Function �
 
 本節是本輪實作與下一階段驗收契約。名稱唯一反查、非阻斷差異、階段進度、用量觀測、單次 AI、
 單實例鎖與背景啟動腳本已加入程式；`db/041_ocr_progress.sql` 已於 2026-09-06 套用正式 Supabase，
-`ocr-jobs` Edge Function 已更新為 v10。Worker 取到工作後會立即接下一張，佇列超過 30 秒且短心跳確認
+`ocr-jobs` Edge Function 已更新為 v11。Worker 取到工作後會立即接下一張，佇列超過 30 秒且短心跳確認
 Worker 不可用時會回退 Tesseract；Windows 排程改為直接啟動自包含 EXE，不依賴常駐 PowerShell。
 本次再修正 Edge Function 的 Worker 選擇：新鮮 Windows 為預設，其他平台只在 Windows 不在線時備援，
 readiness 同時回傳所選 `workerPlatform` 供診斷。
+本輪再加入 `db/042_ocr_evaluation.sql` 與 Edge v11：預設約 10% 的 Max 成功工作會保存 Max，
+背景 Worker 以 `low` 執行同一張圖並保存 Low；人工套用後由 admin action 保存人工答案。這是離線評估
+資料，不會把 Low 結果插入或替換 Max 畫面，也不會在未核對時把 Max 當成 ground truth。
 圖片減量、模型／推理強度調校、多圖全域 concurrency、Golden Set 與 Windows 鎖屏／重開機／斷網仍必須
 驗收，不以本機 build 通過宣稱正確率或正式服務已完成。
 
@@ -944,7 +960,7 @@ P95 ≤ 60 秒；若無法在不降低身份／數量 95%、成本 90%、危險�
 
 現在前端原本只會在 `queued`／`leased` 之間切換文字；本輪已加入每圖原生 progressbar、階段文字、
 批次計數與 status 恢復欄位。`db/041_ocr_progress.sql` 已於 2026-09-06 依明確授權套用正式 Supabase，
-`ocr-jobs` Edge Function 已更新為 v10，因此跨重載可保存並還原真實階段；舊 status 相容查詢仍保留，
+`ocr-jobs` Edge Function 已更新為 v11，因此跨重載可保存並還原真實階段；舊 status 相容查詢仍保留，
 避免不同部署版本短暫交錯時中斷 AI fallback。
 
 選定的正式方案是「伺服器保存階段，前端顯示階段式進度」：
@@ -1086,9 +1102,32 @@ host 的主控台 handle 為 0、Worker 只有 1 個，週期 trigger 為 `PT2M`
    尚未以速度換取未驗證的準確率。
 4. 驗收多圖全域 concurrency 2；若額度或速率限制不穩定，保持目前單工作單次 AI。
 5. 公司 Windows 隱藏啟動器與每 2 分鐘補啟動已重新發布／註冊；接著驗證關閉可見終端機、鎖屏／重開機／
-   斷網／登入撤銷與 log 脫敏。Mac LaunchAgent 仍未啟用。
+斷網／登入撤銷與 log 脫敏。Mac LaunchAgent 仍未啟用。
 6. 每個階段都要跑 .NET 10 Release build／全測試、JavaScript 語法與相關前端契約測試；涉及 Supabase
    時再驗 admin／worker／owner 權限矩陣、租約 token、重載恢復與過期清理。最後才用正式手機重跑兩張圖。
+
+#### I. Max／Low／人工答案三方評估資料集（2026-09-07）
+
+使用者要求把未來的模式選擇建立在實際資料，而不是主觀感覺。正式畫面因此固定使用 Max；每張成功
+Max 工作依 Worker 的 `OCR_EVALUATION_SAMPLE_RATE` 決定是否進入背景評估，預設約 10%。被抽中的一張
+圖片會形成一筆 `ocr_evaluations`：
+
+1. `max_result` 與 `max_metadata`：保存當次 Max 的 JSON、Agent、模型、推理強度、服務層級、耗時與安全用量摘要。
+2. `low_result` 與 `low_metadata`：Worker 在一般 OCR 佇列沒有工作時，以同一張原圖、同一份 schema／Prompt，
+   只把 Router request 的 reasoning／effort 覆蓋為 `low`；Low 不使用 Tesseract fallback，也不回傳到使用者畫面。
+3. `human_truth`：使用者在差異表人工修改並按「套用到持倉」後，前端把校對後的股票身份、股數、成本及勾選
+   的變更送到 `evaluation-truth`。`human_truth_complete` 在單張 AI 圖片可安全歸屬時才標 true；多張圖片
+   同代號或無法判定來源時保存資料但標 false，不把答案錯綁到某張圖。
+
+低優先級不是「低品質結果先給使用者」：它是背景 shadow run。Max 完成後的畫面不會等待 Low，也不會被
+   Low 取代；Low 失敗只在評估列留下錯誤碼。抽樣評估完成／失敗後才清理 private Storage，最長仍受原工作
+   60 分鐘期限限制。若要全量收集，必須在 Windows Worker 明確設定 `OCR_EVALUATION_SAMPLE_RATE=1`，
+   並接受訂閱額度與處理時間約增加一倍；不會改走額外付費 API。
+
+這批資料先用於比較 Max／Low 與人工答案的身份、數量、成本、完整列與危險假陽性，再決定是否改用 Low。
+在資料量足夠、依股票／圖片版型／裝置分層且不低於既有 Max 基準前，正式模式不變；不存在自動替換結果
+或只看平均值升級的路徑。`db/042_ocr_evaluation.sql` 已套用正式 Supabase，`ocr-jobs` Edge Function v11
+已部署；本輪只更新資料庫／Edge／Worker／前端與文件，沒有發布靜態網站。
 
 ## 十五、參考資料
 

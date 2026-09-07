@@ -7225,8 +7225,9 @@ function makeAssetHoldingEditor(view) {
     return panel;
 }
 
-// 截圖流程。AI 可用時原圖只進 private bucket 並在完成／取消／到期清掉；AI 不可用時
-// 才完全在瀏覽器跑 Tesseract。留下來的是使用者在下面校對過的數字。
+// 截圖流程。AI 可用時原圖只進 private bucket；未抽樣的 Max 在完成／取消／到期清掉，
+// 抽樣工作等背景 Low 完成／失敗後清掉。AI 不可用時才完全在瀏覽器跑 Tesseract。
+// 留下來的是使用者在下面校對過的數字。
 // 套用前先和帳戶現有持倉比對：同代號直接覆蓋、截圖新出現的列新增、截圖未出現的列
 // 則明列為「可選移除」。不再用「先刪全部、再重建」的做法，避免 OCR 少認一列就誤刪。
 const ASSET_DRAFT_FIELDS = ['ticker', 'name', 'quantity', 'cost', 'marketValue', 'unrealized'];
@@ -7242,7 +7243,8 @@ function assetDraftRowFrom(holding) {
         unrealized: holding.unrealized ?? '',
         aiVerified: holding.aiVerified === true,
         aiWarnings: Array.isArray(holding.aiWarnings) ? holding.aiWarnings : [],
-        recognitionEngine: holding.recognitionEngine ?? ''
+        recognitionEngine: holding.recognitionEngine ?? '',
+        sourceJobId: holding.sourceJobId ?? null
     };
 }
 
@@ -7730,12 +7732,17 @@ function readAssetDraftRows(body) {
             draft[field] = row.querySelector(`input[data-field="${field}"]`)?.value.trim() ?? '';
         }
 
+        draft.recognitionEngine = row.dataset.recognitionEngine ?? '';
+        draft.sourceJobId = row.dataset.ocrSourceJobId || null;
+
         return draft;
     });
 }
 
 function makeAssetDraftRow(draft) {
     const row = document.createElement('tr');
+    row.dataset.recognitionEngine = draft.recognitionEngine ?? '';
+    row.dataset.ocrSourceJobId = draft.sourceJobId ?? '';
     const inputs = new Map();
 
     if (draft.recognitionEngine === 'ai') {
@@ -8121,6 +8128,15 @@ async function assetAiOcrAcknowledge(jobId, action = 'acknowledge') {
     return assetAiOcrJson(response, '清理 AI OCR 工作');
 }
 
+async function assetAiOcrRecordTruth(jobId, truthRows, confirmedChanges, complete) {
+    const response = await assetAiOcrRequest('evaluation-truth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, truthRows, confirmedChanges, complete })
+    });
+    return assetAiOcrJson(response, '保存 OCR 評估答案');
+}
+
 async function assetAiOcrDownload(jobId) {
     const response = await assetAiOcrRequest('download', {
         method: 'GET',
@@ -8195,7 +8211,7 @@ function updateAssetAiProgress(index, status, override = {}) {
     }
 }
 
-function assetAiDraftRows(result, market = '') {
+function assetAiDraftRows(result, market = '', sourceJobId = null) {
     return (result?.rows ?? []).map(row => {
         const rawTicker = String(row.ticker ?? '').trim().toUpperCase();
         const recognizedName = String(row.name ?? '').trim();
@@ -8231,7 +8247,8 @@ function assetAiDraftRows(result, market = '') {
             unrealized: '',
             aiVerified: verified,
             aiWarnings: [...new Set(warnings)],
-            recognitionEngine: 'ai'
+            recognitionEngine: 'ai',
+            sourceJobId
             }),
             identityResolution: identity.source,
             aiNameCandidates: identity.candidates
@@ -8249,6 +8266,7 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
         setAssetOcrStatus(`第 ${index} / ${total} 張：上傳至私有 AI 佇列…`);
         const submitted = await assetAiOcrSubmit(file, accountId, market, idempotencyKey);
         jobId = submitted.jobId;
+        screenshot.jobId = jobId;
         rememberAssetAiJob({
             jobId,
             accountId,
@@ -8269,12 +8287,12 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
 
             const status = await assetAiOcrStatus(jobId);
             if (status.status === 'succeeded') {
-                // 結果已拿到且 Worker 已要求刪圖；清除資料庫草稿失敗不應反過來讓同一張圖
-                // 再跑一次 Tesseract。未清掉的結果會由 60 分鐘 expiry 回收。
+                // Max 結果已拿到；若這張圖被抽中評估，acknowledge 只清掉 Max 草稿，
+                // private object 會保留到 Low 完成或 60 分鐘到期，不影響目前畫面。
                 await assetAiOcrAcknowledge(jobId).catch(() => {});
                 forgetAssetAiJob(jobId);
                 updateAssetAiProgress(index - 1, status.status, { statusText: 'D+ AI 完成' });
-                return { mode: 'ai', result: status.result };
+                return { mode: 'ai', jobId, result: status.result };
             }
 
             if (status.status === 'fallback_required') {
@@ -8335,7 +8353,7 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
 
 // 分頁或瀏覽器重整不會把佇列中的工作遺失。localStorage 只存 job id／檔名等非影像
 // 描述；原始圖仍留在 private bucket，只有核准的 fallback_required 工作能拿到 10 分鐘
-// 的簽名網址。完成後立刻 acknowledge 並從本機清單移除。
+// 的簽名網址。Max 完成後立刻 acknowledge；被抽中的評估圖由背景 Low 完成後清理。
 async function resumeAssetAiJobs(accountId) {
     if (assetAiResumePromise !== null || loginTier !== 'admin' || supabase === null) return;
     const account = assetFindAccount(accountId);
@@ -8353,6 +8371,8 @@ async function resumeAssetAiJobs(accountId) {
             capturedAt: pending[0].createdAt ?? new Date().toISOString(),
             screenshots: pending.map(job => ({
                 fileName: job.fileName || job.jobId,
+                jobId: job.jobId,
+                aiEvaluationEligible: false,
                 previewUrl: placeholder,
                 status: '恢復中…',
                 elapsedMs: null,
@@ -8406,8 +8426,9 @@ async function resumeAssetAiJobs(accountId) {
                 }
 
                 if (finalStatus?.status === 'succeeded') {
-                    rows.push(...assetEnrichOcrRows(assetAiDraftRows(finalStatus.result, view.market), view.market));
+                    rows.push(...assetEnrichOcrRows(assetAiDraftRows(finalStatus.result, view.market, job.jobId), view.market));
                     assetScreenshotDraft.usedAi = true;
+                    screenshot.aiEvaluationEligible = true;
                     screenshot.status = 'D+ AI 完成';
                     updateAssetAiProgress(index, 'succeeded', { stage: '完成', percent: 100, statusText: screenshot.status });
                     await assetAiOcrAcknowledge(job.jobId).catch(() => {});
@@ -11227,6 +11248,12 @@ function mergeAssetOcrScreenshotRows(rows) {
                 previous[field] = row[field];
             }
         }
+
+        if (previous.sourceJobId !== row.sourceJobId
+            && (previous.sourceJobId !== null || row.sourceJobId !== null)) {
+            // 同一代號若來自不同圖片，不能把人工答案錯綁到其中一張圖。
+            previous.sourceJobId = null;
+        }
     }
 
     return [...unique.values()];
@@ -11274,6 +11301,8 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         capturedAt: new Date().toISOString(),
         screenshots: files.map(file => ({
             fileName: file.name,
+            jobId: null,
+            aiEvaluationEligible: false,
             previewUrl: URL.createObjectURL(file),
             status: '等待中',
             elapsedMs: null,
@@ -11351,7 +11380,9 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             }
 
             if (aiResult.mode === 'ai') {
-                const draftRows = assetAiDraftRows(aiResult.result, market);
+                screenshot.jobId = aiResult.jobId;
+                screenshot.aiEvaluationEligible = true;
+                const draftRows = assetAiDraftRows(aiResult.result, market, aiResult.jobId);
                 aiTotalRows += draftRows.length;
                 aiVerifiedRows += draftRows.filter(row => row.aiVerified).length;
                 aiWarnings.push(...(aiResult.result?.warnings ?? []));
@@ -11449,6 +11480,57 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         .filter(text => text !== '')
         .join(' ');
     renderAssetsDashboard();
+}
+
+function assetAiEvaluationTruthGroups(rows, changes, screenshots) {
+    const jobIds = [...new Set((screenshots ?? [])
+        .filter(screenshot => screenshot.aiEvaluationEligible === true && screenshot.jobId)
+        .map(screenshot => screenshot.jobId))];
+    const groups = new Map(jobIds.map(jobId => [jobId, { rows: [], confirmedChanges: [] }]));
+
+    const resolveJobId = row => {
+        const sourceJobId = typeof row?.sourceJobId === 'string' ? row.sourceJobId : null;
+        if (sourceJobId !== null && groups.has(sourceJobId)) {
+            return sourceJobId;
+        }
+
+        // 單張 AI 圖片新增／手動修正的列沒有原始 metadata 時仍可安全歸屬；
+        // 多張圖片則寧可標記不完整，也不把答案錯綁到某一張圖。
+        return sourceJobId === null && jobIds.length === 1 && row?.recognitionEngine !== 'tesseract'
+            ? jobIds[0]
+            : null;
+    };
+
+    for (const row of rows ?? []) {
+        const jobId = resolveJobId(row);
+        if (jobId === null) continue;
+        groups.get(jobId).rows.push({
+            ticker: assetHoldingTicker(row),
+            name: String(row.name ?? '').trim(),
+            quantity: assetHoldingComparable(row.quantity),
+            cost: assetHoldingComparable(row.cost)
+        });
+    }
+
+    for (const change of changes ?? []) {
+        const source = change.draft ?? change.holding ?? {};
+        const jobId = resolveJobId(source);
+        if (jobId === null) continue;
+        groups.get(jobId).confirmedChanges.push({
+            kind: change.kind,
+            ticker: assetHoldingTicker(source),
+            fields: Array.isArray(change.fields) ? change.fields : []
+        });
+    }
+
+    return [...groups.entries()]
+        .filter(([, group]) => group.rows.length > 0 || group.confirmedChanges.length > 0)
+        .map(([jobId, group]) => ({
+            jobId,
+            rows: group.rows,
+            confirmedChanges: group.confirmedChanges,
+            complete: jobIds.length === 1 && group.rows.length > 0
+        }));
 }
 
 function makeAssetScreenshotFlow(view) {
@@ -11705,6 +11787,11 @@ function makeAssetScreenshotFlow(view) {
             return;
         }
 
+        const reviewedRows = readAssetDraftRows(body);
+        const truthGroups = assetAiEvaluationTruthGroups(
+            reviewedRows,
+            selected,
+            assetScreenshotDraft.screenshots);
         const updates = selected.filter(change => change.kind === 'update');
         const additions = selected.filter(change => change.kind === 'addition');
         const removals = selected.filter(change => change.kind === 'removal');
@@ -11774,6 +11861,21 @@ function makeAssetScreenshotFlow(view) {
             `已套用 ${selected.length} 項差異：覆蓋 ${updates.length}、新增 ${additions.length}、移除 ${removals.length}。`);
 
         if (done) {
+            const truthFailures = [];
+            await Promise.all(truthGroups.map(async group => {
+                try {
+                    await assetAiOcrRecordTruth(
+                        group.jobId,
+                        group.rows,
+                        group.confirmedChanges,
+                        group.complete);
+                } catch {
+                    truthFailures.push(group.jobId);
+                }
+            }));
+            if (truthFailures.length > 0) {
+                assetActionNotice = `${assetActionNotice} 持倉已套用，但 OCR 評估答案未完整保存。`;
+            }
             discardAssetScreenshotDraft();
             assetHoldingSortKey = 'ticker';
             assetHoldingSortDirection = 'asc';
