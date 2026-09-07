@@ -5189,6 +5189,97 @@ function podcastPreviewMakeFusionTimeline(summary, title, description, showManag
     return section;
 }
 
+function podcastPreviewMakeVerticalTimeline(summary, title, description, showManage = false) {
+    const timeline = podcastPreviewElement('section', 'podcast-preview-timeline');
+    const heading = podcastPreviewElement('div', 'podcast-preview-timeline-heading');
+    const headingCopy = podcastPreviewElement('div', '');
+    headingCopy.append(
+        podcastPreviewElement('h2', 'podcast-preview-section-heading', title),
+        podcastPreviewElement('p', 'podcast-preview-thesis-description', description));
+    heading.append(headingCopy);
+
+    if (showManage) {
+        const manage = podcastPreviewElement('div', 'podcast-preview-fusion-timeline-manage');
+        manage.append(podcastPreviewButton(
+            podcastPreviewImportOpen ? '收合匯入' : '＋ 多筆匯入',
+            'podcast-preview-primary-button',
+            () => {
+                podcastPreviewImportOpen = !podcastPreviewImportOpen;
+                podcastPreviewNotice = '';
+                renderPodcastNotesPreview();
+            }));
+        if (podcastPreviewImportOpen || podcastPreviewEditingId) {
+            const popover = podcastPreviewElement('div', 'podcast-preview-source-popover');
+            popover.append(podcastPreviewMakeSourcePanel({ compact: true }));
+            manage.append(popover);
+        }
+        heading.append(manage);
+    }
+
+    const list = podcastPreviewElement('div', 'podcast-preview-timeline-list');
+    if (summary.episodes.length === 0) {
+        list.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
+            podcastPreviewSourcesStatusText() ?? '目前尚未匯入 Podcast 來源。'));
+    }
+
+    summary.rows.forEach((sourceRow, index) => {
+        const item = sourceRow.episode;
+        const row = podcastPreviewElement('article', 'podcast-preview-timeline-row'
+            + (index === 0 ? ' is-latest' : ''));
+        const date = podcastPreviewElement('div', 'podcast-preview-timeline-date');
+        date.append(
+            podcastPreviewElement('time', '', item.date),
+            podcastPreviewElement('span', '', item.episode));
+        const marker = podcastPreviewElement('span', 'podcast-preview-timeline-marker');
+        marker.setAttribute('aria-hidden', 'true');
+        const entry = podcastPreviewElement('div', 'podcast-preview-timeline-entry');
+        const entryHead = podcastPreviewElement('div', 'podcast-preview-timeline-entry-head');
+        entryHead.append(
+            podcastPreviewElement('span', 'podcast-preview-summary-eyebrow',
+                index === 0 ? '最新研究' : '研究紀錄'),
+            podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
+                item.stance));
+        entry.append(entryHead, podcastPreviewElement('h3', '', item.title));
+        if (item.takeaway && item.takeaway !== item.title) {
+            entry.append(podcastPreviewElement(
+                'p', 'podcast-preview-episode-summary-takeaway', item.takeaway));
+        }
+        entry.append(podcastPreviewMakeTags(item.tags));
+        if (index === 0 && item.corePoints.length > 0) {
+            const signal = podcastPreviewElement('div', 'podcast-preview-timeline-signal');
+            signal.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '最新核心觀察'));
+            const signalList = document.createElement('ul');
+            for (const point of item.corePoints.slice(0, 2)) {
+                signalList.append(podcastPreviewElement('li', '', point));
+            }
+            signal.append(signalList);
+            entry.append(signal);
+        }
+        entry.append(podcastPreviewButton('閱讀完整分析 →', 'podcast-preview-secondary-button', () => {
+            podcastPreviewOpenEpisode(item.id);
+        }));
+        const footer = podcastPreviewElement('div', 'podcast-preview-timeline-footer');
+        footer.append(
+            podcastPreviewElement('span', 'podcast-preview-timeline-stats',
+                `${item.conclusions} 個結論 · ${item.followUps} 個待追蹤`));
+        const actions = podcastPreviewElement('div', 'podcast-preview-timeline-actions');
+        actions.append(
+            podcastPreviewButton('編輯', 'podcast-preview-history-action', () => {
+                podcastPreviewBeginEdit(sourceRow.source.id);
+            }),
+            podcastPreviewButton('刪除', 'podcast-preview-history-action is-danger', () => {
+                podcastPreviewRemoveSource(sourceRow.source.id);
+            }));
+        footer.append(actions);
+        entry.append(footer);
+        row.append(date, marker, entry);
+        list.append(row);
+    });
+
+    timeline.append(heading, list);
+    return timeline;
+}
+
 function podcastPreviewRenderVariantB(host) {
     const tab = podcastPreviewTabKey();
 
@@ -5355,74 +5446,8 @@ function podcastPreviewRenderVariantD(host) {
             podcastPreviewSourcesStatusText() ?? '尚未辨識待追蹤事項。'));
     page.append(snapshot);
 
-    const timeline = podcastPreviewElement('section', 'podcast-preview-timeline');
-    timeline.append(
-        podcastPreviewElement('h2', 'podcast-preview-section-heading', '集數演進'),
-        podcastPreviewElement('p', 'podcast-preview-thesis-description',
-            '每個節點都保留一句話結論、關聯標籤與節目觀點。'));
-    const list = podcastPreviewElement('div', 'podcast-preview-timeline-list');
-
-    if (summary.episodes.length === 0) {
-        list.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
-            podcastPreviewSourcesStatusText() ?? '目前尚未匯入 Podcast 來源。'));
-    }
-
-    summary.rows.forEach((sourceRow, index) => {
-        const item = sourceRow.episode;
-        const row = podcastPreviewElement('article', 'podcast-preview-timeline-row'
-            + (index === 0 ? ' is-latest' : ''));
-        const date = podcastPreviewElement('div', 'podcast-preview-timeline-date');
-        date.append(
-            podcastPreviewElement('time', '', item.date),
-            podcastPreviewElement('span', '', item.episode));
-        const marker = podcastPreviewElement('span', 'podcast-preview-timeline-marker');
-        marker.setAttribute('aria-hidden', 'true');
-        const entry = podcastPreviewElement('div', 'podcast-preview-timeline-entry');
-        const entryHead = podcastPreviewElement('div', 'podcast-preview-timeline-entry-head');
-        entryHead.append(
-            podcastPreviewElement('span', 'podcast-preview-summary-eyebrow',
-                index === 0 ? '最新研究' : '研究紀錄'),
-            podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
-                item.stance));
-        entry.append(entryHead, podcastPreviewElement('h3', '', item.title));
-        if (item.takeaway && item.takeaway !== item.title) {
-            entry.append(podcastPreviewElement(
-                'p', 'podcast-preview-episode-summary-takeaway', item.takeaway));
-        }
-        entry.append(podcastPreviewMakeTags(item.tags));
-        if (index === 0 && item.corePoints.length > 0) {
-            const signal = podcastPreviewElement('div', 'podcast-preview-timeline-signal');
-            signal.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '最新核心觀察'));
-            const signalList = document.createElement('ul');
-            for (const point of item.corePoints.slice(0, 2)) {
-                signalList.append(podcastPreviewElement('li', '', point));
-            }
-            signal.append(signalList);
-            entry.append(signal);
-        }
-        entry.append(podcastPreviewButton('閱讀完整分析 →', 'podcast-preview-secondary-button', () => {
-            podcastPreviewOpenEpisode(item.id);
-        }));
-        const footer = podcastPreviewElement('div', 'podcast-preview-timeline-footer');
-        footer.append(
-            podcastPreviewElement('span', 'podcast-preview-timeline-stats',
-                `${item.conclusions} 個結論 · ${item.followUps} 個待追蹤`));
-        const actions = podcastPreviewElement('div', 'podcast-preview-timeline-actions');
-        actions.append(
-            podcastPreviewButton('編輯', 'podcast-preview-history-action', () => {
-                podcastPreviewBeginEdit(sourceRow.source.id);
-            }),
-            podcastPreviewButton('刪除', 'podcast-preview-history-action is-danger', () => {
-                podcastPreviewRemoveSource(sourceRow.source.id);
-            }));
-        footer.append(actions);
-        entry.append(footer);
-        row.append(date, marker, entry);
-        list.append(row);
-    });
-
-    timeline.append(list);
-    page.append(timeline);
+    page.append(podcastPreviewMakeVerticalTimeline(summary, '集數演進',
+        '每個節點都保留一句話結論、關聯標籤與節目觀點。'));
     host.append(page);
 }
 
@@ -5458,8 +5483,8 @@ function podcastPreviewRenderVariantE(host) {
         podcastPreviewMakeInsightList('待驗證與追蹤', summary.followUps,
             podcastPreviewSourcesStatusText() ?? '尚未辨識待追蹤事項。'));
     page.append(matrix);
-    page.append(podcastPreviewMakeFusionTimeline(summary, '集數演進',
-        '由宏觀主題往下追查每一集，保留原始分析、觀點與待追蹤數量。', true));
+    page.append(podcastPreviewMakeVerticalTimeline(summary, '集數演進',
+        '每個節點都保留一句話結論、關聯標籤與節目觀點。', true));
     host.append(page);
 }
 

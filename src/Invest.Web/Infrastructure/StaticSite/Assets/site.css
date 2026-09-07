@@ -6940,6 +6940,7 @@ button.podcast-preview-database-row:hover {
 }
 
 .podcast-preview-timeline-heading {
+    position: relative;
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
