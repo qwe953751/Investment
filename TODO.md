@@ -125,26 +125,29 @@ CI 的密碼放在 GitHub Secrets，不能讓它擁有 DDL 權限。
 
 ### 已討論
 
-**2026-09-01 設計已改變並上線（筆記 #37）**：先前定案的「Google 登入 + `editors`
+**2026-09-01 設計已改變並上線（筆記 #37，2026-09-07 擴充最高權限帳號）**：先前定案的「Google 登入 + `editors`
 白名單」方向**沒有採用**，改成更簡單的密碼登入＋固定三層：訪客（不登入）／
 監控者／最高權限。原因是 Google OAuth 對靜態站（無後端）串接複雜、且使用者
 只有自己和另一個信任對象要登入，不需要白名單擴充彈性。
 
 實作方式：
 
-- 頁首新增獨立登入列（`#access-bar`），隨時顯示目前權限，密碼輸入比對兩組
-  Supabase Auth 固定帳號：`admin@investment.local` → 最高權限、
-  `monitor@investment.local` → 監控者。帳號密碼由 `db/029_permission_accounts.sql`
-  以 `auth.users`／`auth.identities` 直接建立（不透過註冊流程寄信）。
+- 頁首新增獨立登入列（`#access-bar`），隨時顯示目前權限，密碼輸入比對三組
+  Supabase Auth 固定帳號：`admin@investment.local` → 最高權限、資產預設 Frank；
+  `fortune@investment.local` → 最高權限、資產預設財神；`monitor@investment.local` → 監控者。
+  原有兩組帳號由忽略的 `db/029_permission_accounts.sql` 以 `auth.users`／`auth.identities`
+  直接建立；第三組帳號依同一結構透過受控 Management API 佈建，不透過註冊流程寄信，且密碼
+  不寫入 repo、文件或 log。
 - 登入狀態是疊加在既有網址下限（`URL_ACCESS`，admin888／viewer，見第 11 項）
   之上的，`applyEffectiveAccess()` 取兩者較高者；登入只會往上疊加，不會蓋掉
   網址本身的下限。
 - 同裝置靠 Supabase 的 refresh token 存在 `localStorage`（key `invest.auth`）
-  自動恢復登入；另外支援 `?key=密碼` 網址參數做長者友善的免打字自動登入，
-  用過即從網址列移除。
+  自動恢復登入。恢復後一律以 Supabase session 的 email 重新對應權限與資產預設，
+  不信任瀏覽器先前保存的層級；refresh 失效或帳號不在固定清單時會一併清除前端權限；
+  另外支援 `?key=密碼` 網址參數做長者友善的免打字自動登入，用過即從網址列移除。
 - 前端已完整實作並端到端驗證（真密碼登入、頁籤依權限篩選、自動恢復都測過），
   commit `6ddd72d4`（`main` 已推送）。`db/029_permission_accounts.sql` 已用
-  Management API 套用到正式 Supabase，兩組帳號皆可正常登入。
+  Management API 套用到正式 Supabase；2026-09-07 新增的財神最高權限帳號也已確認可正常登入。
 
 ### 尚未討論／待驗收
 
@@ -156,7 +159,7 @@ CI 的密碼放在 GitHub Secrets，不能讓它擁有 DDL 權限。
 - `db/029_permission_accounts.sql` 內容含明碼密碼（`crypt(...)` 的字面參數），
   repo 是公開的，已加進 `.gitignore` 排除、永遠不進版控；套用方式記錄在
   memory `reference_supabase_ddl`，需要在別的環境重建帳號時照那份做。
-- 兩組密碼是使用者自訂，不記錄在任何會進版控的檔案。
+- 所有登入密碼都是使用者自訂，不記錄在任何會進版控的檔案。
 
 ---
 

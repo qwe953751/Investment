@@ -73,6 +73,9 @@ const ACCESS_TIER_TEXT = { viewer: '訪客', monitor: '監控者', admin: '最�
 // 登入拿到的層級；null 代表沒登入（訪客）。跟 URL_ACCESS 各自獨立，
 // 實際生效的權限（SITE_ACCESS）取兩者較高的一個，見 applyEffectiveAccess()。
 let loginTier = null;
+// 同一層級的登入帳號仍可能有不同的資產預設使用者；這個值只保存帳號公開識別，
+// 不保存密碼或 access token。
+let loginAccount = null;
 // Access token 只留在記憶體，供需要真正身分驗證的 Edge Function 使用；跨重整仍只保存
 // 原本的 refresh token，再由 Supabase Auth 換一組新 session。
 let authAccessToken = null;
@@ -1821,12 +1824,40 @@ function renderAccessBadge() {
 
 // 筆記 #37：登入列。跟網址決定的下限（URL_ACCESS）各自獨立，登入只會把權限往上加，
 // 不會蓋掉網址原本給的下限——見檔案開頭 applyEffectiveAccess() 的說明。
-// 帳號固定兩組、密碼寫在 Supabase Auth 裡，這裡不判斷帳號名稱，兩組都試一次密碼即可。
+// 帳號固定三組、密碼只保存在 Supabase Auth；同一個最高權限層可指定不同的資產初始使用者。
 const ACCESS_TIER_ACCOUNTS = [
-    { email: 'admin@investment.local', tier: 'admin' },
+    { email: 'admin@investment.local', tier: 'admin', defaultAssetOwnerName: 'Frank' },
+    { email: 'fortune@investment.local', tier: 'admin', defaultAssetOwnerName: '財神' },
     { email: 'monitor@investment.local', tier: 'monitor' }
 ];
 const AUTH_STORAGE_KEY = 'invest.auth';
+
+function accessTierAccountForEmail(email) {
+    const normalized = typeof email === 'string' ? email.trim().toLowerCase() : '';
+
+    return ACCESS_TIER_ACCOUNTS.find(account => account.email === normalized) ?? null;
+}
+
+function resetAssetSelectionForLogin() {
+    assetSelectedOwnerId = '';
+    assetSelectedAccountId = '';
+    assetDashboardScreen = 'dashboard';
+    assetEditorMode = '';
+    assetActionNotice = '';
+}
+
+function activateLoginAccount(account, session) {
+    const changedAccount = loginAccount?.email !== account.email;
+    loginTier = account.tier;
+    loginAccount = account;
+
+    if (changedAccount) {
+        resetAssetSelectionForLogin();
+    }
+
+    saveAuthSession(session, account);
+    applyEffectiveAccess();
+}
 
 async function authRequest(grantType, body) {
     if (supabase === null || PODCAST_NOTES_LOCAL_PREVIEW) {
@@ -1846,16 +1877,21 @@ async function authRequest(grantType, body) {
     }
 }
 
-function saveAuthSession(session, tier) {
+function saveAuthSession(session, account) {
     authAccessToken = session.access_token ?? null;
     try {
-        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ refreshToken: session.refresh_token, tier }));
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
+            refreshToken: session.refresh_token,
+            email: account.email
+        }));
     } catch {
     }
 }
 
 function clearAuthSession() {
     authAccessToken = null;
+    loginTier = null;
+    loginAccount = null;
     try {
         localStorage.removeItem(AUTH_STORAGE_KEY);
     } catch {
@@ -1867,9 +1903,7 @@ async function loginWithPassword(password) {
         const session = await authRequest('password', { email: account.email, password });
 
         if (session !== null) {
-            loginTier = account.tier;
-            saveAuthSession(session, account.tier);
-            applyEffectiveAccess();
+            activateLoginAccount(account, session);
             return true;
         }
     }
@@ -1879,6 +1913,7 @@ async function loginWithPassword(password) {
 
 function logout() {
     loginTier = null;
+    resetAssetSelectionForLogin();
     clearAuthSession();
     applyEffectiveAccess();
 }
@@ -1897,7 +1932,7 @@ async function restoreSession() {
         return;
     }
 
-    if (stored === null || typeof stored !== 'object' || !stored.refreshToken || !stored.tier) {
+    if (stored === null || typeof stored !== 'object' || !stored.refreshToken) {
         return;
     }
 
@@ -1908,9 +1943,15 @@ async function restoreSession() {
         return;
     }
 
-    loginTier = stored.tier;
-    saveAuthSession(session, stored.tier);
-    applyEffectiveAccess();
+    const account = accessTierAccountForEmail(session.user?.email)
+        ?? accessTierAccountForEmail(stored.email);
+
+    if (account === null) {
+        clearAuthSession();
+        return;
+    }
+
+    activateLoginAccount(account, session);
 }
 
 async function refreshAuthAccessToken() {
@@ -1922,7 +1963,7 @@ async function refreshAuthAccessToken() {
         return false;
     }
 
-    if (!stored?.refreshToken || !stored?.tier) {
+    if (!stored?.refreshToken) {
         return false;
     }
 
@@ -1932,9 +1973,15 @@ async function refreshAuthAccessToken() {
         return false;
     }
 
-    loginTier = stored.tier;
-    saveAuthSession(session, stored.tier);
-    applyEffectiveAccess();
+    const account = accessTierAccountForEmail(session.user?.email)
+        ?? accessTierAccountForEmail(stored.email);
+
+    if (account === null) {
+        clearAuthSession();
+        return false;
+    }
+
+    activateLoginAccount(account, session);
     return true;
 }
 
@@ -6137,7 +6184,18 @@ function assetsAreEditing() {
 }
 
 function assetActiveOwner() {
-    return assetOwners.find(owner => owner.id === assetSelectedOwnerId) ?? assetOwners[0] ?? null;
+    const explicitlySelected = assetOwners.find(owner => owner.id === assetSelectedOwnerId);
+
+    if (explicitlySelected !== undefined) {
+        return explicitlySelected;
+    }
+
+    const defaultOwnerName = loginAccount?.defaultAssetOwnerName;
+    const loginDefault = typeof defaultOwnerName === 'string'
+        ? assetOwners.find(owner => owner.name === defaultOwnerName)
+        : undefined;
+
+    return loginDefault ?? assetOwners[0] ?? null;
 }
 
 function assetAccountsOf(ownerId) {
@@ -6775,6 +6833,37 @@ function assetValueTrendRows(ownerId, currentTotal) {
         .sort((left, right) => left.date.localeCompare(right.date));
 }
 
+function assetTrendTooltipText(row) {
+    return `${String(row.date ?? '').replaceAll('-', '/')} · ${assetCurrency(row.value)}`;
+}
+
+function makeAssetTrendTooltip(card) {
+    const tooltip = document.createElement('div');
+    tooltip.className = 'asset-value-trend-tooltip';
+    tooltip.hidden = true;
+    tooltip.setAttribute('role', 'status');
+    card.append(tooltip);
+
+    const hide = () => {
+        tooltip.hidden = true;
+    };
+
+    const show = (row, point) => {
+        tooltip.textContent = assetTrendTooltipText(row);
+        tooltip.hidden = false;
+
+        const cardRect = card.getBoundingClientRect();
+        const pointRect = point.getBoundingClientRect();
+        const desiredLeft = pointRect.left - cardRect.left + pointRect.width / 2 - tooltip.offsetWidth / 2;
+        const maxLeft = Math.max(8, card.clientWidth - tooltip.offsetWidth - 8);
+        const desiredTop = pointRect.top - cardRect.top - tooltip.offsetHeight - 8;
+        tooltip.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
+        tooltip.style.top = `${Math.max(8, desiredTop)}px`;
+    };
+
+    return { hide, show };
+}
+
 // owner 層級（Dashboard 總覽）與 account 層級（帳戶明細）的資產變化圖是同一份畫圖
 // 邏輯，只有「資料從哪張表來、沒資料時的提示文字」不同，所以畫圖核心抽成這個共用
 // 函式，兩層各自只負責準備 rows 與提示文字，避免兩份幾乎一樣的 SVG 程式碼各自漂移。
@@ -6867,6 +6956,7 @@ function makeAssetValueTrendCard(rows, options) {
 
     const path = visibleRows.map((row, index) => `${index === 0 ? 'M' : 'L'} ${x(index)} ${y(row.value)}`).join(' ');
     svg.append(svgElement('path', { class: 'asset-value-trend-line', d: path }));
+    const tooltip = makeAssetTrendTooltip(card);
 
     visibleRows.forEach((row, index) => {
         const point = svgElement('circle', {
@@ -6877,7 +6967,19 @@ function makeAssetValueTrendCard(rows, options) {
             cy: y(row.value),
             r: index === visibleRows.length - 1 ? 5 : 3
         });
-        point.append(svgElement('title', {}, `${row.date} ${assetCurrency(row.value)}`));
+        point.setAttribute('tabindex', '0');
+        point.setAttribute('aria-label', assetTrendTooltipText(row));
+        point.append(svgElement('title', {}, assetTrendTooltipText(row)));
+        point.addEventListener('pointerenter', event => tooltip.show(row, event.currentTarget));
+        point.addEventListener('pointerleave', tooltip.hide);
+        point.addEventListener('focus', event => tooltip.show(row, event.currentTarget));
+        point.addEventListener('blur', tooltip.hide);
+        point.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                tooltip.hide();
+                event.currentTarget.blur();
+            }
+        });
         svg.append(point);
     });
 

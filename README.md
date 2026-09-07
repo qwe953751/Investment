@@ -100,6 +100,8 @@ Dashboard 的資產圓餅圖中心會依格式化後金額的字元長度縮放�
 `db/034_daily_quotes_view_security.sql`、`db/035_asset_value_snapshots.sql` 建立；四支 migration
 已於 2026-09-02 依獨立流程套用正式 Supabase 並查證。Dashboard 的「資產變化」折線圖讀取
 每日快照；當日總值完整時最多寫一筆，缺行情或匯率時不以成本假裝市值，也不寫不完整快照。
+最高權限帳號初次進入資產頁時，會依登入身分預設選取對應的使用者（Frank 或財神），仍可手動切換；
+Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查看日期與台幣金額提示。
 
 本機預覽：`http://127.0.0.1:5220/?access=admin`、
 `http://127.0.0.1:5220/?access=viewer`。

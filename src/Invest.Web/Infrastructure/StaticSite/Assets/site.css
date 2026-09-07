@@ -1412,6 +1412,7 @@ body {
 }
 
 .asset-value-trend-card {
+    position: relative;
     min-width: 0;
     padding: 20px 24px 14px;
     border: 1px solid var(--border);
@@ -1443,6 +1444,22 @@ body {
     height: auto;
     margin-top: 12px;
     overflow: visible;
+}
+
+.asset-value-trend-tooltip {
+    position: absolute;
+    z-index: 2;
+    max-width: calc(100% - 16px);
+    padding: 6px 9px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-alt);
+    box-shadow: 0 4px 12px rgb(15 23 42 / 16%);
+    color: var(--text);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
 }
 
 .asset-value-trend-periods {
@@ -1500,6 +1517,12 @@ body {
     fill: #fff;
     stroke: var(--accent);
     stroke-width: 2;
+    cursor: pointer;
+}
+
+.asset-value-trend-point:focus {
+    outline: none;
+    stroke-width: 4;
 }
 
 .asset-value-trend-point.is-latest {

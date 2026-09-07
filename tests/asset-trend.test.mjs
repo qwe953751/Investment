@@ -49,6 +49,54 @@ function donutFontSize() {
     return context.assetDonutFontSize;
 }
 
+function tooltipText() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetCurrency'),
+        functionSource('assetTrendTooltipText')
+    ].join('\n\n'), context);
+    return context.assetTrendTooltipText;
+}
+
+function activeAssetOwner() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        "let assetSelectedOwnerId = '';",
+        'let loginAccount = null;',
+        "const assetOwners = [{ id: 'frank', name: 'Frank' }, { id: 'fortune', name: '財神' }];",
+        functionSource('assetActiveOwner'),
+        'function selectOwner(id) { assetSelectedOwnerId = id; }',
+        'function loginAs(account) { loginAccount = account; }'
+    ].join('\n\n'), context);
+    return {
+        active: context.assetActiveOwner,
+        select: context.selectOwner,
+        loginAs: context.loginAs
+    };
+}
+
+function clearAuthState() {
+    const context = {
+        localStorage: { removeItem() {} }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        "let authAccessToken = 'token';",
+        "let loginTier = 'admin';",
+        "let loginAccount = { email: 'admin@investment.local' };",
+        "const AUTH_STORAGE_KEY = 'invest.auth';",
+        functionSource('clearAuthSession'),
+        'function state() { return { authAccessToken, loginTier, loginAccount }; }'
+    ].join('\n\n'), context);
+    return {
+        clear: context.clearAuthSession,
+        state: context.state
+    };
+}
+
 const rows = [
     { date: '2025-12-31', value: 100 },
     { date: '2026-01-02', value: 101 },
@@ -88,4 +136,33 @@ test('資產圓餅圖中心金額會隨格式化後的位數縮小', () => {
     assert.equal(fontSize('NT$3,026,563', 18), 15);
     assert.equal(fontSize('NT$123,456,789', 18), 13);
     assert.equal(fontSize('—', 18), 18);
+});
+
+test('資產折線圖提示文字同時包含日期與台幣金額', () => {
+    assert.equal(tooltipText()({ date: '2026-09-07', value: 1234567 }), '2026/09/07 · NT$1,234,567');
+});
+
+test('最高權限帳號依登入身分預設資產使用者，但手動選擇優先', () => {
+    const owner = activeAssetOwner();
+
+    owner.loginAs({ email: 'fortune@investment.local', defaultAssetOwnerName: '財神' });
+    assert.equal(owner.active().name, '財神');
+
+    owner.select('frank');
+    assert.equal(owner.active().name, 'Frank');
+
+    owner.select('');
+    owner.loginAs({ email: 'admin@investment.local', defaultAssetOwnerName: 'Frank' });
+    assert.equal(owner.active().name, 'Frank');
+});
+
+test('失效登入會同時清除權限、帳號與 access token', () => {
+    const auth = clearAuthState();
+
+    auth.clear();
+    assert.deepEqual(JSON.parse(JSON.stringify(auth.state())), {
+        authAccessToken: null,
+        loginTier: null,
+        loginAccount: null
+    });
 });
