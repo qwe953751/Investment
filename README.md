@@ -137,15 +137,16 @@ Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查�
 筆記 #56／#54／#50 已完成手機小控件最上層、裝置清單重複狀態清理，以及其他市場彈出式 K 線標題的 MoneyDJ 連結；
 正式 Edge Function 與網站版本的驗證結果見 [版本紀錄](Doc/版本紀錄.md) 最新一節。
 筆記 #55 已完成：族群成員表的「營收增減」沿用主排行表的營收彈窗，點擊後顯示同一份 20 個月圖表與最近 5 個月列表；
-本次程式與測試已完成，網站待本輪 `publish-only` Action 發布。
+本次 `main` commit `7cee07262e1b8ec676765a9423151a65aa2abd76` 已由
+[`daily-snapshot.yml` publish-only run 34128141460](https://github.com/qwe953751/Investment/actions/runs/34128141460) 發布。
 
 ## 最新已發布版本
 
-本次發布所用的 `main` commit `a56d7a345d91e07a118c04c75f5c84edc60ab561` 已由
-[`daily-snapshot.yml` publish-only run 34115199019](https://github.com/qwe953751/Investment/actions/runs/34115199019)
-完成全套測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788779471`、最新交易日
-`2026/09/07`、產生時間 `2026-09-07 19:11`；公開 manifest 在 CDN 延遲後已與 `gh-pages` 同版，線上 `site.js`
-已驗證包含 `z-index: 40`、`moneyDjStockUrl` 與 K 線標題連結。
+本次發布所用的 `main` commit `7cee07262e1b8ec676765a9423151a65aa2abd76` 已由
+[`daily-snapshot.yml` publish-only run 34128141460](https://github.com/qwe953751/Investment/actions/runs/34128141460)
+完成測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788788236`、最新交易日
+`2026/09/07`、產生時間 `2026-09-07 21:37`；公開 manifest 在 CDN 延遲後已與 `gh-pages` 同版，線上 `site.js`
+已驗證包含族群成員表的 `revenue-cell-button` 與 `toggleRevenueDetails(member.ticker, ...)`。
 本次純發布沒有回補行情、寫入 `data` 或重跑 Supabase migration。
 
 本次最新發布包含 A｜極簡動作列、密碼登入三層權限、券商 OCR 漏列修正、美股帳戶與
