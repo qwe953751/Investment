@@ -17,13 +17,7 @@ const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
 // 經由 usesIntradaySnapshot()，不可再各頁各自列舉，以免新增一個盤中入口就漏掉。
 const INTRADAY_TOPIC_TABS = new Set(['heat', 'tree']);
 const PREVIEW_QUERY = new URLSearchParams(window.location.search).get('preview');
-const MARKET_NAV_VARIANT_QUERY = new URLSearchParams(window.location.search).get('market-nav');
-const MARKET_NAV_VARIANT_KEYS = ['e', 'e1', 'e2', 'e3', 'e4'];
-const MARKET_NAV_DEFAULT_VARIANT = 'e2';
-// 本機專用導覽原型：只在 localhost 顯示，用來比較不同的市場／主頁籤配置。
-// 正式網站不建立原型切換器，也不套用下列版型 class。
-const MARKET_NAV_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
-    && MARKET_NAV_VARIANT_KEYS.includes(MARKET_NAV_VARIANT_QUERY);
+const MARKET_NAV_DEFAULT_VARIANT = 'u1';
 // 本機專用：讓指數 K 線的排版在沒有新快照／尚未套用盤中 migration 時也能檢查。
 // 這個開關只接受 localhost，正式網址不會進入假資料分支。
 const INDEX_KLINE_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
@@ -21798,7 +21792,6 @@ let marketOverviewData = null;
 let marketOverviewLoadError = null;
 let marketOverviewPromise = null;
 let marketSwitchRender = null;
-let marketNavPreviewVariant = MARKET_NAV_PREVIEW ? MARKET_NAV_VARIANT_QUERY : null;
 
 async function ensureMarketOverviewData() {
     if (marketOverviewData !== null) {
@@ -21980,63 +21973,6 @@ function mspBuildPageHeaderPreviewRail(utilitySlot) {
         rail.append(utilitySlot);
     }
     return { rail, status, snapshotNote };
-}
-
-const MARKET_NAV_PREVIEW_VARIANTS = [
-    { key: 'e', label: 'E｜基準：浮層卡片＋標準留白' },
-    { key: 'e1', label: 'E1｜貼合：標題卡再上移' },
-    { key: 'e2', label: 'E2｜連接：導覽與標題卡銜接' },
-    { key: 'e3', label: 'E3｜重疊：標題卡吃進中段空間' },
-    { key: 'e4', label: 'E4｜分層：細線界定內容起點' }
-];
-
-function mspSetPreviewVariant(key, render) {
-    if (!MARKET_NAV_PREVIEW_VARIANTS.some(variant => variant.key === key)) {
-        return;
-    }
-
-    marketNavPreviewVariant = key;
-    const url = new URL(window.location.href);
-    url.searchParams.set('market-nav', key);
-    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
-    render();
-}
-
-function mspBuildPreviewSwitcher(render) {
-    const switcher = document.createElement('div');
-    switcher.className = 'msp-nav-preview-switcher';
-    switcher.setAttribute('aria-label', '導覽版型原型切換');
-
-    const currentIndex = () => MARKET_NAV_PREVIEW_VARIANTS
-        .findIndex(variant => variant.key === marketNavPreviewVariant);
-    const cycle = step => {
-        const next = (currentIndex() + step + MARKET_NAV_PREVIEW_VARIANTS.length)
-            % MARKET_NAV_PREVIEW_VARIANTS.length;
-        mspSetPreviewVariant(MARKET_NAV_PREVIEW_VARIANTS[next].key, render);
-    };
-
-    const previous = document.createElement('button');
-    previous.type = 'button';
-    previous.textContent = '←';
-    previous.setAttribute('aria-label', '上一個導覽版型');
-    previous.addEventListener('click', () => cycle(-1));
-
-    const label = document.createElement('span');
-    label.className = 'msp-nav-preview-label';
-    label.setAttribute('aria-live', 'polite');
-
-    const next = document.createElement('button');
-    next.type = 'button';
-    next.textContent = '→';
-    next.setAttribute('aria-label', '下一個導覽版型');
-    next.addEventListener('click', () => cycle(1));
-
-    switcher.append(previous, label, next);
-    switcher.refresh = () => {
-        label.textContent = MARKET_NAV_PREVIEW_VARIANTS[currentIndex()]?.label ?? '';
-    };
-    switcher.refresh();
-    return switcher;
 }
 
 // 美股指數印小數兩位（跟公開行情慣例一致），加密貨幣用 $ 前綴、大額數字不印小數。
@@ -22644,33 +22580,6 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
     right: 0;
     left: auto;
 }
-.msp-nav-preview-switcher {
-    position: fixed;
-    z-index: 30;
-    left: 50%;
-    bottom: 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    transform: translateX(-50%);
-    padding: 7px 10px;
-    border: 1px solid #334155;
-    border-radius: 999px;
-    background: #0f172a;
-    color: #fff;
-    box-shadow: 0 8px 24px rgba(15, 23, 42, .24);
-}
-.msp-nav-preview-switcher button {
-    width: 28px;
-    height: 28px;
-    border: 0;
-    border-radius: 50%;
-    background: #1e293b;
-    color: #fff;
-    cursor: pointer;
-}
-.msp-nav-preview-switcher button:hover { background: #334155; }
-.msp-nav-preview-label { min-width: 190px; text-align: center; font-size: 12px; white-space: nowrap; }
 .market-switch-prototype {
     max-width: 1440px;
     box-sizing: border-box;
@@ -24142,6 +24051,167 @@ body[data-msp-nav-variant="e4"] .page-title {
         gap: 8px;
     }
 }
+
+/* U1：正式市場頁排版。
+   台股與美股／加密貨幣共用同一個外框；主頁籤與子頁籤同為 16px。
+   市場導覽與標題卡之間不繪製整條交界線。 */
+body[data-msp-nav-variant="u1"] .msp-market-bar,
+body[data-msp-nav-variant="u1"] .ranking-page,
+body[data-msp-nav-variant="u1"] .market-switch-prototype {
+    width: min(100%, 1504px);
+    max-width: 1504px;
+    box-sizing: border-box;
+    margin-inline: auto;
+}
+body[data-msp-nav-variant="u1"] .msp-market-bar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+        "market spacer utility"
+        "nav nav nav";
+    align-items: center;
+    gap: 8px 16px;
+    padding: 8px clamp(12px, 2.2vw, 24px);
+}
+body[data-msp-nav-variant="u1"] .msp-market-bar .msp-market-segmented {
+    grid-area: market;
+    justify-self: start;
+}
+body[data-msp-nav-variant="u1"] .msp-market-bar .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: start;
+    gap: 4px;
+    padding: 3px;
+}
+body[data-msp-nav-variant="u1"] .msp-market-bar .msp-utility-slot {
+    grid-area: utility;
+    justify-self: end;
+}
+body[data-msp-nav-variant="u1"] .msp-market-bar .msp-market-segment {
+    min-height: 22px;
+    padding: 7px 16px;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.35;
+}
+body[data-msp-nav-variant="u1"] .msp-market-bar .msp-global-nav-button {
+    min-width: 64px;
+    padding: 7px 12px;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.35;
+}
+body[data-msp-nav-variant="u1"] .ranking-page {
+    padding: 0 clamp(12px, 2.2vw, 24px) 32px;
+}
+body[data-msp-nav-variant="u1"] .market-switch-prototype {
+    padding: 0 clamp(12px, 2.2vw, 24px) 48px;
+}
+body[data-msp-nav-variant="u1"] .page-header {
+    margin-bottom: 10px;
+}
+body[data-msp-nav-variant="u1"] .page-title {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, .58fr);
+    gap: 14px 18px;
+}
+body[data-msp-nav-variant="u1"] .msp-page-header-rail {
+    width: 100%;
+    max-width: none;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant="u1"] #summary {
+    gap: 8px;
+    margin-bottom: 10px;
+}
+body[data-msp-nav-variant="u1"] .market-switch-prototype .market-heat-panel {
+    display: block;
+    min-height: 0;
+    padding: 12px 14px;
+}
+body[data-msp-nav-variant="u1"] .market-switch-prototype .market-heat-overview {
+    min-height: 0;
+}
+body[data-msp-nav-variant="u1"] .msp-dashboard {
+    gap: 10px;
+}
+body[data-msp-nav-variant="u1"] .msp-section-compact {
+    padding: 11px 12px;
+}
+body[data-msp-nav-variant="u1"] .msp-market-bar[data-nav-variant] {
+    border-bottom: 0;
+}
+
+@media (max-width: 960px) {
+    body[data-msp-nav-variant="u1"] .msp-market-bar {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "market"
+            "utility"
+            "nav";
+        gap: 6px;
+        padding: 7px 12px;
+    }
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-market-segmented {
+        justify-self: stretch;
+        width: 100%;
+        max-width: none;
+    }
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-market-segment {
+        flex: 1 1 0;
+        padding-inline: 8px;
+        text-align: center;
+    }
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-utility-slot {
+        justify-self: stretch;
+        width: 100%;
+    }
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-utility-slot .page-title-tools {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-global-view-nav {
+        justify-self: stretch;
+        justify-content: flex-start;
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+    }
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-global-nav-group {
+        flex-wrap: nowrap;
+    }
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-global-nav-button {
+        flex: 0 0 auto;
+        min-width: 64px;
+    }
+    body[data-msp-nav-variant="u1"] .ranking-page,
+    body[data-msp-nav-variant="u1"] .market-switch-prototype {
+        padding-inline: 12px;
+    }
+    body[data-msp-nav-variant="u1"] .page-title {
+        display: flex;
+        grid-template-columns: none;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 7px;
+        padding: 10px 12px;
+    }
+    body[data-msp-nav-variant="u1"] .msp-page-header-rail {
+        width: 100%;
+        padding: 6px 0 0;
+        border-top: 1px solid var(--border);
+        border-right: 0;
+        border-left: 0;
+        border-radius: 0;
+    }
+    body[data-msp-nav-variant="u1"] .market-switch-prototype .market-heat-panel {
+        padding: 10px 11px;
+    }
+}
 `;
     document.head.append(style);
 }
@@ -24179,13 +24249,10 @@ function initMarketSwitch() {
     panel.hidden = true;
     bar.after(panel);
 
-    let previewSwitcher = null;
     const render = () => {
         const workspaceView = state.view === 'assets' || state.view === 'notes';
         const showOverview = proto.market !== 'tw' && !workspaceView;
-        const navVariant = MARKET_NAV_PREVIEW
-            ? marketNavPreviewVariant
-            : MARKET_NAV_DEFAULT_VARIANT;
+        const navVariant = MARKET_NAV_DEFAULT_VARIANT;
 
         bar.dataset.navVariant = navVariant;
         document.body.dataset.mspNavVariant = navVariant;
@@ -24207,7 +24274,6 @@ function initMarketSwitch() {
                 pageHeaderRail.status.append(pageHeaderRail.snapshotNote);
             }
         }
-        previewSwitcher?.refresh();
         document.body.classList.toggle('market-switch-prototype-active', showOverview);
 
         if (!showOverview) {
@@ -24242,29 +24308,6 @@ function initMarketSwitch() {
 
         panel.replaceChildren(inner);
     };
-
-    if (MARKET_NAV_PREVIEW) {
-        previewSwitcher = mspBuildPreviewSwitcher(render);
-        document.body.append(previewSwitcher);
-        document.addEventListener('keydown', event => {
-            if (event.target instanceof HTMLInputElement
-                || event.target instanceof HTMLTextAreaElement
-                || event.target instanceof HTMLSelectElement
-                || event.target instanceof HTMLElement && event.target.isContentEditable) {
-                return;
-            }
-
-            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-                event.preventDefault();
-                const step = event.key === 'ArrowLeft' ? -1 : 1;
-                const index = MARKET_NAV_PREVIEW_VARIANTS
-                    .findIndex(variant => variant.key === marketNavPreviewVariant);
-                const next = (index + step + MARKET_NAV_PREVIEW_VARIANTS.length)
-                    % MARKET_NAV_PREVIEW_VARIANTS.length;
-                mspSetPreviewVariant(MARKET_NAV_PREVIEW_VARIANTS[next].key, render);
-            }
-        });
-    }
 
     marketSwitchRender = render;
     render();
