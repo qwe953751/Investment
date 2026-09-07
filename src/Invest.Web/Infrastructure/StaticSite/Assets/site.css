@@ -1328,11 +1328,13 @@ body {
 
 .asset-dashboard-donut-inside {
     display: grid;
-    width: 58%;
-    height: 58%;
+    width: 68%;
+    height: 68%;
     align-content: center;
     justify-items: center;
     gap: 5px;
+    box-sizing: border-box;
+    padding: 0 6px;
     border-radius: 50%;
     background: var(--surface);
     color: var(--text);
@@ -1347,10 +1349,16 @@ body {
 .asset-dashboard-donut-inside strong {
     font-size: 18px;
     font-variant-numeric: tabular-nums;
+    min-width: 0;
+    max-width: 100%;
+    white-space: nowrap;
 }
 
 .asset-dashboard-donut-inside .asset-preview-delta {
     font-size: 12px;
+    min-width: 0;
+    max-width: 100%;
+    white-space: nowrap;
 }
 
 .asset-dashboard-legend {

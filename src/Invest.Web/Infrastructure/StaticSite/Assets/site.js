@@ -6568,6 +6568,12 @@ function assetDelta(value, label = '', currency = 'TWD') {
     return delta;
 }
 
+function assetDonutFontSize(text, maxSize, minSize = 8) {
+    const length = [...String(text ?? '')].length;
+    const size = Math.round(maxSize * 10 / Math.max(length, 10));
+    return Math.max(minSize, Math.min(maxSize, size));
+}
+
 function assetField(form, type, text, value, options = {}) {
     const label = document.createElement('label');
     label.textContent = text;
@@ -6678,7 +6684,10 @@ function makeAssetDonut(views, summary) {
     label.textContent = '總資產';
     const amount = document.createElement('strong');
     amount.textContent = assetCurrency(total);
-    inside.append(label, amount, assetDelta(summary.unrealized));
+    const delta = assetDelta(summary.unrealized);
+    amount.style.fontSize = `${assetDonutFontSize(amount.textContent, 18)}px`;
+    delta.style.fontSize = `${assetDonutFontSize(delta.textContent, 12)}px`;
+    inside.append(label, amount, delta);
     donut.append(inside);
 
     const legend = document.createElement('div');

@@ -42,6 +42,13 @@ function trendRowsForPeriod() {
     return context.assetTrendRowsForPeriod;
 }
 
+function donutFontSize() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext(functionSource('assetDonutFontSize'), context);
+    return context.assetDonutFontSize;
+}
+
 const rows = [
     { date: '2025-12-31', value: 100 },
     { date: '2026-01-02', value: 101 },
@@ -73,4 +80,12 @@ test('Max 顯示完整歷史，不受原本最近 120 筆限制', () => {
 
     assert.deepEqual(JSON.parse(JSON.stringify(filter(rows, 'Max').map(row => row.date))),
         rows.map(row => row.date));
+});
+
+test('資產圓餅圖中心金額會隨格式化後的位數縮小', () => {
+    const fontSize = donutFontSize();
+
+    assert.equal(fontSize('NT$3,026,563', 18), 15);
+    assert.equal(fontSize('NT$123,456,789', 18), 13);
+    assert.equal(fontSize('—', 18), 18);
 });
