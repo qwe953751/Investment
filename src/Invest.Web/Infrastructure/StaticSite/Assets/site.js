@@ -19291,6 +19291,15 @@ function makeTopicMemberTable(members, onSortChanged = null) {
         const revenueCell = document.createElement('td');
         const revenue = topicMemberRevenue(member);
         revenueCell.className = 'numeric metric-stack revenue-growth';
+        const revenueButton = document.createElement('button');
+        revenueButton.type = 'button';
+        revenueButton.className = 'revenue-cell-button';
+        revenueButton.dataset.ticker = member.ticker;
+        revenueButton.dataset.hint = '點擊開啟 20 個月營收圖表與最近 5 個月列表';
+        revenueButton.setAttribute('aria-controls', 'revenue-popover');
+        revenueButton.setAttribute('aria-expanded', String(expandedRevenueTicker === member.ticker));
+        revenueButton.setAttribute('aria-label', `${member.ticker} ${memberName} 營收詳情`);
+        revenueButton.addEventListener('click', () => toggleRevenueDetails(member.ticker, memberName, revenueButton));
         for (const line of [
             {
                 label: 'YOY',
@@ -19309,8 +19318,9 @@ function makeTopicMemberTable(members, onSortChanged = null) {
             label.className = 'metric-label';
             label.textContent = line.label;
             span.append(label, line.text);
-            revenueCell.append(span);
+            revenueButton.append(span);
         }
+        revenueCell.append(revenueButton);
 
         const highMonths = toHighMonthsCell(member.ticker, revenue);
         const highMonthsCell = document.createElement('td');
