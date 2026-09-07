@@ -17,6 +17,13 @@ const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
 // 經由 usesIntradaySnapshot()，不可再各頁各自列舉，以免新增一個盤中入口就漏掉。
 const INTRADAY_TOPIC_TABS = new Set(['heat', 'tree']);
 const PREVIEW_QUERY = new URLSearchParams(window.location.search).get('preview');
+const MARKET_NAV_VARIANT_QUERY = new URLSearchParams(window.location.search).get('market-nav');
+const MARKET_NAV_VARIANT_KEYS = ['e', 'e1', 'e2', 'e3', 'e4'];
+const MARKET_NAV_DEFAULT_VARIANT = 'e2';
+// 本機專用導覽原型：只在 localhost 顯示，用來比較不同的市場／主頁籤配置。
+// 正式網站不建立原型切換器，也不套用下列版型 class。
+const MARKET_NAV_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && MARKET_NAV_VARIANT_KEYS.includes(MARKET_NAV_VARIANT_QUERY);
 // 本機專用：讓指數 K 線的排版在沒有新快照／尚未套用盤中 migration 時也能檢查。
 // 這個開關只接受 localhost，正式網址不會進入假資料分支。
 const INDEX_KLINE_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
@@ -1462,11 +1469,14 @@ const NOTES_LOCAL_PREVIEW_ITEMS = [
     }
 ];
 
-const PODCAST_PREVIEW_VARIANTS = [
-    { key: 'a', label: 'A 工作／研究分層' },
-    { key: 'b', label: 'B 股癌直接子頁籤（推薦）' },
-    { key: 'c', label: 'C Podcast 資料庫' }
-];
+// 原型：同一路徑上的四種 D＋E 融合版型，透過 ?variant= 比較資訊主次。
+ const PODCAST_PREVIEW_VARIANTS = [
+     { key: 'a', label: 'A｜寬版研究儀表板' },
+     { key: 'b', label: 'B｜宏觀導讀卡片' },
+     { key: 'c', label: 'C｜三欄研究總覽' },
+     { key: 'd', label: 'D｜時間軸研究室' },
+     { key: 'e', label: 'E｜宏觀三欄＋集數演進' }
+ ];
 
 // 股癌沒有預先建立的補充資料，所有內容都必須由使用者匯入或後續新增。
 const PODCAST_PREVIEW_MY_NOTES = [];
@@ -1958,6 +1968,7 @@ function afterAccessChange() {
     }
 
     renderFilters();
+    marketSwitchRender?.();
     renderAccessBadge();
     wireDevicePresence();
     void refreshAlerts();
@@ -3867,7 +3878,7 @@ function podcastPreviewSetUrl(changes) {
 
 function podcastPreviewVariantKey() {
     const key = new URLSearchParams(window.location.search).get('variant');
-    return PODCAST_PREVIEW_VARIANTS.some(variant => variant.key === key) ? key : 'b';
+    return PODCAST_PREVIEW_VARIANTS.some(variant => variant.key === key) ? key : 'a';
 }
 
 function podcastPreviewTabKey() {
@@ -3938,22 +3949,23 @@ function podcastPreviewWireEvents() {
     podcastPreviewEventsWired = true;
 
     document.addEventListener('keydown', event => {
-        if (!PODCAST_NOTES_LOCAL_PREVIEW || event.target instanceof HTMLInputElement
-            || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) {
+        const target = event.target;
+
+        if (!PODCAST_NOTES_LOCAL_PREVIEW || target instanceof HTMLInputElement
+            || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
+            || target instanceof HTMLElement && target.isContentEditable) {
             return;
         }
 
         const current = podcastPreviewVariantKey();
         const index = PODCAST_PREVIEW_VARIANTS.findIndex(variant => variant.key === current);
 
-        if (event.key === 'ArrowLeft' && index > 0) {
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
             event.preventDefault();
-            podcastPreviewSetVariant(PODCAST_PREVIEW_VARIANTS[index - 1].key);
-        }
-
-        if (event.key === 'ArrowRight' && index < PODCAST_PREVIEW_VARIANTS.length - 1) {
-            event.preventDefault();
-            podcastPreviewSetVariant(PODCAST_PREVIEW_VARIANTS[index + 1].key);
+            const step = event.key === 'ArrowLeft' ? -1 : 1;
+            const nextIndex = (index + step + PODCAST_PREVIEW_VARIANTS.length)
+                % PODCAST_PREVIEW_VARIANTS.length;
+            podcastPreviewSetVariant(PODCAST_PREVIEW_VARIANTS[nextIndex].key);
         }
     });
 }
@@ -3973,7 +3985,7 @@ function podcastPreviewMakeNotice() {
 }
 
 function podcastPreviewMakeSubtabs(active) {
-    const nav = podcastPreviewElement('nav', 'podcast-preview-subtabs');
+    const nav = podcastPreviewElement('nav', 'view-switch podcast-preview-subtabs');
     nav.setAttribute('aria-label', '筆記來源');
 
     const items = [
@@ -3982,7 +3994,7 @@ function podcastPreviewMakeSubtabs(active) {
     ];
 
     for (const item of items) {
-        const button = podcastPreviewButton('', 'podcast-preview-subtab' + (item.key === active ? ' is-active' : ''), () => {
+        const button = podcastPreviewButton('', 'toggle-button' + (item.key === active ? ' selected' : ''), () => {
             podcastPreviewSetUrl({ notesTab: item.key, episode: null });
             podcastPreviewQuery = '';
             podcastPreviewFilter = 'all';
@@ -4157,12 +4169,14 @@ function podcastPreviewMakeListHeader(title, description) {
 
 function podcastPreviewMakeEpisodeList() {
     const section = podcastPreviewElement('section', 'podcast-preview-list-section');
+    const sources = podcastPreviewSources();
     section.append(
-        podcastPreviewMakeListHeader('股癌', '每一集 Podcast 都是一個子頁籤，進入後直接看該集的分析。'));
+        podcastPreviewMakeListHeader('股癌集數', '每一集都保留完整研究脈絡，進入後可查看該集的原始分析。'));
 
     const meta = podcastPreviewElement('div', 'podcast-preview-list-meta');
     meta.append(
-        podcastPreviewElement('span', '', '最近同步：08/30'),
+        podcastPreviewElement('span', '',
+            '最近同步：' + (sources[0]?.date ?? '尚無資料')),
         podcastPreviewButton('＋ 匯入結論', 'podcast-preview-primary-button', () => {
             podcastPreviewActionNotice('展示樣版：匯入流程只展示按鈕狀態，尚未連接正式資料庫。');
         }));
@@ -4280,32 +4294,27 @@ function podcastPreviewMakeDetail(episode) {
 
 function podcastPreviewMakeVariantTabs() {
     const tabs = podcastPreviewElement('div', 'podcast-preview-variant-tabs');
-    const current = podcastPreviewVariantKey();
+    const currentKey = podcastPreviewVariantKey();
+    const current = PODCAST_PREVIEW_VARIANTS.find(variant => variant.key === currentKey)
+        ?? PODCAST_PREVIEW_VARIANTS[0];
+    const currentIndex = PODCAST_PREVIEW_VARIANTS.findIndex(variant => variant.key === current.key);
+    const previousIndex = (currentIndex - 1 + PODCAST_PREVIEW_VARIANTS.length)
+        % PODCAST_PREVIEW_VARIANTS.length;
+    const nextIndex = (currentIndex + 1) % PODCAST_PREVIEW_VARIANTS.length;
 
-    for (const variant of PODCAST_PREVIEW_VARIANTS) {
-        const button = podcastPreviewButton(variant.label,
-            'podcast-preview-variant-tab' + (variant.key === current ? ' is-active' : ''),
-            () => podcastPreviewSetVariant(variant.key));
-        button.setAttribute('aria-pressed', variant.key === current ? 'true' : 'false');
-        tabs.append(button);
-    }
+    const previous = podcastPreviewButton('←', 'podcast-preview-variant-tab',
+        () => podcastPreviewSetVariant(PODCAST_PREVIEW_VARIANTS[previousIndex].key));
+    previous.setAttribute('aria-label', '上一個版型');
 
-    const hint = podcastPreviewElement('span', 'podcast-preview-variant-hint', '← → 切換版本');
-    tabs.append(hint);
+    const label = podcastPreviewElement('span', 'podcast-preview-variant-hint', current.label);
+    label.setAttribute('aria-live', 'polite');
+
+    const next = podcastPreviewButton('→', 'podcast-preview-variant-tab',
+        () => podcastPreviewSetVariant(PODCAST_PREVIEW_VARIANTS[nextIndex].key));
+    next.setAttribute('aria-label', '下一個版型');
+
+    tabs.append(previous, label, next);
     return tabs;
-}
-
-function podcastPreviewRenderVariantB(host) {
-    const tab = podcastPreviewTabKey();
-    host.append(podcastPreviewMakeSubtabs(tab));
-
-    if (tab === 'my') {
-        host.append(podcastPreviewMakeMyNotes());
-        return;
-    }
-
-    const episode = podcastPreviewEpisode();
-    host.append(episode ? podcastPreviewMakeDetail(episode) : podcastPreviewMakeEpisodeList());
 }
 
 function podcastPreviewMakeHistoryTable() {
@@ -4659,22 +4668,26 @@ function podcastPreviewMakeGeneratedPreview(generated) {
     return section;
 }
 
-function podcastPreviewMakeSourcePanel() {
+function podcastPreviewMakeSourcePanel(options = {}) {
+    const compact = options.compact === true;
     const page = podcastPreviewElement('section', 'podcast-preview-source-page');
     const editingSource = podcastPreviewEditingId
         ? podcastPreviewSources().find(source => source.id === podcastPreviewEditingId)
         : null;
     const isEditing = Boolean(editingSource);
-    const heading = podcastPreviewElement('header', 'podcast-preview-source-page-heading');
-    const headingCopy = podcastPreviewElement('div', '');
-    headingCopy.append(
-        podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '來源管理'),
-        podcastPreviewElement('h1', '', 'Podcast 來源'));
-    const toggle = podcastPreviewButton(
-        podcastPreviewImportOpen || isEditing ? '收合匯入' : '＋ 多筆匯入',
-        'podcast-preview-primary-button');
-    heading.append(headingCopy, toggle);
-    page.append(heading);
+    let toggle = null;
+    if (!compact) {
+        const heading = podcastPreviewElement('header', 'podcast-preview-source-page-heading');
+        const headingCopy = podcastPreviewElement('div', '');
+        headingCopy.append(
+            podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '來源管理'),
+            podcastPreviewElement('h1', '', 'Podcast 來源'));
+        toggle = podcastPreviewButton(
+            podcastPreviewImportOpen || isEditing ? '收合匯入' : '＋ 多筆匯入',
+            'podcast-preview-primary-button');
+        heading.append(headingCopy, toggle);
+        page.append(heading);
+    }
 
     const importPanel = podcastPreviewElement('section', 'podcast-preview-import-panel');
     importPanel.hidden = !(podcastPreviewImportOpen || isEditing);
@@ -4684,6 +4697,16 @@ function podcastPreviewMakeSourcePanel() {
         podcastPreviewElement('h2', '', isEditing ? '編輯 Podcast 來源' : '多筆匯入'),
         podcastPreviewElement('p', '',
             '只需輸入時間、集數與 Gemini Notebook 逐字稿分析；其餘欄位先由內容解析產生，資料存在資料庫，任何裝置打開網站都看得到。'));
+    if (compact) {
+        const close = podcastPreviewButton('×', 'podcast-preview-popover-close', () => {
+            podcastPreviewEditingId = '';
+            podcastPreviewImportOpen = false;
+            podcastPreviewGeneratedDraft = null;
+            renderPodcastNotesPreview();
+        });
+        close.setAttribute('aria-label', '關閉多筆匯入');
+        importHeading.append(close);
+    }
     const rows = podcastPreviewElement('div', 'podcast-preview-import-rows');
 
     const appendRow = values => {
@@ -4801,13 +4824,16 @@ function podcastPreviewMakeSourcePanel() {
                     });
             }));
     importPanel.append(importHeading, rows, generatedPreview, importMessage, importActions);
-    page.append(importPanel, podcastPreviewMakeHistoryTable());
+    page.append(importPanel);
 
-    toggle.addEventListener('click', () => {
-        importPanel.hidden = !importPanel.hidden;
-        podcastPreviewImportOpen = !importPanel.hidden;
-        toggle.textContent = importPanel.hidden ? '＋ 多筆匯入' : '收合匯入';
-    });
+    if (!compact) {
+        page.append(podcastPreviewMakeHistoryTable());
+        toggle.addEventListener('click', () => {
+            importPanel.hidden = !importPanel.hidden;
+            podcastPreviewImportOpen = !importPanel.hidden;
+            toggle.textContent = importPanel.hidden ? '＋ 多筆匯入' : '收合匯入';
+        });
+    }
 
     return page;
 }
@@ -4854,70 +4880,592 @@ function podcastPreviewRenderVariantA(host) {
     host.append(layout);
 }
 
-function podcastPreviewRenderVariantC(host) {
-    const page = podcastPreviewElement('div', 'podcast-preview-database');
-    const episode = podcastPreviewEpisode();
-    const heading = podcastPreviewElement('header', 'podcast-preview-database-heading');
-    heading.append(
-        podcastPreviewElement('div', '', ''),
-        podcastPreviewButton('＋ 匯入 Podcast', 'podcast-preview-primary-button', () => {
-            podcastPreviewActionNotice('展示樣版：來源匯入尚未接上正式資料流程。');
-        }));
-    heading.firstChild.append(
-        podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '來源管理'),
-        podcastPreviewElement('h1', '', 'Podcast 資料庫'));
-    page.append(heading);
+function podcastPreviewAggregate(sources = podcastPreviewSources()) {
+    const rows = sources.map(source => ({
+        source,
+        generated: source.generated || podcastPreviewGenerateAnalysis(source.analysis),
+        episode: podcastPreviewSourceToEpisode(source)
+    }));
+    const collect = key => rows.reduce((result, row) => result.concat(
+        Array.isArray(row.generated[key]) ? row.generated[key] : []), []);
+    const unique = values => Array.from(new Set(values.filter(Boolean))).slice(0, 12);
 
-    const metrics = podcastPreviewElement('div', 'podcast-preview-database-metrics');
+    return {
+        rows,
+        sources,
+        episodes: rows.map(row => row.episode),
+        groups: unique(collect('groups')),
+        targets: unique(collect('targets')),
+        points: unique(collect('points')),
+        followUps: unique(collect('followUps')),
+        stanceCounts: rows.reduce((result, row) => {
+            const stance = row.generated.stance || '待驗證';
+            result[stance] = (result[stance] || 0) + 1;
+            return result;
+        }, {}),
+        conclusions: rows.reduce((total, row) => total + (row.generated.points?.length ?? 0), 0),
+        followUpCount: rows.reduce((total, row) => total + (row.generated.followUps?.length ?? 0), 0)
+    };
+}
+
+function podcastPreviewMakeSummaryMetrics(summary, className) {
+    const metrics = podcastPreviewElement('div', 'podcast-preview-metric-grid'
+        + (className ? ' ' + className : ''));
     metrics.append(
-        podcastPreviewMakeMetric('1', '來源'),
-        podcastPreviewMakeMetric('4', '集數', 'accent'),
-        podcastPreviewMakeMetric('16', '原始結論'),
-        podcastPreviewMakeMetric('7', '待追蹤', 'warning'));
-    page.append(metrics);
+        podcastPreviewMakeMetric(String(summary.sources.length > 0 ? 1 : 0), '來源'),
+        podcastPreviewMakeMetric(String(summary.episodes.length), '集數', 'accent'),
+        podcastPreviewMakeMetric(String(summary.conclusions), '核心論點'),
+        podcastPreviewMakeMetric(String(summary.followUpCount), '待追蹤', 'warning'));
+    return metrics;
+}
 
-    if (episode) {
-        page.append(podcastPreviewMakeDetail(episode));
-        host.append(page);
+function podcastPreviewMakeEmptyPanel(message, className) {
+    const panel = podcastPreviewElement('section', 'podcast-preview-empty-panel'
+        + (className ? ' ' + className : ''));
+    panel.append(podcastPreviewElement('p', 'podcast-preview-empty-state', message));
+    return panel;
+}
+
+function podcastPreviewMakeEpisodeSummary(episode, eyebrow) {
+    const card = podcastPreviewElement('article', 'podcast-preview-episode-summary');
+    const head = podcastPreviewElement('div', 'podcast-preview-episode-summary-head');
+    const meta = podcastPreviewElement('div', 'podcast-preview-summary-meta');
+    meta.append(
+        podcastPreviewElement('span', 'podcast-preview-episode-kicker', episode.episode),
+        podcastPreviewElement('time', 'podcast-preview-episode-date', episode.date),
+        podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(episode.stance),
+            episode.stance));
+    head.append(
+        podcastPreviewElement('span', 'podcast-preview-summary-eyebrow', eyebrow),
+        meta);
+
+    const content = podcastPreviewElement('div', 'podcast-preview-episode-summary-content');
+    content.append(podcastPreviewElement('h2', 'podcast-preview-episode-summary-title', episode.title));
+    if (episode.takeaway && episode.takeaway !== episode.title) {
+        content.append(podcastPreviewElement(
+            'p', 'podcast-preview-episode-summary-takeaway', episode.takeaway));
+    }
+    content.append(podcastPreviewMakeTags(episode.tags));
+
+    const points = podcastPreviewElement('section', 'podcast-preview-summary-points');
+    points.append(podcastPreviewElement('span', 'podcast-preview-section-label', '核心觀察'));
+    const list = document.createElement('ul');
+    const corePoints = Array.isArray(episode.corePoints) ? episode.corePoints.slice(0, 3) : [];
+    for (const point of corePoints) {
+        list.append(podcastPreviewElement('li', '', point));
+    }
+    if (list.children.length === 0) {
+        list.append(podcastPreviewElement('li', '', '尚未辨識核心觀察。'));
+    }
+    points.append(list);
+
+    const action = podcastPreviewButton('閱讀完整分析 →', 'podcast-preview-summary-action', () => {
+        podcastPreviewOpenEpisode(episode.id);
+    });
+    card.append(head, content, points, action);
+    return card;
+}
+
+function podcastPreviewMakeEpisodeIndex(episodes) {
+    const section = podcastPreviewElement('section', 'podcast-preview-workbench-index');
+    section.append(podcastPreviewElement('h2', 'podcast-preview-section-heading', '集數索引'));
+    const list = podcastPreviewElement('div', 'podcast-preview-workbench-index-list');
+
+    if (episodes.length === 0) {
+        list.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
+            podcastPreviewSourcesStatusText() ?? '目前尚未匯入 Podcast 來源。'));
+    }
+
+    for (const episode of episodes) {
+        const row = podcastPreviewElement('button', 'podcast-preview-workbench-index-row');
+        row.type = 'button';
+        row.addEventListener('click', () => podcastPreviewOpenEpisode(episode.id));
+        const meta = podcastPreviewElement('div', 'podcast-preview-workbench-index-meta');
+        meta.append(
+            podcastPreviewElement('time', '', episode.date),
+            podcastPreviewElement('span', '', episode.episode));
+        row.append(
+            meta,
+            podcastPreviewElement('strong', '', episode.title),
+            podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(episode.stance),
+                episode.stance));
+        list.append(row);
+    }
+
+    section.append(list);
+    return section;
+}
+
+function podcastPreviewMakeThesisPanel(summary) {
+    const panel = podcastPreviewElement('section', 'podcast-preview-thesis-panel is-emphasis');
+    panel.append(
+        podcastPreviewElement('h2', '', '研究概念'),
+        podcastPreviewElement('p', 'podcast-preview-thesis-description',
+            '跨集整理各種概念、族群、標的與主要論點，建立宏觀研究地圖。'));
+
+    for (const [label, values] of [['關聯族群', summary.groups], ['相關標的', summary.targets]]) {
+        const field = podcastPreviewElement('div', 'podcast-preview-thesis-field');
+        field.append(podcastPreviewElement('span', 'podcast-preview-generated-label', label));
+        if (values.length > 0) {
+            field.append(podcastPreviewMakeTags(values));
+        } else {
+            field.append(podcastPreviewElement('span', 'podcast-preview-empty-inline', '尚未辨識'));
+        }
+        panel.append(field);
+    }
+
+    const points = podcastPreviewElement('ul', 'podcast-preview-thesis-point-list');
+    for (const point of summary.points.slice(0, 5)) {
+        points.append(podcastPreviewElement('li', '', point));
+    }
+    if (points.children.length === 0) {
+        points.append(podcastPreviewElement('li', '', '尚未辨識主要論點。'));
+    }
+    panel.append(
+        podcastPreviewElement('span', 'podcast-preview-generated-label', '跨集主要論點'),
+        points);
+    return panel;
+}
+
+function podcastPreviewMakeMarketMatrix(summary) {
+    const panel = podcastPreviewElement('section', 'podcast-preview-thesis-panel');
+    panel.append(
+        podcastPreviewElement('h2', '', '市場情境'),
+        podcastPreviewElement('p', 'podcast-preview-thesis-description',
+            '依集數保留市場背景，點選任一列查看完整分析。'));
+    const list = podcastPreviewElement('div', 'podcast-preview-thesis-market-list');
+
+    for (const row of summary.rows) {
+        const item = podcastPreviewElement('button', 'podcast-preview-thesis-market-row');
+        item.type = 'button';
+        item.addEventListener('click', () => podcastPreviewOpenEpisode(row.episode.id));
+        const meta = podcastPreviewElement('div', 'podcast-preview-thesis-market-meta');
+        meta.append(
+            podcastPreviewElement('time', '', row.source.date),
+            podcastPreviewElement('span', '', row.source.episode));
+        item.append(
+            meta,
+            podcastPreviewElement('p', '', row.generated.market || '待分析'),
+            podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(
+                row.generated.stance), row.generated.stance));
+        list.append(item);
+    }
+    if (list.children.length === 0) {
+        list.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
+            podcastPreviewSourcesStatusText() ?? '尚未匯入市場內容。'));
+    }
+    panel.append(list);
+    return panel;
+}
+
+function podcastPreviewMakeInsightList(title, items, emptyMessage) {
+    const panel = podcastPreviewElement('section', 'podcast-preview-thesis-panel');
+    panel.append(podcastPreviewElement('h2', '', title));
+    const list = podcastPreviewElement('ul', 'podcast-preview-thesis-follow-list');
+    for (const item of items.slice(0, 8)) {
+        list.append(podcastPreviewElement('li', '', item));
+    }
+    if (list.children.length === 0) {
+        list.append(podcastPreviewElement('li', 'podcast-preview-empty-state', emptyMessage));
+    }
+    panel.append(list);
+    return panel;
+}
+
+function podcastPreviewMakeMacroSummary(summary) {
+    const section = podcastPreviewElement('section', 'podcast-preview-macro-summary');
+    const lead = podcastPreviewElement('div', 'podcast-preview-macro-lead');
+    lead.append(
+        podcastPreviewElement('h2', '', '跨集宏觀結論'),
+        podcastPreviewElement('p', 'podcast-preview-thesis-description',
+            '將目前所有來源的主要論點集中閱讀；這是研究整理，不是買賣訊號。'));
+    const points = podcastPreviewElement('ul', 'podcast-preview-macro-point-list');
+    for (const point of summary.points.slice(0, 5)) {
+        points.append(podcastPreviewElement('li', '', point));
+    }
+    if (points.children.length === 0) {
+        points.append(podcastPreviewElement('li', 'podcast-preview-empty-state',
+            podcastPreviewSourcesStatusText() ?? '尚未匯入可供整理的研究論點。'));
+    }
+    lead.append(points);
+
+    const stance = podcastPreviewElement('div', 'podcast-preview-macro-stance');
+    stance.append(
+        podcastPreviewElement('h2', '', '觀點分布'),
+        podcastPreviewElement('p', 'podcast-preview-thesis-description',
+            '依每集分析中的節目觀點統計。'));
+    for (const [label, className] of [['偏多', 'up'], ['偏空', 'down'], ['待驗證', 'verify']]) {
+        const count = summary.stanceCounts[label] || 0;
+        const row = podcastPreviewElement('div', 'podcast-preview-macro-stance-row');
+        const meta = podcastPreviewElement('div', 'podcast-preview-macro-stance-meta');
+        meta.append(
+            podcastPreviewElement('span', '', label),
+            podcastPreviewElement('strong', '', String(count)));
+        const track = podcastPreviewElement('div', 'podcast-preview-macro-stance-track');
+        const fill = podcastPreviewElement('div', 'podcast-preview-macro-stance-fill is-' + className);
+        fill.style.width = summary.episodes.length > 0
+            ? `${count / summary.episodes.length * 100}%`
+            : '0%';
+        track.append(fill);
+        row.append(meta, track);
+        stance.append(row);
+    }
+    section.append(lead, stance);
+    return section;
+}
+
+function podcastPreviewMakeFusionTimeline(summary, title, description, showManage = false) {
+    const section = podcastPreviewElement('section', 'podcast-preview-fusion-timeline');
+    const heading = podcastPreviewElement('div', 'podcast-preview-fusion-timeline-head');
+    const headingCopy = podcastPreviewElement('div', '');
+    headingCopy.append(
+        podcastPreviewElement('h2', 'podcast-preview-section-heading', title),
+        podcastPreviewElement('p', 'podcast-preview-thesis-description', description));
+    heading.append(headingCopy);
+
+    if (showManage) {
+        const manage = podcastPreviewElement('div', 'podcast-preview-fusion-timeline-manage');
+        manage.append(podcastPreviewButton(
+            podcastPreviewImportOpen ? '收合匯入' : '＋ 多筆匯入',
+            'podcast-preview-primary-button',
+            () => {
+                podcastPreviewImportOpen = !podcastPreviewImportOpen;
+                podcastPreviewNotice = '';
+                renderPodcastNotesPreview();
+            }));
+        if (podcastPreviewImportOpen || podcastPreviewEditingId) {
+            const popover = podcastPreviewElement('div', 'podcast-preview-source-popover');
+            popover.append(podcastPreviewMakeSourcePanel({ compact: true }));
+            manage.append(popover);
+        }
+        heading.append(manage);
+    }
+
+    const list = podcastPreviewElement('div', 'podcast-preview-fusion-timeline-list');
+
+    if (summary.rows.length === 0) {
+        list.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
+            podcastPreviewSourcesStatusText() ?? '目前尚未匯入 Podcast 來源。'));
+    }
+
+    for (const [index, sourceRow] of summary.rows.entries()) {
+        const item = sourceRow.episode;
+        const entry = podcastPreviewElement('article', 'podcast-preview-fusion-timeline-item'
+            + (index === 0 ? ' is-latest' : ''));
+        const meta = podcastPreviewElement('div', 'podcast-preview-fusion-timeline-meta');
+        meta.append(
+            podcastPreviewElement('time', '', item.date),
+            podcastPreviewElement('span', '', item.episode),
+            podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
+                item.stance));
+
+        const content = podcastPreviewElement('div', 'podcast-preview-fusion-timeline-content');
+        content.append(podcastPreviewElement('span', 'podcast-preview-summary-eyebrow',
+            index === 0 ? '最新研究' : '研究紀錄'));
+        content.append(podcastPreviewElement('h3', '', item.title));
+        if (item.takeaway && item.takeaway !== item.title) {
+            content.append(podcastPreviewElement(
+                'p', 'podcast-preview-episode-summary-takeaway', item.takeaway));
+        }
+        content.append(podcastPreviewMakeTags(item.tags));
+        const footer = podcastPreviewElement('div', 'podcast-preview-fusion-timeline-footer');
+        const actions = podcastPreviewElement('div', 'podcast-preview-fusion-timeline-actions');
+        actions.append(podcastPreviewButton('閱讀 →', 'podcast-preview-secondary-button', () => {
+                podcastPreviewOpenEpisode(item.id);
+            }));
+        if (showManage) {
+            actions.append(
+                podcastPreviewButton('編輯', 'podcast-preview-history-action', () => {
+                    podcastPreviewBeginEdit(sourceRow.source.id);
+                }),
+                podcastPreviewButton('刪除', 'podcast-preview-history-action is-danger', () => {
+                    podcastPreviewRemoveSource(sourceRow.source.id);
+                }));
+        }
+        footer.append(
+            podcastPreviewElement('span', 'podcast-preview-timeline-stats',
+                `${item.conclusions} 個結論 · ${item.followUps} 個待追蹤`),
+            actions);
+        content.append(footer);
+        entry.append(meta, content);
+        list.append(entry);
+    }
+
+    section.append(heading, list);
+    return section;
+}
+
+function podcastPreviewRenderVariantB(host) {
+    const tab = podcastPreviewTabKey();
+
+    if (tab === 'my') {
+        host.append(podcastPreviewMakeMyNotes());
         return;
     }
 
-    const source = podcastPreviewElement('section', 'podcast-preview-source-card');
-    const sourceHead = podcastPreviewElement('div', 'podcast-preview-source-head');
-    sourceHead.append(
-        podcastPreviewElement('div', '', ''),
-        podcastPreviewElement('span', 'podcast-preview-source-status', '已同步'));
-    sourceHead.firstChild.append(
-        podcastPreviewElement('span', 'podcast-preview-source-icon', '股'),
-        podcastPreviewElement('div', '', ''));
-    sourceHead.firstChild.lastChild.append(
-        podcastPreviewElement('h2', '', '股癌'),
-        podcastPreviewElement('p', '', 'Podcast · 最近同步 08/30'));
-    source.append(sourceHead);
-
-    const table = podcastPreviewElement('div', 'podcast-preview-database-table');
-    const tableHeader = podcastPreviewElement('div', 'podcast-preview-database-row is-header');
-    tableHeader.append(
-        podcastPreviewElement('span', '', '集數'),
-        podcastPreviewElement('span', '', '標題'),
-        podcastPreviewElement('span', '', '觀點'),
-        podcastPreviewElement('span', '', '日期'));
-    table.append(tableHeader);
-
-    for (const item of podcastPreviewEpisodes()) {
-        const row = podcastPreviewElement('button', 'podcast-preview-database-row');
-        row.type = 'button';
-        row.addEventListener('click', () => podcastPreviewOpenEpisode(item.id));
-        row.append(
-            podcastPreviewElement('span', 'podcast-preview-episode-kicker', item.episode),
-            podcastPreviewElement('strong', '', item.title),
-            podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance), item.stance),
-            podcastPreviewElement('time', '', item.date));
-        table.append(row);
+    const episode = podcastPreviewEpisode();
+    if (episode) {
+        host.append(podcastPreviewMakeDetail(episode));
+        return;
     }
 
-    source.append(table);
-    page.append(source);
+    const summary = podcastPreviewAggregate();
+    const page = podcastPreviewElement('main', 'podcast-preview-fusion-page podcast-preview-fusion-editorial');
+    const heading = podcastPreviewElement('header', 'podcast-preview-fusion-heading');
+    const headingCopy = podcastPreviewElement('div', '');
+    headingCopy.append(
+        podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '宏觀導讀卡片'),
+        podcastPreviewElement('h1', '', '把跨集研究整理成一頁'),
+        podcastPreviewElement('p', 'podcast-preview-workspace-description',
+            '先讀跨集結論，再用卡片分區理解概念、市場與待驗證事項。'));
+    const importButton = podcastPreviewButton(
+        podcastPreviewImportOpen ? '收合匯入' : '＋ 多筆匯入',
+        'podcast-preview-primary-button',
+        () => {
+            podcastPreviewImportOpen = !podcastPreviewImportOpen;
+            podcastPreviewNotice = '';
+            renderPodcastNotesPreview();
+        });
+    heading.append(headingCopy, importButton);
+    page.append(heading, podcastPreviewMakeSummaryMetrics(summary, 'podcast-preview-fusion-metrics'));
+
+    if (podcastPreviewImportOpen || podcastPreviewEditingId) {
+        const sourcePanel = podcastPreviewMakeSourcePanel();
+        sourcePanel.classList.add('podcast-preview-fusion-source-panel');
+        page.append(sourcePanel);
+    }
+
+    page.append(podcastPreviewMakeMacroSummary(summary));
+
+    const lead = podcastPreviewElement('div', 'podcast-preview-fusion-card-grid is-two');
+    lead.append(summary.episodes[0]
+        ? podcastPreviewMakeEpisodeSummary(summary.episodes[0], '焦點研究')
+        : podcastPreviewMakeEmptyPanel(
+            podcastPreviewSourcesStatusText() ?? '目前尚未匯入 Podcast 來源。'));
+    const concepts = podcastPreviewMakeThesisPanel(summary);
+    concepts.classList.add('is-emphasis');
+    lead.append(concepts);
+    page.append(lead);
+
+    const context = podcastPreviewElement('div', 'podcast-preview-fusion-card-grid is-two');
+    context.append(podcastPreviewMakeMarketMatrix(summary));
+    context.append(podcastPreviewMakeInsightList('待驗證與追蹤', summary.followUps,
+        podcastPreviewSourcesStatusText() ?? '尚未辨識待追蹤事項。'));
+    page.append(context);
+    page.append(podcastPreviewMakeFusionTimeline(summary, '集數索引',
+        '把宏觀結論落回每集資料，快速比較觀點如何變化。'));
+    host.append(page);
+}
+
+function podcastPreviewRenderVariantC(host) {
+    const tab = podcastPreviewTabKey();
+
+    if (tab === 'my') {
+        host.append(podcastPreviewMakeMyNotes());
+        return;
+    }
+
+    const episode = podcastPreviewEpisode();
+    if (episode) {
+        host.append(podcastPreviewMakeDetail(episode));
+        return;
+    }
+
+    const summary = podcastPreviewAggregate();
+    const page = podcastPreviewElement('main', 'podcast-preview-fusion-page podcast-preview-fusion-hub-page');
+    const heading = podcastPreviewElement('header', 'podcast-preview-fusion-heading');
+    const headingCopy = podcastPreviewElement('div', '');
+    headingCopy.append(
+        podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '三欄研究總覽'),
+        podcastPreviewElement('h1', '', '從概念一路追到證據'),
+        podcastPreviewElement('p', 'podcast-preview-workspace-description',
+            '讓研究概念成為主軸，右側同時保留市場情境與待驗證事項。'));
+    const importButton = podcastPreviewButton(
+        podcastPreviewImportOpen ? '收合匯入' : '＋ 管理來源',
+        'podcast-preview-primary-button',
+        () => {
+            podcastPreviewImportOpen = !podcastPreviewImportOpen;
+            podcastPreviewNotice = '';
+            renderPodcastNotesPreview();
+        });
+    heading.append(headingCopy, importButton);
+    page.append(heading, podcastPreviewMakeSummaryMetrics(summary, 'podcast-preview-fusion-metrics'));
+
+    if (podcastPreviewImportOpen || podcastPreviewEditingId) {
+        const sourcePanel = podcastPreviewMakeSourcePanel();
+        sourcePanel.classList.add('podcast-preview-fusion-source-panel');
+        page.append(sourcePanel);
+    }
+
+    const spotlight = podcastPreviewElement('div', 'podcast-preview-fusion-spotlight');
+    const concepts = podcastPreviewMakeThesisPanel(summary);
+    concepts.classList.add('is-emphasis');
+    const spotlightSide = podcastPreviewElement('div', 'podcast-preview-fusion-spotlight-side');
+    spotlightSide.append(
+        podcastPreviewMakeMarketMatrix(summary),
+        podcastPreviewMakeInsightList('待驗證與追蹤', summary.followUps,
+            podcastPreviewSourcesStatusText() ?? '尚未辨識待追蹤事項。'));
+    spotlight.append(concepts, spotlightSide);
+    page.append(spotlight);
+    page.append(podcastPreviewMakeFusionTimeline(summary, '集數證據鏈',
+        '每一個宏觀概念都能回到具體集數，不把摘要與來源混在一起。'));
+    host.append(page);
+}
+
+function podcastPreviewRenderVariantD(host) {
+    const tab = podcastPreviewTabKey();
+
+    if (tab === 'my') {
+        host.append(podcastPreviewMakeMyNotes());
+        return;
+    }
+
+    const episode = podcastPreviewEpisode();
+    if (episode) {
+        host.append(podcastPreviewMakeDetail(episode));
+        return;
+    }
+
+    const summary = podcastPreviewAggregate();
+    const page = podcastPreviewElement('main', 'podcast-preview-timeline-page podcast-preview-fusion-page');
+    const heading = podcastPreviewElement('header', 'podcast-preview-timeline-heading');
+    const headingCopy = podcastPreviewElement('div', '');
+    headingCopy.append(
+        podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '時間軸研究室'),
+        podcastPreviewElement('h1', '', '先看脈絡，再看變化'),
+        podcastPreviewElement('p', 'podcast-preview-workspace-description',
+            '上方先看跨集宏觀結論，下方沿日期檢視每一集的觀點變化；來源節點可直接維護。'));
+    const importButton = podcastPreviewButton(
+        podcastPreviewImportOpen ? '收合匯入' : '＋ 多筆匯入',
+        'podcast-preview-primary-button',
+        () => {
+            podcastPreviewImportOpen = !podcastPreviewImportOpen;
+            podcastPreviewNotice = '';
+            renderPodcastNotesPreview();
+        });
+    heading.append(headingCopy, importButton);
+    page.append(heading, podcastPreviewMakeSummaryMetrics(summary, 'podcast-preview-timeline-metrics'));
+
+    page.append(podcastPreviewMakeMacroSummary(summary));
+
+    if (podcastPreviewImportOpen || podcastPreviewEditingId) {
+        const sourcePanel = podcastPreviewMakeSourcePanel();
+        sourcePanel.classList.add('podcast-preview-timeline-source-panel');
+        page.append(sourcePanel);
+    }
+
+    const snapshot = podcastPreviewElement('div', 'podcast-preview-fusion-card-grid is-two');
+    snapshot.append(
+        podcastPreviewMakeThesisPanel(summary),
+        podcastPreviewMakeInsightList('待驗證與追蹤', summary.followUps,
+            podcastPreviewSourcesStatusText() ?? '尚未辨識待追蹤事項。'));
+    page.append(snapshot);
+
+    const timeline = podcastPreviewElement('section', 'podcast-preview-timeline');
+    timeline.append(
+        podcastPreviewElement('h2', 'podcast-preview-section-heading', '集數演進'),
+        podcastPreviewElement('p', 'podcast-preview-thesis-description',
+            '每個節點都保留一句話結論、關聯標籤與節目觀點。'));
+    const list = podcastPreviewElement('div', 'podcast-preview-timeline-list');
+
+    if (summary.episodes.length === 0) {
+        list.append(podcastPreviewElement('p', 'podcast-preview-empty-state',
+            podcastPreviewSourcesStatusText() ?? '目前尚未匯入 Podcast 來源。'));
+    }
+
+    summary.rows.forEach((sourceRow, index) => {
+        const item = sourceRow.episode;
+        const row = podcastPreviewElement('article', 'podcast-preview-timeline-row'
+            + (index === 0 ? ' is-latest' : ''));
+        const date = podcastPreviewElement('div', 'podcast-preview-timeline-date');
+        date.append(
+            podcastPreviewElement('time', '', item.date),
+            podcastPreviewElement('span', '', item.episode));
+        const marker = podcastPreviewElement('span', 'podcast-preview-timeline-marker');
+        marker.setAttribute('aria-hidden', 'true');
+        const entry = podcastPreviewElement('div', 'podcast-preview-timeline-entry');
+        const entryHead = podcastPreviewElement('div', 'podcast-preview-timeline-entry-head');
+        entryHead.append(
+            podcastPreviewElement('span', 'podcast-preview-summary-eyebrow',
+                index === 0 ? '最新研究' : '研究紀錄'),
+            podcastPreviewElement('span', 'podcast-preview-stance is-' + podcastPreviewStanceClass(item.stance),
+                item.stance));
+        entry.append(entryHead, podcastPreviewElement('h3', '', item.title));
+        if (item.takeaway && item.takeaway !== item.title) {
+            entry.append(podcastPreviewElement(
+                'p', 'podcast-preview-episode-summary-takeaway', item.takeaway));
+        }
+        entry.append(podcastPreviewMakeTags(item.tags));
+        if (index === 0 && item.corePoints.length > 0) {
+            const signal = podcastPreviewElement('div', 'podcast-preview-timeline-signal');
+            signal.append(podcastPreviewElement('span', 'podcast-preview-generated-label', '最新核心觀察'));
+            const signalList = document.createElement('ul');
+            for (const point of item.corePoints.slice(0, 2)) {
+                signalList.append(podcastPreviewElement('li', '', point));
+            }
+            signal.append(signalList);
+            entry.append(signal);
+        }
+        entry.append(podcastPreviewButton('閱讀完整分析 →', 'podcast-preview-secondary-button', () => {
+            podcastPreviewOpenEpisode(item.id);
+        }));
+        const footer = podcastPreviewElement('div', 'podcast-preview-timeline-footer');
+        footer.append(
+            podcastPreviewElement('span', 'podcast-preview-timeline-stats',
+                `${item.conclusions} 個結論 · ${item.followUps} 個待追蹤`));
+        const actions = podcastPreviewElement('div', 'podcast-preview-timeline-actions');
+        actions.append(
+            podcastPreviewButton('編輯', 'podcast-preview-history-action', () => {
+                podcastPreviewBeginEdit(sourceRow.source.id);
+            }),
+            podcastPreviewButton('刪除', 'podcast-preview-history-action is-danger', () => {
+                podcastPreviewRemoveSource(sourceRow.source.id);
+            }));
+        footer.append(actions);
+        entry.append(footer);
+        row.append(date, marker, entry);
+        list.append(row);
+    });
+
+    timeline.append(list);
+    page.append(timeline);
+    host.append(page);
+}
+
+function podcastPreviewRenderVariantE(host) {
+    const tab = podcastPreviewTabKey();
+
+    if (tab === 'my') {
+        host.append(podcastPreviewMakeMyNotes());
+        return;
+    }
+
+    const episode = podcastPreviewEpisode();
+    if (episode) {
+        host.append(podcastPreviewMakeDetail(episode));
+        return;
+    }
+
+    const summary = podcastPreviewAggregate();
+    const page = podcastPreviewElement('main', 'podcast-preview-thesis-page podcast-preview-fusion-page');
+    const heading = podcastPreviewElement('header', 'podcast-preview-thesis-heading');
+    heading.append(
+        podcastPreviewElement('span', 'podcast-preview-rail-eyebrow', '宏觀三欄＋集數演進'),
+        podcastPreviewElement('h1', '', '跨集宏觀研究總覽'),
+        podcastPreviewElement('p', 'podcast-preview-workspace-description',
+            '上方看跨集結論與權重分布，中段拆解概念、市場和待驗證，下方回到每一集。'));
+    page.append(heading);
+    page.append(podcastPreviewMakeMacroSummary(summary));
+
+    const matrix = podcastPreviewElement('div', 'podcast-preview-thesis-matrix');
+    matrix.append(
+        podcastPreviewMakeThesisPanel(summary),
+        podcastPreviewMakeMarketMatrix(summary),
+        podcastPreviewMakeInsightList('待驗證與追蹤', summary.followUps,
+            podcastPreviewSourcesStatusText() ?? '尚未辨識待追蹤事項。'));
+    page.append(matrix);
+    page.append(podcastPreviewMakeFusionTimeline(summary, '集數演進',
+        '由宏觀主題往下追查每一集，保留原始分析、觀點與待追蹤數量。', true));
     host.append(page);
 }
 
@@ -4928,15 +5476,34 @@ function renderPodcastNotesPreview() {
         return;
     }
 
+    const variantKey = PODCAST_NOTES_LOCAL_PREVIEW
+        ? podcastPreviewVariantKey()
+        : podcastPreviewTabKey() === 'gooaye' ? 'e' : 'a';
+
     host.replaceChildren();
-    host.className = 'podcast-preview-root podcast-preview-variant-a';
+    host.className = 'podcast-preview-root podcast-preview-variant-' + variantKey;
 
     const notice = podcastPreviewMakeNotice();
     if (notice) {
         host.append(notice);
     }
 
-    podcastPreviewRenderVariantA(host);
+    if (variantKey === 'b') {
+        podcastPreviewRenderVariantB(host);
+    } else if (variantKey === 'c') {
+        podcastPreviewRenderVariantC(host);
+    } else if (variantKey === 'd') {
+        podcastPreviewRenderVariantD(host);
+    } else if (variantKey === 'e') {
+        podcastPreviewRenderVariantE(host);
+    } else {
+        podcastPreviewRenderVariantA(host);
+    }
+
+    if (PODCAST_NOTES_LOCAL_PREVIEW) {
+        podcastPreviewWireEvents();
+        host.append(podcastPreviewMakeVariantTabs());
+    }
 }
 
 // 資產。使用者、帳戶與持倉都存在資料庫（db/019_assets.sql），不放瀏覽器 localStorage：
@@ -21199,6 +21766,8 @@ function startIntradayTimer() {
 let marketOverviewData = null;
 let marketOverviewLoadError = null;
 let marketOverviewPromise = null;
+let marketSwitchRender = null;
+let marketNavPreviewVariant = MARKET_NAV_PREVIEW ? MARKET_NAV_VARIANT_QUERY : null;
 
 async function ensureMarketOverviewData() {
     if (marketOverviewData !== null) {
@@ -21239,9 +21808,7 @@ const MSP_MARKETS = [
     { key: 'crypto', text: '加密貨幣' }
 ];
 
-// 第一層：市場（台股／美股／加密貨幣），單一膠囊容器內的分段控制。
-// 跟第二層（頁籤＋內容，裝在下面那個有邊框的面板裡）在視覺上明顯分層——
-// 先選市場，才決定面板裡出現哪些頁籤與內容，兩層不是並排的等重選項。
+// 市場（台股／美股／加密貨幣）是情境選擇，主頁籤則是全域導覽；兩者不再塞進內容面板。
 function mspBuildMarketTabs(proto, paint) {
     const wrap = document.createElement('div');
     wrap.className = 'msp-market-segmented';
@@ -21256,24 +21823,189 @@ function mspBuildMarketTabs(proto, paint) {
     return wrap;
 }
 
-// 第二層：面板裡的頁籤，維持既有的藥丸樣式，視覺上明顯「裝在」第一層底下的面板裡。
-function mspBuildViewTabs(proto) {
-    const wrap = document.createElement('div');
-    wrap.className = 'view-switch';
-    const tabs = proto.market === 'tw'
-        ? ['盤中', '盤後', '族群', '自訂', '資產', '筆記']
-        : ['總覽', '資產', '筆記'];
+// 全域導覽：市場資料頁與資產／筆記工作區分組，但仍維持同一層主導覽。
+// 資產／筆記不是市場總覽的子頁，所以不能放進市場面板裡，更不能因市場切換被 disabled。
+function mspBuildViewTabs(proto, paint) {
+    const nav = document.createElement('nav');
+    nav.className = 'msp-global-view-nav';
+    nav.setAttribute('aria-label', '主頁籤');
 
-    tabs.forEach((text, index) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = index === 0 ? 'toggle-button selected' : 'toggle-button';
-        button.textContent = text;
-        button.disabled = true;
-        wrap.append(button);
+    const dataTabs = proto.market === 'tw'
+        ? VIEWS.filter(view => !['assets', 'notes'].includes(view.key))
+            .filter(view => availableViews().some(item => item.key === view.key))
+        : [{ key: 'overview', text: '總覽', hint: '查看目前選定市場的指數、熱絡程度與類股／幣種表現。' }];
+    const workspaceTabs = availableViews()
+        .filter(view => view.key === 'assets' || view.key === 'notes');
+    const groups = [dataTabs, workspaceTabs].filter(group => group.length > 0);
+    const workspaceView = state.view === 'assets' || state.view === 'notes';
+    const activeKey = workspaceView
+        ? state.view
+        : proto.market === 'tw'
+            ? state.view
+            : 'overview';
+
+    groups.forEach((tabs, groupIndex) => {
+        if (groupIndex > 0) {
+            const divider = document.createElement('span');
+            divider.className = 'msp-global-nav-divider';
+            divider.setAttribute('aria-hidden', 'true');
+            nav.append(divider);
+        }
+
+        const group = document.createElement('div');
+        group.className = 'msp-global-nav-group';
+
+        tabs.forEach(tab => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = tab.key === activeKey
+                ? 'msp-global-nav-button selected'
+                : 'msp-global-nav-button';
+            button.textContent = tab.text;
+            button.dataset.hint = tab.hint;
+            button.setAttribute('aria-current', tab.key === activeKey ? 'page' : 'false');
+            button.addEventListener('click', () => {
+                if (tab.key === 'overview') {
+                    if (state.view !== 'daily') {
+                        update({ view: 'daily' });
+                    }
+                } else {
+                    update({ view: tab.key });
+                }
+
+                paint();
+            });
+            group.append(button);
+        });
+
+        nav.append(group);
     });
 
-    return wrap;
+    return nav;
+}
+
+// 把原本標題右側的同一組控制項移到市場導覽列，
+// 只改 DOM 位置，不複製按鈕、不改 id，既有事件綁定與下拉面板仍沿用正式程式。
+function mspBuildUtilityPreviewSlot() {
+    const tools = document.querySelector('.page-title-tools');
+
+    if (tools === null) {
+        return null;
+    }
+
+    const slot = document.createElement('div');
+    slot.className = 'msp-utility-slot';
+
+    const systemGroup = document.createElement('div');
+    systemGroup.className = 'msp-utility-group msp-utility-system';
+    systemGroup.dataset.label = '工具';
+
+    const accessGroup = document.createElement('div');
+    accessGroup.className = 'msp-utility-group msp-utility-access';
+    accessGroup.dataset.label = '權限';
+
+    for (const selector of [
+        '#refresh-status',
+        '#theme-switcher',
+        '#access-badge',
+        '#device-presence',
+        '#alert-bell'
+    ]) {
+        const element = tools.querySelector(selector);
+        if (element !== null) {
+            systemGroup.append(element);
+        }
+    }
+
+    const accessBar = tools.querySelector('#access-bar');
+    if (accessBar !== null) {
+        accessGroup.append(accessBar);
+    }
+
+    tools.replaceChildren(
+        ...[systemGroup, accessGroup].filter(group => group.childElementCount > 0)
+    );
+    slot.append(tools);
+    return slot;
+}
+
+// E 家族把即時快照說明放進標題右側，利用標題卡原本空出的頁首空間。
+// snapshot-note 保留原 id，既有 renderSnapshotNote() 不需要知道它換了位置。
+function mspBuildPageHeaderPreviewRail(utilitySlot) {
+    const rail = document.createElement('div');
+    rail.className = 'msp-page-header-rail';
+
+    const status = document.createElement('div');
+    status.className = 'msp-page-header-status';
+    status.dataset.label = '資料說明';
+
+    const snapshotNote = document.querySelector('#snapshot-note');
+    if (snapshotNote !== null) {
+        status.append(snapshotNote);
+    }
+
+    rail.append(status);
+    if (utilitySlot !== null) {
+        rail.append(utilitySlot);
+    }
+    return { rail, status, snapshotNote };
+}
+
+const MARKET_NAV_PREVIEW_VARIANTS = [
+    { key: 'e', label: 'E｜基準：浮層卡片＋標準留白' },
+    { key: 'e1', label: 'E1｜貼合：標題卡再上移' },
+    { key: 'e2', label: 'E2｜連接：導覽與標題卡銜接' },
+    { key: 'e3', label: 'E3｜重疊：標題卡吃進中段空間' },
+    { key: 'e4', label: 'E4｜分層：細線界定內容起點' }
+];
+
+function mspSetPreviewVariant(key, render) {
+    if (!MARKET_NAV_PREVIEW_VARIANTS.some(variant => variant.key === key)) {
+        return;
+    }
+
+    marketNavPreviewVariant = key;
+    const url = new URL(window.location.href);
+    url.searchParams.set('market-nav', key);
+    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+    render();
+}
+
+function mspBuildPreviewSwitcher(render) {
+    const switcher = document.createElement('div');
+    switcher.className = 'msp-nav-preview-switcher';
+    switcher.setAttribute('aria-label', '導覽版型原型切換');
+
+    const currentIndex = () => MARKET_NAV_PREVIEW_VARIANTS
+        .findIndex(variant => variant.key === marketNavPreviewVariant);
+    const cycle = step => {
+        const next = (currentIndex() + step + MARKET_NAV_PREVIEW_VARIANTS.length)
+            % MARKET_NAV_PREVIEW_VARIANTS.length;
+        mspSetPreviewVariant(MARKET_NAV_PREVIEW_VARIANTS[next].key, render);
+    };
+
+    const previous = document.createElement('button');
+    previous.type = 'button';
+    previous.textContent = '←';
+    previous.setAttribute('aria-label', '上一個導覽版型');
+    previous.addEventListener('click', () => cycle(-1));
+
+    const label = document.createElement('span');
+    label.className = 'msp-nav-preview-label';
+    label.setAttribute('aria-live', 'polite');
+
+    const next = document.createElement('button');
+    next.type = 'button';
+    next.textContent = '→';
+    next.setAttribute('aria-label', '下一個導覽版型');
+    next.addEventListener('click', () => cycle(1));
+
+    switcher.append(previous, label, next);
+    switcher.refresh = () => {
+        label.textContent = MARKET_NAV_PREVIEW_VARIANTS[currentIndex()]?.label ?? '';
+    };
+    switcher.refresh();
+    return switcher;
 }
 
 // 美股指數印小數兩位（跟公開行情慣例一致），加密貨幣用 $ 前綴、大額數字不印小數。
@@ -21559,27 +22291,366 @@ function injectMarketSwitchStyle() {
     style.id = 'msp-style';
     style.textContent = `
 .market-switch-prototype-active .ranking-page { display: none; }
+.ranking-page #view-options { display: none; }
 .msp-market-bar {
     display: flex;
-    justify-content: center;
-    padding: 12px 16px 0;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    max-width: 1440px;
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 16px 32px 10px;
     background: var(--bg);
 }
+.msp-market-bar[data-nav-variant="a"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-areas:
+        "spacer market utility"
+        "nav nav nav";
+    align-items: center;
+    gap: 10px 18px;
+}
+.msp-market-bar[data-nav-variant="a"] .msp-market-segmented {
+    grid-area: market;
+}
+.msp-market-bar[data-nav-variant="a"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: stretch;
+    justify-content: center;
+    border-width: 1px 0 0;
+    border-radius: 0;
+    background: transparent;
+}
+.msp-market-bar[data-nav-variant="a"] .msp-utility-slot {
+    grid-area: utility;
+    justify-self: end;
+}
+.msp-market-bar[data-nav-variant="b"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+        "market utility"
+        "nav nav";
+    align-items: center;
+    gap: 12px 24px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+}
+.msp-market-bar[data-nav-variant="b"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: start;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+.msp-market-bar[data-nav-variant="b"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: stretch;
+    justify-content: center;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+}
+.msp-market-bar[data-nav-variant="b"] .msp-utility-slot {
+    grid-area: utility;
+    justify-self: end;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
+}
+.msp-market-bar[data-nav-variant="b"] .msp-market-segment.selected,
+.msp-market-bar[data-nav-variant="b"] .msp-global-nav-button.selected {
+    background: var(--surface);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
+    border-radius: 0;
+}
+.msp-market-bar[data-nav-variant="c"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+        "market market"
+        "nav utility";
+    align-items: center;
+    gap: 10px 20px;
+    border-bottom: 1px solid var(--border);
+}
+.msp-market-bar[data-nav-variant="c"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: center;
+}
+.msp-market-bar[data-nav-variant="c"] .msp-market-segment {
+    text-align: center;
+}
+.msp-market-bar[data-nav-variant="c"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: start;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+.msp-market-bar[data-nav-variant="c"] .msp-utility-slot {
+    grid-area: utility;
+    justify-self: end;
+}
+.msp-market-bar[data-nav-variant="c"] .msp-utility-group::before {
+    display: none;
+}
+.msp-market-bar[data-nav-variant="c"] .msp-utility-access {
+    padding-left: 10px;
+    border-left: 1px solid var(--border);
+}
+.msp-market-bar[data-nav-variant="d"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-areas:
+        "spacer market spacer-two"
+        "nav nav nav";
+    align-items: center;
+    gap: 10px 18px;
+    border-bottom: 1px solid var(--border);
+}
+.msp-market-bar[data-nav-variant="d"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: center;
+}
+.msp-market-bar[data-nav-variant="d"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: stretch;
+    justify-content: center;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+}
+.msp-market-bar[data-nav-variant="e"] {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "market nav";
+    align-items: center;
+    gap: 24px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+}
+.msp-market-bar[data-nav-variant="e"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: start;
+}
+.msp-market-bar[data-nav-variant="e"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: end;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+.msp-page-header-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    min-width: 0;
+    max-width: 620px;
+}
+.msp-page-header-status {
+    min-width: 0;
+    max-width: 620px;
+}
+.msp-page-header-status::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    color: var(--text-faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-align: right;
+}
+.msp-page-header-status .snapshot-note {
+    max-width: 620px;
+    margin: 0 !important;
+    font-size: 12px;
+    line-height: 1.45;
+    text-align: right;
+}
+body[data-msp-nav-variant="d"] .page-title {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(360px, auto);
+    align-items: start;
+    gap: 18px;
+}
+body[data-msp-nav-variant="d"] .page-title-heading,
+body[data-msp-nav-variant="e"] .page-title-heading {
+    min-width: 0;
+}
+body[data-msp-nav-variant="d"] .msp-page-header-rail {
+    align-items: flex-end;
+}
+body[data-msp-nav-variant="d"] .msp-page-header-rail .msp-utility-slot,
+body[data-msp-nav-variant="e"] .msp-page-header-rail .msp-utility-slot {
+    width: 100%;
+}
+body[data-msp-nav-variant="e"] .page-title {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(420px, .8fr);
+    align-items: start;
+    gap: 20px;
+}
+body[data-msp-nav-variant="e"] .msp-page-header-rail {
+    width: 100%;
+    max-width: 620px;
+    box-sizing: border-box;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant="e"] .msp-page-header-status {
+    width: 100%;
+    max-width: none;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+body[data-msp-nav-variant="e"] .msp-page-header-status::before,
+body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
+    text-align: left;
+}
+.msp-page-header-rail .msp-utility-slot .page-title-tools {
+    width: 100%;
+    justify-content: flex-end;
+}
+.msp-utility-slot {
+    min-width: 0;
+}
+.msp-utility-slot .page-title-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: auto;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+.msp-utility-group {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+.msp-utility-group::before {
+    content: attr(data-label);
+    color: var(--text-faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+}
+.msp-utility-access::before {
+    display: none;
+}
+.msp-utility-access {
+    padding-left: 10px;
+    border-left: 1px solid var(--border);
+}
+.msp-utility-slot .access-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+.msp-utility-slot .refresh-button,
+.msp-utility-slot .device-presence-button,
+.msp-utility-slot .alert-button {
+    min-height: 32px;
+    padding: 5px 9px;
+    border-radius: 8px;
+    font-size: 12px;
+}
+.msp-utility-slot .theme-switcher {
+    padding: 2px;
+}
+.msp-utility-slot .access-bar-label {
+    font-size: 11px;
+}
+.msp-utility-slot .access-bar-tier {
+    padding: 2px 7px;
+    font-size: 11px;
+}
+.msp-utility-slot #access-bar-login-form {
+    gap: 4px;
+}
+.msp-utility-slot #access-bar-login-form input[type="password"] {
+    width: 92px;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+.msp-utility-slot #access-bar-login-form button,
+.msp-utility-slot .access-bar-logout {
+    min-height: 30px;
+    padding: 5px 9px;
+    border-radius: 7px;
+    font-size: 12px;
+}
+.msp-utility-slot .alert-panel,
+.msp-utility-slot .device-presence-panel,
+.msp-utility-slot .refresh-status-panel {
+    top: calc(100% + 8px);
+    right: 0;
+    left: auto;
+}
+.msp-nav-preview-switcher {
+    position: fixed;
+    z-index: 30;
+    left: 50%;
+    bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transform: translateX(-50%);
+    padding: 7px 10px;
+    border: 1px solid #334155;
+    border-radius: 999px;
+    background: #0f172a;
+    color: #fff;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, .24);
+}
+.msp-nav-preview-switcher button {
+    width: 28px;
+    height: 28px;
+    border: 0;
+    border-radius: 50%;
+    background: #1e293b;
+    color: #fff;
+    cursor: pointer;
+}
+.msp-nav-preview-switcher button:hover { background: #334155; }
+.msp-nav-preview-label { min-width: 190px; text-align: center; font-size: 12px; white-space: nowrap; }
 .market-switch-prototype {
-    max-width: 1200px;
+    max-width: 1440px;
+    box-sizing: border-box;
     margin: 0 auto;
-    padding: 20px 16px 64px;
+    padding: 10px 32px 64px;
     color: var(--text);
     background: var(--bg);
     min-height: 100vh;
 }
 .msp-market-panel {
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--surface);
-    padding: 16px;
-    margin-top: 12px;
-    margin-bottom: 16px;
+    padding-top: 4px;
 }
 .msp-dashboard { display: flex; flex-direction: column; gap: 14px; }
 .msp-card-detail { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
@@ -21588,7 +22659,7 @@ function injectMarketSwitchStyle() {
     padding-top: 12px;
     border-top: 1px solid var(--border);
 }
-.msp-index-tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.msp-index-tile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
 .msp-index-tile {
     display: flex;
     flex-direction: column;
@@ -21606,7 +22677,7 @@ function injectMarketSwitchStyle() {
 .msp-index-tile:hover { border-color: var(--text-muted); }
 .msp-index-tile-name { font-size: 12px; color: var(--text-muted); }
 .msp-index-tile-value { font-size: 15px; font-weight: 700; }
-.msp-index-tile-changes { display: flex; gap: 8px; }
+.msp-index-tile-changes { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .msp-index-tile-daily, .msp-index-tile-ytd { font-size: 12px; font-weight: 600; }
 .msp-market-segmented {
     display: inline-flex;
@@ -21630,6 +22701,33 @@ function injectMarketSwitchStyle() {
 }
 .msp-market-segment:hover { color: var(--text); }
 .msp-market-segment.selected { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
+.msp-global-view-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
+}
+.msp-global-nav-group { display: flex; flex-wrap: wrap; gap: 2px; }
+.msp-global-nav-divider { width: 1px; height: 24px; background: var(--border); }
+.msp-global-nav-button {
+    appearance: none;
+    min-width: 64px;
+    padding: 7px 12px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.msp-global-nav-button:hover { color: var(--text); background: var(--surface-hover); }
+.msp-global-nav-button.selected { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
 .msp-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 12px; }
 .msp-section-header .msp-section-title { margin: 0; }
 .msp-view-toggle {
@@ -21693,6 +22791,1326 @@ function injectMarketSwitchStyle() {
 }
 .msp-sector-list li:last-child { border-bottom: none; }
 .msp-overview-notice { margin-top: 12px; }
+@media (max-width: 720px) {
+    .msp-market-bar { align-items: stretch; padding: 12px 16px 8px; }
+    .msp-market-segmented,
+    .msp-global-view-nav { width: 100%; box-sizing: border-box; }
+    .msp-market-segmented { justify-content: stretch; }
+    .msp-market-segment { flex: 1 1 0; padding-right: 10px; padding-left: 10px; }
+    .msp-global-view-nav { overflow-x: auto; justify-content: flex-start; }
+    .msp-global-nav-group { flex: 0 0 auto; }
+    .market-switch-prototype { padding: 8px 16px 48px; }
+    .msp-market-bar[data-nav-variant="a"],
+    .msp-market-bar[data-nav-variant="b"],
+    .msp-market-bar[data-nav-variant="c"] {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    .msp-market-bar[data-nav-variant="a"] .msp-market-segmented,
+    .msp-market-bar[data-nav-variant="b"] .msp-market-segmented,
+    .msp-market-bar[data-nav-variant="c"] .msp-market-segmented {
+        order: 0;
+        flex-direction: row;
+    }
+    .msp-market-bar[data-nav-variant="a"] .msp-utility-slot,
+    .msp-market-bar[data-nav-variant="b"] .msp-utility-slot {
+        order: 1;
+        width: 100%;
+        box-sizing: border-box;
+    }
+    .msp-market-bar[data-nav-variant="a"] .msp-global-view-nav,
+    .msp-market-bar[data-nav-variant="b"] .msp-global-view-nav {
+        order: 2;
+    }
+    .msp-market-bar[data-nav-variant="c"] .msp-global-view-nav {
+        order: 1;
+    }
+    .msp-market-bar[data-nav-variant="c"] .msp-utility-slot {
+        order: 2;
+        width: 100%;
+    }
+    .msp-market-bar[data-nav-variant="c"] .msp-market-segment { text-align: center; }
+    .msp-market-bar[data-nav-variant="d"],
+    .msp-market-bar[data-nav-variant="e"] {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    .msp-market-bar[data-nav-variant="d"] .msp-market-segmented,
+    .msp-market-bar[data-nav-variant="e"] .msp-market-segmented {
+        order: 0;
+    }
+    .msp-market-bar[data-nav-variant="d"] .msp-global-view-nav,
+    .msp-market-bar[data-nav-variant="e"] .msp-global-view-nav {
+        order: 1;
+        justify-content: flex-start;
+        width: 100%;
+    }
+    body[data-msp-nav-variant="d"] .page-title,
+    body[data-msp-nav-variant="e"] .page-title {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+    body[data-msp-nav-variant="d"] .msp-page-header-rail,
+    body[data-msp-nav-variant="e"] .msp-page-header-rail {
+        width: 100%;
+        max-width: none;
+        align-items: stretch;
+    }
+    body[data-msp-nav-variant="d"] .msp-page-header-status::before,
+    body[data-msp-nav-variant="d"] .msp-page-header-status .snapshot-note,
+    body[data-msp-nav-variant="e"] .msp-page-header-status::before,
+    body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
+        text-align: left;
+    }
+    body[data-msp-nav-variant="d"] .msp-page-header-rail .msp-utility-slot .page-title-tools,
+    body[data-msp-nav-variant="e"] .msp-page-header-rail .msp-utility-slot .page-title-tools {
+        justify-content: flex-start;
+    }
+    .msp-utility-slot .page-title-tools {
+        justify-content: flex-start;
+        width: 100%;
+    }
+    .msp-utility-group { flex: 0 1 auto; }
+    .msp-nav-preview-label { min-width: 155px; }
+}
+
+/* 完整頁首原型：每一版都同時展示市場、子頁籤、小控件、標題與資料說明。 */
+.msp-market-bar[data-nav-variant] {
+    box-sizing: border-box;
+    min-height: 82px;
+    border-bottom: 1px solid var(--border);
+}
+.msp-market-bar[data-nav-variant="a"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-areas:
+        "spacer market spacer-two"
+        "nav nav nav";
+    align-items: center;
+    gap: 10px 18px;
+    padding-top: 12px;
+    padding-bottom: 10px;
+    background: var(--surface-alt);
+}
+.msp-market-bar[data-nav-variant="a"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: center;
+}
+.msp-market-bar[data-nav-variant="a"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: stretch;
+    justify-content: center;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    padding-top: 8px;
+}
+.msp-market-bar[data-nav-variant="b"] {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "market nav";
+    align-items: center;
+    gap: 24px;
+    padding-bottom: 14px;
+}
+.msp-market-bar[data-nav-variant="b"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: start;
+    border: 0;
+    background: transparent;
+}
+.msp-market-bar[data-nav-variant="b"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: end;
+    border: 0;
+    background: transparent;
+}
+.msp-market-bar[data-nav-variant="c"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+        "market"
+        "nav";
+    gap: 8px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+.msp-market-bar[data-nav-variant="c"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: start;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    padding: 0 0 8px;
+}
+.msp-market-bar[data-nav-variant="c"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: start;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding-left: 0;
+}
+.msp-market-bar[data-nav-variant="d"] {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "market nav spacer";
+    align-items: center;
+    gap: 26px;
+    padding-bottom: 14px;
+    background: var(--bg);
+}
+.msp-market-bar[data-nav-variant="d"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: start;
+}
+.msp-market-bar[data-nav-variant="d"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: center;
+    border: 0;
+    background: transparent;
+}
+.msp-market-bar[data-nav-variant="e"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "nav market";
+    align-items: center;
+    gap: 26px;
+    padding-bottom: 14px;
+    background: var(--surface-alt);
+}
+.msp-market-bar[data-nav-variant="e"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: end;
+}
+.msp-market-bar[data-nav-variant="e"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: start;
+    border: 0;
+    background: transparent;
+}
+
+body[data-msp-nav-variant="a"] .page-title,
+body[data-msp-nav-variant="b"] .page-title,
+body[data-msp-nav-variant="d"] .page-title,
+body[data-msp-nav-variant="e"] .page-title {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(420px, .85fr);
+    align-items: start;
+    gap: 20px;
+    min-width: 0;
+}
+body[data-msp-nav-variant="c"] .page-title {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+body[data-msp-nav-variant] .page-title-heading {
+    min-width: 0;
+}
+body[data-msp-nav-variant] .msp-page-header-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    min-width: 0;
+    max-width: 620px;
+}
+body[data-msp-nav-variant] .msp-page-header-status {
+    min-width: 0;
+    max-width: 620px;
+}
+body[data-msp-nav-variant] .msp-page-header-status::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    color: var(--text-faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+}
+body[data-msp-nav-variant] .msp-page-header-status .snapshot-note {
+    max-width: 620px;
+    margin: 0 !important;
+    font-size: 12px;
+    line-height: 1.45;
+}
+body[data-msp-nav-variant] .msp-page-header-rail .msp-utility-slot,
+body[data-msp-nav-variant] .msp-page-header-rail .page-title-tools {
+    width: 100%;
+}
+body[data-msp-nav-variant] .msp-page-header-rail .msp-utility-slot .page-title-tools {
+    justify-content: flex-end;
+}
+body[data-msp-nav-variant="a"] .page-title {
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+body[data-msp-nav-variant="a"] .msp-page-header-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    max-width: none;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant="a"] .msp-page-header-status::before,
+body[data-msp-nav-variant="a"] .msp-page-header-status .snapshot-note {
+    text-align: left;
+}
+body[data-msp-nav-variant="a"] .msp-page-header-rail .msp-utility-slot .page-title-tools {
+    justify-content: flex-end;
+}
+body[data-msp-nav-variant="b"] .msp-page-header-rail {
+    align-items: flex-end;
+    padding-left: 18px;
+    border-left: 3px solid var(--border);
+}
+body[data-msp-nav-variant="b"] .msp-page-header-status::before,
+body[data-msp-nav-variant="b"] .msp-page-header-status .snapshot-note {
+    text-align: right;
+}
+body[data-msp-nav-variant="c"] .msp-page-header-rail {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    max-width: none;
+    padding: 10px 0;
+    border-top: 1px solid var(--border);
+}
+body[data-msp-nav-variant="c"] .msp-page-header-status {
+    flex: 1 1 auto;
+}
+body[data-msp-nav-variant="c"] .msp-page-header-status::before,
+body[data-msp-nav-variant="c"] .msp-page-header-status .snapshot-note {
+    text-align: left;
+}
+body[data-msp-nav-variant="c"] .msp-page-header-rail .msp-utility-slot {
+    flex: 0 1 auto;
+    width: auto;
+}
+body[data-msp-nav-variant="d"] .msp-page-header-rail {
+    align-items: flex-end;
+    max-width: 620px;
+}
+body[data-msp-nav-variant="d"] .msp-page-header-status::before,
+body[data-msp-nav-variant="d"] .msp-page-header-status .snapshot-note {
+    text-align: right;
+}
+body[data-msp-nav-variant="e"] .page-title {
+    grid-template-columns: minmax(0, 1fr) minmax(420px, .8fr);
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant="e"] .msp-page-header-rail {
+    max-width: none;
+    padding-left: 18px;
+    border-left: 1px solid var(--border);
+}
+body[data-msp-nav-variant="e"] .msp-page-header-status {
+    padding-bottom: 9px;
+    border-bottom: 1px solid var(--border);
+}
+body[data-msp-nav-variant="e"] .msp-page-header-status::before,
+body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
+    text-align: left;
+}
+
+@media (max-width: 720px) {
+    .msp-market-bar[data-nav-variant="a"],
+    .msp-market-bar[data-nav-variant="b"],
+    .msp-market-bar[data-nav-variant="c"],
+    .msp-market-bar[data-nav-variant="d"],
+    .msp-market-bar[data-nav-variant="e"] {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+    .msp-market-bar[data-nav-variant] .msp-market-segmented,
+    .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+        width: 100%;
+        box-sizing: border-box;
+    }
+    .msp-market-bar[data-nav-variant] .msp-market-segmented {
+        justify-content: stretch;
+        padding: 4px;
+    }
+    .msp-market-bar[data-nav-variant] .msp-market-segment {
+        flex: 1 1 0;
+        padding-right: 10px;
+        padding-left: 10px;
+        text-align: center;
+    }
+    .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+        justify-content: flex-start;
+        overflow-x: auto;
+    }
+    body[data-msp-nav-variant="a"] .page-title,
+    body[data-msp-nav-variant="b"] .page-title,
+    body[data-msp-nav-variant="c"] .page-title,
+    body[data-msp-nav-variant="d"] .page-title,
+    body[data-msp-nav-variant="e"] .page-title {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+        padding: 0 0 12px;
+    }
+    body[data-msp-nav-variant] .msp-page-header-rail,
+    body[data-msp-nav-variant="a"] .msp-page-header-rail {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        width: 100%;
+        max-width: none;
+        box-sizing: border-box;
+        padding: 10px 0;
+        border-right: 0;
+        border-left: 0;
+        border-radius: 0;
+    }
+    body[data-msp-nav-variant="a"] .msp-page-header-rail {
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+    }
+    body[data-msp-nav-variant="c"] .msp-page-header-rail {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    body[data-msp-nav-variant] .msp-page-header-status::before,
+    body[data-msp-nav-variant] .msp-page-header-status .snapshot-note {
+        text-align: left;
+    }
+    body[data-msp-nav-variant="c"] .msp-page-header-rail .msp-utility-slot {
+        width: 100%;
+    }
+    body[data-msp-nav-variant="e"] .page-title {
+        padding: 12px;
+        border-radius: 14px;
+    }
+    body[data-msp-nav-variant="e"] .msp-page-header-rail {
+        padding-left: 0;
+        border-top: 1px solid var(--border);
+        border-left: 0;
+    }
+    body[data-msp-nav-variant] .msp-page-header-rail .msp-utility-slot .page-title-tools {
+        justify-content: flex-start;
+    }
+}
+
+/* UX v2：全域操作固定在頁首右上，標題區只負責說明目前所在的內容。 */
+.msp-market-bar[data-nav-variant] {
+    display: grid;
+    align-items: center;
+    box-sizing: border-box;
+    min-height: 74px;
+    gap: 10px 22px;
+    padding-top: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+}
+.msp-market-bar[data-nav-variant] .msp-market-segmented {
+    grid-area: market;
+    justify-self: start;
+}
+.msp-market-bar[data-nav-variant] .msp-global-view-nav {
+    grid-area: nav;
+    min-width: 0;
+}
+.msp-market-bar[data-nav-variant] .msp-utility-slot {
+    grid-area: utility;
+    justify-self: end;
+    align-self: start;
+    width: auto;
+    max-width: 100%;
+    min-width: 0;
+    z-index: 2;
+}
+.msp-market-bar[data-nav-variant] .msp-utility-slot .page-title-tools {
+    width: auto;
+    max-width: 100%;
+    justify-content: flex-end;
+}
+.msp-market-bar[data-nav-variant="a"] {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-areas:
+        "spacer market utility"
+        "nav nav nav";
+    background: var(--surface-alt);
+}
+.msp-market-bar[data-nav-variant="a"] .msp-market-segmented {
+    justify-self: center;
+}
+.msp-market-bar[data-nav-variant="a"] .msp-global-view-nav {
+    justify-self: stretch;
+    justify-content: center;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    padding-top: 8px;
+}
+.msp-market-bar[data-nav-variant="b"] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    grid-template-areas:
+        "market utility"
+        "nav nav";
+    gap: 10px 22px;
+}
+.msp-market-bar[data-nav-variant="b"] .msp-market-segmented {
+    border: 0;
+    background: transparent;
+}
+.msp-market-bar[data-nav-variant="b"] .msp-global-view-nav {
+    justify-self: stretch;
+    justify-content: center;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    padding-top: 8px;
+}
+.msp-market-bar[data-nav-variant="c"] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    grid-template-areas:
+        "market utility"
+        "nav nav";
+    gap: 8px 22px;
+}
+.msp-market-bar[data-nav-variant="c"] .msp-market-segmented {
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    padding: 0 0 8px;
+}
+.msp-market-bar[data-nav-variant="c"] .msp-global-view-nav {
+    justify-self: start;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding-left: 0;
+}
+.msp-market-bar[data-nav-variant="d"] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    grid-template-areas:
+        "market utility"
+        "nav nav";
+    background: var(--bg);
+}
+.msp-market-bar[data-nav-variant="d"] .msp-market-segmented {
+    justify-self: center;
+}
+.msp-market-bar[data-nav-variant="d"] .msp-global-view-nav {
+    justify-self: center;
+    justify-content: center;
+    border: 0;
+    background: transparent;
+}
+.msp-market-bar[data-nav-variant="e"] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    grid-template-areas:
+        "market utility"
+        "nav utility";
+    gap: 8px 26px;
+    background: var(--surface-alt);
+}
+.msp-market-bar[data-nav-variant="e"] .msp-market-segmented {
+    justify-self: start;
+}
+.msp-market-bar[data-nav-variant="e"] .msp-global-view-nav {
+    justify-self: start;
+    border: 0;
+    background: transparent;
+}
+
+body[data-msp-nav-variant="a"] .page-title,
+body[data-msp-nav-variant="b"] .page-title,
+body[data-msp-nav-variant="d"] .page-title,
+body[data-msp-nav-variant="e"] .page-title {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(360px, .7fr);
+    align-items: start;
+    gap: 28px;
+    min-width: 0;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+}
+body[data-msp-nav-variant="c"] .page-title {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+}
+body[data-msp-nav-variant] .page-title-heading {
+    min-width: 0;
+}
+body[data-msp-nav-variant] .msp-page-header-rail {
+    display: block;
+    min-width: 0;
+    max-width: none;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+body[data-msp-nav-variant] .msp-page-header-status {
+    min-width: 0;
+    max-width: none;
+}
+body[data-msp-nav-variant] .msp-page-header-status::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    color: var(--text-faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-align: left;
+}
+body[data-msp-nav-variant] .msp-page-header-status .snapshot-note {
+    max-width: none;
+    margin: 0 !important;
+    font-size: 12px;
+    line-height: 1.5;
+    text-align: left;
+}
+body[data-msp-nav-variant="a"] .msp-page-header-rail {
+    padding-left: 18px;
+    border-left: 2px solid var(--border);
+}
+body[data-msp-nav-variant="b"] .msp-page-header-status {
+    padding-left: 18px;
+    border-left: 1px solid var(--border);
+}
+body[data-msp-nav-variant="b"] .msp-page-header-status::before,
+body[data-msp-nav-variant="b"] .msp-page-header-status .snapshot-note {
+    text-align: right;
+}
+body[data-msp-nav-variant="c"] .msp-page-header-rail {
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+body[data-msp-nav-variant="d"] .msp-page-header-rail {
+    padding-top: 3px;
+}
+body[data-msp-nav-variant="d"] .msp-page-header-status::before,
+body[data-msp-nav-variant="d"] .msp-page-header-status .snapshot-note {
+    text-align: right;
+}
+body[data-msp-nav-variant="e"] .page-title {
+    grid-template-columns: minmax(0, 1fr) minmax(360px, .65fr);
+    padding: 16px 18px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant="e"] .msp-page-header-rail {
+    padding-left: 18px;
+    border-left: 1px solid var(--border);
+}
+
+@media (max-width: 720px) {
+    .msp-market-bar[data-nav-variant="a"],
+    .msp-market-bar[data-nav-variant="b"],
+    .msp-market-bar[data-nav-variant="c"],
+    .msp-market-bar[data-nav-variant="d"],
+    .msp-market-bar[data-nav-variant="e"] {
+        grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+        grid-template-areas:
+            "market utility"
+            "nav nav";
+        display: grid;
+        align-items: center;
+        gap: 10px;
+    }
+    .msp-market-bar[data-nav-variant] .msp-market-segmented {
+        justify-self: start;
+        width: auto;
+        max-width: 100%;
+    }
+    .msp-market-bar[data-nav-variant] .msp-utility-slot {
+        justify-self: end;
+        max-width: 100%;
+    }
+    .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+        justify-self: stretch;
+        justify-content: flex-start;
+        width: 100%;
+        overflow-x: auto;
+    }
+    body[data-msp-nav-variant="a"] .page-title,
+    body[data-msp-nav-variant="b"] .page-title,
+    body[data-msp-nav-variant="c"] .page-title,
+    body[data-msp-nav-variant="d"] .page-title,
+    body[data-msp-nav-variant="e"] .page-title {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+        padding: 0 0 12px;
+    }
+    body[data-msp-nav-variant] .msp-page-header-rail,
+    body[data-msp-nav-variant="a"] .msp-page-header-rail,
+    body[data-msp-nav-variant="b"] .msp-page-header-status,
+    body[data-msp-nav-variant="e"] .msp-page-header-rail {
+        width: 100%;
+        max-width: none;
+        box-sizing: border-box;
+        padding: 10px 0 0;
+        border-right: 0;
+        border-left: 0;
+        border-top: 1px solid var(--border);
+    }
+    body[data-msp-nav-variant="e"] .page-title {
+        padding: 12px;
+        border-radius: 14px;
+    }
+    body[data-msp-nav-variant="b"] .msp-page-header-status::before,
+    body[data-msp-nav-variant="b"] .msp-page-header-status .snapshot-note,
+    body[data-msp-nav-variant="d"] .msp-page-header-status::before,
+    body[data-msp-nav-variant="d"] .msp-page-header-status .snapshot-note {
+        text-align: left;
+    }
+}
+
+/* A 衍生間距版：保留市場／主頁籤／工具／標題說明四個層次，只收斂垂直節奏。 */
+.msp-market-bar[data-nav-variant] {
+    min-height: 0;
+    gap: 5px 16px;
+    padding: 7px 32px 5px;
+}
+.msp-market-bar[data-nav-variant] .msp-market-segmented {
+    gap: 3px;
+    padding: 3px;
+}
+.msp-market-bar[data-nav-variant] .msp-market-segment {
+    padding: 7px 18px;
+    font-size: 13px;
+}
+.msp-market-bar[data-nav-variant] .msp-global-view-nav {
+    gap: 3px;
+    padding: 2px;
+}
+.msp-market-bar[data-nav-variant] .msp-global-nav-button {
+    min-width: 58px;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+.msp-market-bar[data-nav-variant] .msp-utility-slot .page-title-tools {
+    gap: 6px;
+}
+body[data-msp-nav-variant] .page-header {
+    margin-bottom: 8px;
+}
+body[data-msp-nav-variant] .page-title {
+    margin-bottom: 0;
+    gap: 16px;
+    padding-bottom: 8px;
+}
+body[data-msp-nav-variant] .msp-page-header-status::before {
+    margin-bottom: 2px;
+}
+body[data-msp-nav-variant] .msp-page-header-status .snapshot-note {
+    line-height: 1.4;
+}
+body[data-msp-nav-variant="a"] .msp-market-bar[data-nav-variant] .msp-global-view-nav,
+body[data-msp-nav-variant="b"] .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+    padding-top: 4px;
+}
+body[data-msp-nav-variant="a"] .page-title {
+    gap: 18px;
+    padding-bottom: 8px;
+}
+body[data-msp-nav-variant="a"] .msp-page-header-rail {
+    padding-left: 12px;
+}
+body[data-msp-nav-variant="b"] .page-title {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, .58fr);
+    gap: 12px;
+    padding-bottom: 7px;
+}
+body[data-msp-nav-variant="b"] .msp-page-header-status {
+    padding-left: 12px;
+}
+body[data-msp-nav-variant="c"] .page-title {
+    gap: 6px;
+    padding-bottom: 8px;
+}
+body[data-msp-nav-variant="c"] .msp-page-header-rail {
+    padding-top: 5px;
+}
+body[data-msp-nav-variant="d"] .page-title {
+    gap: 10px;
+    padding-bottom: 6px;
+}
+body[data-msp-nav-variant="d"] .msp-page-header-rail {
+    padding-top: 0;
+}
+body[data-msp-nav-variant="e"] .page-title {
+    gap: 14px;
+    padding: 10px 12px;
+    border-radius: 12px;
+}
+body[data-msp-nav-variant="e"] .msp-page-header-rail {
+    padding-left: 12px;
+}
+
+/* 筆記頁把來源切換、頁面標題與第一個工作區連成一個明確節奏。 */
+body[data-msp-nav-variant] .notes-page {
+    margin-top: 6px;
+}
+body[data-msp-nav-variant] #podcast-notes-subtabs .podcast-preview-subtabs {
+    margin: 0 0 8px;
+    padding: 3px;
+}
+body[data-msp-nav-variant] #podcast-notes-subtabs .podcast-preview-subtabs .toggle-button {
+    padding: 6px 16px;
+}
+body[data-msp-nav-variant] .notes-toolbar {
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+body[data-msp-nav-variant] .notes-storage-note {
+    margin-top: 2px;
+}
+body[data-msp-nav-variant] .notes-filter-row {
+    gap: 12px;
+    padding: 9px 10px;
+    margin-bottom: 10px;
+}
+
+/* 預覽面板窄於桌面時仍維持工具在頁首右側，但改成不重疊的三列。 */
+@media (max-width: 960px) {
+    .msp-market-bar[data-nav-variant] {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "market"
+            "utility"
+            "nav";
+        gap: 5px;
+        padding: 6px 16px 5px;
+    }
+    .msp-market-bar[data-nav-variant] .msp-market-segmented {
+        justify-self: center;
+        width: max-content;
+        max-width: 100%;
+    }
+    .msp-market-bar[data-nav-variant] .msp-utility-slot {
+        justify-self: end;
+        width: 100%;
+        box-sizing: border-box;
+    }
+    .msp-market-bar[data-nav-variant] .msp-utility-slot .page-title-tools {
+        width: 100%;
+        justify-content: flex-end;
+    }
+    .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+        justify-self: stretch;
+        justify-content: center;
+        width: 100%;
+        overflow-x: auto;
+    }
+    body[data-msp-nav-variant] .page-title,
+    body[data-msp-nav-variant="b"] .page-title,
+    body[data-msp-nav-variant="e"] .page-title {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 7px;
+        padding-bottom: 8px;
+    }
+    body[data-msp-nav-variant] .msp-page-header-rail,
+    body[data-msp-nav-variant="a"] .msp-page-header-rail,
+    body[data-msp-nav-variant="b"] .msp-page-header-status,
+    body[data-msp-nav-variant="e"] .msp-page-header-rail {
+        width: 100%;
+        max-width: none;
+        box-sizing: border-box;
+        padding: 6px 0 0;
+        border-top: 1px solid var(--border);
+        border-right: 0;
+        border-left: 0;
+        border-radius: 0;
+    }
+    body[data-msp-nav-variant="e"] .page-title {
+        padding: 10px;
+    }
+    body[data-msp-nav-variant="b"] .msp-page-header-status::before,
+    body[data-msp-nav-variant="b"] .msp-page-header-status .snapshot-note,
+    body[data-msp-nav-variant="d"] .msp-page-header-status::before,
+    body[data-msp-nav-variant="d"] .msp-page-header-status .snapshot-note {
+        text-align: left;
+    }
+}
+
+/* 卡片衍生版：以方案 A 的資訊順序為底，重新比較卡片密度與頁籤按鈕層級。 */
+body[data-msp-nav-variant] .page-title {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, .58fr);
+    align-items: center;
+    gap: 12px 18px;
+    min-width: 0;
+    margin-bottom: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant] .msp-page-header-rail {
+    max-width: none;
+    padding-left: 14px;
+    border-left: 1px solid var(--border);
+}
+body[data-msp-nav-variant] .msp-page-header-status .snapshot-note {
+    line-height: 1.4;
+}
+body[data-msp-nav-variant] .msp-market-bar[data-nav-variant] .msp-market-segmented {
+    padding: 3px;
+    gap: 2px;
+    border-radius: 12px;
+}
+body[data-msp-nav-variant] .msp-market-bar[data-nav-variant] .msp-market-segment {
+    padding: 7px 17px;
+    border-radius: 9px;
+}
+body[data-msp-nav-variant] .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant] .msp-market-bar[data-nav-variant] .msp-global-nav-button {
+    min-width: 56px;
+    padding: 6px 10px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+}
+body[data-msp-nav-variant] .msp-market-bar[data-nav-variant] .msp-global-nav-button.selected {
+    border-color: var(--border);
+    background: var(--surface);
+    box-shadow: 0 2px 5px rgba(15, 23, 42, .09);
+}
+
+/* 總覽頁：卡片之間只保留一個可辨識的節奏，不用大片留白分隔。 */
+body[data-msp-nav-variant] #summary {
+    gap: 8px;
+    margin-bottom: 10px;
+}
+body[data-msp-nav-variant] .market-heat-panel {
+    gap: 10px 12px;
+    padding: 10px 12px 11px;
+    border-radius: 12px;
+}
+body[data-msp-nav-variant] .market-heat-overview {
+    min-height: 180px;
+}
+body[data-msp-nav-variant] .market-heat-indicators,
+body[data-msp-nav-variant] .market-heat-indices,
+body[data-msp-nav-variant] .market-heat-meta {
+    gap: 6px;
+}
+body[data-msp-nav-variant] .market-heat-card,
+body[data-msp-nav-variant] .market-heat-index-card {
+    padding: 8px 10px;
+    border-radius: 9px;
+}
+body[data-msp-nav-variant] .summary-explanation-row {
+    gap: 12px;
+}
+body[data-msp-nav-variant] .filter-panel {
+    gap: 12px;
+    padding: 11px 12px;
+    margin-bottom: 10px;
+    border-radius: 12px;
+}
+body[data-msp-nav-variant] .filter-panel .toggle-button {
+    padding: 7px 11px;
+    border-radius: 9px;
+}
+body[data-msp-nav-variant] .table-container {
+    border-radius: 12px;
+}
+
+/* 其他市場的原型卡片、資產卡片與筆記卡片共用同一個間距尺度。 */
+body[data-msp-nav-variant] .msp-dashboard {
+    gap: 10px;
+}
+body[data-msp-nav-variant] .msp-section-compact {
+    padding: 11px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant] .msp-section-title {
+    margin-bottom: 8px;
+}
+body[data-msp-nav-variant] .msp-index-tile-grid {
+    gap: 6px;
+}
+body[data-msp-nav-variant] .msp-index-tile {
+    padding: 9px 10px;
+    border-radius: 9px;
+    background: var(--surface);
+}
+body[data-msp-nav-variant] .msp-heatmap-grid {
+    gap: 3px;
+    grid-auto-rows: 68px;
+}
+body[data-msp-nav-variant] .notes-page {
+    margin-top: 6px;
+}
+body[data-msp-nav-variant] #podcast-notes-subtabs .podcast-preview-subtabs {
+    gap: 2px;
+    margin: 0 0 8px;
+    padding: 3px;
+    border-radius: 11px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant] #podcast-notes-subtabs .podcast-preview-subtabs .toggle-button {
+    min-width: 0;
+    padding: 6px 15px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+}
+body[data-msp-nav-variant] #podcast-notes-subtabs .podcast-preview-subtabs .toggle-button.selected {
+    border-color: var(--border);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 2px 5px rgba(15, 23, 42, .09);
+}
+body[data-msp-nav-variant] .notes-layout {
+    gap: 10px;
+}
+body[data-msp-nav-variant] .notes-list-card,
+body[data-msp-nav-variant] .notes-editor-card,
+body[data-msp-nav-variant] .asset-dashboard-donut-card,
+body[data-msp-nav-variant] .asset-dashboard-config-card,
+body[data-msp-nav-variant] .asset-value-trend-card,
+body[data-msp-nav-variant] .asset-account-holdings,
+body[data-msp-nav-variant] .asset-screenshot-flow {
+    border-radius: 12px;
+}
+body[data-msp-nav-variant] .asset-dashboard-content,
+body[data-msp-nav-variant] .asset-account-content,
+body[data-msp-nav-variant] .asset-dashboard-overview {
+    gap: 10px;
+}
+
+/* A：最接近參考圖，標題卡／摘要卡／篩選卡有清楚邊界但不加陰影。 */
+body[data-msp-nav-variant="a"] .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+    justify-self: start;
+    justify-content: flex-start;
+}
+body[data-msp-nav-variant="a"] .page-title {
+    box-shadow: 0 1px 0 rgba(15, 23, 42, .02);
+}
+
+/* B：同樣的卡片結構，縮小 padding 與間距，方便快速掃讀。 */
+body[data-msp-nav-variant="b"] .page-title {
+    padding: 9px 12px;
+    gap: 10px 14px;
+}
+body[data-msp-nav-variant="b"] #summary {
+    gap: 6px;
+    margin-bottom: 8px;
+}
+body[data-msp-nav-variant="b"] .market-heat-panel {
+    gap: 8px 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+}
+body[data-msp-nav-variant="b"] .market-heat-overview {
+    min-height: 168px;
+}
+body[data-msp-nav-variant="b"] .filter-panel {
+    gap: 9px 10px;
+    padding: 9px 10px;
+    border-radius: 10px;
+}
+body[data-msp-nav-variant="b"] .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+    padding: 2px;
+    border-radius: 10px;
+}
+
+/* C：摘要卡改為兩欄，讓指數卡與熱絡指標卡在同一視線層級。 */
+body[data-msp-nav-variant="c"] .market-heat-panel {
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+    grid-template-areas:
+        "overview indicators"
+        "overview indices"
+        "meta meta";
+    gap: 8px 10px;
+}
+body[data-msp-nav-variant="c"] .market-heat-overview {
+    grid-area: overview;
+    min-height: 0;
+}
+body[data-msp-nav-variant="c"] .market-heat-indicators {
+    grid-area: indicators;
+}
+body[data-msp-nav-variant="c"] .market-heat-indices {
+    grid-area: indices;
+}
+body[data-msp-nav-variant="c"] .market-heat-meta {
+    grid-area: meta;
+}
+body[data-msp-nav-variant="c"] .market-heat-indices {
+    gap: 8px;
+}
+body[data-msp-nav-variant="c"] .page-title {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, .5fr);
+}
+body[data-msp-nav-variant="c"] .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+    justify-self: center;
+}
+
+/* D：保留卡片分組，但拿掉厚重背景，讓資料密度最高。 */
+body[data-msp-nav-variant="d"] .page-title,
+body[data-msp-nav-variant="d"] .market-heat-panel,
+body[data-msp-nav-variant="d"] .filter-panel,
+body[data-msp-nav-variant="d"] .msp-section-compact {
+    background: var(--surface);
+    box-shadow: none;
+}
+body[data-msp-nav-variant="d"] .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+    border-width: 0 0 1px;
+    border-radius: 0;
+    background: transparent;
+}
+body[data-msp-nav-variant="d"] .msp-market-bar[data-nav-variant] .msp-global-nav-button {
+    border-color: var(--border);
+    background: var(--surface);
+}
+body[data-msp-nav-variant="d"] .msp-market-bar[data-nav-variant] .msp-global-nav-button.selected {
+    border-color: var(--border-strong);
+    box-shadow: none;
+}
+
+/* E：參考圖的卡片感最完整，以很淡的陰影標示層級，間距仍維持緊湊。 */
+body[data-msp-nav-variant="e"] .page-title,
+body[data-msp-nav-variant="e"] .market-heat-panel,
+body[data-msp-nav-variant="e"] .filter-panel,
+body[data-msp-nav-variant="e"] .table-container,
+body[data-msp-nav-variant="e"] .msp-section-compact,
+body[data-msp-nav-variant="e"] .notes-list-card,
+body[data-msp-nav-variant="e"] .notes-editor-card,
+body[data-msp-nav-variant="e"] .asset-dashboard-donut-card,
+body[data-msp-nav-variant="e"] .asset-dashboard-config-card,
+body[data-msp-nav-variant="e"] .asset-value-trend-card,
+body[data-msp-nav-variant="e"] .asset-account-holdings,
+body[data-msp-nav-variant="e"] .asset-screenshot-flow {
+    box-shadow: 0 3px 12px rgba(15, 23, 42, .07);
+}
+body[data-msp-nav-variant="e"] .page-title {
+    padding: 11px 13px;
+}
+body[data-msp-nav-variant="e"] .msp-market-bar[data-nav-variant] .msp-global-view-nav {
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .05);
+}
+
+/* E 家族：固定同一個資訊骨架，只比較中段留白與標題卡的銜接方式。
+   桌面版把市場、工具、子頁籤安排成兩列，工具永遠在右上角；
+   這樣黃色標記區不會再靠自動排版產生不可預期的高度。 */
+.msp-market-bar[data-nav-variant^="e"] {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+        "market spacer utility"
+        "nav nav nav";
+    align-items: center;
+    gap: 8px 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+}
+.msp-market-bar[data-nav-variant^="e"] .msp-market-segmented {
+    grid-area: market;
+    justify-self: start;
+}
+.msp-market-bar[data-nav-variant^="e"] .msp-global-view-nav {
+    grid-area: nav;
+    justify-self: start;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+.msp-market-bar[data-nav-variant^="e"] .msp-utility-slot {
+    grid-area: utility;
+    justify-self: end;
+}
+body[data-msp-nav-variant^="e"] .page-title {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(420px, .8fr);
+    align-items: start;
+    gap: 20px;
+}
+body[data-msp-nav-variant^="e"] .page-title-heading {
+    min-width: 0;
+}
+body[data-msp-nav-variant^="e"] .msp-page-header-rail,
+body[data-msp-nav-variant^="e"] .msp-page-header-rail .msp-utility-slot {
+    width: 100%;
+    max-width: 620px;
+    box-sizing: border-box;
+}
+body[data-msp-nav-variant^="e"] .msp-page-header-rail {
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface-alt);
+}
+body[data-msp-nav-variant^="e"] .msp-page-header-status {
+    width: 100%;
+    max-width: none;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+body[data-msp-nav-variant^="e"] .msp-page-header-status::before,
+body[data-msp-nav-variant^="e"] .msp-page-header-status .snapshot-note {
+    text-align: left;
+}
+body[data-msp-nav-variant^="e"] .page-title,
+body[data-msp-nav-variant^="e"] .market-heat-panel,
+body[data-msp-nav-variant^="e"] .filter-panel,
+body[data-msp-nav-variant^="e"] .table-container,
+body[data-msp-nav-variant^="e"] .msp-section-compact,
+body[data-msp-nav-variant^="e"] .notes-list-card,
+body[data-msp-nav-variant^="e"] .notes-editor-card,
+body[data-msp-nav-variant^="e"] .asset-dashboard-donut-card,
+body[data-msp-nav-variant^="e"] .asset-dashboard-config-card,
+body[data-msp-nav-variant^="e"] .asset-value-trend-card,
+body[data-msp-nav-variant^="e"] .asset-account-holdings,
+body[data-msp-nav-variant^="e"] .asset-screenshot-flow {
+    box-shadow: 0 3px 12px rgba(15, 23, 42, .07);
+}
+body[data-msp-nav-variant^="e"] .ranking-page {
+    padding-top: 14px;
+}
+body[data-msp-nav-variant^="e"] .market-switch-prototype {
+    padding-top: 6px;
+}
+
+/* E1：最靠近導覽列，適合需要快速掃讀的首頁。 */
+body[data-msp-nav-variant="e1"] .ranking-page {
+    padding-top: 8px;
+}
+body[data-msp-nav-variant="e1"] .market-switch-prototype {
+    padding-top: 4px;
+}
+body[data-msp-nav-variant="e1"] .page-title {
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .09);
+}
+
+/* E2：標題卡直接接到導覽列，交界不畫整條橫線。 */
+body[data-msp-nav-variant="e2"] .ranking-page {
+    padding-top: 0;
+}
+body[data-msp-nav-variant="e2"] .market-switch-prototype {
+    padding-top: 0;
+}
+body[data-msp-nav-variant="e2"] .msp-market-bar {
+    border-bottom: 0;
+}
+body[data-msp-nav-variant="e2"] .page-title {
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .08);
+}
+
+/* E3：保留少量呼吸感，但讓標題卡的陰影吃進中段，視覺上不再像斷層。 */
+body[data-msp-nav-variant="e3"] .ranking-page {
+    padding-top: 12px;
+}
+body[data-msp-nav-variant="e3"] .market-switch-prototype {
+    padding-top: 5px;
+}
+body[data-msp-nav-variant="e3"] .page-title {
+    position: relative;
+    z-index: 1;
+    transform: translateY(-5px);
+    margin-bottom: -5px;
+    box-shadow: 0 5px 14px rgba(15, 23, 42, .1);
+}
+
+/* E4：用上緣細線明確宣告內容起點，間距比 E 更緊但不貼邊。 */
+body[data-msp-nav-variant="e4"] .ranking-page {
+    padding-top: 6px;
+}
+body[data-msp-nav-variant="e4"] .market-switch-prototype {
+    padding-top: 3px;
+}
+body[data-msp-nav-variant="e4"] .page-title {
+    border-top: 2px solid var(--border-strong);
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(15, 23, 42, .08);
+}
+
+@media (max-width: 960px) {
+    body[data-msp-nav-variant] .page-title,
+    body[data-msp-nav-variant="c"] .page-title {
+        display: flex;
+        grid-template-columns: none;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 7px;
+        padding: 10px 12px;
+    }
+    body[data-msp-nav-variant] .msp-page-header-rail {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 0 0;
+        border-top: 1px solid var(--border);
+        border-right: 0;
+        border-left: 0;
+    }
+    body[data-msp-nav-variant] .market-heat-panel,
+    body[data-msp-nav-variant="c"] .market-heat-panel {
+        grid-template-columns: 1fr;
+        grid-template-areas: none;
+        gap: 8px;
+    }
+    body[data-msp-nav-variant="c"] .market-heat-overview,
+    body[data-msp-nav-variant="c"] .market-heat-indicators,
+    body[data-msp-nav-variant="c"] .market-heat-indices,
+    body[data-msp-nav-variant="c"] .market-heat-meta {
+        grid-area: auto;
+        grid-column: auto;
+    }
+    body[data-msp-nav-variant] .market-heat-overview {
+        min-height: 0;
+    }
+    body[data-msp-nav-variant] .filter-panel {
+        gap: 9px;
+        padding: 9px 10px;
+    }
+    body[data-msp-nav-variant] .msp-dashboard {
+        gap: 8px;
+    }
+}
 `;
     document.head.append(style);
 }
@@ -21719,16 +24137,49 @@ function initMarketSwitch() {
     bar.className = 'msp-market-bar';
     document.body.prepend(bar);
 
+    // 正式頁面與本機預覽共用同一組頁首工具位置；只移動既有 DOM，不複製控制項。
+    const utilitySlot = mspBuildUtilityPreviewSlot();
+    const pageHeader = document.querySelector('.page-header');
+    const pageTitle = document.querySelector('.page-title');
+    const pageHeaderRail = mspBuildPageHeaderPreviewRail(null);
+
     const panel = document.createElement('div');
     panel.className = 'market-switch-prototype';
     panel.hidden = true;
     bar.after(panel);
 
+    let previewSwitcher = null;
     const render = () => {
-        bar.replaceChildren(mspBuildMarketTabs(proto, render));
-        document.body.classList.toggle('market-switch-prototype-active', proto.market !== 'tw');
+        const workspaceView = state.view === 'assets' || state.view === 'notes';
+        const showOverview = proto.market !== 'tw' && !workspaceView;
+        const navVariant = MARKET_NAV_PREVIEW
+            ? marketNavPreviewVariant
+            : MARKET_NAV_DEFAULT_VARIANT;
 
-        if (proto.market === 'tw') {
+        bar.dataset.navVariant = navVariant;
+        document.body.dataset.mspNavVariant = navVariant;
+        const navigation = [
+            mspBuildMarketTabs(proto, render),
+            mspBuildViewTabs(proto, render)
+        ];
+        if (utilitySlot !== null) {
+            navigation.push(utilitySlot);
+        }
+        bar.replaceChildren(...navigation);
+
+        if (pageHeaderRail !== null && pageHeader !== null && pageTitle !== null) {
+            if (pageHeaderRail.rail.parentElement !== pageTitle) {
+                pageTitle.append(pageHeaderRail.rail);
+            }
+            if (pageHeaderRail.snapshotNote !== null
+                && pageHeaderRail.snapshotNote.parentElement !== pageHeaderRail.status) {
+                pageHeaderRail.status.append(pageHeaderRail.snapshotNote);
+            }
+        }
+        previewSwitcher?.refresh();
+        document.body.classList.toggle('market-switch-prototype-active', showOverview);
+
+        if (!showOverview) {
             panel.hidden = true;
             return;
         }
@@ -21736,7 +24187,6 @@ function initMarketSwitch() {
         panel.hidden = false;
         const inner = document.createElement('div');
         inner.className = 'msp-market-panel';
-        inner.append(mspBuildViewTabs(proto));
 
         if (marketOverviewLoadError !== null) {
             const notice = document.createElement('section');
@@ -21762,6 +24212,30 @@ function initMarketSwitch() {
         panel.replaceChildren(inner);
     };
 
+    if (MARKET_NAV_PREVIEW) {
+        previewSwitcher = mspBuildPreviewSwitcher(render);
+        document.body.append(previewSwitcher);
+        document.addEventListener('keydown', event => {
+            if (event.target instanceof HTMLInputElement
+                || event.target instanceof HTMLTextAreaElement
+                || event.target instanceof HTMLSelectElement
+                || event.target instanceof HTMLElement && event.target.isContentEditable) {
+                return;
+            }
+
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                event.preventDefault();
+                const step = event.key === 'ArrowLeft' ? -1 : 1;
+                const index = MARKET_NAV_PREVIEW_VARIANTS
+                    .findIndex(variant => variant.key === marketNavPreviewVariant);
+                const next = (index + step + MARKET_NAV_PREVIEW_VARIANTS.length)
+                    % MARKET_NAV_PREVIEW_VARIANTS.length;
+                mspSetPreviewVariant(MARKET_NAV_PREVIEW_VARIANTS[next].key, render);
+            }
+        });
+    }
+
+    marketSwitchRender = render;
     render();
 }
 
@@ -21819,6 +24293,8 @@ async function start() {
     if (CUSTOM_INTRADAY_LOCAL_PREVIEW && state.view === 'custom') {
         state.customSource = 'intraday';
     }
+
+    marketSwitchRender?.();
 
     snapshotNote =
         `資料截至 ${manifest.latestTradingDate}，共 ${manifest.tradingDayCount} 個交易日、`
