@@ -14367,18 +14367,14 @@ function renderKLinePopover(ticker, name, anchor) {
     // 連結包在裡面而不是讓 <strong> 自己變成 <a>，這樣標題的字重不必再另外寫一次。
     const strong = document.createElement('strong');
     strong.id = 'kline-title';
-    if (isUs) {
-        strong.textContent = `${ticker} ${name}`;
-    } else {
-        const titleLink = document.createElement('a');
-        titleLink.className = 'kline-title-link';
-        titleLink.href = moneyDjStockUrl(ticker, name);
-        titleLink.target = '_blank';
-        titleLink.rel = 'noopener noreferrer';
-        titleLink.title = '在 MoneyDJ 財經百科查這家公司（公司簡介、產品與競爭條件、市場銷售及競爭）';
-        titleLink.textContent = `${ticker} ${name}`;
-        strong.append(titleLink);
-    }
+    const titleLink = document.createElement('a');
+    titleLink.className = 'kline-title-link';
+    titleLink.href = moneyDjStockUrl(ticker, name);
+    titleLink.target = '_blank';
+    titleLink.rel = 'noopener noreferrer';
+    titleLink.title = '在 MoneyDJ 財經百科查這家公司（公司簡介、產品與競爭條件、市場銷售及競爭）';
+    titleLink.textContent = `${ticker} ${name}`;
+    strong.append(titleLink);
     const period = document.createElement('span');
     period.className = 'daily-kline-period';
     const endDate = klineEndDate();
@@ -23206,7 +23202,8 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
     width: auto;
     max-width: 100%;
     min-width: 0;
-    z-index: 2;
+    position: relative;
+    z-index: 40;
 }
 .msp-market-bar[data-nav-variant] .msp-utility-slot .page-title-tools {
     width: auto;

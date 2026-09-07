@@ -6,8 +6,8 @@
 -- 只接受最高權限入口的請求。真正抵抗偽造仍要等 Supabase Auth／白名單完成。
 --
 -- last_seen_at 是即時活動來源，status 由心跳與每天台北 07:00 的 pg_cron 維護。
--- 這張表不做自動刪除，保留完整紀錄供最高權限追查；若日後要加保留期限，
--- 需另行確認期限與清理方式。
+-- 管理員列表依「裝置名稱＋IP＋權限」顯示目前可辨識的裝置；當 localStorage 重建
+-- device_id 造成同一組資訊累積多列時，Edge Function 會保留 last_seen_at 最新列並刪除舊列。
 
 create table if not exists public.device_sessions (
     device_id      text primary key check (length(device_id) between 16 and 128),

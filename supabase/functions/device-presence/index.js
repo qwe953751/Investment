@@ -140,6 +140,26 @@ async function register(request) {
     return json(request, { ok: true });
 }
 
+function deduplicateDeviceSessions(devices) {
+    const seen = new Set();
+    const duplicateIds = [];
+    const uniqueDevices = [];
+
+    for (const device of devices) {
+        const key = [device.device_name, device.ip_address, device.access_level].join('\u0000');
+
+        if (seen.has(key)) {
+            duplicateIds.push(device.device_id);
+            continue;
+        }
+
+        seen.add(key);
+        uniqueDevices.push(device);
+    }
+
+    return { duplicateIds, uniqueDevices };
+}
+
 async function list(request) {
     if (request.headers.get('x-site-access') !== 'admin') {
         return json(request, { error: 'admin access required' }, 403);
@@ -147,7 +167,7 @@ async function list(request) {
 
     const response = await databaseRequest(
         'device_sessions?select=device_id,device_name,ip_address,access_level,status,first_seen_at,last_seen_at'
-            + '&order=last_seen_at.desc&limit=200'
+            + '&order=last_seen_at.desc&limit=1000'
     );
 
     if (!response.ok) {
@@ -155,7 +175,22 @@ async function list(request) {
         return json(request, { error: 'device sessions could not be loaded' }, 502);
     }
 
-    return json(request, { devices: await response.json() });
+    const { duplicateIds, uniqueDevices } = deduplicateDeviceSessions(await response.json());
+
+    if (duplicateIds.length > 0) {
+        const duplicateFilter = duplicateIds.map(id => encodeURIComponent(id)).join(',');
+        const cleanupResponse = await databaseRequest(`device_sessions?device_id=in.(${duplicateFilter})`, {
+            method: 'DELETE',
+            headers: { Prefer: 'return=minimal' }
+        });
+
+        if (!cleanupResponse.ok) {
+            console.error('device_sessions duplicate cleanup failed', cleanupResponse.status, await cleanupResponse.text());
+            return json(request, { error: 'duplicate device sessions could not be cleaned' }, 502);
+        }
+    }
+
+    return json(request, { devices: uniqueDevices });
 }
 
 Deno.serve(async request => {
