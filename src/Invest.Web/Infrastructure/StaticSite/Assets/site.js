@@ -562,6 +562,86 @@ async function fetchAllRows(table, select, extraQuery = '') {
     }
 }
 
+// 行動網路或 GitHub Pages 短暫沒有回應時，不能讓整個網站永遠等在 fetch。
+// 沒有 AbortController 的舊瀏覽器仍會拿到正常的 fetch 結果，只是失去逾時中止能力。
+// timeout 要包住 response.json()：大型快照可能已拿到 header，卻卡在 body 解析。
+async function fetchJsonAttempt(url, options = {}, timeoutMs = 8_000) {
+    const controller = typeof AbortController === 'function'
+        ? new AbortController()
+        : null;
+    const requestOptions = controller === null
+        ? options
+        : { ...options, signal: controller.signal };
+    const request = fetch(url, requestOptions);
+    let timeoutId = null;
+    const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+            const error = new Error(`請求逾時（${timeoutMs}ms）`);
+            error.name = 'TimeoutError';
+            reject(error);
+            controller?.abort();
+        }, timeoutMs);
+    });
+
+    try {
+        const response = await Promise.race([request, timeout]);
+
+        if (!response.ok) {
+            const error = new Error(`HTTP ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+
+        return await Promise.race([response.json(), timeout]);
+    } finally {
+        if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+        }
+    }
+}
+
+async function fetchJsonWithRetry(url, options = {}) {
+    const retryDelays = [300, 1_000];
+
+    for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+        try {
+            return await fetchJsonAttempt(url, options);
+        } catch (error) {
+            const status = Number(error?.status);
+            const retryable = !Number.isInteger(status)
+                || status === 408
+                || status === 429
+                || status >= 500;
+
+            if (!retryable || attempt === retryDelays.length) {
+                throw error;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+        }
+    }
+
+    throw new Error('JSON 資料讀取失敗。');
+}
+
+function staticJsonLoadErrorMessage(resource, error) {
+    const status = Number(error?.status);
+
+    if (status === 404) {
+        return `找不到 ${resource}（HTTP 404），請確認目前發布版本包含這個檔案。`;
+    }
+
+    if (Number.isInteger(status)) {
+        return `${resource} 讀取失敗（HTTP ${status}），請稍後重試。`;
+    }
+
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+        return `${resource} 讀取逾時，請檢查網路後重試。`;
+    }
+
+    return `${resource} 暫時無法讀取，請檢查網路後重試。`;
+}
+
 // 自動流程的異常紀錄。這一份刻意不從 manifest.json 讀：
 // 最需要被通知的情況就是「靜態網站沒發佈成功」，那時候線上的 manifest 還是舊的，
 // 寫在裡面的訊息永遠送不出去。資料庫是唯一在發佈失敗時仍然會更新的地方。
@@ -1935,13 +2015,11 @@ async function authRequest(grantType, body) {
     }
 
     try {
-        const response = await fetch(`${supabase.url}/auth/v1/token?grant_type=${grantType}`, {
+        return await fetchJsonWithRetry(`${supabase.url}/auth/v1/token?grant_type=${grantType}`, {
             method: 'POST',
             headers: { apikey: supabase.anonKey, 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
-
-        return response.ok ? response.json() : null;
     } catch {
         return null;
     }
@@ -2084,7 +2162,7 @@ function afterAccessChange() {
     renderAccessBadge();
     wireDevicePresence();
     void refreshAlerts();
-    load();
+    void load().catch(reportLoadFailure);
 }
 
 function wireAccessBar() {
@@ -16073,18 +16151,45 @@ function renderMarketHeat(heat, index) {
     return panel;
 }
 
-function showNotice(message, isWarning) {
+function makeLoadRetryButton(onRetry) {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'toggle-button load-retry';
+    retry.textContent = '重試';
+    retry.addEventListener('click', onRetry);
+    return retry;
+}
+
+function showNotice(message, isWarning, onRetry = null) {
     const notice = el('notice');
     notice.className = isWarning ? 'notice warning' : 'notice';
     notice.textContent = message;
+
+    if (onRetry !== null) {
+        notice.append(makeLoadRetryButton(onRetry));
+    }
+
     notice.hidden = false;
     el('ranking').hidden = true;
+}
+
+function reportLoadFailure(error) {
+    console.error('網站資料載入失敗', error);
+    showNotice(staticJsonLoadErrorMessage('網站資料', error), true, () => {
+        window.location.reload();
+    });
 }
 
 /// 舊的 index.html / site.js 可能還躺在瀏覽器快取裡（GitHub Pages 給十分鐘）。
 /// 版本號對不上就換一個帶查詢字串的網址重載，一次把 HTML 與 JS 都換成新的。
 async function reloadIfStale() {
-    const latest = await (await fetch('manifest.json', { cache: 'no-store' })).json();
+    let latest;
+
+    try {
+        latest = await fetchJsonWithRetry('manifest.json', { cache: 'no-store' });
+    } catch {
+        return false;
+    }
 
     if (latest.version === version) {
         return false;
@@ -16892,17 +16997,19 @@ function intradayYearToDatePercent(row, market) {
 
 // 一份「期間 × 交易日」的完整名單。盤後檢視直接畫它，盤中檢視拿它當對照組。
 // 讀不到就回 null，兩邊各自決定怎麼處理。
+const periodLoadErrors = new Map();
+
 async function fetchPeriod(key) {
     if (!cache.has(key)) {
         // 帶上快照版本號：同一份快照可以被瀏覽器盡情快取，
         // 重新發佈後版本號一變，網址跟著變，手機上就不會再看到舊資料。
-        const response = await fetch(`data/${key}.json?v=${version}`);
-
-        if (!response.ok) {
+        try {
+            cache.set(key, await fetchJsonWithRetry(`data/${key}.json?v=${version}`));
+            periodLoadErrors.delete(key);
+        } catch (error) {
+            periodLoadErrors.set(key, error);
             return null;
         }
-
-        cache.set(key, await response.json());
     }
 
     return cache.get(key);
@@ -17075,11 +17182,17 @@ async function loadCustom(silent = false, force = false) {
     const data = await fetchPeriod(`1-${state.date}`);
 
     if (!data) {
-        if (await reloadIfStale()) {
+        const error = periodLoadErrors.get(key);
+
+        if (error?.status === 404 && await reloadIfStale()) {
             return;
         }
 
-        showNotice(`讀不到 ${state.date} 的單日資料，請在本機重新產生一次靜態網站。`, true);
+        showNotice(error
+            ? staticJsonLoadErrorMessage(`data/${key}.json`, error)
+            : `讀不到 ${state.date} 的單日資料，請確認目前發布版本包含這個檔案。`, true, () => {
+                void loadCustom(false, true).catch(reportLoadFailure);
+            });
         return;
     }
 
@@ -17387,40 +17500,33 @@ function focusTopic(topicId) {
 // 排行榜那一欄要的東西很小，跟族群頁的完整資料分開抓，讓沒切過去的人不必付那 2 MB。
 async function loadAttributions() {
     try {
-        const response = await fetch(`data/topic-attributions.json?v=${version}`);
-
-        if (!response.ok) {
-            return;
-        }
-
-        const data = await response.json();
+        const data = await fetchJsonWithRetry(`data/topic-attributions.json?v=${version}`);
         attributionByTicker = new Map(data.attributions.map(item => [item.ticker, item]));
     } catch {
         // 族群欄是附加資訊，抓不到就整欄顯示待分類，不能擋住排行榜。
     }
 }
 
-async function loadTopics() {
+let topicLoading = false;
+
+async function loadTopics(force = false) {
     const panel = el('topic-panel');
 
     if (TOPIC_EDITOR_PROTOTYPE) {
         state.topicTab = 'edits';
     }
 
-    if (topicData === null && topicLoadError === '') {
+    if (topicData === null && !topicLoading && (topicLoadError === '' || force)) {
+        topicLoading = true;
+        topicLoadError = '';
         panel.replaceChildren(makeTopicNotice('族群資料載入中…', false));
 
         try {
-            const response = await fetch(`data/topics.json?v=${version}`);
-
-            if (!response.ok) {
-                throw new Error(String(response.status));
-            }
-
-            topicData = await response.json();
-        } catch {
-            topicLoadError = '讀不到 data/topics.json。這一份是本機 export 時產生的，'
-                + '請重新產生一次靜態網站再發佈。';
+            topicData = await fetchJsonWithRetry(`data/topics.json?v=${version}`);
+        } catch (error) {
+            topicLoadError = staticJsonLoadErrorMessage('data/topics.json', error);
+        } finally {
+            topicLoading = false;
         }
 
         prepareTopics();
@@ -17685,7 +17791,9 @@ function renderTopicPanel() {
     }
 
     if (topicLoadError !== '') {
-        panel.append(makeTopicNotice(topicLoadError, true));
+        const notice = makeTopicNotice(topicLoadError, true);
+        notice.append(makeLoadRetryButton(() => { void loadTopics(true); }));
+        panel.append(notice);
         return;
     }
 
@@ -21972,11 +22080,17 @@ async function load() {
 
     if (!loaded) {
         // 抓不到資料，通常是因為手上這份頁面是舊的：新版改了檔名的組成方式。
-        if (await reloadIfStale()) {
+        const error = periodLoadErrors.get(key);
+
+        if (error?.status === 404 && await reloadIfStale()) {
             return;
         }
 
-        showNotice(`讀不到 ${key} 這個組合的資料，請在本機重新產生一次靜態網站。`, true);
+        showNotice(error
+            ? staticJsonLoadErrorMessage(`data/${key}.json`, error)
+            : `讀不到 ${key} 這個組合的資料，請確認目前發布版本包含這個檔案。`, true, () => {
+                void load().catch(reportLoadFailure);
+            });
         return;
     }
 
@@ -22056,7 +22170,7 @@ function update(changes) {
     writeSettings();
     renderSnapshotNote();
     renderFilters();
-    load();
+    void load().catch(reportLoadFailure);
 }
 
 let snapshotNote = '';
@@ -24940,7 +25054,7 @@ async function start() {
 
     // manifest 一定要拿到最新的一份，否則版本號就失去意義，
     // 所以這支檔案自己不進快取。
-    const manifest = await (await fetch('manifest.json', { cache: 'no-store' })).json();
+    const manifest = await fetchJsonWithRetry('manifest.json', { cache: 'no-store' });
 
     thresholds = manifest.thresholds;
     dates = manifest.dates;
@@ -25037,9 +25151,14 @@ async function start() {
         return;
     }
 
-    // 營收與族群欄都要在第一次畫表之前就位。晚一步到的話那幾欄會先顯示 — 再跳成內容，
-    // 看起來像抓錯了。兩支都是小請求，擋在前面不會有感。
-    await Promise.all([loadRevenue(), loadAttributions()]);
+    // 補充欄位先在背景載入，不能因為營收或族群欄的網路請求卡住而擋住核心排行。
+    // 各自完成就重畫一次；失敗時保留既有的 —／待分類狀態，不影響主表。
+    void loadRevenue()
+        .then(() => renderRevenueForCurrentView())
+        .catch(reportLoadFailure);
+    void loadAttributions()
+        .then(() => renderRevenueForCurrentView())
+        .catch(reportLoadFailure);
     await load();
 }
 
@@ -25099,4 +25218,4 @@ function wireThemeSwitcher() {
 // 越早呼叫越好：這是整支腳本第一個非同步斷點（start() 內的 await）之前
 // 最後一個同步呼叫，避免瀏覽器先畫出預設外觀、下一輪才跳成使用者選的深色。
 wireThemeSwitcher();
-start();
+void start().catch(reportLoadFailure);

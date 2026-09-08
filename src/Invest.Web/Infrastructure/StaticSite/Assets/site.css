@@ -2980,6 +2980,11 @@ body {
     color: #7a5b00;
 }
 
+.load-retry {
+    display: block;
+    margin-top: 12px;
+}
+
 /* 「這不是今天的資料」的橫幅。左邊界比 .notice.warning 重：
    它跟排行榜並存，不像 .notice 是整片取代表格，不夠顯眼就會被整張表蓋過去。 */
 .stale-banner {
