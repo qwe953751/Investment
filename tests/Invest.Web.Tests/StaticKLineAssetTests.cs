@@ -669,7 +669,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("async function fetchIntradayCdnSnapshot()", script, StringComparison.Ordinal);
         Assert.Contains("function initializeIntradayBroadcastChannel()", script, StringComparison.Ordinal);
         Assert.Contains("function isTaiwanIntradaySession()", script, StringComparison.Ordinal);
-        Assert.Contains("await Promise.all([loadMarketFlags(), loadRevenue(force)]);", script, StringComparison.Ordinal);
+        Assert.Contains("void Promise.all([loadMarketFlags(), loadRevenue(force)])", script, StringComparison.Ordinal);
     }
 
     [Fact]

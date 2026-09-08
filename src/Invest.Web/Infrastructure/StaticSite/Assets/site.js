@@ -532,25 +532,29 @@ function toBadges(ticker) {
 // 所以凡是「整張表都要」的查詢一律走這裡，用 Range 一頁一頁拿到尾。
 const PAGE_SIZE = 1000;
 
-async function fetchAllRows(table, select, extraQuery = '') {
+async function fetchAllRows(table, select, extraQuery = '', timeoutMs = null) {
     const rows = [];
 
     for (let offset = 0; ; offset += PAGE_SIZE) {
-        const response = await fetch(
-            `${supabase.url}/rest/v1/${table}?select=${select}${extraQuery}`,
-            {
-                headers: {
-                    apikey: supabase.anonKey,
-                    Range: `${offset}-${offset + PAGE_SIZE - 1}`
-                },
-                cache: 'no-store'
-            });
+        const url = `${supabase.url}/rest/v1/${table}?select=${select}${extraQuery}`;
+        const requestOptions = {
+            headers: {
+                apikey: supabase.anonKey,
+                Range: `${offset}-${offset + PAGE_SIZE - 1}`
+            },
+            cache: 'no-store'
+        };
+        const page = timeoutMs === null
+            ? await (async () => {
+                const response = await fetch(url, requestOptions);
 
-        if (!response.ok) {
-            throw new Error(String(response.status));
-        }
+                if (!response.ok) {
+                    throw new Error(String(response.status));
+                }
 
-        const page = await response.json();
+                return response.json();
+            })()
+            : await fetchJsonAttempt(url, requestOptions, timeoutMs);
 
         rows.push(...page);
 
@@ -600,12 +604,17 @@ async function fetchJsonAttempt(url, options = {}, timeoutMs = 8_000) {
     }
 }
 
-async function fetchJsonWithRetry(url, options = {}) {
-    const retryDelays = [300, 1_000];
+async function fetchJsonWithRetry(url, options = {}, policy = {}) {
+    const timeoutMs = Number.isFinite(policy.timeoutMs) && policy.timeoutMs > 0
+        ? policy.timeoutMs
+        : 8_000;
+    const retryDelays = Array.isArray(policy.retryDelays)
+        ? policy.retryDelays
+        : [300, 1_000];
 
     for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
         try {
-            return await fetchJsonAttempt(url, options);
+            return await fetchJsonAttempt(url, options, timeoutMs);
         } catch (error) {
             const status = Number(error?.status);
             const retryable = !Number.isInteger(status)
@@ -2011,18 +2020,32 @@ function activateLoginAccount(account, session) {
 
 async function authRequest(grantType, body) {
     if (supabase === null || PODCAST_NOTES_LOCAL_PREVIEW) {
-        return null;
+        return { session: null, error: null };
     }
 
     try {
-        return await fetchJsonWithRetry(`${supabase.url}/auth/v1/token?grant_type=${grantType}`, {
-            method: 'POST',
-            headers: { apikey: supabase.anonKey, 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
-    } catch {
-        return null;
+        const session = await fetchJsonWithRetry(
+            `${supabase.url}/auth/v1/token?grant_type=${grantType}`,
+            {
+                method: 'POST',
+                headers: { apikey: supabase.anonKey, 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            },
+            { timeoutMs: 8_000, retryDelays: [] });
+
+        return { session, error: null };
+    } catch (error) {
+        return { session: null, error };
     }
+}
+
+function isTransientAuthError(error) {
+    const status = Number(error?.status);
+
+    return !Number.isInteger(status)
+        || status === 408
+        || status === 429
+        || status >= 500;
 }
 
 function saveAuthSession(session, account) {
@@ -2048,11 +2071,17 @@ function clearAuthSession() {
 
 async function loginWithPassword(password) {
     for (const account of ACCESS_TIER_ACCOUNTS) {
-        const session = await authRequest('password', { email: account.email, password });
+        const result = await authRequest('password', { email: account.email, password });
 
-        if (session !== null) {
-            activateLoginAccount(account, session);
+        if (result.session !== null) {
+            activateLoginAccount(account, result.session);
             return true;
+        }
+
+        // 400／401 代表這個固定帳號的密碼不符，才繼續試下一組；
+        // 斷線、逾時、429 或 5xx 再試其他帳號沒有意義，只會把一次故障放大。
+        if (isTransientAuthError(result.error)) {
+            return false;
         }
     }
 
@@ -2084,14 +2113,14 @@ async function restoreSession() {
         return;
     }
 
-    const session = await authRequest('refresh_token', { refresh_token: stored.refreshToken });
+    const result = await authRequest('refresh_token', { refresh_token: stored.refreshToken });
 
-    if (session === null) {
+    if (result.session === null) {
         clearAuthSession();
         return;
     }
 
-    const account = accessTierAccountForEmail(session.user?.email)
+    const account = accessTierAccountForEmail(result.session.user?.email)
         ?? accessTierAccountForEmail(stored.email);
 
     if (account === null) {
@@ -2099,7 +2128,7 @@ async function restoreSession() {
         return;
     }
 
-    activateLoginAccount(account, session);
+    activateLoginAccount(account, result.session);
 }
 
 async function refreshAuthAccessToken() {
@@ -2115,13 +2144,13 @@ async function refreshAuthAccessToken() {
         return false;
     }
 
-    const session = await authRequest('refresh_token', { refresh_token: stored.refreshToken });
-    if (session === null) {
+    const result = await authRequest('refresh_token', { refresh_token: stored.refreshToken });
+    if (result.session === null) {
         clearAuthSession();
         return false;
     }
 
-    const account = accessTierAccountForEmail(session.user?.email)
+    const account = accessTierAccountForEmail(result.session.user?.email)
         ?? accessTierAccountForEmail(stored.email);
 
     if (account === null) {
@@ -2129,7 +2158,7 @@ async function refreshAuthAccessToken() {
         return false;
     }
 
-    activateLoginAccount(account, session);
+    activateLoginAccount(account, result.session);
     return true;
 }
 
@@ -16549,13 +16578,7 @@ async function fetchIntradayCdnSnapshot() {
     // latest 本身只有數百 bytes；用十秒 time slot 讓多裝置仍可共用 CDN 命中，又不會長時間
     // 停在上一個指標。完整資料一律依不可變檔名快取，絕不覆寫後再賭 CDN 傳播速度。
     latest.searchParams.set('slot', String(Math.floor(Date.now() / 10_000)));
-    const latestResponse = await fetch(latest, { cache: 'no-store' });
-
-    if (!latestResponse.ok) {
-        throw new Error(`盤中 CDN latest HTTP ${latestResponse.status}`);
-    }
-
-    const pointer = await latestResponse.json();
+    const pointer = await fetchJsonAttempt(latest, { cache: 'no-store' }, 10_000);
 
     if (pointer?.schemaVersion !== 1
         || !Number.isInteger(pointer.runId)
@@ -16574,13 +16597,10 @@ async function fetchIntradayCdnSnapshot() {
         return null;
     }
 
-    const snapshotResponse = await fetch(intradayCdnUrl(pointer.file), { cache: 'force-cache' });
-
-    if (!snapshotResponse.ok) {
-        throw new Error(`盤中 CDN 快照 HTTP ${snapshotResponse.status}`);
-    }
-
-    const document = await snapshotResponse.json();
+    const document = await fetchJsonAttempt(
+        intradayCdnUrl(pointer.file),
+        { cache: 'force-cache' },
+        15_000);
     validateIntradayCdnSnapshot(pointer, document);
     return document;
 }
@@ -16673,11 +16693,6 @@ async function ensureIntradaySnapshot(silent = false, force = false, loadSupport
                 applyIntradaySnapshot({ rows, summary, runId: null, topicHeat: null });
             }
 
-            if (loadSupportingData) {
-                // 這兩項不是盤中 CDN 的內容：交易限制與營收延續原本的 Supabase 流程，
-                // 也只在盤中排行／自訂盤中真正需要它們時才讀。
-                await Promise.all([loadMarketFlags(), loadRevenue(force)]);
-            }
         } catch {
             // 靜默更新失敗就讓畫面停在上一輪的數字，總比把整張表換成錯誤訊息好。
             if (!silent) {
@@ -16687,6 +16702,14 @@ async function ensureIntradaySnapshot(silent = false, force = false, loadSupport
             return;
         }
 
+    }
+
+    if (loadSupportingData) {
+        // 這兩項不是盤中 CDN 的內容：交易限制與營收延續原本的 Supabase 流程，
+        // 也只在盤中排行／自訂盤中真正需要它們時才讀。它們不能擋住核心快照與表格。
+        void Promise.all([loadMarketFlags(), loadRevenue(force)])
+            .then(() => renderRevenueForCurrentView())
+            .catch(reportLoadFailure);
     }
 
     return true;
@@ -16925,22 +16948,16 @@ let intradayLegacySelect = false;
 let intradayHeatSelectLegacy = false;
 
 function fetchIntradayRows() {
-    return fetchAllRows('intraday_latest', INTRADAY_ROW_SELECT, '&order=turnover.desc');
+    return fetchAllRows('intraday_latest', INTRADAY_ROW_SELECT, '&order=turnover.desc', 15_000);
 }
 
 async function fetchIntradaySummaryRow(select) {
-    const response = await fetch(
+    const rows = await fetchJsonAttempt(
         `${supabase.url}/rest/v1/intraday_latest?select=${select}&order=turnover.desc&limit=1`,
-        { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+        { headers: { apikey: supabase.anonKey }, cache: 'no-store' },
+        10_000);
 
-    if (!response.ok) {
-        // 把資料庫講的原因一起帶出去。底下的退版鏈只認得「失敗了」，
-        // 於是 db/021 漏套用的那兩天，畫面只是安靜地少掉幾個欄位
-        // （盤中熱絡的「較前一交易日」變成 —），沒有任何地方說得出為什麼。
-        throw new Error(`${response.status} ${(await response.text()).slice(0, 200)}`);
-    }
-
-    const [row] = await response.json();
+    const [row] = rows;
     return row ?? null;
 }
 
@@ -17088,7 +17105,10 @@ async function fetchPeriod(key) {
         // 帶上快照版本號：同一份快照可以被瀏覽器盡情快取，
         // 重新發佈後版本號一變，網址跟著變，手機上就不會再看到舊資料。
         try {
-            cache.set(key, await fetchJsonWithRetry(`data/${key}.json?v=${version}`));
+            cache.set(key, await fetchJsonWithRetry(
+                `data/${key}.json?v=${version}`,
+                {},
+                { timeoutMs: 30_000, retryDelays: [1_000] }));
             periodLoadErrors.delete(key);
         } catch (error) {
             periodLoadErrors.set(key, error);
@@ -17606,7 +17626,10 @@ async function loadTopics(force = false) {
         panel.replaceChildren(makeTopicNotice('族群資料載入中…', false));
 
         try {
-            topicData = await fetchJsonWithRetry(`data/topics.json?v=${version}`);
+            topicData = await fetchJsonWithRetry(
+                `data/topics.json?v=${version}`,
+                {},
+                { timeoutMs: 30_000, retryDelays: [1_000] });
         } catch (error) {
             topicLoadError = staticJsonLoadErrorMessage('data/topics.json', error);
         } finally {
@@ -25235,11 +25258,15 @@ async function start() {
         return;
     }
 
-    // 補充欄位先在背景載入，不能因為營收或族群欄的網路請求卡住而擋住核心排行。
-    // 各自完成就重畫一次；失敗時保留既有的 —／待分類狀態，不影響主表。
-    void loadRevenue()
-        .then(() => renderRevenueForCurrentView())
-        .catch(reportLoadFailure);
+    // 盤中／自訂盤中會在快照完成後自己背景載入營收，避免同時打兩份 Supabase 請求；
+    // 族群的盤中模式仍需營收欄，所以它不屬於 isIntradayDataView()。
+    if (!isIntradayDataView()) {
+        // 補充欄位先在背景載入，不能因為營收或族群欄的網路請求卡住而擋住核心排行。
+        // 各自完成就重畫一次；失敗時保留既有的 —／待分類狀態，不影響主表。
+        void loadRevenue()
+            .then(() => renderRevenueForCurrentView())
+            .catch(reportLoadFailure);
+    }
     void loadAttributions()
         .then(() => renderRevenueForCurrentView())
         .catch(reportLoadFailure);

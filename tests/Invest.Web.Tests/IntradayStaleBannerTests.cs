@@ -117,11 +117,13 @@ public sealed class IntradayStaleBannerTests
         Assert.Contains("} catch (heatError) {", chain, StringComparison.Ordinal);
         Assert.Contains("} catch (yearError) {", chain, StringComparison.Ordinal);
 
-        // 錯誤訊息要把資料庫講的原因帶出來，不然只知道「失敗了」。
-        Assert.Contains(
-            "throw new Error(`${response.status} ${(await response.text()).slice(0, 200)}`);",
+        // 摘要 fallback 也要走有界 JSON 載入器，至少保留 HTTP 狀態並避免無限等待。
+        var summaryRow = Slice(
             script,
-            StringComparison.Ordinal);
+            "async function fetchIntradaySummaryRow(select) {",
+            "// 退版只該發生在");
+        Assert.Contains("fetchJsonAttempt(", summaryRow, StringComparison.Ordinal);
+        Assert.Contains("10_000", summaryRow, StringComparison.Ordinal);
     }
 
     private static string Slice(string text, string from, string to)
