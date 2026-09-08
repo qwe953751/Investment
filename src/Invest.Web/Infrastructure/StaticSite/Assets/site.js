@@ -14388,7 +14388,8 @@ function selectedKLineBars(ticker) {
         return bars;
     }
 
-    const historicalBars = bars.filter(bar => bar.date !== endDate);
+    // 資產頁的即時棒可能比靜態 K 線尾日晚一天；只去除同日歷史棒，保留 endDate 的前收棒。
+    const historicalBars = bars.filter(bar => bar.date !== liveBar.date);
 
     return [...historicalBars, {
         ...liveBar,

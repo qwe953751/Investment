@@ -117,6 +117,67 @@ function holdingQuoteFlow() {
     return context;
 }
 
+function assetKLineFlow() {
+    const context = {
+        TAIPEI_DATE: { format: () => '2026-09-08' },
+        assetTickerQuotes: new Map([
+            ['2308', { quoteDate: '2026-09-07' }]
+        ]),
+        assetIntradayQuotes: new Map([
+            ['2308', {
+                open: 1860,
+                high: 1870,
+                low: 1800,
+                close: 1805,
+                tradingVolume: 5780
+            }]
+        ]),
+        assetLatestUsQuotes: new Map(),
+        expandedTicker: '2308',
+        klineUseLatestDate: true,
+        klineData: new Map([
+            ['2308', {
+                bars: [
+                    { date: '2026-09-04', close: 1825 },
+                    { date: '2026-09-07', close: 1850 }
+                ]
+            }]
+        ]),
+        state: { view: 'assets', date: '2026-09-07' },
+        current: null,
+        topicIntradayKLines: new Map(),
+        isIntradayDataView: () => false,
+        topicUsesIntradayData: () => false,
+        klineStartDate: () => '2026-06-07'
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetIntradayLiveKLine'),
+        functionSource('klineEndDate'),
+        functionSource('selectedKLineBars')
+    ].join('\n\n'), context);
+    return context;
+}
+
+function klineDateFlow() {
+    const context = {
+        expandedTicker: '2308',
+        klineUseLatestDate: false,
+        klineData: new Map([
+            ['2308', { bars: [{ date: '2026-09-07', close: 1850 }] }]
+        ]),
+        state: { view: 'daily', date: '2026-08-28' },
+        current: { tradeDate: '2026-09-08' },
+        intradayTopicPeriod: null,
+        topicData: null,
+        isIntradayDataView: () => false,
+        topicUsesIntradayData: () => false
+    };
+    vm.createContext(context);
+    vm.runInContext(functionSource('klineEndDate'), context);
+    return context;
+}
+
 function holdingSort() {
     const context = {};
     vm.createContext(context);
@@ -286,4 +347,43 @@ test('市值漲跌幅與持倉 K 線共用盤中盤後交接規則', () => {
     assert.equal(officialHolding.priceChange, -1.62);
     assert.equal(officialHolding.quoteSession, '盤後');
     assert.equal(context.assetIntradayLiveKLine(ticker), null);
+});
+
+test('資產盤中 K 線保留最新盤後棒作為前收', () => {
+    const context = assetKLineFlow();
+    const bars = context.selectedKLineBars('2308');
+
+    assert.deepEqual(JSON.parse(JSON.stringify(bars.map(bar => bar.date))), [
+        '2026-09-04',
+        '2026-09-07',
+        '2026-09-08'
+    ]);
+    assert.equal(bars[bars.length - 1].previousClose, 1850);
+    assert.equal(((1805 - bars[bars.length - 1].previousClose) / bars[bars.length - 1].previousClose * 100).toFixed(2), '-2.43');
+});
+
+test('K 線尾端日期沿用各頁籤交易日', () => {
+    const context = klineDateFlow();
+
+    assert.equal(context.klineEndDate(), '2026-08-28');
+
+    context.state.view = 'custom';
+    assert.equal(context.klineEndDate(), '2026-08-28');
+
+    context.state.view = 'intraday';
+    context.isIntradayDataView = () => true;
+    assert.equal(context.klineEndDate(), '2026-09-08');
+
+    context.state.view = 'topics';
+    context.isIntradayDataView = () => false;
+    context.topicData = { baseDate: '2026-08-29' };
+    assert.equal(context.klineEndDate(), '2026-08-29');
+
+    context.topicUsesIntradayData = () => true;
+    context.intradayTopicPeriod = { tradeDate: '2026-09-08' };
+    assert.equal(context.klineEndDate(), '2026-09-08');
+
+    context.state.view = 'assets';
+    context.klineUseLatestDate = true;
+    assert.equal(context.klineEndDate(), '2026-09-07');
 });
