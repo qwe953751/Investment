@@ -134,6 +134,8 @@ Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查�
 
 ## 本次已發布修改
 
+筆記 #53 的「持倉檢視者」正式模板已完成：登入後固定讀取 `資產 → Frank → 所有帳號持股`，以台股／美股／加密貨幣市場頁籤篩選，並只呈現附件模板的八欄唯讀表格；使用者下拉、資料說明、名次變化、帳戶明細與刪除／編輯／清除／X 操作均不顯示，右上工具列沿用訪客可見控件並支援手機橫向表格。本次 `main` commit `ad7bb2a3156a115be278f5434a897c587765994e` 已由 [`daily-snapshot.yml` publish-only run 34191472515](https://github.com/qwe953751/Investment/actions/runs/34191472515) 發布；正式網站 manifest 為 `1788846093`，公開 manifest 在 CDN 傳播後已核對同版，線上 `site.js` 已驗證包含持倉權限與唯讀模板接線。正式網站已以真實登入驗證持倉檢視者、台股 48 筆與美股 11 筆資料；本次沒有新增 Supabase migration，匿名 RLS 仍依 TODO 保持不變。
+
 熱門族群熱度排行目前新增「列表／泡泡圖」切換，預設仍是列表；列表保留完整資料。泡泡圖以資金／成交活動熱度為 X 軸，以成交值加權漲跌幅經「價格反應 80%＋族群廣度最多修正 20%」調整後的結果為 Y 軸，泡泡大小為族群成交活動，顏色表示族群廣度，顯示熱度前 20 個族群並可點擊展開原本的成員明細。完整整理見 [熱門族群泡泡圖設計](Doc/技術文件/熱門族群泡泡圖設計.md)。此版本已推送並發布。
 
 本機預覽：<http://127.0.0.1:5228/?access=admin&view=topics&preview=topic-bubble-v2>；預覽使用本機既有樣本資料，不代表正式行情。
@@ -149,11 +151,13 @@ Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查�
 
 ## 最新已發布版本
 
-本次發布所用的 `main` commit `7cee07262e1b8ec676765a9423151a65aa2abd76` 已由
-[`daily-snapshot.yml` publish-only run 34128141460](https://github.com/qwe953751/Investment/actions/runs/34128141460)
-完成測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788788236`、最新交易日
-`2026/09/07`、產生時間 `2026-09-07 21:37`；公開 manifest 在 CDN 延遲後已與 `gh-pages` 同版，線上 `site.js`
-已驗證包含族群成員表的 `revenue-cell-button` 與 `toggleRevenueDetails(member.ticker, ...)`。
+本次筆記 #53 發布所用的 `main` commit `ad7bb2a3156a115be278f5434a897c587765994e` 已由
+[`daily-snapshot.yml` publish-only run 34191472515](https://github.com/qwe953751/Investment/actions/runs/34191472515)
+完成測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788846093`、最新交易日
+`2026/09/07`、產生時間 `2026-09-08 13:41`；公開 manifest 在 CDN 延遲後已與 Pages branch 同版，線上 `site.js`
+已驗證包含 `ASSET_HOLDINGS_VIEW_ENABLED`、`holdings@investment.local`、`assetHoldingsViewerRows` 與
+`asset-holdings-viewer-table`。正式網址登入後已驗證「持倉檢視者」與台股／美股切換；publish-only 的行情回補、
+Supabase 同步、備份與心跳步驟均依設計跳過。
 本次純發布沒有回補行情、寫入 `data` 或重跑 Supabase migration。
 
 本次最新發布包含 A｜極簡動作列、密碼登入權限、券商 OCR 漏列修正、美股帳戶與
