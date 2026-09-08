@@ -137,6 +137,39 @@ test('持倉檢視者手機股票名稱比照盤中排行限制為兩行', () =>
     }
 });
 
+test('持倉啟動沿用完整補充資料載入流程', () => {
+    const startAt = siteScript.indexOf('async function start()');
+    assert.ok(startAt >= 0, '找不到 start()，無法驗證持倉啟動流程。');
+
+    const assetsAt = siteScript.indexOf("if (state.view === 'assets')", startAt);
+    const assetsEnd = siteScript.indexOf('// 營收與族群欄都要在第一次畫表之前就位', assetsAt);
+    const assetsBranch = siteScript.slice(assetsAt, assetsEnd);
+
+    assert.match(assetsBranch, /await load\(\);\s*return;/);
+    assert.doesNotMatch(assetsBranch, /await refreshAssets/);
+});
+
+test('持倉檢視者手機欄軌比照盤中排行固定代號與名稱', () => {
+    const holdingsStart = siteStyles.indexOf('.asset-holdings-viewer-table {');
+    const mobileStart = siteStyles.indexOf('@media (max-width: 820px)', holdingsStart);
+    const mobileStyles = siteStyles.slice(mobileStart);
+
+    for (const [column, width] of Object.entries({
+        rank: '56px',
+        ticker: '80px',
+        name: '104px',
+        topic: '160px',
+        price: '156px',
+        close: '120px',
+        revenue: '180px',
+        revenueHigh: '64px'
+    })) {
+        assert.match(
+            mobileStyles,
+            new RegExp(`\\.asset-holdings-viewer-table col\\.${column} \\{ width: ${width}; \\}`));
+    }
+});
+
 test('正式模板保留唯讀欄位，不含刪除、編輯或清除控制', () => {
     assert.match(siteScript, /const ACCESS_RANK = \{ viewer: 0, holdings: 1, monitor: 2, admin: 3 \};/);
     assert.match(siteScript, /holdings@investment\.local/);

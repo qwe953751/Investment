@@ -8744,6 +8744,17 @@ button.podcast-preview-database-row:hover {
         font-size: 13px;
     }
 
+    /* 固定表格的欄軌由 <col> 決定，單獨設定 td 寬度無法覆蓋桌面版百分比。
+       這組寬度與手機盤中排行的代號／名稱固定欄一致，合計 920px。 */
+    .asset-holdings-viewer-table col.rank { width: 56px; }
+    .asset-holdings-viewer-table col.ticker { width: 80px; }
+    .asset-holdings-viewer-table col.name { width: 104px; }
+    .asset-holdings-viewer-table col.topic { width: 160px; }
+    .asset-holdings-viewer-table col.price { width: 156px; }
+    .asset-holdings-viewer-table col.close { width: 120px; }
+    .asset-holdings-viewer-table col.revenue { width: 180px; }
+    .asset-holdings-viewer-table col.revenueHigh { width: 64px; }
+
     .asset-holdings-viewer-table th,
     .asset-holdings-viewer-table td {
         padding-inline: 9px;

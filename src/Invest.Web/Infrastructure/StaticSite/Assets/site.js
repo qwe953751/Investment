@@ -25032,13 +25032,8 @@ async function start() {
     }
 
     if (state.view === 'assets') {
-        renderAssetsDashboard();
-        await refreshAssets({ persistSnapshots: ASSET_DASHBOARD_ENABLED });
-
-        if (state.view === 'assets') {
-            renderAssetsDashboard();
-        }
-
+        // 持倉檢視者也要走完整 load()：它會並行載入族群、營收與最新排行補充資料。
+        await load();
         return;
     }
 
