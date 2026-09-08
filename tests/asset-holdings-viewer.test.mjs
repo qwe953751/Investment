@@ -8,6 +8,9 @@ const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const siteScript = fs.readFileSync(
     path.join(repositoryRoot, 'src', 'Invest.Web', 'Infrastructure', 'StaticSite', 'Assets', 'site.js'),
     'utf8');
+const siteStyles = fs.readFileSync(
+    path.join(repositoryRoot, 'src', 'Invest.Web', 'Infrastructure', 'StaticSite', 'Assets', 'site.css'),
+    'utf8');
 
 function functionSource(name) {
     const start = siteScript.indexOf(`function ${name}(`);
@@ -107,6 +110,31 @@ test('持倉行情轉成盤中欄位的比率並保留週基準與市場標記',
 
 test('持倉週漲跌使用 manifest 日期對應的排行檔案 key', async () => {
     assert.deepEqual(await loadViewerLatestRows(), ['1-2026-09-07']);
+});
+
+test('持倉檢視者手機股票名稱比照盤中排行限制為兩行', () => {
+    const rankingNameRule = siteStyles.match(
+        /\.ranking-table td\.stock-name \.stock-name-button\s*\{([\s\S]*?)\}/);
+    const holdingsNameRule = [...siteStyles.matchAll(
+        /\.asset-holdings-viewer-table td\.stock-name \.stock-name-button\s*\{([\s\S]*?)\}/g)]
+        .find((match) => /display:\s*-webkit-box;/.test(match[1]));
+
+    assert.ok(rankingNameRule, '找不到盤中排行手機股票名稱規則。');
+    assert.ok(holdingsNameRule, '找不到持倉檢視者手機股票名稱規則。');
+
+    for (const declaration of [
+        /display:\s*-webkit-box;/,
+        /max-width:\s*88px;/,
+        /min-height:\s*36px;/,
+        /overflow:\s*hidden;/,
+        /overflow-wrap:\s*anywhere;/,
+        /line-height:\s*1\.25;/,
+        /-webkit-box-orient:\s*vertical;/,
+        /-webkit-line-clamp:\s*2;/
+    ]) {
+        assert.match(rankingNameRule[1], declaration);
+        assert.match(holdingsNameRule[1], declaration);
+    }
 });
 
 test('正式模板保留唯讀欄位，不含刪除、編輯或清除控制', () => {

@@ -8781,9 +8781,14 @@ button.podcast-preview-database-row:hover {
     }
 
     .asset-holdings-viewer-table td.stock-name .stock-name-button {
+        display: -webkit-box;
+        max-width: 88px;
         min-height: 36px;
+        overflow: hidden;
         overflow-wrap: anywhere;
         line-height: 1.25;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
     }
 
     .asset-holdings-viewer-status { text-align: left; }
