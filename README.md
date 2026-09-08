@@ -67,7 +67,7 @@ K 線、族群可跳到同一個節點、營收可開同一個 20 個月彈窗�
 日／週兩層格式；台股週值由最新交易日排行檔的週基準補足，資料讀不到時才顯示 `—`。表格不提供使用者選擇、
 資料說明、名次變化、帳戶明細、刪除、編輯或清除操作，右上
 工具列沿用訪客可見的控制項；手機版在表格卡片內橫向捲動並固定代號與名稱欄，股票名稱比照盤中排行限制為兩行並省略過長文字。本輪互動補齊已完成，
-正式網站仍須依發布流程重新 export／publish 才會載入這份更新。
+正式網站已依 publish-only 流程完成更新。
 「筆記」是個人工作區，只在最高權限樣板顯示；內容直接讀寫 Supabase 的 `notes` 表，任何裝置都能看到同一份資料，
 並每 60 秒重讀。檢視權限不顯示此頁籤。這是公開網站的刻意取捨：沒有登入邊界，知道網址的人也可能修改筆記，
 密碼登入會在網址下限之上提升權限；在 RLS 收回匿名寫入前，資料表仍沿用公開 anon 模型。
@@ -161,13 +161,12 @@ Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查�
 
 ## 最新已發布版本
 
-本次筆記 #53 發布所用的 `main` commit `ad7bb2a3156a115be278f5434a897c587765994e` 已由
-[`daily-snapshot.yml` publish-only run 34191472515](https://github.com/qwe953751/Investment/actions/runs/34191472515)
-完成測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788846093`、最新交易日
-`2026/09/07`、產生時間 `2026-09-08 13:41`；公開 manifest 在 CDN 延遲後已與 Pages branch 同版，線上 `site.js`
-已驗證包含 `ASSET_HOLDINGS_VIEW_ENABLED`、`holdings@investment.local`、`assetHoldingsViewerRows` 與
-`asset-holdings-viewer-table`。正式網址登入後已驗證「持倉檢視者」與台股／美股切換；publish-only 的行情回補、
-Supabase 同步、備份與心跳步驟均依設計跳過。
+本次持倉檢視者手機股票名稱版面修正所用的 `main` commit `c536d14a04b30204abc087efc7e9056ac5ce02b4` 已由
+[`daily-snapshot.yml` publish-only run 34217567626](https://github.com/qwe953751/Investment/actions/runs/34217567626)
+完成測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788864751`、最新交易日
+`2026/09/08`、產生時間 `2026-09-08 18:52`；公開 manifest 在 CDN 延遲後已與 Pages branch 同版，線上 `site.css`
+已驗證包含 `asset-holdings-viewer-table td.stock-name .stock-name-button`、`max-width: 88px` 與
+`-webkit-line-clamp: 2`。publish-only 的行情回補、Supabase 同步、備份與心跳步驟均依設計跳過。
 本次純發布沒有回補行情、寫入 `data` 或重跑 Supabase migration。
 
 本次最新發布包含 A｜極簡動作列、密碼登入權限、券商 OCR 漏列修正、美股帳戶與
