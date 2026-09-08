@@ -5836,16 +5836,19 @@ function assetUnrealizedPercent(unrealized, cost) {
         : Math.round(amount / base * 1000) / 10;
 }
 
-// 未實現損益改成「金額(%數)」：不寫 +/− 符號，色塊（呼叫端另外套 assetSignClass）
-// 就足以表達正負，所以金額跟百分比都取絕對值——Intl.NumberFormat 本身會幫負數
-// 加上「-」，這裡要比照 assetSignedCurrency 的做法自己擋掉。算不出百分比時只顯示
-// 金額，不留一個空括號。
+// 未實現損益顯示為「帶正負號的金額(報酬率)」；色塊（呼叫端另外套 assetSignClass）
+// 只作為輔助，不能取代數值本身的正負號。算不出百分比時只顯示金額，不留一個空括號。
 function assetUnrealizedText(unrealized, cost, currency = 'TWD') {
     const amount = assetNumber(unrealized);
     const percent = assetUnrealizedPercent(unrealized, cost);
-    const amountText = amount === null ? assetCurrency(unrealized, currency) : assetCurrency(Math.abs(amount), currency);
+    const amountText = amount === null
+        ? assetCurrency(unrealized, currency)
+        : assetSignedCurrency(amount, currency);
+    const percentText = percent === null
+        ? null
+        : `${percent >= 0 ? '+' : '−'}${Math.abs(percent)}%`;
 
-    return percent === null ? amountText : `${amountText}（${Math.abs(percent)}%）`;
+    return percentText === null ? amountText : `${amountText}（${percentText}）`;
 }
 
 function assetUnrealizedForMarket(unrealized, cost, market) {
@@ -5867,7 +5870,9 @@ function assetUnrealizedDualCurrency(twdUnrealized, twdCost, usdUnrealized, mark
     const usd = document.createElement('span');
     usd.className = 'asset-dual-currency-secondary';
     const usdAmount = assetNumber(usdUnrealized);
-    usd.textContent = `（${assetCurrency(usdAmount === null ? usdUnrealized : Math.abs(usdAmount), 'USD')}）`;
+    usd.textContent = `（${usdAmount === null
+        ? assetCurrency(usdUnrealized, 'USD')
+        : assetSignedCurrency(usdAmount, 'USD')}）`;
     value.append(twd, usd);
     return value;
 }
@@ -5880,9 +5885,12 @@ function assetUnrealizedDelta(unrealized, cost, currency = 'TWD') {
     const percent = assetUnrealizedPercent(unrealized, cost);
     const delta = document.createElement('span');
     delta.className = `asset-preview-delta ${assetSignClass(unrealized)}`.trim();
-    delta.textContent = percent !== null
-        ? `${Math.abs(percent)}%`
-        : amount === null ? assetCurrency(unrealized, currency) : assetCurrency(Math.abs(amount), currency);
+    const percentText = percent === null
+        ? null
+        : `${percent >= 0 ? '+' : '−'}${Math.abs(percent)}%`;
+    delta.textContent = percentText !== null
+        ? percentText
+        : amount === null ? assetCurrency(unrealized, currency) : assetSignedCurrency(amount, currency);
     return delta;
 }
 
@@ -8060,7 +8068,9 @@ function assetHoldingSortHeader(label, key) {
     const active = assetHoldingSortKey === key;
     const direction = assetHoldingSortDirection === 'desc' ? '▼' : '▲';
     button.textContent = `${label}${active ? ` ${direction}` : ''}`;
-    button.title = `點擊依${label}排序；再次點擊切換方向。`;
+    button.title = key === 'priceChange'
+        ? '日漲跌：盤中為現價相對昨日收盤價；盤後為最近收盤相對前一有效收盤價。不是持倉報酬率。點擊可排序；再次點擊切換方向。'
+        : `點擊依${label}排序；再次點擊切換方向。`;
     button.setAttribute('aria-pressed', String(active));
     button.addEventListener('click', () => {
         if (assetHoldingSortKey === key) {
@@ -8078,7 +8088,7 @@ function assetHoldingSortHeader(label, key) {
 
 const ASSET_HOLDING_SORTABLE_HEADERS = [
     ['名稱', 'name'],
-    ['漲跌幅', 'priceChange'],
+    ['日漲跌', 'priceChange'],
     ['股數', 'quantity'],
     ['成本', 'cost'],
     ['市值', 'marketValue'],

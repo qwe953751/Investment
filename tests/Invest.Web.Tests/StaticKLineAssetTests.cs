@@ -1216,7 +1216,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains(
             "const ASSET_HOLDING_SORTABLE_HEADERS = [\n"
             + "    ['名稱', 'name'],\n"
-            + "    ['漲跌幅', 'priceChange'],\n"
+            + "    ['日漲跌', 'priceChange'],\n"
             + "    ['股數', 'quantity'],\n"
             + "    ['成本', 'cost'],\n"
             + "    ['市值', 'marketValue'],\n"
@@ -1229,6 +1229,9 @@ public sealed class StaticKLineAssetTests
             "...ASSET_HOLDING_SORTABLE_HEADERS.map(([title, key]) => assetHoldingSortHeader(title, key)),",
             script,
             StringComparison.Ordinal);
+        Assert.Contains("button.title = key === 'priceChange'", script, StringComparison.Ordinal);
+        Assert.Contains("assetSignedCurrency(amount, currency)", script, StringComparison.Ordinal);
+        Assert.Contains("const percentText = percent === null", script, StringComparison.Ordinal);
     }
 
     [Fact]

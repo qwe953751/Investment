@@ -67,6 +67,29 @@ function assetGroupedAmountText() {
     return context.assetGroupedAmountText;
 }
 
+function holdingPriceChangeText() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetHoldingPriceChangeText')
+    ].join('\n\n'), context);
+    return context.assetHoldingPriceChangeText;
+}
+
+function unrealizedText() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetCurrency'),
+        functionSource('assetSignedCurrency'),
+        functionSource('assetUnrealizedPercent'),
+        functionSource('assetUnrealizedText')
+    ].join('\n\n'), context);
+    return context.assetUnrealizedText;
+}
+
 function holdingSort() {
     const context = {};
     vm.createContext(context);
@@ -167,4 +190,12 @@ test('持倉預設以代號排序，漲跌幅可排序且未知值固定排在�
         { id: 'c', sortOrder: 1 },
         { id: 'b', sortOrder: 2 }
     ]);
+});
+
+test('持倉日漲跌與相對成本報酬分開顯示', () => {
+    assert.equal(holdingPriceChangeText()(-2.3), '-2.30 %');
+
+    const format = unrealizedText();
+    assert.equal(format(-1455, 200280), '−NT$1,455（−0.7%）');
+    assert.equal(format(6305, 477240), '+NT$6,305（+1.3%）');
 });
