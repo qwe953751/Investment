@@ -669,7 +669,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("async function fetchIntradayCdnSnapshot()", script, StringComparison.Ordinal);
         Assert.Contains("function initializeIntradayBroadcastChannel()", script, StringComparison.Ordinal);
         Assert.Contains("function isTaiwanIntradaySession()", script, StringComparison.Ordinal);
-        Assert.Contains("await Promise.all([loadMarketFlags(), loadRevenue()]);", script, StringComparison.Ordinal);
+        Assert.Contains("await Promise.all([loadMarketFlags(), loadRevenue(force)]);", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1374,7 +1374,7 @@ public sealed class StaticKLineAssetTests
 
         Assert.Contains("const REVENUE_REFRESH_MS = 15 * 60_000;", script, StringComparison.Ordinal);
         Assert.Contains("async function loadRevenue(force = false)", script, StringComparison.Ordinal);
-        Assert.Contains("await loadRevenue(true);", script, StringComparison.Ordinal);
+        Assert.Contains("await refreshRevenueForCurrentView(true);", script, StringComparison.Ordinal);
     }
 
     [Fact]

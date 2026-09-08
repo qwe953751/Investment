@@ -1087,6 +1087,7 @@ const toRankChangeText = rankChange => (missing(rankChange)
 // 跟 market_flags 同一個理由、同一種做法。
 
 let revenueByTicker = new Map();
+let revenueLoadFailed = false;
 
 // 今天該看哪一個月：一律是上個月，不看日期，也不會退回去拿上上個月。
 // 8 月看到的只能是 7 月，就算 6 月的數字擺在手邊也不能拿出來用。
@@ -1107,17 +1108,29 @@ function eligibleMonthKey() {
 // 但營收是「每月 10 日前申報」的東西，公告期內也只是幾小時多幾家，
 // 跟兩分鐘一輪的報價完全不同步。改成十五分鐘才重抓，把它移出盤中的關鍵路徑。
 const REVENUE_REFRESH_MS = 15 * 60_000;
+const REVENUE_RETRY_MS = 60_000;
 
 let lastRevenueLoadedAt = 0;
+let lastRevenueAttemptedAt = 0;
 
 async function loadRevenue(force = false) {
     if (supabase === null) {
-        return;
+        revenueLoadFailed = true;
+        return false;
     }
 
-    if (!force && revenueByTicker.size > 0 && Date.now() - lastRevenueLoadedAt < REVENUE_REFRESH_MS) {
-        return;
+    const now = Date.now();
+
+    if (!force && lastRevenueLoadedAt > 0 && now - lastRevenueLoadedAt < REVENUE_REFRESH_MS) {
+        return false;
     }
+
+    if (!force && lastRevenueLoadedAt === 0
+        && now - lastRevenueAttemptedAt < REVENUE_RETRY_MS) {
+        return false;
+    }
+
+    lastRevenueAttemptedAt = now;
 
     try {
         const raw = await fetchAllRows(
@@ -1127,7 +1140,7 @@ async function loadRevenue(force = false) {
 
         // month 是該月一號（2026-07-01），只比對年月。對不上就整批丟掉：
         // 寧可顯示 —，也不要讓人拿上上個月的營收當上個月的看。
-        revenueByTicker = new Map(raw
+        const nextRevenueByTicker = new Map(raw
             .filter(row => row.month.slice(0, 7) === eligible)
             .map(row => [row.ticker, {
                 month: row.month.slice(0, 7),
@@ -1138,15 +1151,44 @@ async function loadRevenue(force = false) {
                 recordHigh: row.record_high
             }]));
 
+        revenueByTicker = nextRevenueByTicker;
         lastRevenueLoadedAt = Date.now();
+        revenueLoadFailed = false;
+        return true;
     } catch {
-        // 營收讀不到就讓那兩欄顯示 —，不影響排行本身。
-        // 這裡不記時間：下一次進來要立刻重試，不能被節流擋住。
-        revenueByTicker = new Map();
+        // 讀取失敗不能把上一份成功資料清掉，否則暫時斷線會被偽裝成「尚未公告」。
+        // 不更新 lastRevenueLoadedAt，第一次成功前每分鐘重試；成功過則等下個 15 分鐘週期。
+        revenueLoadFailed = true;
+        return false;
     }
 }
 
 const revenueOf = ticker => revenueByTicker.get(ticker) ?? null;
+
+function renderRevenueForCurrentView() {
+    if (state.view === 'topics') {
+        if (topicData !== null) {
+            renderTopicPanel();
+        }
+
+        return;
+    }
+
+    if (current !== null
+        && (state.view === 'daily' || state.view === 'intraday' || state.view === 'custom')) {
+        renderTable();
+    }
+}
+
+async function refreshRevenueForCurrentView(force = false) {
+    const loaded = await loadRevenue(force);
+
+    if (loaded) {
+        renderRevenueForCurrentView();
+    }
+
+    return loaded;
+}
 
 function normalizeRevenueHistoryRow(row) {
     const month = typeof row.month === 'string' ? row.month.slice(0, 7) : '';
@@ -15863,7 +15905,9 @@ function wireRefreshButton() {
                 } else {
                     await loadCustom(true, true);
                 }
-                showStatusPopup(current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料');
+                showStatusPopup(revenueLoadFailed
+                    ? '盤中行情已更新；營收暫時讀取失敗，保留上一份資料'
+                    : current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料');
                 button.disabled = false;
                 return;
             }
@@ -15879,10 +15923,15 @@ function wireRefreshButton() {
             if (isIntradayTopicDataView()) {
                 await loadIntradayTopicHeat();
                 renderSnapshotNote();
-                renderTopicPanel();
-                showStatusPopup(intradayTopicPeriod
+                const revenueLoaded = await refreshRevenueForCurrentView(true);
+
+                if (!revenueLoaded) {
+                    renderTopicPanel();
+                }
+
+                showStatusPopup(revenueLoaded && intradayTopicPeriod
                     ? `已更新（資料時間 ${toTaipeiText(intradayTopicPeriod.capturedAt)}）`
-                    : '還沒有盤中族群熱度');
+                    : revenueLoaded ? '還沒有盤中族群熱度' : '族群已更新；營收暫時讀取失敗，保留上一份資料');
                 button.disabled = false;
                 return;
             }
@@ -15895,13 +15944,11 @@ function wireRefreshButton() {
             // 快照沒變不代表營收沒變：公告期內每隔兩小時就有幾十家補進來，
             // 那是寫在資料庫裡的，跟這份快照的版本號無關。
             // 這是使用者親手按的「檢查更新」，一定要真的去問一次，不能被節流擋掉。
-            await loadRevenue(true);
+            const revenueLoaded = await refreshRevenueForCurrentView(true);
 
-            if (current) {
-                renderTable();
-            }
-
-            showStatusPopup(`已是最新（資料截至 ${latestTradingDate}）`);
+            showStatusPopup(revenueLoaded
+                ? `已是最新（資料截至 ${latestTradingDate}）`
+                : '營收資料暫時讀取失敗，保留上一份資料');
         } catch {
             showStatusPopup('連不上，稍後再試');
         }
@@ -16189,7 +16236,7 @@ async function ensureIntradaySnapshot(silent = false, force = false, loadSupport
             if (loadSupportingData) {
                 // 這兩項不是盤中 CDN 的內容：交易限制與營收延續原本的 Supabase 流程，
                 // 也只在盤中排行／自訂盤中真正需要它們時才讀。
-                await Promise.all([loadMarketFlags(), loadRevenue()]);
+                await Promise.all([loadMarketFlags(), loadRevenue(force)]);
             }
         } catch {
             // 靜默更新失敗就讓畫面停在上一輪的數字，總比把整張表換成錯誤訊息好。
@@ -21905,6 +21952,16 @@ function renderStaleBanner() {
     banner.hidden = text === '';
 }
 
+async function refreshRevenueIfDue() {
+    if (document.hidden) {
+        return;
+    }
+
+    if (await loadRevenue()) {
+        renderRevenueForCurrentView();
+    }
+}
+
 function refreshIntradayIfDue() {
     const isIntradayView = isIntradayDataView();
     const isIntradayTopic = isIntradayTopicDataView();
@@ -21944,6 +22001,7 @@ function startIntradayTimer() {
     const tick = Math.max(15_000, Math.round(intradayRefreshMs / 4));
 
     const tickOnce = () => {
+        void refreshRevenueIfDue();
         refreshIntradayIfDue();
 
         // 「幾分鐘前」要自己走，不能等下一次抓資料才更新——
@@ -22008,6 +22066,7 @@ function startIntradayTimer() {
     // 斷網重連也要補一次，否則斷線那輪失敗之後要等到下一格才會重試。
     for (const name of ['visibilitychange', 'focus', 'pageshow', 'online']) {
         window.addEventListener(name, refreshIntradayIfDue);
+        window.addEventListener(name, () => { void refreshRevenueIfDue(); });
     }
 }
 
