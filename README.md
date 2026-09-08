@@ -162,12 +162,11 @@ Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查�
 
 ## 最新已發布版本
 
-本次持倉檢視者手機股票名稱版面修正所用的 `main` commit `c536d14a04b30204abc087efc7e9056ac5ce02b4` 已由
-[`daily-snapshot.yml` publish-only run 34217567626](https://github.com/qwe953751/Investment/actions/runs/34217567626)
-完成測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788864751`、最新交易日
-`2026/09/08`、產生時間 `2026-09-08 18:52`；公開 manifest 在 CDN 延遲後已與 Pages branch 同版，線上 `site.css`
-已驗證包含 `asset-holdings-viewer-table td.stock-name .stock-name-button`、`max-width: 88px` 與
-`-webkit-line-clamp: 2`。publish-only 的行情回補、Supabase 同步、備份與心跳步驟均依設計跳過。
+本次持倉檢視者手機欄軌與首次補充資料載入修正所用的 `main` commit `867c9c8c59510a77f5dbd484fc69ecc5dbed22d0` 已由
+[`daily-snapshot.yml` publish-only run 34224432574](https://github.com/qwe953751/Investment/actions/runs/34224432574)
+完成測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788869400`、最新交易日
+`2026/09/08`、產生時間 `2026-09-08 20:10`；公開 manifest 在 CDN 傳播後已與 Pages branch 同版，線上 `site.js`／`site.css`
+已驗證包含完整 `load()` 啟動接線與手機 `<col>` 代號 80px／名稱 104px 欄軌。publish-only 的行情回補、Supabase 同步、備份與心跳步驟均依設計跳過。
 本次純發布沒有回補行情、寫入 `data` 或重跑 Supabase migration。
 
 本次最新發布包含 A｜極簡動作列、密碼登入權限、券商 OCR 漏列修正、美股帳戶與
