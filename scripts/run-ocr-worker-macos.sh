@@ -25,6 +25,7 @@ fi
 export OCR_WORKER_EMAIL="${worker_email}"
 export OCR_WORKER_PASSWORD="${worker_password}"
 export OCR_AGENT_PRIMARY="${OCR_AGENT_PRIMARY:-codex}"
+export OCR_MAX_REASONING_EFFORT="${OCR_MAX_REASONING_EFFORT:-max}"
 
 if [[ -z "${OCR_CODEX_PATH:-}" ]]; then
     if command -v codex >/dev/null 2>&1; then
@@ -38,6 +39,7 @@ fi
 export OCR_CODEX_PATH
 
 printf 'Codex CLI 路徑：%s\n' "${OCR_CODEX_PATH}"
+printf 'Max reasoning effort：%s\n' "${OCR_MAX_REASONING_EFFORT}"
 
 cd "${repository_root}"
 exec dotnet run --project src/Invest.Web -c Release -- ocr-worker "$@"

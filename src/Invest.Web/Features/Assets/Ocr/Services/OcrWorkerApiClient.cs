@@ -19,7 +19,7 @@ public sealed record OcrWorkerOptions(
     TimeSpan PollInterval,
     double EvaluationSampleRate,
     int MaxConcurrency,
-    string MaxReasoningEffort = "high")
+    string MaxReasoningEffort = "max")
 {
     public static OcrWorkerOptions FromEnvironment(IConfiguration configuration)
     {
@@ -61,7 +61,7 @@ public sealed record OcrWorkerOptions(
         var configuredEffort = Environment.GetEnvironmentVariable("OCR_MAX_REASONING_EFFORT")?.Trim().ToLowerInvariant();
         var maxReasoningEffort = configuredEffort is "low" or "medium" or "high" or "max"
             ? configuredEffort!
-            : "high";
+            : "max";
 
         if (string.IsNullOrWhiteSpace(url)
             || string.IsNullOrWhiteSpace(anonKey)

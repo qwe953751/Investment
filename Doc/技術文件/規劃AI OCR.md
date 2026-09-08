@@ -1,8 +1,8 @@
 # 規劃 AI OCR
 
-> 日期：2026-09-08
+> 日期：2026-09-09
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max 結果路徑，正式辨識 effort 預設為 `high`，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續、忙碌 heartbeat、佇列補位、fallback 清理與 Windows 自包含 EXE 排程；Low 只在背景抽樣，不會替換畫面上的 Max；公司 Windows 已重新部署目前 `main` 的 Worker 並驗證 `Max effort high` 與並行上限 3；Golden Set、圖片／模型效能調校、六張圖片整批外部驗收仍待完成**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max 結果路徑，正式辨識 effort 預設回復為 `max`，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續、忙碌 heartbeat、佇列補位、fallback 清理與 Windows 自包含 EXE 排程；Low 只在背景抽樣，不會替換畫面上的 Max；OCR 校對改為單一已確認快照，市值／未實現損益為行情唯讀欄位；公司 Windows Worker 需重新發布後以 `Max effort max` 驗證；Golden Set、圖片／模型效能調校、六張圖片整批外部驗收仍待完成**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -10,7 +10,7 @@
 
 使用者已明確決定不跑兩遍。每張圖片只建立一個 AI request，由 Router 依主要 Agent 的登入與額度狀態選擇 Codex 或 Claude；主要 Agent 不可用才嘗試另一個，兩者都不可用才回退瀏覽器 Tesseract。這個「換 Agent」是故障切換，不是同一張圖片的第二遍辨識。
 
-- Codex 固定使用 `gpt-5.6-luna`、`priority`（Fast）服務層級；Max reasoning 預設為 `high`，可由
+- Codex 固定使用 `gpt-5.6-luna`、`priority`（Fast）服務層級；Max reasoning 預設為 `max`，可由
   `OCR_MAX_REASONING_EFFORT` 設為 `low`／`medium`／`high`／`max`。
 - Claude 固定使用 `claude-sonnet-5`；同一個 `OCR_MAX_REASONING_EFFORT` 設定會傳入其 effort。
 - 單次 AI JSON 仍會經過欄位、數值、遮擋、名稱／代號名冊交叉檢查；`verified` 只代表通過結構檢查，不能取代使用者人工核對。
@@ -922,7 +922,7 @@ Tesseract 路徑也有 `assetKnownTicker(name)` 與 `assetOcrResolveIdentity(dra
 concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、成本 90%、危險假陽性 0，不能只為速度放寬
 人工確認。本輪已先做不改辨識語意的安全優化：工作完成後不再額外睡一個輪詢週期，AI Schema 移除不使用
 的 `currency`／`evidence` 輸出，降低輸出負擔；2026-09-08 再加入前端有界 worker pool、Worker
-忙碌期間每 10 秒 heartbeat、完成後立即補 claim，以及預設 `high` effort。尚未以 Windows 實機重新量測
+忙碌期間每 10 秒 heartbeat、完成後立即補 claim，以及預設 `max` effort。尚未以 Windows 實機重新量測
 每張 ≤30 秒與 Golden Set 正確率。
 
 <!-- 歷史雙 Pass 方案（已由本節上方單次 AI 決策取代） -->
@@ -947,7 +947,7 @@ concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、�
 2. **圖片減量**：上傳前或 Worker 下載後先去掉純色邊界與無關 UI，限制像素但保證最小字高；
    原圖與縮圖要用 Golden Set A/B 比較，不可只以 JPEG 檔案變小就宣稱 token 或延遲一定降低。
 3. **固定 OCR 用模型與推理強度（接線已完成，效能／正確率仍待驗收）**：新增
-   `OCR_MAX_REASONING_EFFORT`，預設 `high`，可明確切回 `max`；不在未量測前改圖片內容或模型名稱。
+   `OCR_MAX_REASONING_EFFORT`，預設 `max`，仍可明確指定 `low`／`medium`／`high`；不在未量測前改圖片內容或模型名稱。
 4. **多圖有界並行（接線已完成）**：前端最多建立 3 個 AI 工作，Worker 共用
    `OCR_WORKER_MAX_CONCURRENCY`（預設 3）；一件完成後立即再 claim，忙碌期間保持 heartbeat，
    空佇列才回到輪詢。仍不得因允許 20 張就同時啟動 20 個 CLI。
@@ -1263,5 +1263,33 @@ Claude CLI 並修好雙 Agent 接線，而不是繼續維持「不裝 Claude」�
 AI-first 前端、Mac Worker 與 CLI 路徑接線修正已整合，正式手機兩張圖亦已確認 AI `succeeded`。
 名稱唯一反查、可恢復進度與 Windows 背景常駐的基本實作／驗證已完成；延遲縮短、Golden Set、修復後的
 手機 AI 成功及 Windows 長期／斷網／重開機情境仍是後續驗收。筆記 #52 的前端／Worker 並行、忙碌 heartbeat、
-佇列補位、fallback 清理與 `OCR_MAX_REASONING_EFFORT=high` 預設已完成程式接線、自動化測試，且目前 `main`
+佇列補位、fallback 清理與 `OCR_MAX_REASONING_EFFORT=max` 預設已完成程式接線、自動化測試，且目前 `main`
 版本已重新部署至公司 Windows；本輪未部署 Edge Function 或網站，正式 Windows 每張 ≤30 秒仍待外部驗收。
+
+### 14.7 2026-09-09 Max 預設與 OCR 人工確認快照修正
+
+本輪接手筆記 #52／附件回報後，確認兩個互相獨立但都會造成使用者誤判的問題：
+
+1. 使用者已將 effort 降為 High 做過測試，但目前決策要求恢復 Max；若只改 `OcrWorkerOptions` 的建構子而不改
+   啟動器，Windows／Mac 仍可能沿用舊的環境設定，實機不一定真的使用 Max。
+2. OCR 差異頁的輸入框雖然可編輯，`submit` 卻使用初次建立的 `diff` 內 `change.draft`；人工答案則另外讀取
+   DOM。使用者把 41 列修成 43 列或改數字後，畫面和資料庫寫入可能使用不同版本，正是「編輯後按套用仍是舊值」
+   的根因。
+
+採最小且可追溯的修正：
+
+- `OcrWorkerOptions` 與 Windows／Mac launcher 的未設定預設都改為 `max`；`OCR_MAX_REASONING_EFFORT` 仍可明確
+  指定 `low`／`medium`／`high`／`max`，因此不會阻止未來以實測資料比較模式，但不會暗中覆寫使用者的明確設定。
+- OCR 草稿新增欄位 fingerprint。每次「確認修改並更新差異」都更新唯一確認快照；編輯任何欄位會先把 DOM
+  值同步回草稿、鎖住上方套用按鈕。最後送出前再比對目前輸入與 fingerprint，不一致或 `diffStale` 時拒絕寫入，
+  不會套用舊 `change.draft`。
+- 最後送出的差異由確認後 rows 重新產生，資料庫持倉寫入、`evaluation-truth` 人工答案與畫面勾選共用同一份
+  `submittedDiff`／rows。市值與未實現損益在 OCR 編輯表改成唯讀，標示「由最新行情自動計算」，差異只計算可人工
+  確認並可寫入的代號、名稱、股數與成本。
+- 畫面文案統一為「辨識草稿 N 列／可套用差異 M 項」，編輯按鈕改為「確認修改並更新差異」，避免把原始辨識列數、
+  差異總數與勾選數量混成同一個概念。
+
+驗證包含：先加入會重現舊快照錯誤的 Node 回歸測試，再完成修正使測試轉綠；Node 靜態測試與 `site.js` 語法檢查、
+`.NET 10.0.302` OCR Worker 選項測試均通過。這次沒有新增 Supabase migration 或 Edge Function，既有 Max／Low／
+人工答案資料表契約不變；網站發布與 Windows Worker 自包含 EXE 的最終版本／Action／公開 manifest，記在本文件
+最新版本紀錄的發布結果中。

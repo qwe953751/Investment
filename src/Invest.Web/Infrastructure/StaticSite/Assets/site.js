@@ -8255,12 +8255,23 @@ function wireAssetTickerName(tickerInput, nameInput) {
 function makeAssetHoldingEditableInput(field, value) {
     const input = document.createElement('input');
     const isAmount = ['cost', 'marketValue', 'unrealized'].includes(field);
+    const isQuoteCalculated = ['marketValue', 'unrealized'].includes(field);
     input.type = field === 'ticker' || field === 'name' || isAmount ? 'text' : 'number';
     input.dataset.field = field;
     input.step = 'any';
     input.value = value === null || value === undefined
         ? ''
         : isAmount ? assetGroupedAmountText(value) : String(value);
+
+    if (isQuoteCalculated) {
+        input.readOnly = true;
+        input.title = '由最新行情自動計算；套用時不會寫入此欄位。';
+        input.setAttribute(
+            'aria-label',
+            field === 'marketValue'
+                ? '市值（由最新行情自動計算）'
+                : '未實現損益（由最新行情自動計算）');
+    }
 
     if (field === 'ticker') {
         input.required = true;
@@ -8453,7 +8464,7 @@ function assetHoldingComparable(value) {
 }
 
 function assetHoldingChangedFields(holding, draft) {
-    return ['ticker', 'name', 'quantity', 'cost', 'marketValue', 'unrealized']
+    return ['ticker', 'name', 'quantity', 'cost']
         .map(field => {
             const before = field === 'ticker'
                 ? assetHoldingTicker(holding)
@@ -8579,6 +8590,30 @@ function buildAssetHoldingDiff(holdings, draftRows) {
     return { additions, updates, removals, invalid };
 }
 
+function assetScreenshotRowsFingerprint(rows) {
+    return JSON.stringify((Array.isArray(rows) ? rows : []).map(row =>
+        ASSET_DRAFT_FIELDS.map(field => [
+            field,
+            field === 'ticker'
+                ? assetHoldingTicker(row)
+                : field === 'name'
+                    ? String(row?.[field] ?? '').trim()
+                    : assetHoldingComparable(row?.[field])
+        ])));
+}
+
+function assetScreenshotConfirmedDiff(holdings, rows, confirmedFingerprint, diffStale) {
+    if (diffStale === true || typeof confirmedFingerprint !== 'string') {
+        return null;
+    }
+
+    if (assetScreenshotRowsFingerprint(rows) !== confirmedFingerprint) {
+        return null;
+    }
+
+    return buildAssetHoldingDiff(holdings, rows);
+}
+
 function readAssetDraftRows(body) {
     return [...body.querySelectorAll('tr')].map(row => {
         const draft = {};
@@ -8592,6 +8627,18 @@ function readAssetDraftRows(body) {
 
         return draft;
     });
+}
+
+function assetScreenshotDraftRowsFromBody(body) {
+    const rows = readAssetDraftRows(body);
+    const previousRows = Array.isArray(assetScreenshotDraft?.rows)
+        ? assetScreenshotDraft.rows
+        : [];
+
+    return rows.map((row, index) => ({
+        ...(previousRows[index] ?? {}),
+        ...row
+    }));
 }
 
 function makeAssetDraftRow(draft) {
@@ -8838,6 +8885,7 @@ function refreshAssetScreenshotDiff(holdings, rows) {
 
     assetScreenshotDraft.rows = rows;
     assetScreenshotDraft.diff = buildAssetHoldingDiff(holdings, rows);
+    assetScreenshotDraft.confirmedFingerprint = assetScreenshotRowsFingerprint(rows);
     assetScreenshotDraft.selections = {};
     assetScreenshotDraft.diffStale = false;
 }
@@ -9307,6 +9355,7 @@ async function resumeAssetAiJobs(accountId) {
             scanning: true,
             rows: [],
             diff: null,
+            confirmedFingerprint: null,
             selections: {},
             diffStale: false,
             notice: '已從私有佇列恢復 OCR 工作，正在核對結果…',
@@ -12238,6 +12287,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         scanning: true,
         rows: [],
         diff: null,
+        confirmedFingerprint: null,
         selections: {},
         diffStale: false,
         notice: '',
@@ -12614,7 +12664,14 @@ function makeAssetScreenshotFlow(view) {
         body.append(makeAssetDraftRow(draft));
     }
 
-    table.append(assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益']), body);
+    table.append(assetTableHead([
+        '代號',
+        '名稱',
+        '股數',
+        '成本',
+        '市值（自動）',
+        '未實現損益（自動）'
+    ]), body);
 
     if (assetScreenshotDraft.diff === null) {
         refreshAssetScreenshotDiff(view.holdings, assetScreenshotDraft.rows);
@@ -12636,16 +12693,20 @@ function makeAssetScreenshotFlow(view) {
     const selectedChanges = () => changes.filter(change => assetScreenshotDraft.selections[change.key] === true);
     const refreshSelectionSummary = () => {
         const selectedCount = selectedChanges().length;
+        const draftSummary = `辨識草稿 ${assetScreenshotDraft.rows.length} 列／可套用差異 ${changes.length} 項`;
         apply.textContent = `套用到持倉（${selectedCount} 項）`;
         apply.disabled = assetsBusy || assetScreenshotDraft.diffStale || selectedCount === 0;
         selectionSummary.textContent = assetScreenshotDraft.diffStale
-            ? '辨識結果已修改，請先按「重新比較差異」。'
+            ? `${draftSummary}；辨識結果已修改，請先按「確認修改並更新差異」。`
             : selectedCount === 0
-                ? '請勾選已人工核對、要套用的項目。'
-                : `已選 ${selectedCount} 項變更；按下按鈕後才會寫入帳戶。`;
+                ? `${draftSummary}；請勾選已人工核對、要套用的項目。`
+                : `${draftSummary}；已選 ${selectedCount} 項變更，按下按鈕後才會寫入帳戶。`;
     };
 
-    diffPanel.append(diffHeading, diffDescription);
+    const draftSummary = document.createElement('p');
+    draftSummary.className = 'asset-holding-diff-summary';
+    draftSummary.textContent = `辨識草稿 ${assetScreenshotDraft.rows.length} 列／可套用差異 ${changes.length} 項`;
+    diffPanel.append(diffHeading, diffDescription, draftSummary);
 
     const invalid = makeAssetHoldingDiffInvalidRows(diff.invalid);
     if (invalid !== null) {
@@ -12694,20 +12755,21 @@ function makeAssetScreenshotFlow(view) {
     editor.className = 'asset-screenshot-editor';
     editor.open = assetScreenshotDraft.diffStale === true;
     const editorHeading = document.createElement('summary');
-    editorHeading.textContent = `修改辨識結果（${assetScreenshotDraft.rows.length} 列）`;
+    editorHeading.textContent = `辨識草稿（${assetScreenshotDraft.rows.length} 列）`;
     const editorHint = document.createElement('p');
-    editorHint.textContent = '修正欄位、補上代號或新增一列後，請按「重新比較差異」。';
+    editorHint.textContent = '修正欄位、補上代號或新增一列後，請按「確認修改並更新差異」。市值與未實現損益由最新行情自動計算。';
     const editorActions = document.createElement('div');
     editorActions.className = 'asset-editor-actions';
     editorActions.append(
         assetButton('＋ 一列', 'asset-secondary-button', () => {
-            assetScreenshotDraft.rows = [...readAssetDraftRows(body), assetDraftRowFrom({})];
+            assetScreenshotDraft.rows = [...assetScreenshotDraftRowsFromBody(body), assetDraftRowFrom({})];
             assetScreenshotDraft.diffStale = true;
-            assetScreenshotDraft.notice = '已新增空白列；完成後請重新比較差異。';
+            assetScreenshotDraft.notice = '已新增空白列；完成後請按「確認修改並更新差異」。';
             renderAssetsDashboard();
         }),
-        assetButton('重新比較差異', 'asset-secondary-button', () => {
-            const rows = readAssetDraftRows(body).filter(row => row.ticker !== '' || row.name !== '');
+        assetButton('確認修改並更新差異', 'asset-secondary-button', () => {
+            const rows = assetScreenshotDraftRowsFromBody(body)
+                .filter(row => row.ticker !== '' || row.name !== '');
 
             if (rows.length === 0) {
                 assetScreenshotDraft.notice = '沒有可比較的列；請至少填入一筆代號或名稱。';
@@ -12716,7 +12778,7 @@ function makeAssetScreenshotFlow(view) {
             }
 
             refreshAssetScreenshotDiff(view.holdings, rows);
-            assetScreenshotDraft.notice = '已依目前辨識結果重新列出差異；請勾選要套用的項目。';
+            assetScreenshotDraft.notice = '已依目前人工修正重新列出差異；請重新勾選要套用的項目。';
             renderAssetsDashboard();
         }),
         assetButton('取消', 'asset-secondary-button', () => {
@@ -12728,13 +12790,30 @@ function makeAssetScreenshotFlow(view) {
 
     review.addEventListener('submit', async event => {
         event.preventDefault();
-        if (assetScreenshotDraft.diffStale) {
-            assetScreenshotDraft.notice = '辨識結果已修改，請先重新比較差異。';
+        const currentRows = assetScreenshotDraftRowsFromBody(body);
+        const submittedDiff = assetScreenshotConfirmedDiff(
+            view.holdings,
+            currentRows,
+            assetScreenshotDraft.confirmedFingerprint,
+            assetScreenshotDraft.diffStale);
+
+        if (submittedDiff === null) {
+            assetScreenshotDraft.rows = currentRows;
+            assetScreenshotDraft.diffStale = true;
+            assetScreenshotDraft.notice = '目前編輯內容尚未確認，請先按「確認修改並更新差異」；未套用舊結果。';
             renderAssetsDashboard();
             return;
         }
 
-        const selected = selectedChanges();
+        // 用最後一次確認後的內容重新產生差異；資料庫寫入與人工答案都只取這份快照。
+        assetScreenshotDraft.diff = submittedDiff;
+        const submittedChanges = [
+            ...submittedDiff.updates,
+            ...submittedDiff.additions,
+            ...submittedDiff.removals
+        ];
+        const selected = submittedChanges
+            .filter(change => assetScreenshotDraft.selections[change.key] === true);
 
         if (selected.length === 0) {
             assetScreenshotDraft.notice = '請至少勾選一項已核對的差異。';
@@ -12742,7 +12821,7 @@ function makeAssetScreenshotFlow(view) {
             return;
         }
 
-        const reviewedRows = readAssetDraftRows(body);
+        const reviewedRows = currentRows;
         const truthGroups = assetAiEvaluationTruthGroups(
             reviewedRows,
             selected,
@@ -12853,9 +12932,14 @@ function makeAssetScreenshotFlow(view) {
     });
 
     body.addEventListener('input', () => {
+        if (assetScreenshotDraft === null) {
+            return;
+        }
+
+        assetScreenshotDraft.rows = assetScreenshotDraftRowsFromBody(body);
         if (!assetScreenshotDraft.diffStale) {
             assetScreenshotDraft.diffStale = true;
-            assetScreenshotDraft.notice = '辨識結果已修改，請按「重新比較差異」再套用。';
+            assetScreenshotDraft.notice = '辨識結果已修改，請按「確認修改並更新差異」再套用。';
             refreshSelectionSummary();
         }
     });

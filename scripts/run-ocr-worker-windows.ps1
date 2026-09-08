@@ -23,6 +23,9 @@ $workerExecutable = Join-Path $publishDirectory 'Invest.Web.exe'
 if ([string]::IsNullOrWhiteSpace($env:OCR_AGENT_PRIMARY)) {
     $env:OCR_AGENT_PRIMARY = 'codex'
 }
+if ([string]::IsNullOrWhiteSpace($env:OCR_MAX_REASONING_EFFORT)) {
+    $env:OCR_MAX_REASONING_EFFORT = 'max'
+}
 if ([string]::IsNullOrWhiteSpace($env:OCR_CODEX_PATH)) {
     $codexCommand = Get-Command codex -ErrorAction SilentlyContinue
     if ($null -ne $codexCommand) {
@@ -36,6 +39,7 @@ if ([string]::IsNullOrWhiteSpace($env:OCR_CLAUDE_PATH)) {
     }
 }
 Write-Output "OCR_AGENT_PRIMARY=$($env:OCR_AGENT_PRIMARY)"
+Write-Output "OCR_MAX_REASONING_EFFORT=$($env:OCR_MAX_REASONING_EFFORT)"
 Write-Output "OCR_CODEX_PATH=$($env:OCR_CODEX_PATH)"
 Write-Output "OCR_CLAUDE_PATH=$($env:OCR_CLAUDE_PATH)"
 

@@ -46,16 +46,16 @@ public sealed class OcrWorkerApiClientTests
     }
 
     [Fact]
-    public void 未設定Max推理強度時預設為High()
+    public void 未設定Max推理強度時預設為Max()
     {
         var options = BuildOptions();
-        Assert.Equal("high", options.MaxReasoningEffort);
+        Assert.Equal("max", options.MaxReasoningEffort);
     }
 
     [Theory]
     [InlineData("HIGH", "high")]
     [InlineData("max", "max")]
-    [InlineData("unsupported", "high")]
+    [InlineData("unsupported", "max")]
     public void Max推理強度環境變數只接受支援值並正規化(string configured, string expected)
     {
         Environment.SetEnvironmentVariable("OCR_MAX_REASONING_EFFORT", configured);

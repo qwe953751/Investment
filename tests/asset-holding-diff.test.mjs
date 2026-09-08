@@ -43,6 +43,24 @@ function holdingDiff() {
     return context.buildAssetHoldingDiff;
 }
 
+function screenshotSubmitDiff() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        "const ASSET_DRAFT_FIELDS = ['ticker', 'name', 'quantity', 'cost', 'marketValue', 'unrealized'];",
+        functionSource('assetHoldingTicker'),
+        functionSource('assetHoldingComparable'),
+        functionSource('assetHoldingChangedFields'),
+        functionSource('buildAssetHoldingDiff'),
+        functionSource('assetScreenshotRowsFingerprint'),
+        functionSource('assetScreenshotConfirmedDiff')
+    ].join('\n\n'), context);
+    return {
+        fingerprint: context.assetScreenshotRowsFingerprint,
+        submit: context.assetScreenshotConfirmedDiff
+    };
+}
+
 function cashFlowNet() {
     const context = {};
     vm.createContext(context);
@@ -212,9 +230,30 @@ test('同標的覆蓋、新增與可選移除會分開列出', () => {
     assert.equal(diff.removals.length, 1);
     assert.equal(diff.updates[0].holding.id, 'old-6274');
     assert.deepEqual(JSON.parse(JSON.stringify(diff.updates[0].fields.map(field => field.field))),
-        ['quantity', 'cost', 'marketValue', 'unrealized']);
+        ['quantity', 'cost']);
     assert.equal(diff.additions[0].draft.ticker, '6530');
     assert.equal(diff.removals[0].holding.id, 'old-3189');
+});
+
+test('人工修改後若未重新確認，不可套用舊差異；確認後寫入快照與人工答案一致', () => {
+    const { fingerprint, submit } = screenshotSubmitDiff();
+    const holdings = [{ id: 'old-6530', ticker: '6530', name: '創威', quantity: 492, cost: 41466 }];
+    const confirmedRows = [{ ticker: '6530', name: '創威', quantity: '492', cost: '41,466' }];
+    const editedRows = [{ ticker: '6530', name: '創威', quantity: '500', cost: '42,000' }];
+    const confirmedFingerprint = fingerprint(confirmedRows);
+
+    assert.equal(
+        submit(holdings, editedRows, confirmedFingerprint, false),
+        null,
+        '目前輸入值與上次確認快照不同時必須拒絕套用');
+    assert.equal(
+        submit(holdings, editedRows, fingerprint(editedRows), true),
+        null,
+        '即使輸入值相同，只要畫面標示為過期也必須重新確認');
+
+    const diff = submit(holdings, editedRows, fingerprint(editedRows), false);
+    assert.equal(diff.updates[0].draft.quantity, '500');
+    assert.equal(diff.updates[0].draft.cost, '42,000');
 });
 
 test('空白或重複代號不會被當成新增或覆蓋', () => {

@@ -1670,10 +1670,10 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("套用前差異", script, StringComparison.Ordinal);
         Assert.Contains("勾選要套用的項目", script, StringComparison.Ordinal);
         Assert.Contains("移除項目預設不勾選", script, StringComparison.Ordinal);
-        Assert.Contains(
-            "table.append(assetTableHead(['代號', '名稱', '股數', '成本', '市值', '未實現損益']), body);",
-            script,
-            StringComparison.Ordinal);
+        Assert.Contains("'市值（自動）'", script, StringComparison.Ordinal);
+        Assert.Contains("'未實現損益（自動）'", script, StringComparison.Ordinal);
+        Assert.Contains("function assetScreenshotConfirmedDiff", script, StringComparison.Ordinal);
+        Assert.Contains("確認修改並更新差異", script, StringComparison.Ordinal);
         Assert.Contains("assetScreenshotDraft.diff = null;", script, StringComparison.Ordinal);
         Assert.DoesNotContain("data-asset-ocr-confirmed", script, StringComparison.Ordinal);
         Assert.DoesNotContain("確定以這 ${rows.length} 列取代", script, StringComparison.Ordinal);
