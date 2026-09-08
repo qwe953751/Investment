@@ -58,18 +58,23 @@ const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
 const VIEW_QUERY = new URLSearchParams(window.location.search).get('view');
 // 長者友善連結：網址帶 ?key=密碼，開頁就自動登入，不用打字。
 const AUTOLOGIN_QUERY = new URLSearchParams(window.location.search).get('key');
-// 本機測試專用：?access=admin／?access=viewer 可以不登入就切換畫面看到的權限，
+// 本機測試專用：?access=admin／?access=viewer／?access=holdings 可以不登入就切換畫面看到的權限，
 // 正式網址不會進這個分支，只影響 URL_ACCESS 與下面的預覽徽章。
 const ACCESS_PREVIEW_QUERY = ['localhost', '127.0.0.1'].includes(window.location.hostname)
-    && (ACCESS_QUERY === 'admin' || ACCESS_QUERY === 'viewer')
+    && (ACCESS_QUERY === 'admin' || ACCESS_QUERY === 'viewer' || ACCESS_QUERY === 'holdings')
     ? ACCESS_QUERY
     : null;
 // 網址決定的下限：正式網站只有單一網址，一律預設訪客，監控者／最高權限一律要
 // 登入才能拿到（筆記 #37 收尾：admin888／viewer 這兩個轉發網址已經收掉，不再
 // 靠路徑當防線）。
 const URL_ACCESS = ACCESS_PREVIEW_QUERY ?? 'viewer';
-const ACCESS_RANK = { viewer: 0, monitor: 1, admin: 2 };
-const ACCESS_TIER_TEXT = { viewer: '訪客', monitor: '監控者', admin: '最高權限' };
+const ACCESS_RANK = { viewer: 0, holdings: 1, monitor: 2, admin: 3 };
+const ACCESS_TIER_TEXT = {
+    viewer: '訪客',
+    holdings: '持倉檢視者',
+    monitor: '監控者',
+    admin: '最高權限'
+};
 // 登入拿到的層級；null 代表沒登入（訪客）。跟 URL_ACCESS 各自獨立，
 // 實際生效的權限（SITE_ACCESS）取兩者較高的一個，見 applyEffectiveAccess()。
 let loginTier = null;
@@ -80,8 +85,10 @@ let loginAccount = null;
 // 原本的 refresh token，再由 Supabase Auth 換一組新 session。
 let authAccessToken = null;
 let SITE_ACCESS = URL_ACCESS;
-// 資產是個人資料工作區，只有最高權限（登入最高權限帳號）才給。
+// 資產管理是個人資料工作區，只有最高權限（登入最高權限帳號）才給；
+// 持倉檢視者只拿到 Frank 的唯讀持倉模板。
 let ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';
+let ASSET_HOLDINGS_VIEW_ENABLED = SITE_ACCESS === 'holdings';
 const ACCESS_PREVIEW = ACCESS_PREVIEW_QUERY !== null;
 
 function applyEffectiveAccess() {
@@ -89,6 +96,7 @@ function applyEffectiveAccess() {
         ? loginTier
         : URL_ACCESS;
     ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';
+    ASSET_HOLDINGS_VIEW_ENABLED = SITE_ACCESS === 'holdings';
 }
 
 // 檢視權限的泡泡只開放表格／列表表頭，而且只說明「這欄怎麼看」。
@@ -242,8 +250,13 @@ const CUSTOM_DATA_SOURCES = [
     { key: 'daily', text: '盤後', hint: '瀏覽指定交易日的收盤資料；可以使用交易日選擇器。' }
 ];
 
-// 筆記與資產都是個人工作區，只有登入最高權限帳號才顯示。
+// 筆記與資產都是個人工作區；持倉檢視者只顯示資產的 Frank 唯讀模板，
+// 不讓管理用頁籤或筆記頁混進來。
 const availableViews = () => {
+    if (SITE_ACCESS === 'holdings') {
+        return VIEWS.filter(view => view.key === 'assets');
+    }
+
     const workspaceViews = ASSET_DASHBOARD_ENABLED
         ? VIEWS
         : VIEWS.filter(view => view.key !== 'assets');
@@ -1858,19 +1871,26 @@ function renderAccessBadge() {
 
     badge.hidden = false;
     badge.className = `access-badge access-${SITE_ACCESS}`;
-    badge.textContent = SITE_ACCESS === 'viewer' ? '預覽｜檢視權限' : '預覽｜最高權限';
+    badge.textContent = SITE_ACCESS === 'viewer'
+        ? '預覽｜檢視權限'
+        : SITE_ACCESS === 'holdings'
+            ? '預覽｜持倉檢視者'
+            : '預覽｜最高權限';
     badge.dataset.hint = SITE_ACCESS === 'viewer'
         ? '本機預覽：可使用盤中、盤後、自訂、族群的熱度排行。族群列表、催化事件、人工編輯屬最高權限。'
-        : '本機預覽：可使用目前網站的所有頁籤與族群功能。';
+        : SITE_ACCESS === 'holdings'
+            ? '本機預覽：只顯示 Frank 所有帳號的持股，可切換台股、美股與加密貨幣。'
+            : '本機預覽：可使用目前網站的所有頁籤與族群功能。';
 }
 
 // 筆記 #37：登入列。跟網址決定的下限（URL_ACCESS）各自獨立，登入只會把權限往上加，
 // 不會蓋掉網址原本給的下限——見檔案開頭 applyEffectiveAccess() 的說明。
-// 帳號固定三組、密碼只保存在 Supabase Auth；同一個最高權限層可指定不同的資產初始使用者。
+// 帳號固定四組、密碼只保存在 Supabase Auth；同一個最高權限層可指定不同的資產初始使用者。
 const ACCESS_TIER_ACCOUNTS = [
     { email: 'admin@investment.local', tier: 'admin', defaultAssetOwnerName: 'Frank' },
     { email: 'fortune@investment.local', tier: 'admin', defaultAssetOwnerName: '財神' },
-    { email: 'monitor@investment.local', tier: 'monitor' }
+    { email: 'monitor@investment.local', tier: 'monitor' },
+    { email: 'holdings@investment.local', tier: 'holdings', defaultAssetOwnerName: 'Frank' }
 ];
 const AUTH_STORAGE_KEY = 'invest.auth';
 
@@ -2034,6 +2054,7 @@ function renderAccessBar() {
         return;
     }
 
+    document.body.classList.toggle('holdings-viewer-access', SITE_ACCESS === 'holdings');
     tierLabel.textContent = ACCESS_TIER_TEXT[SITE_ACCESS] ?? SITE_ACCESS;
     tierLabel.className = `access-bar-tier access-${SITE_ACCESS}`;
 
@@ -2047,7 +2068,7 @@ function renderAccessBar() {
 // 這裡要一併重新判斷一次，不然登出後畫面還留著最高權限才看得到的按鈕。
 function afterAccessChange() {
     if (!availableViews().some(view => view.key === state.view)) {
-        state.view = 'daily';
+        state.view = SITE_ACCESS === 'holdings' ? 'assets' : 'daily';
     }
 
     renderFilters();
@@ -2142,7 +2163,9 @@ const PAGE_HEADINGS = {
 function renderFilters() {
     const custom = state.view === 'custom';
     const customIntraday = isCustomIntradayView();
-    el('page-heading').textContent = PAGE_HEADINGS[state.view] ?? '個股成交值排行';
+    el('page-heading').textContent = SITE_ACCESS === 'holdings' && state.view === 'assets'
+        ? '持倉'
+        : PAGE_HEADINGS[state.view] ?? '個股成交值排行';
     document.title = el('page-heading').textContent;
     renderAccessBadge();
     renderAccessBar();
@@ -5663,6 +5686,7 @@ let assetLatestUsdTwdRate = null;
 let assetLatestUsQuotes = new Map();
 let assetTickerQuotes = new Map();
 let assetIntradayQuotes = new Map();
+let assetHoldingsMarket = '台股';
 let assetHoldingSortKey = 'ticker';
 let assetHoldingSortDirection = 'asc';
 const assetTrendPeriodByKey = new Map();
@@ -6234,6 +6258,10 @@ function assetsAreEditing() {
 }
 
 function assetActiveOwner() {
+    if (typeof ASSET_HOLDINGS_VIEW_ENABLED !== 'undefined' && ASSET_HOLDINGS_VIEW_ENABLED) {
+        return assetOwners.find(owner => owner.name === 'Frank') ?? null;
+    }
+
     const explicitlySelected = assetOwners.find(owner => owner.id === assetSelectedOwnerId);
 
     if (explicitlySelected !== undefined) {
@@ -6340,6 +6368,7 @@ function assetHoldingForAccount(account, holding) {
         return {
             ...holding,
             name: quote?.name || holding.name || '',
+            price: close,
             marketValue: null,
             unrealized: null,
             priceChange,
@@ -6353,6 +6382,7 @@ function assetHoldingForAccount(account, holding) {
     return {
         ...holding,
         name: quote?.name || holding.name || '',
+        price: close,
         marketValue,
         unrealized: holding.cost === null
             ? null
@@ -12866,10 +12896,171 @@ function makeAssetMessage(text) {
     return block;
 }
 
+// 筆記 #53 的正式唯讀模板：只把 Frank 所有帳號中符合目前市場的持股攤平，
+// 不混入帳戶管理欄、批次編輯、刪除或 OCR 操作。這個 helper 刻意保持純資料轉換，
+// 讓市場篩選不會偷偷改到管理員資產頁的排序與選取狀態。
+function assetHoldingsViewerRows(views, market) {
+    return (Array.isArray(views) ? views : [])
+        .filter(view => view.market === market)
+        .flatMap(view => Array.isArray(view.holdings) ? view.holdings : []);
+}
+
+function assetHoldingsViewerMarketLabel(market) {
+    return market === '美股' ? '美股' : market === '其他' ? '加密貨幣' : '台股';
+}
+
+function assetHoldingsViewerCell(text, className = '') {
+    const cell = document.createElement('td');
+
+    if (className !== '') {
+        cell.className = className;
+    }
+
+    cell.textContent = text;
+    return cell;
+}
+
+function makeAssetHoldingsViewerTable(views, market) {
+    const table = document.createElement('table');
+    table.className = 'asset-holdings-viewer-table';
+    table.setAttribute('aria-label', `Frank ${assetHoldingsViewerMarketLabel(market)}持倉`);
+
+    const colgroup = document.createElement('colgroup');
+    for (const className of ['rank', 'ticker', 'name', 'topic', 'change', 'price', 'revenue', 'highs']) {
+        const col = document.createElement('col');
+        col.className = className;
+        colgroup.append(col);
+    }
+
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const title of ['排名', '代號', '名稱', '族群', '漲跌幅', '現價', '營收增減', '創高月數']) {
+        const heading = document.createElement('th');
+        heading.scope = 'col';
+        heading.className = 'asset-holdings-viewer-heading';
+        heading.textContent = title;
+        headRow.append(heading);
+    }
+    head.append(headRow);
+
+    const body = document.createElement('tbody');
+    const rows = assetHoldingsViewerRows(views, market);
+
+    if (rows.length === 0) {
+        const row = document.createElement('tr');
+        const empty = assetHoldingsViewerCell(
+            `Frank 沒有可顯示的${assetHoldingsViewerMarketLabel(market)}持股。`,
+            'asset-holdings-viewer-empty');
+        empty.colSpan = 8;
+        row.append(empty);
+        body.append(row);
+    } else {
+        rows.forEach((holding, index) => {
+            const row = document.createElement('tr');
+            row.append(assetHoldingsViewerCell(String(index + 1), 'asset-holdings-viewer-rank'));
+
+            const ticker = assetHoldingTicker(holding);
+            const tickerCell = document.createElement('td');
+            tickerCell.className = 'asset-holdings-viewer-ticker';
+            const tickerWrap = document.createElement('span');
+            tickerWrap.className = 'asset-holdings-viewer-ticker-wrap';
+            tickerWrap.append(document.createTextNode(ticker || '—'));
+            const marketMark = document.createElement('small');
+            marketMark.className = 'asset-holdings-viewer-market-mark';
+            marketMark.textContent = market === '美股' ? '股' : market === '台股' ? '市' : '幣';
+            tickerWrap.append(marketMark);
+            tickerCell.append(tickerWrap);
+            row.append(tickerCell);
+
+            const nameCell = document.createElement('td');
+            nameCell.className = `asset-holdings-viewer-name ${stockNameChangeClass(holding.priceChange)}`.trim();
+            nameCell.textContent = holding.name || ticker || '—';
+            row.append(nameCell);
+
+            row.append(assetHoldingsViewerCell('—', 'asset-holdings-viewer-topic'));
+
+            const changeCell = document.createElement('td');
+            changeCell.className = `asset-holdings-viewer-change ${assetSignClass(holding.priceChange)}`.trim();
+            const day = document.createElement('span');
+            day.textContent = `日 ${assetHoldingPriceChangeText(holding.priceChange)}`;
+            const week = document.createElement('span');
+            week.className = 'asset-holdings-viewer-muted';
+            week.textContent = '週 —';
+            changeCell.append(day, week);
+            row.append(changeCell);
+
+            row.append(assetHoldingsViewerCell(
+                assetCurrencyForMarket(holding.price, market),
+                'asset-holdings-viewer-price'));
+
+            const revenueCell = document.createElement('td');
+            revenueCell.className = 'asset-holdings-viewer-revenue asset-holdings-viewer-muted';
+            const yoy = document.createElement('span');
+            yoy.textContent = 'YOY —';
+            const mom = document.createElement('span');
+            mom.textContent = 'MOM —';
+            revenueCell.append(yoy, mom);
+            row.append(revenueCell);
+
+            row.append(assetHoldingsViewerCell('—', 'asset-holdings-viewer-muted'));
+            body.append(row);
+        });
+    }
+
+    table.append(colgroup, head, body);
+    return { table, rowCount: rows.length };
+}
+
+function makeAssetHoldingsViewerMessage(text) {
+    const card = document.createElement('section');
+    card.className = 'asset-holdings-viewer-card';
+    const message = document.createElement('p');
+    message.className = 'asset-holdings-viewer-message';
+    message.textContent = text;
+    card.append(message);
+    return card;
+}
+
+function renderAssetHoldingsViewer(page) {
+    page.setAttribute('aria-label', 'Frank 持倉');
+
+    if (assetsLoadError !== null) {
+        page.replaceChildren(makeAssetHoldingsViewerMessage(assetsLoadError));
+        return;
+    }
+
+    if (!assetsLoaded) {
+        page.replaceChildren(makeAssetHoldingsViewerMessage('Frank 持倉載入中…'));
+        return;
+    }
+
+    const owner = assetActiveOwner();
+
+    if (owner === null) {
+        page.replaceChildren(makeAssetHoldingsViewerMessage('找不到 Frank 的資產資料。'));
+        return;
+    }
+
+    const views = assetAccountsOf(owner.id).map(assetAccountView);
+    const { table, rowCount } = makeAssetHoldingsViewerTable(views, assetHoldingsMarket);
+    const card = document.createElement('section');
+    card.className = 'asset-holdings-viewer-card';
+    card.append(table);
+    const status = document.createElement('p');
+    status.className = 'asset-holdings-viewer-status';
+    status.textContent = `Frank｜${assetHoldingsViewerMarketLabel(assetHoldingsMarket)}｜${rowCount} 筆持股（唯讀）`;
+    page.replaceChildren(card, status);
+}
+
 function renderAssetsDashboard() {
     const page = el('assets-page');
 
-    if (!page || !ASSET_DASHBOARD_ENABLED) {
+    if (!page || (!ASSET_DASHBOARD_ENABLED && !ASSET_HOLDINGS_VIEW_ENABLED)) {
+        return;
+    }
+
+    if (ASSET_HOLDINGS_VIEW_ENABLED) {
+        renderAssetHoldingsViewer(page);
         return;
     }
 
@@ -15923,7 +16114,7 @@ function wireRefreshButton() {
             }
 
             if (state.view === 'assets') {
-                await refreshAssets();
+                await refreshAssets({ persistSnapshots: ASSET_DASHBOARD_ENABLED });
                 renderAssetsDashboard();
                 showStatusPopup(assetsLoadError ?? '已是最新');
                 button.disabled = false;
@@ -21669,7 +21860,7 @@ async function load() {
         el('notes-page').hidden = true;
         el('assets-page').hidden = false;
         renderAssetsDashboard();
-        await refreshAssets();
+        await refreshAssets({ persistSnapshots: ASSET_DASHBOARD_ENABLED });
 
         if (state.view === 'assets') {
             renderAssetsDashboard();
@@ -21818,10 +22009,14 @@ function renderSnapshotNote() {
             + `每 ${schedule.intradayIntervalMinutes} 分鐘寫入一輪。`;
 
     if (state.view === 'assets') {
-        el('snapshot-note').textContent = supabase === null
-            ? '資產需要資料庫連線；離線快照看不到資產。'
-            : `使用者、帳戶、現金與持倉存在資料庫，任何裝置打開網站都看得到並能編輯；`
-                + `這一頁停留時每 ${Math.round(ASSETS_REFRESH_MS / 1000)} 秒自動重讀一次。D+ AI 可用時原圖只暫存於私有佇列，完成後清除；不可用時回退瀏覽器 Tesseract。`;
+        el('snapshot-note').textContent = ASSET_HOLDINGS_VIEW_ENABLED
+            ? supabase === null
+                ? '資產需要資料庫連線；離線快照看不到 Frank 持倉。'
+                : `只顯示 Frank 所有帳號持股；市場頁籤可切換台股、美股與加密貨幣。每 ${Math.round(ASSETS_REFRESH_MS / 1000)} 秒自動重讀一次。`
+            : supabase === null
+                ? '資產需要資料庫連線；離線快照看不到資產。'
+                : `使用者、帳戶、現金與持倉存在資料庫，任何裝置打開網站都看得到並能編輯；`
+                    + `這一頁停留時每 ${Math.round(ASSETS_REFRESH_MS / 1000)} 秒自動重讀一次。D+ AI 可用時原圖只暫存於私有佇列，完成後清除；不可用時回退瀏覽器 Tesseract。`;
         return;
     }
 
@@ -22049,7 +22244,7 @@ function startIntradayTimer() {
         // 資產同理，另外多一個條件：有表單開著就先不要重讀。
         // 資產的表單沒有像筆記那樣的草稿機制，背景重畫會把正在打的數字清掉。
         if (state.view === 'assets' && !document.hidden && assetsAreStale() && !assetsAreEditing()) {
-            void refreshAssets().then(() => {
+            void refreshAssets({ persistSnapshots: ASSET_DASHBOARD_ENABLED }).then(() => {
                 if (state.view === 'assets') {
                     renderAssetsDashboard();
                 }
@@ -22143,7 +22338,16 @@ function mspBuildMarketTabs(proto, paint) {
         button.type = 'button';
         button.className = market.key === proto.market ? 'msp-market-segment selected' : 'msp-market-segment';
         button.textContent = market.text;
-        button.addEventListener('click', () => { proto.market = market.key; paint(); });
+        button.addEventListener('click', () => {
+            proto.market = market.key;
+
+            if (SITE_ACCESS === 'holdings' && state.view === 'assets') {
+                assetHoldingsMarket = market.key === 'us' ? '美股' : market.key === 'crypto' ? '其他' : '台股';
+                renderAssetsDashboard();
+            }
+
+            paint();
+        });
         wrap.append(button);
     }
     return wrap;
@@ -22155,6 +22359,7 @@ function mspBuildViewTabs(proto, paint) {
     const nav = document.createElement('nav');
     nav.className = 'msp-global-view-nav';
     nav.setAttribute('aria-label', '主頁籤');
+    nav.hidden = SITE_ACCESS === 'holdings';
 
     const dataTabs = proto.market === 'tw'
         ? VIEWS.filter(view => !['assets', 'notes'].includes(view.key))
@@ -24515,6 +24720,55 @@ body[data-msp-nav-variant="u1"] .msp-market-bar[data-nav-variant] {
         padding: 10px 11px;
     }
 }
+
+/* 持倉檢視者沿用 U1 的右上工具列與市場頁籤，但只保留附件模板的單一內容頁。 */
+body.holdings-viewer-access .msp-market-bar {
+    grid-template-areas: "market spacer utility" !important;
+    min-height: 0;
+    border-bottom: 0 !important;
+}
+body.holdings-viewer-access .msp-global-view-nav,
+body.holdings-viewer-access .msp-page-header-rail {
+    display: none !important;
+}
+body.holdings-viewer-access .page-title {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    align-items: center;
+    min-height: 80px;
+    padding: 10px 15px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-alt);
+    box-shadow: 0 3px 9px rgba(31, 50, 75, .07);
+}
+body.holdings-viewer-access .page-title-heading {
+    min-width: 0;
+}
+body.holdings-viewer-access .page-title-heading h1 {
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: .02em;
+}
+body.holdings-viewer-access .assets-page {
+    margin-top: 10px;
+}
+
+@media (max-width: 960px) {
+    body.holdings-viewer-access .msp-market-bar {
+        grid-template-areas: "market" "utility" !important;
+        gap: 6px;
+    }
+
+    body.holdings-viewer-access .page-title {
+        min-height: 0;
+        padding: 13px;
+    }
+
+    body.holdings-viewer-access .page-title-heading h1 {
+        font-size: 28px;
+    }
+}
 `;
     document.head.append(style);
 }
@@ -24557,6 +24811,10 @@ function initMarketSwitch() {
         const showOverview = proto.market !== 'tw' && !workspaceView;
         const navVariant = MARKET_NAV_DEFAULT_VARIANT;
 
+        if (SITE_ACCESS === 'holdings' && state.view === 'assets') {
+            assetHoldingsMarket = proto.market === 'us' ? '美股' : proto.market === 'crypto' ? '其他' : '台股';
+        }
+
         bar.dataset.navVariant = navVariant;
         document.body.dataset.mspNavVariant = navVariant;
         const navigation = [
@@ -24569,6 +24827,7 @@ function initMarketSwitch() {
         bar.replaceChildren(...navigation);
 
         if (pageHeaderRail !== null && pageHeader !== null && pageTitle !== null) {
+            pageHeaderRail.rail.hidden = SITE_ACCESS === 'holdings';
             if (pageHeaderRail.rail.parentElement !== pageTitle) {
                 pageTitle.append(pageHeaderRail.rail);
             }
@@ -24667,6 +24926,10 @@ async function start() {
         state.view = VIEW_QUERY;
     }
 
+    if (SITE_ACCESS === 'holdings') {
+        state.view = 'assets';
+    }
+
     if (CUSTOM_INTRADAY_LOCAL_PREVIEW && state.view === 'custom') {
         state.customSource = 'intraday';
     }
@@ -24707,7 +24970,7 @@ async function start() {
 
     if (state.view === 'assets') {
         renderAssetsDashboard();
-        await refreshAssets();
+        await refreshAssets({ persistSnapshots: ASSET_DASHBOARD_ENABLED });
 
         if (state.view === 'assets') {
             renderAssetsDashboard();

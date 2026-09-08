@@ -1057,7 +1057,8 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange)", customColumns, StringComparison.Ordinal);
     }
 
-    // 資產頁只在最高權限登入後出現，檢視權限不能透過 view 參數開啟。
+    // 資產管理頁只在最高權限登入後出現；持倉檢視者只能看到 Frank 的唯讀模板，
+    // 不能透過 view 參數繞過權限或取得管理操作。
     // D+ AI 只做短期私有暫存，且每個結果仍要經人工差異確認。
     [Fact]
     public void 資產頁只在最高權限出現且不保存原始截圖()
@@ -1067,6 +1068,11 @@ public sealed class StaticKLineAssetTests
         var styles = ReadAsset("site.css");
 
         Assert.Contains("let ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';", script, StringComparison.Ordinal);
+        Assert.Contains("let ASSET_HOLDINGS_VIEW_ENABLED = SITE_ACCESS === 'holdings';", script, StringComparison.Ordinal);
+        Assert.Contains("const ACCESS_RANK = { viewer: 0, holdings: 1, monitor: 2, admin: 3 };", script, StringComparison.Ordinal);
+        Assert.Contains("holdings@investment.local", script, StringComparison.Ordinal);
+        Assert.Contains("function assetHoldingsViewerRows", script, StringComparison.Ordinal);
+        Assert.Contains("function renderAssetHoldingsViewer", script, StringComparison.Ordinal);
         Assert.Contains("function applyEffectiveAccess()", script, StringComparison.Ordinal);
         Assert.Contains("const workspaceViews = ASSET_DASHBOARD_ENABLED", script, StringComparison.Ordinal);
         Assert.Contains("VIEWS.filter(view => view.key !== 'assets')", script, StringComparison.Ordinal);
@@ -1080,6 +1086,13 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("assetAiOcrReadiness()", script, StringComparison.Ordinal);
         Assert.Contains("preflightFallbackReason", script, StringComparison.Ordinal);
         Assert.Contains("已回退 Tesseract", script, StringComparison.Ordinal);
+
+        var viewerStart = script.IndexOf("function assetHoldingsViewerRows", StringComparison.Ordinal);
+        var viewerEnd = script.IndexOf("function renderAssetsDashboard", viewerStart, StringComparison.Ordinal);
+        var viewerRenderer = script[viewerStart..viewerEnd];
+        Assert.DoesNotContain("assetButton(", viewerRenderer, StringComparison.Ordinal);
+        Assert.DoesNotContain("assetRemove(", viewerRenderer, StringComparison.Ordinal);
+        Assert.DoesNotContain("assetUpdate(", viewerRenderer, StringComparison.Ordinal);
 
         // 離開資產頁一定要 revoke，否則 blob 會一路留到重新整理。
         Assert.Contains("for (const screenshot of assetScreenshotDraft?.screenshots ?? [])", script, StringComparison.Ordinal);
