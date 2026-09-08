@@ -90,6 +90,33 @@ function unrealizedText() {
     return context.assetUnrealizedText;
 }
 
+function unrealizedSignClass() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetSignClass')
+    ].join('\n\n'), context);
+    return context.assetSignClass;
+}
+
+function holdingQuoteFlow() {
+    const context = {
+        TAIPEI_DATE: { format: () => '2026-09-08' },
+        assetTickerQuotes: new Map(),
+        assetLatestUsQuotes: new Map(),
+        assetIntradayQuotes: new Map()
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetHoldingTicker'),
+        functionSource('assetHoldingForAccount'),
+        functionSource('assetIntradayLiveKLine')
+    ].join('\n\n'), context);
+    return context;
+}
+
 function holdingSort() {
     const context = {};
     vm.createContext(context);
@@ -192,10 +219,71 @@ test('持倉預設以代號排序，漲跌幅可排序且未知值固定排在�
     ]);
 });
 
-test('持倉日漲跌與相對成本報酬分開顯示', () => {
+test('持倉漲跌幅與未實現損益依原規格分開顯示', () => {
     assert.equal(holdingPriceChangeText()(-2.3), '-2.30 %');
 
     const format = unrealizedText();
-    assert.equal(format(-1455, 200280), '−NT$1,455（−0.7%）');
-    assert.equal(format(6305, 477240), '+NT$6,305（+1.3%）');
+    assert.equal(format(-1455, 200280), 'NT$1,455（0.7%）');
+    assert.equal(format(6305, 477240), 'NT$6,305（1.3%）');
+
+    const signClass = unrealizedSignClass();
+    assert.equal(signClass(-1455), 'negative');
+    assert.equal(signClass(6305), 'positive');
+});
+
+test('市值漲跌幅與持倉 K 線共用盤中盤後交接規則', () => {
+    const context = holdingQuoteFlow();
+    const ticker = '2308';
+    const holding = { ticker, quantity: 110, cost: 200280 };
+    const intraday = {
+        name: '台達電',
+        close: 1807.5,
+        priceChange: -2.3,
+        quoteDate: '',
+        session: '盤中',
+        open: 1850,
+        high: 1860,
+        low: 1800,
+        tradingVolume: 12345
+    };
+
+    context.assetTickerQuotes.set(ticker, {
+        name: '台達電',
+        close: 1850,
+        priceChange: 1.37,
+        quoteDate: '2026-09-07',
+        session: '盤後'
+    });
+    context.assetIntradayQuotes.set(ticker, intraday);
+
+    const intradayHolding = context.assetHoldingForAccount({ market: '台股' }, holding);
+    assert.equal(intradayHolding.price, 1807.5);
+    assert.equal(intradayHolding.marketValue, 198825);
+    assert.equal(intradayHolding.unrealized, -1455);
+    assert.equal(intradayHolding.priceChange, -2.3);
+    assert.equal(intradayHolding.quoteSession, '盤中');
+    assert.deepEqual(JSON.parse(JSON.stringify(context.assetIntradayLiveKLine(ticker))), {
+        date: '2026-09-08',
+        open: 1850,
+        high: 1860,
+        low: 1800,
+        close: 1807.5,
+        tradingVolume: 12345
+    });
+
+    context.assetTickerQuotes.set(ticker, {
+        name: '台達電',
+        close: 1820,
+        priceChange: -1.62,
+        quoteDate: '2026-09-08',
+        session: '盤後'
+    });
+
+    const officialHolding = context.assetHoldingForAccount({ market: '台股' }, holding);
+    assert.equal(officialHolding.price, 1820);
+    assert.equal(officialHolding.marketValue, 200200);
+    assert.equal(officialHolding.unrealized, -80);
+    assert.equal(officialHolding.priceChange, -1.62);
+    assert.equal(officialHolding.quoteSession, '盤後');
+    assert.equal(context.assetIntradayLiveKLine(ticker), null);
 });

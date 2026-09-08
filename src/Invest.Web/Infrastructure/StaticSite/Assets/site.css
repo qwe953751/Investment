@@ -8639,7 +8639,8 @@ button.podcast-preview-database-row:hover {
 /* 筆記 #53：持倉檢視者的正式唯讀表格。欄位骨架比管理員資產頁簡單，
    桌面版充分利用內容寬度，手機版保留必要的橫向捲動，避免把代號與數字擠成難讀的多行。 */
 .asset-holdings-viewer-card {
-    overflow: hidden;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--surface);
@@ -8657,10 +8658,10 @@ button.podcast-preview-database-row:hover {
 .asset-holdings-viewer-table col.ticker { width: 11%; }
 .asset-holdings-viewer-table col.name { width: 20%; }
 .asset-holdings-viewer-table col.topic { width: 14%; }
-.asset-holdings-viewer-table col.change { width: 17%; }
-.asset-holdings-viewer-table col.price { width: 13%; }
+.asset-holdings-viewer-table col.price { width: 17%; }
+.asset-holdings-viewer-table col.close { width: 13%; }
 .asset-holdings-viewer-table col.revenue { width: 13%; }
-.asset-holdings-viewer-table col.highs { width: 6%; }
+.asset-holdings-viewer-table col.revenueHigh { width: 6%; }
 
 .asset-holdings-viewer-table th,
 .asset-holdings-viewer-table td {
@@ -8694,53 +8695,29 @@ button.podcast-preview-database-row:hover {
 .asset-holdings-viewer-table tbody tr:last-child td { border-bottom: 0; }
 .asset-holdings-viewer-table tbody tr:hover td { background: var(--surface-hover); }
 
-.asset-holdings-viewer-rank,
-.asset-holdings-viewer-ticker,
-.asset-holdings-viewer-price {
+.asset-holdings-viewer-table td.rank,
+.asset-holdings-viewer-table td.ticker,
+.asset-holdings-viewer-table td.close {
     font-variant-numeric: tabular-nums;
 }
 
-.asset-holdings-viewer-rank {
+.asset-holdings-viewer-table td.rank {
     text-align: center !important;
 }
 
-.asset-holdings-viewer-ticker-wrap {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.asset-holdings-viewer-market-mark {
-    padding: 1px 4px;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    color: var(--text-faint);
-    background: var(--surface-alt);
-    font-size: 11px;
-}
-
-.asset-holdings-viewer-name {
+.asset-holdings-viewer-table td.stock-name {
     overflow: hidden;
     padding: 4px 8px;
     border-radius: 3px;
-    color: var(--text);
-    font-weight: 700;
     text-overflow: ellipsis;
 }
 
-.asset-holdings-viewer-name.stock-name-change-up { background: var(--up-bg); }
-.asset-holdings-viewer-name.stock-name-change-down { background: var(--down-bg); }
-
-.asset-holdings-viewer-change,
-.asset-holdings-viewer-revenue {
-    display: grid;
-    gap: 2px;
-    line-height: 1.25;
+.asset-holdings-viewer-table td.stock-name .stock-name-button {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
-
-.asset-holdings-viewer-change span,
-.asset-holdings-viewer-revenue span { display: block; }
-.asset-holdings-viewer-muted { color: var(--text-muted); }
 
 .asset-holdings-viewer-empty {
     height: 130px !important;
@@ -8770,6 +8747,43 @@ button.podcast-preview-database-row:hover {
     .asset-holdings-viewer-table th,
     .asset-holdings-viewer-table td {
         padding-inline: 9px;
+    }
+
+    .asset-holdings-viewer-table th.col-ticker,
+    .asset-holdings-viewer-table td.ticker {
+        position: sticky;
+        left: 0;
+        box-sizing: border-box;
+        width: 80px;
+        min-width: 80px;
+        max-width: 80px;
+        background: var(--surface);
+        z-index: 2;
+    }
+
+    .asset-holdings-viewer-table th.col-name,
+    .asset-holdings-viewer-table td.stock-name {
+        position: sticky;
+        left: 80px;
+        box-sizing: border-box;
+        width: 104px;
+        min-width: 104px;
+        max-width: 104px;
+        background: var(--surface);
+        white-space: normal;
+        z-index: 2;
+    }
+
+    .asset-holdings-viewer-table th.col-ticker,
+    .asset-holdings-viewer-table th.col-name {
+        background: var(--surface-alt);
+        z-index: 3;
+    }
+
+    .asset-holdings-viewer-table td.stock-name .stock-name-button {
+        min-height: 36px;
+        overflow-wrap: anywhere;
+        line-height: 1.25;
     }
 
     .asset-holdings-viewer-status { text-align: left; }

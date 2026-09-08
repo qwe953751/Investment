@@ -1179,6 +1179,14 @@ async function loadRevenue(force = false) {
 const revenueOf = ticker => revenueByTicker.get(ticker) ?? null;
 
 function renderRevenueForCurrentView() {
+    if (state.view === 'assets') {
+        if (ASSET_HOLDINGS_VIEW_ENABLED) {
+            renderAssetsDashboard();
+        }
+
+        return;
+    }
+
     if (state.view === 'topics') {
         if (topicData !== null) {
             renderTopicPanel();
@@ -5860,19 +5868,16 @@ function assetUnrealizedPercent(unrealized, cost) {
         : Math.round(amount / base * 1000) / 10;
 }
 
-// 未實現損益顯示為「帶正負號的金額(報酬率)」；色塊（呼叫端另外套 assetSignClass）
-// 只作為輔助，不能取代數值本身的正負號。算不出百分比時只顯示金額，不留一個空括號。
+// 未實現損益改成「金額(%數)」：不寫 +/− 符號，色塊（呼叫端另外套 assetSignClass）
+// 就足以表達正負，所以金額跟百分比都取絕對值——Intl.NumberFormat 本身會幫負數
+// 加上「-」，這裡要比照 assetSignedCurrency 的做法自己擋掉。算不出百分比時只顯示
+// 金額，不留一個空括號。
 function assetUnrealizedText(unrealized, cost, currency = 'TWD') {
     const amount = assetNumber(unrealized);
     const percent = assetUnrealizedPercent(unrealized, cost);
-    const amountText = amount === null
-        ? assetCurrency(unrealized, currency)
-        : assetSignedCurrency(amount, currency);
-    const percentText = percent === null
-        ? null
-        : `${percent >= 0 ? '+' : '−'}${Math.abs(percent)}%`;
+    const amountText = amount === null ? assetCurrency(unrealized, currency) : assetCurrency(Math.abs(amount), currency);
 
-    return percentText === null ? amountText : `${amountText}（${percentText}）`;
+    return percent === null ? amountText : `${amountText}（${Math.abs(percent)}%）`;
 }
 
 function assetUnrealizedForMarket(unrealized, cost, market) {
@@ -5894,9 +5899,7 @@ function assetUnrealizedDualCurrency(twdUnrealized, twdCost, usdUnrealized, mark
     const usd = document.createElement('span');
     usd.className = 'asset-dual-currency-secondary';
     const usdAmount = assetNumber(usdUnrealized);
-    usd.textContent = `（${usdAmount === null
-        ? assetCurrency(usdUnrealized, 'USD')
-        : assetSignedCurrency(usdAmount, 'USD')}）`;
+    usd.textContent = `（${assetCurrency(usdAmount === null ? usdUnrealized : Math.abs(usdAmount), 'USD')}）`;
     value.append(twd, usd);
     return value;
 }
@@ -5909,12 +5912,9 @@ function assetUnrealizedDelta(unrealized, cost, currency = 'TWD') {
     const percent = assetUnrealizedPercent(unrealized, cost);
     const delta = document.createElement('span');
     delta.className = `asset-preview-delta ${assetSignClass(unrealized)}`.trim();
-    const percentText = percent === null
-        ? null
-        : `${percent >= 0 ? '+' : '−'}${Math.abs(percent)}%`;
-    delta.textContent = percentText !== null
-        ? percentText
-        : amount === null ? assetCurrency(unrealized, currency) : assetSignedCurrency(amount, currency);
+    delta.textContent = percent !== null
+        ? `${Math.abs(percent)}%`
+        : amount === null ? assetCurrency(unrealized, currency) : assetCurrency(Math.abs(amount), currency);
     return delta;
 }
 
@@ -8098,9 +8098,7 @@ function assetHoldingSortHeader(label, key) {
     const active = assetHoldingSortKey === key;
     const direction = assetHoldingSortDirection === 'desc' ? '▼' : '▲';
     button.textContent = `${label}${active ? ` ${direction}` : ''}`;
-    button.title = key === 'priceChange'
-        ? '日漲跌：盤中為現價相對昨日收盤價；盤後為最近收盤相對前一有效收盤價。不是持倉報酬率。點擊可排序；再次點擊切換方向。'
-        : `點擊依${label}排序；再次點擊切換方向。`;
+    button.title = `點擊依${label}排序；再次點擊切換方向。`;
     button.setAttribute('aria-pressed', String(active));
     button.addEventListener('click', () => {
         if (assetHoldingSortKey === key) {
@@ -8118,7 +8116,7 @@ function assetHoldingSortHeader(label, key) {
 
 const ASSET_HOLDING_SORTABLE_HEADERS = [
     ['名稱', 'name'],
-    ['日漲跌', 'priceChange'],
+    ['漲跌幅', 'priceChange'],
     ['股數', 'quantity'],
     ['成本', 'cost'],
     ['市值', 'marketValue'],
@@ -12909,6 +12907,72 @@ function assetHoldingsViewerMarketLabel(market) {
     return market === '美股' ? '美股' : market === '其他' ? '加密貨幣' : '台股';
 }
 
+const ASSET_HOLDINGS_VIEWER_COLUMNS = INTRADAY_COLUMNS.filter(column =>
+    ['rank', 'ticker', 'name', 'topic', 'price', 'close', 'revenue', 'revenueHigh'].includes(column.key));
+
+let assetHoldingsViewerLatestRows = new Map();
+let assetHoldingsViewerLatestDate = '';
+
+async function loadAssetHoldingsViewerLatestRows() {
+    if (latestTradingDate === '' || assetHoldingsViewerLatestDate === latestTradingDate) {
+        return;
+    }
+
+    try {
+        const data = await fetchPeriod(`1-${latestTradingDate}`);
+
+        if (data === null) {
+            return;
+        }
+
+        assetHoldingsViewerLatestRows = new Map(
+            (data.rows ?? []).map(row => [row.ticker, row]));
+        assetHoldingsViewerLatestDate = latestTradingDate;
+    } catch {
+        // 最新收盤快照是週漲跌的補充資料；讀不到時仍顯示持倉已有的日行情。
+    }
+}
+
+function assetHoldingsViewerMarketCode(holding, latestRow) {
+    const catalogMarket = String(
+        assetTickerQuotes.get(assetHoldingTicker(holding))?.market ?? '')
+        .toUpperCase();
+
+    return catalogMarket === 'TWSE'
+        ? 'twse'
+        : catalogMarket === 'TPEX'
+            ? 'tpex'
+            : latestRow?.market ?? '';
+}
+
+// 資產行情的 change_percent 是百分點（例如 1.67），盤中欄位則統一使用比率（0.0167）。
+// 這裡只做資料形狀轉換，顯示與互動仍交給盤中排行榜的共用欄位。
+function assetHoldingsViewerRow(holding, rank, latestRow = null) {
+    const ticker = assetHoldingTicker(holding);
+    const quote = assetTickerQuotes.get(ticker);
+    const holdingPriceChange = assetNumber(holding.priceChange);
+    const close = assetNumber(holding.price) ?? assetNumber(latestRow?.close);
+    const weeklyBaselineClose = assetNumber(latestRow?.weeklyBaselineClose);
+    const weeklyPriceChange = close !== null
+        && weeklyBaselineClose !== null
+        && weeklyBaselineClose > 0
+        ? (close - weeklyBaselineClose) / weeklyBaselineClose
+        : latestRow?.weeklyPriceChange ?? null;
+
+    return {
+        ...latestRow,
+        ticker,
+        name: holding.name || latestRow?.name || quote?.name || ticker,
+        market: assetHoldingsViewerMarketCode(holding, latestRow),
+        rank,
+        priceChange: holdingPriceChange === null
+            ? latestRow?.priceChange ?? null
+            : holdingPriceChange / 100,
+        weeklyPriceChange,
+        close
+    };
+}
+
 function assetHoldingsViewerCell(text, className = '') {
     const cell = document.createElement('td');
 
@@ -12922,11 +12986,11 @@ function assetHoldingsViewerCell(text, className = '') {
 
 function makeAssetHoldingsViewerTable(views, market) {
     const table = document.createElement('table');
-    table.className = 'asset-holdings-viewer-table';
+    table.className = 'ranking-table asset-holdings-viewer-table';
     table.setAttribute('aria-label', `Frank ${assetHoldingsViewerMarketLabel(market)}持倉`);
 
     const colgroup = document.createElement('colgroup');
-    for (const className of ['rank', 'ticker', 'name', 'topic', 'change', 'price', 'revenue', 'highs']) {
+    for (const className of ['rank', 'ticker', 'name', 'topic', 'price', 'close', 'revenue', 'revenueHigh']) {
         const col = document.createElement('col');
         col.className = className;
         colgroup.append(col);
@@ -12934,11 +12998,12 @@ function makeAssetHoldingsViewerTable(views, market) {
 
     const head = document.createElement('thead');
     const headRow = document.createElement('tr');
-    for (const title of ['排名', '代號', '名稱', '族群', '漲跌幅', '現價', '營收增減', '創高月數']) {
+    for (const column of ASSET_HOLDINGS_VIEWER_COLUMNS) {
         const heading = document.createElement('th');
         heading.scope = 'col';
-        heading.className = 'asset-holdings-viewer-heading';
-        heading.textContent = title;
+        heading.className = `asset-holdings-viewer-heading col-${column.key}`;
+        heading.dataset.hint = tableHeaderHint(column.key, rankingColumnHint(column));
+        heading.textContent = rankingColumnTitle(column);
         headRow.append(heading);
     }
     head.append(headRow);
@@ -12957,52 +13022,22 @@ function makeAssetHoldingsViewerTable(views, market) {
     } else {
         rows.forEach((holding, index) => {
             const row = document.createElement('tr');
-            row.append(assetHoldingsViewerCell(String(index + 1), 'asset-holdings-viewer-rank'));
+            const viewerRow = assetHoldingsViewerRow(
+                holding,
+                index + 1,
+                assetHoldingsViewerLatestRows.get(assetHoldingTicker(holding)) ?? null);
+            const ticker = viewerRow.ticker;
 
-            const ticker = assetHoldingTicker(holding);
-            const tickerCell = document.createElement('td');
-            tickerCell.className = 'asset-holdings-viewer-ticker';
-            const tickerWrap = document.createElement('span');
-            tickerWrap.className = 'asset-holdings-viewer-ticker-wrap';
-            tickerWrap.append(document.createTextNode(ticker || '—'));
-            const marketMark = document.createElement('small');
-            marketMark.className = 'asset-holdings-viewer-market-mark';
-            marketMark.textContent = market === '美股' ? '股' : market === '台股' ? '市' : '幣';
-            tickerWrap.append(marketMark);
-            tickerCell.append(tickerWrap);
-            row.append(tickerCell);
+            if (ticker !== '') {
+                nameByTicker.set(ticker, viewerRow.name);
+            }
 
-            const nameCell = document.createElement('td');
-            nameCell.className = `asset-holdings-viewer-name ${stockNameChangeClass(holding.priceChange)}`.trim();
-            nameCell.textContent = holding.name || ticker || '—';
-            row.append(nameCell);
+            for (const column of ASSET_HOLDINGS_VIEWER_COLUMNS) {
+                appendRankingCell(row, viewerRow, column, {
+                    kline: { latest: true, market: assetHoldingsViewerMarketLabel(market) }
+                });
+            }
 
-            row.append(assetHoldingsViewerCell('—', 'asset-holdings-viewer-topic'));
-
-            const changeCell = document.createElement('td');
-            changeCell.className = `asset-holdings-viewer-change ${assetSignClass(holding.priceChange)}`.trim();
-            const day = document.createElement('span');
-            day.textContent = `日 ${assetHoldingPriceChangeText(holding.priceChange)}`;
-            const week = document.createElement('span');
-            week.className = 'asset-holdings-viewer-muted';
-            week.textContent = '週 —';
-            changeCell.append(day, week);
-            row.append(changeCell);
-
-            row.append(assetHoldingsViewerCell(
-                assetCurrencyForMarket(holding.price, market),
-                'asset-holdings-viewer-price'));
-
-            const revenueCell = document.createElement('td');
-            revenueCell.className = 'asset-holdings-viewer-revenue asset-holdings-viewer-muted';
-            const yoy = document.createElement('span');
-            yoy.textContent = 'YOY —';
-            const mom = document.createElement('span');
-            mom.textContent = 'MOM —';
-            revenueCell.append(yoy, mom);
-            row.append(revenueCell);
-
-            row.append(assetHoldingsViewerCell('—', 'asset-holdings-viewer-muted'));
             body.append(row);
         });
     }
@@ -13023,6 +13058,14 @@ function makeAssetHoldingsViewerMessage(text) {
 
 function renderAssetHoldingsViewer(page) {
     page.setAttribute('aria-label', 'Frank 持倉');
+
+    if (expandedTicker !== null) {
+        closeKLine(false);
+    }
+
+    if (expandedRevenueTicker !== null) {
+        closeRevenueDetails(false);
+    }
 
     if (assetsLoadError !== null) {
         page.replaceChildren(makeAssetHoldingsViewerMessage(assetsLoadError));
@@ -15450,6 +15493,112 @@ function configureRevenuePopover() {
     window.addEventListener('scroll', () => positionRevenuePopover(revenueAnchor), true);
 }
 
+// 排行榜與持倉檢視共用同一套儲存格內容：代號市場標記／交易限制、名稱 K 線、族群連結、
+// 日週漲跌、營收彈窗與創高月數都在這裡畫。呼叫端只負責提供資料列與 K 線尾端選項。
+function appendRankingCell(tr, row, column, options = {}) {
+    const { text, cls, lines, kline, marketMark, revenueDetails, topic, tickerBadges } = column.cell(row);
+    const td = document.createElement('td');
+    td.className = cls;
+
+    // 交易限制移到代號右側，讓名稱儲存格可以安全使用漲跌底色。
+    if (tickerBadges !== undefined) {
+        td.append(String(text));
+
+        if (marketMark) {
+            const mark = document.createElement('span');
+            mark.className = 'market-mark';
+            mark.textContent = marketMark;
+            mark.dataset.hint = marketMark === '市'
+                ? '上市（證交所）'
+                : '上櫃（櫃買中心）';
+            td.append(mark);
+        }
+
+        if (tickerBadges.length > 0) {
+            const badges = document.createElement('span');
+            badges.className = 'badges ticker-badges';
+
+            for (const badge of tickerBadges) {
+                const mark = document.createElement('span');
+                mark.className = 'badge ' + badge.cls;
+                mark.textContent = badge.text;
+                mark.dataset.hint = badge.hint;
+                badges.append(mark);
+            }
+
+            td.append(badges);
+        }
+
+        tr.append(td);
+        return;
+    }
+
+    // 族群欄：上下兩層各自是一顆連結，點下去跳到族群列表的那個節點。
+    if (cls === 'topic-cell') {
+        td.append(makeTopicCell(row.ticker, topic));
+        tr.append(td);
+        return;
+    }
+
+    // 日／週與 YOY／MOM 都共用上下兩行。兩個數字的漲跌顏色是各自的，
+    // 所以每一行自己一個 span，不能整格套同一個顏色。
+    if (lines) {
+        const target = revenueDetails
+            ? document.createElement('button')
+            : td;
+
+        if (revenueDetails) {
+            target.type = 'button';
+            target.className = 'revenue-cell-button';
+            target.dataset.ticker = row.ticker;
+            target.dataset.hint = '點擊開啟 20 個月營收圖表與最近 5 個月列表';
+            target.setAttribute('aria-controls', 'revenue-popover');
+            target.setAttribute('aria-expanded', String(expandedRevenueTicker === row.ticker));
+            target.setAttribute('aria-label', `${row.ticker} ${row.name} 營收詳情`);
+            target.addEventListener('click', () => toggleRevenueDetails(row.ticker, row.name, target));
+        }
+
+        for (const line of lines) {
+            const span = document.createElement('span');
+            span.className = line.cls;
+
+            // 標籤自己一個 span：漲跌顏色只上在數字上，
+            // 整行都染紅的話標籤會跟數字搶注意力。
+            const label = document.createElement('span');
+            label.className = 'metric-label';
+            label.textContent = line.label;
+
+            span.append(label, line.text);
+            target.append(span);
+        }
+
+        if (revenueDetails) {
+            td.append(target);
+        }
+
+        tr.append(td);
+        return;
+    }
+
+    if (kline && row.ticker !== '') {
+        td.append(makeKLineButton(row.ticker, String(text), options.kline ?? {}));
+    } else {
+        td.append(String(text));
+
+        if (marketMark) {
+            const mark = document.createElement('span');
+            mark.className = 'market-mark';
+            mark.textContent = marketMark;
+            mark.dataset.hint = marketMark === '市'
+                ? '上市（證交所）'
+                : '上櫃（櫃買中心）';
+            td.append(mark);
+        }
+    }
+
+    tr.append(td);
+}
+
 function renderTable() {
     el('data-table').classList.toggle('custom-table', state.view === 'custom');
 
@@ -15523,108 +15672,7 @@ function renderTable() {
         }
 
         for (const column of columns()) {
-            const { text, cls, lines, kline, marketMark, revenueDetails, topic, tickerBadges } = column.cell(row);
-            const td = document.createElement('td');
-            td.className = cls;
-
-            // 交易限制移到代號右側，讓名稱儲存格可以安全使用漲跌底色。
-            if (tickerBadges !== undefined) {
-                td.append(String(text));
-
-                if (marketMark) {
-                    const mark = document.createElement('span');
-                    mark.className = 'market-mark';
-                    mark.textContent = marketMark;
-                    mark.dataset.hint = marketMark === '市'
-                        ? '上市（證交所）'
-                        : '上櫃（櫃買中心）';
-                    td.append(mark);
-                }
-
-                if (tickerBadges.length > 0) {
-                    const badges = document.createElement('span');
-                    badges.className = 'badges ticker-badges';
-
-                    for (const badge of tickerBadges) {
-                        const mark = document.createElement('span');
-                        mark.className = 'badge ' + badge.cls;
-                        mark.textContent = badge.text;
-                        mark.dataset.hint = badge.hint;
-                        badges.append(mark);
-                    }
-
-                    td.append(badges);
-                }
-
-                tr.append(td);
-                continue;
-            }
-
-            // 族群欄：上下兩層各自是一顆連結，點下去跳到族群列表的那個節點。
-            // 一定要用 Topic Id 帶過去，不能用中文名字——名字在人工編輯頁改得動，
-            // 改完連結就會找不到節點，而且改的人不會知道自己弄壞了排行榜。
-            if (cls === 'topic-cell') {
-                td.append(makeTopicCell(row.ticker, topic));
-                tr.append(td);
-                continue;
-            }
-
-            // 日／週與 YOY／MOM 都共用上下兩行。兩個數字的漲跌顏色是各自的，
-            // 所以每一行自己一個 span，不能整格套同一個顏色。
-            if (lines) {
-                const target = revenueDetails
-                    ? document.createElement('button')
-                    : td;
-
-                if (revenueDetails) {
-                    target.type = 'button';
-                    target.className = 'revenue-cell-button';
-                    target.dataset.ticker = row.ticker;
-                    target.dataset.hint = '點擊開啟 20 個月營收圖表與最近 5 個月列表';
-                    target.setAttribute('aria-controls', 'revenue-popover');
-                    target.setAttribute('aria-expanded', String(expandedRevenueTicker === row.ticker));
-                    target.setAttribute('aria-label', `${row.ticker} ${row.name} 營收詳情`);
-                    target.addEventListener('click', () => toggleRevenueDetails(row.ticker, row.name, target));
-                }
-
-                for (const line of lines) {
-                    const span = document.createElement('span');
-                    span.className = line.cls;
-
-                    // 標籤自己一個 span：漲跌顏色只上在數字上，
-                    // 整行都染紅的話標籤會跟數字搶注意力。
-                    const label = document.createElement('span');
-                    label.className = 'metric-label';
-                    label.textContent = line.label;
-
-                    span.append(label, line.text);
-                    target.append(span);
-                }
-
-                if (revenueDetails) {
-                    td.append(target);
-                }
-
-                tr.append(td);
-                continue;
-            }
-
-            if (kline) {
-                td.append(makeKLineButton(row.ticker, String(text)));
-            } else {
-                td.append(String(text));
-
-                if (marketMark) {
-                    const mark = document.createElement('span');
-                    mark.className = 'market-mark';
-                    mark.textContent = marketMark;
-                    mark.dataset.hint = marketMark === '市'
-                        ? '上市（證交所）'
-                        : '上櫃（櫃買中心）';
-                    td.append(mark);
-                }
-            }
-            tr.append(td);
+            appendRankingCell(tr, row, column);
         }
 
         body.append(tr);
@@ -21860,7 +21908,17 @@ async function load() {
         el('notes-page').hidden = true;
         el('assets-page').hidden = false;
         renderAssetsDashboard();
-        await refreshAssets({ persistSnapshots: ASSET_DASHBOARD_ENABLED });
+        const viewerSupplement = ASSET_HOLDINGS_VIEW_ENABLED
+            ? Promise.all([
+                loadRevenue(),
+                loadAttributions(),
+                loadAssetHoldingsViewerLatestRows()
+            ])
+            : Promise.resolve();
+        await Promise.all([
+            refreshAssets({ persistSnapshots: ASSET_DASHBOARD_ENABLED }),
+            viewerSupplement
+        ]);
 
         if (state.view === 'assets') {
             renderAssetsDashboard();

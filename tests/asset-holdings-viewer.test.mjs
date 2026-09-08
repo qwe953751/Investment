@@ -38,6 +38,19 @@ function holdingsViewerRows() {
     return context.assetHoldingsViewerRows;
 }
 
+function holdingsViewerRow() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        "const assetTickerQuotes = new Map([['2308', { market: 'TWSE', name: '台燿' }]]);",
+        functionSource('assetNumber'),
+        functionSource('assetHoldingTicker'),
+        functionSource('assetHoldingsViewerMarketCode'),
+        functionSource('assetHoldingsViewerRow')
+    ].join('\n\n'), context);
+    return context.assetHoldingsViewerRow;
+}
+
 test('持倉檢視者只按帳戶市場篩選 Frank 的所有持股', () => {
     const rowsFor = holdingsViewerRows();
     const views = [
@@ -51,6 +64,28 @@ test('持倉檢視者只按帳戶市場篩選 Frank 的所有持股', () => {
     assert.deepEqual(rowsFor(views, '其他').map(row => row.ticker), ['BTC']);
 });
 
+test('持倉行情轉成盤中欄位的比率並保留週基準與市場標記', () => {
+    const rowFor = holdingsViewerRow();
+    const row = rowFor(
+        { ticker: '2308', name: '台燿', price: 180, priceChange: -2.7 },
+        3,
+        {
+            ticker: '2308',
+            name: '台燿',
+            market: 'twse',
+            close: 175,
+            priceChange: -0.02,
+            weeklyBaselineClose: 170,
+            weeklyPriceChange: 0.0294
+        });
+
+    assert.equal(row.rank, 3);
+    assert.equal(row.market, 'twse');
+    assert.ok(Math.abs(row.priceChange - -0.027) < 0.000000001);
+    assert.equal(row.close, 180);
+    assert.equal(row.weeklyPriceChange, 10 / 170);
+});
+
 test('正式模板保留唯讀欄位，不含刪除、編輯或清除控制', () => {
     assert.match(siteScript, /const ACCESS_RANK = \{ viewer: 0, holdings: 1, monitor: 2, admin: 3 \};/);
     assert.match(siteScript, /holdings@investment\.local/);
@@ -59,5 +94,11 @@ test('正式模板保留唯讀欄位，不含刪除、編輯或清除控制', ()
     const viewerStart = siteScript.indexOf('function assetHoldingsViewerRows');
     const viewerEnd = siteScript.indexOf('function renderAssetsDashboard', viewerStart);
     const viewerRenderer = siteScript.slice(viewerStart, viewerEnd);
+    assert.match(siteScript, /const ASSET_HOLDINGS_VIEWER_COLUMNS = INTRADAY_COLUMNS\.filter/);
+    assert.match(viewerRenderer, /appendRankingCell\(row, viewerRow, column/);
+    assert.match(siteScript, /function appendRankingCell\(tr, row, column, options = \{\}\)/);
+    assert.match(siteScript, /makeKLineButton\(row\.ticker, String\(text\), options\.kline \?\? \{\}\)/);
+    assert.match(siteScript, /target\.className = 'revenue-cell-button'/);
+    assert.match(siteScript, /loadRevenue\(\),\n                loadAttributions\(\),/);
     assert.doesNotMatch(viewerRenderer, /assetButton\(|assetRemove\(|assetUpdate\(|assetInsert\(/);
 });
