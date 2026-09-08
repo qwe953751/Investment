@@ -24958,19 +24958,22 @@ async function start() {
     alteredTrading = new Set(manifest.alteredTrading ?? []);
     state.date = dates[dates.length - 1];
 
-    // 同裝置登入過就自動恢復，一定要在套用上次選的頁籤之前完成，
-    // 不然頁籤的可用性判斷（availableViews／availableTopicTabs）會用到舊的權限。
-    await restoreSession();
+    // 長者友善連結：明確的 key 代表這次開頁的登入意圖，優先於同裝置舊 session。
+    // key 驗證失敗才回復舊 session，避免輸錯連結時把原本可用的登入弄丟。
+    if (AUTOLOGIN_QUERY) {
+        const loggedIn = await loginWithPassword(AUTOLOGIN_QUERY);
 
-    // 長者友善連結：跟手動輸入密碼走同一套驗證，只是省了打字。安全層級跟
-    // 手動打密碼一樣，只是密碼變成寫在網址上，不是額外的存取控制。
-    // 已經用 refresh token 恢復過登入就不用再試一次。
-    if (AUTOLOGIN_QUERY && loginTier === null) {
-        await loginWithPassword(AUTOLOGIN_QUERY);
+        if (!loggedIn) {
+            await restoreSession();
+        }
+    } else {
+        // 同裝置登入過就自動恢復，一定要在套用上次選的頁籤之前完成，
+        // 不然頁籤的可用性判斷（availableViews／availableTopicTabs）會用到舊的權限。
+        await restoreSession();
     }
 
     // 用過就把 key 從網址列拿掉：分享畫面截圖、瀏覽器歷史記錄都不會留下明文密碼。
-    // 之後這台裝置靠 restoreSession() 的 refresh token 記得住，不用再帶著這段網址。
+    // 沒有 key 時則靠 restoreSession() 的 refresh token 記得住，不用再帶著這段網址。
     if (AUTOLOGIN_QUERY) {
         const cleanUrl = new URL(window.location.href);
         cleanUrl.searchParams.delete('key');

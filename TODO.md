@@ -145,7 +145,8 @@ CI 的密碼放在 GitHub Secrets，不能讓它擁有 DDL 權限。
 - 同裝置靠 Supabase 的 refresh token 存在 `localStorage`（key `invest.auth`）
   自動恢復登入。恢復後一律以 Supabase session 的 email 重新對應權限與資產預設，
   不信任瀏覽器先前保存的層級；refresh 失效或帳號不在固定清單時會一併清除前端權限；
-  另外支援 `?key=密碼` 網址參數做長者友善的免打字自動登入，用過即從網址列移除。
+  另外支援 `?key=密碼` 網址參數做長者友善的免打字自動登入；明確帶入的 `key` 會優先於既有
+  refresh session，驗證成功就切換到 key 對應權限，驗證失敗才回復舊 session，用過即從網址列移除。
 - 前端已完整實作並端到端驗證（真密碼登入、頁籤依權限篩選、自動恢復都測過）。本次持倉檢視者的程式與模板
   已由 `main` commit `ad7bb2a3156a115be278f5434a897c587765994e` 推送，並由 publish-only run `34191472515`
   發布為正式網站 manifest `1788846093`；正式網址已驗證登入後固定顯示 Frank 的台股／美股持股唯讀表格。
