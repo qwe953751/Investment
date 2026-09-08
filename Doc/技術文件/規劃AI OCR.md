@@ -2,7 +2,7 @@
 
 > 日期：2026-09-08
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max AI，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續、忙碌 heartbeat、佇列補位、fallback 清理與 Windows 自包含 EXE 排程；Max effort 預設 `high` 且可由環境變數調整；Low 只在背景抽樣，不會替換畫面上的 Max；Golden Set、圖片／模型效能調校與 Windows 新接線實機仍待驗收**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max 結果路徑，正式辨識 effort 預設為 `high`，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續、忙碌 heartbeat、佇列補位、fallback 清理與 Windows 自包含 EXE 排程；Low 只在背景抽樣，不會替換畫面上的 Max；公司 Windows 已重新部署目前 `main` 的 Worker 並驗證 `Max effort high` 與並行上限 3；Golden Set、圖片／模型效能調校、六張圖片整批外部驗收仍待完成**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -1263,5 +1263,5 @@ Claude CLI 並修好雙 Agent 接線，而不是繼續維持「不裝 Claude」�
 AI-first 前端、Mac Worker 與 CLI 路徑接線修正已整合，正式手機兩張圖亦已確認 AI `succeeded`。
 名稱唯一反查、可恢復進度與 Windows 背景常駐的基本實作／驗證已完成；延遲縮短、Golden Set、修復後的
 手機 AI 成功及 Windows 長期／斷網／重開機情境仍是後續驗收。筆記 #52 的前端／Worker 並行、忙碌 heartbeat、
-佇列補位、fallback 清理與 `OCR_MAX_REASONING_EFFORT=high` 預設已完成程式接線與自動化測試；本輪未部署
-Edge Function 或網站，正式 Windows 每張 ≤30 秒仍待外部驗收。
+佇列補位、fallback 清理與 `OCR_MAX_REASONING_EFFORT=high` 預設已完成程式接線、自動化測試，且目前 `main`
+版本已重新部署至公司 Windows；本輪未部署 Edge Function 或網站，正式 Windows 每張 ≤30 秒仍待外部驗收。
