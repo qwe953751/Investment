@@ -12919,7 +12919,8 @@ async function loadAssetHoldingsViewerLatestRows() {
     }
 
     try {
-        const data = await fetchPeriod(`1-${latestTradingDate}`);
+        const latestDateKey = latestTradingDate.replaceAll('/', '-');
+        const data = await fetchPeriod(`1-${latestDateKey}`);
 
         if (data === null) {
             return;

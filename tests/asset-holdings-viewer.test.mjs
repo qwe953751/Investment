@@ -13,7 +13,10 @@ function functionSource(name) {
     const start = siteScript.indexOf(`function ${name}(`);
     assert.ok(start >= 0, `找不到 ${name}，無法驗證持倉檢視模板。`);
 
-    const openingBrace = siteScript.indexOf('{', start);
+    const sourceStart = start >= 6 && siteScript.slice(start - 6, start) === 'async '
+        ? start - 6
+        : start;
+    const openingBrace = siteScript.indexOf('{', sourceStart);
     let depth = 0;
 
     for (let index = openingBrace; index < siteScript.length; index += 1) {
@@ -23,7 +26,7 @@ function functionSource(name) {
             depth -= 1;
 
             if (depth === 0) {
-                return siteScript.slice(start, index + 1);
+                return siteScript.slice(sourceStart, index + 1);
             }
         }
     }
@@ -49,6 +52,22 @@ function holdingsViewerRow() {
         functionSource('assetHoldingsViewerRow')
     ].join('\n\n'), context);
     return context.assetHoldingsViewerRow;
+}
+
+async function loadViewerLatestRows() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        "let latestTradingDate = '2026/09/07';",
+        "let assetHoldingsViewerLatestRows = new Map();",
+        "let assetHoldingsViewerLatestDate = '';",
+        "var requestedPeriodKeys = [];",
+        "async function fetchPeriod(key) { requestedPeriodKeys.push(key); return { rows: [] }; }",
+        functionSource('loadAssetHoldingsViewerLatestRows')
+    ].join('\n\n'), context);
+
+    await context.loadAssetHoldingsViewerLatestRows();
+    return Array.from(context.requestedPeriodKeys);
 }
 
 test('持倉檢視者只按帳戶市場篩選 Frank 的所有持股', () => {
@@ -84,6 +103,10 @@ test('持倉行情轉成盤中欄位的比率並保留週基準與市場標記',
     assert.ok(Math.abs(row.priceChange - -0.027) < 0.000000001);
     assert.equal(row.close, 180);
     assert.equal(row.weeklyPriceChange, 10 / 170);
+});
+
+test('持倉週漲跌使用 manifest 日期對應的排行檔案 key', async () => {
+    assert.deepEqual(await loadViewerLatestRows(), ['1-2026-09-07']);
 });
 
 test('正式模板保留唯讀欄位，不含刪除、編輯或清除控制', () => {
