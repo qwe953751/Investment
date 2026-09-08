@@ -14,6 +14,8 @@ public sealed class OcrWorkerRunner(
 {
     private static readonly string[] SupportedExtensions = [".png", ".jpg", ".jpeg", ".webp"];
     private static readonly TimeSpan ProbeCacheTtl = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan BusyHeartbeatInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan QueueDrainGrace = TimeSpan.FromSeconds(3);
 
     private IReadOnlyDictionary<string, OcrWorkerAgentState>? _probeCache;
     private DateTimeOffset _probeCacheAt;
@@ -31,7 +33,8 @@ public sealed class OcrWorkerRunner(
         var api = new OcrWorkerApiClient(httpClientFactory.CreateClient(nameof(OcrWorkerApiClient)), options);
         Console.WriteLine(
             $"D+ OCR Worker 啟動：{options.Name}（輪詢 {options.PollInterval.TotalSeconds:0} 秒；"
-            + $"並行上限 {options.MaxConcurrency}；評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
+            + $"並行上限 {options.MaxConcurrency}；Max effort {options.MaxReasoningEffort}；"
+            + $"評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
 
         do
         {
@@ -42,23 +45,8 @@ public sealed class OcrWorkerRunner(
                 await api.HeartbeatAsync(agents, cancellationToken);
                 if (agents.Values.Any(agent => agent.Authenticated && agent.QuotaAvailable))
                 {
-                    var jobs = new List<OcrClaimedJob>();
-                    for (var claimed = 0; claimed < options.MaxConcurrency; claimed++)
-                    {
-                        var job = await api.ClaimAsync(cancellationToken);
-                        if (job is null)
-                        {
-                            break;
-                        }
-                        jobs.Add(job);
-                    }
-
-                    if (jobs.Count > 0)
-                    {
-                        processedWork = true;
-                        await Task.WhenAll(jobs.Select(job => ProcessJobAsync(api, job, agents, options, cancellationToken)));
-                    }
-                    else
+                    processedWork = await ProcessAvailableJobsAsync(api, agents, options, cancellationToken);
+                    if (!processedWork)
                     {
                         var evaluation = await api.ClaimEvaluationAsync(cancellationToken);
                         if (evaluation is not null)
@@ -90,6 +78,100 @@ public sealed class OcrWorkerRunner(
         while (!once);
     }
 
+    private async Task<bool> ProcessAvailableJobsAsync(
+        OcrWorkerApiClient api,
+        IReadOnlyDictionary<string, OcrWorkerAgentState> agentStates,
+        OcrWorkerOptions options,
+        CancellationToken cancellationToken)
+    {
+        using var heartbeatCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var heartbeatTask = MaintainHeartbeatAsync(api, agentStates, heartbeatCancellation.Token);
+        var dispatchState = new DispatchState();
+
+        try
+        {
+            var workers = Enumerable.Range(0, options.MaxConcurrency)
+                .Select(_ => ClaimAndProcessJobsAsync(api, agentStates, options, dispatchState, cancellationToken));
+
+            await Task.WhenAll(workers);
+            return Volatile.Read(ref dispatchState.ProcessedJobs) > 0;
+        }
+        finally
+        {
+            heartbeatCancellation.Cancel();
+            await heartbeatTask;
+        }
+    }
+
+    private async Task ClaimAndProcessJobsAsync(
+        OcrWorkerApiClient api,
+        IReadOnlyDictionary<string, OcrWorkerAgentState> agentStates,
+        OcrWorkerOptions options,
+        DispatchState dispatchState,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var job = await api.ClaimAsync(cancellationToken);
+            if (job is null)
+            {
+                var idleFor = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeMilliseconds(
+                    Volatile.Read(ref dispatchState.LastActivityUnixMilliseconds));
+                if (Volatile.Read(ref dispatchState.ActiveJobs) == 0 && idleFor >= QueueDrainGrace)
+                {
+                    return;
+                }
+
+                await Task.Delay(options.PollInterval, cancellationToken);
+                continue;
+            }
+
+            Interlocked.Increment(ref dispatchState.ActiveJobs);
+            Interlocked.Exchange(ref dispatchState.ProcessedJobs, 1);
+            Volatile.Write(ref dispatchState.LastActivityUnixMilliseconds, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+            try
+            {
+                await ProcessJobAsync(api, job, agentStates, options, cancellationToken);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref dispatchState.ActiveJobs);
+                Volatile.Write(ref dispatchState.LastActivityUnixMilliseconds, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            }
+        }
+    }
+
+    private async Task MaintainHeartbeatAsync(
+        OcrWorkerApiClient api,
+        IReadOnlyDictionary<string, OcrWorkerAgentState> agentStates,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(BusyHeartbeatInterval, cancellationToken);
+                await api.HeartbeatAsync(agentStates, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"OCR Worker 忙碌 heartbeat 失敗：{Safe(exception.Message)}");
+            }
+        }
+    }
+
+    private sealed class DispatchState
+    {
+        public long LastActivityUnixMilliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        public int ActiveJobs;
+        public int ProcessedJobs;
+    }
+
     private async Task ProcessJobAsync(
         OcrWorkerApiClient api,
         OcrClaimedJob job,
@@ -117,7 +199,7 @@ public sealed class OcrWorkerRunner(
             downloadStopwatch.Stop();
             await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
 
-            var request = CreateRequest(imagePath, schemaPath, directory.FullName, job.Market, "max");
+            var request = CreateRequest(imagePath, schemaPath, directory.FullName, job.Market, options.MaxReasoningEffort);
             var readiness = new OcrWorkerReadiness(
                 DateTimeOffset.UtcNow,
                 agentStates

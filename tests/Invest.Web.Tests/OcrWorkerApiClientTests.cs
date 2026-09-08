@@ -46,6 +46,31 @@ public sealed class OcrWorkerApiClientTests
     }
 
     [Fact]
+    public void 未設定Max推理強度時預設為High()
+    {
+        var options = BuildOptions();
+        Assert.Equal("high", options.MaxReasoningEffort);
+    }
+
+    [Theory]
+    [InlineData("HIGH", "high")]
+    [InlineData("max", "max")]
+    [InlineData("unsupported", "high")]
+    public void Max推理強度環境變數只接受支援值並正規化(string configured, string expected)
+    {
+        Environment.SetEnvironmentVariable("OCR_MAX_REASONING_EFFORT", configured);
+        try
+        {
+            var options = BuildOptions();
+            Assert.Equal(expected, options.MaxReasoningEffort);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OCR_MAX_REASONING_EFFORT", null);
+        }
+    }
+
+    [Fact]
     public async Task 多個工作同時遇到401時只會觸發一次換發不會重複刷新()
     {
         var handler = new RaceyAuthHandler();

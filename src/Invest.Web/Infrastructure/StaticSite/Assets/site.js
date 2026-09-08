@@ -8836,6 +8836,56 @@ async function assetAiOcrAcknowledge(jobId, action = 'acknowledge') {
     return assetAiOcrJson(response, '清理 AI OCR 工作');
 }
 
+async function assetAiOcrMarkFallback(jobId, fallbackReason) {
+    const response = await assetAiOcrRequest('fallback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'fallback', jobId, fallbackReason })
+    });
+    return assetAiOcrJson(response, '切換 AI OCR 備援');
+}
+
+async function assetAiOcrPrepareFallback(jobId) {
+    try {
+        const status = await assetAiOcrStatus(jobId);
+        if (status.status === 'succeeded') {
+            await assetAiOcrAcknowledge(jobId);
+            forgetAssetAiJob(jobId);
+            return { mode: 'ai', jobId, result: status.result };
+        }
+
+        if (['queued', 'leased'].includes(status.status)) {
+            await assetAiOcrAcknowledge(jobId, 'cancel');
+        } else if (['fallback_required', 'failed', 'expired', 'cancelled'].includes(status.status)) {
+            await assetAiOcrAcknowledge(jobId);
+        } else {
+            return { mode: 'tesseract', jobId };
+        }
+        forgetAssetAiJob(jobId);
+        return { mode: 'tesseract', jobId: null };
+    } catch {
+        // 若取消與狀態查詢同時遇到網路中斷，保留 job id，讓 finally／下次重整繼續清理。
+        return { mode: 'tesseract', jobId };
+    }
+}
+
+async function assetAiOcrFinalizeFallback(jobId) {
+    try {
+        const status = await assetAiOcrStatus(jobId);
+        if (['queued', 'leased'].includes(status.status)) {
+            await assetAiOcrAcknowledge(jobId, 'cancel');
+        } else if (['succeeded', 'fallback_required', 'failed', 'expired', 'cancelled'].includes(status.status)) {
+            await assetAiOcrAcknowledge(jobId);
+        } else {
+            return false;
+        }
+        forgetAssetAiJob(jobId);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 async function assetAiOcrRecordTruth(jobId, truthRows, confirmedChanges, complete) {
     const response = await assetAiOcrRequest('evaluation-truth', {
         method: 'POST',
@@ -9029,7 +9079,8 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                         percent: 90,
                         statusText: 'Worker 離線，切換 Tesseract…'
                     });
-                    return { mode: 'tesseract', jobId, reason: unavailableReason };
+                    const fallback = await assetAiOcrPrepareFallback(jobId);
+                    return { ...fallback, reason: unavailableReason };
                 }
             }
 
@@ -9048,8 +9099,15 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
         return { mode: 'tesseract', jobId, reason: 'ai_execution_failed' };
     } catch (error) {
         if (jobId !== null) {
-            await assetAiOcrAcknowledge(jobId, 'cancel').catch(() => {});
-            forgetAssetAiJob(jobId);
+            const fallback = await assetAiOcrPrepareFallback(jobId);
+            if (fallback.mode === 'ai') {
+                return fallback;
+            }
+            return {
+                mode: 'tesseract',
+                jobId: fallback.jobId,
+                reason: error?.fallbackReason ?? error?.code ?? 'ai_execution_failed'
+            };
         }
         return {
             mode: 'tesseract',
@@ -9117,6 +9175,7 @@ async function resumeAssetAiJobs(accountId) {
                     if (status.status === 'queued') {
                         const unavailableReason = await assetAiQueuedWorkerUnavailable(queuedAt);
                         if (unavailableReason !== null) {
+                            await assetAiOcrMarkFallback(job.jobId, unavailableReason);
                             finalStatus = { ...status, status: 'fallback_required', fallbackReason: unavailableReason };
                             break;
                         }
@@ -12131,16 +12190,16 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             await tesseractQueue;
 
             if (aiResult.jobId !== null) {
-                await assetAiOcrAcknowledge(aiResult.jobId).catch(() => {});
-                forgetAssetAiJob(aiResult.jobId);
-                pendingAiJobId = null;
+                if (await assetAiOcrFinalizeFallback(aiResult.jobId)) {
+                    pendingAiJobId = null;
+                }
             }
         } catch (error) {
             screenshot.status = '失敗';
             failures.push(`第 ${index} 張：${String(error?.message ?? error)}`);
         } finally {
             if (pendingAiJobId !== null) {
-                await assetAiOcrAcknowledge(pendingAiJobId).catch(() => {});
+                await assetAiOcrFinalizeFallback(pendingAiJobId);
             }
             completedCount += 1;
             if (!aborted) {

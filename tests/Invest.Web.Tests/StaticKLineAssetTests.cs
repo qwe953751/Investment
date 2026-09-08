@@ -1621,6 +1621,19 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void AI佇列回退會取消即時工作並保留重整後取圖的備援工作()
+    {
+        var script = ReadAsset("site.js");
+
+        Assert.Contains("async function assetAiOcrMarkFallback(jobId, fallbackReason)", script, StringComparison.Ordinal);
+        Assert.Contains("async function assetAiOcrPrepareFallback(jobId)", script, StringComparison.Ordinal);
+        Assert.Contains("async function assetAiOcrFinalizeFallback(jobId)", script, StringComparison.Ordinal);
+        Assert.Contains("assetAiOcrAcknowledge(jobId, 'cancel')", script, StringComparison.Ordinal);
+        Assert.Contains("await assetAiOcrMarkFallback(job.jobId, unavailableReason);", script, StringComparison.Ordinal);
+        Assert.Contains("assetAiOcrRequest('fallback'", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 截圖辨識可選多張並支援英文券商欄位()
     {
         var script = ReadAsset("site.js");

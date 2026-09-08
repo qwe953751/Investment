@@ -403,28 +403,39 @@ async function handleAcknowledge(request, user, body) {
     }
 
     const cancellable = ['queued', 'leased'];
+    const fallbackable = ['queued'];
     const terminal = ['succeeded', 'fallback_required', 'failed', 'cancelled', 'expired'];
     if (body?.action === 'cancel' && !cancellable.includes(job.status)) {
         return json(request, 409, { error: 'job_not_cancellable' });
     }
-    if (body?.action !== 'cancel' && !terminal.includes(job.status)) {
+    if (body?.action === 'fallback' && !fallbackable.includes(job.status)) {
+        return json(request, 409, { error: 'job_not_fallbackable' });
+    }
+    if (!['cancel', 'fallback'].includes(body?.action) && !terminal.includes(job.status)) {
         return json(request, 409, { error: 'job_not_terminal' });
     }
 
-    const evaluationResponse = await serviceFetch(
-        `/rest/v1/ocr_evaluations?source_job_id=eq.${encodeURIComponent(jobId)}`
-        + '&low_status=in.(queued,leased)&select=id&limit=1');
-    const evaluationPending = evaluationResponse.ok && (await evaluationResponse.json()).length > 0;
-    if (!evaluationPending) {
-        await removeObject(job.storage_path);
+    const markingFallback = body?.action === 'fallback';
+    let evaluationPending = false;
+    if (!markingFallback) {
+        const evaluationResponse = await serviceFetch(
+            `/rest/v1/ocr_evaluations?source_job_id=eq.${encodeURIComponent(jobId)}`
+            + '&low_status=in.(queued,leased)&select=id&limit=1');
+        evaluationPending = evaluationResponse.ok && (await evaluationResponse.json()).length > 0;
+        if (!evaluationPending) {
+            await removeObject(job.storage_path);
+        }
     }
     await serviceFetch(`/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(jobId)}&user_id=eq.${encodeURIComponent(user.id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
         body: JSON.stringify({
-            storage_path: evaluationPending ? job.storage_path : null,
+            storage_path: markingFallback || evaluationPending ? job.storage_path : null,
             result: null,
-            status: body?.action === 'cancel' ? 'cancelled' : job.status,
+            status: markingFallback ? 'fallback_required' : body?.action === 'cancel' ? 'cancelled' : job.status,
+            fallback_reason: markingFallback
+                ? boundedText(body?.fallbackReason, 80, 'worker_offline')
+                : job.fallback_reason,
             lease_owner: null,
             lease_token: null,
             lease_until: null,
@@ -950,7 +961,7 @@ Deno.serve(async request => {
 
         const { action, body } = await parseAction(request);
         const role = accessRole(user);
-        const adminAction = ['readiness', 'submit', 'status', 'download', 'acknowledge', 'cancel', 'evaluation-truth'].includes(action);
+        const adminAction = ['readiness', 'submit', 'status', 'download', 'acknowledge', 'cancel', 'fallback', 'evaluation-truth'].includes(action);
         const workerAction = ['heartbeat', 'claim', 'progress', 'complete', 'evaluation-claim', 'evaluation-complete'].includes(action);
         if ((adminAction && role !== 'admin') || (workerAction && role !== 'ocr_worker')) {
             return json(request, 403, { error: 'forbidden' });
@@ -960,7 +971,9 @@ Deno.serve(async request => {
         if (action === 'submit') return await handleSubmit(request, user);
         if (action === 'status') return await handleStatus(request, user, new URL(request.url).searchParams.get('jobId') ?? '');
         if (action === 'download') return await handleDownload(request, user, new URL(request.url).searchParams.get('jobId') ?? '');
-        if (action === 'acknowledge' || action === 'cancel') return await handleAcknowledge(request, user, { ...body, action });
+        if (action === 'acknowledge' || action === 'cancel' || action === 'fallback') {
+            return await handleAcknowledge(request, user, { ...body, action });
+        }
         if (action === 'evaluation-truth') return await handleEvaluationTruth(request, user, body);
         if (action === 'heartbeat') return await handleHeartbeat(request, user, body);
         if (action === 'claim') return await handleClaim(request, user);

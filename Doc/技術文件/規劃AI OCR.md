@@ -1,8 +1,8 @@
 # 規劃 AI OCR
 
-> 日期：2026-09-07
+> 日期：2026-09-08
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max AI，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續與 Windows 自包含 EXE 排程；Low 只在背景抽樣，不會替換畫面上的 Max；Golden Set、圖片／模型效能調校、多圖 concurrency 與 Windows 新接線實機仍待驗收**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max AI，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續、忙碌 heartbeat、佇列補位、fallback 清理與 Windows 自包含 EXE 排程；Max effort 預設 `high` 且可由環境變數調整；Low 只在背景抽樣，不會替換畫面上的 Max；Golden Set、圖片／模型效能調校與 Windows 新接線實機仍待驗收**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -10,8 +10,9 @@
 
 使用者已明確決定不跑兩遍。每張圖片只建立一個 AI request，由 Router 依主要 Agent 的登入與額度狀態選擇 Codex 或 Claude；主要 Agent 不可用才嘗試另一個，兩者都不可用才回退瀏覽器 Tesseract。這個「換 Agent」是故障切換，不是同一張圖片的第二遍辨識。
 
-- Codex 固定使用 `gpt-5.6-luna`、`max` reasoning、`priority`（Fast）服務層級。
-- Claude 固定使用 `claude-sonnet-5`、`max` effort。
+- Codex 固定使用 `gpt-5.6-luna`、`priority`（Fast）服務層級；Max reasoning 預設為 `high`，可由
+  `OCR_MAX_REASONING_EFFORT` 設為 `low`／`medium`／`high`／`max`。
+- Claude 固定使用 `claude-sonnet-5`；同一個 `OCR_MAX_REASONING_EFFORT` 設定會傳入其 effort。
 - 單次 AI JSON 仍會經過欄位、數值、遮擋、名稱／代號名冊交叉檢查；`verified` 只代表通過結構檢查，不能取代使用者人工核對。
 - 前端不再顯示「D+ 兩遍一致」或「AI 兩遍一致」，改顯示「D+ AI 已辨識」／「D+ 需人工校對」。
 - 下方標示兩遍的內容是歷史設計與既有驗收紀錄，不是目前執行契約；後續實作以本節、`README.md` 與 `TODO.md` 為準。
@@ -920,7 +921,9 @@ Tesseract 路徑也有 `assetKnownTicker(name)` 與 `assetOcrResolveIdentity(dra
 後續縮短時間仍必須先用相同 Mac、相同圖片建立三輪基線，再以 Golden Set A/B 驗證圖片減量、多圖有界
 concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、成本 90%、危險假陽性 0，不能只為速度放寬
 人工確認。本輪已先做不改辨識語意的安全優化：工作完成後不再額外睡一個輪詢週期，AI Schema 移除不使用
-的 `currency`／`evidence` 輸出，降低輸出負擔；沒有在未量測前加入圖片縮放或多工作並行。
+的 `currency`／`evidence` 輸出，降低輸出負擔；2026-09-08 再加入前端有界 worker pool、Worker
+忙碌期間每 10 秒 heartbeat、完成後立即補 claim，以及預設 `high` effort。尚未以 Windows 實機重新量測
+每張 ≤30 秒與 Golden Set 正確率。
 
 <!-- 歷史雙 Pass 方案（已由本節上方單次 AI 決策取代） -->
 
@@ -928,8 +931,8 @@ concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、�
 稽核 Pass 或 Validator。已可從程式確認的結構是：
 
 - 每張圖只啟動一次全新的 `codex exec --ephemeral`；主要 Agent 額度／登入失效才切換另一個 Agent。
-- 前端的多張圖仍是一張完成後才送下一張；Worker 每輪只 claim 一件，但取到工作後會立即 claim 下一件，
-  只有空佇列才等待預設 5 秒。
+- 前端最多同時建立 3 個 AI 工作；Worker 以 `OCR_WORKER_MAX_CONCURRENCY`（預設 3）建立工作槽，
+  每槽完成後立即 claim 下一件，忙碌期間每 10 秒回 heartbeat；空佇列經 3 秒 grace drain 後才回到外層輪詢。
 - 單次 AI 最長可跑 4 分鐘，瀏覽器對單件工作等待上限為 9 分鐘；Worker 取到工作後不再額外等待輪詢週期。
 - 現行 Runner 把 stdout／stderr 整段讀完才處理，沒有收集 CLI 即時事件；只保留完成後的安全 token usage 彙總。
 
@@ -943,11 +946,11 @@ concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、�
    token」中的即時事件串流尚未接上，目前只在程序完成後安全彙總。
 2. **圖片減量**：上傳前或 Worker 下載後先去掉純色邊界與無關 UI，限制像素但保證最小字高；
    原圖與縮圖要用 Golden Set A/B 比較，不可只以 JPEG 檔案變小就宣稱 token 或延遲一定降低。
-3. **固定 OCR 用模型與推理強度**：新增明確的 OCR-only 設定，先測試當前訂閱可用的快速視覺模型與
-   `low` 推理強度；只有 Golden Set 準確率不下降才改預設。不在文件寫死未來可能下架的模型名稱。
-4. **多圖有界並行（尚未開啟）**：前端先建立所有工作，Worker 共用同一個全域 concurrency budget，上限仍為 2；
-   不可因允許 20 張就同時啟動 40 個 CLI Pass。一件完成後若佇列還有工作，立即再 claim，
-   無工作時才等下一個輪詢間隔。
+3. **固定 OCR 用模型與推理強度（接線已完成，效能／正確率仍待驗收）**：新增
+   `OCR_MAX_REASONING_EFFORT`，預設 `high`，可明確切回 `max`；不在未量測前改圖片內容或模型名稱。
+4. **多圖有界並行（接線已完成）**：前端最多建立 3 個 AI 工作，Worker 共用
+   `OCR_WORKER_MAX_CONCURRENCY`（預設 3）；一件完成後立即再 claim，忙碌期間保持 heartbeat，
+   空佇列才回到輪詢。仍不得因允許 20 張就同時啟動 20 個 CLI。
 5. 只有量測證明「每次啟動 CLI」佔比很高，才進一步評估常駐 Codex App Server；這個方案複雜度與
    憑證攻擊面較大，不是第一批修正。
 
@@ -1259,4 +1262,6 @@ Claude CLI 並修好雙 Agent 接線，而不是繼續維持「不裝 Claude」�
 本文件同時記錄決策與接手狀態。Supabase migration、私有 Storage、Worker Auth、Edge Function、
 AI-first 前端、Mac Worker 與 CLI 路徑接線修正已整合，正式手機兩張圖亦已確認 AI `succeeded`。
 名稱唯一反查、可恢復進度與 Windows 背景常駐的基本實作／驗證已完成；延遲縮短、Golden Set、修復後的
-手機 AI 成功及 Windows 長期／斷網／重開機情境仍是後續驗收。
+手機 AI 成功及 Windows 長期／斷網／重開機情境仍是後續驗收。筆記 #52 的前端／Worker 並行、忙碌 heartbeat、
+佇列補位、fallback 清理與 `OCR_MAX_REASONING_EFFORT=high` 預設已完成程式接線與自動化測試；本輪未部署
+Edge Function 或網站，正式 Windows 每張 ≤30 秒仍待外部驗收。

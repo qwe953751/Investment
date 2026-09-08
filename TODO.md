@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；Max／Low／人工答案評估資料接線已完成；Agent 優先序改回 Codex 優先、CLI 分類器誤判與 Claude Adapter 缺陷已修正、Claude CLI 已裝妥；筆記 #52 前端＋Worker 並行化與分段計時已實作（`max` 不動）；待使用者完成 Claude Pro 登入、外部情境／Golden Set／手機新圖片 AI 驗收，以及筆記 #52 的 Windows 實機每張 ≤30 秒驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；Max／Low／人工答案評估資料接線已完成；Agent 優先序改回 Codex 優先、CLI 分類器誤判與 Claude Adapter 缺陷已修正、Claude CLI 已裝妥；筆記 #52 的前端＋Worker 並行、忙碌 heartbeat、佇列補位、fallback 清理與 Max effort=`high` 預設已實作；待使用者完成 Claude Pro 登入、外部情境／Golden Set／手機新圖片 AI 驗收，以及筆記 #52 的 Windows 實機每張 ≤30 秒驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🟢 已完成，待實機驗收發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。

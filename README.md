@@ -198,7 +198,7 @@ publish-only run [33509783439](https://github.com/qwe953751/Investment/actions/r
 冪等、受控 fallback 取回與每 5 分鐘逾期清理已驗證；公司 Windows Worker 的隱藏背景排程與正式心跳也已驗證。
 Golden Set 的正確率門檻與修復後的新手機圖片 AI 成功仍是外部驗收，不會因管線成功就宣稱達到九成。
 
-**目前狀態（2026-09-07）**：前端、佇列、Worker claim 與 CLI 路徑接線已生效。健康探測與實際
+**目前狀態（2026-09-08）**：前端、佇列、Worker claim 與 CLI 路徑接線已生效。健康探測與實際
 Runner 共用 `OcrAgentExecutableResolver`；公司 Windows 的專用 Worker 已在正式 Supabase 持續回報 Codex
 已安裝、已登入且有額度，網站的兩分鐘 readiness 條件已具備。原先手機走 Tesseract 的直接原因是 Windows
 沒有可用的背景 Worker 心跳，不是前端把 AI 功能關掉。現在 `ocr-jobs` 會優先選取仍在線的 Windows Worker，
@@ -219,6 +219,11 @@ manifest version `1788730222` 與 `gh-pages` 同版，`site.js` 已驗證包含 
 本輪的 Max／Low／人工答案評估接線已在 `main` 完成，正式 `ocr-jobs` 已部署 v11；因本輪沒有要求發布靜態網站，
 公開 Pages 仍維持上方記載的版本。Windows Worker 未設定時預設抽樣率為 10%；要全量建立評估資料集，
 才在 Worker 環境明確設定 `OCR_EVALUATION_SAMPLE_RATE=1`。Low 結果只進私有評估表，不會在網站上突然替換 Max。
+
+筆記 #52 的程式修正已完成：Worker 處理佇列時每 10 秒持續回報 heartbeat，最多 3 個工作槽會在完成一張後立即
+補取下一張；Max reasoning effort 改由 `OCR_MAX_REASONING_EFFORT` 設定，未設定時為 `high`。前端即時回退會取消
+queued／leased 工作；重新整理後仍需取回私有圖片的 queued 工作，則由 Edge Function 標記為 `fallback_required` 並保留
+圖片。這次只完成程式、測試與文件，沒有部署 Edge Function 或觸發網站發布；正式 Windows 多圖 ≤30 秒仍待外部驗收。
 
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
 輪詢，拿到短效私有圖片 URL 後才啟動 CLI；程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、
