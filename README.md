@@ -246,7 +246,9 @@ manifest version `1788730222` 與 `gh-pages` 同版，`site.js` 已驗證包含 
 queued／leased 工作；重新整理後仍需取回私有圖片的 queued 工作，則由 Edge Function 標記為 `fallback_required` 並保留
 圖片。2026-09-09 本輪同時修正 OCR 校對流程：輸入框編輯會同步到唯一草稿，套用按鈕在差異過期時鎖定；
 「確認修改並更新差異」後，資料庫寫入與人工答案共用同一份已確認快照，且市值／未實現損益改為行情唯讀欄位。
-正式 Windows Worker 重新發布後應看到 `並行上限 3；Max effort max`；正式 Windows 多圖 ≤30 秒仍待外部驗收。
+2026-09-09 已以 `ca0b6023ab5a8dcc4fdd68518f190bc2b981aa76` 重新產生並啟動 Windows 自包含 Worker；
+`-Once` 輸出確認 `並行上限 3；Max effort max`，程序 ProductVersion 與該 commit 對應，隱藏排程也已重新註冊。
+正式 Windows 多圖 ≤30 秒與長期 heartbeat 仍待外部驗收。
 
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
 輪詢，拿到短效私有圖片 URL 後才啟動 CLI；程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、

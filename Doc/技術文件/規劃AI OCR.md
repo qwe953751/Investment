@@ -2,7 +2,7 @@
 
 > 日期：2026-09-09
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max 結果路徑，正式辨識 effort 預設回復為 `max`，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續、忙碌 heartbeat、佇列補位、fallback 清理與 Windows 自包含 EXE 排程；Low 只在背景抽樣，不會替換畫面上的 Max；OCR 校對改為單一已確認快照，市值／未實現損益為行情唯讀欄位；公司 Windows Worker 需重新發布後以 `Max effort max` 驗證；Golden Set、圖片／模型效能調校、六張圖片整批外部驗收仍待完成**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max 結果路徑，正式辨識 effort 預設回復為 `max`，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續、忙碌 heartbeat、佇列補位、fallback 清理與 Windows 自包含 EXE 排程；Low 只在背景抽樣，不會替換畫面上的 Max；OCR 校對改為單一已確認快照，市值／未實現損益為行情唯讀欄位；公司 Windows 已重新發布 ProductVersion 對應 `ca0b6023` 的 Worker 並以 `-Once` 驗證 `Max effort max`／並行上限 3；Golden Set、圖片／模型效能調校、六張圖片整批外部驗收仍待完成**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -1263,8 +1263,9 @@ Claude CLI 並修好雙 Agent 接線，而不是繼續維持「不裝 Claude」�
 AI-first 前端、Mac Worker 與 CLI 路徑接線修正已整合，正式手機兩張圖亦已確認 AI `succeeded`。
 名稱唯一反查、可恢復進度與 Windows 背景常駐的基本實作／驗證已完成；延遲縮短、Golden Set、修復後的
 手機 AI 成功及 Windows 長期／斷網／重開機情境仍是後續驗收。筆記 #52 的前端／Worker 並行、忙碌 heartbeat、
-佇列補位、fallback 清理與 `OCR_MAX_REASONING_EFFORT=max` 預設已完成程式接線、自動化測試，且目前 `main`
-版本已重新部署至公司 Windows；本輪未部署 Edge Function 或網站，正式 Windows 每張 ≤30 秒仍待外部驗收。
+佇列補位、fallback 清理與 `OCR_MAX_REASONING_EFFORT=max` 預設已完成程式接線、自動化測試，且 `main`
+版本已重新部署至公司 Windows；publish-only 網站已完成並核對公開 manifest／`site.js`，正式 Windows 每張 ≤30 秒
+仍待外部驗收。
 
 ### 14.7 2026-09-09 Max 預設與 OCR 人工確認快照修正
 
