@@ -69,7 +69,8 @@ K 線、族群可跳到同一個節點、營收可開同一個 20 個月彈窗�
 工具列沿用訪客可見的控制項；手機版在表格卡片內橫向捲動，並以盤中排行相同的 80px 代號／104px 名稱固定欄軌，
 股票名稱比照盤中排行限制為兩行並省略過長文字；首次進入持倉頁也會先載入族群、營收與最新單日補充資料。本輪互動補齊已完成，
 正式網站已依 publish-only 流程完成更新。持倉資料快取超過 60 秒，或手機／分頁回到前景與重新連線時，會重新從 Supabase
-讀取 Frank 所有帳號的持股並重畫表格，避免背景頁沿用舊庫存。
+讀取 Frank 所有帳號的持股並重畫表格，避免背景頁沿用舊庫存；顯示時先在每個子帳戶內依代號升冪排序，
+再依子帳戶順序合併，不做跨帳戶全域排序。
 「筆記」是個人工作區，只在最高權限樣板顯示；內容直接讀寫 Supabase 的 `notes` 表，任何裝置都能看到同一份資料，
 並每 60 秒重讀。檢視權限不顯示此頁籤。這是公開網站的刻意取捨：沒有登入邊界，知道網址的人也可能修改筆記，
 密碼登入會在網址下限之上提升權限；在 RLS 收回匿名寫入前，資料表仍沿用公開 anon 模型。
@@ -146,6 +147,12 @@ Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查�
 
 ## 本次已發布修改
 
+持倉檢視者的子帳戶排序已修正：每個子帳戶先依代號升冪排序，再依帳戶順序合併，避免資料庫既有
+`sort_order` 讓 1303 等持股被排到帳戶後方。本次 `main` commit `e24956bf3c3c9cad4b875032fcbfdc553bc75ccc`
+已由 [`daily-snapshot.yml` publish-only run 34305234097](https://github.com/qwe953751/Investment/actions/runs/34305234097)
+發布；正式網站 manifest 為 `1788922740`，公開 manifest 與 Pages 已核對同版，線上 `site.js` 已驗證包含
+子帳戶排序接線。未修改 Supabase schema、持倉資料、RLS 或權限。
+
 筆記 #53 的「持倉檢視者」正式模板已完成：登入後固定讀取 `資產 → Frank → 所有帳號持股`，以台股／美股／加密貨幣市場頁籤篩選，並只呈現附件模板的八欄唯讀表格；使用者下拉、資料說明、名次變化、帳戶明細與刪除／編輯／清除／X 操作均不顯示，右上工具列沿用訪客可見控件並支援手機橫向表格。本次 `main` commit `ad7bb2a3156a115be278f5434a897c587765994e` 已由 [`daily-snapshot.yml` publish-only run 34191472515](https://github.com/qwe953751/Investment/actions/runs/34191472515) 發布；正式網站 manifest 為 `1788846093`，公開 manifest 在 CDN 傳播後已核對同版，線上 `site.js` 已驗證包含持倉權限與唯讀模板接線。正式網站已以真實登入驗證持倉檢視者、台股 48 筆與美股 11 筆資料；本次沒有新增 Supabase migration，匿名 RLS 仍依 TODO 保持不變。
 
 熱門族群熱度排行目前新增「列表／泡泡圖」切換，預設仍是列表；列表保留完整資料。泡泡圖以資金／成交活動熱度為 X 軸，以成交值加權漲跌幅經「價格反應 80%＋族群廣度最多修正 20%」調整後的結果為 Y 軸，泡泡大小為族群成交活動，顏色表示族群廣度，顯示熱度前 20 個族群並可點擊展開原本的成員明細。完整整理見 [熱門族群泡泡圖設計](Doc/技術文件/熱門族群泡泡圖設計.md)。此版本已推送並發布。
@@ -162,6 +169,12 @@ Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查�
 [`daily-snapshot.yml` publish-only run 34128141460](https://github.com/qwe953751/Investment/actions/runs/34128141460) 發布。
 
 ## 最新已發布版本
+
+本次持倉檢視者各子帳戶排序修正所用的 `main` commit
+`e24956bf3c3c9cad4b875032fcbfdc553bc75ccc` 已由 [`daily-snapshot.yml` publish-only run 34305234097](https://github.com/qwe953751/Investment/actions/runs/34305234097)
+完成測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788922740`、最新交易日
+`2026/09/08`、產生時間 `2026-09-09 10:59`；公開 manifest 在 CDN 傳播後已與 Pages branch 同版，線上 `site.js`
+已驗證包含 `assetSortHoldings(view.holdings)` 的子帳戶排序接線。publish-only 的行情回補、Supabase 同步、備份與心跳步驟均依設計跳過。
 
 本次持倉檢視者手機欄軌與首次補充資料載入修正所用的 `main` commit `867c9c8c59510a77f5dbd484fc69ecc5dbed22d0` 已由
 [`daily-snapshot.yml` publish-only run 34224432574](https://github.com/qwe953751/Investment/actions/runs/34224432574)
