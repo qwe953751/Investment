@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Realtime 事件驅動、健康空轉零 claim、權限分享連結已實作並發布；仍待 Claude Pro 登入、Golden Set、手機新圖、Windows 每張 ≤30 秒與長期斷線復原驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 已修復 claim 502、分離 Realtime trigger、加入活躍工作 wake 並部署 `ocr-jobs` v13；仍待網站發布、Windows 重啟、Claude Pro 登入、Golden Set、手機新圖、Windows 每張 ≤30 秒與長期斷線復原驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🔵 市場切換已上線；美股／加密貨幣熱絡指標修正規劃完成，待實作與回放驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1185,6 +1185,12 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
    驗證去重不誤刪不同裝置）與 4 個 C# 測試（`OcrWorkerApiClientTests.cs` 驗證並行上限解析與並行
    401 只觸發一次刷新），`dotnet test` 433/433 全綠。**尚未實機驗證**：需要 Windows Worker 正式環境
    用真實截圖跑一次，確認整批 wall clock 與每張分段耗時是否達到「每張 ≤30 秒」目標。
+6. 2026-09-10 已完成目前正式環境查核所需的止血修復：`db/047_ocr_realtime_claim_wake.sql` 將
+   `ocr_jobs.status` 與 `ocr_evaluations.low_status` 的 trigger function 分離，並以
+   `ocr_wake_job()`／`last_wake_at` 提供本人活躍工作 5 秒 server-side 節流；`ocr-jobs` v13 已部署，前端
+   只在 queued／leased 進度停滯超過 5 秒時呼叫 wake。正式 rollback smoke test 已驗證 claim、evaluation
+   transition、wake rate-limit 與 terminal job 拒絕；本機 .NET `440/440`、Node `55/55` 通過。這些是
+   claim／喚醒契約的驗證，不等於 AI 辨識正確率或 Windows 常駐已驗收。
 
 ### 仍待實機或使用者確認
 

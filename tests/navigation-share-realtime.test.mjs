@@ -25,6 +25,9 @@ const shareMigration = fs.readFileSync(
 const realtimeMigration = fs.readFileSync(
     path.join(root, 'db', '044_ocr_realtime.sql'),
     'utf8');
+const claimWakeMigration = fs.readFileSync(
+    path.join(root, 'db', '047_ocr_realtime_claim_wake.sql'),
+    'utf8');
 
 test('central navigation rerenders the top-level tab and rejects unavailable views', () => {
     const update = site.match(/function update\(changes\) \{[\s\S]*?\r?\n\}\r?\n\r?\nlet snapshotNote/);
@@ -67,4 +70,10 @@ test('OCR worker has an event-driven wake path and no idle claim polling', () =>
     assert.match(realtimeMigration, /realtime\.send/);
     assert.match(realtimeMigration, /realtime\.topic\(\)/);
     assert.match(realtimeMigration, /access_role.*ocr_worker/);
+    assert.match(claimWakeMigration, /ocr_jobs_queue_broadcast/);
+    assert.match(claimWakeMigration, /ocr_evaluations_queue_broadcast/);
+    assert.match(claimWakeMigration, /ocr_wake_job/);
+    assert.doesNotMatch(claimWakeMigration, /execute function public\.ocr_queue_broadcast\(\)/);
+    assert.match(site, /assetAiOcrWake\(/);
+    assert.match(site, /ASSET_AI_OCR_WAKE_AFTER_MS = 5_000/);
 });

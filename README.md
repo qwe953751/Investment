@@ -18,6 +18,10 @@ Edge Function v11 已更新並具備 Windows 優先的 Worker 選擇；公司 Wi
 Max／Low／人工答案三方評估資料集：預設抽樣約 10%，Low 只在背景執行、不會替換 Max；`db/042_ocr_evaluation.sql` 已套用正式 Supabase。
 Golden Set、圖片／模型
 效能調校、多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收，限制與下一步見 [TODO.md](TODO.md)。
+2026-09-10 已修復正式 `ocr_jobs` claim 502 的共用 trigger 欄位錯誤：`db/047_ocr_realtime_claim_wake.sql`
+分離兩張表的 Realtime trigger，並加入管理者本人限定、5 秒資料庫原子節流的活躍工作 `wake`；`ocr-jobs`
+Edge Function 已部署 v13，正式 claim／evaluation transition／wake rollback smoke test 通過。網站需完成本次
+`main` 的 publish-only 發布，公司 Windows Worker 仍需重啟最新自包含版本，之後才以正式手機新圖驗收完整 OCR。
 
 ## 文件導覽
 

@@ -1,8 +1,8 @@
 # 規劃 AI OCR
 
-> 日期：2026-09-09
+> 日期：2026-09-10
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線已發布到 `main`；但 2026-09-09 正式環境查核確認「上傳後立即執行」尚未可用：Windows 上執行中的 Worker 仍是舊版 `1.0.0+ca0b6023`，而目前正式資料庫的 Realtime trigger 在 `ocr_jobs` 由 `queued` 轉 `leased` 時引用不存在的 `NEW.low_status`，造成 SQLSTATE `42703`、claim 502 與工作永久停在 queued。故在完成 trigger 修正、發布並重啟最新 Worker、活躍工作喚醒保底、健康檢查與整合驗收前，不標示為已完成。其他已發布的 Max／Agent fallback／Tesseract、權限分享、Low 背景抽樣與 OCR 校對規則維持不變；Golden Set、圖片／模型效能調校、六張圖片整批外部驗收與 Windows 長期斷線復原仍待完成**
+> 狀態：**2026-09-10 已完成並套用 `db/047_ocr_realtime_claim_wake.sql`，將兩張表的 Realtime trigger 分離，正式 `ocr-jobs` 已部署 v13，並加入管理者限定、資料庫原子節流的活躍工作 `wake`；正式 claim／trigger rollback smoke test 已通過。Mac 目前的程式與 Edge source 已完成，但公司 Windows 仍需重啟最新 Worker，網站仍需以本次 `main` commit 發布；正式手機新圖、Golden Set、圖片／模型效能調校、六張圖片整批與 Windows 長期斷線復原仍待外部驗收，不把資料庫 smoke test 當成 OCR 成功率證據。其他已發布的 Max／Agent fallback／Tesseract、權限分享、Low 背景抽樣與 OCR 校對規則維持不變**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -13,18 +13,18 @@
 > 不再另立一份「下一版方案」。以下數字以 30 天、1 台健康在線 Worker、Free 方案額度作為
 > 可重現的容量估算；Supabase dashboard 與 Codex usage 仍是實際帳單／訂閱限制的最終依據。
 
-### 0. 2026-09-09 正式環境查核結論（優先於下方方案）
+### 0. 2026-09-09～2026-09-10 正式環境查核與修復結論（優先於下方方案）
 
-本節記錄本次「截圖一直列隊、沒有觸發 AI Worker」的可驗證結論；在修復與驗收完成前，
-下方的事件驅動方案只能視為目標契約，不是目前正式環境已達成的行為。
+本節先記錄「截圖一直列隊、沒有觸發 AI Worker」的根因，再記錄本次已完成的資料庫／Edge 修復；
+Windows Worker 重啟與真實新圖驗收仍未完成，因此下方的事件驅動方案尚不能視為整條正式 OCR 已驗收。
 
 | 查核項目 | 正式環境結果 | 判讀 |
 |---|---|---|
 | 18:33 上傳的 2 筆工作 | `status = queued`、`attempt_count = 0`、沒有 `lease_owner`，進度停在 5% | Worker 沒有成功 claim |
-| PostgreSQL log | 重複出現 `record "new" has no field "low_status"`（SQLSTATE `42703`） | `ocr_jobs` 更新時 trigger 讀錯資料表欄位，整個 transaction rollback |
+| PostgreSQL log | 重複出現 `record "new" has no field "low_status"`（SQLSTATE `42703`） | 原共用 trigger 在 `ocr_jobs` 更新時讀錯資料表欄位，整個 transaction rollback |
 | Edge Function log | 同一時段重複 `ocr-jobs` `502`，另有 heartbeat `200` | Worker 仍在線，但 claim action 失敗；重試只會放大錯誤 |
 | Windows 執行檔 | `Invest.Web.exe` 為 `1.0.0+ca0b6023` 舊版；目前 main 的事件驅動 source 尚未部署／重啟到這台機器 | 網站發布不會自動更新常駐 Worker |
-| 前端／Edge | 前端只有 status 讀取；目前 `ocr-jobs` actions 沒有真正的 `wake` action | 文件所寫的「活躍工作 5 秒喚醒保底」尚未實作 |
+| 前端／Edge | 9/10 已加入 `wake` action；管理者／本人 job 限制、RPC row lock 與 5 秒節流已接上 | 尚待網站發布與正式 Windows Worker／手機新圖整合驗收 |
 | 逾期資料 | 圖片 Storage object 已刪除，但資料列仍可能是過期 `queued` | 修復後需另行清理／標記，不可把舊列當成新工作 |
 
 真正的失敗鏈如下：
@@ -42,22 +42,21 @@ Worker claim → UPDATE ocr_jobs queued → leased
 每 5 秒即可解決；真正根因是 **資料表共用 trigger 的欄位錯誤，加上正式 Windows Worker 仍在跑舊版**。
 目前已觀察到的大量 502／重試也表示，增加輪詢頻率只會增加 Supabase 用量，不能修復 claim。
 
-#### 尚未執行的修復順序
+#### 修復執行狀態（2026-09-10）
 
-1. **先止血：** 暫停目前舊版 Windows Worker，避免繼續產生 claim 502 與空轉請求；這是操作步驟，
-   不是永久方案。
-2. **先修資料庫再啟動 Worker：** 將 `ocr_jobs.status` 與 `ocr_evaluations.low_status` 分成各自的
-   trigger function／trigger，或至少在同一 function 內先依 `TG_TABLE_NAME` 分支後才存取對應的
-   `NEW`／`OLD` 欄位；驗證 insert、queued→leased、leased→queued、completed／failed 全部不再出現
-   `42703`，並確認 Realtime 仍只送 id。
-3. **重新發布並重啟最新 Worker：** 啟動前記錄 EXE informational version／commit SHA，確認它與
-   `main` 的事件驅動程式一致；啟動後先做一次 catch-up drain，再進入 Realtime 待命。
-4. **補齊真正的活躍工作保底：** 只有前端仍等待該 job、且超過 5 秒沒有進展時，才由受控 Edge
-   `wake`／等價 action 重送一次 Broadcast；必須有 server-side rate limit 與冪等性。沒有活躍 job
-   時仍維持零 claim，不把 5 秒變成全時輪詢。
-5. **補健康門檻與測試：** readiness 必須同時確認新版本／協定、最新 heartbeat、Realtime 已 joined、
-   最近 claim 沒有錯誤；加入 PostgreSQL transition integration test、部署 smoke test 與 claim
-   circuit breaker，避免三路並行在同一錯誤上形成重試風暴。
+1. **止血／Windows：** Mac 無法代替公司 Windows 操作；目前仍需在公司機器停止舊版 Worker，
+   再以本次 `main` 建立的自包含 EXE 重啟，記錄 informational version／commit SHA，確認先 catch-up drain
+   再進入 Realtime 待命。
+2. **資料庫已修復：** `db/047_ocr_realtime_claim_wake.sql` 已套用正式 Supabase；`ocr_jobs.status` 與
+   `ocr_evaluations.low_status` 使用各自的 trigger function／trigger。rollback smoke test 已實際執行
+   `queued → leased` claim 與 evaluation transition，沒有 `42703`。
+3. **Edge 已更新：** `ocr-jobs` 已部署 v13，`wake` 只接受 admin、本人仍 active 的 job；
+   `ocr_wake_job` 以 row lock／`last_wake_at` 做 5 秒 server-side rate limit，Broadcast 使用 private channel。
+   匿名請求已驗證回 401；尚待帶正式 admin session 的整合測試。
+4. **前端已接線、網站待發布：** 只有瀏覽器仍等待 queued／leased job 且 progress 超過 5 秒未更新時才呼叫
+   `wake`；沒有活躍工作仍維持零 claim／零 wake。完成本次 commit／push 後依 publish-only 流程發布。
+5. **仍待健康與外部驗收：** readiness／heartbeat／Realtime joined 的長期觀測、正式手機新圖、鎖屏／重開機／
+   斷網復線、登入撤銷、程序重啟、Golden Set 與 claim circuit breaker 的長期行為仍不能以本機測試代替。
 
 #### 修復後的驗收條件
 
@@ -71,8 +70,8 @@ Worker claim → UPDATE ocr_jobs queued → leased
   失敗 claim。
 - 舊的過期 queued 列完成狀態修復，且 `ocr-private` 不留下已完成工作的 Storage object。
 
-本次查核沒有修改程式碼、資料庫或部署；修復完成前，重新上傳才是有效的驗收輸入，不能沿用本次已
-過期且圖片已刪除的兩筆工作判定新版本成功。
+本次修復已修改程式碼並套用資料庫／Edge，但沒有使用真實持倉截圖；重新上傳仍是判定最新 Windows Worker
+與完整 OCR 管線成功的唯一有效驗收輸入，不能沿用先前已過期且圖片已刪除的兩筆工作。
 
 ### 1. 最終實作方式
 
@@ -1625,3 +1624,33 @@ AI-first 前端、Mac Worker 與 CLI 路徑接線修正已整合，正式手機�
 `.NET 10.0.302` OCR Worker 選項測試均通過。這次沒有新增 Supabase migration 或 Edge Function，既有 Max／Low／
 人工答案資料表契約不變；網站發布與 Windows Worker 自包含 EXE 的最終版本／Action／公開 manifest，記在本文件
 最新版本紀錄的發布結果中。
+
+### 14.8 2026-09-10 修復 Realtime claim 502 與活躍工作 wake（程式／資料庫／Edge 已完成，外部整合待驗收）
+
+#### 根因與選擇
+
+正式 PostgreSQL 的 `db/044_ocr_realtime.sql` 以一個 trigger function 同時處理 `ocr_jobs` 與
+`ocr_evaluations`。當 `ocr_jobs` 從 `queued` 轉成 `leased` 時，第一個表名分支不成立，PL/pgSQL
+仍會落到讀取 `NEW.low_status` 的第二個分支，因 `ocr_jobs` 沒有該欄位而拋出 SQLSTATE `42703`；
+claim transaction 因此 rollback，Edge 回 502，Worker 的 `attempt_count` 保持 0。單純把 Worker
+輪詢改成每 5 秒只會放大失敗請求，不會修正資料庫欄位錯誤。
+
+採用兩個明確 trigger function 是比在共用 function 內繼續依 `TG_TABLE_NAME` 分支更安全的方案：
+`ocr_jobs_queue_broadcast()` 只讀 `status`，`ocr_evaluations_queue_broadcast()` 只讀 `low_status`，
+trigger 本身也分開綁定。`db/047_ocr_realtime_claim_wake.sql` 同時新增 `last_wake_at` 與
+`ocr_wake_job()`；資料庫 row lock 負責原子 5 秒節流，Edge 只對本人尚未結束且未過期的工作送 private
+Realtime Broadcast，不新增全時輪詢。
+
+#### 實作與驗證
+
+- `supabase/config.toml` 明確指定 `ocr-jobs/index.js` 並保持 `verify_jwt=false`，由函式內手動驗證
+  admin／`ocr_worker` JWT；解決新版 Supabase CLI 將 JavaScript 函式猜成 `index.ts` 的部署錯誤。
+- `ocr-jobs` Edge Function 已部署 v13；未帶 JWT 的 `wake` 請求正式回 `401 unauthorized`，沒有放寬權限。
+- 正式 `db/047` 已登記；Management API rollback smoke test 實際驗證 `queued → leased` claim、evaluation
+  transition，以及 wake 首次送出／5 秒內 rate-limit／terminal job 拒絕，測試資料已 rollback。
+- 本機 .NET 10 Release `Invest.Web.Tests` `440/440`、Node `tests/*.test.mjs` `55/55`、前端／Edge 語法與
+  `git diff --check` 均通過。
+
+本節仍不宣稱正式 OCR 已完成：公司 Windows Worker 尚需重啟本次 main 版本，網站需完成本次 publish-only 發布，
+之後才可用正式最高權限手機新圖驗證 Realtime joined、5 秒內 claim、AI `succeeded`／Tesseract fallback 與
+Golden Set；Claude Pro 登入仍必須由使用者互動完成。

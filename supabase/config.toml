@@ -9,3 +9,9 @@ verify_jwt = true
 [functions.access-share]
 entrypoint = './functions/access-share/index.js'
 verify_jwt = false
+
+# ocr-jobs performs its own admin／ocr_worker JWT and ownership checks;
+# platform JWT verification must remain disabled for the manual auth contract.
+[functions.ocr-jobs]
+entrypoint = './functions/ocr-jobs/index.js'
+verify_jwt = false

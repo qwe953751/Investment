@@ -264,6 +264,50 @@ async function handleReadiness(request) {
     });
 }
 
+async function handleWake(request, user, body) {
+    const jobId = String(body?.jobId ?? '');
+    if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
+        return json(request, 400, { error: 'invalid_job_id' });
+    }
+
+    const reservation = await serviceFetch('/rest/v1/rpc/ocr_wake_job', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            p_user_id: user.id,
+            p_job_id: jobId,
+            p_min_interval_seconds: 5
+        })
+    });
+    if (!reservation.ok) {
+        return json(request, 502, { error: 'wake_reservation_failed' });
+    }
+
+    const wake = await reservation.json();
+    if (wake?.sent !== true) {
+        return json(request, 200, {
+            ok: true,
+            sent: false,
+            reason: wake?.reason ?? 'job_not_active',
+            retryAfterSeconds: wake?.retryAfterSeconds ?? null
+        });
+    }
+
+    const broadcast = await fetch(
+        `${SUPABASE_URL}/realtime/v1/api/broadcast/${encodeURIComponent('ocr:queue')}`
+            + `/events/${encodeURIComponent('ocr_job_queued')}?private=true`,
+        {
+            method: 'POST',
+            headers: serviceHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ job_id: jobId, source: 'wake' })
+        });
+    if (!broadcast.ok) {
+        return json(request, 502, { error: 'wake_broadcast_failed' });
+    }
+
+    return json(request, 200, { ok: true, sent: true, jobId });
+}
+
 async function handleSubmit(request, user) {
     const worker = await latestWorker();
     const online = workerIsFresh(worker, MAX_HEARTBEAT_AGE_MS);
@@ -958,7 +1002,7 @@ Deno.serve(async request => {
 
         const { action, body } = await parseAction(request);
         const role = accessRole(user);
-        const adminAction = ['readiness', 'submit', 'status', 'download', 'acknowledge', 'cancel', 'fallback', 'evaluation-truth'].includes(action);
+        const adminAction = ['readiness', 'submit', 'status', 'download', 'wake', 'acknowledge', 'cancel', 'fallback', 'evaluation-truth'].includes(action);
         const workerAction = ['heartbeat', 'claim', 'progress', 'complete', 'evaluation-claim', 'evaluation-complete'].includes(action);
         if ((adminAction && role !== 'admin') || (workerAction && role !== 'ocr_worker')) {
             return json(request, 403, { error: 'forbidden' });
@@ -968,6 +1012,7 @@ Deno.serve(async request => {
         if (action === 'submit') return await handleSubmit(request, user);
         if (action === 'status') return await handleStatus(request, user, new URL(request.url).searchParams.get('jobId') ?? '');
         if (action === 'download') return await handleDownload(request, user, new URL(request.url).searchParams.get('jobId') ?? '');
+        if (action === 'wake') return await handleWake(request, user, body);
         if (action === 'acknowledge' || action === 'cancel' || action === 'fallback') {
             return await handleAcknowledge(request, user, { ...body, action });
         }

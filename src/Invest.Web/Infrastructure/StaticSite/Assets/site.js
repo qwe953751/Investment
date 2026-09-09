@@ -9107,6 +9107,7 @@ const ASSET_AI_OCR_POLL_FAST_MS = 700;
 const ASSET_AI_OCR_POLL_FAST_WINDOW_MS = 10_000;
 const ASSET_AI_OCR_POLL_SLOW_MS = 1_500;
 const ASSET_AI_OCR_QUEUE_GRACE_MS = 30_000;
+const ASSET_AI_OCR_WAKE_AFTER_MS = 5_000;
 const ASSET_AI_OCR_TIMEOUT_MS = 9 * 60_000;
 const ASSET_AI_OCR_CONCURRENCY = 3;
 const ASSET_AI_PENDING_JOBS_KEY = 'invest.assetAiOcrJobs.v1';
@@ -9225,6 +9226,29 @@ async function assetAiOcrStatus(jobId) {
         query: `&jobId=${encodeURIComponent(jobId)}`
     });
     return assetAiOcrJson(response, '讀取 AI OCR 結果');
+}
+
+async function assetAiOcrWake(jobId) {
+    const response = await assetAiOcrRequest('wake', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'wake', jobId })
+    });
+    return assetAiOcrJson(response, '喚醒 AI OCR Worker');
+}
+
+async function assetAiOcrWakeIfStalled(jobId, status, screenshot) {
+    const progressAt = Date.parse(status.progressUpdatedAt ?? '');
+    const lastWakeAt = Number(screenshot.lastWakeAt ?? 0);
+    if (!['queued', 'leased'].includes(status.status)
+        || !Number.isFinite(progressAt)
+        || Date.now() - progressAt < ASSET_AI_OCR_WAKE_AFTER_MS
+        || Date.now() - lastWakeAt < ASSET_AI_OCR_WAKE_AFTER_MS) {
+        return;
+    }
+
+    screenshot.lastWakeAt = Date.now();
+    await assetAiOcrWake(jobId).catch(() => {});
 }
 
 async function assetAiOcrAcknowledge(jobId, action = 'acknowledge') {
@@ -9484,6 +9508,8 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                 }
             }
 
+            await assetAiOcrWakeIfStalled(jobId, status, screenshot);
+
             const progress = assetAiProgressForStatus(status.status);
             screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';
             updateAssetAiProgress(index - 1, status.status, {
@@ -9581,6 +9607,7 @@ async function resumeAssetAiJobs(accountId) {
                             break;
                         }
                     }
+                    await assetAiOcrWakeIfStalled(job.jobId, status, screenshot);
                     const progress = assetAiProgressForStatus(status.status);
                     screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';
                     updateAssetAiProgress(index, status.status, {
