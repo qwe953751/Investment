@@ -2,7 +2,7 @@
 
 > 日期：2026-09-09
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線已發布到 `main`；目前每張圖片只執行一次 Max 結果路徑，正式辨識 effort 預設為 `max`，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；`db/041`、`db/042`、`db/043`（安全權限分享）、`db/044`（OCR private Realtime 喚醒）、`db/045`（Realtime 權限 hardening）與 `db/046`（Realtime policy init-plan）已套用正式 Supabase，`ocr-jobs` 與 `access-share` Edge Function 已部署。Worker 正常待命不 claim，只有截圖佇列事件才排空工作；每 60 秒只更新在線 heartbeat，Realtime 斷線才每 5 秒重連；最高權限可建立 holdings／monitor 的一次性邀請連結。Low 只在背景抽樣，不會替換畫面上的 Max；OCR 校對仍使用單一已確認快照，市值／未實現損益為行情唯讀欄位。Golden Set、圖片／模型效能調校、六張圖片整批外部驗收與 Windows 長期斷線復原仍待完成**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線已發布到 `main`；但 2026-09-09 正式環境查核確認「上傳後立即執行」尚未可用：Windows 上執行中的 Worker 仍是舊版 `1.0.0+ca0b6023`，而目前正式資料庫的 Realtime trigger 在 `ocr_jobs` 由 `queued` 轉 `leased` 時引用不存在的 `NEW.low_status`，造成 SQLSTATE `42703`、claim 502 與工作永久停在 queued。故在完成 trigger 修正、發布並重啟最新 Worker、活躍工作喚醒保底、健康檢查與整合驗收前，不標示為已完成。其他已發布的 Max／Agent fallback／Tesseract、權限分享、Low 背景抽樣與 OCR 校對規則維持不變；Golden Set、圖片／模型效能調校、六張圖片整批外部驗收與 Windows 長期斷線復原仍待完成**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -12,6 +12,67 @@
 > 操作或 Agent 用量，只更新本節的方案與表格；下方舊章節只保留推導、驗收與歷史決策，
 > 不再另立一份「下一版方案」。以下數字以 30 天、1 台健康在線 Worker、Free 方案額度作為
 > 可重現的容量估算；Supabase dashboard 與 Codex usage 仍是實際帳單／訂閱限制的最終依據。
+
+### 0. 2026-09-09 正式環境查核結論（優先於下方方案）
+
+本節記錄本次「截圖一直列隊、沒有觸發 AI Worker」的可驗證結論；在修復與驗收完成前，
+下方的事件驅動方案只能視為目標契約，不是目前正式環境已達成的行為。
+
+| 查核項目 | 正式環境結果 | 判讀 |
+|---|---|---|
+| 18:33 上傳的 2 筆工作 | `status = queued`、`attempt_count = 0`、沒有 `lease_owner`，進度停在 5% | Worker 沒有成功 claim |
+| PostgreSQL log | 重複出現 `record "new" has no field "low_status"`（SQLSTATE `42703`） | `ocr_jobs` 更新時 trigger 讀錯資料表欄位，整個 transaction rollback |
+| Edge Function log | 同一時段重複 `ocr-jobs` `502`，另有 heartbeat `200` | Worker 仍在線，但 claim action 失敗；重試只會放大錯誤 |
+| Windows 執行檔 | `Invest.Web.exe` 為 `1.0.0+ca0b6023` 舊版；目前 main 的事件驅動 source 尚未部署／重啟到這台機器 | 網站發布不會自動更新常駐 Worker |
+| 前端／Edge | 前端只有 status 讀取；目前 `ocr-jobs` actions 沒有真正的 `wake` action | 文件所寫的「活躍工作 5 秒喚醒保底」尚未實作 |
+| 逾期資料 | 圖片 Storage object 已刪除，但資料列仍可能是過期 `queued` | 修復後需另行清理／標記，不可把舊列當成新工作 |
+
+真正的失敗鏈如下：
+
+```text
+submit → INSERT ocr_jobs（trigger 第一分支可通過）
+      → private Broadcast 成功
+Worker claim → UPDATE ocr_jobs queued → leased
+            → trigger 第一分支不成立，錯誤落入第二分支
+            → NEW.low_status 不存在（42703）
+            → transaction rollback → Edge 502 → attempt_count 仍為 0
+```
+
+因此根因不是「Realtime 沒有觸發」、不是「60 秒 heartbeat 太慢」，也不是單純把輪詢改成
+每 5 秒即可解決；真正根因是 **資料表共用 trigger 的欄位錯誤，加上正式 Windows Worker 仍在跑舊版**。
+目前已觀察到的大量 502／重試也表示，增加輪詢頻率只會增加 Supabase 用量，不能修復 claim。
+
+#### 尚未執行的修復順序
+
+1. **先止血：** 暫停目前舊版 Windows Worker，避免繼續產生 claim 502 與空轉請求；這是操作步驟，
+   不是永久方案。
+2. **先修資料庫再啟動 Worker：** 將 `ocr_jobs.status` 與 `ocr_evaluations.low_status` 分成各自的
+   trigger function／trigger，或至少在同一 function 內先依 `TG_TABLE_NAME` 分支後才存取對應的
+   `NEW`／`OLD` 欄位；驗證 insert、queued→leased、leased→queued、completed／failed 全部不再出現
+   `42703`，並確認 Realtime 仍只送 id。
+3. **重新發布並重啟最新 Worker：** 啟動前記錄 EXE informational version／commit SHA，確認它與
+   `main` 的事件驅動程式一致；啟動後先做一次 catch-up drain，再進入 Realtime 待命。
+4. **補齊真正的活躍工作保底：** 只有前端仍等待該 job、且超過 5 秒沒有進展時，才由受控 Edge
+   `wake`／等價 action 重送一次 Broadcast；必須有 server-side rate limit 與冪等性。沒有活躍 job
+   時仍維持零 claim，不把 5 秒變成全時輪詢。
+5. **補健康門檻與測試：** readiness 必須同時確認新版本／協定、最新 heartbeat、Realtime 已 joined、
+   最近 claim 沒有錯誤；加入 PostgreSQL transition integration test、部署 smoke test 與 claim
+   circuit breaker，避免三路並行在同一錯誤上形成重試風暴。
+
+#### 修復後的驗收條件
+
+- 新上傳工作在 Realtime 正常時於 5 秒內由 `queued` 轉 `leased`，`attempt_count` 增加，沒有
+  `42703` 或 `ocr-jobs` 502。
+- `ocr_workers` 顯示目前 main 對應的版本／協定，Realtime channel 狀態為 joined；Agent 可用時才
+  開始模型工作。
+- 空轉 10 分鐘只看到 Worker heartbeat（約 10 次），沒有 claim／evaluation-claim；Realtime
+  protocol heartbeat 不算工作請求。
+- 強制 Realtime 斷線或 claim 失敗時，readiness 轉為不可用並受控重連，不會無限重試或同時開三路
+  失敗 claim。
+- 舊的過期 queued 列完成狀態修復，且 `ocr-private` 不留下已完成工作的 Storage object。
+
+本次查核沒有修改程式碼、資料庫或部署；修復完成前，重新上傳才是有效的驗收輸入，不能沿用本次已
+過期且圖片已刪除的兩筆工作判定新版本成功。
 
 ### 1. 最終實作方式
 
