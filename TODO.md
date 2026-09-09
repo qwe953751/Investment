@@ -26,8 +26,8 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Windows 隱藏背景 Worker 與每 2 分鐘自動復原已實作並固定為預設；Max／Low／人工答案評估資料接線已完成；Agent 優先序改回 Codex 優先、CLI 分類器誤判與 Claude Adapter 缺陷已修正、Claude CLI 已裝妥；筆記 #52 的前端＋Worker 並行、忙碌 heartbeat、佇列補位、fallback 清理與 Max effort=`max` 預設已實作；OCR 編輯快照一致性與行情唯讀欄位已修正；待使用者完成 Claude Pro 登入、外部情境／Golden Set／手機新圖片 AI 驗收，以及筆記 #52 的 Windows 實機每張 ≤30 秒驗收 |
-| 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🟢 已完成，待實機驗收發布 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 既有功能已上線；2026-09-09 已整理「上傳才喚醒、健康空轉零 claim」最終方案與用量，尚未改 Code；其餘待 Claude Pro 登入、Golden Set、手機新圖與 Windows 每張 ≤30 秒驗收 |
+| 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🔵 市場切換已上線；美股／加密貨幣熱絡指標修正規劃完成，待實作與回放驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1148,6 +1148,12 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
   `ocr_evaluations` 與 Low 租約 RPC；成功 Max 依 Worker `OCR_EVALUATION_SAMPLE_RATE`（預設 10%）
   抽樣保存，Low 只在一般佇列沒有工作時背景執行，人工按套用後由 admin action 保存校對列。Low 不會
   替換 Max，也不會被當成人工答案；多圖來源不明時保存但標記 `human_truth_complete=false`。
+- **2026-09-09 事件驅動最終規劃（尚未實作）**：正常待命時不再 heartbeat 順便 claim，也不設
+  60 秒保底工作輪詢。queued 工作建立後以 private Realtime Broadcast 喚醒；斷線才固定每 5 秒
+  重連，成功後立即 catch-up drain。60 秒只更新 `ocr_workers` 在線狀態，25 秒只維持 WebSocket，
+  沒有截圖時 claim／evaluation／Codex／Claude 全為 0。健康空轉 30 天估算為 51,840 次 OCR Edge
+  invocation；35 筆 Max 與 3 筆 Low 的 token 實測、每張與每月公式及可靠性取捨詳見
+  [規劃 AI OCR：2026-09-09 事件驅動 Worker 最終規劃](Doc/技術文件/規劃AI%20OCR.md#2026-09-09-事件驅動-worker-最終規劃尚未改-code)。
 
 ### 本輪已完成與仍待外部驗收
 
@@ -1166,7 +1172,7 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
    Windows 已用官方原生安裝器裝上 Claude Code CLI `2.1.263`（真正 exe，非 npm shim），並釘選
    `OCR_CLAUDE_PATH`／`OCR_CODEX_PATH`／`OCR_AGENT_PRIMARY=codex` 為使用者環境變數；重新發布 Worker
    並以 `-Once` 驗證 exit code 0，排程重啟後恢復 `Running`。完整脈絡見
-   [規劃 AI OCR §14.6](技術文件/規劃AI%20OCR.md#146-2026-09-07-windows-agent-優先序修正與-claude-cli-安裝第一階段已實作仍待登入與外部驗收)。
+   [規劃 AI OCR §14.6](Doc/技術文件/規劃AI%20OCR.md#146-2026-09-07-windows-agent-優先序修正與-claude-cli-安裝第一階段已實作仍待登入與外部驗收)。
 5. 2026-09-07（筆記 #52）：根因是前端逐張序列 `for...of` 與 Worker 單一 `do` 迴圈雙層序列化，DB
    `FOR UPDATE SKIP LOCKED` 早已支援並行、不是瓶頸。已實作：Worker 每輪依 `OCR_WORKER_MAX_CONCURRENCY`
    （預設 3）並行 claim／處理多件工作；`OcrWorkerApiClient` 用 `SemaphoreSlim` 序列化認證換發，
@@ -1196,7 +1202,7 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
 ---
 
 <a id="todo-16"></a>
-## 🟢 16. 市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站
+## 🔵 16. 市場切換（台股／美股／加密貨幣）：UI 已上線，熱絡指標待修
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
@@ -1204,7 +1210,8 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
 現在是正式網站永久功能，所有使用者都看得到。台股維持真實內容、完全沒有重畫
 （`initMarketSwitch()` 只在切到美股／加密貨幣時用 CSS 隱藏 `.ranking-page`，
 `start()` 主流程一行都沒動）。美股／加密貨幣已接上真實 Yahoo Finance 資料，
-`MARKET_SWITCH_MOCK` 已刪除。**
+`MARKET_SWITCH_MOCK` 已刪除。2026-09-09 已確認熱絡分數的公式／來源問題並完成修正規劃，
+但尚未改 Code；因此市場切換功能已上線，不代表熱絡指標已修正。**
 
 ### 已討論並定案
 
@@ -1261,6 +1268,19 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
   ＋VIX；漲跌家數比、恐懼貪婪指數、財報行事曆這輪不做，對應區塊整塊不顯示。
 - **排程**：`.github/workflows/us-daily-snapshot.yml` 在 `backfill-us` 之後
   加了 `backfill-overview` 步驟，快取跟 `imports-us` 一起 commit 到 `data` 分支。
+
+### 2026-09-09 熱絡指標修正規劃（尚未實作）
+
+- 2026-09-09 查核的公開快照美股約 2.4、加密貨幣約 2.5，前端與現行公式一致；根因是公式／資料語意，
+  不是前端頁籤或格式化。
+- 共同修正方向：熱絡只量「活動程度」，由相對成交額與絕對波動組成；上漲／下跌／平盤
+  另外呈現方向。平盤不再算上漲，基準只用前 20 個完整期間且排除當期。
+- 美股保留 `close × share volume`；各 ETF 先和自己的歷史比較，再等權／中位數聚合。
+- 加密貨幣不再把 Yahoo `volume` 乘價格；排除未完成的 UTC 當日 K，各幣先算自己的相對量，
+  再等權／中位數聚合，避免 BTC 約 98.5% 的錯誤權重支配結果。
+- 完整公式草案、資料邊界、風險與必要測試分別見
+  [美股－熱絡指標](Doc/技術文件/美股-熱絡指標.md)及
+  [加密貨幣－熱絡指標](Doc/技術文件/加密貨幣-熱絡指標.md)。
 
 ### 尚未討論
 

@@ -17,6 +17,166 @@
 - 前端不再顯示「D+ 兩遍一致」或「AI 兩遍一致」，改顯示「D+ AI 已辨識」／「D+ 需人工校對」。
 - 下方標示兩遍的內容是歷史設計與既有驗收紀錄，不是目前執行契約；後續實作以本節、`README.md` 與 `TODO.md` 為準。
 
+## 2026-09-09 事件驅動 Worker 最終規劃（尚未改 Code）
+
+本節回答「使用者上傳截圖時才啟動 AI Agent」以及空轉／單張用量問題。這是下一版的
+**目標契約**，不是目前已上線行為：現行 Worker 仍會每 5 秒呼叫 heartbeat／claim，忙碌時每 10 秒
+heartbeat；本次只寫文件，未修改 Worker、Edge Function、資料庫或前端。
+
+### A. 最終方案
+
+核心原則是把「在線」與「取工作」拆開。60 秒不是工作保底輪詢，也不會造成新工作先等 60 秒：
+
+```text
+Worker 待命
+├─ 私有 Realtime 連線：協定 heartbeat 約 25 秒，只維持 WebSocket
+├─ Worker 狀態 heartbeat：60 秒，只更新 ocr_workers
+├─ claim／evaluation-claim／Codex／Claude：0
+└─ JWT：接近到期才 refresh
+
+使用者 submit 截圖
+└─ 寫入 queued 工作成功
+   └─ 私有 Broadcast 只送 job id
+      └─ Worker 立即 drain queue
+         ├─ 最多 3 個工作槽並行
+         ├─ 每完成一件立即補 claim 下一件
+         └─ queue 空了才回待命
+```
+
+實作時應遵守下列邊界：
+
+1. **可靠資料仍是 `ocr_jobs`，Realtime 只是喚醒鈴。** queued 工作建立成功後才送 private
+   Broadcast；事件只含 `job_id`，不得放圖片、signed URL、結果、JWT 或其他 Secret。建議由
+   `ocr_jobs` 進入 `queued` 的資料庫 trigger 呼叫 Supabase 支援的 Broadcast function，使
+   「工作已提交」與「發出喚醒」不會成為兩套互不相干的前端流程。Realtime schema 本身維持鎖定，
+   權限使用 `realtime.messages` 的 RLS，只有專用 `ocr_worker` 可以訂閱。
+2. **正常連線不輪詢工作。** Realtime WebSocket 約 25 秒的 protocol heartbeat 只保活；
+   60 秒的 Worker heartbeat 只 upsert `ocr_workers` 的在線時間與 Agent 狀態。它不得順便
+   claim、evaluation-claim 或掃描工作，也不得像現行版本一樣把 expired-object cleanup 綁在
+   heartbeat 裡。
+3. **斷線才固定每 5 秒重連。** 不採 5、15、30、60 秒漸進退避，避免重新連線後的新工作受最長
+   60 秒延遲。WebSocket 一旦確認 disconnected，固定每 5 秒嘗試重連；成功後立即做一次
+   catch-up drain，補拿斷線期間已寫入的 queued 工作。固定 5 秒屬異常復原流量，不是正常空轉
+   claim；若整月都斷線，理論上會有 518,400 次連線嘗試，必須另以 log／告警辨識故障，不能把
+   這個病態情境算成健康待命。
+4. **只在有活躍截圖時補送喚醒。** 前端本來就會在等待該 job 時讀 status；若同一 job 仍是
+   `queued` 且距上次喚醒已超過 5 秒，可由受控 Edge 邊界重送一次 Broadcast。這不是 Worker
+   空閒輪詢，沒有上傳就不會發生。Worker 的 drain 必須冪等，重複喚醒只會得到空 claim。
+5. **評估工作不獨立空轉。** Max 成功且被 10% 抽樣時，由正在處理的流程接續建立 Low shadow
+   work；一般 OCR queue 排空後才做。沒有抽樣就不呼叫 evaluation-claim，不在待命時另設輪詢。
+6. **Agent 探測不使用模型 token。** `codex login status`／`claude auth status` 只在啟動、
+   收到工作或狀態快取失效時執行；它們是本機登入檢查，不是模型推理。Windows 每 2 分鐘的
+   `IgnoreNew` 排程只用來補啟動，既有程序仍存活時不會再建立 Worker。
+7. **逾期清理維持獨立。** `ocr-expired-cleanup` 每 5 分鐘由 Supabase Cron 執行，與 Worker
+   是否在線無關；圖片完成、fallback 確認或評估結束後仍應立即刪除，Cron 只收漏網項目。
+
+Broadcast 不是 durable queue。採這個方案後，資料庫工作不會遺失，但若事件剛好遺失、瀏覽器也立即
+關閉、且 WebSocket 表面仍在線而沒有重連，處理可能延後到下一次 reconnect catch-up。若未來要求
+「即使送出頁面立刻關閉，也必須在固定秒數內保證執行」，就必須接受低頻 queue reconciliation
+或引入真正的 durable push consumer；不能同時宣稱零空閒 claim 與嚴格固定延遲保證。第一版選擇
+「上傳驅動、健康空轉零 claim」，搭配提交 trigger、活躍 job 重送與重連補抓。
+
+### B. Supabase 每月用量
+
+以下以 **30 天、1 台健康在線 Worker、沒有任何截圖** 計算。這是 OCR 子系統的增量，不是整個
+Investment 專案或 Supabase organization 的總帳。Free 方案目前主要相關額度為 Edge Function
+500,000 次／月、Realtime 2,000,000 messages／月、200 peak connections、Database 500 MB、
+Storage 1 GB、uncached egress 5 GB；實際方案與當月 dashboard 仍是最終依據。
+
+| 項目 | 30 天健康空轉 | Free 額度占比／判斷 |
+|---|---:|---|
+| Worker heartbeat Edge invocation | `30 × 24 × 60 = 43,200` | Edge 額度 8.64% |
+| Cleanup Cron Edge invocation | `30 × 24 × 12 = 8,640` | Edge 額度 1.73% |
+| OCR Edge invocation 合計 | **51,840** | **10.37%**，單看 OCR 不會超額，尚餘 448,160 次給截圖與其他功能 |
+| Realtime 應用訊息 | **0** | 沒有工作就沒有 Broadcast／Database Changes／Presence 訊息 |
+| Realtime 連線 | 1 peak connection | 0.5% of 200 |
+| WebSocket protocol heartbeat | 約 103,680 個 client frame；連 server reply 的保守框數為 207,360 | 官方用量頁未明列 protocol heartbeat 是否列入 billable messages；即使全部保守算入也約 10.37% of 2M |
+| Auth | 1 個 Worker MAU；若 JWT 1 小時到期約 720 次 refresh | 遠低於 50,000 MAU；refresh 不是 Edge invocation |
+| Storage 新增 | 0 | 空轉不新增圖片 |
+| Database 操作 | 約 43,200 次同一 Worker row upsert，加 8,640 次 cleanup 執行 | 不等於資料列持續成長，但會有少量 WAL／autovacuum |
+| AI Agent | 0 次模型任務、0 token | heartbeat、Realtime 與登入探測不呼叫模型 |
+
+2026-09-09 唯讀查核正式專案約為 **236 MB／500 MB**，`ocr-private` 當時為 0 objects；OCR
+健康空轉不會明顯增加資料庫或 Storage 容量。不過 Edge／Realtime／egress 額度可能與 organization
+內其他專案或功能共用，因此「OCR 本身不超額」不等於整個帳號保證不超額。小型 JSON heartbeat
+的 egress 粗估遠低於 0.1 GB／月，但這不是帳單保證；落地後應以 Supabase usage dashboard 量一個
+完整週期，再用實際 request／response bytes 校正。
+
+每張截圖的 Supabase 增量不是單一固定值，主因是前端等待期間會讀 status。現有成功樣本的端到端
+P50 約 28.84 秒、P90 約 91.69 秒；依前 10 秒每 0.7 秒、之後每 1.5 秒的現行前端節奏推估：
+
+| 每張成功截圖 | 一般值／公式 | 說明 |
+|---|---:|---|
+| 固定 Edge actions | 約 10 次 | 單張時包含 readiness、submit、成功 claim、排空用 empty claim、4 次 progress、complete、acknowledge；批次時 readiness 可攤提 |
+| Status Edge actions | P50 約 28 次；P90 約 70 次 | 隨模型時間、網路與重試改變 |
+| 10% Low 評估 | 期望值約 0.3 次 | 被抽中才有 evaluation-claim、evaluation-complete、使用者套用後的 evaluation-truth |
+| Edge invocation 合計 | **約 38 次／P50；約 80 次／P90** | 估算，不是固定帳單 |
+| Realtime messages | 正常 2 messages | 1 次 Broadcast send + 1 個 Worker receiver；每次 active-job 重送再加 2 |
+| Private Storage | 暫存 1 個、上限 10 MB | 完成後刪除；Worker 下載 egress 約為圖片大小 `S`，fallback 再下載約再加 `S` |
+| Database | 1 個 job insert、約 6～8 次狀態寫入、約 28～70 次 status read | DB query 沒有逐次 invocation 額度，但影響 compute／WAL |
+| 評估保存 | 平均 0.1 row | 只有抽樣圖片保留 Max／Low／人工答案 JSON；需用實測 row size 監控 DB 成長 |
+
+令一個月處理 `N` 張成功圖片，健康待命架構的概算為：
+
+```text
+Edge invocations ≈ 51,840 + N × (38 ～ 80)
+Realtime 應用訊息 ≈ 2N + active-job 重送
+Storage egress ≈ N × 平均圖片大小（若 fallback 下載則另加）
+```
+
+例：100 張／月約為 55,640～59,840 次 Edge invocation（Free 額度 11.1%～12.0%）；
+1,000 張／月約為 89,840～131,840 次（18.0%～26.4%）。但若每張都剛好 10 MB，
+約 500 次 Worker 下載就可能接近 5 GB uncached egress；因此高量時先碰到的也可能是圖片流量，
+不是 Edge 次數。
+
+### C. AI Agent 每月用量
+
+目前正式路徑使用 ChatGPT 登入的 Codex `gpt-5.6-luna`、`priority/Fast`、Max effort，程式會移除
+API-key 環境變數。因此是 ChatGPT／Codex 訂閱用量，不是 OpenAI Platform API 帳單。空轉一整月為
+**0 次模型任務、0 token**；只有真正收到圖片才啟動 Agent。
+
+2026-09-09 對正式 `ocr_jobs`／`ocr_evaluations` 做唯讀彙總，35 筆成功 Max 樣本如下。`cached input`
+是 input 的子集，`reasoning` 是 output 的子集，兩者都不可再加一次：
+
+| Max 樣本 | Input tokens | 其中 cached input | Output tokens | 其中 reasoning |
+|---|---:|---:|---:|---:|
+| 最小值 | 16,443 | 0 | 380 | 198 |
+| P50 | **16,896** | **8,960** | **1,299** | **953** |
+| P90 | 約 37,231 | — | 約 4,777 | 約 4,176 |
+| 最大值 | 86,829 | 61,440 | 9,542 | 8,444 |
+
+Low 目前只有 3 筆可比較樣本，P50 約為 input 16,449、cached 0、output 788、reasoning 372；
+樣本太少，不能把它當穩定基準。以 10% Low 抽樣與兩組 P50 做容量規劃：
+
+```text
+每張圖片期望模型任務 = 1 Max + 10% × 1 Low = 1.1 次
+每張圖片期望 input ≈ 16,896 + 10% × 16,449 = 18,541 tokens
+其中 cached input ≈ 8,960 tokens
+每張圖片期望 output ≈ 1,299 + 10% × 788 = 1,378 tokens
+其中 reasoning ≈ 953 + 10% × 372 = 990 tokens（已包含在 output）
+```
+
+因此 100 張／月約為 110 次模型任務、1,854,100 input tokens（其中 cached 約 896,000）、
+137,800 output tokens（其中 reasoning 約 99,000）。未抽中的單張只跑 1 次 Max；抽中的單張
+跑 Max + Low 共 2 次。Codex 不可用而切 Claude 時，兩家的 tokenizer／訂閱用量口徑不同，不能把
+Claude token 硬併入這張表；Tesseract fallback 則為 0 Agent token。
+
+OpenAI 官方目前只提供依模型、工作複雜度、context、reasoning、工具與 caching 而變動的
+Codex 訂閱估算，不承諾「每月固定幾 token」。Plus 的 Luna 本機工作估算約 250～2,000 messages／
+5 小時，但所有 Codex 使用共用限制，且 `priority/Fast` 的實際消耗倍率不可由上述 raw token 反推。
+所以本文件可預算 raw token 與模型任務數，不能誠實地換算為「每月訂閱額度百分比」或保證不會
+撞週期限制。需要準確答案時，應在 Worker log 保留每次安全 usage 摘要，並以 Codex app 的 usage
+頁面按週比對。
+
+官方配額與口徑：
+
+- [Supabase Billing on Supabase](https://supabase.com/docs/guides/platform/billing-on-supabase)
+- [Supabase Edge Function invocations](https://supabase.com/docs/guides/platform/manage-your-usage/edge-function-invocations)
+- [Supabase Realtime messages](https://supabase.com/docs/guides/platform/manage-your-usage/realtime-messages)
+- [Supabase Realtime pricing](https://supabase.com/docs/guides/realtime/pricing)
+- [Supabase Egress](https://supabase.com/docs/guides/platform/manage-your-usage/egress)
+- [Codex pricing／訂閱用量](https://learn.chatgpt.com/docs/pricing)
+
 ## 一、結論摘要
 
 2026-09-05 使用者將 D+ 修訂為 **AI-first：AI Worker 可用時優先由單一可用 Agent 辨識；Worker／
@@ -586,7 +746,9 @@ queued／leased／fallback_required → expired／cancelled
 - 每個 Agent 的可用狀態為 `available`、`quota_exhausted`、`authentication_required`、
   `unavailable`。額度訊息若有可信重設時間就採用；沒有時依
   `OCR_AGENT_QUOTA_RECHECK_MINUTES` 延後，初始預設 30 分鐘，不能在 loop 中忙等。
-- Worker 閒置時預設每 5 秒心跳／輪詢；超過 2 分鐘未更新，網站在上傳前判定離線並不上傳。
+- **現行程式**在 Worker 閒置時預設每 5 秒 heartbeat／claim；超過 2 分鐘未更新，網站在上傳前
+  判定離線並不上傳。這是目前行為，不是最終目標；下一版事件驅動方案以上方
+  「2026-09-09 事件驅動 Worker 最終規劃」為準。
 - 未抽樣的 AI 成功、取消或瀏覽器確認 Tesseract 完成後立即刪除圖片；抽樣成功工作要等 Low
   結束／失敗後才刪除。Edge Function 另由 Supabase Cron
   `ocr-expired-cleanup` 每 5 分鐘執行 secret-protected cleanup，Worker／瀏覽器都離線時仍會清理。
