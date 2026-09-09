@@ -40,7 +40,14 @@ function functionSource(name) {
 function holdingsViewerRows() {
     const context = {};
     vm.createContext(context);
-    vm.runInContext(functionSource('assetHoldingsViewerRows'), context);
+    vm.runInContext([
+        "const ASSET_HOLDING_SORT_NUMERIC_KEYS = new Set(['priceChange', 'quantity', 'cost', 'marketValue', 'unrealized']);",
+        "const ASSET_HOLDING_SORT_TEXT_KEYS = new Set(['name', 'source']);",
+        functionSource('assetNumber'),
+        functionSource('assetHoldingTicker'),
+        functionSource('assetSortHoldings'),
+        functionSource('assetHoldingsViewerRows')
+    ].join('\n\n'), context);
     return context.assetHoldingsViewerRows;
 }
 
@@ -73,15 +80,28 @@ async function loadViewerLatestRows() {
     return Array.from(context.requestedPeriodKeys);
 }
 
-test('持倉檢視者只按帳戶市場篩選 Frank 的所有持股', () => {
+test('持倉檢視者依各子帳戶代號排序後再合併 Frank 的所有持股', () => {
     const rowsFor = holdingsViewerRows();
     const views = [
-        { market: '台股', holdings: [{ ticker: '2308' }, { ticker: '0050' }] },
+        {
+            market: '台股',
+            holdings: [
+                { ticker: '1560', sortOrder: 1 },
+                { ticker: '1303', sortOrder: 43 }
+            ]
+        },
+        {
+            market: '台股',
+            holdings: [
+                { ticker: '00631L', sortOrder: 1 },
+                { ticker: '0050', sortOrder: 0 }
+            ]
+        },
         { market: '美股', holdings: [{ ticker: 'AMD' }] },
         { market: '其他', holdings: [{ ticker: 'BTC' }] }
     ];
 
-    assert.deepEqual(rowsFor(views, '台股').map(row => row.ticker), ['2308', '0050']);
+    assert.deepEqual(rowsFor(views, '台股').map(row => row.ticker), ['1303', '1560', '0050', '00631L']);
     assert.deepEqual(rowsFor(views, '美股').map(row => row.ticker), ['AMD']);
     assert.deepEqual(rowsFor(views, '其他').map(row => row.ticker), ['BTC']);
 });

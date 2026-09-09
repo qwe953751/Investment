@@ -13097,13 +13097,14 @@ function makeAssetMessage(text) {
     return block;
 }
 
-// 筆記 #53 的正式唯讀模板：只把 Frank 所有帳號中符合目前市場的持股攤平，
+// 筆記 #53 的正式唯讀模板：各帳號先依代號排序，再把 Frank 所有帳號中符合目前市場的持股攤平，
 // 不混入帳戶管理欄、批次編輯、刪除或 OCR 操作。這個 helper 刻意保持純資料轉換，
-// 讓市場篩選不會偷偷改到管理員資產頁的排序與選取狀態。
+// 讓市場篩選不會偷偷改到管理員資產頁的排序與選取狀態；assetSortHoldings 會回傳副本，
+// 不會改動各帳號原本的持倉陣列。
 function assetHoldingsViewerRows(views, market) {
     return (Array.isArray(views) ? views : [])
         .filter(view => view.market === market)
-        .flatMap(view => Array.isArray(view.holdings) ? view.holdings : []);
+        .flatMap(view => assetSortHoldings(view.holdings));
 }
 
 function assetHoldingsViewerMarketLabel(market) {
