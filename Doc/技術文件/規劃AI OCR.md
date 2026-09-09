@@ -2,7 +2,7 @@
 
 > 日期：2026-09-10
 >
-> 狀態：**2026-09-10 已完成並套用 `db/047_ocr_realtime_claim_wake.sql`，將兩張表的 Realtime trigger 分離，正式 `ocr-jobs` 已部署 v13，並加入管理者限定、資料庫原子節流的活躍工作 `wake`；正式 claim／trigger rollback smoke test 已通過。Mac 目前的程式與 Edge source 已完成，但公司 Windows 仍需重啟最新 Worker，網站仍需以本次 `main` commit 發布；正式手機新圖、Golden Set、圖片／模型效能調校、六張圖片整批與 Windows 長期斷線復原仍待外部驗收，不把資料庫 smoke test 當成 OCR 成功率證據。其他已發布的 Max／Agent fallback／Tesseract、權限分享、Low 背景抽樣與 OCR 校對規則維持不變**
+> 狀態：**2026-09-10 已完成並套用 `db/047_ocr_realtime_claim_wake.sql`，將兩張表的 Realtime trigger 分離，正式 `ocr-jobs` 已部署 v13，並加入管理者限定、資料庫原子節流的活躍工作 `wake`；正式 claim／trigger rollback smoke test 已通過。`main` commit `4a2f6803` 已由 publish-only run `34378748000` 發布，公開版本化 `site.js` 已確認包含 wake 接線，公開 manifest 目前為 `1788972419`。公司 Windows 仍需重啟最新 Worker；正式手機新圖、Golden Set、圖片／模型效能調校、六張圖片整批與 Windows 長期斷線復原仍待外部驗收，不把資料庫 smoke test 當成 OCR 成功率證據。其他已發布的 Max／Agent fallback／Tesseract、權限分享、Low 背景抽樣與 OCR 校對規則維持不變**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -53,8 +53,9 @@ Worker claim → UPDATE ocr_jobs queued → leased
 3. **Edge 已更新：** `ocr-jobs` 已部署 v13，`wake` 只接受 admin、本人仍 active 的 job；
    `ocr_wake_job` 以 row lock／`last_wake_at` 做 5 秒 server-side rate limit，Broadcast 使用 private channel。
    匿名請求已驗證回 401；尚待帶正式 admin session 的整合測試。
-4. **前端已接線、網站待發布：** 只有瀏覽器仍等待 queued／leased job 且 progress 超過 5 秒未更新時才呼叫
-   `wake`；沒有活躍工作仍維持零 claim／零 wake。完成本次 commit／push 後依 publish-only 流程發布。
+4. **前端與網站已發布：** 只有瀏覽器仍等待 queued／leased job 且 progress 超過 5 秒未更新時才呼叫
+   `wake`；沒有活躍工作仍維持零 claim／零 wake。`34378748000` 已以 `4a2f6803` 完成 publish-only 發布，
+   公開版本化 `site.js` 已核對 `assetAiOcrWake` 與 5 秒門檻。
 5. **仍待健康與外部驗收：** readiness／heartbeat／Realtime joined 的長期觀測、正式手機新圖、鎖屏／重開機／
    斷網復線、登入撤銷、程序重啟、Golden Set 與 claim circuit breaker 的長期行為仍不能以本機測試代替。
 
@@ -1651,6 +1652,6 @@ Realtime Broadcast，不新增全時輪詢。
 - 本機 .NET 10 Release `Invest.Web.Tests` `440/440`、Node `tests/*.test.mjs` `55/55`、前端／Edge 語法與
   `git diff --check` 均通過。
 
-本節仍不宣稱正式 OCR 已完成：公司 Windows Worker 尚需重啟本次 main 版本，網站需完成本次 publish-only 發布，
+本節仍不宣稱正式 OCR 已完成：公司 Windows Worker 尚需重啟本次 main 版本；網站已完成本次 publish-only 發布，
 之後才可用正式最高權限手機新圖驗證 Realtime joined、5 秒內 claim、AI `succeeded`／Tesseract fallback 與
 Golden Set；Claude Pro 登入仍必須由使用者互動完成。
