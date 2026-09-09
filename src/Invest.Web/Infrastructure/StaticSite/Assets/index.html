@@ -76,6 +76,15 @@
                     </form>
                     <button type="button" class="access-bar-logout" id="access-bar-logout" hidden
                             data-hint="登出目前這個權限，回到訪客視角。">登出</button>
+                    <div class="access-bar-share-tools" id="access-bar-share-tools" hidden>
+                        <select id="access-bar-share-role" aria-label="分享權限">
+                            <option value="holdings">持倉檢視者</option>
+                            <option value="monitor">監控者</option>
+                        </select>
+                        <button type="button" id="access-bar-share"
+                                data-hint="建立不含密碼的一次性權限連結；24 小時後或使用一次後失效。">分享權限</button>
+                        <button type="button" id="access-bar-share-revoke" hidden>撤銷最後連結</button>
+                    </div>
                     <span class="access-bar-error" id="access-bar-error" hidden></span>
                 </div>
             </div>

@@ -247,7 +247,6 @@ async function insertJob(job) {
 }
 
 async function handleReadiness(request) {
-    await cleanupExpiredObjects();
     const maxHeartbeatAgeMs = readinessHeartbeatAgeMs(request);
     const worker = await latestWorker(maxHeartbeatAgeMs);
     const online = workerIsFresh(worker, maxHeartbeatAgeMs);
@@ -370,7 +369,6 @@ async function ownJob(userId, jobId) {
 }
 
 async function handleStatus(request, user, jobId) {
-    await cleanupExpiredObjects();
     if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
         return json(request, 400, { error: 'invalid_job_id' });
     }
@@ -504,7 +502,6 @@ async function handleHeartbeat(request, user, body) {
         body: JSON.stringify(payload)
     });
 
-    await cleanupExpiredObjects();
     return response.ok
         ? json(request, 200, { ok: true })
         : json(request, 502, { error: 'heartbeat_failed' });

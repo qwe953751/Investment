@@ -3,3 +3,9 @@
 [functions.device-presence]
 entrypoint = './functions/device-presence/index.js'
 verify_jwt = true
+
+# redeem is intentionally anonymous; create/revoke still validate the caller's
+# Supabase Auth JWT and require app_metadata.access_role=admin in the function.
+[functions.access-share]
+entrypoint = './functions/access-share/index.js'
+verify_jwt = false

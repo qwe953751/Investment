@@ -58,6 +58,9 @@ const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
 const VIEW_QUERY = new URLSearchParams(window.location.search).get('view');
 // 長者友善連結：網址帶 ?key=密碼，開頁就自動登入，不用打字。
 const AUTOLOGIN_QUERY = new URLSearchParams(window.location.search).get('key');
+// 權限分享連結只帶一次性、不可猜測的邀請碼；它不是密碼，也不會被當成固定登入憑證保存。
+const INVITE_QUERY = new URLSearchParams(window.location.search).get('invite');
+const ACCESS_SHARE_FUNCTION = 'access-share';
 // 本機測試專用：?access=admin／?access=viewer／?access=holdings 可以不登入就切換畫面看到的權限，
 // 正式網址不會進這個分支，只影響 URL_ACCESS 與下面的預覽徽章。
 const ACCESS_PREVIEW_QUERY = ['localhost', '127.0.0.1'].includes(window.location.hostname)
@@ -2039,6 +2042,77 @@ async function authRequest(grantType, body) {
     }
 }
 
+// 分享邀請兌換後拿到的是 Supabase Auth 的 token hash；只有驗證成功才建立本機 session。
+// token hash 由 Auth 一次性消耗，完成後再把 invite 從網址移除。
+async function verifyAccessShareToken(tokenHash, type = 'magiclink') {
+    if (supabase === null || !tokenHash) {
+        return null;
+    }
+
+    try {
+        return await fetchJsonWithRetry(
+            `${supabase.url}/auth/v1/verify`,
+            {
+                method: 'POST',
+                headers: { apikey: supabase.anonKey, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token_hash: tokenHash, type })
+            },
+            { timeoutMs: 8_000, retryDelays: [] });
+    } catch {
+        return null;
+    }
+}
+
+async function accessShareRequest(action, body = null, retryAuthentication = true) {
+    if (supabase === null) {
+        throw new Error('沒有資料庫連線。');
+    }
+
+    const needsAuthentication = action !== 'redeem';
+    if (needsAuthentication
+        && authAccessToken === null
+        && !await refreshAuthAccessToken()) {
+        throw new Error('登入已失效。');
+    }
+
+    const headers = new Headers({
+        apikey: supabase.anonKey,
+        ...(needsAuthentication ? { Authorization: `Bearer ${authAccessToken}` } : {}),
+        ...(body === null ? {} : { 'Content-Type': 'application/json' })
+    });
+    const response = await fetch(
+        `${supabase.url}/functions/v1/${ACCESS_SHARE_FUNCTION}?action=${encodeURIComponent(action)}`,
+        {
+            method: 'POST',
+            headers,
+            body: body === null ? undefined : JSON.stringify(body),
+            cache: 'no-store'
+        });
+
+    if (response.status === 401 && needsAuthentication && retryAuthentication
+        && await refreshAuthAccessToken()) {
+        return accessShareRequest(action, body, false);
+    }
+
+    return response;
+}
+
+async function accessShareJson(response, operation) {
+    let body = null;
+    try {
+        body = await response.json();
+    } catch {
+    }
+
+    if (!response.ok) {
+        const error = new Error(`${operation}失敗（HTTP ${response.status}）`);
+        error.code = body?.error ?? 'access_share_error';
+        throw error;
+    }
+
+    return body;
+}
+
 function isTransientAuthError(error) {
     const status = Number(error?.status);
 
@@ -2176,6 +2250,10 @@ function renderAccessBar() {
     const loggedIn = loginTier !== null;
     el('access-bar-login-form').hidden = loggedIn;
     el('access-bar-logout').hidden = !loggedIn;
+    const shareTools = el('access-bar-share-tools');
+    if (shareTools) {
+        shareTools.hidden = loginTier !== 'admin';
+    }
 }
 
 // 權限一變（登入或登出），目前頁籤如果已經不在允許範圍內就退回預設，再重畫一次篩選與資料。
@@ -2194,11 +2272,83 @@ function afterAccessChange() {
     void load().catch(reportLoadFailure);
 }
 
+let lastAccessShareId = '';
+
+async function createAccessShareLink() {
+    const errorLabel = el('access-bar-error');
+    const button = el('access-bar-share');
+    const role = el('access-bar-share-role')?.value ?? 'holdings';
+
+    if (loginTier !== 'admin' || !['holdings', 'monitor'].includes(role)) {
+        return;
+    }
+
+    button.disabled = true;
+    errorLabel.hidden = true;
+    try {
+        const response = await accessShareRequest('create', {
+            role,
+            expiresInHours: 24,
+            maxUses: 1
+        });
+        const share = await accessShareJson(response, '建立分享連結');
+        lastAccessShareId = share.id ?? '';
+        const revokeButton = el('access-bar-share-revoke');
+        if (revokeButton) {
+            revokeButton.hidden = lastAccessShareId === '';
+        }
+        const link = String(share.url ?? '');
+        if (!link) {
+            throw new Error('分享連結回應不完整。');
+        }
+
+        try {
+            await navigator.clipboard.writeText(link);
+            errorLabel.textContent = `已複製 ${ACCESS_TIER_TEXT[role]}的一次性分享連結（24 小時、限用 1 次）。`;
+        } catch {
+            window.prompt('請複製這個一次性分享連結；連結不含密碼，使用一次後失效。', link);
+            errorLabel.textContent = `已建立 ${ACCESS_TIER_TEXT[role]}分享連結。`;
+        }
+        errorLabel.hidden = false;
+    } catch (error) {
+        errorLabel.textContent = error.message || '分享連結建立失敗。';
+        errorLabel.hidden = false;
+    } finally {
+        button.disabled = false;
+    }
+}
+
+async function revokeLastAccessShareLink() {
+    const errorLabel = el('access-bar-error');
+    const button = el('access-bar-share-revoke');
+
+    if (loginTier !== 'admin' || !lastAccessShareId) {
+        return;
+    }
+
+    button.disabled = true;
+    try {
+        const response = await accessShareRequest('revoke', { id: lastAccessShareId });
+        await accessShareJson(response, '撤銷分享連結');
+        lastAccessShareId = '';
+        button.hidden = true;
+        errorLabel.textContent = '最後建立的分享連結已撤銷。';
+        errorLabel.hidden = false;
+    } catch (error) {
+        errorLabel.textContent = error.message || '分享連結撤銷失敗。';
+        errorLabel.hidden = false;
+    } finally {
+        button.disabled = false;
+    }
+}
+
 function wireAccessBar() {
     const form = el('access-bar-login-form');
     const passwordInput = el('access-bar-password');
     const errorLabel = el('access-bar-error');
     const logoutButton = el('access-bar-logout');
+    const shareButton = el('access-bar-share');
+    const shareRevokeButton = el('access-bar-share-revoke');
 
     if (!form) {
         return;
@@ -2230,6 +2380,9 @@ function wireAccessBar() {
         errorLabel.hidden = true;
         afterAccessChange();
     });
+
+    shareButton?.addEventListener('click', () => void createAccessShareLink());
+    shareRevokeButton?.addEventListener('click', () => void revokeLastAccessShareLink());
 }
 
 // 盤後專用的篩選條件（期間、交易日、模式、門檻）在盤中沒有意義，直接收起來，
@@ -17553,6 +17706,14 @@ function makeTopicLink(topicId, name, level, ticker, attribution) {
         return blank;
     }
 
+    if (SITE_ACCESS === 'holdings') {
+        const plain = document.createElement('span');
+        plain.className = `topic-link-plain topic-${level}`;
+        plain.append(makeTopicLevelLabel(label), name);
+        plain.dataset.hint = '持倉檢視者只能查看持倉；族群頁面不在此權限範圍。';
+        return plain;
+    }
+
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `topic-link topic-${level}`;
@@ -17604,6 +17765,10 @@ function topicRootId(topicId) {
 
 /// 從排行榜跳到族群列表的某個節點。用 Id 不用名字：名字在人工編輯頁改得動。
 function focusTopic(topicId) {
+    if (!availableViews().some(view => view.key === 'topics')) {
+        return false;
+    }
+
     // 監控者只看得到一個大族群：跳轉前先把「目前顯示的大族群」切成目標所屬的那一個，
     // 不然目標可能落在畫不出來的樹外，選中會是個 silent no-op。
     if (SITE_ACCESS === 'monitor') {
@@ -17611,7 +17776,7 @@ function focusTopic(topicId) {
     }
 
     pendingTopicFocus = topicId;
-    update({ view: 'topics', topicTab: SITE_ACCESS === 'viewer' ? 'heat' : 'tree' });
+    return update({ view: 'topics', topicTab: SITE_ACCESS === 'viewer' ? 'heat' : 'tree' });
 }
 
 // 排行榜那一欄要的東西很小，跟族群頁的完整資料分開抓，讓沒切過去的人不必付那 2 MB。
@@ -20683,7 +20848,7 @@ function renderTopicEvents(panel) {
         event.topicNames.forEach((name, index) => {
             const id = event.topicIds?.[index] ?? null;
 
-            if (id && topicById.has(id)) {
+            if (id && topicById.has(id) && SITE_ACCESS !== 'holdings') {
                 const link = document.createElement('button');
                 link.type = 'button';
                 link.className = 'topic-link';
@@ -22253,6 +22418,11 @@ async function load() {
 
 function update(changes) {
     if (changes.view !== undefined
+        && !availableViews().some(view => view.key === changes.view)) {
+        return false;
+    }
+
+    if (changes.view !== undefined
         || changes.date !== undefined
         || changes.customSource !== undefined) {
         closeKLine(false);
@@ -22290,7 +22460,10 @@ function update(changes) {
     writeSettings();
     renderSnapshotNote();
     renderFilters();
+    // 所有程式導覽（包含 focusTopic）都走這裡，確保內容、第二層與主頁籤狀態同步。
+    marketSwitchRender?.();
     void load().catch(reportLoadFailure);
+    return true;
 }
 
 let snapshotNote = '';
@@ -22644,7 +22817,7 @@ function mspBuildMarketTabs(proto, paint) {
 
 // 全域導覽：市場資料頁與資產／筆記工作區分組，但仍維持同一層主導覽。
 // 資產／筆記不是市場總覽的子頁，所以不能放進市場面板裡，更不能因市場切換被 disabled。
-function mspBuildViewTabs(proto, paint) {
+function mspBuildViewTabs(proto) {
     const nav = document.createElement('nav');
     nav.className = 'msp-global-view-nav';
     nav.setAttribute('aria-label', '主頁籤');
@@ -22692,8 +22865,6 @@ function mspBuildViewTabs(proto, paint) {
                 } else {
                     update({ view: tab.key });
                 }
-
-                paint();
             });
             group.append(button);
         });
@@ -23366,6 +23537,19 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
 .msp-utility-slot .access-bar-logout {
     min-height: 30px;
     padding: 5px 9px;
+    border-radius: 7px;
+    font-size: 12px;
+}
+.msp-utility-slot .access-bar-share-tools {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.msp-utility-slot #access-bar-share-role,
+.msp-utility-slot #access-bar-share-tools button {
+    min-height: 30px;
+    padding: 5px 8px;
     border-radius: 7px;
     font-size: 12px;
 }
@@ -25108,7 +25292,7 @@ function initMarketSwitch() {
         document.body.dataset.mspNavVariant = navVariant;
         const navigation = [
             mspBuildMarketTabs(proto, render),
-            mspBuildViewTabs(proto, render)
+            mspBuildViewTabs(proto)
         ];
         if (utilitySlot !== null) {
             navigation.push(utilitySlot);
@@ -25188,15 +25372,36 @@ async function start() {
     alteredTrading = new Set(manifest.alteredTrading ?? []);
     state.date = dates[dates.length - 1];
 
+    // 權限分享連結先由 Edge Function 原子兌換，再用 Auth token hash 建立本機 session；
+    // 只有管理者可以建立，接收者不會接觸任何固定帳號密碼。
+    let sharedLogin = false;
+    if (INVITE_QUERY) {
+        try {
+            const redeemed = await accessShareJson(
+                await accessShareRequest('redeem', { token: INVITE_QUERY }),
+                '兌換分享連結');
+            const session = await verifyAccessShareToken(
+                redeemed?.tokenHash,
+                redeemed?.type ?? 'magiclink');
+            const account = accessTierAccountForEmail(session?.user?.email);
+            if (session?.access_token && account !== null) {
+                activateLoginAccount(account, session);
+                sharedLogin = true;
+            }
+        } catch {
+            // 邀請碼無效、已使用或已撤銷時仍允許回復本機既有 session。
+        }
+    }
+
     // 長者友善連結：明確的 key 代表這次開頁的登入意圖，優先於同裝置舊 session。
     // key 驗證失敗才回復舊 session，避免輸錯連結時把原本可用的登入弄丟。
-    if (AUTOLOGIN_QUERY) {
+    if (!sharedLogin && AUTOLOGIN_QUERY) {
         const loggedIn = await loginWithPassword(AUTOLOGIN_QUERY);
 
         if (!loggedIn) {
             await restoreSession();
         }
-    } else {
+    } else if (!sharedLogin) {
         // 同裝置登入過就自動恢復，一定要在套用上次選的頁籤之前完成，
         // 不然頁籤的可用性判斷（availableViews／availableTopicTabs）會用到舊的權限。
         await restoreSession();
@@ -25204,9 +25409,10 @@ async function start() {
 
     // 用過就把 key 從網址列拿掉：分享畫面截圖、瀏覽器歷史記錄都不會留下明文密碼。
     // 沒有 key 時則靠 restoreSession() 的 refresh token 記得住，不用再帶著這段網址。
-    if (AUTOLOGIN_QUERY) {
+    if (AUTOLOGIN_QUERY || INVITE_QUERY) {
         const cleanUrl = new URL(window.location.href);
         cleanUrl.searchParams.delete('key');
+        cleanUrl.searchParams.delete('invite');
         window.history.replaceState(null, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
     }
 

@@ -14,7 +14,7 @@ function startupAuthSource() {
     assert.ok(start >= 0, '找不到 start。');
 
     const restore = siteScript.indexOf('    await restoreSession();', start);
-    const autoLogin = siteScript.indexOf('    if (AUTOLOGIN_QUERY', start);
+    const autoLogin = siteScript.indexOf('    if (!sharedLogin && AUTOLOGIN_QUERY', start);
     const cleanup = siteScript.indexOf('    // 用過就把 key 從網址列拿掉', start);
     assert.ok(restore >= 0, '找不到 restoreSession 啟動接線。');
     assert.ok(autoLogin >= 0, '找不到 AUTOLOGIN_QUERY 啟動接線。');
@@ -31,6 +31,8 @@ async function runStartupAuth({ key, loginSucceeds }) {
     const result = await vm.runInContext(`
         (async () => {
             const AUTOLOGIN_QUERY = ${JSON.stringify(key)};
+            const INVITE_QUERY = null;
+            let sharedLogin = false;
             let loginTier = null;
             const calls = [];
 

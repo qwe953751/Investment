@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
+using System.Threading.Channels;
 using Invest.Web.Infrastructure.Ai.Cli;
 using Microsoft.Extensions.Configuration;
 
@@ -14,8 +14,7 @@ public sealed class OcrWorkerRunner(
 {
     private static readonly string[] SupportedExtensions = [".png", ".jpg", ".jpeg", ".webp"];
     private static readonly TimeSpan ProbeCacheTtl = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan BusyHeartbeatInterval = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan QueueDrainGrace = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(60);
 
     private IReadOnlyDictionary<string, OcrWorkerAgentState>? _probeCache;
     private DateTimeOffset _probeCacheAt;
@@ -32,51 +31,73 @@ public sealed class OcrWorkerRunner(
         using var singleInstance = OcrWorkerSingleInstance.Acquire();
         var api = new OcrWorkerApiClient(httpClientFactory.CreateClient(nameof(OcrWorkerApiClient)), options);
         Console.WriteLine(
-            $"D+ OCR Worker 啟動：{options.Name}（輪詢 {options.PollInterval.TotalSeconds:0} 秒；"
+            $"D+ OCR Worker 啟動：{options.Name}（Realtime 喚醒；斷線每 {options.PollInterval.TotalSeconds:0} 秒重連；"
             + $"並行上限 {options.MaxConcurrency}；Max effort {options.MaxReasoningEffort}；"
             + $"評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
 
-        do
+        var agents = await ProbeAgentsAsync(cancellationToken);
+        await api.HeartbeatAsync(agents, cancellationToken);
+
+        if (once)
         {
-            var processedWork = false;
-            try
+            if (AgentsCanWork(agents))
             {
-                var agents = await ProbeAgentsAsync(cancellationToken);
-                await api.HeartbeatAsync(agents, cancellationToken);
-                if (agents.Values.Any(agent => agent.Authenticated && agent.QuotaAvailable))
+                await ProcessAvailableJobsAsync(api, agents, options, cancellationToken);
+            }
+
+            return;
+        }
+
+        var wakeSignals = Channel.CreateUnbounded<bool>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false
+        });
+        using var workerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var realtimeTask = api.RunWakeListenerAsync(
+            () => wakeSignals.Writer.TryWrite(true),
+            options.PollInterval,
+            workerCancellation.Token);
+        var heartbeatTask = MaintainHeartbeatAsync(
+            api,
+            workerCancellation.Token,
+            AgentsCanWork(agents),
+            () => wakeSignals.Writer.TryWrite(true));
+
+        try
+        {
+            if (AgentsCanWork(agents))
+            {
+                await ProcessAvailableJobsAsync(api, agents, options, workerCancellation.Token);
+            }
+
+            while (await wakeSignals.Reader.WaitToReadAsync(workerCancellation.Token))
+            {
+                while (wakeSignals.Reader.TryRead(out _))
                 {
-                    processedWork = await ProcessAvailableJobsAsync(api, agents, options, cancellationToken);
-                    if (!processedWork)
+                    agents = await ProbeAgentsAsync(workerCancellation.Token);
+                    if (AgentsCanWork(agents))
                     {
-                        var evaluation = await api.ClaimEvaluationAsync(cancellationToken);
-                        if (evaluation is not null)
-                        {
-                            processedWork = true;
-                            await ProcessEvaluationAsync(api, evaluation, cancellationToken);
-                        }
+                        await ProcessAvailableJobsAsync(api, agents, options, workerCancellation.Token);
                     }
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                Console.Error.WriteLine($"OCR Worker 本輪失敗：{Safe(exception.Message)}");
-                if (once)
-                {
-                    throw;
-                }
-            }
-
-            if (!once && !processedWork)
-            {
-                await Task.Delay(options.PollInterval, cancellationToken);
-            }
         }
-        while (!once);
+        catch (OperationCanceledException) when (workerCancellation.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            workerCancellation.Cancel();
+            wakeSignals.Writer.TryComplete();
+            try { await realtimeTask; } catch (OperationCanceledException) { }
+            try { await heartbeatTask; } catch (OperationCanceledException) { }
+        }
     }
+
+    private static bool AgentsCanWork(IReadOnlyDictionary<string, OcrWorkerAgentState> agents)
+        => agents.Values.Any(agent => agent.Authenticated && agent.QuotaAvailable);
 
     private async Task<bool> ProcessAvailableJobsAsync(
         OcrWorkerApiClient api,
@@ -84,23 +105,20 @@ public sealed class OcrWorkerRunner(
         OcrWorkerOptions options,
         CancellationToken cancellationToken)
     {
-        using var heartbeatCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var heartbeatTask = MaintainHeartbeatAsync(api, agentStates, heartbeatCancellation.Token);
         var dispatchState = new DispatchState();
+        var workers = Enumerable.Range(0, options.MaxConcurrency)
+            .Select(_ => ClaimAndProcessJobsAsync(api, agentStates, options, dispatchState, cancellationToken));
 
-        try
-        {
-            var workers = Enumerable.Range(0, options.MaxConcurrency)
-                .Select(_ => ClaimAndProcessJobsAsync(api, agentStates, options, dispatchState, cancellationToken));
+        await Task.WhenAll(workers);
 
-            await Task.WhenAll(workers);
-            return Volatile.Read(ref dispatchState.ProcessedJobs) > 0;
-        }
-        finally
+        // 評估工作只在收到喚醒、且一般 OCR 佇列已排空後接續處理；待命時不另設 claim。
+        while (await api.ClaimEvaluationAsync(cancellationToken) is { } evaluation)
         {
-            heartbeatCancellation.Cancel();
-            await heartbeatTask;
+            Interlocked.Exchange(ref dispatchState.ProcessedJobs, 1);
+            await ProcessEvaluationAsync(api, evaluation, cancellationToken);
         }
+
+        return Volatile.Read(ref dispatchState.ProcessedJobs) > 0;
     }
 
     private async Task ClaimAndProcessJobsAsync(
@@ -115,20 +133,11 @@ public sealed class OcrWorkerRunner(
             var job = await api.ClaimAsync(cancellationToken);
             if (job is null)
             {
-                var idleFor = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeMilliseconds(
-                    Volatile.Read(ref dispatchState.LastActivityUnixMilliseconds));
-                if (Volatile.Read(ref dispatchState.ActiveJobs) == 0 && idleFor >= QueueDrainGrace)
-                {
-                    return;
-                }
-
-                await Task.Delay(options.PollInterval, cancellationToken);
-                continue;
+                return;
             }
 
             Interlocked.Increment(ref dispatchState.ActiveJobs);
             Interlocked.Exchange(ref dispatchState.ProcessedJobs, 1);
-            Volatile.Write(ref dispatchState.LastActivityUnixMilliseconds, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
             try
             {
@@ -137,22 +146,30 @@ public sealed class OcrWorkerRunner(
             finally
             {
                 Interlocked.Decrement(ref dispatchState.ActiveJobs);
-                Volatile.Write(ref dispatchState.LastActivityUnixMilliseconds, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             }
         }
     }
 
     private async Task MaintainHeartbeatAsync(
         OcrWorkerApiClient api,
-        IReadOnlyDictionary<string, OcrWorkerAgentState> agentStates,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool initiallyAvailable,
+        Action signalWake)
     {
+        var wasAvailable = initiallyAvailable;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(BusyHeartbeatInterval, cancellationToken);
-                await api.HeartbeatAsync(agentStates, cancellationToken);
+                await Task.Delay(WorkerHeartbeatInterval, cancellationToken);
+                var agents = await ProbeAgentsAsync(cancellationToken);
+                await api.HeartbeatAsync(agents, cancellationToken);
+                var available = AgentsCanWork(agents);
+                if (available && !wasAvailable)
+                {
+                    signalWake();
+                }
+                wasAvailable = available;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -160,14 +177,13 @@ public sealed class OcrWorkerRunner(
             }
             catch (Exception exception)
             {
-                Console.Error.WriteLine($"OCR Worker 忙碌 heartbeat 失敗：{Safe(exception.Message)}");
+                Console.Error.WriteLine($"OCR Worker heartbeat 失敗：{Safe(exception.Message)}");
             }
         }
     }
 
     private sealed class DispatchState
     {
-        public long LastActivityUnixMilliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         public int ActiveJobs;
         public int ProcessedJobs;
     }

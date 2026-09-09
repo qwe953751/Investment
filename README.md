@@ -265,8 +265,9 @@ queued／leased 工作；重新整理後仍需取回私有圖片的 queued 工�
 正式 Windows 多圖 ≤30 秒與長期 heartbeat 仍待外部驗收。
 
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
-輪詢，拿到短效私有圖片 URL 後才啟動 CLI；程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、
-`ANTHROPIC_API_KEY`，不會偷偷改走按量 API。
+維持 private Realtime 連線；只有收到 OCR 佇列 Broadcast 才 claim，拿到短效私有圖片 URL 後才啟動
+CLI。Worker 每 60 秒只回報在線狀態，Realtime 斷線才以 `OCR_WORKER_RECONNECT_SECONDS` 重連；
+程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、`ANTHROPIC_API_KEY`，不會偷偷改走按量 API。
 
 目前 Mac 已用 Codex CLI 實測，腳本已設為 executable：
 

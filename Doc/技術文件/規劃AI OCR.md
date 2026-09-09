@@ -2,9 +2,117 @@
 
 > 日期：2026-09-09
 >
-> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線修正已發布到 `main`；目前每張圖片只執行一次 Max 結果路徑，正式辨識 effort 預設回復為 `max`，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；正式手機已確認兩張圖片皆由 AI `succeeded`。`db/041`、`db/042` 已套用；本輪加入 Max／Low／人工答案三方評估資料集、佇列短心跳回退、Worker 取件後立即接續、忙碌 heartbeat、佇列補位、fallback 清理與 Windows 自包含 EXE 排程；Low 只在背景抽樣，不會替換畫面上的 Max；OCR 校對改為單一已確認快照，市值／未實現損益為行情唯讀欄位；公司 Windows 已重新發布 ProductVersion 對應 `ca0b6023` 的 Worker 並以 `-Once` 驗證 `Max effort max`／並行上限 3；Golden Set、圖片／模型效能調校、六張圖片整批外部驗收仍待完成**
+> 狀態：**D+ AI-first 前端、正式 Supabase 佇列與 CLI 路徑接線已發布到 `main`；目前每張圖片只執行一次 Max 結果路徑，正式辨識 effort 預設為 `max`，主要 Agent 登入／額度不可用時才切換另一個，兩者都不可用回退 Tesseract；`db/041`、`db/042`、`db/043`（安全權限分享）、`db/044`（OCR private Realtime 喚醒）、`db/045`（Realtime 權限 hardening）與 `db/046`（Realtime policy init-plan）已套用正式 Supabase，`ocr-jobs` 與 `access-share` Edge Function 已部署。Worker 正常待命不 claim，只有截圖佇列事件才排空工作；每 60 秒只更新在線 heartbeat，Realtime 斷線才每 5 秒重連；最高權限可建立 holdings／monitor 的一次性邀請連結。Low 只在背景抽樣，不會替換畫面上的 Max；OCR 校對仍使用單一已確認快照，市值／未實現損益為行情唯讀欄位。Golden Set、圖片／模型效能調校、六張圖片整批外部驗收與 Windows 長期斷線復原仍待完成**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
+
+## 目前生效的 AI OCR 最終方案與用量（單一維護區塊）
+
+> **維護規則：** 這一節是 AI OCR 的現行契約。未來若調整 Worker 喚醒、Supabase
+> 操作或 Agent 用量，只更新本節的方案與表格；下方舊章節只保留推導、驗收與歷史決策，
+> 不再另立一份「下一版方案」。以下數字以 30 天、1 台健康在線 Worker、Free 方案額度作為
+> 可重現的容量估算；Supabase dashboard 與 Codex usage 仍是實際帳單／訂閱限制的最終依據。
+
+### 1. 最終實作方式
+
+```text
+Worker 待命
+├─ 私有 Realtime WebSocket：協定 heartbeat 約 25 秒，只保活
+├─ Worker 狀態 heartbeat：每 60 秒 1 次，只 upsert ocr_workers
+├─ claim／evaluation-claim／AI Agent：0
+├─ JWT：由一般 API heartbeat 接近到期時 refresh
+└─ Realtime 斷線：固定每 5 秒重連；不是正常工作輪詢
+
+上傳截圖
+└─ ocr_jobs 寫入 queued
+   └─ DB trigger → private Broadcast（只送 job_id／evaluation_id）
+      └─ Worker 收到事件後立即排空佇列
+         ├─ 最多 3 個工作槽並行
+         ├─ 每完成一件立即 claim 下一件
+         └─ 沒有工作就停止 claim，回到待命
+```
+
+1. `ocr_jobs`／`ocr_evaluations` 是可靠資料來源，Realtime 只是喚醒鈴。`db/044_ocr_realtime.sql`
+   的 trigger 使用 `realtime.send(..., 'ocr:queue', true)`；`realtime.messages` RLS 只允許
+   `app_metadata.access_role = 'ocr_worker'` 的 authenticated Worker 讀取 private channel。
+   事件不含圖片、signed URL、結果、密碼或 JWT。
+2. 正常空轉沒有 claim。固定 5 秒只用於 Realtime 斷線後重連；連線成功會先做一次 catch-up
+   drain，避免斷線期間已寫入的 queued 工作遺漏。啟動時也會做一次排空，這是恢復既有佇列，
+   不是定時輪詢。
+3. Worker 狀態 heartbeat 不執行 cleanup、claim 或 evaluation-claim。逾期圖片由獨立的
+   `ocr-expired-cleanup` Cron 呼叫 cleanup action；readiness／status／heartbeat 不再順便清理。
+4. 仍保留前端在「有一張活躍截圖」期間的 status 讀取與 5 秒喚醒保底；沒有上傳就沒有這些
+   請求。Max 成功且被抽樣時，Low evaluation 在同一次喚醒的普通佇列排空後接續處理。
+5. 權限分享連結不是 `?key=密碼`：最高權限登入者只能建立 `holdings`／`monitor` 的一次性
+   opaque invite。原始隨機碼只出現在分享網址，資料庫只存 SHA-256、角色、到期時間、使用次數、
+   撤銷時間與建立者；Edge Function 原子兌換後以 Supabase Auth magic-link token hash 建立
+   接收者自己的 session，前端立即移除 `invite`。不可分享 `admin`，也不把密碼寫入 URL。
+   實作檔案為 `db/043_access_share_links.sql`、`supabase/functions/access-share/index.js`。
+
+### 2. Supabase 每月用量
+
+#### 2.1 整月空轉（30 天）
+
+| 項目 | 健康空轉用量 | Free 額度占比／判斷 |
+|---|---:|---|
+| Worker heartbeat Edge invocation | `30 × 24 × 60 = 43,200` | 8.64% of 500,000 |
+| Cleanup Cron Edge invocation | `30 × 24 × 12 = 8,640` | 1.73% |
+| OCR Edge invocation 合計 | **51,840** | **10.37%**，尚餘 448,160 次給截圖與其他功能 |
+| Realtime 應用 Broadcast | **0** | 沒有工作就沒有 queue message |
+| Realtime 連線 | 1 peak connection | 0.5% of 200 |
+| Realtime protocol heartbeat | 約 103,680 個 client frame；含 server reply 保守約 207,360 | 官方未明列是否全算 billable message；即使全算約 10.37% of 2M |
+| Auth | 1 個 Worker MAU；約 720 次／月 refresh（以 1 小時 JWT） | 遠低於 50,000 MAU；refresh 不是 Edge invocation |
+| Database | 約 43,200 次同一 Worker row upsert | 資料列不成長，但有少量 WAL／autovacuum |
+| Storage 新增 | 0 | 空轉不新增圖片 |
+
+**結論：** 只看 OCR 子系統，不會因健康空轉超過上述 Free 額度；但 Edge、Realtime、egress
+與 Database compute 可能和同一 Supabase organization 的其他功能共用，不能把 OCR 單項估算當成
+整個帳號的保證。若整月斷線，固定 5 秒重連理論上會有 518,400 次連線嘗試，這是故障情境，
+應由 log／告警處理，不列入健康空轉預算。
+
+#### 2.2 每跑一張截圖（估算）
+
+目前正式成功樣本端到端 P50 約 28.84 秒、P90 約 91.69 秒；前端只在這段活躍期間讀 status。
+下表是單張的粗估，不是固定帳單：
+
+| 項目 | P50／一般值 | P90／較慢值 | 說明 |
+|---|---:|---:|---|
+| OCR Edge invocation | 約 38 | 約 80 | readiness、submit、事件喚醒後 claim／排空、進度、complete、status、acknowledge |
+| Realtime 應用訊息 | 約 2 | 約 2 + 重送 | DB trigger 送 1、Worker 收 1；活躍工作超過 5 秒的受控重送另加 |
+| Database 操作 | 1 insert、約 6～8 次狀態寫入、約 28～70 次 status read | 隨等待時間增加 | 不以 invocation 計費，但影響 compute／WAL |
+| Private Storage | 暫存 1 個、上限 10 MB | 同左 | 完成後刪除；Worker 下載 egress 約圖片大小 `S`，fallback 可能再加 `S` |
+
+以每月 `N` 張成功圖片估算：
+
+```text
+Edge invocations ≈ 51,840 + N × (38 ～ 80)
+Realtime 應用訊息 ≈ 2N + 活躍工作重送
+Storage egress ≈ N × 平均圖片大小（fallback 另加）
+```
+
+例如 100 張／月約 55,640～59,840 次 Edge invocation（Free 的 11.1%～12.0%）；若每張都接近
+10 MB，Storage egress 可能比 Edge 次數更早成為瓶頸。
+
+### 3. AI Agent 每月用量
+
+空轉一整月：**0 次模型任務、0 input token、0 output token、0 reasoning token**。Realtime、
+Worker heartbeat、JWT refresh、CLI 登入狀態探測都不呼叫 Codex／Claude。
+
+以正式 35 筆 Max 樣本與目前 10% Low 抽樣規則做容量預算：
+
+| 指標 | Max P50 | Low P50（3 筆樣本，僅供容量預算） | 每張期望值（Max + 10% Low） |
+|---|---:|---:|---:|
+| 模型任務 | 1 | 1 | **1.1** |
+| Input tokens | 16,896 | 16,449 | **18,541** |
+| 其中 cached input | 8,960 | 0 | **約 8,960** |
+| Output tokens | 1,299 | 788 | **1,378** |
+| 其中 reasoning（已包含於 output） | 953 | 372 | **約 990** |
+
+因此 100 張／月約為 **110 次模型任務、1,854,100 input tokens（cached 約 896,000）、
+137,800 output tokens（reasoning 約 99,000）**。未抽中只跑 1 次 Max；抽中跑 Max + Low。
+切換到 Claude 時，tokenizer／訂閱用量口徑不同，不能硬併入 Codex 數字；Tesseract fallback
+為 0 Agent token。Raw token 可用於容量預算，但不能誠實換算成 ChatGPT／Codex 固定百分比，
+實際訂閱限制仍以 Codex usage 頁面按週校正。
 
 ## 目前生效的 2026-09-06 決策（覆蓋下方舊版雙 Pass 規劃）
 
@@ -17,13 +125,13 @@
 - 前端不再顯示「D+ 兩遍一致」或「AI 兩遍一致」，改顯示「D+ AI 已辨識」／「D+ 需人工校對」。
 - 下方標示兩遍的內容是歷史設計與既有驗收紀錄，不是目前執行契約；後續實作以本節、`README.md` 與 `TODO.md` 為準。
 
-## 2026-09-09 事件驅動 Worker 最終規劃（尚未改 Code）
+## 2026-09-09 事件驅動方案的歷史推導（現行契約請以上方單一維護區塊為準）
 
 本節回答「使用者上傳截圖時才啟動 AI Agent」以及空轉／單張用量問題。這是下一版的
-**目標契約**，不是目前已上線行為：現行 Worker 仍會每 5 秒呼叫 heartbeat／claim，忙碌時每 10 秒
-heartbeat；本次只寫文件，未修改 Worker、Edge Function、資料庫或前端。
+成本與可靠性推導；方案已在 Worker、Edge Function、資料庫與前端實作。若本節與上方
+「目前生效的 AI OCR 最終方案與用量」有文字差異，以上方區塊與目前程式／正式資料庫為準。
 
-### A. 最終方案
+### A. 推導細節（勿在此更新現行契約）
 
 核心原則是把「在線」與「取工作」拆開。60 秒不是工作保底輪詢，也不會造成新工作先等 60 秒：
 
@@ -253,7 +361,7 @@ Supabase 暫存圖片／建立工作
 
 ### 3.1 可行性
 
-此流程技術上可行。PC 端可執行常駐程式，主動輪詢或訂閱待處理工作，再透過視覺模型或本機模型完成辨識並回寫結果。
+此流程技術上可行。PC 端可執行常駐程式，透過 private Realtime 訂閱待處理工作，再透過視覺模型或本機模型完成辨識並回寫結果。
 
 ### 3.2 優點
 
@@ -746,9 +854,8 @@ queued／leased／fallback_required → expired／cancelled
 - 每個 Agent 的可用狀態為 `available`、`quota_exhausted`、`authentication_required`、
   `unavailable`。額度訊息若有可信重設時間就採用；沒有時依
   `OCR_AGENT_QUOTA_RECHECK_MINUTES` 延後，初始預設 30 分鐘，不能在 loop 中忙等。
-- **現行程式**在 Worker 閒置時預設每 5 秒 heartbeat／claim；超過 2 分鐘未更新，網站在上傳前
-  判定離線並不上傳。這是目前行為，不是最終目標；下一版事件驅動方案以上方
-  「2026-09-09 事件驅動 Worker 最終規劃」為準。
+- **現行程式**在 Worker 閒置時只維持 60 秒狀態 heartbeat；正常不 claim。網站仍以新鮮心跳
+  判定 Worker 是否可用，Realtime 斷線才每 5 秒重連；這是上方單一維護區塊所記載的已實作契約。
 - 未抽樣的 AI 成功、取消或瀏覽器確認 Tesseract 完成後立即刪除圖片；抽樣成功工作要等 Low
   結束／失敗後才刪除。Edge Function 另由 Supabase Cron
   `ocr-expired-cleanup` 每 5 分鐘執行 secret-protected cleanup，Worker／瀏覽器都離線時仍會清理。
@@ -784,7 +891,8 @@ Worker 所需設定：
 
 - `OCR_WORKER_EMAIL`、`OCR_WORKER_PASSWORD`。
 - `OCR_SUPABASE_URL`、`OCR_SUPABASE_ANON_KEY`；未設定時讀既有 `Supabase:Url`／`Supabase:AnonKey`。
-- `OCR_WORKER_NAME`、`OCR_WORKER_POLL_SECONDS`；輪詢預設 5 秒，允許 2～60 秒。
+- `OCR_WORKER_NAME`、`OCR_WORKER_RECONNECT_SECONDS`；Realtime 斷線重連預設 5 秒，允許 2～60 秒。
+  舊名稱 `OCR_WORKER_POLL_SECONDS` 仍可作相容 fallback，但不再代表工作輪詢間隔。
 - `OCR_AGENT_PRIMARY=claude|codex`、`OCR_AGENT_QUOTA_RECHECK_MINUTES`。
 - 可選的 `OCR_CLAUDE_PATH`、`OCR_CODEX_PATH`；Windows 排程建議使用已驗證的完整路徑。
 - 可選的 `OCR_CLAUDE_MODEL`、`OCR_CODEX_MODEL`；只能選該訂閱與 CLI 當下實際可用的模型，
@@ -1094,7 +1202,7 @@ concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、�
 
 - 每張圖只啟動一次全新的 `codex exec --ephemeral`；主要 Agent 額度／登入失效才切換另一個 Agent。
 - 前端最多同時建立 3 個 AI 工作；Worker 以 `OCR_WORKER_MAX_CONCURRENCY`（預設 3）建立工作槽，
-  每槽完成後立即 claim 下一件，忙碌期間每 10 秒回 heartbeat；空佇列經 3 秒 grace drain 後才回到外層輪詢。
+  每槽完成後立即 claim 下一件，工作排空後回到 Realtime 待命；在線狀態另以 60 秒 heartbeat 回報。
 - 單次 AI 最長可跑 4 分鐘，瀏覽器對單件工作等待上限為 9 分鐘；Worker 取到工作後不再額外等待輪詢週期。
 - 現行 Runner 把 stdout／stderr 整段讀完才處理，沒有收集 CLI 即時事件；只保留完成後的安全 token usage 彙總。
 
@@ -1112,7 +1220,7 @@ concurrency 或 CLI 啟動最佳化；若準確率未達身份／數量 95%、�
    `OCR_MAX_REASONING_EFFORT`，預設 `max`，仍可明確指定 `low`／`medium`／`high`；不在未量測前改圖片內容或模型名稱。
 4. **多圖有界並行（接線已完成）**：前端最多建立 3 個 AI 工作，Worker 共用
    `OCR_WORKER_MAX_CONCURRENCY`（預設 3）；一件完成後立即再 claim，忙碌期間保持 heartbeat，
-   空佇列才回到輪詢。仍不得因允許 20 張就同時啟動 20 個 CLI。
+   空佇列才回到 Realtime 待命。仍不得因允許 20 張就同時啟動 20 個 CLI。
 5. 只有量測證明「每次啟動 CLI」佔比很高，才進一步評估常駐 Codex App Server；這個方案複雜度與
    憑證攻擊面較大，不是第一批修正。
 

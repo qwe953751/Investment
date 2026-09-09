@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Net.WebSockets;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Invest.Web.Infrastructure.Ai.Cli;
@@ -41,11 +43,12 @@ public sealed record OcrWorkerOptions(
         }
         var name = Environment.GetEnvironmentVariable("OCR_WORKER_NAME")
             ?? Environment.MachineName;
-        var pollSeconds = int.TryParse(
-            Environment.GetEnvironmentVariable("OCR_WORKER_POLL_SECONDS"),
+        var reconnectSeconds = int.TryParse(
+            Environment.GetEnvironmentVariable("OCR_WORKER_RECONNECT_SECONDS")
+                ?? Environment.GetEnvironmentVariable("OCR_WORKER_POLL_SECONDS"),
             out var parsed) && parsed is >= 2 and <= 60
                 ? parsed
-                : 2;
+                : 5;
         var evaluationSampleRate = double.TryParse(
             Environment.GetEnvironmentVariable("OCR_EVALUATION_SAMPLE_RATE"),
             NumberStyles.Float,
@@ -78,7 +81,7 @@ public sealed record OcrWorkerOptions(
             email,
             password,
             name,
-            TimeSpan.FromSeconds(pollSeconds),
+            TimeSpan.FromSeconds(reconnectSeconds),
             evaluationSampleRate,
             maxConcurrency,
             maxReasoningEffort);
@@ -98,9 +101,12 @@ public sealed record OcrWorkerOptions(
 public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions options)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly TimeSpan RealtimeHeartbeatInterval = TimeSpan.FromSeconds(25);
+    private const string RealtimeTopic = "realtime:ocr:queue";
     private readonly SemaphoreSlim _authLock = new(1, 1);
     private string? _accessToken;
     private string? _refreshToken;
+    private DateTimeOffset _accessTokenExpiresAt = DateTimeOffset.MinValue;
 
     public async Task HeartbeatAsync(
         IReadOnlyDictionary<string, OcrWorkerAgentState> agentStatus,
@@ -216,6 +222,178 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         await source.CopyToAsync(destination, cancellationToken);
     }
 
+    public async Task RunWakeListenerAsync(
+        Action signalWake,
+        TimeSpan reconnectInterval,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await EnsureAuthenticatedAsync(cancellationToken);
+                using var socket = new ClientWebSocket();
+                await socket.ConnectAsync(BuildRealtimeUri(), cancellationToken);
+                await SendRealtimeAsync(socket, new
+                {
+                    topic = RealtimeTopic,
+                    @event = "phx_join",
+                    payload = new
+                    {
+                        config = new
+                        {
+                            broadcast = new { ack = false, self = false },
+                            presence = new { enabled = false, key = string.Empty },
+                            @private = true
+                        },
+                        access_token = _accessToken
+                    },
+                    @ref = "1",
+                    join_ref = "1"
+                }, cancellationToken);
+                await ReceiveRealtimeAsync(socket, signalWake, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"OCR Worker Realtime 連線失敗：{Safe(exception.Message)}");
+            }
+
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(reconnectInterval, cancellationToken);
+            }
+        }
+    }
+
+    private Uri BuildRealtimeUri()
+    {
+        var builder = new UriBuilder(options.SupabaseUrl)
+        {
+            Scheme = options.SupabaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                ? "wss"
+                : "ws",
+            Path = "/realtime/v1/websocket",
+            Query = $"apikey={Uri.EscapeDataString(options.AnonKey)}&vsn=1.0.0"
+        };
+        return builder.Uri;
+    }
+
+    private static async Task SendRealtimeAsync(
+        ClientWebSocket socket,
+        object message,
+        CancellationToken cancellationToken)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(message, JsonOptions);
+        await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
+    }
+
+    private async Task ReceiveRealtimeAsync(
+        ClientWebSocket socket,
+        Action signalWake,
+        CancellationToken cancellationToken)
+    {
+        var joined = false;
+        var nextHeartbeat = DateTimeOffset.UtcNow + RealtimeHeartbeatInterval;
+        Task<string?> receiveTask = ReceiveTextAsync(socket, cancellationToken);
+
+        while (socket.State == WebSocketState.Open)
+        {
+            if (receiveTask.IsCompleted)
+            {
+                var message = await receiveTask;
+                if (message is null)
+                {
+                    return;
+                }
+
+                using var document = JsonDocument.Parse(message);
+                var root = document.RootElement;
+                var eventName = root.TryGetProperty("event", out var eventElement)
+                    ? eventElement.GetString()
+                    : null;
+                if (eventName is "phx_error" or "phx_close")
+                {
+                    throw new InvalidOperationException($"realtime_{eventName}");
+                }
+
+                if (eventName == "phx_reply"
+                    && root.TryGetProperty("payload", out var replyPayload)
+                    && replyPayload.TryGetProperty("status", out var replyStatus)
+                    && !joined)
+                {
+                    if (replyStatus.GetString() != "ok")
+                    {
+                        throw new InvalidOperationException("realtime_join_failed");
+                    }
+
+                    joined = true;
+                    signalWake();
+                }
+                else if (eventName == "broadcast")
+                {
+                    signalWake();
+                }
+
+                receiveTask = ReceiveTextAsync(socket, cancellationToken);
+                continue;
+            }
+
+            var untilHeartbeat = nextHeartbeat - DateTimeOffset.UtcNow;
+            if (untilHeartbeat <= TimeSpan.Zero)
+            {
+                await SendRealtimeAsync(socket, new
+                {
+                    topic = "phoenix",
+                    @event = "heartbeat",
+                    payload = new { },
+                    @ref = Guid.NewGuid().ToString("N")
+                }, cancellationToken);
+                nextHeartbeat = DateTimeOffset.UtcNow + RealtimeHeartbeatInterval;
+                continue;
+            }
+
+            var timer = Task.Delay(untilHeartbeat, cancellationToken);
+            var completed = await Task.WhenAny(receiveTask, timer);
+            if (completed == timer)
+            {
+                continue;
+            }
+        }
+    }
+
+    private static async Task<string?> ReceiveTextAsync(
+        ClientWebSocket socket,
+        CancellationToken cancellationToken)
+    {
+        using var message = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(buffer, cancellationToken);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                return null;
+            }
+
+            if (message.Length + result.Count > 1024 * 1024)
+            {
+                throw new InvalidOperationException("realtime_message_too_large");
+            }
+
+            message.Write(buffer, 0, result.Count);
+            if (result.EndOfMessage)
+            {
+                return Encoding.UTF8.GetString(message.GetBuffer(), 0, (int)message.Length);
+            }
+        }
+    }
+
+    private static string Safe(string value) => value.Length <= 500 ? value : value[..500];
+
     private async Task<HttpResponseMessage> SendJsonAsync(object body, CancellationToken cancellationToken)
     {
         await EnsureAuthenticatedAsync(cancellationToken);
@@ -264,19 +442,29 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
 
     private Task EnsureAuthenticatedAsync(CancellationToken cancellationToken)
         => string.IsNullOrWhiteSpace(_accessToken)
-            ? AuthenticateSerializedAsync(cancellationToken)
-            : Task.CompletedTask;
+            ? AuthenticateSerializedAsync(useRefreshToken: false, cancellationToken)
+            : _accessTokenExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(1)
+                ? AuthenticateSerializedAsync(useRefreshToken: true, cancellationToken)
+                : Task.CompletedTask;
 
-    private async Task AuthenticateSerializedAsync(CancellationToken cancellationToken)
+    private async Task AuthenticateSerializedAsync(bool useRefreshToken, CancellationToken cancellationToken)
     {
         await _authLock.WaitAsync(cancellationToken);
         try
         {
-            if (!string.IsNullOrWhiteSpace(_accessToken))
+            if (!useRefreshToken && !string.IsNullOrWhiteSpace(_accessToken))
             {
                 return;
             }
-            await AuthenticateAsync(useRefreshToken: false, cancellationToken);
+
+            if (useRefreshToken
+                && !string.IsNullOrWhiteSpace(_accessToken)
+                && _accessTokenExpiresAt > DateTimeOffset.UtcNow.AddMinutes(1))
+            {
+                return;
+            }
+
+            await AuthenticateAsync(useRefreshToken, cancellationToken);
         }
         finally
         {
@@ -303,6 +491,8 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
             ?? throw new InvalidOperationException("worker_auth_empty_response");
         _accessToken = session.AccessToken;
         _refreshToken = session.RefreshToken;
+        var expiresIn = session.ExpiresIn.GetValueOrDefault(3600);
+        _accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(expiresIn > 0 ? expiresIn : 3600);
     }
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, string operation)
@@ -319,7 +509,8 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
 
     private sealed record AuthSession(
         [property: JsonPropertyName("access_token")] string AccessToken,
-        [property: JsonPropertyName("refresh_token")] string RefreshToken);
+        [property: JsonPropertyName("refresh_token")] string RefreshToken,
+        [property: JsonPropertyName("expires_in")] int? ExpiresIn);
     private sealed record OcrClaimResponse(OcrClaimedJob? Job);
     private sealed record OcrEvaluationClaimResponse(OcrClaimedEvaluation? Evaluation);
 }

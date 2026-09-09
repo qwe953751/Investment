@@ -37,7 +37,7 @@ public sealed class OcrCliWiringTests
     }
 
     [Fact]
-    public void Worker忙碌時持續回報心跳並在完成後補取下一張()
+    public void Worker收到喚醒後並行排空佇列且待命不輪詢()
     {
         var root = FindRepositoryRoot();
         var worker = File.ReadAllText(Path.Combine(
@@ -50,12 +50,25 @@ public sealed class OcrCliWiringTests
             "Services",
             "OcrWorkerRunner.cs"));
 
-        Assert.Contains("BusyHeartbeatInterval = TimeSpan.FromSeconds(10)", worker, StringComparison.Ordinal);
-        Assert.Contains("MaintainHeartbeatAsync(api, agentStates, heartbeatCancellation.Token)", worker, StringComparison.Ordinal);
+        var api = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Invest.Web",
+            "Features",
+            "Assets",
+            "Ocr",
+            "Services",
+            "OcrWorkerApiClient.cs"));
+
+        Assert.Contains("WorkerHeartbeatInterval = TimeSpan.FromSeconds(60)", worker, StringComparison.Ordinal);
+        Assert.Contains("RunWakeListenerAsync(", worker, StringComparison.Ordinal);
+        Assert.Contains("await Task.Delay(WorkerHeartbeatInterval, cancellationToken)", worker, StringComparison.Ordinal);
         Assert.Contains("Enumerable.Range(0, options.MaxConcurrency)", worker, StringComparison.Ordinal);
         Assert.Contains("ClaimAndProcessJobsAsync(api, agentStates, options, dispatchState, cancellationToken)", worker, StringComparison.Ordinal);
         Assert.Contains("var job = await api.ClaimAsync(cancellationToken);", worker, StringComparison.Ordinal);
         Assert.Contains("await ProcessJobAsync(api, job, agentStates, options, cancellationToken);", worker, StringComparison.Ordinal);
+        Assert.Contains("public async Task RunWakeListenerAsync(", api, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task.Delay(options.PollInterval, cancellationToken)", worker, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()

@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 8/31 驗收又抓到兩個成因（run 層級鎖、鬧鐘被純發布騙），都已修，等 9/1 驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 已改走 CDN，等 8/31 量實際流量 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 既有功能已上線；2026-09-09 已整理「上傳才喚醒、健康空轉零 claim」最終方案與用量，尚未改 Code；其餘待 Claude Pro 登入、Golden Set、手機新圖與 Windows 每張 ≤30 秒驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 Realtime 事件驅動、健康空轉零 claim、權限分享連結已實作並發布；仍待 Claude Pro 登入、Golden Set、手機新圖、Windows 每張 ≤30 秒與長期斷線復原驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🔵 市場切換已上線；美股／加密貨幣熱絡指標修正規劃完成，待實作與回放驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1078,8 +1078,9 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 [↑ 回到 TODO 列表](#快速跳轉)
 
 **狀態：AI-first 前端、正式 Supabase 私有佇列、Validator、Mac Worker、重載恢復、submit 冪等、
-fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並發布；本輪再加入
-佇列短心跳回退、Worker 取件後立即接續與 Windows 自包含 EXE 排程；正式最高權限手機已確認
+fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並發布；本輪已加入
+private Realtime 事件喚醒、健康空轉零 claim、60 秒 Worker heartbeat、斷線 5 秒重連、權限分享邀請連結、
+Worker 取件後立即接續與 Windows 自包含 EXE 排程；正式最高權限手機已確認
 `IMG_1601.jpeg`／`IMG_1602.jpeg` 由 D+ AI `succeeded`，耗時 70／78 秒。本輪已實作市場限縮的名稱唯一
 反查、模糊候選不自選、單列不阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、單次 AI 辨識、
 跨平台單實例鎖與背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs` 已更新為
@@ -1148,12 +1149,12 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
   `ocr_evaluations` 與 Low 租約 RPC；成功 Max 依 Worker `OCR_EVALUATION_SAMPLE_RATE`（預設 10%）
   抽樣保存，Low 只在一般佇列沒有工作時背景執行，人工按套用後由 admin action 保存校對列。Low 不會
   替換 Max，也不會被當成人工答案；多圖來源不明時保存但標記 `human_truth_complete=false`。
-- **2026-09-09 事件驅動最終規劃（尚未實作）**：正常待命時不再 heartbeat 順便 claim，也不設
-  60 秒保底工作輪詢。queued 工作建立後以 private Realtime Broadcast 喚醒；斷線才固定每 5 秒
-  重連，成功後立即 catch-up drain。60 秒只更新 `ocr_workers` 在線狀態，25 秒只維持 WebSocket，
-  沒有截圖時 claim／evaluation／Codex／Claude 全為 0。健康空轉 30 天估算為 51,840 次 OCR Edge
-  invocation；35 筆 Max 與 3 筆 Low 的 token 實測、每張與每月公式及可靠性取捨詳見
-  [規劃 AI OCR：2026-09-09 事件驅動 Worker 最終規劃](Doc/技術文件/規劃AI%20OCR.md#2026-09-09-事件驅動-worker-最終規劃尚未改-code)。
+- **2026-09-09 事件驅動方案已實作**：正常待命時不 claim，也不設 60 秒保底工作輪詢。queued
+  工作建立後以 private Realtime Broadcast 喚醒；斷線才固定每 5 秒重連，成功後立即 catch-up drain。
+  60 秒只更新 `ocr_workers` 在線狀態，25 秒只維持 WebSocket，沒有截圖時 claim／evaluation／
+  Codex／Claude 全為 0。健康空轉 30 天估算為 51,840 次 OCR Edge invocation；35 筆 Max 與 3 筆 Low
+  的 token 實測、每張與每月公式及可靠性取捨詳見
+  [規劃 AI OCR：目前生效的 AI OCR 最終方案與用量](Doc/技術文件/規劃AI%20OCR.md#目前生效的-ai-ocr-最終方案與用量單一維護區塊)。
 
 ### 本輪已完成與仍待外部驗收
 
