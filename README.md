@@ -170,6 +170,13 @@ Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查�
 
 ## 最新已發布版本
 
+本次事件驅動 OCR、一次性權限分享與族群導覽權限修正的程式 commit
+`9654ab3f4b078ed781cf6834f4ff8176b7344d2f`，以及文件交接 commit
+`e81098d7cd6c11249f676394297dcb836064840c`，已由 [`daily-snapshot.yml` publish-only run 34338930836](https://github.com/qwe953751/Investment/actions/runs/34338930836)
+成功發布。公開 manifest 版本為 `1788948353`、最新交易日 `2026/09/09`、產生時間 `2026-09-09 18:05`；
+線上 HTML 已含管理者分享控制項，cache-busted `site.js` 已驗證包含 opaque invite、主頁籤同步與持倉
+族群防繞過接線。publish-only 的行情回補、Supabase 同步、備份與心跳均依設計跳過。
+
 本次持倉檢視者各子帳戶排序修正所用的 `main` commit
 `e24956bf3c3c9cad4b875032fcbfdc553bc75ccc` 已由 [`daily-snapshot.yml` publish-only run 34305234097](https://github.com/qwe953751/Investment/actions/runs/34305234097)
 完成測試、靜態輸出與兩個 Pages 發布。正式網站 manifest 版本為 `1788922740`、最新交易日
