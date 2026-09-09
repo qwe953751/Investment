@@ -6364,6 +6364,18 @@ function assetsAreEditing() {
     return assetsBusy || assetEditorMode !== '' || assetScreenshotDraft !== null;
 }
 
+async function refreshAssetsIfDue() {
+    if (state.view !== 'assets' || document.hidden || !assetsAreStale() || assetsAreEditing()) {
+        return;
+    }
+
+    await refreshAssets({ persistSnapshots: ASSET_DASHBOARD_ENABLED });
+
+    if (state.view === 'assets') {
+        renderAssetsDashboard();
+    }
+}
+
 function assetActiveOwner() {
     if (typeof ASSET_HOLDINGS_VIEW_ENABLED !== 'undefined' && ASSET_HOLDINGS_VIEW_ENABLED) {
         return assetOwners.find(owner => owner.name === 'Frank') ?? null;
@@ -22524,13 +22536,7 @@ function startIntradayTimer() {
 
         // 資產同理，另外多一個條件：有表單開著就先不要重讀。
         // 資產的表單沒有像筆記那樣的草稿機制，背景重畫會把正在打的數字清掉。
-        if (state.view === 'assets' && !document.hidden && assetsAreStale() && !assetsAreEditing()) {
-            void refreshAssets({ persistSnapshots: ASSET_DASHBOARD_ENABLED }).then(() => {
-                if (state.view === 'assets') {
-                    renderAssetsDashboard();
-                }
-            });
-        }
+        void refreshAssetsIfDue();
 
         // 裝置列表只有最高權限能打開；面板開著時每分鐘重讀一次，
         // 讓使用者不用手動刷新就能看到其他裝置的最後活動時間。
@@ -22553,6 +22559,7 @@ function startIntradayTimer() {
     for (const name of ['visibilitychange', 'focus', 'pageshow', 'online']) {
         window.addEventListener(name, refreshIntradayIfDue);
         window.addEventListener(name, () => { void refreshRevenueIfDue(); });
+        window.addEventListener(name, refreshAssetsIfDue);
     }
 }
 

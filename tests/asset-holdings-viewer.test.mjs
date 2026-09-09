@@ -170,6 +170,60 @@ test('持倉檢視者手機欄軌比照盤中排行固定代號與名稱', () =>
     }
 });
 
+function assetRefreshDueHarness({ hidden = false, view = 'assets', stale = true, editing = false } = {}) {
+    const calls = [];
+    const context = {
+        document: { hidden },
+        state: { view },
+        ASSET_DASHBOARD_ENABLED: false,
+        assetsAreStale: () => stale,
+        assetsAreEditing: () => editing,
+        refreshAssets: async options => calls.push({ type: 'refresh', options }),
+        renderAssetsDashboard: () => calls.push({ type: 'render' })
+    };
+
+    vm.createContext(context);
+    vm.runInContext(functionSource('refreshAssetsIfDue'), context);
+
+    return {
+        refreshAssetsIfDue: context.refreshAssetsIfDue,
+        calls
+    };
+}
+
+test('持倉頁回到前景時會重新載入已過期的資料', async () => {
+    const harness = assetRefreshDueHarness();
+
+    await harness.refreshAssetsIfDue();
+
+    assert.deepEqual(JSON.parse(JSON.stringify(harness.calls)), [
+        { type: 'refresh', options: { persistSnapshots: false } },
+        { type: 'render' }
+    ]);
+});
+
+test('持倉刷新在背景、非資產頁或編輯中不會誤觸發', async () => {
+    for (const options of [
+        { hidden: true },
+        { view: 'intraday' },
+        { editing: true },
+        { stale: false }
+    ]) {
+        const harness = assetRefreshDueHarness(options);
+
+        await harness.refreshAssetsIfDue();
+
+        assert.deepEqual(harness.calls, [], JSON.stringify(options));
+    }
+});
+
+test('資產背景計時器與前景事件共用持倉刷新入口', () => {
+    const timer = functionSource('startIntradayTimer');
+
+    assert.match(timer, /void refreshAssetsIfDue\(\);/);
+    assert.match(timer, /window\.addEventListener\(name, refreshAssetsIfDue\)/);
+});
+
 test('正式模板保留唯讀欄位，不含刪除、編輯或清除控制', () => {
     assert.match(siteScript, /const ACCESS_RANK = \{ viewer: 0, holdings: 1, monitor: 2, admin: 3 \};/);
     assert.match(siteScript, /holdings@investment\.local/);
