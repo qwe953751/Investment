@@ -44,6 +44,7 @@ function annualRows(storedRows, values = {}) {
         functionSource('assetNumber'),
         functionSource('assetCashFlowNet'),
         functionSource('assetNativeToTwd'),
+        functionSource('assetAnnualPreviewFundingCostNativeFor'),
         functionSource('assetAnnualPreviewFundingCostFor'),
         functionSource('assetAnnualPreviewRowsFor')
     ].join('\n\n'), context);
@@ -186,6 +187,7 @@ test('年度成本按該曆年累計出入金紀錄，不跨年累加', () => {
         functionSource('assetNumber'),
         functionSource('assetCashFlowNet'),
         functionSource('assetNativeToTwd'),
+        functionSource('assetAnnualPreviewFundingCostNativeFor'),
         functionSource('assetAnnualPreviewFundingCostFor'),
         functionSource('assetAnnualPreviewRowsFor')
     ].join('\n\n'), context);
@@ -215,22 +217,22 @@ test('年度區塊預設收合，且年度淨值名稱改為試算淨值', () =>
     const metric = functionSource('makeAssetAnnualPreviewMetric');
     const section = functionSource('makeAssetAnnualPreviewSection');
 
-    assert.match(metric, /依（今年總資產－今年入金成本）÷ 去年總資產試算/);
+    assert.doesNotMatch(metric, /依（今年總資產/);
     assert.match(metric, /每年總資產與試算淨值/);
     assert.match(section, /每年總資產與試算淨值/);
-    assert.match(section, /試算淨值＝總資產－入金成本/);
+    assert.doesNotMatch(section, /試算淨值＝總資產－入金成本/);
     assert.match(section, /makeAssetAnnualPreviewValue\('試算淨值'/);
 });
 
 test('新增年度的入金成本為出入金紀錄衍生欄位，不接受手動輸入', () => {
     const addForm = functionSource('makeAssetAnnualPreviewAddForm');
 
-    assert.match(addForm, /入金成本（出入金紀錄累計）/);
+    assert.match(addForm, /入金成本（出入金紀錄累計，\$\{currency\}）/);
     assert.match(addForm, /costInput\.readOnly = true/);
     assert.doesNotMatch(addForm, /assetAmountField\(fields, '入金成本'/);
 });
 
-test('年化報酬使用今年總資產減入金成本，再除以去年總資產', () => {
+test('年化報酬使用今年試算淨值相對去年總資產的報酬率', () => {
     const context = {};
     vm.createContext(context);
     vm.runInContext([
@@ -243,9 +245,36 @@ test('年化報酬使用今年總資產減入金成本，再除以去年總資�
         { totalAssets: 1_758_696, cost: 400_000 },
         { totalAssets: 688_116, cost: 500_000 }
     ];
-    const expected = Math.round((1_758_696 - 400_000) / 688_116 * 10_000) / 100;
+    const expected = Math.round(((1_758_696 - 400_000) - 688_116) / 688_116 * 10_000) / 100;
 
     assert.equal(context.assetAnnualPreviewReturn(rows, 0), expected);
+
+    const returnSource = functionSource('assetAnnualPreviewReturn');
+    assert.match(returnSource, /currentTotalAssets - currentCost - previousTotalAssets/);
+});
+
+test('美股年度輸入使用 USD，寫入年度表前換算成 TWD', () => {
+    const context = {
+        assetLatestUsdTwdRate: { rate: 32 }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetNativeToTwd'),
+        functionSource('assetTwdToNative')
+    ].join('\n\n'), context);
+
+    assert.equal(context.assetNativeToTwd(100, '美股'), 3_200);
+    assert.equal(context.assetTwdToNative(3_200, '美股'), 100);
+    assert.equal(context.assetTwdToNative(3_200, '台股'), 3_200);
+
+    const addForm = functionSource('makeAssetAnnualPreviewAddForm');
+    const editValue = functionSource('makeAssetAnnualPreviewTotalValue');
+    assert.match(addForm, /總資產（\$\{currency\}）/);
+    assert.match(addForm, /assetNativeToTwd\(totalAssetsNative, view\.market\)/);
+    assert.match(addForm, /assetNativeToTwd\(costNative, view\.market\)/);
+    assert.match(addForm, /Math\.round\(totalAssetsTwd\), Math\.round\(costTwd\)/);
+    assert.match(editValue, /assetTwdToNative\(row\.totalAssets, view\.market\)/);
 });
 
 test('Dashboard 帳戶表以資產總值減入金成本顯示總獲利', () => {
@@ -314,6 +343,7 @@ test('Dashboard 年度資料由各帳戶逐年彙總，且不提供年度 CRUD',
         functionSource('assetSumComplete'),
         functionSource('assetCashFlowNet'),
         functionSource('assetNativeToTwd'),
+        functionSource('assetAnnualPreviewFundingCostNativeFor'),
         functionSource('assetAnnualPreviewFundingCostFor'),
         functionSource('assetAnnualPreviewRowsFor'),
         functionSource('assetAnnualPreviewOwnerView')

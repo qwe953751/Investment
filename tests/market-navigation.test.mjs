@@ -16,3 +16,15 @@ test('筆記 #56 的市場導覽小控件保持在頁面最上層', () => {
     assert.match(utilityLayerRule[1], /position:\s*relative;/);
     assert.match(utilityLayerRule[1], /z-index:\s*40;/);
 });
+
+test('U1 手機版先顯示完整工具列，再顯示市場與主頁籤', () => {
+    const mobileOrder = `grid-template-areas:
+            "utility"
+            "market"
+            "nav"`;
+
+    assert.match(siteScript, new RegExp(
+        `body\\[data-msp-nav-variant="u1"\\] \\.msp-market-bar[\\s\\S]*?${mobileOrder}`));
+    assert.match(siteScript, /msp-utility-system/);
+    assert.match(siteScript, /msp-utility-access/);
+});
