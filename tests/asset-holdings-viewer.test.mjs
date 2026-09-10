@@ -7,7 +7,8 @@ import vm from 'node:vm';
 const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const siteScript = fs.readFileSync(
     path.join(repositoryRoot, 'src', 'Invest.Web', 'Infrastructure', 'StaticSite', 'Assets', 'site.js'),
-    'utf8');
+    'utf8')
+    .replaceAll('\r\n', '\n');
 const siteStyles = fs.readFileSync(
     path.join(repositoryRoot, 'src', 'Invest.Web', 'Infrastructure', 'StaticSite', 'Assets', 'site.css'),
     'utf8');

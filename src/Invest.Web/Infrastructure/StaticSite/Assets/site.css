@@ -1566,6 +1566,7 @@ body {
 .asset-dashboard-user-controls select,
 .asset-editor-form input,
 .asset-editor-form select,
+.asset-annual-preview-add-form input,
 .asset-screenshot-review input {
     min-height: 38px;
     padding: 7px 10px;
@@ -1618,7 +1619,8 @@ body {
 
 .asset-button:disabled,
 .asset-editor-form input:disabled,
-.asset-editor-form select:disabled {
+.asset-editor-form select:disabled,
+.asset-annual-preview-add-form input:disabled {
     cursor: not-allowed;
     opacity: .55;
 }
@@ -1833,6 +1835,301 @@ body {
     line-height: 1.35;
     text-overflow: clip;
     white-space: normal;
+}
+
+.asset-annualized-metric {
+    cursor: pointer;
+}
+
+.asset-annualized-metric:hover,
+.asset-annualized-metric:focus-visible {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgb(23 92 211 / 12%);
+    outline: none;
+}
+
+.asset-annual-preview {
+    min-width: 0;
+    padding: 20px 24px 16px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-alt);
+}
+
+.asset-annual-preview-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.asset-annual-preview-heading h2 {
+    margin: 0;
+    color: var(--text);
+    font-size: 18px;
+}
+
+.asset-annual-preview-heading-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.asset-annual-preview-heading-actions > span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.asset-annual-preview > .asset-local-only-note {
+    margin-top: 7px;
+}
+
+.asset-annual-preview-add-form {
+    display: grid;
+    gap: 10px;
+    margin-top: 14px;
+    padding: 12px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+.asset-annual-preview-add-form > strong {
+    color: var(--text);
+    font-size: 14px;
+}
+
+.asset-annual-preview-add-form > span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.asset-annual-preview-add-fields {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.asset-annual-preview-add-fields label {
+    display: grid;
+    gap: 5px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.asset-annual-preview-add-fields input[aria-invalid="true"] {
+    border-color: var(--up-text);
+    box-shadow: 0 0 0 2px rgb(217 45 32 / 10%);
+}
+
+.asset-annual-preview-add-form.is-invalid::after {
+    color: var(--up-text);
+    content: '請確認年份未重複，且金額皆為 0 或以上。';
+    font-size: 12px;
+}
+
+.asset-annual-preview-list {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.asset-annual-preview-row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 12px;
+}
+
+.asset-annual-preview-row:not(:last-child)::after {
+    position: absolute;
+    top: 34px;
+    bottom: -14px;
+    left: 27px;
+    width: 2px;
+    background: var(--accent-border);
+    content: '';
+}
+
+.asset-annual-preview-year {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    align-self: start;
+    min-height: 32px;
+    place-items: center;
+    padding: 0 6px;
+    border: 2px solid var(--accent-border);
+    border-radius: 999px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.asset-annual-preview-row.is-current .asset-annual-preview-year {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+}
+
+.asset-annual-preview-card {
+    min-width: 0;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+}
+
+.asset-annual-preview-row.is-current .asset-annual-preview-card {
+    border-color: var(--accent-border);
+    box-shadow: 0 8px 20px rgb(23 92 211 / 7%);
+}
+
+.asset-annual-preview-card-heading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.asset-annual-preview-card-heading > strong:first-child {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 17px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-annual-preview-status {
+    flex: 0 0 auto;
+    padding: 3px 8px;
+    border: 1px solid var(--accent-border);
+    border-radius: 999px;
+    background: var(--accent-bg);
+    color: var(--accent-strong);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.asset-annual-preview-return {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-size: 18px;
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-annual-preview-values {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    margin-top: 13px;
+}
+
+.asset-annual-preview-value {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+}
+
+.asset-annual-preview-value > span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.asset-annual-preview-value > strong {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 18px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-annual-preview-net > strong {
+    color: var(--accent-strong);
+}
+
+.asset-annual-preview-total-control {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+
+.asset-annual-preview-total-control > strong {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 18px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-annual-preview-edit {
+    min-height: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font-size: 12px;
+}
+
+.asset-annual-preview-edit:hover,
+.asset-annual-preview-edit:focus-visible {
+    border: 0;
+    background: transparent;
+    color: var(--accent-strong);
+    text-decoration: underline;
+}
+
+.asset-annual-preview-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.asset-annual-preview-delete {
+    min-height: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--up-text);
+    font-size: 12px;
+}
+
+.asset-annual-preview-delete:hover,
+.asset-annual-preview-delete:focus-visible {
+    border: 0;
+    background: transparent;
+    color: var(--up-text);
+    text-decoration: underline;
+}
+
+.asset-annual-preview-total-control > input {
+    min-width: 0;
+    width: 132px;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-annual-preview-total-control > .asset-button {
+    min-height: auto;
+    padding: 5px 8px;
+    font-size: 12px;
 }
 
 .asset-dual-currency-value {
@@ -3914,6 +4211,7 @@ td.stock-name.stock-name-change-down {
 
     .asset-dashboard-config-card,
     .asset-value-trend-card,
+    .asset-annual-preview,
     .asset-account-holdings,
     .asset-screenshot-flow {
         padding: 16px;
@@ -3923,6 +4221,48 @@ td.stock-name.stock-name-change-down {
     .asset-preview-metrics,
     .asset-account-metrics {
         grid-template-columns: 1fr;
+    }
+
+    .asset-annual-preview-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .asset-annual-preview-heading-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .asset-annual-preview-add-fields {
+        grid-template-columns: 1fr;
+    }
+
+    .asset-annual-preview-row {
+        grid-template-columns: 42px minmax(0, 1fr);
+        gap: 8px;
+    }
+
+    .asset-annual-preview-row:not(:last-child)::after {
+        left: 20px;
+    }
+
+    .asset-annual-preview-card-heading {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .asset-annual-preview-card-heading > strong:first-child {
+        flex: 1 1 100%;
+    }
+
+    .asset-annual-preview-return {
+        margin-left: auto;
+    }
+
+    .asset-annual-preview-values {
+        grid-template-columns: 1fr;
+        gap: 10px;
     }
 
     .asset-editor-actions {

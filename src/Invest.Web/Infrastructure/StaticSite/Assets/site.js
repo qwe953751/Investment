@@ -43,12 +43,20 @@ const TOPIC_EDITOR_PROTOTYPE_V3 = ['localhost', '127.0.0.1'].includes(window.loc
 const TOPIC_EDITOR_PROTOTYPE = TOPIC_EDITOR_PROTOTYPE_V1
     || TOPIC_EDITOR_PROTOTYPE_V2
     || TOPIC_EDITOR_PROTOTYPE_V3;
+// 本機專用：用筆記 #62 的年度總資產／淨資產示意資料檢查正式資產頁版面與互動。
+// 正式網址走同一個 renderer，但歷史年度改讀 asset_annual_snapshots；本機 query 不讀寫 Supabase。
+const ASSET_ANNUALIZED_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && PREVIEW_QUERY === 'asset-annualized-v1';
 let assetDashboardScreen = 'dashboard';
 let assetSelectedAccountId = '';
 let assetEditorMode = '';
 let assetScreenshotDraft = null;
 let assetAiResumePromise = null;
 let assetActionNotice = '';
+let assetAnnualPreviewEditingKey = '';
+let assetAnnualPreviewAddingKey = '';
+let assetAnnualPreviewExpanded = true;
+let assetAnnualPreviewAutoOpened = false;
 // 出入金紀錄的「就地編輯」：一次只允許一列進入編輯狀態，切到別列不會遺失資料，
 // 因為原本就還沒送出。跟 assetEditorMode（持倉整表批次編輯）是各自獨立的狀態。
 let assetEditingCashFlowId = '';
@@ -5920,6 +5928,7 @@ const ASSET_HOLDINGS_TABLE = 'asset_holdings';
 const ASSET_CASH_FLOWS_TABLE = 'asset_cash_flows';
 const ASSET_VALUE_SNAPSHOTS_TABLE = 'asset_value_snapshots';
 const ASSET_ACCOUNT_VALUE_SNAPSHOTS_TABLE = 'asset_account_value_snapshots';
+const ASSET_ANNUAL_SNAPSHOTS_TABLE = 'asset_annual_snapshots';
 const ASSET_EXCHANGE_RATES_TABLE = 'exchange_rates';
 const ASSET_LATEST_US_QUOTES_VIEW = 'latest_us_quotes';
 const ASSET_MARKETS = ['台股', '美股', '其他'];
@@ -5945,6 +5954,8 @@ let assetValueSnapshotRows = [];
 let assetValueSnapshotsAvailable = false;
 let assetAccountValueSnapshotRows = [];
 let assetAccountValueSnapshotsAvailable = false;
+let assetAnnualSnapshotRows = [];
+let assetAnnualSnapshotsAvailable = false;
 let assetsLoaded = false;
 let assetsLoadError = null;
 let assetsBusy = false;
@@ -6239,7 +6250,7 @@ function assetTrendRowsForPeriod(rows, period = ASSET_DEFAULT_TREND_PERIOD) {
 }
 
 async function loadAssets() {
-    const [owners, accounts, holdings, cashFlows, valueSnapshots, accountValueSnapshots, exchangeRates, usQuotes]
+    const [owners, accounts, holdings, cashFlows, valueSnapshots, accountValueSnapshots, annualSnapshots, exchangeRates, usQuotes]
         = await Promise.all([
         fetchAllRows(
             ASSET_OWNERS_TABLE,
@@ -6265,6 +6276,10 @@ async function loadAssets() {
             ASSET_ACCOUNT_VALUE_SNAPSHOTS_TABLE,
             'account_id,snapshot_date,total_value_twd,market_value_twd,cash_twd,cost_twd,unrealized_twd,updated_at',
             '&order=snapshot_date.asc').catch(() => null),
+        fetchAllRows(
+            ASSET_ANNUAL_SNAPSHOTS_TABLE,
+            'id,owner_id,account_id,snapshot_year,total_assets_twd,cost_twd,updated_at',
+            '&order=snapshot_year.desc').catch(() => null),
         fetchAssetLatestUsdTwdRate().catch(() => undefined),
         fetchAssetLatestUsQuotes().catch(() => undefined)
     ]);
@@ -6332,6 +6347,15 @@ async function loadAssets() {
             unrealized: assetNumber(row.unrealized_twd),
             updatedAt: String(row.updated_at ?? '')
         })),
+        annualSnapshots: annualSnapshots === null ? null : annualSnapshots.map(row => ({
+            id: String(row.id),
+            ownerId: row.owner_id === null || row.owner_id === undefined ? '' : String(row.owner_id),
+            accountId: row.account_id === null || row.account_id === undefined ? '' : String(row.account_id),
+            snapshotYear: assetNumber(row.snapshot_year),
+            totalAssets: assetNumber(row.total_assets_twd),
+            cost: assetNumber(row.cost_twd),
+            updatedAt: String(row.updated_at ?? '')
+        })),
         exchangeRate: exchangeRates,
         usQuotes
     };
@@ -6350,6 +6374,121 @@ async function fetchAssetLatestUsQuotes() {
             'symbol,name,trade_date,close_price',
             '&order=symbol.asc');
     }
+}
+
+function loadAssetAnnualPreviewData() {
+    const today = TAIPEI_DATE.format(new Date());
+    const now = new Date().toISOString();
+    const currentYear = Number(today.slice(0, 4));
+    const ownerId = 'local-preview-frank';
+    const accountId = 'local-preview-taiwan';
+    const holdingSeeds = [
+        ['1303', '南亞', 202, 40_959, 48_228, 1.6],
+        ['1560', '中砂', 30, 20_819, 21_690, .8],
+        ['1802', '台玻', 710, 41_268, 42_884, .8],
+        ['1815', '富喬', 567, 61_417, 73_001, .6],
+        ['2327', '國巨*', 69, 41_044, 39_227, -.3],
+        ['2368', '金像電', 19, 20_549, 21_328, 4.4],
+        ['2375', '凱美', 160, 20_749, 19_720, .2],
+        ['2383', '台光電', 21, 103_386, 115_763, 3.2],
+        ['2421', '建準', 386, 61_863, 64_559, -.5],
+        ['2455', '全新', 108, 41_004, 58_212, 4.7],
+        ['2472', '立隆電', 90, 20_684, 19_260, -.7],
+        ['9999', '其餘持股（預覽）', 1, 1_508_887, 1_768_217, 0]
+    ];
+    const snapshotValues = [2_394_771, 2_285_000, 2_285_000, 2_330_000, 2_330_000,
+        2_325_000, 2_202_625, 2_276_000, 2_292_089];
+    const snapshotDates = [
+        '2026-09-02', '2026-09-03', '2026-09-04', '2026-09-05', '2026-09-06',
+        '2026-09-07', '2026-09-08', '2026-09-09', '2026-09-10'
+    ];
+
+    assetOwners = [{ id: ownerId, name: 'Frank', sortOrder: 0, updatedAt: now }];
+    assetAccountRows = [{
+        id: accountId,
+        ownerId,
+        name: '台股操作',
+        market: '台股',
+        broker: '富邦',
+        cash: 0,
+        realized: 0,
+        sortOrder: 0,
+        updatedAt: now
+    }];
+    assetHoldingRows = holdingSeeds.map(([ticker, name, quantity, cost, marketValue, priceChange], index) => ({
+        id: `local-preview-holding-${ticker}`,
+        accountId,
+        ticker,
+        name,
+        quantity,
+        cost,
+        marketValue,
+        unrealized: marketValue - cost,
+        source: 'manual',
+        sortOrder: index,
+        updatedAt: now
+    }));
+    assetTickerQuotes = new Map(holdingSeeds.map(([ticker, name, quantity, , marketValue, priceChange]) => [
+        ticker,
+        {
+            name,
+            close: marketValue / quantity,
+            priceChange,
+            quoteDate: today,
+            tradeDate: today,
+            session: '盤後'
+        }
+    ]));
+    assetIntradayQuotes = new Map();
+    assetLatestUsQuotes = new Map();
+    assetLatestUsdTwdRate = null;
+    assetCashFlowAvailable = true;
+    assetCashFlowRows = [{
+        id: 'local-preview-cash-flow',
+        accountId,
+        flowDate: '2026-01-02',
+        direction: 'deposit',
+        amount: 1_185_539,
+        note: '本機預覽',
+        createdAt: now,
+        updatedAt: now
+    }];
+    assetValueSnapshotRows = [];
+    assetValueSnapshotsAvailable = false;
+    assetAccountValueSnapshotRows = snapshotValues.map((totalValue, index) => ({
+        accountId,
+        snapshotDate: snapshotDates[index],
+        totalValue,
+        marketValue: totalValue,
+        cash: 0,
+        cost: 1_982_629,
+        unrealized: totalValue - 1_982_629,
+        updatedAt: now
+    }));
+    assetAccountValueSnapshotsAvailable = true;
+    assetAnnualSnapshotRows = [
+        {
+            id: 'local-preview-owner-2025',
+            ownerId,
+            accountId: '',
+            snapshotYear: currentYear - 1,
+            totalAssets: 2_017_038,
+            cost: 1_784_366,
+            updatedAt: now
+        },
+        {
+            id: 'local-preview-account-2025',
+            ownerId: '',
+            accountId,
+            snapshotYear: currentYear - 1,
+            totalAssets: 2_017_038,
+            cost: 1_784_366,
+            updatedAt: now
+        }
+    ];
+    assetAnnualSnapshotsAvailable = true;
+    assetsLoadError = null;
+    assetsLoaded = true;
 }
 
 async function fetchAssetIntradayQuotes(accounts, holdings) {
@@ -6436,6 +6575,11 @@ async function fetchAssetLatestUsdTwdRate() {
 async function refreshAssets({ persistSnapshots = true } = {}) {
     lastAssetsLoadedAt = Date.now();
 
+    if (ASSET_ANNUALIZED_LOCAL_PREVIEW) {
+        loadAssetAnnualPreviewData();
+        return;
+    }
+
     if (supabase === null) {
         assetsLoadError = '資產需要資料庫連線；離線快照看不到資產。';
         assetsLoaded = true;
@@ -6444,6 +6588,7 @@ async function refreshAssets({ persistSnapshots = true } = {}) {
 
     try {
         const data = await loadAssets();
+
         assetOwners = data.owners;
         assetAccountRows = data.accounts;
         assetHoldingRows = data.holdings;
@@ -6453,6 +6598,8 @@ async function refreshAssets({ persistSnapshots = true } = {}) {
         assetValueSnapshotsAvailable = data.valueSnapshots !== null;
         assetAccountValueSnapshotRows = data.accountValueSnapshots ?? [];
         assetAccountValueSnapshotsAvailable = data.accountValueSnapshots !== null;
+        assetAnnualSnapshotRows = data.annualSnapshots ?? [];
+        assetAnnualSnapshotsAvailable = data.annualSnapshots !== null;
 
         if (data.exchangeRate !== undefined) {
             assetLatestUsdTwdRate = data.exchangeRate;
@@ -7065,6 +7212,446 @@ function assetMetric(label, value, detail, valueClass = '') {
     return card;
 }
 
+function assetAnnualPreviewRowsFor(view) {
+    const currentYear = Number(TAIPEI_DATE.format(new Date()).slice(0, 4));
+    const currentTotal = assetNumber(view.twdTotalValue) ?? assetNumber(view.totalValue);
+    const currentCost = assetNumber(view.twdCost) ?? assetNumber(view.cost);
+    const today = TAIPEI_DATE.format(new Date()).slice(5).replaceAll('-', '/');
+    const isOwner = view.annualScope === 'owner';
+    const scopeId = isOwner ? String(view.ownerId ?? '') : String(view.id ?? '');
+    const storedByYear = new Map();
+
+    assetAnnualSnapshotRows
+        .filter(row => (isOwner
+            ? row.ownerId === scopeId && row.accountId === ''
+            : row.accountId === scopeId && row.ownerId === ''))
+        .forEach(row => {
+            const year = assetNumber(row.snapshotYear);
+
+            if (year !== null
+                && Number.isInteger(year)
+                && year >= 2000
+                && year < currentYear
+                && assetNumber(row.totalAssets) !== null
+                && assetNumber(row.cost) !== null
+                && !storedByYear.has(year)) {
+                storedByYear.set(year, {
+                    id: String(row.id ?? ''),
+                    year,
+                    period: '全年',
+                    status: '歷史快照',
+                    totalAssets: Math.round(assetNumber(row.totalAssets)),
+                    cost: Math.round(assetNumber(row.cost)),
+                    updatedAt: row.updatedAt,
+                    sample: false,
+                    auto: false
+                });
+            }
+        });
+
+    return [
+        {
+            id: '',
+            year: currentYear,
+            period: `截至 ${today}`,
+            status: '目前年度',
+            totalAssets: currentTotal === null ? null : Math.round(currentTotal),
+            cost: currentCost === null ? null : Math.round(currentCost),
+            sample: false,
+            auto: true
+        },
+        ...[...storedByYear.values()].sort((left, right) => right.year - left.year)
+    ];
+}
+
+function assetAnnualPreviewOwnerView(owner, summary) {
+    return {
+        id: `owner:${owner.id}`,
+        ownerId: owner.id,
+        annualScope: 'owner',
+        twdTotalValue: summary.totalValue,
+        totalValue: summary.totalValue,
+        twdCost: summary.cost,
+        cost: summary.cost
+    };
+}
+
+function assetAnnualPreviewNetAsset(row) {
+    const totalAssets = assetNumber(row.totalAssets);
+    const cost = assetNumber(row.cost);
+
+    return totalAssets === null || cost === null ? null : totalAssets - cost;
+}
+
+function assetAnnualPreviewReturn(rows, index) {
+    if (!Array.isArray(rows) || index < 0 || index >= rows.length - 1) {
+        return null;
+    }
+
+    return assetChangePercent(
+        assetAnnualPreviewNetAsset(rows[index]),
+        assetAnnualPreviewNetAsset(rows[index + 1]));
+}
+
+function assetAnnualPreviewTrendClass(value) {
+    const amount = assetNumber(value);
+
+    return amount === null ? '' : amount > 0 ? 'positive' : amount < 0 ? 'negative' : 'unchanged';
+}
+
+function assetAnnualPreviewPercentText(value) {
+    const amount = assetNumber(value);
+
+    return amount === null ? '—' : `${amount >= 0 ? '+' : ''}${amount.toFixed(1)}%`;
+}
+
+function makeAssetAnnualPreviewMetric(rows) {
+    const change = assetAnnualPreviewReturn(rows, 0);
+    const detail = document.createElement('span');
+    detail.textContent = `依淨資產年增率試算 · 點擊${assetAnnualPreviewExpanded ? '收合' : '展開'}`;
+    const card = assetMetric(
+        '年化報酬',
+        assetAnnualPreviewPercentText(change),
+        detail,
+        assetAnnualPreviewTrendClass(change));
+    card.classList.add('asset-annualized-metric');
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-expanded', String(assetAnnualPreviewExpanded));
+    card.title = '點擊展開或收合每年總資產與淨資產';
+
+    const toggle = () => {
+        assetAnnualPreviewExpanded = !assetAnnualPreviewExpanded;
+        renderAssetsDashboard();
+    };
+
+    card.addEventListener('click', toggle);
+    card.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggle();
+        }
+    });
+    return card;
+}
+
+function assetAnnualPreviewSuggestedYear(rows) {
+    const currentYear = Number(TAIPEI_DATE.format(new Date()).slice(0, 4));
+    const usedYears = new Set(rows.map(row => assetNumber(row.year)).filter(year => year !== null));
+
+    for (let year = currentYear - 1; year >= 2000; year -= 1) {
+        if (!usedYears.has(year)) {
+            return year;
+        }
+    }
+
+    return currentYear - 1;
+}
+
+function assetAnnualPreviewScope(view) {
+    const isOwner = view.annualScope === 'owner';
+
+    return {
+        isOwner,
+        key: isOwner ? `owner:${view.ownerId}` : `account:${view.id}`,
+        body: (year, totalAssets, cost) => isOwner
+            ? {
+                owner_id: view.ownerId,
+                account_id: null,
+                snapshot_year: year,
+                total_assets_twd: totalAssets,
+                cost_twd: cost
+            }
+            : {
+                owner_id: null,
+                account_id: view.id,
+                snapshot_year: year,
+                total_assets_twd: totalAssets,
+                cost_twd: cost
+            }
+    };
+}
+
+function makeAssetAnnualPreviewAddForm(view, rows) {
+    const scope = assetAnnualPreviewScope(view);
+
+    if (assetAnnualPreviewAddingKey !== scope.key) {
+        return null;
+    }
+
+    const currentYear = rows[0]?.year ?? Number(TAIPEI_DATE.format(new Date()).slice(0, 4));
+    const form = document.createElement('form');
+    form.className = 'asset-annual-preview-add-form';
+    form.noValidate = true;
+
+    const title = document.createElement('strong');
+    title.textContent = '新增歷史年度';
+    const hint = document.createElement('span');
+    hint.textContent = `只能新增 ${currentYear} 年以前的完整年度資料。`;
+    form.append(title, hint);
+
+    const fields = document.createElement('div');
+    fields.className = 'asset-annual-preview-add-fields';
+    const yearInput = assetField(fields, 'number', '年份', assetAnnualPreviewSuggestedYear(rows), {
+        required: true,
+        step: '1'
+    });
+    yearInput.min = '2000';
+    yearInput.max = String(currentYear - 1);
+    const totalInput = assetAmountField(fields, '總資產', '', {
+        required: true,
+        placeholder: '例如 1800000'
+    });
+    const costInput = assetAmountField(fields, '投入成本', '', {
+        required: true,
+        placeholder: '例如 1600000'
+    });
+    form.append(fields);
+
+    const actions = document.createElement('div');
+    actions.className = 'asset-editor-actions';
+    const cancel = assetButton('取消', 'asset-secondary-button', () => {
+        assetAnnualPreviewAddingKey = '';
+        renderAssetsDashboard();
+    });
+    const save = assetButton('新增', 'asset-primary-button');
+    save.type = 'submit';
+    save.disabled = assetsBusy;
+    actions.append(cancel, save);
+    form.append(actions);
+
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        const year = assetNumber(yearInput.value);
+        const totalAssets = assetNumber(totalInput.value);
+        const cost = assetNumber(costInput.value);
+        const invalid = year === null
+            || !Number.isInteger(year)
+            || year < 2000
+            || year >= currentYear
+            || totalAssets === null
+            || totalAssets < 0
+            || cost === null
+            || cost < 0
+            || rows.some(row => row.year === year);
+
+        if (invalid) {
+            form.classList.add('is-invalid');
+            yearInput.setAttribute('aria-invalid', String(year === null
+                || !Number.isInteger(year)
+                || year < 2000
+                || year >= currentYear
+                || rows.some(row => row.year === year)));
+            totalInput.setAttribute('aria-invalid', String(totalAssets === null || totalAssets < 0));
+            costInput.setAttribute('aria-invalid', String(cost === null || cost < 0));
+            return;
+        }
+
+        assetAnnualPreviewAddingKey = '';
+
+        if (ASSET_ANNUALIZED_LOCAL_PREVIEW) {
+            assetAnnualSnapshotRows = [
+                ...assetAnnualSnapshotRows,
+                {
+                    id: `local-preview-${scope.key}-${year}`,
+                    ownerId: scope.isOwner ? String(view.ownerId) : '',
+                    accountId: scope.isOwner ? '' : String(view.id),
+                    snapshotYear: year,
+                    totalAssets: Math.round(totalAssets),
+                    cost: Math.round(cost),
+                    updatedAt: new Date().toISOString()
+                }
+            ];
+            renderAssetsDashboard();
+            return;
+        }
+
+        void runAssetAction(
+            '新增年度資料中…',
+            () => assetInsert(
+                ASSET_ANNUAL_SNAPSHOTS_TABLE,
+                scope.body(year, Math.round(totalAssets), Math.round(cost))),
+            `已新增 ${year} 年年度資料。`);
+    });
+
+    return form;
+}
+
+function makeAssetAnnualPreviewTotalValue(view, row) {
+    const block = document.createElement('div');
+    block.className = 'asset-annual-preview-value asset-annual-preview-total';
+    const label = document.createElement('span');
+    label.textContent = '總資產';
+    const key = `${String(view.id ?? 'preview-account')}:${row.id || row.year}`;
+    const control = document.createElement('div');
+    control.className = 'asset-annual-preview-total-control';
+    const editable = row.auto !== true && row.id !== '';
+
+    if (editable && assetAnnualPreviewEditingKey === key) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = assetGroupedAmountText(row.totalAssets);
+        input.inputMode = 'decimal';
+        input.setAttribute('aria-label', `${row.year} 年總資產`);
+        wireAssetAmountInput(input);
+
+        const save = assetButton('儲存', 'asset-primary-button', () => {
+            const amount = assetNumber(input.value);
+
+            if (amount === null || amount < 0) {
+                input.setAttribute('aria-invalid', 'true');
+                input.focus();
+                return;
+            }
+
+            assetAnnualPreviewEditingKey = '';
+
+            if (ASSET_ANNUALIZED_LOCAL_PREVIEW) {
+                row.totalAssets = Math.round(amount);
+                renderAssetsDashboard();
+                return;
+            }
+
+            void runAssetAction(
+                '儲存年度資料中…',
+                () => assetUpdate(ASSET_ANNUAL_SNAPSHOTS_TABLE, row.id, {
+                    total_assets_twd: Math.round(amount)
+                }),
+                `已更新 ${row.year} 年總資產。`);
+        });
+        const cancel = assetButton('取消', 'asset-secondary-button', () => {
+            assetAnnualPreviewEditingKey = '';
+            renderAssetsDashboard();
+        });
+        control.append(input, save, cancel);
+    } else {
+        const amount = document.createElement('strong');
+        amount.textContent = assetCurrency(row.totalAssets);
+        control.append(amount);
+
+        if (editable) {
+            const actions = document.createElement('div');
+            actions.className = 'asset-annual-preview-actions';
+            const edit = assetButton('編輯', 'asset-annual-preview-edit', () => {
+                assetAnnualPreviewEditingKey = key;
+                renderAssetsDashboard();
+            });
+            const remove = assetButton('刪除', 'asset-annual-preview-delete', () => {
+                if (assetsBusy || !window.confirm(`確定刪除 ${row.year} 年年度資料？此動作無法復原。`)) {
+                    return;
+                }
+
+                assetAnnualPreviewEditingKey = '';
+
+                if (ASSET_ANNUALIZED_LOCAL_PREVIEW) {
+                    assetAnnualSnapshotRows = assetAnnualSnapshotRows.filter(item => item.id !== row.id);
+                    renderAssetsDashboard();
+                    return;
+                }
+
+                void runAssetAction(
+                    '刪除年度資料中…',
+                    () => assetRemove(
+                        ASSET_ANNUAL_SNAPSHOTS_TABLE,
+                        `?id=eq.${encodeURIComponent(row.id)}`),
+                    `已刪除 ${row.year} 年年度資料。`);
+            });
+            actions.append(edit, remove);
+            control.append(actions);
+        }
+    }
+
+    block.append(label, control);
+    return block;
+}
+
+function makeAssetAnnualPreviewValue(labelText, value, className = '') {
+    const block = document.createElement('div');
+    block.className = `asset-annual-preview-value ${className}`.trim();
+    const label = document.createElement('span');
+    label.textContent = labelText;
+    const amount = document.createElement('strong');
+    amount.textContent = assetCurrency(value);
+    block.append(label, amount);
+    return block;
+}
+
+function makeAssetAnnualPreviewSection(view, rows) {
+    const section = document.createElement('section');
+    section.className = 'asset-annual-preview';
+    section.setAttribute('aria-labelledby', 'asset-annual-preview-heading');
+
+    const heading = document.createElement('div');
+    heading.className = 'asset-annual-preview-heading';
+    const title = document.createElement('h2');
+    title.id = 'asset-annual-preview-heading';
+    title.textContent = '每年總資產與淨資產';
+    const headingActions = document.createElement('div');
+    headingActions.className = 'asset-annual-preview-heading-actions';
+    const meta = document.createElement('span');
+    meta.textContent = `由新到舊 · ${ASSET_ANNUALIZED_LOCAL_PREVIEW
+        ? '本機預覽'
+        : assetAnnualSnapshotsAvailable ? '正式資料' : '目前年度自動帶入'}`;
+    const scope = assetAnnualPreviewScope(view);
+    const add = assetButton('新增年度', 'asset-secondary-button', () => {
+        assetAnnualPreviewEditingKey = '';
+        assetAnnualPreviewAddingKey = assetAnnualPreviewAddingKey === scope.key ? '' : scope.key;
+        renderAssetsDashboard();
+    });
+    add.disabled = assetsBusy;
+    headingActions.append(meta, add);
+    heading.append(title, headingActions);
+
+    const note = document.createElement('p');
+    note.className = 'asset-local-only-note';
+    note.textContent = '目前年度由目前資產狀態自動帶入，不可編輯或刪除；歷史年度可編輯總資產或刪除。淨資產＝總資產－投入成本。';
+
+    const list = document.createElement('div');
+    list.className = 'asset-annual-preview-list';
+    const addForm = makeAssetAnnualPreviewAddForm(view, rows);
+
+    section.append(heading, note);
+
+    if (addForm !== null) {
+        section.append(addForm);
+    }
+
+    rows.forEach((row, index) => {
+        const item = document.createElement('article');
+        item.className = `asset-annual-preview-row ${index === 0 ? 'is-current' : ''}`.trim();
+        const year = document.createElement('div');
+        year.className = 'asset-annual-preview-year';
+        year.textContent = String(row.year);
+
+        const card = document.createElement('div');
+        card.className = 'asset-annual-preview-card';
+        const cardHeading = document.createElement('div');
+        cardHeading.className = 'asset-annual-preview-card-heading';
+        const cardTitle = document.createElement('strong');
+        cardTitle.textContent = `${row.year} · ${row.period}`;
+        const status = document.createElement('span');
+        status.className = 'asset-annual-preview-status';
+        status.textContent = row.status;
+        const change = document.createElement('strong');
+        change.className = `asset-annual-preview-return ${assetAnnualPreviewTrendClass(assetAnnualPreviewReturn(rows, index))}`.trim();
+        change.textContent = assetAnnualPreviewPercentText(assetAnnualPreviewReturn(rows, index));
+        cardHeading.append(cardTitle, status, change);
+
+        const values = document.createElement('div');
+        values.className = 'asset-annual-preview-values';
+        values.append(
+            makeAssetAnnualPreviewTotalValue(view, row),
+            makeAssetAnnualPreviewValue('投入成本', row.cost),
+            makeAssetAnnualPreviewValue('淨資產', assetAnnualPreviewNetAsset(row), 'asset-annual-preview-net'));
+        card.append(cardHeading, values);
+        item.append(year, card);
+        list.append(item);
+    });
+
+    section.append(list);
+    return section;
+}
+
 function assetTableHead(titles) {
     const head = document.createElement('thead');
     const row = document.createElement('tr');
@@ -7149,7 +7736,7 @@ function makeAssetDonut(views, summary) {
     return section;
 }
 
-function makeAssetSummaryMetrics(summary) {
+function makeAssetSummaryMetrics(summary, annualPreviewRows = null) {
     const metrics = document.createElement('section');
     metrics.className = 'asset-preview-metrics';
     metrics.append(
@@ -7160,9 +7747,15 @@ function makeAssetSummaryMetrics(summary) {
         assetMetric('投入成本', assetCurrency(summary.cost),
             document.createTextNode('由每一筆持倉的成本加總')),
         assetMetric('未實現損益', assetUnrealizedText(summary.unrealized, summary.cost),
-            assetUnrealizedDelta(summary.unrealized, summary.cost), assetSignClass(summary.unrealized)),
-        assetMetric('累計已實現', assetSignedCurrency(summary.realized),
+            assetUnrealizedDelta(summary.unrealized, summary.cost), assetSignClass(summary.unrealized)));
+
+    if (annualPreviewRows !== null) {
+        metrics.append(makeAssetAnnualPreviewMetric(annualPreviewRows));
+    } else {
+        metrics.append(assetMetric('累計已實現', assetSignedCurrency(summary.realized),
             assetDelta(summary.realized), assetSignClass(summary.realized)));
+    }
+
     return metrics;
 }
 
@@ -7745,14 +8338,22 @@ function makeAssetAccountTable(owner, views) {
 function makeAssetDashboard(owner, views, summary) {
     const content = document.createElement('div');
     content.className = 'asset-dashboard-content';
+    const annualPreviewView = assetAnnualPreviewOwnerView(owner, summary);
+    const annualPreviewRows = assetAnnualPreviewRowsFor(annualPreviewView);
     const overview = document.createElement('div');
     overview.className = 'asset-dashboard-overview';
-    overview.append(makeAssetDonut(views, summary), makeAssetSummaryMetrics(summary));
+    overview.append(makeAssetDonut(views, summary), makeAssetSummaryMetrics(summary, annualPreviewRows));
     const note = document.createElement('p');
     note.className = 'asset-local-only-note';
     note.textContent = '使用者、帳戶、現金與持倉存在資料庫，換一台裝置打開網站就看得到；'
         + '這裡只存你自己填或截圖辨識出來的數字，不連券商、不存帳號密碼，也不保留原始截圖。';
-    content.append(overview, makeAssetValueTrend(owner, summary), makeAssetAccountTable(owner, views), note);
+    content.append(overview);
+
+    if (assetAnnualPreviewExpanded) {
+        content.append(makeAssetAnnualPreviewSection(annualPreviewView, annualPreviewRows));
+    }
+
+    content.append(makeAssetValueTrend(owner, summary), makeAssetAccountTable(owner, views), note);
     return content;
 }
 
@@ -13190,6 +13791,8 @@ function makeAssetAccountDetails(owner, view) {
 
     const metrics = document.createElement('section');
     metrics.className = 'asset-preview-metrics asset-account-metrics';
+    const annualPreviewRows = assetAnnualPreviewRowsFor(view);
+
     const currency = view.market === '美股' ? 'USD' : 'TWD';
     const totalDetail = view.market === '美股'
         ? `持倉 ${assetCurrency(view.marketValue, 'USD')} ＋ 現金 ${assetCurrency(view.cash, 'USD')}`
@@ -13212,16 +13815,27 @@ function makeAssetAccountDetails(owner, view) {
             `${assetSignClass(view.fundingCost)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`),
         assetMetric('投入成本', assetMarketCurrencyValue(view.twdCost, view.cost, view.market),
             document.createTextNode(`共 ${view.holdings.length} 筆持倉`),
-            view.market === '美股' ? 'asset-dual-currency' : ''),
-        assetMetric('累計已實現', assetMarketCurrencyValue(view.twdRealized, view.realized, view.market, true),
+            view.market === '美股' ? 'asset-dual-currency' : ''));
+
+    if (annualPreviewRows !== null) {
+        metrics.append(makeAssetAnnualPreviewMetric(annualPreviewRows));
+    } else {
+        metrics.append(assetMetric('累計已實現', assetMarketCurrencyValue(view.twdRealized, view.realized, view.market, true),
             assetDelta(view.realized, '', currency),
             `${assetSignClass(view.realized)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`));
+    }
 
     const notice = makeAssetNotice();
     const lower = document.createElement('div');
     lower.className = 'asset-account-lower';
     lower.append(makeAssetHoldings(view), makeAssetScreenshotFlow(view));
-    content.append(heading, metrics, makeAssetAccountValueTrend(view));
+    content.append(heading, metrics);
+
+    if (assetAnnualPreviewExpanded) {
+        content.append(makeAssetAnnualPreviewSection(view, annualPreviewRows));
+    }
+
+    content.append(makeAssetAccountValueTrend(view));
 
     if (view.missingQuoteTickers.length > 0) {
         const warning = document.createElement('p');
@@ -13236,11 +13850,14 @@ function makeAssetAccountDetails(owner, view) {
         content.append(warning);
     }
 
-    if (notice !== null) {
+    if (notice !== null && !ASSET_ANNUALIZED_LOCAL_PREVIEW) {
         content.append(notice);
     }
 
-    content.append(makeAssetAccountSettings(view), makeAssetCashFlowSection(view), lower);
+    if (!ASSET_ANNUALIZED_LOCAL_PREVIEW) {
+        content.append(makeAssetAccountSettings(view), makeAssetCashFlowSection(view), lower);
+    }
+
     return content;
 }
 
@@ -13510,6 +14127,18 @@ function renderAssetsDashboard() {
     }
 
     assetSelectedOwnerId = owner.id;
+
+    if (ASSET_ANNUALIZED_LOCAL_PREVIEW && !assetAnnualPreviewAutoOpened) {
+        const previewAccount = assetAccountsOf(owner.id)
+            .find(account => account.market === '台股')
+            ?? assetAccountsOf(owner.id)[0];
+
+        if (previewAccount !== undefined) {
+            assetAnnualPreviewAutoOpened = true;
+            assetSelectedAccountId = previewAccount.id;
+            assetDashboardScreen = 'account';
+        }
+    }
 
     if (assetDashboardScreen === 'account') {
         const account = assetFindAccount(assetSelectedAccountId);
@@ -25626,6 +26255,10 @@ async function start() {
     }
 
     if (SITE_ACCESS === 'holdings') {
+        state.view = 'assets';
+    }
+
+    if (ASSET_ANNUALIZED_LOCAL_PREVIEW) {
         state.view = 'assets';
     }
 

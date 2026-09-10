@@ -120,10 +120,15 @@ Dashboard 的資產圓餅圖中心會依格式化後金額的字元長度縮放�
 不是帳戶內再存一個容易失真的總數；每筆可記日期、方向、金額與備註。資料表由
 `db/030_asset_cash_flows.sql` 建立；正式 Supabase 已於 2026-08-31 套用並查證 RLS、權限與前端表單。
 金額欄位的無上限型別、美股最新價前收欄位、日行情 view 權限與資產日快照分別由
-`db/032_asset_cash_flows_unbounded_amount.sql`、`db/033_latest_us_quotes_previous_close.sql`、
+ `db/032_asset_cash_flows_unbounded_amount.sql`、`db/033_latest_us_quotes_previous_close.sql`、
 `db/034_daily_quotes_view_security.sql`、`db/035_asset_value_snapshots.sql` 建立；四支 migration
 已於 2026-09-02 依獨立流程套用正式 Supabase 並查證。Dashboard 的「資產變化」折線圖讀取
 每日快照；當日總值完整時最多寫一筆，缺行情或匯率時不以成本假裝市值，也不寫不完整快照。
+Dashboard 與帳戶明細的「每年總資產與淨資產」共用同一個年度元件，資料表為
+`db/048_asset_annual_snapshots.sql` 的 `asset_annual_snapshots`：當年度每次依目前資產狀態自動帶入，
+不提供編輯或刪除；歷史年度可新增年份、填寫總資產／投入成本、編輯總資產或刪除整列。
+年度資料依 Dashboard 的使用者或帳戶明細各自保存，排序固定由新到舊；新增只接受早於當年度的年份，
+避免把當年度自動值寫成可手動覆蓋的歷史資料。
 最高權限帳號初次進入資產頁時，會依登入身分預設選取對應的使用者（Frank 或財神），仍可手動切換；
 Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查看日期與台幣金額提示。
 
