@@ -42,6 +42,9 @@ function annualRows(storedRows, values = {}) {
     vm.createContext(context);
     vm.runInContext([
         functionSource('assetNumber'),
+        functionSource('assetCashFlowNet'),
+        functionSource('assetNativeToTwd'),
+        functionSource('assetAnnualPreviewFundingCostFor'),
         functionSource('assetAnnualPreviewRowsFor')
     ].join('\n\n'), context);
 
@@ -165,6 +168,115 @@ test('年度資料使用帳戶入金成本，不使用持倉投入成本', () =>
     assert.doesNotMatch(section, /投入成本/);
 });
 
+test('年度成本按該曆年累計出入金紀錄，不跨年累加', () => {
+    const context = {
+        TAIPEI_DATE: { format: () => '2026-09-10' },
+        assetAnnualSnapshotRows: [{
+            id: 'history-2025',
+            ownerId: '',
+            accountId: 'account-1',
+            snapshotYear: 2025,
+            totalAssets: 688_116,
+            cost: 999_999
+        }],
+        assetLatestUsdTwdRate: null
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetCashFlowNet'),
+        functionSource('assetNativeToTwd'),
+        functionSource('assetAnnualPreviewFundingCostFor'),
+        functionSource('assetAnnualPreviewRowsFor')
+    ].join('\n\n'), context);
+
+    const rows = context.assetAnnualPreviewRowsFor({
+        id: 'account-1',
+        annualScope: 'account',
+        market: '台股',
+        cashFlows: [
+            { flowDate: '2025-10-13', direction: 'deposit', amount: 500_000 },
+            { flowDate: '2026-03-01', direction: 'deposit', amount: 100_000 },
+            { flowDate: '2026-08-31', direction: 'deposit', amount: 300_000 }
+        ],
+        fundingCost: 900_000,
+        twdFundingCost: 900_000,
+        totalValue: 1_758_696,
+        twdTotalValue: 1_758_696
+    });
+
+    assert.equal(rows[0].cost, 400_000);
+    assert.equal(rows[1].cost, 500_000);
+});
+
+test('年度區塊預設收合，且年度淨值名稱改為試算淨值', () => {
+    assert.match(siteScript, /let assetAnnualPreviewExpanded = false;/);
+
+    const metric = functionSource('makeAssetAnnualPreviewMetric');
+    const section = functionSource('makeAssetAnnualPreviewSection');
+
+    assert.match(metric, /依（今年總資產－今年入金成本）÷ 去年總資產試算/);
+    assert.match(metric, /每年總資產與試算淨值/);
+    assert.match(section, /每年總資產與試算淨值/);
+    assert.match(section, /試算淨值＝總資產－入金成本/);
+    assert.match(section, /makeAssetAnnualPreviewValue\('試算淨值'/);
+});
+
+test('新增年度的入金成本為出入金紀錄衍生欄位，不接受手動輸入', () => {
+    const addForm = functionSource('makeAssetAnnualPreviewAddForm');
+
+    assert.match(addForm, /入金成本（出入金紀錄累計）/);
+    assert.match(addForm, /costInput\.readOnly = true/);
+    assert.doesNotMatch(addForm, /assetAmountField\(fields, '入金成本'/);
+});
+
+test('年化報酬使用今年總資產減入金成本，再除以去年總資產', () => {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetAnnualPreviewNetAsset'),
+        functionSource('assetAnnualPreviewReturn')
+    ].join('\n\n'), context);
+
+    const rows = [
+        { totalAssets: 1_758_696, cost: 400_000 },
+        { totalAssets: 688_116, cost: 500_000 }
+    ];
+    const expected = Math.round((1_758_696 - 400_000) / 688_116 * 10_000) / 100;
+
+    assert.equal(context.assetAnnualPreviewReturn(rows, 0), expected);
+});
+
+test('Dashboard 帳戶表以資產總值減入金成本顯示總獲利', () => {
+    const context = { assetLatestUsdTwdRate: null };
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetNativeToTwd'),
+        functionSource('assetTotalProfitFor')
+    ].join('\n\n'), context);
+
+    const profit = context.assetTotalProfitFor({
+        market: '台股',
+        totalValue: 1_758_696,
+        fundingCost: 900_000
+    });
+
+    assert.equal(profit.native, 858_696);
+    assert.equal(profit.twd, 858_696);
+
+    const table = functionSource('makeAssetAccountTable');
+    const profitSource = functionSource('assetTotalProfitFor');
+
+    assert.match(profitSource, /totalValue/);
+    assert.match(profitSource, /fundingCost/);
+    assert.match(profitSource, /assetNativeToTwd/);
+    assert.match(table, /assetTotalProfitFor/);
+    assert.match(table, /總獲利/);
+    assert.doesNotMatch(table, /累計已實現/);
+});
+
 test('Dashboard 年度資料由各帳戶逐年彙總，且不提供年度 CRUD', () => {
     const context = {
         TAIPEI_DATE: { format: () => '2026-09-10' },
@@ -199,6 +311,10 @@ test('Dashboard 年度資料由各帳戶逐年彙總，且不提供年度 CRUD',
     vm.runInContext([
         functionSource('assetNumber'),
         functionSource('assetSum'),
+        functionSource('assetSumComplete'),
+        functionSource('assetCashFlowNet'),
+        functionSource('assetNativeToTwd'),
+        functionSource('assetAnnualPreviewFundingCostFor'),
         functionSource('assetAnnualPreviewRowsFor'),
         functionSource('assetAnnualPreviewOwnerView')
     ].join('\n\n'), context);

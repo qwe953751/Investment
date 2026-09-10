@@ -55,7 +55,7 @@ let assetAiResumePromise = null;
 let assetActionNotice = '';
 let assetAnnualPreviewEditingKey = '';
 let assetAnnualPreviewAddingKey = '';
-let assetAnnualPreviewExpanded = true;
+let assetAnnualPreviewExpanded = false;
 let assetAnnualPreviewAutoOpened = false;
 // 出入金紀錄的「就地編輯」：一次只允許一列進入編輯狀態，切到別列不會遺失資料，
 // 因為原本就還沒送出。跟 assetEditorMode（持倉整表批次編輯）是各自獨立的狀態。
@@ -6127,6 +6127,19 @@ function assetMarketCurrencyValue(twdValue, nativeValue, market, signed = false)
     return signed ? assetSignedCurrency(nativeValue) : assetCurrency(nativeValue);
 }
 
+function assetTotalProfitFor(view) {
+    const totalValue = assetNumber(view.totalValue);
+    const fundingCost = assetNumber(view.fundingCost);
+    const native = totalValue === null || fundingCost === null
+        ? null
+        : totalValue - fundingCost;
+
+    return {
+        native,
+        twd: native === null ? null : assetNativeToTwd(native, view.market)
+    };
+}
+
 // 未實現損益的百分比：跟成本的比例，分子分母同一套匯率換算出來的，不受幣別影響，
 // 雙幣別不用各自算一次。cost 缺值或 ≤ 0（零成本持倉）時沒有比較基準，回傳 null。
 function assetUnrealizedPercent(unrealized, cost) {
@@ -6442,16 +6455,38 @@ function loadAssetAnnualPreviewData() {
     assetLatestUsQuotes = new Map();
     assetLatestUsdTwdRate = null;
     assetCashFlowAvailable = true;
-    assetCashFlowRows = [{
-        id: 'local-preview-cash-flow',
-        accountId,
-        flowDate: '2026-01-02',
-        direction: 'deposit',
-        amount: 1_185_539,
-        note: '本機預覽',
-        createdAt: now,
-        updatedAt: now
-    }];
+    assetCashFlowRows = [
+        {
+            id: 'local-preview-cash-flow-2025',
+            accountId,
+            flowDate: '2025-10-13',
+            direction: 'deposit',
+            amount: 500_000,
+            note: '本機預覽 2025 年入金',
+            createdAt: now,
+            updatedAt: now
+        },
+        {
+            id: 'local-preview-cash-flow-2026-03',
+            accountId,
+            flowDate: '2026-03-01',
+            direction: 'deposit',
+            amount: 100_000,
+            note: '本機預覽 2026 年入金',
+            createdAt: now,
+            updatedAt: now
+        },
+        {
+            id: 'local-preview-cash-flow-2026-08',
+            accountId,
+            flowDate: '2026-08-31',
+            direction: 'deposit',
+            amount: 300_000,
+            note: '本機預覽 2026 年入金',
+            createdAt: now,
+            updatedAt: now
+        }
+    ];
     assetValueSnapshotRows = [];
     assetValueSnapshotsAvailable = false;
     assetAccountValueSnapshotRows = snapshotValues.map((totalValue, index) => ({
@@ -7202,6 +7237,23 @@ function assetMetric(label, value, detail, valueClass = '') {
     return card;
 }
 
+function assetAnnualPreviewFundingCostFor(view, year) {
+    const targetYear = assetNumber(year);
+
+    if (targetYear === null
+        || !Number.isInteger(targetYear)
+        || !Array.isArray(view.cashFlows)
+        || assetNumber(view.fundingCost) === null) {
+        return null;
+    }
+
+    // 年度卡只取該曆年的入金減出金；帳戶摘要的 fundingCost 仍是全期間淨額。
+    const annualFlows = view.cashFlows.filter(flow =>
+        String(flow.flowDate ?? '').slice(0, 4) === String(targetYear));
+
+    return assetNativeToTwd(assetCashFlowNet(annualFlows), view.market);
+}
+
 function assetAnnualPreviewRowsFor(view) {
     const currentYear = Number(TAIPEI_DATE.format(new Date()).slice(0, 4));
     const isOwner = view.annualScope === 'owner';
@@ -7214,8 +7266,13 @@ function assetAnnualPreviewRowsFor(view) {
     const currentCost = isOwner
         ? accountViews.length === 0
             ? 0
-            : assetSum(accountViews, account => assetNumber(account.twdFundingCost) ?? assetNumber(account.fundingCost))
-        : assetNumber(view.twdFundingCost) ?? assetNumber(view.fundingCost);
+            : assetSumComplete(accountViews, account =>
+                assetAnnualPreviewFundingCostFor(account, currentYear)
+                ?? assetNumber(account.twdFundingCost)
+                ?? assetNumber(account.fundingCost))
+        : assetAnnualPreviewFundingCostFor(view, currentYear)
+            ?? assetNumber(view.twdFundingCost)
+            ?? assetNumber(view.fundingCost);
     const today = TAIPEI_DATE.format(new Date()).slice(5).replaceAll('-', '/');
     const scopeId = isOwner ? String(view.ownerId ?? '') : String(view.id ?? '');
     const accountIds = new Set(accountViews.map(account => String(account.id ?? '')));
@@ -7228,7 +7285,13 @@ function assetAnnualPreviewRowsFor(view) {
         .forEach(row => {
             const year = assetNumber(row.snapshotYear);
             const totalAssets = assetNumber(row.totalAssets);
-            const cost = assetNumber(row.cost);
+            const accountView = isOwner
+                ? accountViews.find(account => String(account.id ?? '') === String(row.accountId ?? '')) ?? null
+                : view;
+            const cost = (accountView === null
+                ? null
+                : assetAnnualPreviewFundingCostFor(accountView, year))
+                ?? assetNumber(row.cost);
 
             if (year !== null
                 && Number.isInteger(year)
@@ -7308,9 +7371,16 @@ function assetAnnualPreviewReturn(rows, index) {
         return null;
     }
 
-    return assetChangePercent(
-        assetAnnualPreviewNetAsset(rows[index]),
-        assetAnnualPreviewNetAsset(rows[index + 1]));
+    const currentTotalAssets = assetNumber(rows[index].totalAssets);
+    const currentCost = assetNumber(rows[index].cost);
+    const previousTotalAssets = assetNumber(rows[index + 1].totalAssets);
+
+    return currentTotalAssets === null
+        || currentCost === null
+        || previousTotalAssets === null
+        || previousTotalAssets <= 0
+        ? null
+        : Math.round((currentTotalAssets - currentCost) / previousTotalAssets * 10_000) / 100;
 }
 
 function assetAnnualPreviewTrendClass(value) {
@@ -7328,7 +7398,7 @@ function assetAnnualPreviewPercentText(value) {
 function makeAssetAnnualPreviewMetric(rows) {
     const change = assetAnnualPreviewReturn(rows, 0);
     const detail = document.createElement('span');
-    detail.textContent = `依淨資產年增率試算 · 點擊${assetAnnualPreviewExpanded ? '收合' : '展開'}`;
+    detail.textContent = `依（今年總資產－今年入金成本）÷ 去年總資產試算 · 點擊${assetAnnualPreviewExpanded ? '收合' : '展開'}`;
     const card = assetMetric(
         '年化報酬',
         assetAnnualPreviewPercentText(change),
@@ -7338,7 +7408,7 @@ function makeAssetAnnualPreviewMetric(rows) {
     card.tabIndex = 0;
     card.setAttribute('role', 'button');
     card.setAttribute('aria-expanded', String(assetAnnualPreviewExpanded));
-    card.title = '點擊展開或收合每年總資產與淨資產';
+    card.title = '點擊展開或收合每年總資產與試算淨值';
 
     const toggle = () => {
         assetAnnualPreviewExpanded = !assetAnnualPreviewExpanded;
@@ -7416,10 +7486,19 @@ function makeAssetAnnualPreviewAddForm(view, rows) {
         required: true,
         placeholder: '例如 1800000'
     });
-    const costInput = assetAmountField(fields, '入金成本', '', {
-        required: true,
-        placeholder: '例如 1600000'
-    });
+    const costInput = assetField(fields, 'text', '入金成本（出入金紀錄累計）', '', {});
+    costInput.readOnly = true;
+    costInput.className = 'asset-readonly-field';
+    costInput.title = '依選定年度的出入金紀錄自動計算，不能手動修改。';
+    const updateCost = () => {
+        const year = assetNumber(yearInput.value);
+        const cost = year === null ? null : assetAnnualPreviewFundingCostFor(view, year);
+        costInput.value = cost === null ? '—' : assetCurrency(cost);
+        costInput.setAttribute('aria-invalid', String(cost === null));
+    };
+    yearInput.addEventListener('input', updateCost);
+    yearInput.addEventListener('change', updateCost);
+    updateCost();
     form.append(fields);
 
     const actions = document.createElement('div');
@@ -7438,7 +7517,7 @@ function makeAssetAnnualPreviewAddForm(view, rows) {
         event.preventDefault();
         const year = assetNumber(yearInput.value);
         const totalAssets = assetNumber(totalInput.value);
-        const cost = assetNumber(costInput.value);
+        const cost = year === null ? null : assetAnnualPreviewFundingCostFor(view, year);
         const invalid = year === null
             || !Number.isInteger(year)
             || year < 2000
@@ -7446,7 +7525,6 @@ function makeAssetAnnualPreviewAddForm(view, rows) {
             || totalAssets === null
             || totalAssets < 0
             || cost === null
-            || cost < 0
             || rows.some(row => row.year === year);
 
         if (invalid) {
@@ -7457,7 +7535,7 @@ function makeAssetAnnualPreviewAddForm(view, rows) {
                 || year >= currentYear
                 || rows.some(row => row.year === year)));
             totalInput.setAttribute('aria-invalid', String(totalAssets === null || totalAssets < 0));
-            costInput.setAttribute('aria-invalid', String(cost === null || cost < 0));
+            costInput.setAttribute('aria-invalid', String(cost === null));
             return;
         }
 
@@ -7599,7 +7677,7 @@ function makeAssetAnnualPreviewSection(view, rows) {
     heading.className = 'asset-annual-preview-heading';
     const title = document.createElement('h2');
     title.id = 'asset-annual-preview-heading';
-    title.textContent = '每年總資產與淨資產';
+    title.textContent = '每年總資產與試算淨值';
     const headingActions = document.createElement('div');
     headingActions.className = 'asset-annual-preview-heading-actions';
     const meta = document.createElement('span');
@@ -7623,8 +7701,8 @@ function makeAssetAnnualPreviewSection(view, rows) {
     const note = document.createElement('p');
     note.className = 'asset-local-only-note';
     note.textContent = view.annualScope === 'owner'
-        ? 'Dashboard 年度資料由各帳戶自動彙總，僅供檢視。淨資產＝總資產－入金成本。'
-        : '目前年度由目前資產狀態自動帶入，不可編輯或刪除；歷史年度可編輯總資產或刪除。淨資產＝總資產－入金成本。';
+        ? 'Dashboard 年度資料由各帳戶自動彙總，僅供檢視。試算淨值＝總資產－入金成本。'
+        : '目前年度由目前資產狀態自動帶入，不可編輯或刪除；歷史年度可編輯總資產或刪除。試算淨值＝總資產－入金成本。';
 
     const list = document.createElement('div');
     list.className = 'asset-annual-preview-list';
@@ -7662,7 +7740,7 @@ function makeAssetAnnualPreviewSection(view, rows) {
         values.append(
             makeAssetAnnualPreviewTotalValue(view, row),
             makeAssetAnnualPreviewValue('入金成本', row.cost),
-            makeAssetAnnualPreviewValue('淨資產', assetAnnualPreviewNetAsset(row), 'asset-annual-preview-net'));
+            makeAssetAnnualPreviewValue('試算淨值', assetAnnualPreviewNetAsset(row), 'asset-annual-preview-net'));
         card.append(cardHeading, values);
         item.append(year, card);
         list.append(item);
@@ -8295,6 +8373,8 @@ function makeAssetAccountTable(owner, views) {
             () => openAssetAccount(view.id)));
         row.append(accountCell);
 
+        const totalProfit = assetTotalProfitFor(view);
+
         const cells = [
             { content: [view.market, view.broker].filter(text => text !== '').join('／') || '—' },
             {
@@ -8312,8 +8392,8 @@ function makeAssetAccountTable(owner, views) {
                 className: assetSignClass(view.fundingCost)
             },
             {
-                content: assetMarketCurrencyValue(view.twdRealized, view.realized, view.market, true),
-                className: assetSignClass(view.realized)
+                content: assetMarketCurrencyValue(totalProfit.twd, totalProfit.native, view.market, true),
+                className: assetSignClass(totalProfit.native)
             },
             { content: assetTimeText(view.updatedAt) }
         ];
@@ -8342,7 +8422,7 @@ function makeAssetAccountTable(owner, views) {
     }
 
     table.append(
-        assetTableHead(['帳戶', '市場／券商', '資產總值', '未實現損益', '現金', '入金成本', '累計已實現', '資料時間']),
+        assetTableHead(['帳戶', '市場／券商', '資產總值', '未實現損益', '現金', '入金成本', '總獲利', '資料時間']),
         body);
     section.append(table);
 
