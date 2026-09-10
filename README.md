@@ -195,6 +195,11 @@ Dashboard 與帳戶明細的折線圖每個日期點皆可用滑鼠或鍵盤查�
 
 ## 最新已發布版本
 
+本次 U1 手機工具列、年化公式與美股年度輸入修正的程式、測試與文件 commit
+`b1df68ca4b056c406e5bc18a3a80a392e1372ba1` 已推送，並由 [`daily-snapshot.yml` publish-only run 34469624532](https://github.com/qwe953751/Investment/actions/runs/34469624532)
+發布。公開 manifest 版本為 `1789038519`、最新交易日 `2026/09/10`、產生時間 `2026-09-10 19:08`；公開 `site.js` 已驗證包含
+手機工具／權限區塊置頂、修正後年化公式與美股年度 USD 輸入換算。publish-only 的行情回補、Supabase 同步、備份與心跳均依設計跳過。
+
 本次事件驅動 OCR、一次性權限分享與族群導覽權限修正的程式 commit
 `9654ab3f4b078ed781cf6834f4ff8176b7344d2f`，以及文件交接 commit
 `e81098d7cd6c11249f676394297dcb836064840c`，已由 [`daily-snapshot.yml` publish-only run 34338930836](https://github.com/qwe953751/Investment/actions/runs/34338930836)
