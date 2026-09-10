@@ -1858,7 +1858,7 @@ let klineUseLatestDate = false;
 let klineAnchor = null;
 let expandedIndexMarket = null;
 let indexKLineAnchor = null;
-let klineReferenceLines = { price: true, volume: true, turnover: true };
+let klineReferenceLines = { price: true, volume: true, turnover: true, cost: true };
 const revenueHistoryData = new Map();
 const revenueHistoryPromises = new Map();
 
@@ -14785,6 +14785,94 @@ function selectedKLineBars(ticker) {
         .sort((left, right) => left.date.localeCompare(right.date));
 }
 
+function klineMarketKey(market) {
+    const value = String(market ?? '').trim().toUpperCase();
+
+    if (value === '美股' || value === 'US') {
+        return '美股';
+    }
+
+    if (value === '其他' || value === '加密貨幣' || value === 'CRYPTO') {
+        return '其他';
+    }
+
+    if (value === '台股'
+        || value === 'TW'
+        || value === 'TWSE'
+        || value === 'TPEX'
+        || value === '上市'
+        || value === '上櫃') {
+        return '台股';
+    }
+
+    return '';
+}
+
+// 成本線只開放最高權限，並只讀目前資產頁已載入的持倉，不另發 Supabase 請求，也不寫回資料庫。
+// 同一使用者同一市場若有多個帳戶，先合併總成本與總股數，再得到加權平均成本。
+function klineHoldingCost(ticker, market) {
+    if (SITE_ACCESS !== 'admin' || !klineReferenceLines.cost) {
+        return null;
+    }
+
+    const owner = assetActiveOwner();
+
+    if (owner === null) {
+        return null;
+    }
+
+    const requestedMarket = klineMarketKey(market);
+    const holdings = assetAccountsOf(owner.id)
+        .filter(account => requestedMarket === '' || account.market === requestedMarket)
+        .flatMap(account => assetHoldingsOf(account.id)
+            .map(holding => ({ holding, market: account.market })));
+    const normalizedTicker = String(ticker ?? '').trim().toUpperCase();
+    let quantity = 0;
+    let totalCost = 0;
+
+    for (const item of holdings) {
+        const holding = item.holding;
+
+        if (assetHoldingTicker(holding) !== normalizedTicker) {
+            continue;
+        }
+
+        const holdingQuantity = assetNumber(holding.quantity);
+        const holdingCost = assetNumber(holding.cost);
+
+        if (holdingQuantity === null || holdingQuantity <= 0
+            || holdingCost === null || holdingCost < 0) {
+            continue;
+        }
+
+        quantity += holdingQuantity;
+        totalCost += holdingCost;
+    }
+
+    if (quantity <= 0 || !Number.isFinite(totalCost)) {
+        return null;
+    }
+
+    const resolvedMarket = requestedMarket
+        || (holdings.find(item => assetHoldingTicker(item.holding) === normalizedTicker)?.market ?? '');
+
+    return {
+        averageCost: totalCost / quantity,
+        quantity,
+        totalCost,
+        market: resolvedMarket
+    };
+}
+
+function klineHoldingCostPriceText(value, market) {
+    const prefix = market === '美股' ? 'US$' : 'NT$';
+    const amount = Number(value);
+
+    return Number.isFinite(amount)
+        ? `${prefix}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : '—';
+}
+
 function svgElement(name, attributes = {}, text = null) {
     const element = document.createElementNS('http://www.w3.org/2000/svg', name);
 
@@ -14860,6 +14948,8 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
 
         const referenceDate = String(bar.date ?? '').replaceAll('-', '/').slice(-5);
         const referenceValues = [];
+        let priceReference = null;
+        let lowerReference = '';
 
         const appendReferenceLine = referenceY => {
             hoverLayer.append(svgElement('line', {
@@ -14883,6 +14973,11 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
             // selectedIndexKLineBars），不是看時鐘——已經有官方收盤資料的棒子一律算收盤。
             const changePercent = assetChangePercent(priceValue, Number(bar.previousClose));
             const changeText = changePercent === null ? '' : ` ${assetHoldingPriceChangeText(changePercent)}`;
+            priceReference = {
+                label: bar.isLive ? '現價' : '收盤',
+                value: toFixedText(priceValue, 2),
+                changePercent
+            };
             referenceValues.push(`${bar.isLive ? '現價' : '收盤'} ${toFixedText(priceValue, 2)}${changeText}`);
         }
 
@@ -14896,13 +14991,33 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
             && lowerY >= layout.lowerTop
             && lowerY <= layout.lowerBottom) {
             appendReferenceLine(lowerY);
+            lowerReference = `${layout.lowerLabel} ${layout.formatLower(lowerValue)}`;
             referenceValues.push(`${layout.lowerLabel} ${layout.formatLower(lowerValue)}`);
         }
 
         if (referenceSummary) {
-            referenceSummary.textContent = referenceValues.length > 0
-                ? `${referenceDate} ${referenceValues.join(' ｜ ')}`
-                : '';
+            referenceSummary.replaceChildren();
+
+            if (referenceValues.length === 0) {
+                referenceSummary.textContent = '';
+            } else if (priceReference === null) {
+                referenceSummary.textContent = `${referenceDate} ${lowerReference}`;
+            } else {
+                referenceSummary.append(
+                    document.createTextNode(
+                        `${referenceDate} ${priceReference.label} ${priceReference.value}`));
+
+                if (priceReference.changePercent !== null) {
+                    const change = document.createElement('span');
+                    change.className = `kline-price-change ${klinePriceChangeClass(priceReference.changePercent)}`;
+                    change.textContent = ` ${assetHoldingPriceChangeText(priceReference.changePercent)}`;
+                    referenceSummary.append(change);
+                }
+
+                if (lowerReference !== '') {
+                    referenceSummary.append(document.createTextNode(` ｜ ${lowerReference}`));
+                }
+            }
         }
     };
 
@@ -14932,6 +15047,14 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
     hitArea.addEventListener('pointerleave', () => renderReferenceLines(referenceIndex));
 }
 
+function klinePriceChangeClass(value) {
+    const amount = assetNumber(value);
+
+    return amount === null || amount === 0
+        ? 'kline-price-change-flat'
+        : amount > 0 ? 'kline-price-change-up' : 'kline-price-change-down';
+}
+
 // 紅漲綠跌比同一根棒子自己的開盤價，不是比前一交易日收盤。
 // 這條規則的正本是 C# 的 DailyKLineTrendCalculator，兩邊必須一模一樣，
 // 否則同一根棒子在 Blazor 與靜態站會顏色相反。
@@ -14950,17 +15073,20 @@ function klineTrendClass(bar) {
             : 'daily-kline-flat';
 }
 
-function renderKLineSvg(ticker, name, bars, referenceSummary) {
+function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null) {
     const width = 600;
-    const height = 440;
+    const height = 360;
     const left = 16;
     const right = 536;
     const priceAxisX = right + 8;
     const top = 16;
-    // 上層刻意沿用原本的 bottom=258；成交量往下長，不縮小既有 K 棒比例。
-    const priceBottom = 258;
-    const volumeTop = 294;
-    const volumeBottom = 382;
+    // 成交量區底部只留日期標籤與 10px 邊界，避免彈窗最下方留下過多空白。
+    const priceBottom = 232;
+    const dividerY = 244;
+    const volumeSectionTitleY = 256;
+    const volumeTop = 260;
+    const volumeBottom = 320;
+    const dateLabelY = 350;
     const prices = bars.flatMap(bar => [
         bar.low,
         bar.high,
@@ -14983,6 +15109,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary) {
         viewBox: `0 0 ${width} ${height}`,
         role: 'img',
         'aria-label': `${ticker} ${name} 三個月還原權息日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與成交量`
+            + (holdingCost === null ? '' : '，並標示持倉成本均價')
     });
 
     for (const price of scale.ticks) {
@@ -15044,12 +15171,34 @@ function renderKLineSvg(ticker, name, bars, referenceSummary) {
         }
     }
 
+    const holdingCostY = holdingCost === null
+        ? null
+        : y(holdingCost.averageCost);
+
+    if (Number.isFinite(holdingCostY)
+        && holdingCostY >= top
+        && holdingCostY <= priceBottom) {
+        svg.append(
+            svgElement('line', {
+                class: 'daily-kline-holding-cost',
+                x1: left,
+                x2: right,
+                y1: holdingCostY,
+                y2: holdingCostY
+            }),
+            svgElement('text', {
+                class: 'daily-kline-holding-cost-label',
+                x: left + 4,
+                y: Math.max(top + 12, holdingCostY - 5)
+            }, `成本 ${klineHoldingCostPriceText(holdingCost.averageCost, holdingCost.market)}`));
+    }
+
     svg.append(
         svgElement('line', {
-            class: 'daily-kline-divider', x1: left, x2: right, y1: 274, y2: 274
+            class: 'daily-kline-divider', x1: left, x2: right, y1: dividerY, y2: dividerY
         }),
         svgElement('text', {
-            class: 'daily-kline-section-title', x: left, y: 288
+            class: 'daily-kline-section-title', x: left, y: volumeSectionTitleY
         }, '下層：成交量'));
 
     bars.forEach((bar, index) => {
@@ -15083,7 +15232,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary) {
         svg.append(svgElement('text', {
             class: 'daily-kline-date',
             x,
-            y: 420,
+            y: dateLabelY,
             'text-anchor': 'middle'
         }, bar.date.slice(5).replace('-', '/')));
     });
@@ -15110,7 +15259,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary) {
     return svg;
 }
 
-function renderKLineLegend(bars) {
+function renderKLineLegend(bars, holdingCost = null) {
     const legend = document.createElement('div');
     legend.className = 'daily-kline-legend';
 
@@ -15138,6 +15287,15 @@ function renderKLineLegend(bars) {
         const visible = values.some(value => value >= min && value <= max);
         item.textContent = line.label + (values.length > 0 && !visible ? '（圖外）' : '');
         legend.append(item);
+    }
+
+    if (holdingCost !== null) {
+        const cost = document.createElement('span');
+        const visible = holdingCost.averageCost >= min && holdingCost.averageCost <= max;
+        cost.className = 'daily-kline-holding-cost-legend';
+        cost.textContent = `持倉成本均價 ${klineHoldingCostPriceText(holdingCost.averageCost, holdingCost.market)}`
+            + (visible ? '' : '（圖外）');
+        legend.append(cost);
     }
 
     return legend;
@@ -15236,6 +15394,7 @@ function renderKLinePopover(ticker, name, anchor) {
     const title = document.createElement('div');
     const payload = klineData.get(ticker);
     const isUs = expandedKLineMarket === '美股' || payload?.market === 'US';
+    const holdingCost = klineHoldingCost(ticker, expandedKLineMarket);
 
     // id 留在外層的 <strong> 上：index.html 的 aria-labelledby 指著它。
     // 連結包在裡面而不是讓 <strong> 自己變成 <a>，這樣標題的字重不必再另外寫一次。
@@ -15310,14 +15469,20 @@ function renderKLinePopover(ticker, name, anchor) {
                 card.append(coverage);
             }
 
-            const referenceControls = renderKLineReferenceControls([
-                    { key: 'price', label: 'K棒' },
-                    { key: 'volume', label: '量' }
-                ]);
+            const referenceOptions = [
+                { key: 'price', label: 'K棒' },
+                { key: 'volume', label: '量' }
+            ];
+
+            if (SITE_ACCESS === 'admin') {
+                referenceOptions.push({ key: 'cost', label: '成本' });
+            }
+
+            const referenceControls = renderKLineReferenceControls(referenceOptions);
             card.append(
-                renderKLineLegend(bars),
+                renderKLineLegend(bars, holdingCost),
                 referenceControls.element,
-                renderKLineSvg(ticker, name, bars, referenceControls.status));
+                renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost));
         }
     }
 
@@ -15429,6 +15594,15 @@ async function toggleKLine(ticker, name, anchor, options = {}) {
             await loadTopicIntradayKLine(ticker);
         } catch {
             // 盤中輔助棒讀取失敗不影響既有還原日 K。
+        }
+    }
+
+    // 最高權限可從排行頁直接開 K 線；若尚未進過資產頁，先載入持倉才能畫成本線。
+    if (SITE_ACCESS === 'admin' && !assetsLoaded) {
+        try {
+            await refreshAssets({ persistSnapshots: false });
+        } catch {
+            // 成本線是附加資訊；持倉讀取失敗時仍保留行情 K 線。
         }
     }
 

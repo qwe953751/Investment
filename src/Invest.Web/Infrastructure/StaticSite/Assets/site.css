@@ -3239,7 +3239,7 @@ td.stock-name.stock-name-change-down {
 }
 
 .daily-kline-card {
-    padding: 12px 14px 10px;
+    padding: 12px 14px 5px;
     background: var(--surface);
 }
 
@@ -3354,6 +3354,21 @@ td.stock-name.stock-name-change-down {
     overflow-wrap: anywhere;
 }
 
+.kline-price-change-up {
+    color: var(--up-text);
+    font-weight: 600;
+}
+
+.kline-price-change-down {
+    color: var(--down-text);
+    font-weight: 600;
+}
+
+.kline-price-change-flat {
+    color: var(--text);
+    font-weight: 600;
+}
+
 .daily-kline-close {
     padding: 4px 9px;
     border: 1px solid var(--border-strong);
@@ -3423,6 +3438,22 @@ td.stock-name.stock-name-change-down {
     stroke-width: 1.6;
     stroke-linecap: round;
     stroke-linejoin: round;
+}
+
+.daily-kline-holding-cost {
+    stroke: #0e7490;
+    stroke-width: 2.2;
+    stroke-dasharray: 8 4;
+}
+
+.daily-kline-holding-cost-label {
+    fill: #0e7490;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.daily-kline-holding-cost-legend {
+    color: #0e7490;
 }
 
 .daily-kline-divider {

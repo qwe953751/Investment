@@ -450,7 +450,7 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 個股K線保留原本上層高度並帶入下層成交量()
+    public void 個股K線縮短底部空白並帶入下層成交量與成本線()
     {
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
@@ -468,14 +468,18 @@ public sealed class StaticKLineAssetTests
 
         var function = script[start..end];
 
-        Assert.Contains("const height = 440;", function, StringComparison.Ordinal);
-        Assert.Contains("const priceBottom = 258;", function, StringComparison.Ordinal);
-        Assert.Contains("const volumeTop = 294;", function, StringComparison.Ordinal);
+        Assert.Contains("const height = 360;", function, StringComparison.Ordinal);
+        Assert.Contains("const priceBottom = 232;", function, StringComparison.Ordinal);
+        Assert.Contains("const volumeTop = 260;", function, StringComparison.Ordinal);
+        Assert.Contains("const volumeBottom = 320;", function, StringComparison.Ordinal);
+        Assert.Contains("const dateLabelY = 350;", function, StringComparison.Ordinal);
         Assert.Contains("下層：成交量", function, StringComparison.Ordinal);
         Assert.Contains("bar.tradingVolume", function, StringComparison.Ordinal);
         Assert.Contains("class: `daily-kline-volume-bar ${klineTrendClass(bar)}`", function, StringComparison.Ordinal);
         Assert.Contains("const scale = niceKLineScale(prices);", function, StringComparison.Ordinal);
         Assert.Contains("kLineAxisText(price, scale.step)", function, StringComparison.Ordinal);
+        Assert.Contains("class: 'daily-kline-holding-cost'", function, StringComparison.Ordinal);
+        Assert.Contains("klineHoldingCostPriceText", function, StringComparison.Ordinal);
         Assert.Contains("RoundKLine(point.TradingVolume)", exporter, StringComparison.Ordinal);
         Assert.Contains(".daily-kline-volume-bar.daily-kline-up", styles, StringComparison.Ordinal);
         Assert.Contains(".daily-kline-volume-bar.daily-kline-down", styles, StringComparison.Ordinal);
@@ -488,7 +492,13 @@ public sealed class StaticKLineAssetTests
         var styles = ReadAsset("site.css");
 
         Assert.Contains("function renderKLineReferenceControls", script, StringComparison.Ordinal);
-        Assert.Contains("let klineReferenceLines = { price: true, volume: true, turnover: true };", script, StringComparison.Ordinal);
+        Assert.Contains("let klineReferenceLines = { price: true, volume: true, turnover: true, cost: true };", script, StringComparison.Ordinal);
+        Assert.Contains("function klineHoldingCost(ticker, market)", script, StringComparison.Ordinal);
+        Assert.Contains("if (SITE_ACCESS !== 'admin' || !klineReferenceLines.cost)", script, StringComparison.Ordinal);
+        Assert.Contains("referenceOptions.push({ key: 'cost', label: '成本' });", script, StringComparison.Ordinal);
+        Assert.Contains("defaultAssetOwnerName: 'Frank'", script, StringComparison.Ordinal);
+        Assert.Contains("defaultAssetOwnerName: '財神'", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("KLINE_LAYOUT_LOCAL_PREVIEW", script, StringComparison.Ordinal);
         Assert.Contains("查價線", script, StringComparison.Ordinal);
         Assert.Contains("function attachKLineInteractions", script, StringComparison.Ordinal);
         Assert.Contains("daily-kline-reference-line", script, StringComparison.Ordinal);
@@ -513,8 +523,9 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("assetChangePercent(priceValue, Number(bar.previousClose))", function, StringComparison.Ordinal);
         Assert.Contains("assetHoldingPriceChangeText(changePercent)", function, StringComparison.Ordinal);
         Assert.Contains("referenceValues.push(`${layout.lowerLabel}", function, StringComparison.Ordinal);
-        Assert.Contains("referenceSummary.textContent = referenceValues.length > 0", function, StringComparison.Ordinal);
-        Assert.Contains("`${referenceDate} ${referenceValues.join(' ｜ ')}`", function, StringComparison.Ordinal);
+        Assert.Contains("referenceSummary.replaceChildren();", function, StringComparison.Ordinal);
+        Assert.Contains("`${referenceDate} ${priceReference.label} ${priceReference.value}`", function, StringComparison.Ordinal);
+        Assert.Contains("kline-price-change ${klinePriceChangeClass(priceReference.changePercent)}", function, StringComparison.Ordinal);
     }
 
     [Fact]
