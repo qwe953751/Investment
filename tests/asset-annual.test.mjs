@@ -46,10 +46,13 @@ function annualRows(storedRows, values = {}) {
     ].join('\n\n'), context);
 
     return context.assetAnnualPreviewRowsFor({
-        id: 'owner:owner-1',
-        ownerId: 'owner-1',
-        annualScope: 'owner',
+        id: 'account-1',
+        accountId: 'account-1',
+        annualScope: 'account',
         twdTotalValue: Object.hasOwn(values, 'twdTotalValue') ? values.twdTotalValue : 2_292_089,
+        twdFundingCost: Object.hasOwn(values, 'twdFundingCost')
+            ? values.twdFundingCost
+            : 1_982_629,
         twdCost: Object.hasOwn(values, 'twdCost') ? values.twdCost : 1_982_629
     });
 }
@@ -58,24 +61,24 @@ test('年度資料永遠先顯示當年度自動列，且忽略當年度資料�
     const rows = annualRows([
         {
             id: 'current-should-be-ignored',
-            ownerId: 'owner-1',
-            accountId: '',
+            ownerId: '',
+            accountId: 'account-1',
             snapshotYear: 2026,
             totalAssets: 1,
             cost: 1
         },
         {
             id: 'history-2025',
-            ownerId: 'owner-1',
-            accountId: '',
+            ownerId: '',
+            accountId: 'account-1',
             snapshotYear: 2025,
             totalAssets: 2_017_038,
             cost: 1_784_366
         },
         {
             id: 'wrong-scope',
-            ownerId: 'other-owner',
-            accountId: '',
+            ownerId: '',
+            accountId: 'other-account',
             snapshotYear: 2024,
             totalAssets: 1,
             cost: 1
@@ -92,6 +95,34 @@ test('年度資料永遠先顯示當年度自動列，且忽略當年度資料�
         { year: 2026, id: '', auto: true, totalAssets: 2_292_089, cost: 1_982_629 },
         { year: 2025, id: 'history-2025', auto: false, totalAssets: 2_017_038, cost: 1_784_366 }
     ]);
+});
+
+test('金額輸入不在每次 input 事件改寫逗號，離開欄位才格式化', () => {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetGroupedAmountText'),
+        functionSource('wireAssetAmountInput')
+    ].join('\n\n'), context);
+
+    const listeners = {};
+    const input = {
+        value: '',
+        addEventListener(name, handler) {
+            listeners[name] = handler;
+        }
+    };
+
+    context.wireAssetAmountInput(input);
+    input.value = '12700553399';
+    listeners.input?.();
+    assert.equal(input.value, '12700553399');
+
+    listeners.blur();
+    assert.equal(input.value, '12,700,553,399');
+
+    listeners.focus();
+    assert.equal(input.value, '12700553399');
 });
 
 test('新增年度的預設年份會跳過已存在的 2025，指向 2024', () => {
@@ -111,11 +142,93 @@ test('新增年度的預設年份會跳過已存在的 2025，指向 2024', () =
 });
 
 test('正式資料缺值時當年度顯示空值，不套用本機示意金額', () => {
-    const current = annualRows([], { twdTotalValue: null, twdCost: null })[0];
+    const current = annualRows([], { twdTotalValue: null, twdFundingCost: null, twdCost: null })[0];
 
     assert.equal(current.totalAssets, null);
     assert.equal(current.cost, null);
     assert.equal(current.auto, true);
+});
+
+test('年度資料使用帳戶入金成本，不使用持倉投入成本', () => {
+    const rows = annualRows([], {
+        twdTotalValue: 2_000_000,
+        twdFundingCost: 900_000,
+        twdCost: 1_800_000
+    });
+    const addForm = functionSource('makeAssetAnnualPreviewAddForm');
+    const section = functionSource('makeAssetAnnualPreviewSection');
+
+    assert.equal(rows[0].cost, 900_000);
+    assert.match(addForm, /入金成本/);
+    assert.doesNotMatch(addForm, /投入成本/);
+    assert.match(section, /入金成本/);
+    assert.doesNotMatch(section, /投入成本/);
+});
+
+test('Dashboard 年度資料由各帳戶逐年彙總，且不提供年度 CRUD', () => {
+    const context = {
+        TAIPEI_DATE: { format: () => '2026-09-10' },
+        assetAnnualSnapshotRows: [
+            {
+                id: 'account-a-2025',
+                ownerId: '',
+                accountId: 'account-a',
+                snapshotYear: 2025,
+                totalAssets: 1_000,
+                cost: 700
+            },
+            {
+                id: 'account-b-2025',
+                ownerId: '',
+                accountId: 'account-b',
+                snapshotYear: 2025,
+                totalAssets: 2_000,
+                cost: 1_100
+            },
+            {
+                id: 'legacy-owner-2025',
+                ownerId: 'owner-1',
+                accountId: '',
+                snapshotYear: 2025,
+                totalAssets: 99_999,
+                cost: 88_888
+            }
+        ]
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetSum'),
+        functionSource('assetAnnualPreviewRowsFor'),
+        functionSource('assetAnnualPreviewOwnerView')
+    ].join('\n\n'), context);
+
+    const accountViews = [
+        {
+            id: 'account-a',
+            twdTotalValue: 1_200,
+            twdFundingCost: 800
+        },
+        {
+            id: 'account-b',
+            twdTotalValue: 2_300,
+            twdFundingCost: 1_200
+        }
+    ];
+    const ownerView = context.assetAnnualPreviewOwnerView({ id: 'owner-1' }, accountViews);
+    const rows = context.assetAnnualPreviewRowsFor(ownerView);
+
+    assert.equal(rows[0].totalAssets, 3_500);
+    assert.equal(rows[0].cost, 2_000);
+    assert.equal(rows[1].year, 2025);
+    assert.equal(rows[1].totalAssets, 3_000);
+    assert.equal(rows[1].cost, 1_800);
+    assert.equal(rows[1].id, '');
+
+    const totalValue = functionSource('makeAssetAnnualPreviewTotalValue');
+    const section = functionSource('makeAssetAnnualPreviewSection');
+    assert.match(totalValue, /view\.annualScope !== 'owner'/);
+    assert.match(section, /view\.annualScope !== 'owner'/);
 });
 
 test('年度編輯／刪除只對歷史列接線，新增資料只接受單一 scope', () => {
@@ -123,11 +236,13 @@ test('年度編輯／刪除只對歷史列接線，新增資料只接受單一 s
     const addForm = functionSource('makeAssetAnnualPreviewAddForm');
     const scope = functionSource('assetAnnualPreviewScope');
 
-    assert.match(totalValue, /const editable = row\.auto !== true && row\.id !== ''/);
+    assert.match(totalValue, /const editable = view\.annualScope !== 'owner' && row\.auto !== true && row\.id !== ''/);
     assert.match(totalValue, /assetRemove\(/);
     assert.match(addForm, /year >= currentYear/);
     assert.match(addForm, /assetInsert\(/);
-    assert.match(scope, /owner_id: view\.ownerId/);
+    assert.match(scope, /view\.annualScope === 'owner'/);
+    assert.match(scope, /return null/);
+    assert.match(scope, /owner_id: null/);
     assert.match(scope, /account_id: view\.id/);
 });
 

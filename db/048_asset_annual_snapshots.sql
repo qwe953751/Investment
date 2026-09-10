@@ -2,7 +2,8 @@
 --
 -- 當年度不是資料庫快照：前端每次載入都用目前資產狀態自動帶入，
 -- 因此不會被手動編輯或刪除。這張表只保存使用者自行建立的歷史年度，
--- 讓年度資料能跨裝置使用，並支援歷史總資產的編輯與刪除。
+-- 讓年度資料能跨裝置使用，並支援歷史總資產的編輯與刪除；cost_twd 代表入金成本。
+-- 前端目前只由帳戶明細寫入 account_id scope；owner_id 保留資料表相容性，Dashboard 不讀 owner 年度列。
 
 create table if not exists asset_annual_snapshots (
     id               uuid primary key default gen_random_uuid(),

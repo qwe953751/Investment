@@ -6020,12 +6020,11 @@ function assetGroupedAmountText(value) {
 function wireAssetAmountInput(input) {
     input.inputMode = 'decimal';
     input.autocomplete = 'off';
-    input.addEventListener('input', () => {
-        const formatted = assetGroupedAmountText(input.value);
-
-        if (input.value !== formatted) {
-            input.value = formatted;
-        }
+    input.addEventListener('focus', () => {
+        input.value = assetGroupedAmountText(input.value).replaceAll(',', '');
+    });
+    input.addEventListener('blur', () => {
+        input.value = assetGroupedAmountText(input.value);
     });
 }
 
@@ -6467,15 +6466,6 @@ function loadAssetAnnualPreviewData() {
     }));
     assetAccountValueSnapshotsAvailable = true;
     assetAnnualSnapshotRows = [
-        {
-            id: 'local-preview-owner-2025',
-            ownerId,
-            accountId: '',
-            snapshotYear: currentYear - 1,
-            totalAssets: 2_017_038,
-            cost: 1_784_366,
-            updatedAt: now
-        },
         {
             id: 'local-preview-account-2025',
             ownerId: '',
@@ -7214,35 +7204,56 @@ function assetMetric(label, value, detail, valueClass = '') {
 
 function assetAnnualPreviewRowsFor(view) {
     const currentYear = Number(TAIPEI_DATE.format(new Date()).slice(0, 4));
-    const currentTotal = assetNumber(view.twdTotalValue) ?? assetNumber(view.totalValue);
-    const currentCost = assetNumber(view.twdCost) ?? assetNumber(view.cost);
-    const today = TAIPEI_DATE.format(new Date()).slice(5).replaceAll('-', '/');
     const isOwner = view.annualScope === 'owner';
+    const accountViews = isOwner && Array.isArray(view.accountViews) ? view.accountViews : [];
+    const currentTotal = isOwner
+        ? accountViews.length === 0
+            ? 0
+            : assetSum(accountViews, account => assetNumber(account.twdTotalValue) ?? assetNumber(account.totalValue))
+        : assetNumber(view.twdTotalValue) ?? assetNumber(view.totalValue);
+    const currentCost = isOwner
+        ? accountViews.length === 0
+            ? 0
+            : assetSum(accountViews, account => assetNumber(account.twdFundingCost) ?? assetNumber(account.fundingCost))
+        : assetNumber(view.twdFundingCost) ?? assetNumber(view.fundingCost);
+    const today = TAIPEI_DATE.format(new Date()).slice(5).replaceAll('-', '/');
     const scopeId = isOwner ? String(view.ownerId ?? '') : String(view.id ?? '');
+    const accountIds = new Set(accountViews.map(account => String(account.id ?? '')));
     const storedByYear = new Map();
 
     assetAnnualSnapshotRows
-        .filter(row => (isOwner
-            ? row.ownerId === scopeId && row.accountId === ''
-            : row.accountId === scopeId && row.ownerId === ''))
+        .filter(row => isOwner
+            ? row.ownerId === '' && accountIds.has(row.accountId)
+            : row.accountId === scopeId && row.ownerId === '')
         .forEach(row => {
             const year = assetNumber(row.snapshotYear);
+            const totalAssets = assetNumber(row.totalAssets);
+            const cost = assetNumber(row.cost);
 
             if (year !== null
                 && Number.isInteger(year)
                 && year >= 2000
                 && year < currentYear
-                && assetNumber(row.totalAssets) !== null
-                && assetNumber(row.cost) !== null
-                && !storedByYear.has(year)) {
+                && totalAssets !== null
+                && cost !== null) {
+                const existing = storedByYear.get(year);
+
+                if (existing !== undefined) {
+                    if (isOwner) {
+                        existing.totalAssets += Math.round(totalAssets);
+                        existing.cost += Math.round(cost);
+                    }
+                    return;
+                }
+
                 storedByYear.set(year, {
-                    id: String(row.id ?? ''),
+                    id: isOwner ? '' : String(row.id ?? ''),
                     year,
                     period: '全年',
                     status: '歷史快照',
-                    totalAssets: Math.round(assetNumber(row.totalAssets)),
-                    cost: Math.round(assetNumber(row.cost)),
-                    updatedAt: row.updatedAt,
+                    totalAssets: Math.round(totalAssets),
+                    cost: Math.round(cost),
+                    updatedAt: isOwner ? '' : row.updatedAt,
                     sample: false,
                     auto: false
                 });
@@ -7264,15 +7275,24 @@ function assetAnnualPreviewRowsFor(view) {
     ];
 }
 
-function assetAnnualPreviewOwnerView(owner, summary) {
+function assetAnnualPreviewOwnerView(owner, accountViews) {
+    const views = Array.isArray(accountViews) ? accountViews : [];
+    const totalValue = views.length === 0
+        ? 0
+        : assetSum(views, view => assetNumber(view.twdTotalValue) ?? assetNumber(view.totalValue));
+    const fundingCost = views.length === 0
+        ? 0
+        : assetSum(views, view => assetNumber(view.twdFundingCost) ?? assetNumber(view.fundingCost));
+
     return {
         id: `owner:${owner.id}`,
         ownerId: owner.id,
         annualScope: 'owner',
-        twdTotalValue: summary.totalValue,
-        totalValue: summary.totalValue,
-        twdCost: summary.cost,
-        cost: summary.cost
+        accountViews: views,
+        twdTotalValue: totalValue,
+        totalValue,
+        twdFundingCost: fundingCost,
+        fundingCost
     };
 }
 
@@ -7349,33 +7369,27 @@ function assetAnnualPreviewSuggestedYear(rows) {
 }
 
 function assetAnnualPreviewScope(view) {
-    const isOwner = view.annualScope === 'owner';
+    if (view.annualScope === 'owner') {
+        return null;
+    }
 
     return {
-        isOwner,
-        key: isOwner ? `owner:${view.ownerId}` : `account:${view.id}`,
-        body: (year, totalAssets, cost) => isOwner
-            ? {
-                owner_id: view.ownerId,
-                account_id: null,
-                snapshot_year: year,
-                total_assets_twd: totalAssets,
-                cost_twd: cost
-            }
-            : {
-                owner_id: null,
-                account_id: view.id,
-                snapshot_year: year,
-                total_assets_twd: totalAssets,
-                cost_twd: cost
-            }
+        isOwner: false,
+        key: `account:${view.id}`,
+        body: (year, totalAssets, cost) => ({
+            owner_id: null,
+            account_id: view.id,
+            snapshot_year: year,
+            total_assets_twd: totalAssets,
+            cost_twd: cost
+        })
     };
 }
 
 function makeAssetAnnualPreviewAddForm(view, rows) {
     const scope = assetAnnualPreviewScope(view);
 
-    if (assetAnnualPreviewAddingKey !== scope.key) {
+    if (scope === null || assetAnnualPreviewAddingKey !== scope.key) {
         return null;
     }
 
@@ -7402,7 +7416,7 @@ function makeAssetAnnualPreviewAddForm(view, rows) {
         required: true,
         placeholder: '例如 1800000'
     });
-    const costInput = assetAmountField(fields, '投入成本', '', {
+    const costInput = assetAmountField(fields, '入金成本', '', {
         required: true,
         placeholder: '例如 1600000'
     });
@@ -7485,7 +7499,7 @@ function makeAssetAnnualPreviewTotalValue(view, row) {
     const key = `${String(view.id ?? 'preview-account')}:${row.id || row.year}`;
     const control = document.createElement('div');
     control.className = 'asset-annual-preview-total-control';
-    const editable = row.auto !== true && row.id !== '';
+    const editable = view.annualScope !== 'owner' && row.auto !== true && row.id !== '';
 
     if (editable && assetAnnualPreviewEditingKey === key) {
         const input = document.createElement('input');
@@ -7592,19 +7606,25 @@ function makeAssetAnnualPreviewSection(view, rows) {
     meta.textContent = `由新到舊 · ${ASSET_ANNUALIZED_LOCAL_PREVIEW
         ? '本機預覽'
         : assetAnnualSnapshotsAvailable ? '正式資料' : '目前年度自動帶入'}`;
-    const scope = assetAnnualPreviewScope(view);
-    const add = assetButton('新增年度', 'asset-secondary-button', () => {
-        assetAnnualPreviewEditingKey = '';
-        assetAnnualPreviewAddingKey = assetAnnualPreviewAddingKey === scope.key ? '' : scope.key;
-        renderAssetsDashboard();
-    });
-    add.disabled = assetsBusy;
-    headingActions.append(meta, add);
+    if (view.annualScope !== 'owner') {
+        const scope = assetAnnualPreviewScope(view);
+        const add = assetButton('新增年度', 'asset-secondary-button', () => {
+            assetAnnualPreviewEditingKey = '';
+            assetAnnualPreviewAddingKey = assetAnnualPreviewAddingKey === scope.key ? '' : scope.key;
+            renderAssetsDashboard();
+        });
+        add.disabled = assetsBusy;
+        headingActions.append(meta, add);
+    } else {
+        headingActions.append(meta);
+    }
     heading.append(title, headingActions);
 
     const note = document.createElement('p');
     note.className = 'asset-local-only-note';
-    note.textContent = '目前年度由目前資產狀態自動帶入，不可編輯或刪除；歷史年度可編輯總資產或刪除。淨資產＝總資產－投入成本。';
+    note.textContent = view.annualScope === 'owner'
+        ? 'Dashboard 年度資料由各帳戶自動彙總，僅供檢視。淨資產＝總資產－入金成本。'
+        : '目前年度由目前資產狀態自動帶入，不可編輯或刪除；歷史年度可編輯總資產或刪除。淨資產＝總資產－入金成本。';
 
     const list = document.createElement('div');
     list.className = 'asset-annual-preview-list';
@@ -7641,7 +7661,7 @@ function makeAssetAnnualPreviewSection(view, rows) {
         values.className = 'asset-annual-preview-values';
         values.append(
             makeAssetAnnualPreviewTotalValue(view, row),
-            makeAssetAnnualPreviewValue('投入成本', row.cost),
+            makeAssetAnnualPreviewValue('入金成本', row.cost),
             makeAssetAnnualPreviewValue('淨資產', assetAnnualPreviewNetAsset(row), 'asset-annual-preview-net'));
         card.append(cardHeading, values);
         item.append(year, card);
@@ -8338,7 +8358,7 @@ function makeAssetAccountTable(owner, views) {
 function makeAssetDashboard(owner, views, summary) {
     const content = document.createElement('div');
     content.className = 'asset-dashboard-content';
-    const annualPreviewView = assetAnnualPreviewOwnerView(owner, summary);
+    const annualPreviewView = assetAnnualPreviewOwnerView(owner, views);
     const annualPreviewRows = assetAnnualPreviewRowsFor(annualPreviewView);
     const overview = document.createElement('div');
     overview.className = 'asset-dashboard-overview';
