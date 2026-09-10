@@ -300,34 +300,23 @@ jobs:
           path: data
           fetch-depth: 1
 
-      # 只是先看一眼這台 runner 通不通，方便事後看日誌時對照。
-      # 連不上也照跑：開盤前的一次連線失敗不能代表整天，
-      # 收集器本來就會每 2 分鐘重試到 13:35，真的整場都沒收到才會紅。
-      - name: 探一下 MIS
-        if: steps.wait.outputs.collect == 'true'
-        continue-on-error: true
-        run: |
-          body=$(curl -sS --max-time 30 \
-              -H 'User-Agent: Mozilla/5.0' \
-              -H 'Referer: https://mis.twse.com.tw/stock/index.jsp' \
-              'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_2330.tw&json=1&delay=0')
-
-          echo "$body" | head -c 400
-          echo
-
-          if echo "$body" | grep -q '"rtcode":"0000"'; then
-              echo "MIS 正常回應。"
-          else
-              echo "::warning::MIS 這一下沒有正常回應，收集器會繼續重試到收盤。"
-          fi
-
       - uses: actions/setup-dotnet@v4
         if: steps.wait.outputs.collect == 'true'
         with:
           dotnet-version: '10.0.x'
 
-      # 收集器自己撐到 13:35。整場一輪都沒寫進去、而且中間出過錯，它會丟例外讓這一步紅掉；
-      # 整場都問得到 MIS、只是日期一直停在上一個交易日，才算休市、正常結束。
+      # 先用正式收集器的完整市場清單與批次邏輯探測一次。
+      # 單問 2330 只能證明單一小請求可用，不能代表 150 檔批次都能通；
+      # 全市場探測失敗就讓本棒立即紅掉，警報步驟會留下線索，下一棒換 runner。
+      - name: 探一下 MIS 全市場批次
+        if: steps.wait.outputs.collect == 'true'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- intraday --probe
+
+      # 收集器自己撐到 13:35；單輪失敗會在連續三輪後快速退出，
+      # 讓警報步驟留下線索並交給下一個 runner。整場都問得到 MIS、只是日期一直停在上一個交易日，
+      # 才算休市、正常結束。
       - name: 收集盤中報價
         if: steps.wait.outputs.collect == 'true'
         env:

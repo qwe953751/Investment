@@ -32,7 +32,7 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- backfill-us
 //   dotnet run --project src/Invest.Web -- backfill-overview
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
-//   dotnet run --project src/Invest.Web -- intraday [--loop]
+//   dotnet run --project src/Invest.Web -- intraday [--loop|--probe]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
 //   dotnet run --project src/Invest.Web -- sync     [保留交易日數]
 //   dotnet run --project src/Invest.Web -- sync-fx
@@ -197,7 +197,16 @@ if (command is "export")
 
 if (command is "intraday")
 {
-    await RunIntradayAsync(app.Services, args);
+    if (args.Any(argument =>
+        string.Equals(argument, "--probe", StringComparison.OrdinalIgnoreCase)))
+    {
+        await RunIntradayProbeAsync(app.Services);
+    }
+    else
+    {
+        await RunIntradayAsync(app.Services, args);
+    }
+
     return;
 }
 
@@ -369,6 +378,66 @@ static async Task RunExportAsync(IServiceProvider services, string[] args)
 }
 
 /// <summary>
+/// 只探測一次全市場 MIS，不寫入資料庫或公開快照。
+///
+/// 這是 workflow 開始正式收集前的健康檢查；不能用單一熱門股代表整個
+/// 150 檔一批的請求路徑，因此沿用正式收集器的完整清單與批次邏輯。
+/// </summary>
+static async Task RunIntradayProbeAsync(IServiceProvider services)
+{
+    using var scope = services.CreateScope();
+    using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+
+    var universeClient = scope.ServiceProvider.GetRequiredService<StockUniverseClient>();
+    var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
+    var universe = await universeClient.GetTickersAsync(cts.Token);
+    var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
+
+    ValidateIntradaySnapshot(universe, snapshot);
+
+    var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+    var today = DateOnly.FromDateTime(
+        TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei).DateTime);
+
+    var dateNote = snapshot.TradeDate == today
+        ? "今天的交易日資料。"
+        : $"目前仍是 {snapshot.TradeDate:yyyy-MM-dd}；開盤前允許，正式收集器會繼續等今天資料。";
+
+    Console.WriteLine(
+        $"MIS 全市場探測成功：交易日 {snapshot.TradeDate:yyyy-MM-dd}、"
+        + $"清單 {universe.Count} 檔、報價 {snapshot.Quotes.Count} 檔、"
+        + $"指數 {snapshot.MarketIndices.Count} 個；{dateNote}");
+}
+
+/// <summary>
+/// 防止合法但殘缺的 MIS 回應被當成一輪健康資料寫入。
+/// 停牌或暫無成交的標的仍會由 MIS 回傳昨收，因此 80% 是保守的故障門檻，
+/// 不是要求每一檔都必須有最新成交價。
+/// </summary>
+static void ValidateIntradaySnapshot(
+    IReadOnlyCollection<(Market Market, string Ticker)> universe,
+    IntradaySnapshot snapshot)
+{
+    const double minimumQuoteCoverage = 0.8;
+
+    if (universe.Count == 0)
+    {
+        throw new InvalidOperationException("盤中個股清單為空，不能判定 MIS 健康。 ");
+    }
+
+    var minimumQuotes = Math.Max(
+        1,
+        (int)Math.Ceiling(universe.Count * minimumQuoteCoverage));
+
+    if (snapshot.Quotes.Count < minimumQuotes)
+    {
+        throw new InvalidOperationException(
+            $"MIS 全市場回應只有 {snapshot.Quotes.Count}/{universe.Count} 檔，"
+            + $"低於 {minimumQuoteCoverage:P0} 健康門檻；整輪不寫入。 ");
+    }
+}
+
+/// <summary>
 /// 抓一輪（或整個交易時段）的盤中報價寫進資料庫。
 ///
 /// 累計成交量是自開盤起算，所以單跑一次也拿得到當日完整數字，
@@ -408,6 +477,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var failedRounds = 0;
     var rejectedRounds = 0;
     var cdnPublishFailures = 0;
+    var failureCircuitBreaker = new IntradayFailureCircuitBreaker();
 
     // 成交金額的逐輪累加狀態。必須活過整個迴圈，不能每輪重建，
     // 否則每一輪都變回「現價 × 全日累計量」。
@@ -478,6 +548,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                 }
 
                 var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
+                ValidateIntradaySnapshot(universe, snapshot);
 
                 // 休市時 MIS 照樣回應，但給的是上一個交易日的數字。日期對不上就是不寫，
                 // 但也不能因此收工——開盤前本來就會對不上，盤中對不上則代表還沒輪到我們。
@@ -599,16 +670,25 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                             + $"累計金額不可能倒退，整輪丟掉不寫（第 {rejectedRounds} 次）。");
                     }
                 }
+
+                failureCircuitBreaker.RecordSuccess();
             }
             catch (Exception exception)
                 when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
             {
-                // 單輪失敗不能中斷整場。逾時、被擋、資料庫連不上都算在內，
-                // 收工時再用 failedRounds 決定這一場是紅還是綠。
                 failedRounds++;
+                var shouldStop = failureCircuitBreaker.RecordFailure();
 
                 Console.WriteLine(
                     $"{localTime:HH:mm:ss} 這一輪失敗（第 {failedRounds} 次）：{exception.Message}");
+
+                if (shouldStop)
+                {
+                    throw new InvalidOperationException(
+                        $"連續 {failureCircuitBreaker.ConsecutiveFailures} 輪盤中收集失敗，立即結束讓下一個 runner 接手："
+                        + exception.Message,
+                        exception);
+                }
             }
 
             if (!loop)

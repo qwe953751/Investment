@@ -13,6 +13,33 @@ public sealed class IntradayWorkflowTests
         Assert.Contains("path: data", workflow, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MIS探測必須驗證全市場而不是只問單一2330()
+    {
+        var workflow = ReadIntradayWorkflow();
+
+        Assert.Contains("intraday --probe", workflow, StringComparison.Ordinal);
+        Assert.Contains("SUPABASE_DB_URL", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("ex_ch=tse_2330.tw", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "continue-on-error: true",
+            Slice(workflow, "- name: 探一下 MIS 全市場批次", "- name: 收集盤中報價"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 盤中收集連續失敗要在收盤前釋放runner()
+    {
+        var program = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "src", "Invest.Web", "Program.cs"));
+        var start = program.IndexOf("static async Task RunIntradayAsync", StringComparison.Ordinal);
+        var end = program.IndexOf("static async Task RunIntradayHeatBackfillAsync", start, StringComparison.Ordinal);
+        var intraday = program[start..end];
+
+        Assert.Contains("IntradayFailureCircuitBreaker", intraday, StringComparison.Ordinal);
+        Assert.Contains("RecordFailure()", intraday, StringComparison.Ordinal);
+        Assert.Contains("立即結束讓下一個 runner 接手", intraday, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// 2026-08-27、08-28 連兩天 GitHub 的 schedule 事件晚到 6～13 小時或整天沒送達，
     /// 開盤了網站還停在昨天，只能靠人手動補跑。加更多 cron 沒有用——那天三個 cron 全都晚到。
