@@ -1093,6 +1093,47 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 **已用實測定案（2026-09-11）**：整期 Cached Egress 只用了 0.12 / 5 GB（2%），
 不管壓縮前後計費都離上限很遠，這一項不再是風險，不用再追。
 
+### CDN cache-control 標頭沒生效：已修，但確認跟這次超額無關（2026-09-11，筆記 #61 追加）
+
+有 session 發現盤中 CDN 上傳的物件實際存的是 `no-cache`，跟程式碼想送的
+`31536000`／`10` 秒都對不上。直接查 Supabase `object/info` 確認屬實，
+兩個檔案（`latest.json`、`intraday-*.json`）的 `cache_control` 欄位都是 `no-cache`。
+
+**根因比表面深一層，不是值的格式錯，是 header 從來沒送出去過**：
+[IntradaySnapshotPublisher.cs](src/Invest.Web/Infrastructure/MarketData/Intraday/IntradaySnapshotPublisher.cs)
+的 `UploadAsync` 把 `cache-control` 掛在 `request.Content.Headers`（`HttpContentHeaders`）上，
+但 `Cache-Control` 在 HTTP 規格裡是 general header 不是 content header，`HttpContentHeaders`
+會直接拒收；`TryAddWithoutValidation` 回傳 `false`，但呼叫端沒檢查回傳值，於是這個 header
+三週來（CDN 08-30 上線起）從未真正送出去，Supabase storage-api 收到「沒有 cache-control」的
+上傳就套用預設值 `no-cache`。用 .NET 實跑這一行可以直接重現：`Content.Headers.TryAddWithoutValidation`
+回傳 `false`，改掛 `request.Headers` 才回傳 `true`。
+
+**但這不是流量問題，實測數字不支持**：
+
+- 快照檔名每一輪都是新的（`intraday-<時間>-run<id>.json`），下一輪是另一個 URL，
+  `max-age` 設多長都不會被用到——TTL 只在「同一個 URL 被重複拿」時才有意義。
+- `latest.json` 原本想設的 TTL（10 秒）本來就短於輪距（2 分鐘），就算生效也永遠不會命中。
+- 用 curl 量測實際上線位元組：快照 62,414 B（含 br 壓縮）、`latest.json` 181 B，
+  兩者都是**每台裝置每交易日都要重新下載的新資料**，跟 cache-control 有沒有生效無關。
+- 交叉驗證：這個 bug 從 CDN 上線第一天就在，而 08-26～09-05 的每日 egress 實測只有
+  0.02～0.05 GB／天——bug 全程在場，卻沒讓任何一根柱子變高。
+
+**已修**（本輪一併完成）：
+`UploadAsync` 的 `Cache-Control` 改掛 `request.Headers`，值改成合法語法
+`max-age={cacheSeconds}`（快照另加 `, immutable`，因為它的內容確實永不變；`latest.json`
+會被覆寫，不能標 immutable）；`TryAddWithoutValidation` 的回傳值現在會被檢查，失敗就丟例外，
+不再靜默吞掉。順手把 `note-images`（[site.js](src/Invest.Web/Infrastructure/StaticSite/Assets/site.js)
+的 `uploadNoteImage`）也補上 `max-age=31536000, immutable`——那是全站少數「路徑帶 UUID、
+`x-upsert: false`、內容永不變」、長 TTL 真的有意義的檔案，原本完全沒送這個 header。
+新增 `.NET` 測試直接組出 `HttpRequestMessage` 斷言 header 落在正確集合、值合法；
+新增 Node 測試直接執行 `uploadNoteImage()` 攔截 `fetch` 呼叫斷言標頭內容——
+兩者都不只檢查原始碼字面，避免同一種「看起來對、實際沒送出去」的錯誤再犯一次。
+
+**這次的教訓值得記住**：跟 OCR Worker 版本落後是同一類問題——**看不見的狀態**。
+上次是「部署的二進位跟 repo 不同步」，這次是「送出去的 request 跟程式碼寫的不一樣」，
+兩者都是「程式碼審查看起來完全正確」卻在執行期悄悄失效，只有直接量測真正送出去的位元組
+或直接問伺服器存了什麼，才驗得出來。
+
 ### 手上還沒打的牌（2026-09-11 起暫緩）
 
 歸因結果顯示結構性基線只有 0.02～0.05 GB／天，這兩張牌省不到有意義的量卻要動四支資料流。

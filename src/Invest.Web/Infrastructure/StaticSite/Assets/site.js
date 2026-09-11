@@ -3186,6 +3186,8 @@ async function uploadNoteImage(noteId, image) {
         throw new Error('圖片尚未轉成可上傳格式');
     }
 
+    // 路徑帶 UUID，同一個路徑永遠只會被寫入一次（x-upsert: false），內容也不會再變，
+    // 是全站少數「長 TTL 真的有意義」的檔案，所以標成 immutable。
     const path = `notes/${noteId}/${crypto.randomUUID()}.${extension}`;
     const response = await fetch(
         `${supabase.url}/storage/v1/object/${NOTE_IMAGES_BUCKET}/${encodeStoragePath(path)}`,
@@ -3195,7 +3197,8 @@ async function uploadNoteImage(noteId, image) {
                 apikey: supabase.anonKey,
                 Authorization: `Bearer ${supabase.anonKey}`,
                 'Content-Type': mimeType,
-                'x-upsert': 'false'
+                'x-upsert': 'false',
+                'cache-control': 'max-age=31536000, immutable'
             },
             body: image.file
         });

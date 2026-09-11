@@ -166,7 +166,7 @@ public sealed class IntradaySnapshotPublisher(
 
         // 完整快照永遠是新路徑，可長期快取；先完成它，再替換極小的 latest 指標。
         // 這個順序保證任何讀到新 latest 的瀏覽器都下載得到對應完整檔。
-        await UploadAsync(settings, fileName, snapshotBytes, cacheSeconds: 31_536_000, cancellationToken);
+        await UploadAsync(settings, fileName, snapshotBytes, cacheSeconds: 31_536_000, immutable: true, cancellationToken);
 
         var latest = new LatestDocument(
             SchemaVersion,
@@ -179,8 +179,8 @@ public sealed class IntradaySnapshotPublisher(
         var latestBytes = JsonSerializer.SerializeToUtf8Bytes(latest, JsonOptions);
 
         // latest 是唯一需要覆寫的檔案，browser TTL 壓到十秒；失敗時舊指標仍指向上一個完整、
-        // 可驗證的輪次，不會曝光半套資料。
-        await UploadAsync(settings, "latest.json", latestBytes, cacheSeconds: 10, cancellationToken);
+        // 可驗證的輪次，不會曝光半套資料。immutable 只適用於內容永不變的檔案，這份會覆寫，不能標。
+        await UploadAsync(settings, "latest.json", latestBytes, cacheSeconds: 10, immutable: false, cancellationToken);
 
         // 版本檔只能保留有限數量，否則每兩分鐘一份會很快吃掉 Free plan 的 Storage 額度。
         // 這個清理放在 latest 成功之後，且失敗不回滾剛發佈的新快照；最差只會暫時多留檔案。
@@ -218,6 +218,7 @@ public sealed class IntradaySnapshotPublisher(
         string path,
         byte[] content,
         int cacheSeconds,
+        bool immutable,
         CancellationToken cancellationToken)
     {
         var endpoint = $"{settings.SupabaseUrl}/storage/v1/object/{Uri.EscapeDataString(settings.Bucket)}/{path}";
@@ -230,7 +231,19 @@ public sealed class IntradaySnapshotPublisher(
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.Secret);
         request.Headers.TryAddWithoutValidation("x-upsert", "true");
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-        request.Content.Headers.TryAddWithoutValidation("cache-control", cacheSeconds.ToString());
+
+        // Cache-Control 在 HTTP 規格裡是 general header，不是 content header：掛在
+        // request.Content.Headers（HttpContentHeaders）上會被直接拒收，TryAddWithoutValidation
+        // 回傳 false 但舊版沒檢查回傳值，於是這個 header 從來沒有真正送出去過，Supabase
+        // storage-api 收到「沒有 cache-control」的上傳就套用它的預設值 no-cache——存進去的物件
+        // 因此三週來一直是 no-cache，跟這裡想送的秒數無關（2026-09-11，筆記 #61 發現）。
+        // 值本身也要用合法的指令語法，單獨一個數字不是合法的 Cache-Control 值。
+        var cacheControlValue = immutable ? $"max-age={cacheSeconds}, immutable" : $"max-age={cacheSeconds}";
+
+        if (!request.Headers.TryAddWithoutValidation("Cache-Control", cacheControlValue))
+        {
+            throw new InvalidOperationException($"無法設定 Cache-Control header（值：{cacheControlValue}）。");
+        }
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
 
