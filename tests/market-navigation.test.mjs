@@ -6,7 +6,7 @@ import test from 'node:test';
 const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const siteScript = fs.readFileSync(
     path.join(repositoryRoot, 'src', 'Invest.Web', 'Infrastructure', 'StaticSite', 'Assets', 'site.js'),
-    'utf8');
+    'utf8').replaceAll('\r\n', '\n');
 
 test('筆記 #56 的市場導覽小控件保持在頁面最上層', () => {
     const utilityLayerRule = siteScript.match(

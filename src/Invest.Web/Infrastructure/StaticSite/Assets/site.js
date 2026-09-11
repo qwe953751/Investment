@@ -17573,9 +17573,16 @@ function renderMarketHeat(heat, index) {
     // 計算與匯出仍保存舊到新的時間序；畫面則由最近交易日往前看，
     // 才能讓左邊第一顆直接回答「最近一次的熱絡程度」。
     for (const day of [...(heat.previousDays ?? [])].reverse()) {
-        const item = document.createElement('span');
+        const item = document.createElement('button');
+        item.type = 'button';
         item.className = 'market-heat-history-item';
-        item.dataset.hint = `${day.tradingDate.replaceAll('-', '/')} 的市場熱絡分數：${toHeatScoreText(day.score)}/10。`;
+        const displayDate = day.tradingDate.replaceAll('-', '/');
+        item.dataset.hint = `${displayDate} 的市場熱絡分數：${toHeatScoreText(day.score)}/10。點擊切換至盤後查看該交易日。`;
+        item.title = `切換至 ${displayDate} 盤後`;
+        item.setAttribute('aria-label', `查看 ${displayDate} 盤後熱絡分數`);
+        item.addEventListener('click', () => {
+            update({ view: 'daily', date: day.tradingDate });
+        });
 
         const point = document.createElement('strong');
         point.className = 'market-heat-history-score';
@@ -26641,6 +26648,18 @@ body[data-msp-nav-variant="u1"] .msp-market-bar[data-nav-variant] {
     }
     body[data-msp-nav-variant="u1"] .market-switch-prototype .market-heat-panel {
         padding: 10px 11px;
+    }
+}
+
+/* U1 手機版的裝置浮層要以全寬工具列左側為基準；若沿用桌面 right: 0，
+   浮層會跟著按鈕寬度反向定位，造成左側內容被裁掉。 */
+@media (max-width: 720px) {
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-utility-slot .device-presence-panel {
+        left: 0;
+        right: auto;
+        width: min(560px, calc(100vw - 24px));
+        max-width: calc(100vw - 24px);
+        box-sizing: border-box;
     }
 }
 

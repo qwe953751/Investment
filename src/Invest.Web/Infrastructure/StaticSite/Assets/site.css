@@ -3327,9 +3327,26 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 3px;
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: #8b95a7;
+    font: inherit;
     font-size: 11px;
-    cursor: help;
+    cursor: pointer;
+}
+
+.market-heat-history-item:hover .market-heat-history-score,
+.market-heat-history-item:focus-visible .market-heat-history-score {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    color: var(--accent-strong);
+}
+
+.market-heat-history-item:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 4px;
 }
 
 .market-heat-history-score {
