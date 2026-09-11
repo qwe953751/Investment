@@ -5969,6 +5969,7 @@ let assetHoldingsMarket = '台股';
 let assetHoldingSortKey = 'ticker';
 let assetHoldingSortDirection = 'asc';
 const assetTrendPeriodByKey = new Map();
+const assetTrendCrosshairByKey = new Map();
 
 function assetNumber(value) {
     if (value === null || value === undefined || value === '') {
@@ -6107,6 +6108,36 @@ function assetChangePercent(current, previous) {
     return currentValue === null || previousValue === null || previousValue <= 0
         ? null
         : Math.round((currentValue / previousValue - 1) * 10_000) / 100;
+}
+
+function assetTrendChangeMeta(current, previous) {
+    const currentValue = assetNumber(current);
+    const previousValue = assetNumber(previous);
+
+    if (currentValue === null || previousValue === null || previousValue <= 0) {
+        return { delta: null, percent: null, tone: 'neutral' };
+    }
+
+    const delta = currentValue - previousValue;
+    return {
+        delta,
+        percent: assetChangePercent(currentValue, previousValue),
+        tone: delta > 0 ? 'up' : delta < 0 ? 'down' : 'neutral'
+    };
+}
+
+function assetTrendPercentText(value) {
+    const percent = assetNumber(value);
+
+    if (percent === null) {
+        return '—';
+    }
+
+    if (percent === 0) {
+        return '0.0%';
+    }
+
+    return `${percent > 0 ? '+' : '−'}${Math.abs(percent).toFixed(1)}%`;
 }
 
 function assetAccountTotalText(view) {
@@ -7924,33 +7955,6 @@ function assetTrendTooltipText(row) {
     return `${String(row.date ?? '').replaceAll('-', '/')} · ${assetCurrency(row.value)}`;
 }
 
-function makeAssetTrendTooltip(card) {
-    const tooltip = document.createElement('div');
-    tooltip.className = 'asset-value-trend-tooltip';
-    tooltip.hidden = true;
-    tooltip.setAttribute('role', 'status');
-    card.append(tooltip);
-
-    const hide = () => {
-        tooltip.hidden = true;
-    };
-
-    const show = (row, point) => {
-        tooltip.textContent = assetTrendTooltipText(row);
-        tooltip.hidden = false;
-
-        const cardRect = card.getBoundingClientRect();
-        const pointRect = point.getBoundingClientRect();
-        const desiredLeft = pointRect.left - cardRect.left + pointRect.width / 2 - tooltip.offsetWidth / 2;
-        const maxLeft = Math.max(8, card.clientWidth - tooltip.offsetWidth - 8);
-        const desiredTop = pointRect.top - cardRect.top - tooltip.offsetHeight - 8;
-        tooltip.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
-        tooltip.style.top = `${Math.max(8, desiredTop)}px`;
-    };
-
-    return { hide, show };
-}
-
 // owner 層級（Dashboard 總覽）與 account 層級（帳戶明細）的資產變化圖是同一份畫圖
 // 邏輯，只有「資料從哪張表來、沒資料時的提示文字」不同，所以畫圖核心抽成這個共用
 // 函式，兩層各自只負責準備 rows 與提示文字，避免兩份幾乎一樣的 SVG 程式碼各自漂移。
@@ -7970,10 +7974,11 @@ function makeAssetValueTrendCard(rows, options) {
     detail.textContent = !options.available || visibleRows.length === 0
         ? '尚無完整資料'
         : `${visibleRows[0].date.replaceAll('-', '/')} ～ ${visibleRows.at(-1).date.replaceAll('-', '/')} · ${visibleRows.length} 個交易／紀錄日`;
-    heading.append(title, detail);
+    heading.append(title);
     card.append(heading);
 
     if (!options.available) {
+        heading.append(detail);
         const warning = document.createElement('p');
         warning.className = 'asset-data-warning';
         warning.textContent = options.unavailableHint;
@@ -7982,6 +7987,7 @@ function makeAssetValueTrendCard(rows, options) {
     }
 
     if (visibleRows.length === 0) {
+        heading.append(detail);
         const empty = document.createElement('p');
         empty.className = 'asset-local-only-note';
         empty.textContent = options.emptyHint;
@@ -7989,9 +7995,43 @@ function makeAssetValueTrendCard(rows, options) {
         return card;
     }
 
+    const crosshairEnabled = assetTrendCrosshairByKey.get(periodKey) ?? true;
+    const selection = document.createElement('div');
+    selection.className = 'asset-value-trend-selection';
+    selection.setAttribute('aria-live', 'polite');
+
+    const selectionItem = label => {
+        const item = document.createElement('div');
+        item.className = 'asset-value-trend-selection-item';
+        const caption = document.createElement('span');
+        caption.textContent = label;
+        const value = document.createElement('strong');
+        item.append(caption, value);
+        selection.append(item);
+        return { item, value };
+    };
+
+    const selectedDate = selectionItem('選定的交易日期');
+    const selectedTotal = selectionItem('總資產');
+    const selectedChange = selectionItem('與前一斷點');
+    const selectedPercent = selectedChange.value;
+    const selectedAmount = document.createElement('small');
+    selectedChange.item.append(selectedAmount);
+    heading.append(selection);
+
+    const crosshairToggle = assetButton(
+        `十字線：${crosshairEnabled ? '開' : '關'}`,
+        `asset-value-trend-crosshair${crosshairEnabled ? ' is-enabled' : ''}`,
+        () => {
+            assetTrendCrosshairByKey.set(periodKey, !crosshairEnabled);
+            renderAssetsDashboard();
+        });
+    crosshairToggle.setAttribute('aria-pressed', String(crosshairEnabled));
+    heading.append(crosshairToggle);
+
     const width = 960;
     const height = 260;
-    const left = 78;
+    const left = 124;
     const right = width - 24;
     const top = 24;
     const bottom = height - 42;
@@ -8043,8 +8083,7 @@ function makeAssetValueTrendCard(rows, options) {
 
     const path = visibleRows.map((row, index) => `${index === 0 ? 'M' : 'L'} ${x(index)} ${y(row.value)}`).join(' ');
     svg.append(svgElement('path', { class: 'asset-value-trend-line', d: path }));
-    const tooltip = makeAssetTrendTooltip(card);
-
+    const pointElements = [];
     visibleRows.forEach((row, index) => {
         const point = svgElement('circle', {
             class: index === visibleRows.length - 1
@@ -8056,19 +8095,84 @@ function makeAssetValueTrendCard(rows, options) {
         });
         point.setAttribute('tabindex', '0');
         point.setAttribute('aria-label', assetTrendTooltipText(row));
-        point.append(svgElement('title', {}, assetTrendTooltipText(row)));
-        point.addEventListener('pointerenter', event => tooltip.show(row, event.currentTarget));
-        point.addEventListener('pointerleave', tooltip.hide);
-        point.addEventListener('focus', event => tooltip.show(row, event.currentTarget));
-        point.addEventListener('blur', tooltip.hide);
-        point.addEventListener('keydown', event => {
-            if (event.key === 'Escape') {
-                tooltip.hide();
-                event.currentTarget.blur();
-            }
-        });
+        pointElements.push(point);
         svg.append(point);
     });
+
+    const verticalCrosshair = svgElement('line', {
+        class: 'asset-value-trend-crosshair-line',
+        x1: x(visibleRows.length - 1),
+        x2: x(visibleRows.length - 1),
+        y1: top,
+        y2: bottom
+    });
+    const horizontalCrosshair = svgElement('line', {
+        class: 'asset-value-trend-crosshair-line',
+        x1: left,
+        x2: right,
+        y1: y(visibleRows.at(-1).value),
+        y2: y(visibleRows.at(-1).value)
+    });
+    svg.append(verticalCrosshair, horizontalCrosshair);
+
+    const hitArea = svgElement('rect', {
+        class: 'asset-value-trend-hit',
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+        'aria-hidden': 'true'
+    });
+    svg.append(hitArea);
+
+    const updateSelection = index => {
+        const selectedIndex = Math.max(0, Math.min(visibleRows.length - 1, index));
+        const row = visibleRows[selectedIndex];
+        const previous = selectedIndex > 0 ? visibleRows[selectedIndex - 1] : null;
+        const change = assetTrendChangeMeta(row.value, previous?.value);
+
+        selectedDate.value.textContent = row.date.replaceAll('-', '/');
+        selectedTotal.value.textContent = assetCurrency(row.value);
+        selectedPercent.textContent = assetTrendPercentText(change.percent);
+        selectedAmount.textContent = change.delta === null
+            ? '—'
+            : change.delta === 0 ? assetCurrency(0) : assetSignedCurrency(change.delta);
+        selectedChange.item.classList.remove('is-up', 'is-down', 'is-neutral');
+        selectedChange.item.classList.add(`is-${change.tone}`);
+
+        const pointX = x(selectedIndex);
+        const pointY = y(row.value);
+        verticalCrosshair.setAttribute('x1', String(pointX));
+        verticalCrosshair.setAttribute('x2', String(pointX));
+        horizontalCrosshair.setAttribute('y1', String(pointY));
+        horizontalCrosshair.setAttribute('y2', String(pointY));
+        pointElements.forEach((point, pointIndex) => {
+            point.classList.toggle('is-selected', pointIndex === selectedIndex);
+            point.setAttribute('r', String(pointIndex === selectedIndex
+                ? 5
+                : pointIndex === visibleRows.length - 1 ? 5 : 3));
+        });
+        verticalCrosshair.style.display = crosshairEnabled ? '' : 'none';
+        horizontalCrosshair.style.display = crosshairEnabled ? '' : 'none';
+    };
+
+    const selectFromPointer = event => {
+        const rect = svg.getBoundingClientRect();
+        if (rect.width <= 0) {
+            return;
+        }
+
+        const viewX = (event.clientX - rect.left) / rect.width * width;
+        const ratio = Math.max(0, Math.min(1, (viewX - left) / (right - left)));
+        updateSelection(Math.round(ratio * (visibleRows.length - 1)));
+    };
+
+    pointElements.forEach((point, index) => {
+        point.addEventListener('focus', () => updateSelection(index));
+    });
+    hitArea.addEventListener('pointermove', selectFromPointer);
+    hitArea.addEventListener('pointerdown', selectFromPointer);
+    updateSelection(visibleRows.length - 1);
 
     const dateIndices = [...new Set([0, Math.floor((visibleRows.length - 1) / 2), visibleRows.length - 1])];
     for (const index of dateIndices) {
@@ -8098,11 +8202,13 @@ function makeAssetValueTrendCard(rows, options) {
         periods.append(button);
     }
 
-    card.append(periods);
-    const note = document.createElement('p');
-    note.className = 'asset-local-only-note';
-    note.textContent = '折線以台幣顯示；今天使用目前最新行情即時計算，過去日期讀取資料庫每日快照。';
-    card.append(note);
+    const footer = document.createElement('div');
+    footer.className = 'asset-value-trend-footer';
+    const range = document.createElement('span');
+    range.className = 'asset-value-trend-range';
+    range.textContent = `${visibleRows[0].date.replaceAll('-', '/')} ～ ${visibleRows.at(-1).date.replaceAll('-', '/')} · ${visibleRows.length} 個交易／紀錄日`;
+    footer.append(periods, range);
+    card.append(footer);
     return card;
 }
 

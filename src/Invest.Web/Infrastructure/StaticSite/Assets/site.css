@@ -1421,9 +1421,9 @@ body {
 }
 
 .asset-value-trend-heading {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
     gap: 16px;
 }
 
@@ -1438,28 +1438,87 @@ body {
     font-size: 12px;
 }
 
+.asset-value-trend-selection {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    justify-self: center;
+    width: min(100%, 620px);
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-alt);
+}
+
+.asset-value-trend-selection-item {
+    min-width: 0;
+    padding: 6px 12px 5px;
+    border-left: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-value-trend-selection-item:first-child {
+    border-left: 0;
+}
+
+.asset-value-trend-selection-item > span {
+    display: block;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-value-trend-selection-item > strong,
+.asset-value-trend-selection-item > small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-value-trend-selection-item > strong {
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.asset-value-trend-selection-item > small {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.asset-value-trend-selection-item.is-up > strong,
+.asset-value-trend-selection-item.is-up > small {
+    color: var(--up-text);
+}
+
+.asset-value-trend-selection-item.is-down > strong,
+.asset-value-trend-selection-item.is-down > small {
+    color: var(--down-text);
+}
+
+.asset-value-trend-crosshair {
+    justify-self: end;
+    min-width: 92px;
+    white-space: nowrap;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.asset-value-trend-crosshair.is-enabled {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+    color: var(--accent);
+}
+
 .asset-value-trend-svg {
     display: block;
     width: 100%;
     height: auto;
-    margin-top: 12px;
-    overflow: visible;
-}
-
-.asset-value-trend-tooltip {
-    position: absolute;
-    z-index: 2;
-    max-width: calc(100% - 16px);
-    padding: 6px 9px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--surface-alt);
-    box-shadow: 0 4px 12px rgb(15 23 42 / 16%);
-    color: var(--text);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    pointer-events: none;
-    white-space: nowrap;
+    margin-top: 10px;
+    overflow: hidden;
 }
 
 .asset-value-trend-periods {
@@ -1467,6 +1526,29 @@ body {
     justify-content: center;
     gap: 4px;
     margin-top: 4px;
+}
+
+.asset-value-trend-footer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    margin-top: 6px;
+}
+
+.asset-value-trend-footer .asset-value-trend-periods {
+    grid-column: 2;
+    margin-top: 0;
+}
+
+.asset-value-trend-range {
+    grid-column: 3;
+    justify-self: end;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
 }
 
 .asset-value-trend-period {
@@ -1525,8 +1607,25 @@ body {
     stroke-width: 4;
 }
 
+.asset-value-trend-point.is-selected {
+    stroke-width: 4;
+}
+
 .asset-value-trend-point.is-latest {
     fill: #2879b5;
+}
+
+.asset-value-trend-crosshair-line {
+    pointer-events: none;
+    stroke: var(--text-muted);
+    stroke-dasharray: 6 5;
+    stroke-width: 1.5;
+}
+
+.asset-value-trend-hit {
+    fill: transparent;
+    cursor: crosshair;
+    pointer-events: all;
 }
 
 .asset-dashboard-config-heading {
@@ -4215,6 +4314,49 @@ td.stock-name.stock-name-change-down {
     .asset-account-holdings,
     .asset-screenshot-flow {
         padding: 16px;
+    }
+
+    .asset-value-trend-heading {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+    }
+
+    .asset-value-trend-heading h2 {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .asset-value-trend-selection {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        justify-self: stretch;
+        width: 100%;
+    }
+
+    .asset-value-trend-crosshair {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    .asset-value-trend-footer {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+
+    .asset-value-trend-footer .asset-value-trend-periods {
+        grid-column: 1;
+        justify-content: flex-start;
+        margin-top: 0;
+        overflow-x: auto;
+        padding-bottom: 2px;
+    }
+
+    .asset-value-trend-range {
+        grid-column: 1;
+        justify-self: start;
+        overflow-wrap: anywhere;
+        text-align: left;
+        white-space: normal;
     }
 
     .asset-editor-form,

@@ -60,6 +60,21 @@ function tooltipText() {
     return context.assetTrendTooltipText;
 }
 
+function trendChangeHelpers() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetChangePercent'),
+        functionSource('assetTrendChangeMeta'),
+        functionSource('assetTrendPercentText')
+    ].join('\n\n'), context);
+    return {
+        change: context.assetTrendChangeMeta,
+        percentText: context.assetTrendPercentText
+    };
+}
+
 function activeAssetOwner() {
     const context = {};
     vm.createContext(context);
@@ -140,6 +155,41 @@ test('資產圓餅圖中心金額會隨格式化後的位數縮小', () => {
 
 test('資產折線圖提示文字同時包含日期與台幣金額', () => {
     assert.equal(tooltipText()({ date: '2026-09-07', value: 1234567 }), '2026/09/07 · NT$1,234,567');
+});
+
+test('資產折線圖選定資訊會正確計算與前一斷點的漲跌與顏色狀態', () => {
+    const helpers = trendChangeHelpers();
+
+    assert.deepEqual(JSON.parse(JSON.stringify(helpers.change(110, 100))), {
+        delta: 10,
+        percent: 10,
+        tone: 'up'
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(helpers.change(90, 100))), {
+        delta: -10,
+        percent: -10,
+        tone: 'down'
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(helpers.change(100, 100))), {
+        delta: 0,
+        percent: 0,
+        tone: 'neutral'
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(helpers.change(100, null))), {
+        delta: null,
+        percent: null,
+        tone: 'neutral'
+    });
+    assert.equal(helpers.percentText(10), '+10.0%');
+    assert.equal(helpers.percentText(-1.25), '−1.3%');
+    assert.equal(helpers.percentText(0), '0.0%');
+});
+
+test('資產 Dashboard 與帳戶共用折線圖選定資訊列與十字線互動', () => {
+    assert.match(siteScript, /asset-value-trend-selection/);
+    assert.match(siteScript, /asset-value-trend-crosshair/);
+    assert.match(siteScript, /asset-value-trend-hit/);
+    assert.match(siteScript, /asset-value-trend-footer/);
 });
 
 test('最高權限帳號依登入身分預設資產使用者，但手動選擇優先', () => {
