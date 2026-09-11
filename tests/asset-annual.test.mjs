@@ -224,6 +224,52 @@ test('年度區塊預設收合，且年度淨值名稱改為試算淨值', () =>
     assert.match(section, /makeAssetAnnualPreviewValue\('試算淨值'/);
 });
 
+test('年度卡的每月 MOM 由日快照取每月最後一筆，並由 1 月向右排序', () => {
+    const context = {
+        TAIPEI_DATE: { format: () => '2026-09-10' },
+        assetAccountValueSnapshotsAvailable: true,
+        assetAccountValueSnapshotRows: [
+            { accountId: 'account-1', snapshotDate: '2025-12-31', totalValue: 1_000 },
+            { accountId: 'account-1', snapshotDate: '2026-01-15', totalValue: 1_050 },
+            { accountId: 'account-1', snapshotDate: '2026-01-31', totalValue: 1_100 },
+            { accountId: 'account-1', snapshotDate: '2026-02-15', totalValue: 1_000 },
+            { accountId: 'account-1', snapshotDate: '2026-02-28', totalValue: 990 },
+            { accountId: 'account-1', snapshotDate: '2026-03-31', totalValue: 990 },
+            { accountId: 'other-account', snapshotDate: '2026-01-31', totalValue: 9_999 }
+        ]
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetNumber'),
+        functionSource('assetAnnualPreviewMonthRowsFor')
+    ].join('\n\n'), context);
+
+    const result = context.assetAnnualPreviewMonthRowsFor({
+        id: 'account-1',
+        annualScope: 'account',
+        twdTotalValue: 1_100
+    }, 2026);
+
+    assert.equal(result.available, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(result.months.map(month => month.label))), [
+        '1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月'
+    ]);
+    assert.equal(result.months[0].value, 1_100);
+    assert.equal(result.months[0].mom, 10);
+    assert.equal(result.months[1].value, 990);
+    assert.equal(result.months[1].mom, -10);
+    assert.equal(result.months[2].mom, 0);
+    assert.equal(result.months[3].mom, null);
+});
+
+test('每月 MOM 圖表不再顯示年度前綴或黃色標記對應的說明文字', () => {
+    const chart = functionSource('makeAssetAnnualPreviewMonthChart');
+
+    assert.match(chart, /title\.textContent = '每月 MOM'/);
+    assert.doesNotMatch(chart, /\$\{year \?\? ''\} 每月 MOM/);
+    assert.doesNotMatch(chart, /紅：正報酬|綠：負報酬|資料至/);
+});
+
 test('新增年度的入金成本為出入金紀錄衍生欄位，不接受手動輸入', () => {
     const addForm = functionSource('makeAssetAnnualPreviewAddForm');
 

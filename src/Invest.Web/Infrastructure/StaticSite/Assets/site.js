@@ -57,6 +57,8 @@ let assetAnnualPreviewEditingKey = '';
 let assetAnnualPreviewAddingKey = '';
 let assetAnnualPreviewExpanded = false;
 let assetAnnualPreviewAutoOpened = false;
+let assetAnnualPreviewMonthScope = '';
+let assetAnnualPreviewExpandedYears = new Set();
 // 出入金紀錄的「就地編輯」：一次只允許一列進入編輯狀態，切到別列不會遺失資料，
 // 因為原本就還沒送出。跟 assetEditorMode（持倉整表批次編輯）是各自獨立的狀態。
 let assetEditingCashFlowId = '';
@@ -7743,10 +7745,225 @@ function makeAssetAnnualPreviewValue(labelText, value, className = '') {
     return block;
 }
 
+function assetAnnualPreviewMonthStateKey(view) {
+    const scope = view.annualScope === 'owner' ? 'owner' : 'account';
+    return `${scope}:${String(view.id ?? view.ownerId ?? '')}`;
+}
+
+function assetAnnualPreviewEnsureMonthState(view, rows) {
+    const key = assetAnnualPreviewMonthStateKey(view);
+    const validYears = new Set((Array.isArray(rows) ? rows : [])
+        .map(row => assetNumber(row.year))
+        .filter(year => year !== null));
+
+    if (assetAnnualPreviewMonthScope !== key) {
+        assetAnnualPreviewMonthScope = key;
+        const firstYear = [...validYears][0];
+        assetAnnualPreviewExpandedYears = firstYear === undefined
+            ? new Set()
+            : new Set([firstYear]);
+        return;
+    }
+
+    assetAnnualPreviewExpandedYears = new Set(
+        [...assetAnnualPreviewExpandedYears].filter(year => validYears.has(year)));
+}
+
+function toggleAssetAnnualPreviewMonth(view, year) {
+    const targetYear = assetNumber(year);
+
+    if (targetYear === null) {
+        return;
+    }
+
+    const key = assetAnnualPreviewMonthStateKey(view);
+
+    if (assetAnnualPreviewMonthScope !== key) {
+        assetAnnualPreviewMonthScope = key;
+        assetAnnualPreviewExpandedYears = new Set();
+    }
+
+    if (assetAnnualPreviewExpandedYears.has(targetYear)) {
+        assetAnnualPreviewExpandedYears.delete(targetYear);
+    } else {
+        assetAnnualPreviewExpandedYears.add(targetYear);
+    }
+
+    renderAssetsDashboard();
+}
+
+function assetAnnualPreviewMonthRowsFor(view, year) {
+    const targetYear = assetNumber(year);
+
+    if (targetYear === null || !Number.isInteger(targetYear) || targetYear < 2000) {
+        return { available: false, months: [] };
+    }
+
+    const today = TAIPEI_DATE.format(new Date());
+    const currentYear = Number(today.slice(0, 4));
+    const currentMonth = Number(today.slice(5, 7));
+    const isOwner = view.annualScope === 'owner';
+    const available = isOwner
+        ? assetValueSnapshotsAvailable
+        : assetAccountValueSnapshotsAvailable;
+    const scopeId = isOwner
+        ? String(view.ownerId ?? '')
+        : String(view.id ?? '');
+    const sourceRows = isOwner
+        ? assetValueSnapshotRows.filter(row => row.ownerId === scopeId)
+        : assetAccountValueSnapshotRows.filter(row => row.accountId === scopeId);
+    const lastMonth = targetYear === currentYear ? currentMonth : 12;
+    const byMonth = new Map();
+
+    if (available) {
+        sourceRows.forEach(row => {
+            const date = String(row.snapshotDate ?? '');
+
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+                return;
+            }
+
+            const snapshotYear = Number(date.slice(0, 4));
+            const snapshotMonth = Number(date.slice(5, 7));
+            const value = assetNumber(row.totalValue);
+
+            if (value === null
+                || !Number.isInteger(snapshotMonth)
+                || snapshotMonth < 1
+                || snapshotMonth > 12
+                || snapshotYear < targetYear - 1
+                || snapshotYear > targetYear
+                || (snapshotYear === targetYear - 1 && snapshotMonth !== 12)) {
+                return;
+            }
+
+            const key = `${snapshotYear}-${String(snapshotMonth).padStart(2, '0')}`;
+            const existing = byMonth.get(key);
+
+            if (existing === undefined || date > existing.date) {
+                byMonth.set(key, { date, value });
+            }
+        });
+
+        if (targetYear === currentYear) {
+            const current = assetNumber(view.twdTotalValue) ?? assetNumber(view.totalValue);
+
+            if (current !== null) {
+                byMonth.set(today.slice(0, 7), { date: today, value: current });
+            }
+        }
+    }
+
+    const months = Array.from({ length: lastMonth }, (_, index) => {
+        const month = index + 1;
+        const key = `${targetYear}-${String(month).padStart(2, '0')}`;
+        const point = byMonth.get(key) ?? null;
+        const previousKey = month === 1
+            ? `${targetYear - 1}-12`
+            : `${targetYear}-${String(month - 1).padStart(2, '0')}`;
+        const previous = byMonth.get(previousKey) ?? null;
+        const mom = point?.value !== null
+            && point?.value !== undefined
+            && previous?.value !== null
+            && previous?.value !== undefined
+            && previous.value > 0
+            ? Math.round((point.value - previous.value) / previous.value * 10_000) / 100
+            : null;
+
+        return {
+            month,
+            label: `${month}月`,
+            date: point?.date ?? '',
+            value: point?.value ?? null,
+            mom
+        };
+    });
+
+    return { available, months };
+}
+
+function makeAssetAnnualPreviewMonthChart(view, row) {
+    const year = assetNumber(row.year);
+    const data = assetAnnualPreviewMonthRowsFor(view, year);
+    const chart = document.createElement('section');
+    chart.className = 'asset-annual-preview-months';
+    chart.setAttribute('aria-label', `${year ?? ''} 年每月 MOM`);
+
+    const heading = document.createElement('div');
+    heading.className = 'asset-annual-preview-month-heading';
+    const title = document.createElement('strong');
+    title.textContent = '每月 MOM';
+    const status = document.createElement('span');
+    status.className = 'asset-annual-preview-month-status';
+    status.textContent = data.available ? '系統自動帶入 · 不可編輯' : '尚無月度快照';
+    heading.append(title, status);
+    chart.append(heading);
+
+    if (!data.available) {
+        const empty = document.createElement('p');
+        empty.className = 'asset-annual-preview-month-empty';
+        empty.textContent = '月度資產快照尚未啟用。';
+        chart.append(empty);
+        return chart;
+    }
+
+    const plot = document.createElement('div');
+    plot.className = 'asset-annual-preview-month-plot';
+    plot.setAttribute('role', 'img');
+    plot.setAttribute('aria-label', `${year ?? ''} 年每月 MOM 圖表`);
+    plot.style.setProperty('--asset-annual-month-count', String(data.months.length));
+    const axis = document.createElement('span');
+    axis.className = 'asset-annual-preview-month-axis';
+    axis.setAttribute('aria-hidden', 'true');
+    plot.append(axis);
+
+    const values = data.months
+        .map(month => Math.abs(assetNumber(month.mom) ?? 0))
+        .filter(value => value > 0);
+    const maxMagnitude = Math.max(1, ...values);
+    const months = document.createElement('div');
+    months.className = 'asset-annual-preview-month-items';
+
+    data.months.forEach(month => {
+        const mom = assetNumber(month.mom);
+        const tone = mom === null ? 'empty' : mom > 0 ? 'positive' : mom < 0 ? 'negative' : 'unchanged';
+        const item = document.createElement('div');
+        item.className = `asset-annual-preview-month-item ${tone}`;
+        item.title = month.date === ''
+            ? `${month.label} · 尚無可計算資料`
+            : `${month.date.replaceAll('-', '/')} · ${assetAnnualPreviewPercentText(mom)}`;
+        const stage = document.createElement('div');
+        stage.className = 'asset-annual-preview-month-stage';
+        const value = document.createElement('span');
+        value.className = 'asset-annual-preview-month-value';
+        value.textContent = assetAnnualPreviewPercentText(mom);
+        const bar = document.createElement('span');
+        bar.className = 'asset-annual-preview-month-bar';
+
+        if (mom !== null) {
+            const height = Math.max(7, Math.round(Math.abs(mom) / maxMagnitude * 42));
+            stage.style.setProperty('--asset-annual-month-bar-size', `${height}%`);
+            bar.style.setProperty('--asset-annual-month-bar-size', `${height}%`);
+        }
+
+        stage.append(value, bar);
+        const label = document.createElement('span');
+        label.className = 'asset-annual-preview-month-label';
+        label.textContent = month.label;
+        item.append(stage, label);
+        months.append(item);
+    });
+
+    plot.append(months);
+    chart.append(plot);
+    return chart;
+}
+
 function makeAssetAnnualPreviewSection(view, rows) {
     const section = document.createElement('section');
     section.className = 'asset-annual-preview';
     section.setAttribute('aria-labelledby', 'asset-annual-preview-heading');
+    assetAnnualPreviewEnsureMonthState(view, rows);
 
     const heading = document.createElement('div');
     heading.className = 'asset-annual-preview-heading';
@@ -7805,10 +8022,20 @@ function makeAssetAnnualPreviewSection(view, rows) {
         const status = document.createElement('span');
         status.className = 'asset-annual-preview-status';
         status.textContent = row.status;
+        const monthExpanded = assetAnnualPreviewExpandedYears.has(assetNumber(row.year));
+        const monthChartId = `asset-annual-preview-month-${assetAnnualPreviewMonthStateKey(view)
+            .replace(/[^a-zA-Z0-9_-]/g, '-')}-${row.year}`;
+        const monthToggle = assetButton(
+            monthExpanded ? '收合每月 MOM' : '查看每月 MOM',
+            'asset-annual-preview-month-toggle',
+            () => toggleAssetAnnualPreviewMonth(view, row.year));
+        monthToggle.setAttribute('aria-expanded', String(monthExpanded));
+        monthToggle.setAttribute('aria-controls', monthChartId);
+        monthToggle.title = '查看或收合每月 MOM 圖表';
         const change = document.createElement('strong');
         change.className = `asset-annual-preview-return ${assetAnnualPreviewTrendClass(assetAnnualPreviewReturn(rows, index))}`.trim();
         change.textContent = assetAnnualPreviewPercentText(assetAnnualPreviewReturn(rows, index));
-        cardHeading.append(cardTitle, status, change);
+        cardHeading.append(cardTitle, status, monthToggle, change);
 
         const values = document.createElement('div');
         values.className = 'asset-annual-preview-values';
@@ -7817,6 +8044,11 @@ function makeAssetAnnualPreviewSection(view, rows) {
             makeAssetAnnualPreviewValue('入金成本', row.cost),
             makeAssetAnnualPreviewValue('試算淨值', assetAnnualPreviewNetAsset(row), 'asset-annual-preview-net'));
         card.append(cardHeading, values);
+        if (monthExpanded) {
+            const monthChart = makeAssetAnnualPreviewMonthChart(view, row);
+            monthChart.id = monthChartId;
+            card.append(monthChart);
+        }
         item.append(year, card);
         list.append(item);
     });

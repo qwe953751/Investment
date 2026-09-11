@@ -2231,6 +2231,171 @@ body {
     font-size: 12px;
 }
 
+.asset-annual-preview-month-toggle {
+    flex: 0 0 auto;
+    min-height: auto;
+    padding: 5px 8px;
+    border: 1px solid var(--accent-border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--accent-strong);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.asset-annual-preview-month-toggle:hover,
+.asset-annual-preview-month-toggle:focus-visible {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    color: var(--accent);
+}
+
+.asset-annual-preview-months {
+    min-width: 0;
+    margin-top: 16px;
+    padding-top: 13px;
+    border-top: 1px solid var(--border);
+}
+
+.asset-annual-preview-month-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.asset-annual-preview-month-heading > strong {
+    color: var(--text);
+    font-size: 14px;
+}
+
+.asset-annual-preview-month-status {
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.asset-annual-preview-month-empty {
+    margin: 12px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.asset-annual-preview-month-plot {
+    position: relative;
+    min-width: 0;
+    margin-top: 9px;
+    overflow-x: auto;
+    padding: 0 2px 2px;
+}
+
+.asset-annual-preview-month-items {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(var(--asset-annual-month-count), minmax(34px, 1fr));
+    min-width: 420px;
+    height: 154px;
+}
+
+.asset-annual-preview-month-axis {
+    position: absolute;
+    z-index: 1;
+    top: 70px;
+    right: 2px;
+    left: 2px;
+    border-top: 1px dashed var(--text-muted);
+    content: '';
+    pointer-events: none;
+}
+
+.asset-annual-preview-month-item {
+    position: relative;
+    min-width: 0;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.asset-annual-preview-month-stage {
+    position: relative;
+    height: 126px;
+}
+
+.asset-annual-preview-month-value {
+    position: absolute;
+    z-index: 2;
+    right: 2px;
+    left: 2px;
+    overflow: hidden;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-annual-preview-month-bar {
+    position: absolute;
+    z-index: 2;
+    right: 22%;
+    left: 22%;
+    min-height: 0;
+    border-radius: 5px;
+}
+
+.asset-annual-preview-month-item.positive {
+    color: var(--up-text);
+}
+
+.asset-annual-preview-month-item.positive .asset-annual-preview-month-value {
+    bottom: calc(50% + var(--asset-annual-month-bar-size, 0%) + 5px);
+}
+
+.asset-annual-preview-month-item.positive .asset-annual-preview-month-bar {
+    bottom: 50%;
+    height: var(--asset-annual-month-bar-size, 0%);
+    background: var(--up-fill);
+}
+
+.asset-annual-preview-month-item.negative {
+    color: var(--down-text);
+}
+
+.asset-annual-preview-month-item.negative .asset-annual-preview-month-value {
+    top: calc(50% + var(--asset-annual-month-bar-size, 0%) + 5px);
+}
+
+.asset-annual-preview-month-item.negative .asset-annual-preview-month-bar {
+    top: 50%;
+    height: var(--asset-annual-month-bar-size, 0%);
+    background: var(--down-fill);
+}
+
+.asset-annual-preview-month-item.unchanged {
+    color: var(--text);
+}
+
+.asset-annual-preview-month-item.unchanged .asset-annual-preview-month-value {
+    top: calc(50% - 5px);
+}
+
+.asset-annual-preview-month-item.unchanged .asset-annual-preview-month-bar {
+    top: calc(50% - 3px);
+    height: 6px;
+    background: var(--text-muted);
+}
+
+.asset-annual-preview-month-item.empty .asset-annual-preview-month-value {
+    top: calc(50% - 5px);
+}
+
+.asset-annual-preview-month-label {
+    display: block;
+    margin-top: 5px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
 .asset-dual-currency-value {
     display: grid;
     gap: 2px;
@@ -4400,6 +4565,17 @@ td.stock-name.stock-name-change-down {
 
     .asset-annual-preview-return {
         margin-left: auto;
+    }
+
+    .asset-annual-preview-month-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .asset-annual-preview-month-items {
+        grid-template-columns: repeat(var(--asset-annual-month-count), minmax(28px, 1fr));
+        min-width: 360px;
     }
 
     .asset-annual-preview-values {
