@@ -140,6 +140,77 @@ public sealed class MarketOverviewCalculatorTests
         Assert.Equal(7.5m, MarketOverviewCalculator.CalculateHeatScore(history, symbols));
     }
 
+    [Fact]
+    public void 全部symbol日期一致時整批日期就是那一天()
+    {
+        var symbols = new[]
+        {
+            new MarketOverviewSymbol("^DJI", "道瓊工業指數"),
+            new MarketOverviewSymbol("XLK", "資訊科技")
+        };
+        var history = new[]
+        {
+            Snapshot(new DateOnly(2026, 9, 9), ("^DJI", 100m, 0m), ("XLK", 50m, 100m))
+        };
+
+        var result = MarketOverviewCalculator.DetermineAsOfDate(history, symbols);
+
+        Assert.Equal(new DateOnly(2026, 9, 9), result.AsOfDate);
+        Assert.Empty(result.AheadSymbols);
+    }
+
+    [Fact]
+    public void 指數已經有隔天資料但類股還沒到時整批日期停在類股那一天且指數列在超前名單()
+    {
+        // 2026-09-11 實際發生的情境：^DJI 已經拿到 09-10，XLK 還停在 09-09。
+        var symbols = new[]
+        {
+            new MarketOverviewSymbol("^DJI", "道瓊工業指數"),
+            new MarketOverviewSymbol("XLK", "資訊科技")
+        };
+        var history = new[]
+        {
+            Snapshot(new DateOnly(2026, 9, 9), ("^DJI", 100m, 0m), ("XLK", 50m, 100m)),
+            Snapshot(new DateOnly(2026, 9, 10), ("^DJI", 101m, 0m))
+        };
+
+        var result = MarketOverviewCalculator.DetermineAsOfDate(history, symbols);
+
+        Assert.Equal(new DateOnly(2026, 9, 9), result.AsOfDate);
+        Assert.Equal(["^DJI"], result.AheadSymbols);
+    }
+
+    [Fact]
+    public void 完全沒有任何symbol有資料時日期是空值而不是今天()
+    {
+        var symbols = new[] { new MarketOverviewSymbol("^DJI", "道瓊工業指數") };
+
+        var result = MarketOverviewCalculator.DetermineAsOfDate([], symbols);
+
+        Assert.Null(result.AsOfDate);
+        Assert.Empty(result.AheadSymbols);
+    }
+
+    [Fact]
+    public void 有symbol完全沒被抓到時不會拖累其他symbol的日期()
+    {
+        // 名冊裡有一檔從沒抓到過資料（例如新上市或格式異常），不該讓整批永遠卡住。
+        var symbols = new[]
+        {
+            new MarketOverviewSymbol("^DJI", "道瓊工業指數"),
+            new MarketOverviewSymbol("NEWX", "從沒抓到的symbol")
+        };
+        var history = new[]
+        {
+            Snapshot(new DateOnly(2026, 9, 9), ("^DJI", 100m, 0m))
+        };
+
+        var result = MarketOverviewCalculator.DetermineAsOfDate(history, symbols);
+
+        Assert.Equal(new DateOnly(2026, 9, 9), result.AsOfDate);
+        Assert.Empty(result.AheadSymbols);
+    }
+
     private static MarketOverviewSnapshot Snapshot(DateOnly date, params (string Symbol, decimal Close, decimal TradingValue)[] quotes)
         => new()
         {

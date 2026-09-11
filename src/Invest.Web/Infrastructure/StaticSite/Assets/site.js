@@ -14582,7 +14582,11 @@ function renderAssetHoldingsViewer(page) {
 function renderAssetsDashboard() {
     const page = el('assets-page');
 
-    if (!page || (!ASSET_DASHBOARD_ENABLED && !ASSET_HOLDINGS_VIEW_ENABLED)) {
+    if (!page) {
+        return;
+    }
+
+    if (!ASSET_DASHBOARD_ENABLED && !ASSET_HOLDINGS_VIEW_ENABLED) {
         return;
     }
 
@@ -24092,6 +24096,51 @@ async function ensureMarketOverviewData() {
     }
 }
 
+// ---- 美股總覽的交易日選擇器 ----
+// 只有美股組有歷史檔（見 StaticSiteExporter.WriteMarketOverviewHistoryAsync 的說明：
+// 加密貨幣是 24/7 市場，「哪一天算到齊」的概念跟美股平日收盤不同，不提供選擇器）。
+// `proto.date === null` 代表「看最新」，直接沿用 marketOverviewData.us（already fetched，
+// 不必多打一次網路）；選到別的日期才需要另外抓 data/market-overview-us-{date}.json。
+const marketOverviewDateCache = new Map();
+const marketOverviewDatePromises = new Map();
+
+function ensureMarketOverviewDate(date, onSettled) {
+    if (marketOverviewDateCache.has(date)) {
+        return;
+    }
+
+    if (!marketOverviewDatePromises.has(date)) {
+        marketOverviewDatePromises.set(date, (async () => {
+            const response = await fetch(`data/market-overview-us-${date}.json?v=${version}`, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            marketOverviewDateCache.set(date, await response.json());
+        })());
+    }
+
+    marketOverviewDatePromises.get(date)
+        .catch(error => console.warn('市場總覽歷史交易日讀取失敗', date, error))
+        .finally(() => {
+            marketOverviewDatePromises.delete(date);
+            onSettled();
+        });
+}
+
+// 回傳目前該顯示的美股總覽 group，或 undefined（還在載入中，呼叫端顯示「載入中」）。
+function resolveMarketOverviewUsGroup(proto, onSettled) {
+    if (proto.date === null) {
+        return marketOverviewData.us;
+    }
+
+    if (marketOverviewDateCache.has(proto.date)) {
+        return marketOverviewDateCache.get(proto.date);
+    }
+
+    ensureMarketOverviewDate(proto.date, onSettled);
+    return undefined;
+}
+
 const MSP_SECTOR_TITLE = {
     us: '11 大類股表現',
     crypto: '主力幣種表現'
@@ -24519,9 +24568,65 @@ function mspSection(titleText, contentEl) {
 // 整體版面：指數（含 VIX）→市場熱絡度→類股/幣種熱力圖，依序往下排。
 // VIX 併入指數小卡，不再另立情緒指標區塊；財報行事曆／漲跌家數比／恐懼貪婪指數
 // 這輪沒有資料來源，整塊不顯示（不是留假資料）。
+// 前後交易日各一顆按鈕瀏覽美股總覽的歷史資料，視覺與互動比照台股盤後的
+// renderDatePicker()／date-step；這裡刻意另外寫一份而不是直接呼叫那支函式——
+// 那支綁死模組層級的 state.date／dates／calendarOpen，是台股排行頁本身的狀態，
+// 跟這裡 proto 物件（美股／加密貨幣切換用的假資料面板狀態）混用風險比重寫一份還高。
+// 只給美股組：加密貨幣是 24/7 市場，沒有 dates 清單（見 WriteMarketOverviewHistoryAsync）。
+function mspBuildDateStepper(proto, paint) {
+    const usDates = marketOverviewData?.us?.dates ?? [];
+    const currentDate = proto.date ?? usDates.at(-1);
+
+    if (currentDate === undefined) {
+        return null;
+    }
+
+    const index = usDates.indexOf(currentDate);
+
+    const step = (text, direction, hint) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'msp-date-step';
+        button.textContent = text;
+        button.title = hint;
+
+        const target = index + direction;
+        button.disabled = index === -1 || target < 0 || target >= usDates.length;
+
+        if (!button.disabled) {
+            button.addEventListener('click', () => {
+                const targetDate = usDates[target];
+                // 選到清單最後一天（最新）就退回 null：直接沿用 market-overview.json
+                // 內建的即時 us 欄位，不必為了「回到最新」多打一次歷史檔案。
+                proto.date = targetDate === usDates.at(-1) ? null : targetDate;
+                paint();
+            });
+        }
+
+        return button;
+    };
+
+    const label = document.createElement('span');
+    label.className = 'msp-date-label';
+    label.textContent = currentDate.replaceAll('-', '/');
+
+    const wrap = document.createElement('div');
+    wrap.className = 'msp-date-stepper';
+    wrap.append(step('‹', -1, '前一個交易日'), label, step('›', 1, '後一個交易日'));
+    return wrap;
+}
+
 function mspBuildDashboard(group, market, proto, paint) {
     const dashboard = document.createElement('div');
     dashboard.className = 'msp-dashboard';
+
+    if (market === 'us') {
+        const stepper = mspBuildDateStepper(proto, paint);
+        if (stepper !== null) {
+            dashboard.append(stepper);
+        }
+    }
+
     dashboard.append(mspSection('指數', mspBuildIndices(group, market)));
     dashboard.append(mspBuildHeatPanel(group, market));
     dashboard.append(mspBuildSectorsSection(group, market, proto, paint));
@@ -24885,6 +24990,20 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
     padding-top: 4px;
 }
 .msp-dashboard { display: flex; flex-direction: column; gap: 14px; }
+.msp-date-stepper { display: flex; align-items: center; gap: 10px; align-self: flex-start; }
+.msp-date-step {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface);
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+.msp-date-step:hover:not(:disabled) { background: var(--surface-hover); }
+.msp-date-step:disabled { opacity: 0.4; cursor: default; }
+.msp-date-label { min-width: 84px; text-align: center; font-variant-numeric: tabular-nums; }
 .msp-card-detail { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
 .msp-section-title { margin: 0 0 10px; font-size: 15px; }
 .msp-section-compact {
@@ -26573,7 +26692,9 @@ function initMarketSwitch() {
 
     const proto = {
         market: 'tw',
-        sectorView: 'heatmap'
+        sectorView: 'heatmap',
+        // 美股總覽目前選定的交易日；null 代表看最新（見 resolveMarketOverviewUsGroup）。
+        date: null
     };
 
     const bar = document.createElement('div');
@@ -26650,7 +26771,19 @@ function initMarketSwitch() {
                 || '這個市場目前還沒有可顯示的資料。';
             inner.append(notice);
         } else {
-            inner.append(mspBuildDashboard(marketOverviewData[proto.market], proto.market, proto, render));
+            // 只有美股組可能在看歷史交易日；加密貨幣沒有選擇器，永遠是 marketOverviewData.crypto。
+            const group = proto.market === 'us'
+                ? resolveMarketOverviewUsGroup(proto, render)
+                : marketOverviewData[proto.market];
+
+            if (group === undefined) {
+                const notice = document.createElement('section');
+                notice.className = 'notice msp-overview-notice';
+                notice.textContent = `${(proto.date ?? '').replaceAll('-', '/')} 的資料載入中…`;
+                inner.append(notice);
+            } else {
+                inner.append(mspBuildDashboard(group, proto.market, proto, render));
+            }
         }
 
         panel.replaceChildren(inner);

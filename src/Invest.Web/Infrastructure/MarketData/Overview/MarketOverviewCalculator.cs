@@ -160,6 +160,56 @@ public static class MarketOverviewCalculator
         return decimal.Round(breadthScore * 0.5m + volumeScore * 0.5m, 1);
     }
 
+    /// <summary>
+    /// 這批 symbol「全部都有資料」的最新交易日，取每個 symbol 自己最新日期的**最小值**。
+    ///
+    /// 2026-09-11 查出的根因：<see cref="ExtractSeries"/> 是逐 symbol 各自找 <c>series[^1]</c>，
+    /// 完全沒有跨 symbol 的日期一致性檢查。同一份 <c>imports-overview</c> 快照，指數
+    /// （^DJI 等）Yahoo 更新得比類股 ETF（XLK 等）快，於是 <c>CalculateIndex</c> 已經算出
+    /// 當天的指數，<c>CalculateSectors</c> 卻還在用前一天的 ETF 收盤——同一個面板混著
+    /// 兩個日期，畫面上完全看不出來。
+    ///
+    /// 呼叫端（<see cref="StaticSite.StaticSiteExporter"/>）要用回傳的 <c>AsOfDate</c> 把
+    /// <paramref name="history"/> 過濾到「不晚於這一天」再丟給 <see cref="CalculateIndex"/>／
+    /// <see cref="CalculateSectors"/>／<see cref="CalculateHeatScore"/>，確保同一個面板裡
+    /// 每個數字都對得起同一個交易日；寧可整批停在前一天，也不要局部超前。
+    /// <c>AheadSymbols</c> 是造成卡住的那幾檔（自己的最新日期比 <c>AsOfDate</c> 新），
+    /// 用來組告警訊息，讓人一眼看出是哪些 symbol 落後。
+    ///
+    /// 沒有任何 symbol 有資料時回傳 <c>AsOfDate: null</c>——呼叫端此時不該顯示任何日期，
+    /// 不能用今天或任意預設值頂替。
+    /// </summary>
+    public static MarketOverviewAsOfResult DetermineAsOfDate(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        IReadOnlyList<MarketOverviewSymbol> symbols)
+    {
+        var latestBySymbol = new Dictionary<string, DateOnly>(StringComparer.Ordinal);
+
+        foreach (var symbol in symbols)
+        {
+            var series = ExtractSeries(history, symbol.Symbol);
+
+            if (series.Count > 0)
+            {
+                latestBySymbol[symbol.Symbol] = series[^1].Date;
+            }
+        }
+
+        if (latestBySymbol.Count == 0)
+        {
+            return new MarketOverviewAsOfResult(null, []);
+        }
+
+        var asOfDate = latestBySymbol.Values.Min();
+        var aheadSymbols = latestBySymbol
+            .Where(pair => pair.Value > asOfDate)
+            .Select(pair => pair.Key)
+            .OrderBy(symbol => symbol, StringComparer.Ordinal)
+            .ToArray();
+
+        return new MarketOverviewAsOfResult(asOfDate, aheadSymbols);
+    }
+
     private static decimal? PercentChange(decimal previousClose, decimal latestClose)
     {
         if (previousClose <= 0m)
@@ -194,3 +244,9 @@ public sealed record MarketOverviewSectorResult(
     string Name,
     decimal? ChangePercent,
     decimal Weight);
+
+/// <summary>
+/// 見 <see cref="MarketOverviewCalculator.DetermineAsOfDate"/>：<paramref name="AsOfDate"/>
+/// 是這批 symbol 全部到齊的最新交易日，<paramref name="AheadSymbols"/> 是超前那幾檔。
+/// </summary>
+public sealed record MarketOverviewAsOfResult(DateOnly? AsOfDate, IReadOnlyList<string> AheadSymbols);

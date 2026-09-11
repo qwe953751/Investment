@@ -276,9 +276,23 @@ public sealed class StaticSiteExporter(
     }
 
     /// <summary>
-    /// 市場切換總覽（美股／加密貨幣）的指數、類股熱力圖與 VIX，寫成 data/market-overview.json。
-    /// 跟族群分類一樣是附加功能：抓不到資料就寫一份帶 warning 的空殼檔，
-    /// 讓前端分得清「還沒發佈」與「這次沒抓到」，絕不能讓它擋掉整份排行榜發布。
+    /// 市場總覽的「交易日選擇器」最多往回看幾天（日曆天，不是交易日）。
+    /// 這個功能剛上線、本機快取才幾天歷史，數字暫時不會頂到；抓一個跟
+    /// K 線視窗（<see cref="DailyKLineSelector.DefaultMonths"/>＝3 個月）同量級的
+    /// 上限，之後快取愈存愈多年也不會讓 market-overview.json 或個別交易日檔案無限長大。
+    /// </summary>
+    private const int MarketOverviewHistoryWindowDays = 120;
+
+    /// <summary>
+    /// 市場切換總覽（美股／加密貨幣）的指數、類股熱力圖與 VIX，寫成 data/market-overview.json，
+    /// 並把美股那組整批到齊的歷史交易日各自寫成 data/market-overview-us-{date}.json，
+    /// 供前端「交易日選擇器」瀏覽過去的資料。跟族群分類一樣是附加功能：抓不到資料就寫一份
+    /// 帶 warning 的空殼檔，讓前端分得清「還沒發佈」與「這次沒抓到」，絕不能讓它擋掉整份
+    /// 排行榜發布。
+    ///
+    /// 只有美股組有歷史檔／選擇器：加密貨幣是 24/7 市場，「哪一天算到齊」的概念跟
+    /// 美股的平日收盤完全不同，混在同一個日期軸只會讓兩邊都難懂；而且 2026-09-11
+    /// 那次「指數有、類股 ETF 沒有」的事故只發生在美股，加密貨幣沒有這個問題。
     /// </summary>
     private async Task WriteMarketOverviewAsync(string dataDirectory, CancellationToken cancellationToken)
     {
@@ -297,8 +311,22 @@ public sealed class StaticSiteExporter(
             else
             {
                 // VIX 跟其他指數一起用小卡呈現，不再另立情緒指標區塊；加密貨幣沒有對應標的。
-                us = ToGroupExport(history, [.. MarketOverviewCatalog.UsIndices, MarketOverviewCatalog.UsVix], MarketOverviewCatalog.UsSectors);
-                crypto = ToGroupExport(history, MarketOverviewCatalog.CryptoIndices, MarketOverviewCatalog.CryptoHeatmap);
+                IReadOnlyList<MarketOverviewSymbol> usSymbols = [.. MarketOverviewCatalog.UsIndices, MarketOverviewCatalog.UsVix];
+                var usResult = ToGroupExport(history, usSymbols, MarketOverviewCatalog.UsSectors);
+                var cryptoResult = ToGroupExport(history, MarketOverviewCatalog.CryptoIndices, MarketOverviewCatalog.CryptoHeatmap);
+                us = usResult.Export;
+                crypto = cryptoResult.Export;
+
+                AppendAsOfMismatchWarning(warnings, "美股指數／VIX／類股 ETF", usResult.AheadSymbols, usResult.Export.AsOf);
+                AppendAsOfMismatchWarning(warnings, "加密貨幣", cryptoResult.AheadSymbols, cryptoResult.Export.AsOf);
+
+                var usDates = await WriteMarketOverviewHistoryAsync(
+                    dataDirectory,
+                    history,
+                    usSymbols,
+                    MarketOverviewCatalog.UsSectors,
+                    cancellationToken);
+                us = us with { Dates = usDates };
 
                 await WriteMarketOverviewKLineExportsAsync(
                     Path.Combine(dataDirectory, "kline"),
@@ -317,13 +345,47 @@ public sealed class StaticSiteExporter(
             cancellationToken);
     }
 
-    private static MarketOverviewGroupExport ToGroupExport(
+    /// <summary>
+    /// 指數已經有更新資料、但同一組裡其餘標的還沒到齊時，把「哪些超前、目前停在哪一天」
+    /// 寫成一句人看得懂的警告，附加進 market-overview.json 既有的 warnings 陣列——
+    /// 這是 2026-09-11 那次事故最終想要的「跳異常通知」的資料面版本；操作面的通知
+    /// 走 <c>verify-us-freshness</c> 的 site_alerts（見 Program.cs 該指令的說明），
+    /// 兩者互為備援，不是同一件事重複做兩次：這裡保證「畫面本身」一定自我一致，
+    /// 那邊保證「有人會被通知」。
+    /// </summary>
+    private static void AppendAsOfMismatchWarning(
+        List<string> warnings,
+        string groupLabel,
+        IReadOnlyList<string> aheadSymbols,
+        string? asOf)
+    {
+        if (aheadSymbols.Count == 0)
+        {
+            return;
+        }
+
+        warnings.Add(
+            $"{groupLabel}：{string.Join('、', aheadSymbols)} 已經有比 {asOf ?? "（沒有資料）"} 更新的資料，"
+            + "但其餘標的還沒到齊，畫面維持在整批到齊的那一天。");
+    }
+
+    private static (MarketOverviewGroupExport Export, IReadOnlyList<string> AheadSymbols) ToGroupExport(
         IReadOnlyList<MarketOverviewSnapshot> history,
         IReadOnlyList<MarketOverviewSymbol> indices,
         IReadOnlyList<MarketOverviewSymbol> sectors)
     {
+        IReadOnlyList<MarketOverviewSymbol> allSymbols = [.. indices, .. sectors];
+        var asOf = MarketOverviewCalculator.DetermineAsOfDate(history, allSymbols);
+
+        // 面板裡每一個數字都要對得起同一個交易日：asOf 之後的資料一律不看，
+        // 寧可整批停在落後那一天，也不要「指數今天、類股昨天」混在同一個面板裡
+        // 卻看不出來（2026-09-11 的根因，見 DetermineAsOfDate 的說明）。
+        var cappedHistory = asOf.AsOfDate is { } cutoff
+            ? history.Where(snapshot => snapshot.TradingDate <= cutoff).ToArray()
+            : [];
+
         var indexResults = indices
-            .Select(symbol => MarketOverviewCalculator.CalculateIndex(history, symbol.Symbol, symbol.DisplayName))
+            .Select(symbol => MarketOverviewCalculator.CalculateIndex(cappedHistory, symbol.Symbol, symbol.DisplayName))
             .Where(result => result is not null)
             .Select(result => new MarketOverviewIndexExport(
                 result!.Name,
@@ -333,13 +395,72 @@ public sealed class StaticSiteExporter(
                 result.YearToDateChangePercent))
             .ToArray();
 
-        var sectorResults = MarketOverviewCalculator.CalculateSectors(history, sectors)
+        var sectorResults = MarketOverviewCalculator.CalculateSectors(cappedHistory, sectors)
             .Select(result => new MarketOverviewSectorExport(result.Symbol, result.Name, result.ChangePercent, result.Weight))
             .ToArray();
 
-        var heatScore = MarketOverviewCalculator.CalculateHeatScore(history, sectors);
+        var heatScore = MarketOverviewCalculator.CalculateHeatScore(cappedHistory, sectors);
 
-        return new MarketOverviewGroupExport(heatScore, indexResults, sectorResults);
+        var export = new MarketOverviewGroupExport(
+            heatScore,
+            indexResults,
+            sectorResults,
+            asOf.AsOfDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            []);
+
+        return (export, asOf.AheadSymbols);
+    }
+
+    /// <summary>
+    /// 美股總覽整批到齊的歷史交易日，各自寫成 data/market-overview-us-{date}.json
+    /// （形狀跟 market-overview.json 的 <c>us</c> 欄位相同），供交易日選擇器瀏覽過去的資料；
+    /// 同時把可選日期清單（近 <see cref="MarketOverviewHistoryWindowDays"/> 天內、整批到齊的
+    /// 那幾天）寫回傳出去，讓 <see cref="WriteMarketOverviewAsync"/> 併進 market-overview.json。
+    ///
+    /// 「整批到齊」用跟即時面板同一套判斷（<see cref="MarketOverviewCalculator.DetermineAsOfDate"/>），
+    /// 逐一往回看候選日期，只收「這天真的是那次計算出的 AsOfDate」的日子——這樣選擇器上
+    /// 每一天都保證是自我一致的完整快照，不會選到「指數到了、類股沒到」的半吊子日期。
+    /// </summary>
+    private async Task<IReadOnlyList<string>> WriteMarketOverviewHistoryAsync(
+        string dataDirectory,
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        IReadOnlyList<MarketOverviewSymbol> indices,
+        IReadOnlyList<MarketOverviewSymbol> sectors,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<MarketOverviewSymbol> allSymbols = [.. indices, .. sectors];
+        var windowStart = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-MarketOverviewHistoryWindowDays));
+
+        var candidateDates = history
+            .Select(snapshot => snapshot.TradingDate)
+            .Where(date => date >= windowStart)
+            .Distinct()
+            .OrderBy(date => date)
+            .ToArray();
+
+        var qualifyingDates = new List<DateOnly>();
+
+        foreach (var candidate in candidateDates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var slice = history.Where(snapshot => snapshot.TradingDate <= candidate).ToArray();
+            var result = MarketOverviewCalculator.DetermineAsOfDate(slice, allSymbols);
+
+            if (result.AsOfDate != candidate)
+            {
+                continue;
+            }
+
+            qualifyingDates.Add(candidate);
+            var (export, _) = ToGroupExport(slice, indices, sectors);
+
+            await WriteJsonAsync(
+                Path.Combine(dataDirectory, $"market-overview-us-{candidate:yyyy-MM-dd}.json"),
+                export,
+                cancellationToken);
+        }
+
+        return [.. qualifyingDates.Select(date => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))];
     }
 
     /// <summary>
@@ -1536,10 +1657,17 @@ public sealed class StaticSiteExporter(
         MarketOverviewGroupExport? Us,
         MarketOverviewGroupExport? Crypto);
 
+    /// <summary>
+    /// <c>AsOf</c> 是這組指數／類股整批到齊的交易日（yyyy-MM-dd），null 代表完全沒有資料。
+    /// <c>Dates</c> 是可以用交易日選擇器往回瀏覽的日期清單（遞增排序），只有美股組會非空——
+    /// 見 <see cref="StaticSiteExporter.WriteMarketOverviewHistoryAsync"/> 的說明。
+    /// </summary>
     private sealed record MarketOverviewGroupExport(
         decimal? HeatScore,
         IReadOnlyList<MarketOverviewIndexExport> Indices,
-        IReadOnlyList<MarketOverviewSectorExport> Sectors);
+        IReadOnlyList<MarketOverviewSectorExport> Sectors,
+        string? AsOf,
+        IReadOnlyList<string> Dates);
 
     private sealed record MarketOverviewIndexExport(string Name, string Symbol, decimal Value, decimal? Daily, decimal? Ytd);
 
