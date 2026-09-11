@@ -3,14 +3,17 @@ namespace Invest.Web.Tests;
 public sealed class UsDailySnapshotWorkflowTests
 {
     [Fact]
-    public void 排程會在收盤半小時後觸發並用時區換算處理夏冬令()
+    public void 排程會等到台北十點半才回補且回補與對帳仍用美東時間()
     {
         var workflow = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(), ".github", "workflows", "us-daily-snapshot.yml"));
 
         Assert.Contains("- cron: '30 23 * * 1-5'", workflow, StringComparison.Ordinal);
         Assert.Contains("TZ: America/New_York", workflow, StringComparison.Ordinal);
-        Assert.Contains("date -d '20:30'", workflow, StringComparison.Ordinal);
+        // 2026-09-11 查出等到 20:30 ET 就回補，個股／類股 ETF 的日 K 陣列還沒到；
+        // 改成等到台北 10:30，且只在算目標時刻這一行覆寫時區，其餘步驟仍是 ET。
+        Assert.DoesNotContain("date -d '20:30'", workflow, StringComparison.Ordinal);
+        Assert.Contains("TZ='Asia/Taipei' date -d '10:30'", workflow, StringComparison.Ordinal);
         Assert.Contains("skip-wait", workflow, StringComparison.Ordinal);
     }
 
@@ -43,6 +46,20 @@ public sealed class UsDailySnapshotWorkflowTests
         Assert.Contains("gh workflow run daily-snapshot.yml --ref main -f trading-days=300 -f publish-only=true", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("-- export", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("scripts/publish-gh-pages.sh", workflow, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 新鮮度檢查獨立成敗且不會擋住後面的保存與同步步驟()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "us-daily-snapshot.yml"));
+
+        Assert.Contains("-- verify-us-freshness", workflow, StringComparison.Ordinal);
+        Assert.Contains("id: freshness", workflow, StringComparison.Ordinal);
+        Assert.Contains("continue-on-error: true", workflow, StringComparison.Ordinal);
+        Assert.Contains("steps.freshness.outcome", workflow, StringComparison.Ordinal);
+        Assert.Contains("alert \"美股資料新鮮度\" warning", workflow, StringComparison.Ordinal);
+        Assert.Contains("alert-clear \"美股資料新鮮度\"", workflow, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()

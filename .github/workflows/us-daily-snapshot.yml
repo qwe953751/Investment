@@ -1,7 +1,21 @@
-# 美股盤後快照：延長盤後交易收盤（20:00 ET）後半小時觸發，回補 us_watchlist
-# 裡的美股 ticker、同步到 Supabase、對帳。跟台股 daily-snapshot.yml 分開一份，
-# 因為資料源（Yahoo Finance）、抓取方向（逐股票 vs 逐日期）都完全不同，
-# 合併只會讓兩邊互相牽制。
+# 美股盤後快照：等到台北 10:30 才觸發，回補 us_watchlist 裡的美股 ticker、
+# 市場切換總覽（指數／類股 ETF／加密貨幣）、同步到 Supabase、對帳。跟台股
+# daily-snapshot.yml 分開一份，因為資料源（Yahoo Finance）、抓取方向
+# （逐股票 vs 逐日期）都完全不同，合併只會讓兩邊互相牽制。
+#
+# ## 為什麼是台北 10:30，不是收盤後半小時
+#
+# 原本等到 20:30 ET（收盤後半小時）就回補，2026-09-11 查出這樣抓到的個股／
+# 類股 ETF 歷史序列其實還停在前一個交易日——Yahoo Finance 的日 K 陣列不是收盤
+# 就立刻更新，指數（^DJI 等）比較快，個股／ETF 觀察到要再晚幾小時：同一次
+# run 相隔 ET 21:13→21:14 一分鐘，指數已經拿到當天收盤，個股（NVDA 等 20 檔）
+# 與類股 ETF 卻仍是前一天。當場補測 `range=2y`，ET 21:14 還是前一天，
+# ET 22:20 才出現當天那根日 K。
+#
+# 改成等到台北 10:30（= 22:30 ET 夏令 / 21:30 EST 冬令，比實測「出現時間」
+# 多留至少 4 小時緩衝），且用 `TZ=Asia/Taipei` 直接算目標時刻——台北沒有
+# 夏令時間，不必像 ET 那樣另外處理日光節約。真的遇到 GitHub schedule 誤點
+# 也不受影響：誤點只會讓這一棒睡得更晚才醒，緩衝只增不減。
 #
 # 行情快取放在同一個 repo 的 data 分支，跟台股快照共用同一個分支，
 # 但目錄各自獨立（data/imports-us/ vs data/imports/ vs data/imports-overview/），互不覆蓋。
@@ -36,11 +50,13 @@ concurrency:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    # 進場到 20:30 ET 最多要等幾十分鐘，加上回補（有節流延遲）與同步，兩小時夠用。
-    timeout-minutes: 120
+    # cron 在 UTC 23:30 觸發 ＝ 台北 07:30，進場到台北 10:30 最多要睡 3 小時，
+    # 加上回補（有節流延遲）與同步，四小時留得住餘裕。
+    timeout-minutes: 240
 
     env:
-      # 回補與對帳都要用美東時間判斷「今天」，不看 runner 所在時區。
+      # 回補與對帳都要用美東時間判斷「今天」，不看 runner 所在時區；
+      # 只有下面「等到台北 10:30」那一步為了算目標時刻另外覆寫成 Asia/Taipei。
       TZ: America/New_York
 
     steps:
@@ -59,19 +75,26 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # 20:00 ET 收盤後半小時 = 20:30 ET，跟台股 workflow 同一招：
-      # 用 TZ 環境變數換算，`date -d` 自動處理夏令/冬令，不用維護兩份 cron。
-      - name: 等到 20:30 ET
+      # 等到台北 10:30 才回補（原因見檔頭「為什麼是台北 10:30」）。
+      #
+      # 刻意只在算目標時刻這一行覆寫 TZ=Asia/Taipei，job 其餘步驟仍是
+      # America/New_York：台北沒有夏令時間，`TZ='Asia/Taipei' date -d '10:30'`
+      # 永遠解讀成「今天台北時間 10:30」，不必像 ET 版那樣煩惱日光節約，
+      # 也不用處理「目標時刻跨到下一個 UTC 天」——cron 觸發時（UTC 23:30）
+      # 台北已經是隔天 07:30，此時的「今天 10:30」自然就是 3 小時後，
+      # 跟原本 `date -d 'HH:MM'` 的算法完全同一招，只是換一個時區來源。
+      - name: 等到台北 10:30
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip-wait != true }}
         run: |
-          wait=$(( $(date -d '20:30' +%s) - $(date +%s) ))
+          target=$(TZ='Asia/Taipei' date -d '10:30' +%s)
+          wait=$(( target - $(date +%s) ))
 
           if [ "$wait" -le 0 ]; then
-              echo "現在 $(date +%H:%M)，已經過 20:30，直接開抓。"
+              echo "現在台北 $(TZ='Asia/Taipei' date +%H:%M)，已經過 10:30，直接開抓。"
               exit 0
           fi
 
-          echo "現在 $(date +%H:%M)，睡 $(( wait / 60 )) 分鐘到 20:30。"
+          echo "現在台北 $(TZ='Asia/Taipei' date +%H:%M)，睡 $(( wait / 60 )) 分鐘到 10:30。"
           sleep "$wait"
 
       # Yahoo Finance 沒有公佈配額，回補邏輯只做禮貌性節流；真的被限流時
@@ -112,6 +135,18 @@ jobs:
           git push -q
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
+      # 2026-09-11 查出「回補成功」不等於「拿到今天的收盤」：Yahoo Finance 的
+      # 個股／類股 ETF 日 K 陣列比指數更新得慢，兩支回補當天都吃到「成功但停在
+      # 前一個交易日」，卻沒有任何步驟失敗。這一步只讀本機剛寫好的快取檔比對
+      # 預期交易日，不呼叫 Yahoo、不需要 SUPABASE_DB_URL；`continue-on-error: true`
+      # 讓它只影響下面「美股資料新鮮度」這顆燈號，不會連帶擋掉保存快取／同步／
+      # 對帳——那些步驟該把已經抓到的資料照常寫進去。
+      - name: 檢查美股資料新鮮度
+        id: freshness
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: dotnet run -c Release --project src/Invest.Web -- verify-us-freshness
+
       # 靜態資產頁的美股 K 線／名冊是 exporter 從 data/imports-us 產出的。這裡只在
       # 快取實際新增後叫既有 publish-only；它有自己的併發鎖與日 K 驗證，且不會等待
       # 或干擾完整台股盤後快照。
@@ -148,4 +183,21 @@ jobs:
           else
               dotnet run -c Release --project src/Invest.Web -- alert "每日美股快照" error \
                   "這一輪有步驟失敗，美股行情可能還停在前一個交易日。" "$RUN_URL"
+          fi
+
+      # 獨立於上面那顆鈴鐺：上面看的是「有沒有步驟失敗」，這裡看的是「有沒有拿到
+      # 今天該有的收盤」——兩者是不同的失敗模式（見「檢查美股資料新鮮度」那一步
+      # 的說明），2026-09-11 那次事故是後者，所有步驟都成功、卻沒有任何燈號亮。
+      - name: 更新「美股資料新鮮度」警報
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ '${{ steps.freshness.outcome }}' = 'success' ]; then
+              dotnet run -c Release --project src/Invest.Web -- alert-clear "美股資料新鮮度"
+          else
+              dotnet run -c Release --project src/Invest.Web -- alert "美股資料新鮮度" warning \
+                  "美股個股或市場總覽還沒有今天預期的收盤資料，可能是 Yahoo Finance 還沒更新，也可能是美股假日（本檢查不接假日日曆）。" \
+                  "$RUN_URL"
           fi

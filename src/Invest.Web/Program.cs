@@ -48,7 +48,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "export" or "intraday" or "backfill-intraday-heat"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -174,6 +174,12 @@ if (command is "backfill-us")
 if (command is "backfill-overview")
 {
     await RunMarketOverviewBackfillAsync(app.Services);
+    return;
+}
+
+if (command is "verify-us-freshness")
+{
+    await RunUsFreshnessCheckAsync(app.Services);
     return;
 }
 
@@ -1591,6 +1597,92 @@ static async Task RunMarketOverviewBackfillAsync(IServiceProvider services)
         Console.WriteLine();
         Console.WriteLine("已中斷。已處理的資料都保留在快取。");
     }
+}
+
+/// <summary>
+/// 檢查美股行情是不是「新鮮」——只讀本機已經回補好的 data/imports-us、
+/// data/imports-overview，不呼叫 Yahoo Finance，也不需要 <c>SUPABASE_DB_URL</c>。
+///
+/// 這支指令回答 2026-09-11 那個事故問過的問題：<c>backfill-us</c>／
+/// <c>backfill-overview</c> 都回報成功，不代表抓到的是「今天」的收盤——Yahoo Finance
+/// 的日 K 陣列不是收盤就立刻更新，指數比個股／類股 ETF 快好幾個小時，兩份回補
+/// 當天都吃到「成功但停在前一個交易日」，卻沒有任何步驟失敗、也沒有任何警報。
+///
+/// 刻意跟 <c>backfill-us</c>／<c>backfill-overview</c> 分開一支指令、獨立成敗，
+/// 而不是把斷言直接寫進那兩支下載器：兩支下載器沒有 <c>if: !cancelled()</c> 銜接，
+/// 讓它們回報「資料還沒新鮮」的失敗會連帶擋掉後面 backfill-overview／保存快取／
+/// 同步／對帳，反而讓原本能寫進去的資料也進不去。獨立成一支帶
+/// <c>continue-on-error: true</c> 的檢查步驟，才能只影響「新鮮度」這一顆燈號，
+/// 不影響其他步驟正常寫入已經抓得到的資料——這是比「直接讓下載器失敗」更安全的作法。
+/// </summary>
+static async Task RunUsFreshnessCheckAsync(IServiceProvider services)
+{
+    using var scope = services.CreateScope();
+    var usStore = scope.ServiceProvider.GetRequiredService<UsDailyQuoteStore>();
+    var overviewStore = scope.ServiceProvider.GetRequiredService<MarketOverviewStore>();
+
+    var expected = UsMarketCalendar.ExpectedLatestTradingDate(DateTimeOffset.UtcNow);
+    var healthy = true;
+
+    Console.WriteLine($"預期最新交易日（依美東時間換算，不含美股假日）：{expected:yyyy-MM-dd}");
+    Console.WriteLine();
+
+    // 個股觀察清單：只看「那一天的檔案在不在」，不要求每一檔都到齊。觀察清單大小、
+    // Yahoo 配額略過都會讓「每一檔都有」在正常情況下也偶爾不成立；只看檔案在不在
+    // 就已經對應到 2026-09-11 實際發生的失效模式——Yahoo 還沒 propagate 時，
+    // 連一檔都不會有當天資料，那天的檔案根本不存在。
+    var usSnapshots = await usStore.LoadAllAsync();
+    var latestUs = usSnapshots.Count > 0 ? usSnapshots[^1].TradingDate : (DateOnly?)null;
+
+    if (latestUs is null || latestUs < expected)
+    {
+        healthy = false;
+        Console.WriteLine(
+            $"美股個股（imports-us）最新交易日是 {DescribeDate(latestUs)}，還沒到 {expected:yyyy-MM-dd}。");
+    }
+    else
+    {
+        Console.WriteLine($"美股個股（imports-us）最新交易日 {latestUs:yyyy-MM-dd}，符合預期。");
+    }
+
+    // 市場總覽（指數＋VIX＋類股 ETF，共 16 檔）：要求全部到齊，不是「任一檔」——
+    // 這是 2026-09-11 真正讓畫面出問題的情境：指數已經更新，類股 ETF 還沒到，
+    // 兩者混在同一個面板卻沒有任何徵兆。加密貨幣 24/7 交易，不適用「平日收盤」
+    // 這個假設，不列入這個斷言（見 MarketOverviewCatalog 的分類）。
+    var overviewHistory = await overviewStore.LoadAllAsync();
+    IReadOnlyList<MarketOverviewSymbol> equitySymbols =
+        [.. MarketOverviewCatalog.UsIndices, MarketOverviewCatalog.UsVix, .. MarketOverviewCatalog.UsSectors];
+    var overviewResult = MarketOverviewCalculator.DetermineAsOfDate(overviewHistory, equitySymbols);
+
+    if (overviewResult.AsOfDate is null || overviewResult.AsOfDate < expected)
+    {
+        healthy = false;
+        Console.WriteLine(
+            $"市場總覽（imports-overview 指數／VIX／類股 ETF）整批到齊的最新交易日是 "
+            + $"{DescribeDate(overviewResult.AsOfDate)}，還沒到 {expected:yyyy-MM-dd}。");
+
+        if (overviewResult.AheadSymbols.Count > 0)
+        {
+            Console.WriteLine(
+                $"已經有更新資料、但其餘標的還沒到齊的 symbol：{string.Join(", ", overviewResult.AheadSymbols)}");
+        }
+    }
+    else
+    {
+        Console.WriteLine($"市場總覽（imports-overview）整批到齊的最新交易日 {overviewResult.AsOfDate:yyyy-MM-dd}，符合預期。");
+    }
+
+    if (healthy)
+    {
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("資料還沒新鮮：可能是 Yahoo Finance 還沒 propagate 完，也可能今天是美股假日——");
+    Console.WriteLine("這支指令不接美股假日日曆，假日這裡一定會誤報，需要人判斷。");
+    Environment.ExitCode = 1;
+
+    static string DescribeDate(DateOnly? date) => date is { } value ? value.ToString("yyyy-MM-dd") : "（沒有任何快取）";
 }
 
 static async Task RunDailyBarBackfillAsync(IServiceProvider services, string[] args)
