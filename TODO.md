@@ -1372,6 +1372,23 @@ Start-ScheduledTask  -TaskName 'Invest D+ OCR Worker'
 - **排程**：`.github/workflows/us-daily-snapshot.yml` 在 `backfill-us` 之後
   加了 `backfill-overview` 步驟，快取跟 `imports-us` 一起 commit 到 `data` 分支。
 
+### 已上線：交易日一致性與選擇器（2026-09-11，筆記見版本紀錄.md）
+
+2026-09-09 查出 Yahoo Finance 的指數比類股 ETF／個股快好幾小時更新，`market-overview.json`
+曾經同一個面板混著兩個交易日（指數 09/10、類股 09/09）。這輪一併修掉：
+
+- `MarketOverviewCalculator.DetermineAsOfDate`：這批 symbol「全部到齊」的最新交易日
+  （取每個 symbol 自己最新日期的**最小值**）；`StaticSiteExporter` 用它把 `us`／`crypto`
+  兩組的 `history` 各自截到自己的到齊日期才計算，確保同一個面板裡每個數字都對得起
+  同一天，超前的 symbol 名單寫進既有 `warnings` 陣列。
+- 美股組新增 `asOf`（目前顯示的交易日）與 `dates`（近 120 天內、整批到齊的可選交易日
+  清單）欄位；`StaticSiteExporter.WriteMarketOverviewHistoryAsync` 把每個到齊日各自寫成
+  `data/market-overview-us-{date}.json`。加密貨幣是 24/7 市場，不提供選擇器。
+- **前端**：`mspBuildDateStepper()` 在美股總覽面板加上前後交易日按鈕（視覺比照台股盤後
+  的 `date-step`，但獨立實作、不共用台股 `renderDatePicker()` 的模組層級狀態）；選到
+  清單最後一天會退回 `null` 直接沿用即時欄位，不必多打一次網路。
+- `us-daily-snapshot.yml` 新增獨立的 `verify-us-freshness` 檢查（見完成進度.md「資料收集」）。
+
 ### 2026-09-09 熱絡指標修正規劃（尚未實作）
 
 - 2026-09-09 查核的公開快照美股約 2.4、加密貨幣約 2.5，前端與現行公式一致；根因是公式／資料語意，
