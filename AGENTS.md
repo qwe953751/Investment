@@ -112,6 +112,12 @@ git push origin main
 
 推送前若發現 `.git` 權限錯誤，先修正目前使用者對 repo `.git` 的寫入權限，再重試原指令；不要刪除不確定來源的 `index.lock`，也不要用 `reset --hard` 覆蓋工作內容。
 
+**改動 `src/Invest.Web/Features/Assets/Ocr/**` 時，push 完還沒結束。** OCR Worker 是常駐在各台機器上的自包含 EXE／LaunchAgent，**不會**跟著網站發布更新；不重新 build 就會出現「repo 已修好、正式環境還在跑舊版」而且完全沒有徵兆。2026-09-11（筆記 #61）就是因此讓舊的 2 秒輪詢版跑了兩天半，燒掉整期 88% 的 Supabase Edge Function 額度。所以：
+
+1. 公司 Windows：先 `Stop-ScheduledTask`（EXE 執行中會被鎖住無法覆寫），再 `scripts\publish-ocr-worker-windows.ps1`，最後 `Start-ScheduledTask`。
+2. 家裡 Mac：重新 build 後以 `scripts/install-ocr-worker-launchagent-macos.sh` 重載 LaunchAgent。
+3. **用啟動訊息核對版本**，不要只看「排程 Running」——目前正確的訊息是「Realtime 喚醒；斷線每 5 秒重連」，出現「輪詢 N 秒」就代表跑的是舊版。
+
 #### 3. 觸發網站發布
 
 程式碼已在 `main` 後，使用 GitHub CLI 觸發既有 workflow；不手動改 `gh-pages`：
