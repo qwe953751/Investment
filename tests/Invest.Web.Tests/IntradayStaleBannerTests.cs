@@ -126,6 +126,52 @@ public sealed class IntradayStaleBannerTests
         Assert.Contains("10_000", summaryRow, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 2026-09-11 的回歸測試。開盤半小時盤中頁還停在前一天，因為
+    /// <c>isTaiwanIntradaySession()</c> 的下限寫死 <c>'09:00'</c>，跟收集器實際的
+    /// <c>schedule.intradayStart</c>（07:00）不一致：08:41～09:00 這段 MIS 早已把
+    /// trade_date 換成當天，畫面卻要等到 09:00 整才會被排程注意到該重讀，這段就是
+    /// 「盲區」。改成跟上限 <c>schedule.intradayEnd</c> 同一種寫法讀 <c>intradayStart</c>，
+    /// 兩端寫死的 fallback 值也要跟 <c>CollectionSchedule</c> 一致，不能只改掉下限的
+    /// 寫死值卻留著另一個。
+    /// </summary>
+    [Fact]
+    public void 盤中自動更新的下限要跟收集器實際開始時間一致而不是寫死九點()
+    {
+        var script = ReadAsset("site.js");
+        var fn = Slice(script, "function isTaiwanIntradaySession() {", "/// 這一輪走到整個交易時段的幾成");
+
+        Assert.Contains("schedule?.intradayStart ?? '07:00'", fn, StringComparison.Ordinal);
+        Assert.Contains("now >= start && now <= end", fn, StringComparison.Ordinal);
+        Assert.DoesNotContain("'09:00'", fn, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 2026-09-11 的回歸測試。<c>tickOnce</c> 原本沒有 try/catch，靠自己最後一行
+    /// <c>setTimeout(tickOnce, tick)</c> 續命；任何一次同步例外都會讓這條鏈永久停擺，
+    /// 只有整頁重載救得回來。當天「盤中頁卡在前一天、過一陣子自己好了」，「自己好」
+    /// 純屬巧合——另一個排程剛好在那個時間點重發了網站觸發強制重載，跟盤中收集器
+    /// 或 CDN 完全無關。<c>setTimeout</c> 一定要在 <c>finally</c> 裡，才能保證不管
+    /// try 區塊內任何一段丟出什麼，下一輪都照樣準時醒來。
+    /// </summary>
+    [Fact]
+    public void 背景輪詢單輪出錯不能讓整條計時器鏈停擺()
+    {
+        var script = ReadAsset("site.js");
+        var fn = Slice(script, "const tickOnce = () => {", "for (const name of ['visibilitychange'");
+
+        Assert.Contains("try {", fn, StringComparison.Ordinal);
+        Assert.Contains("} catch (error) {", fn, StringComparison.Ordinal);
+        Assert.Contains("} finally {", fn, StringComparison.Ordinal);
+
+        // setTimeout 續命那一行要在 finally 裡面，不能還留在 try 區塊尾端——
+        // 那樣任何一次例外照樣會讓它跳過、鏈還是會斷。
+        var finallyIndex = fn.IndexOf("} finally {", StringComparison.Ordinal);
+        var setTimeoutIndex = fn.IndexOf("setTimeout(tickOnce, tick);", StringComparison.Ordinal);
+        Assert.True(finallyIndex >= 0 && setTimeoutIndex > finallyIndex,
+            "setTimeout(tickOnce, tick) 沒有被移進 finally 區塊");
+    }
+
     private static string Slice(string text, string from, string to)
     {
         var start = text.IndexOf(from, StringComparison.Ordinal);

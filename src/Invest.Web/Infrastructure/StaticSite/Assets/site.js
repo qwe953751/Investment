@@ -320,12 +320,18 @@ const TAIPEI_DATE = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit'
 });
 
-// 收集器會在開盤前等候資料，但使用者端只在真正連續交易時段更新。這樣早上九點前與
-// 收盤後打開盤中頁仍能看最後一輪，卻不會為了不會變的資料繼續輪詢 CDN。
+// 下限原本寫死 09:00（台股正式開盤），但收集器其實從 schedule.intradayStart（07:00）
+// 就開始問 MIS——2026-09-11 查出 MIS 早在 08:41 左右就把 trade_date 換成當天
+// （只是還沒有成交量，是正常的開盤前狀態），08:41～09:00 之間卻完全不會自動更新：
+// 這段時間打開盤中頁、或從更早之前就停留在這一頁的人，會一直看著上一輪抓到的資料，
+// 直到 09:00 整才會被排程注意到該重讀。跟收集器同一個下限，就不會有這段盲區；
+// 07:00～08:40 左右輪詢到的多半仍是「上一交易日」，那是真的還沒開盤，不是故障，
+// intradayStaleText() 的 INTRADAY_STALE_AFTER 那段判斷本來就不會在這段時間亮警告。
 function isTaiwanIntradaySession() {
     const now = TAIPEI_CLOCK.format(new Date());
+    const start = schedule?.intradayStart ?? '07:00';
     const end = schedule?.intradayEnd ?? '13:35';
-    return now >= '09:00' && now <= end;
+    return now >= start && now <= end;
 }
 
 /// 這一輪走到整個交易時段的幾成（線性時間比例）。收盤後固定是 1。
@@ -23988,56 +23994,69 @@ function startIntradayTimer() {
     // 真正要不要抓由 refreshIntradayIfDue 用牆上時鐘決定，不會因此多打資料庫。
     const tick = Math.max(15_000, Math.round(intradayRefreshMs / 4));
 
+    // 2026-09-11 查出的根因：這個迴圈原本沒有 try/catch，靠自己最後一行
+    // setTimeout(tickOnce, tick) 續命；下面任何一個同步呼叫丟出例外（不是這裡
+    // 哪個 Promise reject——那些是非同步的，不會打斷這個函式本身往下執行），
+    // 那一行就永遠到不了，這條鏈從此停擺，只有整頁重載救得回來。當天「盤中頁
+    // 卡在前一天、過一陣子自己好了」，「自己好」純屬巧合：另一個排程剛好在
+    // 那個時間點重發了網站，觸發 startSiteVersionChecker() 的強制重載，
+    // 跟盤中收集器或 CDN 完全無關。改成 try/catch/finally，把 setTimeout
+    // 放進 finally：任何一輪出錯只會丟失那一輪的更新，下一輪照樣準時醒來，
+    // 不會整條鏈死掉。
     const tickOnce = () => {
-        void refreshRevenueIfDue();
-        refreshIntradayIfDue();
+        try {
+            void refreshRevenueIfDue();
+            refreshIntradayIfDue();
 
-        // 「幾分鐘前」要自己走，不能等下一次抓資料才更新——
-        // 抓不到的時候正是最需要看到它一直往上加的時候。
-        if (isIntradayDataView() && !document.hidden && current !== null) {
-            renderSummary();
+            // 「幾分鐘前」要自己走，不能等下一次抓資料才更新——
+            // 抓不到的時候正是最需要看到它一直往上加的時候。
+            if (isIntradayDataView() && !document.hidden && current !== null) {
+                renderSummary();
+            }
+
+            // 鈴鐺不分檢視都要跟著走：盤後發佈失敗時使用者多半停在盤後頁。
+            if (!document.hidden && Date.now() - lastAlertsLoadedAt >= ALERT_REFRESH_MS) {
+                refreshAlerts();
+            }
+
+            // 筆記只在使用者正看著這一頁時背景重讀：不在這一頁時沒必要打資料庫，
+            // 而且正在編輯時被背景重讀蓋掉草稿——renderNoteEditor 會保留 notesDraft，
+            // 所以就算列表換新，正在打的字也不會不見。
+            if (state.view === 'notes' && !document.hidden && notesIsStale()) {
+                void refreshNotes().then(() => {
+                    if (state.view === 'notes') {
+                        renderNotes();
+                    }
+                });
+            }
+
+            // Podcast 來源同理：匯入面板開著時先不要重讀，避免蓋掉正在輸入的欄位
+            // （這個表單沒有像筆記那樣的草稿機制，重畫會直接清空 input）。
+            if (state.view === 'notes' && !document.hidden && podcastSourcesIsStale() && !podcastPreviewImportOpen) {
+                void refreshPodcastSources().then(() => {
+                    if (state.view === 'notes' && !podcastPreviewImportOpen) {
+                        renderNotes();
+                    }
+                });
+            }
+
+            // 資產同理，另外多一個條件：有表單開著就先不要重讀。
+            // 資產的表單沒有像筆記那樣的草稿機制，背景重畫會把正在打的數字清掉。
+            void refreshAssetsIfDue();
+
+            // 裝置列表只有最高權限能打開；面板開著時每分鐘重讀一次，
+            // 讓使用者不用手動刷新就能看到其他裝置的最後活動時間。
+            if (SITE_ACCESS === 'admin'
+                && !document.hidden
+                && !el('device-presence-panel').hidden
+                && Date.now() - devicePresenceLoadedAt >= DEVICE_PRESENCE_REFRESH_MS) {
+                void loadDevicePresence();
+            }
+        } catch (error) {
+            console.error('盤中／筆記／資產背景輪詢這一輪出錯，下一輪照常繼續：', error);
+        } finally {
+            setTimeout(tickOnce, tick);
         }
-
-        // 鈴鐺不分檢視都要跟著走：盤後發佈失敗時使用者多半停在盤後頁。
-        if (!document.hidden && Date.now() - lastAlertsLoadedAt >= ALERT_REFRESH_MS) {
-            refreshAlerts();
-        }
-
-        // 筆記只在使用者正看著這一頁時背景重讀：不在這一頁時沒必要打資料庫，
-        // 而且正在編輯時被背景重讀蓋掉草稿——renderNoteEditor 會保留 notesDraft，
-        // 所以就算列表換新，正在打的字也不會不見。
-        if (state.view === 'notes' && !document.hidden && notesIsStale()) {
-            void refreshNotes().then(() => {
-                if (state.view === 'notes') {
-                    renderNotes();
-                }
-            });
-        }
-
-        // Podcast 來源同理：匯入面板開著時先不要重讀，避免蓋掉正在輸入的欄位
-        // （這個表單沒有像筆記那樣的草稿機制，重畫會直接清空 input）。
-        if (state.view === 'notes' && !document.hidden && podcastSourcesIsStale() && !podcastPreviewImportOpen) {
-            void refreshPodcastSources().then(() => {
-                if (state.view === 'notes' && !podcastPreviewImportOpen) {
-                    renderNotes();
-                }
-            });
-        }
-
-        // 資產同理，另外多一個條件：有表單開著就先不要重讀。
-        // 資產的表單沒有像筆記那樣的草稿機制，背景重畫會把正在打的數字清掉。
-        void refreshAssetsIfDue();
-
-        // 裝置列表只有最高權限能打開；面板開著時每分鐘重讀一次，
-        // 讓使用者不用手動刷新就能看到其他裝置的最後活動時間。
-        if (SITE_ACCESS === 'admin'
-            && !document.hidden
-            && !el('device-presence-panel').hidden
-            && Date.now() - devicePresenceLoadedAt >= DEVICE_PRESENCE_REFRESH_MS) {
-            void loadDevicePresence();
-        }
-
-        setTimeout(tickOnce, tick);
     };
 
     setTimeout(tickOnce, tick);
