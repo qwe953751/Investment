@@ -127,7 +127,7 @@ test('正式路徑不再保存本機示範列，且套用會呼叫正式資料�
     assert.match(siteScript, /ASSET_OPERATION_ROWS_TABLE/);
     assert.match(siteScript, /assetExcelWrite\(ASSET_OPERATION_ROWS_TABLE, 'POST', body\)/);
     assert.match(siteScript, /assetExcelWrite\(\s*ASSET_OPERATION_ROWS_TABLE,\s*'PATCH'/);
-    assert.match(siteScript, /assetExcelWrite\(\n\s+ASSET_OPERATION_ROWS_TABLE,\n\s+'DELETE'/);
+    assert.match(siteScript, /assetExcelWrite\(\s*ASSET_OPERATION_ROWS_TABLE,\s*'DELETE'/);
 });
 
 test('migration 對兩張表啟用 RLS，只有 admin authenticated 可用', () => {
