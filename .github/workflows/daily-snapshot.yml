@@ -146,7 +146,7 @@ jobs:
       # TwseHolidayCalendar），等於「沒有已知假日」——intraday 那邊會退回原本靠
       # MIS 即時偵測的保守判斷，不會因此把交易日誤判成假日。
       - name: 更新交易日曆快取
-        run: dotnet run -c Release --project src/Invest.Web -- export-market-calendar data/market-calendar.json
+        run: dotnet run -c Release --project src/Invest.Web -- export-market-calendar "$GITHUB_WORKSPACE/data/market-calendar.json"
 
       # 排程提早進場是為了搶 runner，不是為了提早抓。收盤行情下午三點才公布，
       # 太早抓只會抓到空的，所以睡到 18:00 整再開始。手動觸發時不等。
