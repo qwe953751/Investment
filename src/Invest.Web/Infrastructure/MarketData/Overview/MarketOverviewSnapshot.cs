@@ -3,7 +3,7 @@ using Invest.Web.Infrastructure.MarketData;
 namespace Invest.Web.Infrastructure.MarketData.Overview;
 
 /// <summary>
-/// 市場切換總覽（美股／加密貨幣）單一交易日的快照，落地成 data/imports-overview 的 JSON 檔。
+/// 市場切換總覽（美股／日股／韓股／加密貨幣）單一交易日的快照，落地成 data/imports-overview 的 JSON 檔。
 ///
 /// 刻意不重用 <see cref="DailyQuoteSnapshot"/>：這裡的 symbol（指數、ETF、加密貨幣）
 /// 不是 <see cref="Domain.Stocks.Market"/> enum 能表達的市場，也絕對不能被排行榜、
@@ -30,10 +30,15 @@ public sealed record MarketOverviewQuote
     public required decimal ClosePrice { get; init; }
 
     /// <summary>
-    /// 收盤價 × 成交量的估算值，跟 <see cref="DailyQuote.TradingValue"/> 對美股的定義一致
-    /// （Yahoo 不直接提供成交金額）。指數本身沒有成交量，這裡會是 0。
+    /// 股票／ETF 為收盤價 × 股數的成交額估算；加密貨幣為 Yahoo 回傳的報價貨幣成交額。
+    /// 指數本身沒有成交量，這裡會是 0。
     /// </summary>
     public decimal TradingValue { get; init; }
+
+    /// <summary>
+    /// Yahoo 原始 volume。OBV 使用這個欄位；股票是股數，加密貨幣依來源是報價貨幣成交額。
+    /// </summary>
+    public decimal TradingVolume { get; init; }
 
     /// <summary>
     /// 開高低價，只給前端畫 K 線用；Yahoo 本來就隨每日收盤一起回傳，不必額外呼叫。

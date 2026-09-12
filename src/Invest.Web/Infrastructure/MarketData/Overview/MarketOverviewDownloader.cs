@@ -4,7 +4,7 @@ using Invest.Web.Infrastructure.MarketData.UsStocks;
 namespace Invest.Web.Infrastructure.MarketData.Overview;
 
 /// <summary>
-/// 回補市場切換總覽（美股／加密貨幣）的指數、VIX、類股 ETF 與主力幣種。
+/// 回補市場切換總覽（美股／日股／韓股／加密貨幣）的指數、風險指數、產業標的與主力幣種。
 /// 結構比照 <see cref="UsMarketDataDownloader"/>：逐 symbol 呼叫、整批緩衝後依日期攤平寫檔，
 /// 差別是這裡的名冊固定在 <see cref="MarketOverviewCatalog"/>，不必先讀 Supabase 觀察清單。
 /// </summary>
@@ -64,8 +64,18 @@ public sealed class MarketOverviewDownloader(
                 continue;
             }
 
+            // 加密貨幣是 24/7，Yahoo 可能在 UTC 當日回傳尚未收完的日 K；
+            // 市場總覽只保存已完成 UTC 日，避免同一輪四幣落在不同完成進度。
+            var latestCompletedCryptoDate = DateOnly.FromDateTime(DateTime.UtcNow.Date).AddDays(-1);
+
             foreach (var (date, quote) in series)
             {
+                if (symbol.ValueKind == MarketOverviewValueKind.QuoteTurnover
+                    && date > latestCompletedCryptoDate)
+                {
+                    continue;
+                }
+
                 if (!buffer.TryGetValue(date, out var bySymbol))
                 {
                     bySymbol = new Dictionary<string, MarketOverviewQuote>(StringComparer.Ordinal);
@@ -77,7 +87,12 @@ public sealed class MarketOverviewDownloader(
                     Symbol = symbol.Symbol,
                     Name = symbol.DisplayName,
                     ClosePrice = quote.ClosePrice ?? 0m,
-                    TradingValue = quote.TradingValue,
+                    TradingValue = symbol.ValueKind == MarketOverviewValueKind.QuoteTurnover
+                        ? quote.TradingVolume
+                        : symbol.ValueKind == MarketOverviewValueKind.Index
+                            ? 0m
+                            : quote.TradingValue,
+                    TradingVolume = quote.TradingVolume,
                     OpenPrice = quote.OpenPrice,
                     HighPrice = quote.HighPrice,
                     LowPrice = quote.LowPrice

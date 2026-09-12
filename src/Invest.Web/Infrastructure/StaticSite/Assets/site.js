@@ -17,6 +17,7 @@ const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
 // 經由 usesIntradaySnapshot()，不可再各頁各自列舉，以免新增一個盤中入口就漏掉。
 const INTRADAY_TOPIC_TABS = new Set(['heat', 'tree']);
 const PREVIEW_QUERY = new URLSearchParams(window.location.search).get('preview');
+const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1'];
 const MARKET_NAV_DEFAULT_VARIANT = 'u1';
 // 本機專用：讓指數 K 線的排版在沒有新快照／尚未套用盤中 migration 時也能檢查。
 // 這個開關只接受 localhost，正式網址不會進入假資料分支。
@@ -67,6 +68,10 @@ const LOCAL_REVENUE_PREVIEW = ['localhost', '127.0.0.1'].includes(window.locatio
     && new URLSearchParams(window.location.search).get('local-revenue-preview') === '1';
 const ACCESS_QUERY = new URLSearchParams(window.location.search).get('access');
 const VIEW_QUERY = new URLSearchParams(window.location.search).get('view');
+const ASSET_EXCEL_VIEW = VIEW_QUERY === 'excel';
+const ASSET_EXCEL_LOCAL_PREVIEW = LOCAL_HOSTNAMES.includes(window.location.hostname)
+    && PREVIEW_QUERY === 'asset-excel-v1';
+const ASSET_EXCEL_ACCOUNT_QUERY = new URLSearchParams(window.location.search).get('account');
 // 長者友善連結：網址帶 ?key=密碼，開頁就自動登入，不用打字。
 const AUTOLOGIN_QUERY = new URLSearchParams(window.location.search).get('key');
 // 權限分享連結只帶一次性、不可猜測的邀請碼；它不是密碼，也不會被當成固定登入憑證保存。
@@ -95,6 +100,7 @@ let loginTier = null;
 // 同一層級的登入帳號仍可能有不同的資產預設使用者；這個值只保存帳號公開識別，
 // 不保存密碼或 access token。
 let loginAccount = null;
+let shareError = null;
 // Access token 只留在記憶體，供需要真正身分驗證的 Edge Function 使用；跨重整仍只保存
 // 原本的 refresh token，再由 Supabase Auth 換一組新 session。
 let authAccessToken = null;
@@ -104,6 +110,92 @@ let SITE_ACCESS = URL_ACCESS;
 let ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';
 let ASSET_HOLDINGS_VIEW_ENABLED = SITE_ACCESS === 'holdings';
 const ACCESS_PREVIEW = ACCESS_PREVIEW_QUERY !== null;
+
+const ASSET_EXCEL_PREVIEW_STORAGE_KEY = 'invest.asset-excel-preview.rows.v3';
+const ASSET_EXCEL_PREVIEW_COLUMN_ORDER_STORAGE_KEY = 'invest.asset-excel-preview.column-order.v1';
+
+// 本機預覽只保留「操作(台)」版面與互動樣本；正式路徑改讀 Supabase 的專用操作表，
+// 不把操作資料誤當成 asset_holdings，也不由網站呼叫 Google Sheets API 寫回。
+const ASSET_EXCEL_PREVIEW_COLUMNS = [
+    { key: 'weight', label: '100.0%', kind: 'weight' },
+    { key: 'buy', label: 'Buy\n(份數)', kind: 'buy' },
+    { key: 'stock', label: 'Stock', kind: 'stock' },
+    { key: 'revenueHigh', label: '營收\n創高', kind: 'checkbox' },
+    { key: 'cpo', label: 'CPO', kind: 'checkbox' },
+    { key: 'pcb', label: 'PCB', kind: 'checkbox' },
+    { key: 'asic', label: 'ASIC', kind: 'checkbox' },
+    { key: 'cooling', label: '散熱', kind: 'checkbox' },
+    { key: 'passive', label: '被動\n元件', kind: 'checkbox' },
+    { key: 'other', label: 'Other', kind: 'checkbox' },
+    { key: 'memory', label: '記憶體', kind: 'checkbox' },
+    { key: 'abf', label: 'ABF', kind: 'checkbox' },
+    { key: 'power', label: '電源', kind: 'checkbox' },
+    { key: 'hinge', label: '軸承/\n摺疊機', kind: 'checkbox' },
+    { key: 'pmic', label: 'PMIC', kind: 'checkbox' },
+    { key: 'testing', label: '封測/\n探針', kind: 'checkbox' },
+    { key: 'leadframe', label: '導線架', kind: 'checkbox' },
+    { key: 'bbu', label: 'BBU', kind: 'checkbox' },
+    { key: 'actions', label: '操作', kind: 'actions' }
+];
+
+// 本機預覽只保留 Google Sheet 的持倉／族群樣本，不把「營收創高」的舊布林值
+// 當成正式資料。下一階段接資料時，會以 revenue_latest.high_months 填入
+// revenueHighMonths，再由 assetExcelRevenueHighValue() 統一套用 >= 13 的規則。
+const ASSET_EXCEL_PREVIEW_ROWS = [
+    { buy: 2, stock: '1303 南亞', pcb: true },
+    { buy: 2, stock: '1560 中砂', pcb: true },
+    { buy: 2, stock: '1802 台玻', pcb: true },
+    { buy: 3, stock: '1815 富喬', pcb: true },
+    { buy: 3, stock: '2327 國巨', passive: true },
+    { buy: 1, stock: '2375 凱美', passive: true },
+    { buy: 5, stock: '2383 台光電', pcb: true },
+    { buy: 3, stock: '2421 建準', cooling: true },
+    { buy: 2, stock: '2455 全新', cpo: true },
+    { buy: 1, stock: '2472 立隆電', passive: true },
+    { buy: 1, stock: '2478 大毅', passive: true },
+    { buy: 1, stock: '2492 華新科', passive: true },
+    { buy: 3, stock: '3017 奇鋐', cooling: true },
+    { buy: 1, stock: '3026 禾伸堂', passive: true },
+    { buy: 1, stock: '3042 晶技', passive: true },
+    { buy: 3, stock: '3044 健鼎', pcb: true },
+    { buy: 5, stock: '3105 穩懋', cpo: true },
+    { buy: 6, stock: '3163 波若威', cpo: true },
+    { buy: 3, stock: '3234 光環', cpo: true },
+    { buy: 4, stock: '3324 雙鴻', cooling: true },
+    { buy: 1, stock: '3338 泰碩', cooling: true },
+    { buy: 4, stock: '3443 創意', asic: true },
+    { buy: 1, stock: '3624 光頡', passive: true },
+    { buy: 4, stock: '3653 健策', cooling: true },
+    { buy: 6, stock: '3661 世芯-KY', asic: true },
+    { buy: 1, stock: '3715 定穎投控', pcb: true },
+    { buy: 1, stock: '4908 前鼎', cpo: true },
+    { buy: 3, stock: '4977 眾達-KY', cpo: true },
+    { buy: 1, stock: '4989 榮科', pcb: true },
+    { buy: 3, stock: '5340 建榮', pcb: true },
+    { buy: 2, stock: '5475 德宏', pcb: true },
+    { buy: 1, stock: '6127 九豪', passive: true },
+    { buy: 2, stock: '6147 頎邦', cpo: true },
+    { buy: 2, stock: '6173 信昌電', passive: true },
+    { buy: 4, stock: '6213 聯茂', pcb: true },
+    { buy: 3, stock: '6442 光聖', cpo: true },
+    { buy: 2, stock: '6933 AMAX-KY', cooling: true },
+    { buy: 1, stock: '8042 金山電', passive: true },
+    { buy: 1, stock: '8043 蜜望實', passive: true },
+    { buy: 3, stock: '8358 金居', pcb: true },
+    { buy: 1, stock: '8996 高力', cooling: true }
+];
+
+let assetExcelRows = null;
+let assetExcelAccountId = '';
+let assetExcelLoadError = null;
+let assetExcelSaving = false;
+let assetExcelEditing = false;
+let assetExcelEditingSnapshot = null;
+let assetExcelNotice = '';
+let assetExcelColumnKeys = null;
+let assetExcelDraggingColumn = null;
+let assetExcelSortKey = null;
+let assetExcelSortDescending = false;
 
 function assetOcrCancelledError() {
     const error = new Error('已強制取消這次 OCR 辨識。');
@@ -597,6 +689,9 @@ async function fetchAllRows(table, select, extraQuery = '', timeoutMs = null) {
         const requestOptions = {
             headers: {
                 apikey: supabase.anonKey,
+                ...(authAccessToken === null
+                    ? {}
+                    : { Authorization: `Bearer ${authAccessToken}` }),
                 Range: `${offset}-${offset + PAGE_SIZE - 1}`
             },
             cache: 'no-store'
@@ -6061,6 +6156,8 @@ const ASSET_VALUE_SNAPSHOTS_TABLE = 'asset_value_snapshots';
 const ASSET_ACCOUNT_VALUE_SNAPSHOTS_TABLE = 'asset_account_value_snapshots';
 const ASSET_ANNUAL_SNAPSHOTS_TABLE = 'asset_annual_snapshots';
 const ASSET_EXCHANGE_RATES_TABLE = 'exchange_rates';
+const ASSET_OPERATION_ROWS_TABLE = 'asset_operation_rows';
+const ASSET_OPERATION_SETTINGS_TABLE = 'asset_operation_settings';
 const ASSET_LATEST_US_QUOTES_VIEW = 'latest_us_quotes';
 const ASSET_MARKETS = ['台股', '美股', '其他'];
 const ASSET_TREND_PERIODS = [
@@ -9088,11 +9185,1022 @@ function makeAssetAccountSettings(view) {
     return panel;
 }
 
+function assetExcelCloneRows(rows) {
+    return rows.map(row => ({ ...row }));
+}
+
+function assetExcelTargetAccount() {
+    if (!ASSET_DASHBOARD_ENABLED) {
+        return null;
+    }
+
+    const owner = assetOwners.find(item => item.name === 'Frank');
+    if (owner === undefined) {
+        return null;
+    }
+
+    const matchingAccounts = assetAccountsOf(owner.id)
+        .filter(account => account.name === '台股操作' && account.market === '台股');
+    const requested = matchingAccounts.find(account => account.id === ASSET_EXCEL_ACCOUNT_QUERY);
+
+    return requested ?? matchingAccounts[0] ?? null;
+}
+
+function assetExcelColumnKeysFrom(keys) {
+    const validKeys = new Set(ASSET_EXCEL_PREVIEW_COLUMNS.map(column => column.key));
+    const storedKeys = Array.isArray(keys)
+        ? keys.filter(key => typeof key === 'string' && validKeys.has(key))
+        : [];
+    const missingKeys = ASSET_EXCEL_PREVIEW_COLUMNS
+        .map(column => column.key)
+        .filter(key => !storedKeys.includes(key));
+    return [...new Set([...storedKeys, ...missingKeys])];
+}
+
+function assetExcelOperationBody(row, accountId) {
+    const body = {
+        account_id: accountId,
+        buy: row.buy === '' || row.buy === null || row.buy === undefined ? 0 : Number(row.buy),
+        stock: String(row.stock ?? '').trim(),
+        sort_order: Number.isInteger(row.sortOrder) ? row.sortOrder : 0,
+        updated_at: new Date().toISOString()
+    };
+
+    for (const column of ASSET_EXCEL_PREVIEW_COLUMNS) {
+        if (column.kind === 'checkbox' && column.key !== 'revenueHigh') {
+            body[column.key] = assetExcelCellChecked(row[column.key]);
+        }
+    }
+
+    return body;
+}
+
+function assetExcelValidateRows(rows) {
+    const tickers = new Set();
+
+    for (const row of rows) {
+        const body = assetExcelOperationBody(row, assetExcelAccountId);
+        const isEmpty = body.stock === ''
+            && body.buy === 0
+            && ASSET_EXCEL_PREVIEW_COLUMNS
+                .filter(column => column.kind === 'checkbox' && column.key !== 'revenueHigh')
+                .every(column => body[column.key] === false);
+
+        // 新增的空白列可以留白；套用時不把它寫成一筆沒有標的的資料。
+        if (isEmpty && !row.id) {
+            continue;
+        }
+
+        if (!Number.isInteger(body.buy) || body.buy < 0) {
+            throw new Error(`「${body.stock || '空白列'}」的 Buy 必須是大於等於 0 的整數。`);
+        }
+
+        if (body.stock === '') {
+            throw new Error('只要填了 Buy 或族群，Stock 就不能留白。');
+        }
+
+        const ticker = assetExcelStockParts(body.stock).ticker || body.stock;
+        const key = ticker.trim().toLocaleUpperCase();
+        if (tickers.has(key)) {
+            throw new Error(`Stock 不可重複：${body.stock}`);
+        }
+        tickers.add(key);
+    }
+}
+
+async function assetExcelWrite(
+    table,
+    method,
+    body = null,
+    query = '',
+    prefer = 'return=minimal',
+    retryAuthentication = true) {
+    if (supabase === null) {
+        throw new Error('沒有資料庫連線。');
+    }
+
+    if (authAccessToken === null && !await refreshAuthAccessToken()) {
+        throw new Error('登入已失效，請重新登入最高權限帳號。');
+    }
+
+    const headers = {
+        apikey: supabase.anonKey,
+        Authorization: `Bearer ${authAccessToken}`,
+        'Content-Type': 'application/json',
+        Prefer: prefer
+    };
+    const response = await fetch(`${supabase.url}/rest/v1/${table}${query}`, {
+        method,
+        headers,
+        body: body === null ? undefined : JSON.stringify(body),
+        cache: 'no-store'
+    });
+
+    if (response.status === 401 && retryAuthentication
+        && await refreshAuthAccessToken()) {
+        return assetExcelWrite(table, method, body, query, prefer, false);
+    }
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+}
+
+function assetExcelOperationRowFromDb(row) {
+    const operationRow = {
+        id: String(row.id),
+        accountId: String(row.account_id),
+        buy: assetNumber(row.buy) ?? 0,
+        stock: String(row.stock ?? ''),
+        sortOrder: assetNumber(row.sort_order) ?? 0,
+        updatedAt: String(row.updated_at ?? '')
+    };
+
+    for (const column of ASSET_EXCEL_PREVIEW_COLUMNS) {
+        if (column.kind === 'checkbox' && column.key !== 'revenueHigh') {
+            operationRow[column.key] = row[column.key] === true;
+        }
+    }
+
+    return operationRow;
+}
+
+async function loadAssetExcelData(accountId, retryAuthentication = true) {
+    if (supabase === null) {
+        throw new Error('正式 Excel 表需要 Supabase 連線。');
+    }
+
+    if (authAccessToken === null && !await refreshAuthAccessToken()) {
+        throw new Error('請先登入最高權限帳號，再開啟 Frank／台股操作 Excel。');
+    }
+
+    try {
+        const accountQuery = `&account_id=eq.${encodeURIComponent(accountId)}`;
+        const [rows, settings] = await Promise.all([
+            fetchAllRows(
+                ASSET_OPERATION_ROWS_TABLE,
+                'id,account_id,buy,stock,cpo,pcb,asic,cooling,passive,other,memory,abf,power,hinge,pmic,testing,leadframe,bbu,sort_order,updated_at',
+                `${accountQuery}&order=sort_order.asc,id.asc`),
+            fetchAllRows(
+                ASSET_OPERATION_SETTINGS_TABLE,
+                'account_id,column_order,updated_at',
+                accountQuery)
+        ]);
+
+        assetExcelAccountId = accountId;
+        assetExcelRows = rows.map(assetExcelOperationRowFromDb);
+        assetExcelColumnKeys = assetExcelColumnKeysFrom(settings[0]?.column_order);
+    } catch (error) {
+        if (retryAuthentication
+            && String(error?.message ?? '') === '401'
+            && await refreshAuthAccessToken()) {
+            return loadAssetExcelData(accountId, false);
+        }
+
+        throw error;
+    }
+}
+
+async function assetExcelPersistColumnOrder() {
+    if (ASSET_EXCEL_LOCAL_PREVIEW || assetExcelAccountId === '') {
+        return;
+    }
+
+    await assetExcelWrite(
+        ASSET_OPERATION_SETTINGS_TABLE,
+        'POST',
+        {
+            account_id: assetExcelAccountId,
+            column_order: assetExcelColumnKeysFrom(assetExcelColumnKeys),
+            updated_at: new Date().toISOString()
+        },
+        '?on_conflict=account_id',
+        'resolution=merge-duplicates,return=minimal');
+}
+
+function assetExcelPreviewRows() {
+    if (assetExcelRows !== null) {
+        return assetExcelRows;
+    }
+
+    if (!ASSET_EXCEL_LOCAL_PREVIEW) {
+        assetExcelRows = [];
+        return assetExcelRows;
+    }
+
+    try {
+        const stored = JSON.parse(localStorage.getItem(ASSET_EXCEL_PREVIEW_STORAGE_KEY));
+        if (Array.isArray(stored)) {
+            assetExcelRows = stored.map(row => ({
+                ...row,
+                buy: row.buy === ''
+                    ? ''
+                    : Number.isFinite(Number(row.buy)) ? Number(row.buy) : 0,
+                stock: String(row.stock ?? '')
+            }));
+            return assetExcelRows;
+        }
+    } catch {
+        // 本機草稿格式不正確時回到唯讀樣本，不能讓試算表預覽整頁失效。
+    }
+
+    assetExcelRows = assetExcelCloneRows(ASSET_EXCEL_PREVIEW_ROWS);
+    return assetExcelRows;
+}
+
+function assetExcelStockParts(stock) {
+    const text = String(stock ?? '').trim();
+    const match = text.match(/^(\S+)\s+(.+)$/);
+
+    return {
+        ticker: match?.[1] ?? '',
+        name: match?.[2] ?? text
+    };
+}
+
+function assetExcelRevenueHighMonths(row) {
+    const previewValue = row?.revenueHighMonths;
+
+    if (previewValue !== undefined && previewValue !== null && String(previewValue).trim() !== '') {
+        const months = Number(previewValue);
+        return Number.isFinite(months) ? months : null;
+    }
+
+    const ticker = assetExcelStockParts(row?.stock).ticker;
+    const linkedRevenue = ticker === '' ? null : revenueOf(ticker);
+    const months = Number(linkedRevenue?.highMonths);
+    return Number.isFinite(months) ? months : null;
+}
+
+function assetExcelRevenueHighValue(row) {
+    return assetExcelRevenueHighMonths(row) >= 13 ? true : 'X';
+}
+
+function assetExcelColumnList() {
+    if (assetExcelColumnKeys !== null) {
+        return assetExcelColumnKeys
+            .map(key => ASSET_EXCEL_PREVIEW_COLUMNS.find(column => column.key === key))
+            .filter(column => column !== undefined);
+    }
+
+    if (!ASSET_EXCEL_LOCAL_PREVIEW) {
+        assetExcelColumnKeys = assetExcelColumnKeysFrom(null);
+        return assetExcelColumnList();
+    }
+
+    let stored = null;
+
+    try {
+        stored = JSON.parse(localStorage.getItem(ASSET_EXCEL_PREVIEW_COLUMN_ORDER_STORAGE_KEY));
+    } catch {
+        // 欄位順序損壞時回到程式定義的安全順序。
+    }
+
+    assetExcelColumnKeys = assetExcelColumnKeysFrom(stored);
+
+    return assetExcelColumnList();
+}
+
+function assetExcelMoveColumn(sourceKey, targetKey) {
+    if (sourceKey === targetKey) {
+        return;
+    }
+
+    const nextKeys = assetExcelColumnList().map(column => column.key);
+    const sourceIndex = nextKeys.indexOf(sourceKey);
+    const targetIndex = nextKeys.indexOf(targetKey);
+
+    if (sourceIndex < 0 || targetIndex < 0) {
+        return;
+    }
+
+    nextKeys.splice(sourceIndex, 1);
+    nextKeys.splice(nextKeys.indexOf(targetKey), 0, sourceKey);
+    assetExcelColumnKeys = nextKeys;
+
+    if (ASSET_EXCEL_LOCAL_PREVIEW) {
+        try {
+            localStorage.setItem(
+                ASSET_EXCEL_PREVIEW_COLUMN_ORDER_STORAGE_KEY,
+                JSON.stringify(assetExcelColumnKeys));
+        } catch {
+            // 私有瀏覽模式不允許寫入時仍保留本頁順序，不能阻斷拖放。
+        }
+        assetExcelNotice = '欄位順序已更新；本機預覽會保留這個順序。';
+    } else {
+        assetExcelNotice = '欄位順序已更新；正在保存正式資料設定。';
+        void assetExcelPersistColumnOrder().then(() => {
+            assetExcelNotice = '欄位順序已更新，已保存到正式資料庫。';
+            renderAssetExcelView(el('asset-excel-page'));
+        }).catch(error => {
+            assetExcelNotice = `欄位順序保存失敗：${error.message}`;
+            renderAssetExcelView(el('asset-excel-page'));
+        });
+    }
+    renderAssetExcelView(el('asset-excel-page'));
+}
+
+function assetExcelColumnSortable(column) {
+    return column.kind === 'buy'
+        || column.kind === 'stock'
+        || column.kind === 'checkbox';
+}
+
+function assetExcelSortValue(row, column) {
+    if (!assetExcelColumnSortable(column)) {
+        return null;
+    }
+
+    if (column.kind === 'buy') {
+        if (row.buy === '' || row.buy === null || row.buy === undefined) {
+            return null;
+        }
+
+        const value = Number(row.buy);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    if (column.kind === 'stock') {
+        const value = String(row.stock ?? '').trim();
+        return value === '' ? null : value;
+    }
+
+    return column.key === 'revenueHigh'
+        ? assetExcelRevenueHighValue(row) === true ? 1 : 0
+        : assetExcelCellChecked(row[column.key]) ? 1 : 0;
+}
+
+function assetExcelSortedRows(rows, sortKey, descending) {
+    const column = ASSET_EXCEL_PREVIEW_COLUMNS.find(candidate => candidate.key === sortKey);
+
+    if (column === undefined || !assetExcelColumnSortable(column)) {
+        return rows;
+    }
+
+    return rows
+        .map((row, index) => ({
+            row,
+            index,
+            value: assetExcelSortValue(row, column)
+        }))
+        .sort((left, right) => {
+            const leftMissing = left.value === null || left.value === undefined;
+            const rightMissing = right.value === null || right.value === undefined;
+
+            if (leftMissing !== rightMissing) {
+                return leftMissing ? 1 : -1;
+            }
+
+            if (leftMissing && rightMissing) {
+                return left.index - right.index;
+            }
+
+            const compared = typeof left.value === 'string'
+                ? left.value.localeCompare(right.value, undefined, {
+                    numeric: true,
+                    sensitivity: 'base'
+                })
+                : left.value - right.value;
+
+            if (compared !== 0) {
+                return descending ? -compared : compared;
+            }
+
+            return left.index - right.index;
+        })
+        .map(item => item.row);
+}
+
+function assetExcelResortRows() {
+    if (assetExcelSortKey === null || assetExcelRows === null) {
+        return;
+    }
+
+    assetExcelRows = assetExcelSortedRows(
+        assetExcelRows,
+        assetExcelSortKey,
+        assetExcelSortDescending);
+}
+
+function assetExcelSortByColumn(sortKey) {
+    const column = ASSET_EXCEL_PREVIEW_COLUMNS.find(candidate => candidate.key === sortKey);
+
+    if (column === undefined || !assetExcelColumnSortable(column)) {
+        return;
+    }
+
+    if (assetExcelSortKey === sortKey) {
+        assetExcelSortDescending = !assetExcelSortDescending;
+    } else {
+        assetExcelSortKey = sortKey;
+        assetExcelSortDescending = false;
+    }
+
+    assetExcelResortRows();
+    const label = column.label.replaceAll('\n', '');
+    assetExcelNotice = `已依${label}${assetExcelSortDescending ? '降冪' : '升冪'}排序；標題下方資料列已同步移動。`;
+    renderAssetExcelView(el('asset-excel-page'));
+}
+
+function assetExcelSortButton(column) {
+    const button = document.createElement('button');
+    const active = assetExcelSortKey === column.key;
+    const label = column.label.replaceAll('\n', '');
+
+    button.type = 'button';
+    button.className = 'asset-excel-sort-control';
+    button.dataset.column = column.key;
+    button.draggable = false;
+    button.textContent = active
+        ? assetExcelSortDescending ? '▼' : '▲'
+        : '⇅';
+    button.title = `點擊依${label}排序；再次點擊切換升冪／降冪。`;
+    button.setAttribute(
+        'aria-label',
+        `依${label}排序${active ? `（目前${assetExcelSortDescending ? '降冪' : '升冪'}）` : ''}`);
+    button.setAttribute('aria-pressed', String(active));
+    button.addEventListener('dragstart', event => event.stopPropagation());
+    button.addEventListener('click', event => {
+        event.stopPropagation();
+        assetExcelSortByColumn(column.key);
+    });
+    return button;
+}
+
+function assetExcelBlankRow() {
+    const row = { buy: '', stock: '', revenueHighMonths: null };
+
+    for (const column of ASSET_EXCEL_PREVIEW_COLUMNS) {
+        if (column.kind === 'checkbox' && column.key !== 'revenueHigh') {
+            row[column.key] = false;
+        }
+    }
+
+    return row;
+}
+
+function assetExcelCellChecked(value) {
+    return value === true;
+}
+
+function assetExcelSummary(rows) {
+    const summaryRows = rows.filter(row => String(row.stock ?? '').trim() !== '');
+    const totalBuy = summaryRows.reduce((sum, row) => sum + (Number(row.buy) || 0), 0);
+    const groupColumns = ASSET_EXCEL_PREVIEW_COLUMNS.filter(column => column.kind === 'checkbox');
+    const groups = groupColumns.map(column => {
+        const buy = summaryRows.reduce((sum, row) => (
+            sum + ((column.key === 'revenueHigh'
+                ? assetExcelRevenueHighValue(row) === true
+                : assetExcelCellChecked(row[column.key]))
+                ? (Number(row.buy) || 0)
+                : 0)), 0);
+        const count = summaryRows.reduce((sum, row) => (
+            sum + ((column.key === 'revenueHigh'
+                ? assetExcelRevenueHighValue(row) === true
+                : assetExcelCellChecked(row[column.key])) ? 1 : 0)), 0);
+
+        return {
+            ...column,
+            buyPercent: totalBuy > 0 ? buy / totalBuy : 0,
+            count
+        };
+    });
+
+    return { totalBuy, targetCount: summaryRows.length, groups };
+}
+
+function assetExcelPercentText(value) {
+    return `${(value * 100).toFixed(1)}%`;
+}
+
+function assetExcelButton(text, className, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `asset-excel-button ${className}`.trim();
+    button.textContent = text;
+    button.addEventListener('click', onClick);
+    return button;
+}
+
+function assetExcelPreviewBackUrl() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('view');
+    url.searchParams.delete('account');
+    url.searchParams.set('access', 'admin');
+
+    if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+        url.searchParams.set('preview', 'asset-annualized-v1');
+    } else {
+        url.searchParams.delete('preview');
+    }
+
+    return url.href;
+}
+
+function openAssetExcelView(view) {
+    if (!ASSET_DASHBOARD_ENABLED
+        || assetActiveOwner()?.name !== 'Frank'
+        || view.market !== '台股'
+        || view.name !== '台股操作') {
+        return;
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.set('access', 'admin');
+    url.searchParams.set('view', 'excel');
+    url.searchParams.set('account', view.id);
+
+    if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+        url.searchParams.set('preview', 'asset-excel-v1');
+    } else {
+        url.searchParams.delete('preview');
+    }
+
+    const newTab = window.open(url.href, '_blank', 'noopener');
+    if (newTab === null) {
+        window.location.assign(url.href);
+    }
+}
+
+function makeAssetExcelSummaryRow(summary, rowKind, columns) {
+    const row = document.createElement('tr');
+    row.className = `asset-excel-summary-row ${rowKind}`;
+
+    const groupByKey = new Map(summary.groups.map(group => [group.key, group]));
+
+    for (const column of columns) {
+        const cell = document.createElement('td');
+        if (column.key === 'weight' || column.key === 'stock') {
+            cell.className = 'asset-excel-summary-label';
+            cell.textContent = column.key === 'weight'
+                ? rowKind === 'amount' ? '總份數' : '標的數量'
+                : rowKind === 'amount' ? '族群-總份數(%)' : '族群-標的數量';
+        } else if (column.key === 'buy') {
+            cell.className = 'asset-excel-summary-value';
+            cell.textContent = String(rowKind === 'amount' ? summary.totalBuy : summary.targetCount);
+        } else if (column.kind === 'checkbox') {
+            const group = groupByKey.get(column.key);
+            cell.className = 'asset-excel-summary-value';
+            cell.textContent = rowKind === 'amount'
+                ? assetExcelPercentText(group?.buyPercent ?? 0)
+                : String(group?.count ?? 0);
+        } else {
+            cell.className = 'asset-excel-summary-value';
+            cell.textContent = '';
+        }
+        row.append(cell);
+    }
+
+    return row;
+}
+
+function makeAssetExcelDataCell(row, column, editing) {
+    const cell = document.createElement('td');
+    cell.dataset.column = column.key;
+    cell.classList.add(`asset-excel-col-${column.key}`);
+
+    if (column.kind === 'weight') {
+        return cell;
+    }
+
+    if (column.key === 'revenueHigh') {
+        const months = assetExcelRevenueHighMonths(row);
+        const value = assetExcelRevenueHighValue(row);
+        cell.dataset.revenueHighMonths = months === null ? '' : String(months);
+        cell.title = `創高月數：${months === null ? '—' : months}`;
+
+        if (value === 'X') {
+            cell.textContent = 'X';
+            return cell;
+        }
+
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = true;
+        input.disabled = true;
+        input.setAttribute('aria-label', `${row.stock || '標的'}：營收創高（${months} 個月）`);
+        cell.append(input);
+        return cell;
+    }
+
+    if (column.kind === 'actions') {
+        if (!editing) {
+            cell.textContent = '—';
+            return cell;
+        }
+
+        const deleteButton = assetExcelButton('刪除', 'asset-excel-row-delete-button', () => {
+            assetExcelRows = assetExcelPreviewRows().filter(item => item !== row);
+            assetExcelNotice = '已刪除這一列；按「套用變更」才會保存本機預覽。';
+            renderAssetExcelView(el('asset-excel-page'));
+        });
+        deleteButton.setAttribute('aria-label', `刪除 ${row.stock || '空白'} 這一列`);
+        cell.append(deleteButton);
+        return cell;
+    }
+
+    if (column.kind === 'checkbox') {
+        if (row[column.key] === 'X' && !editing) {
+            cell.textContent = 'X';
+            return cell;
+        }
+
+        if (row[column.key] === 'X' && editing) {
+            const input = document.createElement('input');
+            input.className = 'asset-excel-cell-input';
+            input.type = 'text';
+            input.value = 'X';
+            input.setAttribute('aria-label', `${row.stock || '標的'}：${column.label.replaceAll('\n', '')}`);
+            input.addEventListener('input', () => {
+                row[column.key] = input.value;
+            });
+            cell.append(input);
+            return cell;
+        }
+
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = assetExcelCellChecked(row[column.key]);
+        input.disabled = !editing;
+        input.setAttribute('aria-label', `${row.stock || '標的'}：${column.label.replaceAll('\n', '')}`);
+        input.addEventListener('change', () => {
+            row[column.key] = input.checked;
+        });
+        cell.append(input);
+        return cell;
+    }
+
+    if (column.kind === 'stock') {
+        const parts = assetExcelStockParts(row.stock);
+        const content = document.createElement('div');
+        content.className = 'asset-excel-stock-cell-content';
+
+        if (parts.ticker !== '') {
+            const kline = makeKLineButton(
+                parts.ticker,
+                String(row.stock ?? ''),
+                { latest: true, market: '台股' });
+            kline.classList.add('asset-excel-stock-link');
+            content.append(kline);
+        } else if (!editing) {
+            const text = document.createElement('span');
+            text.textContent = String(row.stock ?? '');
+            content.append(text);
+        }
+
+        if (editing) {
+            const input = document.createElement('input');
+            input.className = 'asset-excel-cell-input';
+            input.type = 'text';
+            input.value = String(row.stock ?? '');
+            input.setAttribute('aria-label', `${row.stock || '標的'}：Stock`);
+            input.addEventListener('input', () => {
+                row.stock = input.value;
+            });
+            content.append(input);
+        }
+
+        cell.append(content);
+        return cell;
+    }
+
+    if (!editing) {
+        cell.textContent = String(row.buy ?? '');
+        return cell;
+    }
+
+    const input = document.createElement('input');
+    input.className = 'asset-excel-cell-input';
+    input.type = column.kind === 'buy' ? 'number' : 'text';
+    if (column.kind === 'buy') {
+        input.min = '0';
+        input.step = '1';
+    }
+    input.value = column.kind === 'buy' ? String(row.buy ?? '') : String(row.stock ?? '');
+    input.setAttribute('aria-label', `${row.stock || '標的'}：${column.label.replaceAll('\n', '')}`);
+    input.addEventListener('input', () => {
+        if (column.kind === 'buy') {
+            const value = Number(input.value);
+            row.buy = Number.isFinite(value) && value >= 0 ? value : 0;
+        } else {
+            row.stock = input.value;
+        }
+    });
+    cell.append(input);
+    return cell;
+}
+
+function makeAssetExcelTable() {
+    const rows = assetExcelPreviewRows();
+    const summary = assetExcelSummary(rows);
+    const columns = assetExcelColumnList();
+    const table = document.createElement('table');
+    table.className = 'asset-excel-table';
+    table.setAttribute('aria-label', '操作(台)試算表');
+
+    const colgroup = document.createElement('colgroup');
+    for (const column of columns) {
+        const col = document.createElement('col');
+        col.className = `asset-excel-col-${column.key}`;
+        colgroup.append(col);
+    }
+
+    const head = document.createElement('thead');
+    head.append(
+        makeAssetExcelSummaryRow(summary, 'amount', columns),
+        makeAssetExcelSummaryRow(summary, 'count', columns));
+
+    const headerRow = document.createElement('tr');
+    headerRow.className = 'asset-excel-header-row';
+    for (const column of columns) {
+        const cell = document.createElement('th');
+        cell.className = 'asset-excel-header-cell';
+        cell.scope = 'col';
+        cell.draggable = true;
+        cell.dataset.column = column.key;
+        cell.title = assetExcelColumnSortable(column)
+            ? '拖曳欄名以移動欄位；點擊排序圖示切換升冪／降冪。'
+            : '拖曳欄名以移動欄位';
+
+        const label = document.createElement('span');
+        label.className = 'asset-excel-header-label';
+        label.textContent = column.label;
+        cell.append(label);
+
+        if (assetExcelColumnSortable(column)) {
+            cell.append(assetExcelSortButton(column));
+            cell.addEventListener('click', event => {
+                if (event.target instanceof Element && event.target.closest('button') !== null) {
+                    return;
+                }
+
+                assetExcelSortByColumn(column.key);
+            });
+        }
+
+        cell.addEventListener('dragstart', event => {
+            assetExcelDraggingColumn = column.key;
+            cell.classList.add('is-dragging');
+            event.dataTransfer?.setData('text/plain', column.key);
+            if (event.dataTransfer) {
+                event.dataTransfer.effectAllowed = 'move';
+            }
+        });
+        cell.addEventListener('dragover', event => {
+            event.preventDefault();
+            cell.classList.add('is-drop-target');
+            if (event.dataTransfer) {
+                event.dataTransfer.dropEffect = 'move';
+            }
+        });
+        cell.addEventListener('dragleave', () => cell.classList.remove('is-drop-target'));
+        cell.addEventListener('drop', event => {
+            event.preventDefault();
+            cell.classList.remove('is-drop-target');
+            const sourceKey = assetExcelDraggingColumn
+                ?? event.dataTransfer?.getData('text/plain');
+            assetExcelMoveColumn(sourceKey, column.key);
+        });
+        cell.addEventListener('dragend', () => {
+            assetExcelDraggingColumn = null;
+            cell.classList.remove('is-dragging', 'is-drop-target');
+        });
+        headerRow.append(cell);
+    }
+    head.append(headerRow);
+
+    const body = document.createElement('tbody');
+    for (const row of rows) {
+        const tableRow = document.createElement('tr');
+        tableRow.className = 'asset-excel-data-row';
+        for (const column of columns) {
+            tableRow.append(makeAssetExcelDataCell(row, column, assetExcelEditing));
+        }
+        body.append(tableRow);
+    }
+
+    table.append(colgroup, head, body);
+    return table;
+}
+
+async function assetExcelApplyChanges() {
+    if (assetExcelSaving) {
+        return;
+    }
+
+    if (ASSET_EXCEL_LOCAL_PREVIEW) {
+        try {
+            localStorage.setItem(
+                ASSET_EXCEL_PREVIEW_STORAGE_KEY,
+                JSON.stringify(assetExcelPreviewRows()));
+        } catch {
+            assetExcelNotice = '本機預覽草稿保存失敗，請確認瀏覽器允許網站儲存資料。';
+            renderAssetExcelView(el('asset-excel-page'));
+            return;
+        }
+
+        assetExcelEditing = false;
+        assetExcelEditingSnapshot = null;
+        assetExcelNotice = '已套用本機預覽變更；正式網站會將變更寫回 Supabase。';
+        renderAssetExcelView(el('asset-excel-page'));
+        return;
+    }
+
+    assetExcelSaving = true;
+    assetExcelNotice = '正在保存正式資料…';
+    renderAssetExcelView(el('asset-excel-page'));
+
+    try {
+        const rows = assetExcelPreviewRows();
+        assetExcelValidateRows(rows);
+        const snapshot = assetExcelEditingSnapshot ?? [];
+        const currentIds = new Set(rows.filter(row => row.id).map(row => row.id));
+        const accountQuery = `&account_id=eq.${encodeURIComponent(assetExcelAccountId)}`;
+
+        for (const row of snapshot) {
+            if (row.id && !currentIds.has(row.id)) {
+                await assetExcelWrite(
+                    ASSET_OPERATION_ROWS_TABLE,
+                    'DELETE',
+                    null,
+                    `?id=eq.${encodeURIComponent(row.id)}${accountQuery}`);
+            }
+        }
+
+        let nextSortOrder = rows.reduce(
+            (max, row) => Math.max(max, Number(row.sortOrder) || 0),
+            0) + 1;
+
+        for (const row of rows) {
+            const body = assetExcelOperationBody(row, assetExcelAccountId);
+
+            if (!row.id && body.stock === '' && body.buy === 0
+                && Object.entries(body)
+                    .filter(([key]) => ASSET_EXCEL_PREVIEW_COLUMNS.some(column => column.key === key))
+                    .every(([, value]) => value !== true)) {
+                continue;
+            }
+
+            if (!row.id) {
+                body.sort_order = nextSortOrder++;
+                await assetExcelWrite(ASSET_OPERATION_ROWS_TABLE, 'POST', body);
+                continue;
+            }
+
+            body.sort_order = Number.isInteger(row.sortOrder) ? row.sortOrder : nextSortOrder++;
+            await assetExcelWrite(
+                ASSET_OPERATION_ROWS_TABLE,
+                'PATCH',
+                body,
+                `?id=eq.${encodeURIComponent(row.id)}${accountQuery}`);
+        }
+
+        // 這裡再保存一次欄位順序，讓「套用變更」也是完整的表格狀態保存點。
+        await assetExcelPersistColumnOrder();
+        await loadAssetExcelData(assetExcelAccountId);
+        assetExcelEditing = false;
+        assetExcelEditingSnapshot = null;
+        assetExcelNotice = '已套用變更，正式資料已寫回 Supabase。';
+    } catch (error) {
+        assetExcelNotice = `套用變更失敗：${error.message}。目前仍在編輯模式，請重新載入確認已保存的列。`;
+    } finally {
+        assetExcelSaving = false;
+        renderAssetExcelView(el('asset-excel-page'));
+    }
+}
+
+function makeAssetExcelView() {
+    const shell = document.createElement('div');
+    shell.className = 'asset-excel-shell';
+
+    const topbar = document.createElement('header');
+    topbar.className = 'asset-excel-topbar';
+    const brand = document.createElement('div');
+    brand.className = 'asset-excel-brand';
+    const mark = document.createElement('span');
+    mark.className = 'asset-excel-brand-mark';
+    mark.textContent = '▦';
+    const titleBlock = document.createElement('div');
+    titleBlock.className = 'asset-excel-title-block';
+    const title = document.createElement('h1');
+    title.textContent = 'Stock';
+    const subtitle = document.createElement('span');
+    subtitle.textContent = 'Frank／台股操作';
+    titleBlock.append(title, subtitle);
+    brand.append(mark, titleBlock);
+
+    const status = document.createElement('span');
+    status.className = 'asset-excel-save-status';
+    status.textContent = ASSET_EXCEL_LOCAL_PREVIEW
+        ? '本機預覽｜尚未連動正式資料'
+        : '正式資料｜Supabase asset_operation_rows';
+    const topActions = document.createElement('div');
+    topActions.className = 'asset-excel-top-actions';
+    topActions.append(
+        assetExcelButton('返回持倉', 'asset-excel-secondary-button', () => {
+            window.location.assign(assetExcelPreviewBackUrl());
+        }));
+    brand.append(status);
+    topbar.append(brand, topActions);
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'asset-excel-toolbar';
+    toolbar.append(
+        assetExcelButton('⌕', 'asset-excel-icon-button', () => {}),
+        assetExcelButton('列印', 'asset-excel-secondary-button', () => window.print()),
+        assetExcelButton('100%', 'asset-excel-secondary-button', () => {}));
+
+    const editActions = document.createElement('div');
+    editActions.className = 'asset-excel-edit-actions';
+    if (assetExcelEditing) {
+        editActions.append(
+            assetExcelButton('新增空白列', 'asset-excel-secondary-button', () => {
+                assetExcelPreviewRows().push(assetExcelBlankRow());
+                assetExcelResortRows();
+                assetExcelNotice = '已新增空白列；可填寫 Buy、Stock 與族群勾選。';
+                renderAssetExcelView(el('asset-excel-page'));
+            }),
+            assetExcelButton('套用變更', 'asset-excel-primary-button', () => {
+                void assetExcelApplyChanges();
+            }),
+            assetExcelButton('取消', 'asset-excel-secondary-button', () => {
+                assetExcelRows = assetExcelCloneRows(assetExcelEditingSnapshot ?? ASSET_EXCEL_PREVIEW_ROWS);
+                assetExcelResortRows();
+                assetExcelEditing = false;
+                assetExcelEditingSnapshot = null;
+                assetExcelNotice = '已取消編輯，資料沒有變更。';
+                renderAssetExcelView(el('asset-excel-page'));
+            }));
+    } else {
+        editActions.append(assetExcelButton('編輯', 'asset-excel-primary-button', () => {
+            assetExcelEditingSnapshot = assetExcelCloneRows(assetExcelPreviewRows());
+            assetExcelEditing = true;
+            assetExcelNotice = '';
+            renderAssetExcelView(el('asset-excel-page'));
+        }));
+    }
+    toolbar.append(editActions);
+
+    const notice = document.createElement('p');
+    notice.className = 'asset-excel-preview-note';
+    notice.textContent = assetExcelNotice || (assetExcelEditing
+        ? `編輯模式：可修改 Buy、Stock 與族群勾選；營收創高由創高月數衍生且唯讀。可點擊欄名排序，新增空白列或逐列刪除，${ASSET_EXCEL_LOCAL_PREVIEW ? '按「套用變更」保存本機預覽草稿。' : '按「套用變更」寫回正式資料庫。'}`
+        : ASSET_EXCEL_LOCAL_PREVIEW
+            ? '操作(台)｜本機唯讀樣本。點擊欄名或排序圖示可切換升冪／降冪，標題下方資料列會同步移動。'
+            : '操作(台)｜正式資料。營收創高依 revenue_latest 的創高月數判斷（≥13 個月為 V），不可直接修改。');
+
+    const grid = document.createElement('div');
+    grid.className = 'asset-excel-grid';
+    grid.append(makeAssetExcelTable());
+
+    shell.append(topbar, toolbar, notice, grid);
+    return shell;
+}
+
+function renderAssetExcelView(page) {
+    const rankingPage = document.querySelector('.ranking-page');
+    if (rankingPage !== null) {
+        rankingPage.hidden = true;
+    }
+
+    page.hidden = false;
+    document.body.classList.add('asset-excel-view-active');
+    document.title = 'Stock｜操作(台)';
+
+    if (!ASSET_DASHBOARD_ENABLED) {
+        const message = document.createElement('p');
+        message.className = 'asset-excel-access-message';
+        message.textContent = '此試算表只開放最高權限使用者查看。';
+        page.replaceChildren(message);
+        return;
+    }
+
+    if (assetExcelLoadError !== null) {
+        const message = document.createElement('p');
+        message.className = 'asset-excel-access-message';
+        message.textContent = assetExcelLoadError;
+        page.replaceChildren(message);
+        return;
+    }
+
+    if (!ASSET_EXCEL_LOCAL_PREVIEW && assetExcelRows === null) {
+        const message = document.createElement('p');
+        message.className = 'asset-excel-access-message';
+        message.textContent = '正式 Excel 資料載入中…';
+        page.replaceChildren(message);
+        return;
+    }
+
+    page.replaceChildren(makeAssetExcelView());
+}
+
 function makeAssetHoldings(view) {
     const section = document.createElement('section');
     section.className = 'asset-account-holdings';
     const headingRow = document.createElement('div');
     headingRow.className = 'asset-section-heading';
+    const headingMain = document.createElement('div');
+    headingMain.className = 'asset-section-heading-main';
     const heading = document.createElement('h2');
     heading.textContent = '持倉';
     const headingActions = document.createElement('div');
@@ -9124,10 +10232,14 @@ function makeAssetHoldings(view) {
                 '刪除全部持倉中…',
                 () => assetRemove(ASSET_HOLDINGS_TABLE, `?account_id=eq.${encodeURIComponent(view.id)}`),
                 `已刪除全部 ${view.holdings.length} 筆持倉。`);
-        });
+    });
     removeAll.disabled = assetsBusy || view.holdings.length === 0;
+    if (assetActiveOwner()?.name === 'Frank' && view.market === '台股' && view.name === '台股操作') {
+        headingMain.append(assetButton('Excel', 'asset-excel-entry-button', () => openAssetExcelView(view)));
+    }
     headingActions.append(editAll, removeAll);
-    headingRow.append(heading, headingActions);
+    headingMain.prepend(heading);
+    headingRow.append(headingMain, headingActions);
     section.append(headingRow);
 
     if (assetEditorMode === 'holdings') {
@@ -14611,6 +15723,8 @@ function makeAssetAccountDetails(owner, view) {
 
     if (!ASSET_ANNUALIZED_LOCAL_PREVIEW) {
         content.append(makeAssetAccountSettings(view), makeAssetCashFlowSection(view), lower);
+    } else {
+        content.append(makeAssetHoldings(view));
     }
 
     return content;
@@ -24405,10 +25519,10 @@ function startIntradayTimer() {
 
 // ---- 市場切換（台股／美股／日股／韓股／加密貨幣）----
 // 只有 initMarketSwitch() 這一支入口會被 start() 呼叫；其餘都是它的內部建構函式。
-// 台股維持既有頁面完全不重畫——切到美股／加密貨幣時只是用 CSS 把 .ranking-page
-// 整塊隱藏，改顯示這裡建立的假資料面板；切回台股就是把 .ranking-page 顯示回來，
+// 台股維持既有頁面完全不重畫——切到其他市場時只是用 CSS 把 .ranking-page
+// 整塊隱藏，改顯示這裡建立的市場總覽面板；切回台股就是把 .ranking-page 顯示回來，
 // 台股本身的渲染／初始化流程完全不受影響。
-// 美股／加密貨幣讀 data/market-overview.json（見 StaticSiteExporter.WriteMarketOverviewAsync），
+// 美股／日股／韓股／加密貨幣讀 data/market-overview.json（見 StaticSiteExporter.WriteMarketOverviewAsync），
 // 台股沒有這份檔案：切到台股時顯示的是真實的既有頁面，不需要也不會去讀它。
 // 這份檔案在使用者第一次切離台股時才 fetch（見 ensureMarketOverviewData），
 // 因為它要用到 manifest 載入後才會設定的 version 做快取破壞。
@@ -24438,7 +25552,7 @@ async function ensureMarketOverviewData() {
         marketOverviewLoadError = null;
     } catch (error) {
         console.warn('市場總覽資料讀取失敗', error);
-        marketOverviewLoadError = '美股／加密貨幣資料讀取失敗，請重新整理再試一次。';
+            marketOverviewLoadError = '市場總覽資料讀取失敗，請重新整理再試一次。';
     } finally {
         // 失敗時清掉 promise 讓下一次切換頁籤可以重試；成功時 marketOverviewData
         // 已經有值，ensureMarketOverviewData 一開始的檢查會直接短路，不會重抓。
@@ -24447,48 +25561,54 @@ async function ensureMarketOverviewData() {
 }
 
 // ---- 市場總覽的交易日選擇器 ----
-// 美股有歷史檔（見 StaticSiteExporter.WriteMarketOverviewHistoryAsync 的說明）；日股／韓股
-// 的模板也提供同樣的交易日軸。加密貨幣是 24/7 市場，「哪一天算到齊」的概念跟收盤市場
+// 美股／日股／韓股有歷史檔（見 StaticSiteExporter.WriteMarketOverviewHistoryAsync 的說明）。
+// 加密貨幣是 24/7 市場，「哪一天算到齊」的概念跟收盤市場
 // 不同，因此不提供選擇器。
-// `proto.date === null` 代表「看最新」，直接沿用 marketOverviewData.us（already fetched，
-// 不必多打一次網路）；選到別的日期才需要另外抓 data/market-overview-us-{date}.json。
+// `proto.date === null` 代表「看最新」，直接沿用 marketOverviewData[market]（already fetched，
+// 不必多打一次網路）；選到別的日期才需要另外抓 data/market-overview-{market}-{date}.json。
 const marketOverviewDateCache = new Map();
 const marketOverviewDatePromises = new Map();
 
-function ensureMarketOverviewDate(date, onSettled) {
-    if (marketOverviewDateCache.has(date)) {
+function marketOverviewDateKey(market, date) {
+    return `${market}:${date}`;
+}
+
+function ensureMarketOverviewDate(market, date, onSettled) {
+    const key = marketOverviewDateKey(market, date);
+    if (marketOverviewDateCache.has(key)) {
         return;
     }
 
-    if (!marketOverviewDatePromises.has(date)) {
-        marketOverviewDatePromises.set(date, (async () => {
-            const response = await fetch(`data/market-overview-us-${date}.json?v=${version}`, { cache: 'no-store' });
+    if (!marketOverviewDatePromises.has(key)) {
+        marketOverviewDatePromises.set(key, (async () => {
+            const response = await fetch(`data/market-overview-${market}-${date}.json?v=${version}`, { cache: 'no-store' });
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
-            marketOverviewDateCache.set(date, await response.json());
+            marketOverviewDateCache.set(key, await response.json());
         })());
     }
 
-    marketOverviewDatePromises.get(date)
-        .catch(error => console.warn('市場總覽歷史交易日讀取失敗', date, error))
+    marketOverviewDatePromises.get(key)
+        .catch(error => console.warn('市場總覽歷史交易日讀取失敗', market, date, error))
         .finally(() => {
-            marketOverviewDatePromises.delete(date);
+            marketOverviewDatePromises.delete(key);
             onSettled();
         });
 }
 
-// 回傳目前該顯示的美股總覽 group，或 undefined（還在載入中，呼叫端顯示「載入中」）。
-function resolveMarketOverviewUsGroup(proto, onSettled) {
+// 回傳目前該顯示的收盤市場總覽 group，或 undefined（還在載入中，呼叫端顯示「載入中」）。
+function resolveMarketOverviewGroup(market, proto, onSettled) {
     if (proto.date === null) {
-        return marketOverviewData.us;
+        return marketOverviewData[market];
     }
 
-    if (marketOverviewDateCache.has(proto.date)) {
-        return marketOverviewDateCache.get(proto.date);
+    const key = marketOverviewDateKey(market, proto.date);
+    if (marketOverviewDateCache.has(key)) {
+        return marketOverviewDateCache.get(key);
     }
 
-    ensureMarketOverviewDate(proto.date, onSettled);
+    ensureMarketOverviewDate(market, proto.date, onSettled);
     return undefined;
 }
 
@@ -24502,7 +25622,7 @@ const MSP_SECTOR_TITLE = {
 const MSP_MARKETS = [
     { key: 'tw', text: '台股' },
     { key: 'us', text: '美股' },
-    // 日股／韓股先只開給最高權限做版面與資料規劃確認；尚未接入行情資料。
+    // 日股／韓股目前仍只對最高權限顯示；資料已由後端市場總覽匯出。
     { key: 'jp', text: '日股', adminOnly: true },
     { key: 'kr', text: '韓股', adminOnly: true },
     { key: 'crypto', text: '加密貨幣' }
@@ -24527,9 +25647,8 @@ function mspTemplateTradingDates() {
     return dates.reverse();
 }
 
-// 日股／韓股尚未完成正式行情管線；這組明確標示為模板資料的內容讓最高權限先確認
-// 「指數 → 熱絡指數 → 熱力圖」的內容密度、三個月 K 線與交易日選擇器。正式網站只對
-// 最高權限顯示，並保留模板／示意標籤；資料來源、交易日規則與公式定案後再替換成正式快照。
+// 保留舊的版面預覽函式供本機 UI 回歸測試；正式渲染不再呼叫這組模板資料，
+// 會改讀後端輸出的日股／韓股快照。
 const MSP_TEMPLATE_TRADING_DATES = mspTemplateTradingDates();
 const MSP_LAYOUT_PREVIEW_DATA = {
     jp: {
@@ -24602,7 +25721,7 @@ function mspBuildMarketTabs(proto, paint) {
         button.textContent = market.text;
         button.setAttribute('aria-pressed', String(market.key === proto.market));
         button.dataset.hint = market.adminOnly
-            ? '只有最高權限可見；目前尚未接入日股／韓股行情。'
+            ? '只有最高權限可見；日股／韓股資料由市場總覽快照提供。'
             : `切換到${market.text}市場`;
         button.addEventListener('click', () => {
             proto.market = market.key;
@@ -24781,7 +25900,7 @@ function mspBuildIndices(group, market, proto) {
         if (group.preview === true) {
             const indexMarket = `msp-${market}-${index.symbol.toLowerCase()}`;
             tile.dataset.indexMarket = indexMarket;
-            tile.dataset.hint = '點擊開啟這檔指數的三個月日 K、均線與成交金額（模板資料）。';
+            tile.dataset.hint = '點擊開啟這檔指數的三個月日 K、均線與成交金額。';
             tile.setAttribute('aria-expanded', String(expandedIndexMarket === indexMarket));
             tile.addEventListener('click', () => toggleIndexKLine(indexMarket, tile, {
                 template: true,
@@ -24795,7 +25914,13 @@ function mspBuildIndices(group, market, proto) {
             tile.dataset.hint = '點擊開啟這檔指數最近三個月的日 K';
             tile.setAttribute('aria-expanded', String(expandedTicker === index.symbol));
             tile.addEventListener('click', () => toggleKLine(index.symbol, index.name, tile, {
-                market: market === 'crypto' ? '加密貨幣' : '美股',
+                market: market === 'crypto'
+                    ? '加密貨幣'
+                    : market === 'jp'
+                        ? '日股'
+                        : market === 'kr'
+                            ? '韓股'
+                            : '美股',
                 latest: true
             }));
         }
@@ -24814,7 +25939,11 @@ function mspBuildIndices(group, market, proto) {
         const ytd = document.createElement('span');
         ytd.className = `msp-index-tile-ytd ${toTrendClass(index.ytd ?? 0)}`;
         ytd.textContent = missing(index.ytd) ? '今年 —' : `今年 ${toSignedPercentText(index.ytd / 100, 2)}`;
-        changes.append(daily, ytd);
+        const heat = document.createElement('span');
+        const [, heatClass] = heatLevel(index.heatScore);
+        heat.className = `msp-index-tile-heat ${heatClass}`;
+        heat.textContent = missing(index.heatScore) ? '熱 —' : `熱 ${index.heatScore}/10`;
+        changes.append(daily, ytd, heat);
         tile.append(name, value, changes);
         section.append(tile);
     }
@@ -24870,6 +25999,15 @@ function mspBuildHeatPanel(group, market) {
     overview.className = 'market-heat-overview';
     overview.append(heading, progress, scale);
 
+    if (market !== 'crypto' && group.sectorValidCount !== undefined) {
+        const sectorMeta = document.createElement('p');
+        sectorMeta.className = 'market-heat-sector-meta';
+        const total = Number(group.sectors?.length ?? 0);
+        const valid = group.sectorValidCount === null ? 0 : group.sectorValidCount;
+        sectorMeta.textContent = `產業確認：${valid}/${total} 檔有效`;
+        overview.append(sectorMeta);
+    }
+
     panel.append(overview);
     return panel;
 }
@@ -24900,7 +26038,11 @@ function mspBuildSectorsSection(group, market, proto, paint) {
     hint.className = 'msp-card-detail';
     hint.textContent = group.preview === true
         ? '模板預覽：方塊大小＝近 20 日平均成交值占比（示意）；顏色＝日漲跌（示意）。'
-        : '方塊大小＝近 20 日平均成交值占比（資金關注度），不是市值權重。';
+        : market === 'crypto'
+            ? '主力幣種僅供觀察；綜合熱絡分數使用 BTC、ETH、SOL、DOGE 的技術分數。'
+            : market === 'kr'
+                ? '方塊大小＝近 20 日平均成交值占比（資金關注度）；韓股目前採產業代表標的，不是市值權重。'
+                : '方塊大小＝近 20 日平均成交值占比（資金關注度），不是市值權重。';
     section.append(hint);
 
     section.append(proto.sectorView === 'list' ? mspBuildSectorsList(group, market) : mspBuildSectorsHeatmap(group, market));
@@ -24944,19 +26086,19 @@ function mspHexToRgb(hex) {
 
 // 點擊熱力圖方塊／列表項開啟該檔的三個月日 K，跟指數小卡共用同一套 toggleKLine 管線。
 function mspMakeTickerClickable(element, symbol, name, market) {
-    if (market === 'jp' || market === 'kr') {
-        element.dataset.hint = '本機版面預覽資料；日股／韓股標的 K 線尚未接入。';
-        element.classList.add('msp-preview-static-tile');
-        return;
-    }
-
     element.tabIndex = 0;
     element.setAttribute('role', 'button');
     element.dataset.mspTicker = symbol;
     element.setAttribute('aria-expanded', String(expandedTicker === symbol));
     element.dataset.hint = '點擊開啟這檔標的最近三個月的日 K';
     const open = () => toggleKLine(symbol, name, element, {
-        market: market === 'crypto' ? '加密貨幣' : '美股',
+        market: market === 'crypto'
+            ? '加密貨幣'
+            : market === 'jp'
+                ? '日股'
+                : market === 'kr'
+                    ? '韓股'
+                    : '美股',
         latest: true
     });
     element.addEventListener('click', open);
@@ -25038,11 +26180,11 @@ function mspSection(titleText, contentEl) {
 // 前後交易日各一顆按鈕瀏覽市場總覽的歷史資料，視覺與互動比照台股盤後的
 // renderDatePicker()／date-step；這裡刻意另外寫一份而不是直接呼叫那支函式——
 // 那支綁死模組層級的 state.date／dates／calendarOpen，是台股排行頁本身的狀態，
-// 跟這裡 proto 物件（美股／加密貨幣切換用的面板狀態）混用風險比重寫一份還高。
+// 跟這裡 proto 物件（市場切換用的面板狀態）混用風險比重寫一份還高。
 // 美股、日股、韓股提供交易日軸；加密貨幣是 24/7 市場，沒有 dates 清單。
 function mspBuildDateStepper(group, market, proto, paint) {
-    const availableDates = market === 'us'
-        ? group?.dates ?? marketOverviewData?.us?.dates ?? []
+    const availableDates = ['us', 'jp', 'kr'].includes(market)
+        ? group?.dates ?? marketOverviewData?.[market]?.dates ?? []
         : group?.dates ?? [];
     const currentDate = proto.date ?? availableDates.at(-1);
 
@@ -25065,8 +26207,7 @@ function mspBuildDateStepper(group, market, proto, paint) {
         if (!button.disabled) {
             button.addEventListener('click', () => {
                 const targetDate = availableDates[target];
-                // 選到清單最後一天（最新）就退回 null：美股直接沿用 market-overview.json，
-                // 日股／韓股則回到模板資料的最新交易日。
+                // 選到清單最後一天（最新）就退回 null，沿用 market-overview.json 的最新組。
                 proto.date = targetDate === availableDates.at(-1) ? null : targetDate;
                 if (expandedIndexMarket?.startsWith(`msp-${market}-`)) {
                     expandedIndexEndDate = proto.date ?? availableDates.at(-1) ?? null;
@@ -25550,7 +26691,7 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
 .msp-index-tile-name { font-size: 12px; color: var(--text-muted); }
 .msp-index-tile-value { font-size: 15px; font-weight: 700; }
 .msp-index-tile-changes { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-.msp-index-tile-daily, .msp-index-tile-ytd { font-size: 12px; font-weight: 600; }
+.msp-index-tile-daily, .msp-index-tile-ytd, .msp-index-tile-heat { font-size: 12px; font-weight: 600; }
 .msp-market-segmented {
     display: inline-flex;
     padding: 4px;
@@ -27270,7 +28411,7 @@ body.holdings-viewer-access .assets-page {
 }
 
 // 台股是預設市場，一進站什麼都不用做——.ranking-page 本來就顯示。
-// 切到美股／加密貨幣才加上 body class 隱藏 .ranking-page，並畫出假資料面板；
+// 切到其他市場才加上 body class 隱藏 .ranking-page，並畫出市場總覽面板；
 // 切回台股就是把面板藏起來、拿掉 body class，.ranking-page 自己重新可見。
 // 全程不重畫、不重新初始化 .ranking-page 裡的任何內容。
 function initMarketSwitch() {
@@ -27285,7 +28426,7 @@ function initMarketSwitch() {
     const proto = {
         market: 'tw',
         sectorView: 'heatmap',
-        // 美股總覽目前選定的交易日；null 代表看最新（見 resolveMarketOverviewUsGroup）。
+        // 收盤市場總覽目前選定的交易日；null 代表看最新（見 resolveMarketOverviewGroup）。
         date: null
     };
 
@@ -27352,13 +28493,7 @@ function initMarketSwitch() {
         const inner = document.createElement('div');
         inner.className = 'msp-market-panel';
 
-        const localPreviewGroup = mspLayoutPreviewGroup(proto.market);
-        if (localPreviewGroup !== null) {
-            inner.append(mspBuildLayoutPreviewNotice(proto.market));
-            inner.append(mspBuildDashboard(localPreviewGroup, proto.market, proto, render));
-        } else if (proto.market === 'jp' || proto.market === 'kr') {
-            inner.append(mspBuildUnavailableMarketPanel(proto.market));
-        } else if (marketOverviewLoadError !== null) {
+        if (marketOverviewLoadError !== null) {
             const notice = document.createElement('section');
             notice.className = 'notice warning msp-overview-notice';
             notice.textContent = marketOverviewLoadError;
@@ -27376,9 +28511,9 @@ function initMarketSwitch() {
                 || '這個市場目前還沒有可顯示的資料。';
             inner.append(notice);
         } else {
-            // 只有美股組可能在看歷史交易日；加密貨幣沒有選擇器，永遠是 marketOverviewData.crypto。
-            const group = proto.market === 'us'
-                ? resolveMarketOverviewUsGroup(proto, render)
+            // 美股／日股／韓股可回看歷史交易日；加密貨幣永遠使用最新組。
+            const group = ['us', 'jp', 'kr'].includes(proto.market)
+                ? resolveMarketOverviewGroup(proto.market, proto, render)
                 : marketOverviewData[proto.market];
 
             if (group === undefined) {
@@ -27400,7 +28535,9 @@ function initMarketSwitch() {
 }
 
 async function start() {
-    initMarketSwitch();
+    if (!ASSET_EXCEL_VIEW) {
+        initMarketSwitch();
+    }
 
     // manifest 一定要拿到最新的一份，否則版本號就失去意義，
     // 所以這支檔案自己不進快取。
@@ -27426,7 +28563,7 @@ async function start() {
     // 權限分享連結先由 Edge Function 原子兌換，再用 Auth token hash 建立本機 session；
     // 只有管理者可以建立，接收者不會接觸任何固定帳號密碼。
     let sharedLogin = false;
-    let shareError = null;
+    shareError = null;
     if (INVITE_QUERY) {
         try {
             const redeemed = await accessShareJson(
@@ -27471,6 +28608,34 @@ async function start() {
 
     // 預設值都擺好之後才套上次選的，這樣驗不過的項目自然留在預設。
     applyStoredSettings();
+
+    if (ASSET_EXCEL_VIEW) {
+        configureKLinePopover();
+
+        if (!ASSET_EXCEL_LOCAL_PREVIEW && ASSET_DASHBOARD_ENABLED) {
+            try {
+                await refreshAssets({ persistSnapshots: false });
+                const account = assetExcelTargetAccount();
+
+                if (account === null) {
+                    throw new Error('找不到 Frank 的「台股操作」帳戶。');
+                }
+
+                await Promise.all([
+                    loadRevenue(true),
+                    loadAssetExcelData(account.id)
+                ]);
+            } catch (error) {
+                const detail = String(error?.message ?? '');
+                assetExcelLoadError = detail === '400' || detail === '404'
+                    ? '正式 Excel 表尚未完成資料庫 migration，請先套用 db/051_asset_operation_sheet.sql。'
+                    : `正式 Excel 資料載入失敗：${detail || '資料庫連線或權限錯誤'}。`;
+            }
+        }
+
+        renderAssetExcelView(el('asset-excel-page'));
+        return;
+    }
 
     // 本機預覽可用 ?view=notes 直接開筆記頁；檢視權限仍不能藉此繞過可用頁籤限制。
     if (availableViews().some(view => view.key === VIEW_QUERY)) {

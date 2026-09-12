@@ -114,30 +114,79 @@ public sealed class MarketOverviewCalculatorTests
     }
 
     [Fact]
-    public void 沒有任何symbol有兩天以上資料時熱度分數是空值()
+    public void 美股個別指數熱絡分數同時納入技術與VIX風險且輸出0到10()
     {
-        var symbols = new[] { new MarketOverviewSymbol("XLK", "資訊科技") };
-        var history = new[]
-        {
-            Snapshot(new DateOnly(2026, 9, 5), ("XLK", 100m, 100m))
-        };
+        var history = BuildHistory(
+            ("^GSPC", 100m, 1_000m),
+            ("^VIX", 18m, 1_000m),
+            ("XLK", 100m, 1_000m));
 
-        Assert.Null(MarketOverviewCalculator.CalculateHeatScore(history, symbols));
+        var result = MarketOverviewCalculator.CalculateHeatAt(history, MarketOverviewCatalog.Us, new DateOnly(2026, 9, 5));
+
+        Assert.NotNull(result.IndexHeatScores["^GSPC"]);
+        Assert.InRange(result.IndexHeatScores["^GSPC"]!.Value, 0m, 10m);
     }
 
     [Fact]
-    public void 全部類股上漲且成交值等於均量時熱度分數是廣度滿分與量能五分的平均()
+    public void 美股綜合熱絡需要四大指數與足夠類股確認資料()
     {
-        // 廣度：全部上漲 → 10 分。量能：當日成交值＝20 日均量（比值 1.0）→ 5 分。
-        // 平均各半，7.5 分。
-        var symbols = new[] { new MarketOverviewSymbol("XLK", "資訊科技") };
-        var history = new[]
+        var history = BuildHistory(
+            ("^DJI", 100m, 1_000m), ("^GSPC", 100m, 1_000m),
+            ("^IXIC", 100m, 1_000m), ("^SOX", 100m, 1_000m),
+            ("^VIX", 18m, 1_000m));
+        foreach (var sector in MarketOverviewCatalog.UsSectors)
         {
-            Snapshot(new DateOnly(2026, 9, 4), ("XLK", 100m, 100m)),
-            Snapshot(new DateOnly(2026, 9, 5), ("XLK", 110m, 100m))
-        };
+            history = history
+                .Select(snapshot => snapshot)
+                .Concat(BuildHistory((sector.Symbol, 100m, 1_000m)))
+                .GroupBy(snapshot => snapshot.TradingDate)
+                .Select(group => Merge(group))
+                .ToArray();
+        }
 
-        Assert.Equal(7.5m, MarketOverviewCalculator.CalculateHeatScore(history, symbols));
+        var result = MarketOverviewCalculator.CalculateHeatAt(history, MarketOverviewCatalog.Us, new DateOnly(2026, 9, 5));
+
+        Assert.NotNull(result.CompositeHeatScore);
+        Assert.NotNull(result.SectorHeatScore);
+        Assert.Equal(11, result.SectorValidCount);
+        Assert.Equal(4, result.IndexHeatScores.Count);
+    }
+
+    [Fact]
+    public void 加密貨幣綜合熱絡包含DOGE且不需要VIX或類股熱力圖()
+    {
+        var history = BuildHistory(
+            ("BTC-USD", 100m, 1_000m), ("ETH-USD", 100m, 1_000m),
+            ("SOL-USD", 100m, 1_000m), ("DOGE-USD", 100m, 1_000m));
+
+        var result = MarketOverviewCalculator.CalculateHeatAt(history, MarketOverviewCatalog.Crypto, new DateOnly(2026, 9, 5));
+
+        Assert.NotNull(result.CompositeHeatScore);
+        Assert.Null(result.SectorHeatScore);
+        Assert.Null(result.SectorValidCount);
+        Assert.Equal(3, result.IndexHeatScores.Count);
+        Assert.InRange(result.CompositeHeatScore!.Value, 0m, 10m);
+    }
+
+    [Fact]
+    public void 缺少VIX時美股指數熱絡分數不以假資料補值()
+    {
+        var history = BuildHistory(("^GSPC", 100m, 1_000m));
+
+        var result = MarketOverviewCalculator.CalculateHeatAt(history, MarketOverviewCatalog.Us, new DateOnly(2026, 9, 5));
+
+        Assert.Null(result.IndexHeatScores["^GSPC"]);
+    }
+
+    [Fact]
+    public void 四市場名冊包含日韓與DOGE()
+    {
+        var symbols = MarketOverviewCatalog.All().Select(symbol => symbol.Symbol).ToHashSet(StringComparer.Ordinal);
+
+        Assert.Contains("^N225", symbols);
+        Assert.Contains("^KS11", symbols);
+        Assert.Contains("DOGE-USD", symbols);
+        Assert.Equal(4, MarketOverviewCatalog.Definitions.Count);
     }
 
     [Fact]
@@ -211,6 +260,29 @@ public sealed class MarketOverviewCalculatorTests
         Assert.Empty(result.AheadSymbols);
     }
 
+    private static MarketOverviewSnapshot[] BuildHistory(params (string Symbol, decimal Base, decimal Volume)[] symbols)
+    {
+        return Enumerable.Range(0, 260)
+            .Select(index => Snapshot(
+                new DateOnly(2025, 12, 20).AddDays(index),
+                symbols.Select(symbol => (
+                    symbol.Symbol,
+                    Close: symbol.Base + index * 0.1m,
+                    TradingValue: symbol.Volume)).ToArray()))
+            .ToArray();
+    }
+
+    private static MarketOverviewSnapshot Merge(IGrouping<DateOnly, MarketOverviewSnapshot> group)
+    {
+        var first = group.First();
+        return new MarketOverviewSnapshot
+        {
+            TradingDate = group.Key,
+            DownloadedAt = first.DownloadedAt,
+            Quotes = [.. group.SelectMany(snapshot => snapshot.Quotes)]
+        };
+    }
+
     private static MarketOverviewSnapshot Snapshot(DateOnly date, params (string Symbol, decimal Close, decimal TradingValue)[] quotes)
         => new()
         {
@@ -221,7 +293,8 @@ public sealed class MarketOverviewCalculatorTests
                 Symbol = q.Symbol,
                 Name = q.Symbol,
                 ClosePrice = q.Close,
-                TradingValue = q.TradingValue
+                TradingValue = q.TradingValue,
+                TradingVolume = q.TradingValue
             })]
         };
 }

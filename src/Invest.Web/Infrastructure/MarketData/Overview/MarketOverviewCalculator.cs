@@ -1,19 +1,14 @@
 namespace Invest.Web.Infrastructure.MarketData.Overview;
 
 /// <summary>
-/// 把 <see cref="MarketOverviewSnapshot"/> 的原始收盤價／成交金額換算成市場切換總覽要顯示的數字。
-/// 純函式、不碰 I/O，方便單獨測試；<see cref="StaticSite.StaticSiteExporter"/> 只負責讀快照、
-/// 呼叫這裡、寫檔。
+/// 市場熱絡公式唯一來源。這裡只做純計算，不讀檔、不碰網路；匯出器只負責準備同日快照。
 /// </summary>
 public static class MarketOverviewCalculator
 {
-    private const int TradingValueAverageWindow = 20;
+    private const int MinimumTechnicalHistory = 60;
+    private const int MinimumRiskHistory = 252;
+    private const int SectorMinimumValid = 9;
 
-    /// <summary>
-    /// 缺資料一律回 null，不往回找最近有值的那天——往回找會產生「指數 —、
-    /// 今年 +12.3%」這種看起來正常、其實是好幾天前數字的畫面（見
-    /// StaticSiteExporter.ToMarketIndexExports 的同一個原則）。
-    /// </summary>
     public static MarketOverviewIndexResult? CalculateIndex(
         IReadOnlyList<MarketOverviewSnapshot> history,
         string symbol,
@@ -36,31 +31,56 @@ public static class MarketOverviewCalculator
     }
 
     /// <summary>
-    /// 比照 <see cref="MarketIndexPerformanceCalculator.YearToDateChangePercent"/> 的原則：
-    /// 只在去年 12 月找基準收盤，找不到就回 null，不往回抓更早的資料充數。
+    /// 計算某市場在自身最新日期的熱絡分數。加密貨幣的 DOGE 會參與綜合分數，
+    /// 但不必出現在個別指數卡片。
     /// </summary>
-    private static decimal? YearToDateChangePercent(
-        IReadOnlyList<(DateOnly Date, decimal ClosePrice, decimal TradingValue)> series,
-        DateOnly endDate,
-        decimal endingClose)
+    public static MarketOverviewHeatResult CalculateHeat(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        MarketOverviewDefinition definition)
     {
-        var previousYear = endDate.Year - 1;
-        var lowerBound = new DateOnly(previousYear, 12, 1);
-        var upperBound = new DateOnly(previousYear, 12, 31);
+        var targetDate = history.Count == 0 ? (DateOnly?)null : history.Max(snapshot => snapshot.TradingDate);
 
-        var baseline = series
-            .Where(point => point.Date >= lowerBound && point.Date <= upperBound)
-            .OrderByDescending(point => point.Date)
-            .Select(point => (decimal?)point.ClosePrice)
-            .FirstOrDefault();
+        return targetDate is { } date
+            ? CalculateHeatAt(history, definition, date)
+            : new MarketOverviewHeatResult(null, new Dictionary<string, decimal?>(), null, null);
+    }
 
-        return baseline is { } value ? PercentChange(value, endingClose) : null;
+    public static MarketOverviewHeatResult CalculateHeatAt(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        MarketOverviewDefinition definition,
+        DateOnly targetDate)
+    {
+        var indexScores = definition.Indices.ToDictionary(
+            symbol => symbol.Symbol,
+            symbol => SmoothToDate(
+                history,
+                targetDate,
+                (slice, date) => definition.IsCrypto
+                    ? CalculateCoinRaw(slice, symbol.Symbol, date)
+                    : CalculateIndexRaw(slice, symbol.Symbol, definition.RiskSymbol?.Symbol, date)),
+            StringComparer.Ordinal);
+
+        decimal? sectorScore = null;
+        int? sectorValidCount = null;
+        if (definition.UsesSectorConfirmation)
+        {
+            sectorScore = SmoothToDate(
+                history,
+                targetDate,
+                (slice, date) => CalculateSectorBlockRaw(slice, definition, date));
+            sectorValidCount = CountValidSectors(history, definition, targetDate);
+        }
+
+        var compositeScore = SmoothToDate(
+            history,
+            targetDate,
+            (slice, date) => CalculateCompositeRaw(slice, definition, date));
+
+        return new MarketOverviewHeatResult(compositeScore, indexScores, sectorScore, sectorValidCount);
     }
 
     /// <summary>
-    /// 類股／幣種熱力圖的每一列：漲跌幅與成交值權重（近 20 日平均成交值占這批 symbol 合計的比例）。
-    /// 用成交值而非市值，因為免費資料源拿不到即時市值權重；weight 的意義因此是
-    /// 「資金關注度」，不是「市值佔比」，前端文案要對應調整。
+    /// 類股／幣種列表仍提供當日漲跌與資金關注度。這個列表權重不會進入加密貨幣綜合熱絡公式。
     /// </summary>
     public static IReadOnlyList<MarketOverviewSectorResult> CalculateSectors(
         IReadOnlyList<MarketOverviewSnapshot> history,
@@ -72,17 +92,13 @@ public static class MarketOverviewCalculator
         foreach (var symbol in symbols)
         {
             var series = ExtractSeries(history, symbol.Symbol);
-
             if (series.Count == 0)
             {
                 continue;
             }
 
-            var window = series.TakeLast(TradingValueAverageWindow).ToArray();
-            averages[symbol.Symbol] = window.Length > 0
-                ? window.Average(point => point.TradingValue)
-                : 0m;
-
+            var window = series.TakeLast(20).ToArray();
+            averages[symbol.Symbol] = window.Length > 0 ? window.Average(point => point.TradingValue) : 0m;
             changes[symbol.Symbol] = series.Count >= 2
                 ? PercentChange(series[^2].ClosePrice, series[^1].ClosePrice)
                 : null;
@@ -100,84 +116,8 @@ public static class MarketOverviewCalculator
     }
 
     /// <summary>
-    /// 上漲家數占比 50% ＋ 當日合計成交值相對 20 日均量 50%，0-10 分。
-    /// 台股既有的 renderMarketHeat 是「短期趨勢／廣度／量能」三分法，但廣度需要全市場成分股；
-    /// 這裡只有 11 檔類股 ETF 或幾檔幣種可用，樣本太小做不出可信的廣度分數，所以另立公式。
-    /// </summary>
-    public static decimal? CalculateHeatScore(
-        IReadOnlyList<MarketOverviewSnapshot> history,
-        IReadOnlyList<MarketOverviewSymbol> symbols)
-    {
-        var advancingRatioInputs = new List<bool>();
-        decimal latestTotal = 0m;
-        decimal averageTotal = 0m;
-        var hasVolumeData = false;
-
-        foreach (var symbol in symbols)
-        {
-            var series = ExtractSeries(history, symbol.Symbol);
-
-            if (series.Count < 2)
-            {
-                continue;
-            }
-
-            var change = PercentChange(series[^2].ClosePrice, series[^1].ClosePrice);
-
-            if (change is { } value)
-            {
-                advancingRatioInputs.Add(value >= 0m);
-            }
-
-            var window = series.TakeLast(TradingValueAverageWindow).ToArray();
-
-            if (window.Any(point => point.TradingValue > 0m))
-            {
-                hasVolumeData = true;
-                latestTotal += series[^1].TradingValue;
-                averageTotal += window.Average(point => point.TradingValue);
-            }
-        }
-
-        if (advancingRatioInputs.Count == 0)
-        {
-            return null;
-        }
-
-        var advancingRatio = advancingRatioInputs.Count(x => x) / (decimal)advancingRatioInputs.Count;
-        var breadthScore = advancingRatio * 10m;
-
-        if (!hasVolumeData || averageTotal <= 0m)
-        {
-            return decimal.Round(breadthScore, 1);
-        }
-
-        var volumeRatio = latestTotal / averageTotal;
-
-        // 相對均量 0.5 倍給 0 分、1 倍給 5 分、1.5 倍以上給滿分 10 分，中間內插。
-        var volumeScore = Math.Clamp((volumeRatio - 0.5m) / 1.0m * 10m, 0m, 10m);
-
-        return decimal.Round(breadthScore * 0.5m + volumeScore * 0.5m, 1);
-    }
-
-    /// <summary>
-    /// 這批 symbol「全部都有資料」的最新交易日，取每個 symbol 自己最新日期的**最小值**。
-    ///
-    /// 2026-09-11 查出的根因：<see cref="ExtractSeries"/> 是逐 symbol 各自找 <c>series[^1]</c>，
-    /// 完全沒有跨 symbol 的日期一致性檢查。同一份 <c>imports-overview</c> 快照，指數
-    /// （^DJI 等）Yahoo 更新得比類股 ETF（XLK 等）快，於是 <c>CalculateIndex</c> 已經算出
-    /// 當天的指數，<c>CalculateSectors</c> 卻還在用前一天的 ETF 收盤——同一個面板混著
-    /// 兩個日期，畫面上完全看不出來。
-    ///
-    /// 呼叫端（<see cref="StaticSite.StaticSiteExporter"/>）要用回傳的 <c>AsOfDate</c> 把
-    /// <paramref name="history"/> 過濾到「不晚於這一天」再丟給 <see cref="CalculateIndex"/>／
-    /// <see cref="CalculateSectors"/>／<see cref="CalculateHeatScore"/>，確保同一個面板裡
-    /// 每個數字都對得起同一個交易日；寧可整批停在前一天，也不要局部超前。
-    /// <c>AheadSymbols</c> 是造成卡住的那幾檔（自己的最新日期比 <c>AsOfDate</c> 新），
-    /// 用來組告警訊息，讓人一眼看出是哪些 symbol 落後。
-    ///
-    /// 沒有任何 symbol 有資料時回傳 <c>AsOfDate: null</c>——呼叫端此時不該顯示任何日期，
-    /// 不能用今天或任意預設值頂替。
+    /// 取整批 symbol 的最新共同日期。缺少整批中的某個 symbol 時不會拿舊日期冒充，
+    /// 但仍回傳現有資料的共同日期，讓上層把缺資料明確列成 warning／null。
     /// </summary>
     public static MarketOverviewAsOfResult DetermineAsOfDate(
         IReadOnlyList<MarketOverviewSnapshot> history,
@@ -188,7 +128,6 @@ public static class MarketOverviewCalculator
         foreach (var symbol in symbols)
         {
             var series = ExtractSeries(history, symbol.Symbol);
-
             if (series.Count > 0)
             {
                 latestBySymbol[symbol.Symbol] = series[^1].Date;
@@ -210,27 +149,452 @@ public static class MarketOverviewCalculator
         return new MarketOverviewAsOfResult(asOfDate, aheadSymbols);
     }
 
-    private static decimal? PercentChange(decimal previousClose, decimal latestClose)
+    private static decimal? CalculateCompositeRaw(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        MarketOverviewDefinition definition,
+        DateOnly targetDate)
     {
-        if (previousClose <= 0m)
+        var components = new List<(decimal Weight, decimal Score)>();
+
+        foreach (var symbol in definition.CompositeSymbols)
+        {
+            var raw = definition.IsCrypto
+                ? CalculateCoinRaw(history, symbol.Symbol, targetDate)
+                : CalculateIndexRaw(history, symbol.Symbol, definition.RiskSymbol?.Symbol, targetDate);
+
+            if (raw is not { } value
+                || !definition.CompositeWeights.TryGetValue(symbol.Symbol, out var weight))
+            {
+                return null;
+            }
+
+            components.Add((weight, value));
+        }
+
+        var weightTotal = components.Sum(component => component.Weight);
+        if (weightTotal <= 0m)
         {
             return null;
         }
 
-        return decimal.Round((latestClose - previousClose) / previousClose * 100m, 2, MidpointRounding.AwayFromZero);
+        var indexBlock = components.Sum(component => component.Weight * component.Score) / weightTotal;
+
+        if (!definition.UsesSectorConfirmation)
+        {
+            return ClampScore(indexBlock);
+        }
+
+        var sectorBlock = CalculateSectorBlockRaw(history, definition, targetDate);
+        return sectorBlock is { } sector
+            ? ClampScore(indexBlock * 0.80m + sector * 0.20m)
+            : null;
     }
 
-    private static IReadOnlyList<(DateOnly Date, decimal ClosePrice, decimal TradingValue)> ExtractSeries(
+    private static decimal? CalculateIndexRaw(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        string indexSymbol,
+        string? riskSymbol,
+        DateOnly targetDate)
+    {
+        var series = ExactSeries(history, indexSymbol, targetDate);
+        if (series.Count < MinimumTechnicalHistory || riskSymbol is null)
+        {
+            return null;
+        }
+
+        var risk = CalculateRiskScore(history, riskSymbol, targetDate);
+        var technical = CalculateTechnicalScore(series);
+
+        return risk is { } riskScore && technical is { } technicalScore
+            ? ClampScore(technicalScore * 0.80m + riskScore * 0.20m)
+            : null;
+    }
+
+    private static decimal? CalculateCoinRaw(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        string symbol,
+        DateOnly targetDate)
+    {
+        var series = ExactSeries(history, symbol, targetDate);
+        if (series.Count < MinimumTechnicalHistory)
+        {
+            return null;
+        }
+
+        var trend = CalculateTrendScore(series);
+        var momentum = CalculateMomentumScore(series);
+        var rsi = CalculateRsiScore(series);
+        var obv = CalculateObvScore(series);
+
+        return trend is { } trendScore
+            && momentum is { } momentumScore
+            && rsi is { } rsiScore
+            && obv is { } obvScore
+            ? ClampScore(trendScore * 0.45m + momentumScore * 0.30m + rsiScore * 0.10m + obvScore * 0.15m)
+            : null;
+    }
+
+    private static decimal? CalculateSectorBlockRaw(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        MarketOverviewDefinition definition,
+        DateOnly targetDate)
+    {
+        if (definition.SectorBenchmark is not { } benchmark)
+        {
+            return null;
+        }
+
+        var benchmarkSeries = ExactSeries(history, benchmark.Symbol, targetDate);
+        if (benchmarkSeries.Count < 6)
+        {
+            return null;
+        }
+
+        var scores = definition.Sectors
+            .Select(symbol => CalculateSectorRaw(history, symbol.Symbol, benchmarkSeries, targetDate))
+            .Where(score => score is not null)
+            .Select(score => score!.Value)
+            .ToArray();
+
+        return scores.Length >= SectorMinimumValid ? ClampScore(scores.Average()) : null;
+    }
+
+    private static int CountValidSectors(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        MarketOverviewDefinition definition,
+        DateOnly targetDate)
+    {
+        if (definition.SectorBenchmark is not { } benchmark)
+        {
+            return 0;
+        }
+
+        var benchmarkSeries = ExactSeries(history, benchmark.Symbol, targetDate);
+        if (benchmarkSeries.Count < 6)
+        {
+            return 0;
+        }
+
+        return definition.Sectors.Count(symbol =>
+            CalculateSectorRaw(history, symbol.Symbol, benchmarkSeries, targetDate) is not null);
+    }
+
+    private static decimal? CalculateSectorRaw(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        string symbol,
+        IReadOnlyList<PricePoint> benchmarkSeries,
+        DateOnly targetDate)
+    {
+        var series = ExactSeries(history, symbol, targetDate);
+        if (series.Count < MinimumTechnicalHistory)
+        {
+            return null;
+        }
+
+        var trend = CalculateTrendScore(series);
+        var obv = CalculateObvScore(series);
+        var sectorReturn = ReturnOverDays(series, 5);
+        var benchmarkReturn = ReturnOverDays(benchmarkSeries, 5);
+
+        if (trend is not { } trendScore
+            || obv is not { } obvScore
+            || sectorReturn is not { } sectorValue
+            || benchmarkReturn is not { } benchmarkValue)
+        {
+            return null;
+        }
+
+        // Relative strength 2% 落後為 0、持平為 5、領先 2% 為 10。
+        var relative = ClampScore(5m + (sectorValue - benchmarkValue) / 0.02m * 5m);
+        return ClampScore(trendScore * 0.50m + relative * 0.30m + obvScore * 0.20m);
+    }
+
+    private static decimal? CalculateRiskScore(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        string riskSymbol,
+        DateOnly targetDate)
+    {
+        var series = ExactSeries(history, riskSymbol, targetDate);
+        if (series.Count < MinimumRiskHistory)
+        {
+            return null;
+        }
+
+        var closes = series.Select(point => point.ClosePrice).ToArray();
+        var latest = closes[^1];
+        var rank = closes.Count(value => value <= latest) - 1m;
+        var denominator = Math.Max(1, closes.Length - 1);
+        var level = ClampScore((1m - rank / denominator) * 10m);
+        var ma20 = closes.TakeLast(20).Average();
+        var priorMa20 = closes.Skip(closes.Length - 25).Take(20).Average();
+        var momentum = CalculateMomentumScore(series);
+
+        if (momentum is not { } momentumScore)
+        {
+            return null;
+        }
+
+        var riskDirection = (latest < ma20 ? 10m : 0m) * 0.20m
+            + (ma20 < priorMa20 ? 10m : 0m) * 0.15m
+            + (momentumScore <= 4m ? 10m : 0m) * 0.15m;
+
+        return ClampScore(level * 0.50m + riskDirection);
+    }
+
+    private static decimal? CalculateTechnicalScore(IReadOnlyList<PricePoint> series)
+    {
+        var trend = CalculateTrendScore(series);
+        var momentum = CalculateMomentumScore(series);
+        var rsi = CalculateRsiScore(series);
+
+        return trend is { } trendScore
+            && momentum is { } momentumScore
+            && rsi is { } rsiScore
+            ? ClampScore(trendScore * 0.55m + momentumScore * 0.35m + rsiScore * 0.10m)
+            : null;
+    }
+
+    private static decimal? CalculateTrendScore(IReadOnlyList<PricePoint> series)
+    {
+        if (series.Count < MinimumTechnicalHistory)
+        {
+            return null;
+        }
+
+        var closes = series.Select(point => point.ClosePrice).ToArray();
+        var ma20 = closes.TakeLast(20).Average();
+        var ma60 = closes.TakeLast(60).Average();
+        var priorMa20 = closes.Skip(closes.Length - 25).Take(20).Average();
+
+        return ClampScore(
+            (closes[^1] > ma20 ? 4m : 0m)
+            + (ma20 > ma60 ? 3.5m : 0m)
+            + (ma20 > priorMa20 ? 2.5m : 0m));
+    }
+
+    private static decimal? CalculateMomentumScore(IReadOnlyList<PricePoint> series)
+    {
+        var closes = series.Select(point => point.ClosePrice).ToArray();
+        if (closes.Length < 35)
+        {
+            return null;
+        }
+
+        var fast = EmaSeries(closes, 12);
+        var slow = EmaSeries(closes, 26);
+        var macd = new decimal?[closes.Length];
+        var macdValues = new List<(int Index, decimal Value)>();
+
+        for (var index = 0; index < closes.Length; index++)
+        {
+            if (fast[index] is { } fastValue && slow[index] is { } slowValue)
+            {
+                macd[index] = fastValue - slowValue;
+                macdValues.Add((index, macd[index]!.Value));
+            }
+        }
+
+        if (macdValues.Count < 10)
+        {
+            return null;
+        }
+
+        var signal = new decimal?[closes.Length];
+        var signalValue = macdValues.Take(9).Average(item => item.Value);
+        signal[macdValues[8].Index] = signalValue;
+
+        for (var index = 9; index < macdValues.Count; index++)
+        {
+            signalValue = signalValue * 8m / 10m + macdValues[index].Value * 2m / 10m;
+            signal[macdValues[index].Index] = signalValue;
+        }
+
+        var histogram = Enumerable.Range(0, closes.Length)
+            .Where(index => macd[index] is not null && signal[index] is not null)
+            .Select(index => (Index: index, Value: macd[index]!.Value - signal[index]!.Value))
+            .ToArray();
+
+        if (histogram.Length < 2)
+        {
+            return null;
+        }
+
+        return ClampScore(
+            (histogram[^1].Value > 0m ? 6m : 0m)
+            + (histogram[^1].Value > histogram[^2].Value ? 4m : 0m));
+    }
+
+    private static decimal? CalculateRsiScore(IReadOnlyList<PricePoint> series)
+    {
+        var closes = series.Select(point => point.ClosePrice).ToArray();
+        if (closes.Length < 15)
+        {
+            return null;
+        }
+
+        var gains = new List<decimal>();
+        var losses = new List<decimal>();
+        for (var index = 1; index < closes.Length; index++)
+        {
+            var change = closes[index] - closes[index - 1];
+            gains.Add(Math.Max(change, 0m));
+            losses.Add(Math.Max(-change, 0m));
+        }
+
+        var averageGain = gains.Take(14).Average();
+        var averageLoss = losses.Take(14).Average();
+        for (var index = 14; index < gains.Count; index++)
+        {
+            averageGain = (averageGain * 13m + gains[index]) / 14m;
+            averageLoss = (averageLoss * 13m + losses[index]) / 14m;
+        }
+
+        var rsi = averageLoss == 0m ? 100m : 100m - 100m / (1m + averageGain / averageLoss);
+        return ClampScore((rsi - 30m) / 40m * 10m);
+    }
+
+    private static decimal? CalculateObvScore(IReadOnlyList<PricePoint> series)
+    {
+        if (series.Count < 25 || series.All(point => point.TradingVolume <= 0m))
+        {
+            return null;
+        }
+
+        var obv = new decimal[series.Count];
+        for (var index = 1; index < series.Count; index++)
+        {
+            obv[index] = obv[index - 1];
+            if (series[index].ClosePrice > series[index - 1].ClosePrice)
+            {
+                obv[index] += series[index].TradingVolume;
+            }
+            else if (series[index].ClosePrice < series[index - 1].ClosePrice)
+            {
+                obv[index] -= series[index].TradingVolume;
+            }
+        }
+
+        var ema20 = EmaSeries(obv, 20);
+        if (ema20[^1] is not { } ema)
+        {
+            return null;
+        }
+
+        return ClampScore((obv[^1] > ema ? 6m : 0m) + (obv[^1] > obv[^6] ? 4m : 0m));
+    }
+
+    private static decimal? SmoothToDate(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        DateOnly targetDate,
+        Func<IReadOnlyList<MarketOverviewSnapshot>, DateOnly, decimal?> rawCalculator)
+    {
+        decimal? previous = null;
+        foreach (var date in history.Select(snapshot => snapshot.TradingDate)
+            .Where(date => date <= targetDate)
+            .Distinct()
+            .OrderBy(date => date))
+        {
+            var raw = rawCalculator(history.Where(snapshot => snapshot.TradingDate <= date).ToArray(), date);
+            previous = raw is { } value
+                ? previous is { } prior ? (value + prior) / 2m : value
+                : null;
+        }
+
+        return previous is { } result ? decimal.Round(ClampScore(result), 1) : null;
+    }
+
+    private static IReadOnlyList<PricePoint> ExactSeries(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        string symbol,
+        DateOnly targetDate)
+    {
+        var series = ExtractSeries(history, symbol)
+            .Where(point => point.Date <= targetDate)
+            .ToArray();
+
+        return series.Length > 0 && series[^1].Date == targetDate ? series : [];
+    }
+
+    private static IReadOnlyList<PricePoint> ExtractSeries(
         IReadOnlyList<MarketOverviewSnapshot> history,
         string symbol)
         => [.. history
             .OrderBy(snapshot => snapshot.TradingDate)
             .Select(snapshot => (
                 snapshot.TradingDate,
-                Quote: snapshot.Quotes.FirstOrDefault(q => q.Symbol == symbol)))
+                Quote: snapshot.Quotes.FirstOrDefault(quote => quote.Symbol == symbol)))
             .Where(entry => entry.Quote is not null)
-            .Select(entry => (entry.TradingDate, entry.Quote!.ClosePrice, entry.Quote.TradingValue))];
+            .Select(entry => new PricePoint(
+                entry.TradingDate,
+                entry.Quote!.ClosePrice,
+                entry.Quote.TradingValue,
+                entry.Quote.TradingVolume > 0m ? entry.Quote.TradingVolume : entry.Quote.TradingValue))];
+
+    private static decimal? ReturnOverDays(IReadOnlyList<PricePoint> series, int days)
+    {
+        var baselineIndex = series.Count - days - 1;
+        if (baselineIndex < 0 || series[baselineIndex].ClosePrice <= 0m)
+        {
+            return null;
+        }
+
+        return (series[^1].ClosePrice / series[baselineIndex].ClosePrice) - 1m;
+    }
+
+    private static decimal? YearToDateChangePercent(
+        IReadOnlyList<PricePoint> series,
+        DateOnly endDate,
+        decimal endingClose)
+    {
+        var previousYear = endDate.Year - 1;
+        var baseline = series
+            .Where(point => point.Date.Year == previousYear && point.Date.Month == 12)
+            .OrderByDescending(point => point.Date)
+            .Select(point => (decimal?)point.ClosePrice)
+            .FirstOrDefault();
+
+        return baseline is { } value ? PercentChange(value, endingClose) : null;
+    }
+
+    private static decimal? PercentChange(decimal previousClose, decimal latestClose)
+        => previousClose > 0m
+            ? decimal.Round((latestClose - previousClose) / previousClose * 100m, 2, MidpointRounding.AwayFromZero)
+            : null;
+
+    private static decimal ClampScore(decimal value) => Math.Clamp(value, 0m, 10m);
+
+    private static decimal?[] EmaSeries(IReadOnlyList<decimal> values, int period)
+    {
+        var result = new decimal?[values.Count];
+        if (values.Count < period)
+        {
+            return result;
+        }
+
+        var ema = values.Take(period).Average();
+        result[period - 1] = ema;
+        var alpha = 2m / (period + 1m);
+        for (var index = period; index < values.Count; index++)
+        {
+            ema = values[index] * alpha + ema * (1m - alpha);
+            result[index] = ema;
+        }
+
+        return result;
+    }
+
+    private sealed record PricePoint(
+        DateOnly Date,
+        decimal ClosePrice,
+        decimal TradingValue,
+        decimal TradingVolume);
 }
+
+public sealed record MarketOverviewHeatResult(
+    decimal? CompositeHeatScore,
+    IReadOnlyDictionary<string, decimal?> IndexHeatScores,
+    decimal? SectorHeatScore,
+    int? SectorValidCount);
 
 public sealed record MarketOverviewIndexResult(
     string Name,
@@ -245,8 +609,4 @@ public sealed record MarketOverviewSectorResult(
     decimal? ChangePercent,
     decimal Weight);
 
-/// <summary>
-/// 見 <see cref="MarketOverviewCalculator.DetermineAsOfDate"/>：<paramref name="AsOfDate"/>
-/// 是這批 symbol 全部到齊的最新交易日，<paramref name="AheadSymbols"/> 是超前那幾檔。
-/// </summary>
 public sealed record MarketOverviewAsOfResult(DateOnly? AsOfDate, IReadOnlyList<string> AheadSymbols);
