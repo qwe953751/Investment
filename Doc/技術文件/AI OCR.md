@@ -2,12 +2,17 @@
 
 > 日期：2026-09-12
 >
-> 狀態：**找到並修正使用者回報「一下走 AI 一下走 Tesseract、感覺只有排隊沒有辨識」的
-> 真正根因（見 0.3 節）：(1) Worker 3 個並行槽會在 claim 落空時永久死掉，慢工作會連帶
-> 卡住其他已經空出來的槽，改成常駐槽；(2) 前端用「心跳新鮮度」猜測 Worker 是否離線，
-> 藉此提早取消排隊中的工作，改成只信任工作本身的事實狀態與絕對時限。兩者皆已修正、
-> 全套 458 個 .NET 測試＋78 個 Node 測試全綠，尚待使用者下次整批上傳做真正的端到端
-> 驗證。Agent 降級已改為固定的跨機接力：Windows 的 Codex→Claude 都不行才換 Mac 的
+> 狀態：**同一天發現並修正第三個獨立問題（見 0.4 節）：readiness 只讀 Worker 心跳的
+> 單一 60 秒快照，探測 CLI 登入狀態失敗就 fail-closed，單次網路抖動會讓整批上傳在
+> 窗口內被靜默判定「沒有可用 Agent」而全部改走 Tesseract，事後完全看不出來——這正是
+> §0.3 修完、Worker 重啟後，使用者當天稍晚再測仍然全部走 Tesseract 的原因，且與 §0.3
+> 的排隊取消問題無關（Edge Function log 證實那批圖從未送出 submit，卡在上傳前）。已
+> 改成探測失敗 5 秒內重試最多 5 次、沒有可用 Agent 時加速到 10 秒重新探測、常駐排程
+> stdout/stderr 導向 log 檔；459 個 .NET 測試全綠。**這次根因推論沒有第一手證據**
+> （沒有 log 可查、使用者也沒回報畫面上的回退原因文字），下次再發生已有 log 可直接
+> 查證，不必再反推。§0.3 修正的前端那一半（拆掉排隊中的心跳誤判）**仍未發布上線**
+> （正式站 `site.js` 仍是舊版，因另一個 session 的發佈流程問題延後），Worker 端那半
+> 已上線。Agent 降級已改為固定的跨機接力：Windows 的 Codex→Claude 都不行才換 Mac 的
 > Codex→Claude，都不行才回退瀏覽器 Tesseract，不再是誰先搶到 job 就誰做的競速制
 > （`db/049_ocr_agent_relay.sql`、`ocr-jobs` v14，完整設計見 0.2 節）；正式資料庫 rollback
 > 測試十項斷言全過，公司 Windows 已重新發布並驗證，**家裡 Mac 尚未套用這次的接力邏輯，跨機
@@ -413,6 +418,99 @@ Node 靜態頁回歸測試（`node --test tests/*.mjs`）78/78 全綠。尚未�
 機器／真正 6 張截圖的端到端實機驗證——這需要使用者實際操作上傳（我沒有登入
 帳密，無法自己在瀏覽器完成），下一次使用者上傳整批圖片時，可以直接查
 `ocr_jobs`／worker console log 確認是否全部走 AI、且排隊時間明顯縮短。
+
+### 0.4 2026-09-12（同日再一次）：readiness 探測 fail-closed，單次抖動整批靜默降級
+
+#### 使用者回報與現場證據
+
+§0.3 修完、Worker 重啟後，使用者當天稍晚又用同一支手機上傳 6 張截圖，結果**全部**
+改走 Tesseract，質疑「到底為什麼還是跑 Tesseract？？？需要重新發佈網站才能測試？
+還是根本還有問題？」。
+
+直接查證，不猜：
+
+- 正式站抓下來的 `site.js` 仍含舊版 `assetAiQueuedWorkerUnavailable`，代表§0.3
+  的前端修正**確實還沒上線**——但這次的失敗跟那個問題無關，因為 Edge Function
+  的呼叫紀錄顯示這 6 張圖**完全沒有任何 `submit`**，甚至連 CORS preflight 都沒有。
+  問題卡在上傳前，不是排隊中被取消。
+- Edge Function log 顯示手機在 16:10:07 呼叫了 `?action=readiness` 並拿到
+  `200`，代表登入與 admin 權限完全正常（推翻了 §0.2／§0.3 更早之前對「admin
+  權限問題」的猜測）。但那之後 6 張圖沒有任何後續請求——代表 `readiness` 當下
+  回的是 `ready:false`。
+- 同一時刻查 `ocr_workers`：心跳只有 34 秒新鮮（門檻 120 秒）、Codex
+  `authenticated=true`／`quotaAvailable=true`，Worker 本身完全健康。
+
+#### 根因：readiness 是「單一 60 秒快照 + 探測失敗就 fail-closed」的閘門
+
+`handleReadiness()`（`ocr-jobs/index.js`）只讀 `ocr_workers` 資料表裡最新一筆心跳
+快照，`ready = online && agents.length > 0`；`agents` 完全來自 Worker 上一次心跳
+時，`ProbeAgentsAsync()`（修正前）對 `codex login status`／`claude auth status`
+**各探測一次**的結果。探測本身是 fail-closed：逾時、非零結束碼、行程啟動失敗都
+直接回傳 `authenticated=false`，不會保留「上一次已知正常」的狀態。
+
+`codex login status` 這類指令通常會對遠端驗證 token 是否有效，不是純讀本機檔案；
+只要那一輪探測剛好撞上一次網路瞬斷或其他暫時性錯誤，就會把「未登入」寫進資料庫，
+持續到下一次心跳（最多 60 秒）。剛好落在這個窗口內上傳的圖，`readiness` 讀到的
+就是這張「假的不可用」快照，整批靜默降級，60 秒後心跳自己恢復正常，事後完全看
+不出來哪裡壞過。這跟使用者一路強調的「用心跳去卡，好像都有漏洞」是同一類問題，
+只是這次發生在上傳前這一關，不是 §0.3 修的排隊中那一關。
+
+**誠實說明舉證到哪裡**：`readiness` 的回應內容（`fallbackReason` 究竟是
+`no_available_agent`、`worker_offline` 還是別的）沒有留存在任何地方，畫面上其實
+會顯示對應文字（`assetAiOcrFallbackText()`），但使用者當下沒有回報那行字，也沒有
+Worker 端的 log 可查（見下）。上述根因是從「心跳新鮮、Codex 快照顯示正常、卻整批
+被判不可用」反推最可能的解釋，不是從探測失敗的第一手紀錄直接證實。
+
+#### 修正一：探測失敗 5 秒內重試，不再單次抖動就定生死
+
+`ProbeAgentsAsync()` 改呼叫新的 `ProbeWithRetryAsync()`：同一個探測最多重試 5 次、
+每次間隔 1 秒，只要有一次回傳 `Authenticated=true` 就立刻採用；執行檔本身不存在
+（`!Installed`）沒有重試的意義，也會提早結束。只有連續 5 次都失敗（代表真的連續
+壞了 5 秒以上）才會把「未登入」寫進心跳快照——這時回報不可用就是正確的，不是
+誤判。實測 `codex login status`／`claude auth status --text` 正常只要 0.2～0.4
+秒，重試機制在健康狀態下幾乎零額外開銷。
+
+刻意不做的事：沒有嘗試從探測結果的文字內容去分辨「真的沒登入」跟「網路瞬斷造成的
+錯誤」——CLI 錯誤訊息的語意依版本而異，用字串比對區分兩者比重試更脆弱；統一重試
+5 次，讓一個穩定的「未登入」狀態最多多花 5 秒探測時間換取正確性，這個代價可接受。
+
+#### 修正二：沒有可用 Agent 時加速重新探測，不用等滿 60 秒
+
+`MaintainHeartbeatAsync()` 原本固定每 60 秒探測一次；改成沒有可用 Agent 時，下一次
+探測間隔縮短為 10 秒（`WorkerHeartbeatRecoveryPollInterval`），恢復後才切回 60 秒。
+這連帶讓原本的探測快取（`ProbeCacheTtl`，60 秒 TTL）失去意義——快取只有這一個呼叫
+端，且會讓「探測更頻繁」這件事形同虛設（命中快取時根本沒有真的重探），故一併移除；
+移除快取不影響行為，因為在正常（60 秒）節奏下探測頻率完全不變，只有進入「不可用」
+狀態後才會變得更頻繁。
+
+#### 修正三：常駐排程的 stdout/stderr 導向 log 檔
+
+`run-ocr-worker-windows.ps1` 原本用 `-WindowStyle Hidden` 執行排程，`&` 呼叫的輸出
+完全沒有導向任何地方，這正是這次「無法直接證實探測輸出」的盲點。改成常駐模式用
+`Start-Process -RedirectStandardOutput/-RedirectStandardError` 分別導向
+`logs/ocr-worker-<timestamp>.out.log`／`.err.log`（每次啟動各一組檔案，不是同一
+檔案持續 append），啟動時清掉超過 30 天的舊檔避免無限累積；`-Once` 診斷模式維持
+原本直接印在畫面上，不寫檔。改用 `Start-Process`而非`2>&1`合併，是刻意避開
+Windows PowerShell 5.1 對原生程式 stderr 用 `2>&1` 會把每行包成
+`NativeCommandError` 的已知問題。
+
+#### 刻意不做的事
+
+沒有嘗試讓瀏覽器端的 `readiness` 呼叫自己重試——重試必須發生在「把結果寫進資料庫
+快照之前」才有意義，寫在瀏覽器端只會在同一筆 60 秒才更新一次的快照上重複讀到
+一樣的答案，完全無效。也沒有做「保留上次已知正常狀態」這類更複雜的緩衝邏輯：
+第 3 點的重試已經讓「回報不可用」等於「真的連續失敗 5 秒以上」，複雜的緩衝在這個
+前提下不再必要。
+
+#### 驗證
+
+`.NET 10.0.302` Release build 0 警告／0 錯誤，`Invest.Web.Tests` 459/459 全綠
+（新增一個原始碼接線測試釘住重試常數、`ProbeWithRetryAsync`、探測快取已移除、
+較短的復原探測間隔）。`run-ocr-worker-windows.ps1` 已用
+`System.Management.Automation.Language.Parser` 做語法檢查通過。**尚未做的**：
+這次的根因推論本身沒有第一手證據（見上「誠實說明舉證到哪裡」），且沒有真的模擬
+一次探測抖動去驗證重試機制會不會生效；下次使用者上傳若再走 Tesseract，這次已有
+log 檔可以直接查探測的實際輸出，不必再靠反推。
 
 ### 1. 最終實作方式
 

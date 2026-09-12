@@ -46,14 +46,41 @@ Write-Output "OCR_CLAUDE_PATH=$($env:OCR_CLAUDE_PATH)"
 if (Test-Path -LiteralPath $workerExecutable -PathType Leaf) {
     $workerArgs = @('ocr-worker')
     if ($Once) { $workerArgs += '--once' }
-    $exitCode = 1
-    Push-Location $publishDirectory
-    try {
-        & $workerExecutable @workerArgs
-        $exitCode = $LASTEXITCODE
+
+    if ($Once) {
+        # 診斷用途：手動在互動式終端機執行，維持原本直接印在畫面上，不寫 log 檔。
+        $exitCode = 1
+        Push-Location $publishDirectory
+        try {
+            & $workerExecutable @workerArgs
+            $exitCode = $LASTEXITCODE
+        }
+        finally { Pop-Location }
+        if ($exitCode -ne 0) { exit $exitCode }
+        exit 0
     }
-    finally { Pop-Location }
-    if ($exitCode -ne 0) { exit $exitCode }
+
+    # 常駐排程用途：排程以 -WindowStyle Hidden 執行，stdout/stderr 原本沒有導向任何地方，
+    # 2026-09-12 一次「AI 明明正常卻整批走 Tesseract」的事故就是因為完全沒有 log 可查，
+    # 只能事後用 Supabase 資料反推。改用 Start-Process 分別導向兩個檔案，避免 PowerShell
+    # 5.1 對原生程式 stderr 用 2>&1 時會把每行包成 NativeCommandError 的已知問題。
+    # 一次啟動對應一組檔案（而非同一檔案持續 append），保留最近 30 天，長期常駐不會無限累積。
+    $logDirectory = Join-Path $repoRoot 'logs'
+    if (-not (Test-Path -LiteralPath $logDirectory)) {
+        New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+    }
+    Get-ChildItem -LiteralPath $logDirectory -Filter 'ocr-worker-*.log' -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $runTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $stdoutLog = Join-Path $logDirectory "ocr-worker-$runTimestamp.out.log"
+    $stderrLog = Join-Path $logDirectory "ocr-worker-$runTimestamp.err.log"
+    Write-Output "常駐輸出導向：$stdoutLog"
+
+    $process = Start-Process -FilePath $workerExecutable -ArgumentList $workerArgs `
+        -WorkingDirectory $publishDirectory -NoNewWindow -PassThru -Wait `
+        -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+    if ($process.ExitCode -ne 0) { exit $process.ExitCode }
     exit 0
 }
 
