@@ -106,6 +106,42 @@ public sealed class OcrCliWiringTests
         Assert.Contains("WorkerHeartbeatRecoveryPollInterval = TimeSpan.FromSeconds(10);", worker, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 工作被取消後Worker在呼叫AI前會發現租約已失效並放棄()
+    {
+        var root = FindRepositoryRoot();
+        var worker = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Invest.Web",
+            "Features",
+            "Assets",
+            "Ocr",
+            "Services",
+            "OcrWorkerRunner.cs"));
+        var api = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Invest.Web",
+            "Features",
+            "Assets",
+            "Ocr",
+            "Services",
+            "OcrWorkerApiClient.cs"));
+
+        // 2026-09-13 使用者要求：按下強制取消後「這輪的資料要全部清空」，不能只是畫面
+        // 上假裝停了、Worker 卻繼續花額度跑完 AI。ocr_update_progress() 回 409 代表
+        // 租約已經失效（使用者取消，或被別的 Worker 接手）；UpdateProgressAsync 把這個
+        // 409 轉成明確的 false，ProcessJobAsync 在下載與呼叫 AI 這兩個最花錢／花頻寬的
+        // 操作之前各檢查一次，false 就直接放棄，不再呼叫 CompleteAsync（反正租約已經
+        // 不是自己的，寫入本來就會被拒絕）。
+        Assert.Contains("public async Task<bool> UpdateProgressAsync(", api, StringComparison.Ordinal);
+        Assert.Contains("if (response.StatusCode == HttpStatusCode.Conflict)", api, StringComparison.Ordinal);
+        Assert.Contains("private static async Task<bool?> UpdateProgressSafeAsync(", worker, StringComparison.Ordinal);
+        Assert.Contains("if (await UpdateProgressSafeAsync(api, job, \"downloading\", 15, null, cancellationToken) == false)", worker, StringComparison.Ordinal);
+        Assert.Contains("if (await UpdateProgressSafeAsync(api, job, \"ai_recognition\", 25, null, cancellationToken) == false)", worker, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)

@@ -254,7 +254,23 @@ public sealed class OcrWorkerRunner(
                 };
             var imagePath = Path.Combine(directory.FullName, $"input{extension}");
             var schemaPath = Path.Combine(directory.FullName, "recognition-schema.json");
-            await UpdateProgressSafeAsync(api, job, "downloading", 15, null, cancellationToken);
+            // 2026-09-13：使用者要求「強制停止就要保證這輪不浪費額度」。這兩個進度回報點
+            // 剛好卡在「下載」與「呼叫 AI」這兩件真正花錢／花頻寬的操作之前；伺服器明確
+            // 回 409（false，見 OcrWorkerApiClient.UpdateProgressAsync）代表這件工作已經
+            // 被取消或租約易主，此時不再往下做，直接放棄——不會呼叫 CompleteAsync，因為
+            // 已經不持有租約，寫入本來就會被伺服器拒絕，沒有必要嘗試。只有明確的 409 才會
+            // 觸發放棄；null（回報本身失敗，例如網路問題）視為無法確認，維持原本繼續執行，
+            // 避免暫時性錯誤誤殺正常工作。
+            //
+            // 誠實限制：這只能攔截「還沒開始下載／還沒呼叫 AI」這兩個時間點之前的取消；
+            // 如果使用者是在 AI 辨識已經開始跑之後才取消，這裡攔不到，CLI 呼叫仍會跑完
+            // 才發現租約已失效——真正中途中止需要把 CancellationToken 貫穿進
+            // OcrExecutionCoordinator／CLI 執行本身，這次沒有做。
+            if (await UpdateProgressSafeAsync(api, job, "downloading", 15, null, cancellationToken) == false)
+            {
+                Console.WriteLine($"OCR 工作 {job.Id} 已被取消或租約易主，放棄下載，不浪費頻寬。");
+                return;
+            }
             var downloadStopwatch = Stopwatch.StartNew();
             await api.DownloadAsync(job.DownloadUrl, imagePath, cancellationToken);
             downloadStopwatch.Stop();
@@ -273,7 +289,11 @@ public sealed class OcrWorkerRunner(
             var coordinator = new OcrExecutionCoordinator(
                 fallbackPolicy,
                 new AiOcrOrchestrator(router, new InMemoryOcrPassCheckpointStore()));
-            await UpdateProgressSafeAsync(api, job, "ai_recognition", 25, null, cancellationToken);
+            if (await UpdateProgressSafeAsync(api, job, "ai_recognition", 25, null, cancellationToken) == false)
+            {
+                Console.WriteLine($"OCR 工作 {job.Id} 已被取消或租約易主，放棄呼叫 AI，不浪費額度。");
+                return;
+            }
             var recognitionStopwatch = Stopwatch.StartNew();
             var execution = await coordinator.RecognizeAsync(
                 readiness,
@@ -418,7 +438,12 @@ public sealed class OcrWorkerRunner(
         }
     }
 
-    private static async Task UpdateProgressSafeAsync(
+    /// <summary>
+    /// 回傳 true：租約仍有效。false：伺服器明確回報租約已失效（使用者取消，或被別的
+    /// Worker 接手）。null：回報本身失敗（網路、5xx 等無法確認的狀況）——只當作記錄，
+    /// 不能當成「已取消」處理，否則暫時性問題會讓正常工作被錯殺。
+    /// </summary>
+    private static async Task<bool?> UpdateProgressSafeAsync(
         OcrWorkerApiClient api,
         OcrClaimedJob job,
         string stage,
@@ -428,11 +453,12 @@ public sealed class OcrWorkerRunner(
     {
         try
         {
-            await api.UpdateProgressAsync(job, stage, percent, usage, cancellationToken);
+            return await api.UpdateProgressAsync(job, stage, percent, usage, cancellationToken);
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             Console.Error.WriteLine($"OCR 工作 {job.Id} 進度回報失敗：{Safe(exception.Message)}");
+            return null;
         }
     }
 

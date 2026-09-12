@@ -601,7 +601,7 @@ async function handleProgress(request, user, body) {
     const percent = Number(body?.progressPercent);
     if (!/^[0-9a-f-]{36}$/i.test(jobId)
         || !/^[0-9a-f-]{36}$/i.test(leaseToken)
-        || !['uploading', 'queued', 'claiming', 'downloading', 'extraction', 'audit', 'validating', 'fallback', 'completed', 'failed'].includes(stage)
+        || !['uploading', 'queued', 'claiming', 'downloading', 'ai_recognition', 'extraction', 'audit', 'validating', 'fallback', 'completed', 'failed'].includes(stage)
         || !Number.isInteger(percent) || percent < 0 || percent > 100) {
         return json(request, 400, { error: 'invalid_progress' });
     }

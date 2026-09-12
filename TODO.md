@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 2026-09-12 已修三個獨立問題並重新發布公司 Windows：Worker 3 個並行槽 claim 落空會永久死掉（改常駐槽）、前端心跳誤判提早取消排隊工作（Worker 端已上線，**前端半套是否已隨同一天的 OCR 強制取消功能一起發布需重新查證**）、readiness 探測失敗 fail-closed 單次抖動整批靜默降級（改 5 秒內重試 5 次＋不可用時 10 秒加速重探＋常駐排程 log 檔，部署時順手修正 log 亂碼）；459 個 .NET 測試全綠，重啟後有真實上傳成功驗證。**部署時意外發現既有 bug**：`ai_recognition` 進度階段不在 Edge Function 合法清單裡，每次都靜默 400 失敗（只影響畫面進度百分比，不影響辨識結果），尚未修正待使用者決定。另已完成 Windows→Mac→Tesseract 固定跨機接力（筆記 #61 收尾）；**家裡 Mac 仍待使用者重載 LaunchAgent，跨機接力未實機驗證**。另仍待 Claude Pro 登入、Golden Set、Windows 每張 ≤30 秒與長期斷線復原驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 2026-09-13 已修第四個獨立問題：「強制取消辨識」與重整恢復流程搶同一個全域狀態，取消後彈回掃描中、下一批可能被誤 abort（改用世代編號＋取消時同步清空本機清單）；並補上「取消後 Worker 也真的停手」，順手修掉讓這個檢查生效的前提 bug（`ai_recognition` 階段名稱不合法，`db/052`＋`ocr-jobs` v15）。461 個 .NET 測試全綠，正式資料庫 rollback 測試四項斷言全過；**前端修正沒有真正瀏覽器端到端測試**。09-12 已修三個獨立問題並重啟公司 Windows：並行槽陣亡、前端心跳誤判、readiness fail-closed（**前端那半是否已隨強制取消功能一起發布需重新查證**）。另已完成 Windows→Mac→Tesseract 固定跨機接力（筆記 #61 收尾）；**家裡 Mac 仍待使用者重載 LaunchAgent，跨機接力未實機驗證**。另仍待 Claude Pro 登入、Golden Set、Windows 每張 ≤30 秒與長期斷線復原驗收 |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 5 分鐘盤中程式已完成；等下一個交易日的來源、Storage 與回補驗收，網站尚未發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1359,6 +1359,65 @@ Edge Function 的合法清單裡，每次都靜默 400 失敗——每件工作�
 進度百分比，尚未修正，留給使用者決定是否處理。重啟期間剛好有真實使用者上傳
 （`IMG_2083.png`）在跑，最終正確 `succeeded`，順帶驗證了跨越一次 Worker 重啟的
 lease 逾時回收沒有壞掉。
+
+### 🔵 2026-09-13 第四個獨立問題：「強制取消辨識」與重整恢復流程競態，取消後彈回掃描中
+
+隔天使用者再次回報「怎麼一直有問題」，附上兩張手機截圖：按下「強制取消辨識」後
+畫面又跳回「AI 辨識中」；另一批新選的圖完全沒反應、舊工作卡在 15% 不動。使用者
+明確給出規格：「強制停止＝這輪資料全丟、狀態回初始化、下一輪上傳（可能幾秒後）要
+跑完整原本流程」，要求先查明原因、依規格找解決方案再動手，之後核准全部一起實作。
+
+**診斷**：01:29 那批特徵與 09-12 16:10 一模一樣——`readiness` 回 200、零個
+`submit`、Worker 心跳與 `codex login status`（連續壓測 30 次 100% 成功）都正常，
+證明不是 §0.4 修的問題。異常點：`readiness` 前 30 秒，手機一秒內送出
+**100 多筆 `acknowledge`**。追查鎖定另一個 session 當天稍早上線的「強制取消辨識」
+功能：`assetScreenshotScanController`（單一全域變數）被「新上傳」與「重整後恢復」
+兩個流程各自寫入，互不知情；取消時呼叫的 `renderAssetsDashboard()` 若畫面停在
+帳戶頁，會在**同一個呼叫堆疊裡**觸發 `resumeAssetAiJobs()`，而剛取消的工作要等
+伺服器回應才會非同步從 localStorage 移除——這個當下localStorage 還看得到它，
+resume 於是把它當成「還在排隊」重新生出一份掃描中的新草稿，這正是「取消後彈回
+掃描中」；若使用者這時再選新圖，新批次會 abort 掉「目前的全域 controller」，但
+那時已經是 resume 的、不是自己的，物件／accountId 比對看不出兩者是不同批次，
+新批次的請求可能被錯誤 abort——這正是 readiness 成功、之後零個 submit 的成因，
+而 resume 反覆把同一批工作生出來又取消一次，正是那 100 多筆 acknowledge 的來源。
+
+**修正（前端，`site.js`）**：新增單調遞增的世代編號 `assetScreenshotGeneration`，
+取代所有物件／`accountId` 相等比較；`discardAssetScreenshotDraft()` 改成世代編號
+最先遞增（早於呼叫 `renderAssetsDashboard()`）→ abort controller →
+**同步**（不等網路）清空 localStorage 待處理清單 → 才發起伺服器端取消（射後
+不理，失敗不影響畫面）；`resumeAssetAiJobs()` 的守衛加上「畫面上已經有草稿就不
+再從 localStorage 生新的」。
+
+**修正（後端）**：使用者的規格包含「我不要這輪的資料」，伺服器端也要真的停手。
+`ocr_update_progress` 遇到已取消的租約本來就會回 409，只是 Worker 完全沒利用這個
+訊號；但要先修掉讓 §0.4 發現的既有 bug——`"ai_recognition"` 階段名稱不合法，
+新增 [db/052](db/052_ocr_progress_ai_recognition_stage.sql)（原本要編號 051，與
+另一個 session 同一時間新增的 `db/051_asset_operation_sheet.sql` 撞號，改成 052）
+補進合法清單（DB
+constraint 與 RPC 內部驗證各自一份，`ocr-jobs` 同步更新部署為 v15）。
+`OcrWorkerApiClient.UpdateProgressAsync()` 改回傳 `bool`（409→false），
+`ProcessJobAsync` 在下載與呼叫 AI 這兩個最花錢／花頻寬的操作前各檢查一次，明確
+`false` 就直接放棄、不再呼叫 `CompleteAsync`。**誠實限制**：只能攔截「還沒開始
+下載」或「還沒呼叫 AI」之前的取消；AI 辨識已經開始跑之後才取消，Worker 要等 CLI
+跑完才會發現，真正中途中止需要把 `CancellationToken` 貫穿進 CLI 執行本身，這次
+沒有做。
+
+**分析後判斷不需要修的部分**：原本規劃把逐筆取消併成一個批次請求解決流量問題，
+但那個「一秒內 100 多筆」本身是競態造成的重複取消，前端競態修好後源頭已經不存在，
+不需要另外做批次端點；原本擔心 Tesseract WASM worker 交接時序也可能競態，重讀
+`resetAssetOcrWorker()` 確認 `assetOcrWorker=null` 是同步先於 `terminate()` 執行，
+下一批一定會拿到全新獨立實例，不是真正的競態，沒有改動。
+
+**驗證**：`.NET Invest.Web.Tests` 461/461 全綠（新增兩個接線測試）、Node 靜態頁
+回歸測試 85/85 全綠；`db/052` 已套用並直接查證 constraint 定義；`ocr-jobs` v15
+已部署。正式 Supabase 上用 rollback transaction 完整模擬「claim→回報
+downloading→回報 ai_recognition（成功，證明新階段合法）→模擬使用者取消→Worker
+不知情繼續用舊 lease_token 回報 ai_recognition（回傳 false，證明 S5 正確運作）」，
+四項斷言全過、rollback 後無殘留。完整診斷見
+[AI OCR §0.5](Doc/技術文件/AI%20OCR.md#05-2026-09-13強制取消辨識與重整恢復流程競態導致取消後彈回掃描中下一批誤判離線)。
+
+**尚未做的**：前端修正沒有真正的瀏覽器端到端測試（沒有登入帳密，只驗證到程式
+邏輯層級），下次使用者實際照這個流程操作會是第一次真正驗證。
 
 ### 已討論
 

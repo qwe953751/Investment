@@ -1,8 +1,19 @@
 # AI OCR
 
-> 日期：2026-09-12
+> 日期：2026-09-13
 >
-> 狀態：**同一天發現並修正第三個獨立問題（見 0.4 節）：readiness 只讀 Worker 心跳的
+> 狀態：**第四個獨立問題已修正（見 0.5 節）：另一個 session 上線的「強制取消辨識」
+> 功能與重整後恢復流程搶同一個全域 `AbortController`／草稿狀態，取消後畫面會彈回
+> 「掃描中」、下一批幾秒內再上傳可能被殘留批次誤 abort（readiness 成功、之後零個
+> submit）。改用世代編號取代物件比對＋取消時同步清空本機待處理清單解掉前端競態；
+> 同時補上使用者要求的「取消後 Worker 也要真的停手」：`ocr_update_progress` 遇到已
+> 取消的租約回 409，Worker 在下載與呼叫 AI 之前各檢查一次，發現租約失效就直接放棄、
+> 不再浪費額度（連帶修掉 §0.4 發現的 `ai_recognition` 階段名稱不合法舊 bug，這是
+> 讓這個檢查生效的前提）。`db/052` 已套用、`ocr-jobs` 已部署 v15，
+> `Invest.Web.Tests` 461/461 全綠。前端修正沒有做真正的瀏覽器端到端測試，只驗證到
+> 程式邏輯層級。
+>
+> 狀態（2026-09-12）：同一天發現並修正第三個獨立問題（見 0.4 節）：readiness 只讀 Worker 心跳的
 > 單一 60 秒快照，探測 CLI 登入狀態失敗就 fail-closed，單次網路抖動會讓整批上傳在
 > 窗口內被靜默判定「沒有可用 Agent」而全部改走 Tesseract，事後完全看不出來——這正是
 > §0.3 修完、Worker 重啟後，使用者當天稍晚再測仍然全部走 Tesseract 的原因，且與 §0.3
@@ -539,6 +550,144 @@ log 檔可以直接查探測的實際輸出，不必再靠反推。
 已依此重新 publish 並重啟：`-Once` 診斷與常駐排程都確認能正常啟動、log 顯示正確
 編碼；重啟期間剛好有使用者真實上傳（`IMG_2083.png`）在飛，最終仍正確
 `succeeded`，順帶驗證了跨越一次 Worker 重啟的 lease 逾時回收與重新 claim 沒有壞掉。
+
+### 0.5 2026-09-13：「強制取消辨識」與重整恢復流程競態，導致取消後彈回掃描中、下一批誤判離線
+
+#### 使用者回報與規格
+
+使用者隔天再次回報「怎麼一直有問題」：手機截圖顯示按下「強制取消辨識」後畫面又
+跳回「AI 辨識中」，另一次則是重新整理後恢復的舊工作卡在 15% 不動、新選的圖完全
+沒有反應。使用者明確定義了規格，不是單純回報症狀：
+
+> 強制停止，就是我不要這輪的資料，要全部清空，且狀態要變回初始化，且要保證下一輪
+> 我上傳圖片就要開始跑原本流程；我可能在數秒內，去按停止且再次上傳。
+
+#### 診斷
+
+不猜測，直接查 Supabase 與程式碼。當天稍早 01:29 那批的特徵與前一天 16:10 一模一樣：
+`readiness` 呼叫回 200，但完全沒有任何 `submit`、DB 零筆工作列；同一時刻 Worker
+心跳每 67 秒正常、`codex login status` 連續壓測 30 次 100% 成功（1.07 秒／次）——
+證明不是 §0.4 修的 Worker 端問題。但這次有個異常：`readiness` 前 30 秒，手機在
+**一秒內送出 100 多筆 `acknowledge`**。追查後鎖定另一個 session 當天稍早上線的
+「強制取消辨識」功能（`site.js` 新增 `AbortController` 串進整條 OCR 呼叫鏈）：
+
+- `assetScreenshotScanController`（單一全域變數）被 `scanAssetScreenshots()`（新上傳）
+  與 `resumeAssetAiJobs()`（重整後恢復）兩個流程各自寫入，彼此不知道對方的存在。
+- `discardAssetScreenshotDraft()`（取消／切帳戶時呼叫）會呼叫
+  `renderAssetsDashboard()`；若畫面停在帳戶頁，這次 render **在同一個呼叫堆疊裡**
+  就會觸發 `resumeAssetAiJobs(accountId)`。
+- 剛取消的工作要等 `cancelAssetAiJobs()` 內部的 `assetAiOcrFinalizeFallback()`
+  **非同步**拿到伺服器回應後才會呼叫 `forgetAssetAiJob()` 從 localStorage 移除——
+  也就是說，取消當下那次 render 觸發 resume 時，localStorage 裡這筆工作**還在**。
+- `resumeAssetAiJobs()` 於是把剛取消的工作當成「還在排隊」，用同一個 `accountId`
+  建立一份**新的**掃描草稿（`scanning: true`）——這正是「取消後畫面又彈回掃描中」。
+- 若使用者在這幾秒內又選了新圖，`scanAssetScreenshots()` 會 abort 掉「目前這個全域
+  controller」，但那個 controller **這時已經是 resume 的**，不是新批次自己的；新批次
+  建立自己的 controller 之後，`assetScreenshotDraft === null || .accountId !== accountId`
+  這類物件／欄位比對完全看不出「這是不同批次」，導致競態下 abort 落錯對象——這正是
+  16:10／01:29 觀察到「readiness 成功、之後零個 submit」的成因，且與 resume 反覆
+  把同一批工作重新掃出來再取消一次，正是那 100 多筆 `acknowledge` 的來源。
+
+#### 修正：S1～S3（前端，`site.js`）
+
+**S1 世代編號**：新增 `assetScreenshotGeneration`（單調遞增計數器）。任何要開始新
+一批（`scanAssetScreenshots` 透過 `discardAssetScreenshotDraft()`；`resumeAssetAiJobs`
+自己遞增）都會拿到自己的世代編號並存進閉包；之後每一步要寫回共用畫面狀態前，一律
+比對「世代還是不是我拿到的那個」，取代原本比較 controller／draft 物件是否相等或
+`accountId` 是否相符的脆弱寫法——被取消後幾秒內對同一帳戶開新一批，`accountId`
+完全相同，物件比較擋不住舊批次殘留的回呼，世代編號才是唯一可靠的身分依據。
+
+**S2 同步立即重置**：`discardAssetScreenshotDraft()` 改成：世代編號**最先**遞增
+（必須早於下面呼叫 `renderAssetsDashboard()` 之前）→ abort 目前的 controller →
+**同步**（不等網路）把這批的 jobId 從 localStorage 移除 → 才呼叫伺服器端取消
+（射後不理，純粹禮貌通知，失敗也不能影響畫面）。同步移除 localStorage 這一步，
+直接讓 `resumeAssetAiJobs` 在同一個 render 堆疊裡看到的待處理清單已經是乾淨的，
+不會再把剛取消的工作生成新草稿。
+
+**S3 resume 閘門**：`resumeAssetAiJobs()` 的守衛加上
+`assetScreenshotDraft !== null` 就直接放棄——只要畫面上已經有（或還有）一份草稿，
+就不該再從 localStorage 生一份新的出來重新掃描一輪。
+
+三者合起來的效果：按下停止後，`assetScreenshotDraft` 立刻變 `null`、
+localStorage 立刻清空、世代編號立刻推進；同一次 render 觸發的 resume 因為
+localStorage 已經乾淨而直接 `return`；幾秒後開新一批，`discardAssetScreenshotDraft()`
+沒有東西可丟、世代再推進一次，新批次的 controller／draft 完全獨立，走的是與第一次
+上傳一模一樣的完整 AI-first 流程。
+
+#### 修正：S5（後端，需要 DB migration + Edge Function + Worker 三處一起動）
+
+使用者的規格不只是「畫面看起來停了」，還包含「我不要這輪的資料」——這代表伺服器端
+也要真的停手，不能讓 Worker 在使用者取消之後繼續呼叫 AI 燒額度。設計：
+
+- `handleAcknowledge()` 的 `cancel` 動作本來就會把 `status` 改成 `cancelled`、清空
+  `lease_owner`／`lease_token`；Worker 若這時還在用（已經失效的）舊 lease_token 呼叫
+  `ocr_update_progress()`，這個 RPC 的 `where` 子句比對不到列，回傳 `false`，
+  Edge Function 的 `handleProgress()` 已經把這個 `false` 轉成 `409 lease_lost`——
+  這條線路整個都已經存在，只是 Worker 端完全沒有利用它。
+- **前提缺陷**：`"ai_recognition"` 這個進度階段從一開始就不在 041 訂的合法清單裡
+  （DB check constraint 與 `ocr_update_progress()` 內部驗證都沒有，見 0.4 節的
+  意外發現），每次回報都是 400，跟「租約失效」的 409 混在一起分不出來。**必須先
+  修這個才能讓 S5 生效**，否則每一件工作都會在真正呼叫 AI 之前就被誤判成已取消。
+  新增 `db/052_ocr_progress_ai_recognition_stage.sql` 把 `ai_recognition` 加進
+  合法清單（constraint 與 RPC 各自的清單，維持既有兩處各自宣告一份的慣例，未抽出
+  共用常數）；`ocr-jobs/index.js` 的 JS 端清單同步更新，部署為 v15。
+- `OcrWorkerApiClient.UpdateProgressAsync()` 回傳型別改成 `Task<bool>`：`409` 回
+  `false`，其餘錯誤維持原本拋例外的行為不變。`OcrWorkerRunner.UpdateProgressSafeAsync()`
+  改回傳 `bool?`：`true`＝租約仍有效、`false`＝伺服器明確回報租約已失效、
+  `null`＝回報本身失敗（網路、5xx 等無法確認）。只有明確的 `false` 才會觸發放棄，
+  `null` 維持原本繼續執行——不能把「暫時性問題」跟「明確被取消」混為一談，否則會
+  重演之前每次修一個地方就多殺一批正常工作的教訓。
+- `ProcessJobAsync` 在兩個最花錢／花頻寬的操作前各插入一次檢查：回報 `downloading`
+  之後、真正呼叫 `DownloadAsync` 之前；回報 `ai_recognition` 之後、真正呼叫
+  `coordinator.RecognizeAsync`（會花 Codex／Claude 額度）之前。任何一次拿到明確的
+  `false`，直接印一行 log 並 `return`，不再呼叫 `CompleteAsync`——反正已經不持有
+  租約，寫入本來就會被伺服器拒絕，沒有必要嘗試。
+
+**誠實說明限制**：這只能攔截「還沒開始下載」或「還沒呼叫 AI」這兩個時間點**之前**
+的取消。如果使用者是在 AI 辨識已經開始跑之後才取消，Worker 要等 CLI 呼叫整個跑完、
+下一次進度回報才會發現租約失效——真正中途中止需要把 `CancellationToken` 貫穿進
+`OcrExecutionCoordinator`／CLI 執行本身，這次沒有做。以使用者描述的「幾秒內按停止」
+情境來說，這兩個檢查點已經涵蓋最常見的情況（下載通常 <1 秒，AI 辨識前的檢查點是
+在真正開始跑 CLI 之前）。
+
+#### 分析後判斷不需要修的部分（S4、S6）
+
+**S4（把逐筆取消併成一個批次請求）**：原本要解決「一秒內 100 多筆 `acknowledge`」
+的流量問題；但查證後那個爆量本身是**競態造成的重複取消**（同一批工作被 resume 
+反覆生出來又取消掉），S1～S3 修好競態後，重複取消的源頭已經不存在，一次正常取消
+6 張圖就是 6×2＝12 個請求、只會發生一次，不再需要額外做一個新的批次 Edge Function
+端點來解決一個已經不存在的症狀。
+
+**S6（Tesseract WASM worker 交接時序）**：原本擔心 `resetAssetOcrWorker()` 是
+fire-and-forget、與下一批的 `getAssetOcrWorker()` 可能互撞。重新閱讀程式碼確認
+`resetAssetOcrWorker()` 把 `assetOcrWorker` 設回 `null` 是**同步**執行、發生在
+`await worker.terminate()` 之前；下一批呼叫 `getAssetOcrWorker()` 一定會看到
+`null` 並建立一個完全獨立的新 Worker 執行緒，不會重用還在終止中的舊實例。兩個
+Web Worker 短暫並存只是次要的資源使用效率問題，不是正確性問題，**不是真正的
+競態**，這次沒有改動。
+
+#### 驗證
+
+`.NET 10.0.302` Release build 0 警告／0 錯誤，`Invest.Web.Tests` 461/461 全綠
+（新增兩個原始碼接線測試：一個釘住世代編號取代物件比對、同步 localStorage
+移除、resume 閘門；一個釘住 `UpdateProgressAsync` 回傳 `bool`、`ProcessJobAsync`
+的兩個提前放棄檢查點）；Node 靜態頁回歸測試 85/85 全綠。
+
+`db/052`（原本編號 051，與另一個 session 同一時間新增的
+`db/051_asset_operation_sheet.sql` 撞號，改成 052 避免混淆）已透過 Management
+API 套用（`schema_migrations` 已登記；直接查證
+constraint 定義已包含 `ai_recognition`）；`ocr-jobs` 已部署 v15。在正式 Supabase
+上用 rollback transaction 完整模擬「claim → 回報 downloading（成功）→ 回報
+ai_recognition（成功，證明新階段合法）→ 模擬使用者取消（改成 `cancelled`、清空
+lease）→ Worker 不知情繼續用舊 lease_token 回報 ai_recognition（回傳 `false`，
+證明 S5 機制正確運作）」，四項斷言全過，rollback 後查證假資料與暫時卸除的外鍵
+都已還原、正式資料庫沒有留下痕跡。
+
+**尚未做的**：前端 S1～S3 的修正沒有做真正的瀏覽器端到端測試（例如自動化操作
+「上傳→立刻取消→幾秒後再上傳」這個完整互動序列並肉眼確認畫面行為）——這需要
+登入帳密與實機操作，只驗證到程式邏輯層級；下次使用者實際照這個流程操作時，
+應該會是第一次真正的端到端驗證。「AI 辨識已經開始跑之後才取消」的中途真正中止
+（S5 的誠實限制段落）也還沒做。
 
 ### 1. 最終實作方式
 

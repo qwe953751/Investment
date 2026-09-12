@@ -207,7 +207,12 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         await EnsureSuccessAsync(response, "evaluation_complete");
     }
 
-    public async Task UpdateProgressAsync(
+    /// <summary>
+    /// 回傳 true 代表租約仍有效、進度已寫入；false 代表伺服器明確回 409（工作已被使用者
+    /// 取消，或租約被別的 Worker 接手），呼叫端應停止繼續花費額度處理這件工作。其餘錯誤
+    /// （網路、5xx 等）維持拋例外，不視為「明確被取消」，避免暫時性問題誤殺正常工作。
+    /// </summary>
+    public async Task<bool> UpdateProgressAsync(
         OcrClaimedJob job,
         string stage,
         int percent,
@@ -231,7 +236,12 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
                     reasoningOutputTokens = usage.ReasoningOutputTokens
                 }
         }, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            return false;
+        }
         await EnsureSuccessAsync(response, "progress");
+        return true;
     }
 
     public async Task DownloadAsync(

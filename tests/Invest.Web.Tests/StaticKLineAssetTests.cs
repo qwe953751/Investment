@@ -1667,6 +1667,33 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 強制取消辨識用世代編號避免與重整恢復流程競態()
+    {
+        var script = ReadAsset("site.js");
+
+        // 2026-09-13 根因：discardAssetScreenshotDraft() 呼叫 renderAssetsDashboard()
+        // 之後，畫面若剛好在帳戶頁，會在同一個呼叫堆疊裡觸發 resumeAssetAiJobs()；
+        // 若這批工作的 jobId 這時還留在 localStorage（forgetAssetAiJob 原本要等
+        // cancelAssetAiJobs 內部的伺服器回應才會執行），resumeAssetAiJobs 就會把剛取消
+        // 的工作當成「還在排隊」，用同一個 accountId 建立一份新草稿——物件與 accountId
+        // 比對兩者都完全看不出這是不同批次，導致取消後畫面又彈回「掃描中」，且下一批
+        // 上傳可能被這個殘留批次的 AbortController 誤 abort（readiness 成功、之後零個
+        // submit）。改用單調遞增的世代編號取代物件識別比對，且取消時同步（不等網路）
+        // 把 jobId 從本機待處理清單移除。
+        Assert.Contains("let assetScreenshotGeneration = 0;", script, StringComparison.Ordinal);
+        Assert.Contains("assetScreenshotGeneration += 1;", script, StringComparison.Ordinal);
+        Assert.Contains("const myGeneration = assetScreenshotGeneration;", script, StringComparison.Ordinal);
+        Assert.Contains("const myGeneration = ++assetScreenshotGeneration;", script, StringComparison.Ordinal);
+        Assert.Contains("assetScreenshotGeneration !== myGeneration", script, StringComparison.Ordinal);
+        Assert.Contains("assetScreenshotGeneration === myGeneration", script, StringComparison.Ordinal);
+        // 同步立刻移除，不能延後到 cancelAssetAiJobs 內部才做。
+        Assert.Contains("for (const jobId of jobIds) {", script, StringComparison.Ordinal);
+        // resumeAssetAiJobs 不該在已經有一份草稿時，又從 localStorage 生一份新的出來。
+        Assert.Contains("loginTier !== 'admin' || supabase === null || assetScreenshotDraft !== null", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("assetScreenshotScanController === scanController", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 截圖辨識可選多張並支援英文券商欄位()
     {
         var script = ReadAsset("site.js");

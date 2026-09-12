@@ -53,6 +53,14 @@ let assetSelectedAccountId = '';
 let assetEditorMode = '';
 let assetScreenshotDraft = null;
 let assetScreenshotScanController = null;
+// 每次「開始新一批」（上傳或重整後恢復）都遞增一次，並在該批次的閉包裡記住自己的編號。
+// 任何要寫回共用畫面狀態（assetScreenshotDraft／assetOcrStatus）之前都要先確認編號沒變，
+// 而不是比對 controller 或 draft 物件是否相等——2026-09-13 發現按下「強制取消辨識」後，
+// discardAssetScreenshotDraft() 觸發的 renderAssetsDashboard() 會在同一個呼叫堆疊裡
+// 讓 resumeAssetAiJobs() 重新對同一個帳戶建立一份新草稿（因為 localStorage 的殘留工作
+// 還沒來得及非同步移除），物件比較看不出兩者是不同批次，導致取消後畫面又彈回「掃描中」，
+// 而且下一批上傳可能被這個殘留批次的 controller 誤 abort。
+let assetScreenshotGeneration = 0;
 let assetAiResumePromise = null;
 let assetActionNotice = '';
 let assetAnnualPreviewEditingKey = '';
@@ -8719,14 +8727,29 @@ function discardAssetScreenshotDraft(options = {}) {
         .map(screenshot => screenshot.jobId)
         .filter(jobId => typeof jobId === 'string' && jobId !== ''))];
 
+    // 世代編號同步遞增，且要在下面呼叫 renderAssetsDashboard()（可能觸發
+    // resumeAssetAiJobs 重新對同一帳戶建立新草稿）之前就先做：任何還在背景跑的批次
+    // 之後每一步都會先比對自己的世代，發現落後就直接放棄，不會把畫面翻回「掃描中」。
+    assetScreenshotGeneration += 1;
+
     if (scanning) {
         assetScreenshotScanController?.abort();
         // Tesseract 沒有可靠的跨版本取消 API；離開帳戶頁時也要終止目前 WASM worker，
         // 不讓背景辨識繼續佔住 CPU。
         void resetAssetOcrWorker();
 
+        // 同步、立刻從本機待處理清單移除，不等任何網路回應。這一步不能延後到
+        // cancelAssetAiJobs 內部才做（那邊要等伺服器回應才會執行）：上面這次世代
+        // 遞增雖然會擋掉 resumeAssetAiJobs 寫回畫面，但讀 localStorage 本身若還看得到
+        // 這些 jobId，resumeAssetAiJobs 仍會白白對它們發起一輪等同重複的狀態查詢與
+        // 取消請求，這正是 2026-09-13 觀察到「一秒內 100 多次 acknowledge」的來源。
+        for (const jobId of jobIds) {
+            forgetAssetAiJob(jobId);
+        }
+
         if (options.cancelRemoteJobs !== false && jobIds.length > 0) {
-            // 先清掉畫面與本機 WASM，遠端取消在背景送出，不讓使用者卡在按鈕上。
+            // 本機狀態已經乾淨；伺服器端清理在背景送出，純粹是禮貌通知且完全解耦，
+            // 失敗也不能反過來改動畫面狀態，到期清理機制仍會回收私有圖片與工作列。
             void cancelAssetAiJobs(jobIds);
         }
     }
@@ -8749,28 +8772,9 @@ function cancelAssetScreenshotScan() {
         return;
     }
 
-    const accountId = draft.accountId;
-    const jobIds = [...new Set((draft.screenshots ?? [])
-        .map(screenshot => screenshot.jobId)
-        .filter(jobId => typeof jobId === 'string' && jobId !== ''))];
-    assetScreenshotScanController?.abort();
-    assetScreenshotScanController = null;
-    discardAssetScreenshotDraft({ cancelRemoteJobs: false });
+    discardAssetScreenshotDraft();
     assetActionNotice = '已強制取消這次截圖辨識，持倉沒有變動。';
     renderAssetsDashboard();
-
-    if (jobIds.length === 0) {
-        return;
-    }
-
-    void cancelAssetAiJobs(jobIds).then(failedJobIds => {
-        if (failedJobIds.length === 0 || assetScreenshotDraft !== null || assetSelectedAccountId !== accountId) {
-            return;
-        }
-
-        assetActionNotice = '已停止瀏覽器辨識；部分 AI 工作取消請求未完成，私有圖片會依伺服器到期清理。';
-        renderAssetsDashboard();
-    });
 }
 
 function openAssetAccount(accountId) {
@@ -11967,7 +11971,13 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
 // 描述；原始圖仍留在 private bucket，只有核准的 fallback_required 工作能拿到 10 分鐘
 // 的簽名網址。Max 完成後立刻 acknowledge；被抽中的評估圖由背景 Low 完成後清理。
 async function resumeAssetAiJobs(accountId) {
-    if (assetAiResumePromise !== null || loginTier !== 'admin' || supabase === null) return;
+    // assetScreenshotDraft !== null 涵蓋「使用者剛按下強制取消」這個瞬間：discardAssetScreenshotDraft()
+    // 已經同步把這批的 jobId 從本機待處理清單移除，但即使還沒移除乾淨，只要畫面上
+    // 已經有（或還有）一份草稿在，就不該再從 localStorage 生一份新的出來重新掃描一輪；
+    // 2026-09-13 發現這是取消後畫面又彈回「掃描中」的主因之一。
+    if (assetAiResumePromise !== null || loginTier !== 'admin' || supabase === null || assetScreenshotDraft !== null) {
+        return;
+    }
     const account = assetFindAccount(accountId);
     const pending = readAssetAiPendingJobs().filter(job => job.accountId === accountId);
     if (account === null || pending.length === 0) return;
@@ -11976,6 +11986,7 @@ async function resumeAssetAiJobs(accountId) {
         const scanController = new AbortController();
         const signal = scanController.signal;
         assetScreenshotScanController = scanController;
+        const myGeneration = ++assetScreenshotGeneration;
         const view = assetAccountView(account);
         const placeholder = 'data:image/svg+xml;charset=utf-8,'
             + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">'
@@ -12089,7 +12100,7 @@ async function resumeAssetAiJobs(accountId) {
             }
         }
 
-        if (signal.aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) return;
+        if (signal.aborted || assetScreenshotGeneration !== myGeneration) return;
         assetScreenshotDraft.scanning = false;
         assetScreenshotDraft.rows = mergeAssetOcrScreenshotRows(rows);
         if (assetScreenshotDraft.rows.length === 0) {
@@ -12103,7 +12114,7 @@ async function resumeAssetAiJobs(accountId) {
         assetOcrStatus = '';
         renderAssetsDashboard();
     })().finally(() => {
-        if (assetScreenshotScanController === scanController) {
+        if (assetScreenshotGeneration === myGeneration) {
             assetScreenshotScanController = null;
         }
         assetAiResumePromise = null;
@@ -14933,6 +14944,10 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
     const scanController = new AbortController();
     const signal = scanController.signal;
     assetScreenshotScanController = scanController;
+    // 這一批唯一的身分依據；任何要寫回共用畫面狀態前都要先確認世代沒被更新的批次
+    // （新的上傳、或使用者按下強制取消）搶走，不能只看 accountId 是否相符——被取消後
+    // 幾秒內對同一帳戶開新一批，accountId 完全相同，物件比較擋不住舊批次殘留的回呼。
+    const myGeneration = assetScreenshotGeneration;
     assetScreenshotDraft = {
         accountId,
         capturedAt: new Date().toISOString(),
@@ -15008,7 +15023,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
     let tesseractQueue = Promise.resolve();
 
     async function processScreenshot(zeroBasedIndex, file) {
-        if (aborted || signal.aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
+        if (aborted || signal.aborted || assetScreenshotGeneration !== myGeneration) {
             aborted = true;
             return;
         }
@@ -15105,7 +15120,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
     await Promise.all(
         Array.from({ length: Math.min(ASSET_AI_OCR_CONCURRENCY, files.length) }, screenshotWorker));
 
-    if (aborted || signal.aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
+    if (aborted || signal.aborted || assetScreenshotGeneration !== myGeneration) {
         setAssetOcrStatus('');
         return;
     }
@@ -15161,7 +15176,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         .join(' ');
     renderAssetsDashboard();
     } finally {
-        if (assetScreenshotScanController === scanController) {
+        if (assetScreenshotGeneration === myGeneration) {
             assetScreenshotScanController = null;
         }
     }
