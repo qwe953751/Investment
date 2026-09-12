@@ -2,16 +2,21 @@
 
 > 日期：2026-09-12
 >
-> 狀態：**2026-09-11 發生「常駐 EXE 版本落後」事故（公司 Windows 跑的自包含 EXE 建於 09-09
-> 00:57，早於同日 18:10 的事件驅動修正 `9654ab3f`，兩天半燒掉當期 88% 的 Supabase Edge
-> Function 額度），兩台 Worker 一度全部停用；2026-09-12 已重新發布並驗證公司 Windows 為事件
-> 驅動版本（`Realtime 喚醒；斷線每 5 秒重連`），排程恢復 `Running`，完整根因與復原步驟見
-> 0.1 節。家裡 Mac 的 LaunchAgent 仍待使用者本人到場重新載入。2026-09-10 已完成並套用
+> 狀態：**Agent 降級已改為固定的跨機接力：Windows 的 Codex→Claude 都不行才換 Mac 的
+> Codex→Claude，都不行才回退瀏覽器 Tesseract，不再是誰先搶到 job 就誰做的競速制
+> （`db/049_ocr_agent_relay.sql`、`ocr-jobs` v14，完整設計見 0.2 節）；正式資料庫 rollback
+> 測試十項斷言全過，公司 Windows 已重新發布並驗證，**家裡 Mac 尚未套用這次的接力邏輯，跨機
+> 接力本身也還沒有實機驗證過**。2026-09-11 發生的「常駐 EXE 版本落後」事故（公司 Windows
+> 跑的自包含 EXE 建於 09-09 00:57，早於同日 18:10 的事件驅動修正 `9654ab3f`，兩天半燒掉當期
+> 88% 的 Supabase Edge Function 額度）已於 09-12 復原，完整根因見 0.1 節。**使用者 09-12
+> 回報手機上傳仍走 Tesseract，且查證當下 Windows 心跳／Codex 狀態正常、`ocr_jobs` 卻完全沒有
+> 新工作列**——指向 `readiness`/`submit` 的 admin 權限或前端層問題，不是 Worker 本身，
+> 待確認登入身分後續查，見 0.2 節「仍待處理」。2026-09-10 已完成並套用
 > `db/047_ocr_realtime_claim_wake.sql`，將兩張表的 Realtime trigger 分離，正式 `ocr-jobs`
-> 已部署 v13，並加入管理者限定、資料庫原子節流的活躍工作 `wake`；正式 claim／trigger
+> 曾部署 v13，並加入管理者限定、資料庫原子節流的活躍工作 `wake`；正式 claim／trigger
 > rollback smoke test 已通過。正式手機新圖、Golden Set、圖片／模型效能調校、六張圖片整批與
 > Windows 長期斷線復原仍待外部驗收，不把資料庫 smoke test 或本次排程重啟當成 OCR 成功率證據。
-> 其他已發布的 Max／Agent fallback／Tesseract、權限分享、Low 背景抽樣與 OCR 校對規則維持不變**
+> 其他已發布的 Max／Tesseract、權限分享、Low 背景抽樣與 OCR 校對規則維持不變**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -40,45 +45,61 @@ Supabase（大腦，只管排隊／記錄／通知，自己不執行任何 AI）
    │ 工作 → ocr_jobs（狀態 queued）
    │ DB trigger → private Realtime Broadcast（只帶 job_id）
    ▼
-所有目前在線的 Worker 主機（Windows／Mac）同時收到 Broadcast
-   │ 各自呼叫 action=claim；ocr_claim_job() 用 FOR UPDATE SKIP LOCKED
-   │ 讓「哪台先搶到就哪台做」，不會兩台同時處理同一張圖，也不是固定順序接力
+Windows 與 Mac 都收到 Broadcast，但 ocr_claim_job() 依平台分流，不是誰先搶到誰做：
+   │ 全新工作只有 Windows 拿得到；Windows 已確認失敗、或 Windows 離線時才輪到 Mac
    ▼
-搶到工作的那一台：下載圖片 → 探測 codex／claude 登入狀態（60 秒快取）
-   ▼
-該機器的 Agent Router：先試 Primary（預設 Codex）
+Windows 下載圖片 → 探測 codex／claude 登入狀態（60 秒快取）→ Agent Router 先試 Codex
    │ 成功 → 直接用這次結果，不會再多跑另一個 Agent
-   │ 額度不足／未登入／逾時 → 換另一個 Agent 試一次
-   │ 兩個都不行 → 往上丟例外
+   │ 額度不足／未登入／逾時 → 換 Claude 試一次
+   │ 兩個都不行 → action=relay
    ▼
-Worker：確定性驗證 → action=complete 回寫 Supabase
-   │ 通過 → succeeded（AI 草稿）
-   │ 驗證失敗，或這台機器的兩個 Agent 都不可用 → fallback_required
+action=relay（ocr_relay_agent_failure）
+   │ Mac 新鮮在線 → 工作釋放回 queued 並標記 windows_attempt_failed_at，
+   │                Realtime 立刻廣播喚醒 Mac（見上方五層降級順序）
+   │ Mac 不在線／也失敗過 → 直接終結 fallback_required
+   ▼
+（若接力）Mac 下載圖片 → 探測登入狀態 → Agent Router 先試 Codex → 不行換 Claude
+   │ 成功 → action=complete 回寫 succeeded
+   │ 兩個都不行 → action=relay → 沒有第三台可接，終結 fallback_required
    ▼
 瀏覽器輪詢 action=status
    ├─ succeeded → 顯示 AI 草稿，人工勾選後才寫入持股
    └─ fallback_required → action=download 拿回原圖 → 瀏覽器本機 Tesseract → 一樣要人工勾選
 ```
 
-#### 三層降級順序，精確說法（澄清跨機容易誤解的地方）
+#### 五層降級順序：Windows 兩個 Agent → Mac 兩個 Agent → Tesseract
 
-使用者原始設計是「**單一 Worker 內**的三層降級：Codex 主要 → 額度／權限不足才切 Claude →
-兩者都不行才回退 Tesseract」（見 §14.6）。**這是每一台機器各自的降級順序，不是
-「Windows 兩個 Agent 都失敗才換 Mac、Mac 兩個都失敗才 Tesseract」的跨機接力**：
+2026-09-12 已改為**固定的跨機接力**（見 0.2 節）：**Windows 的 Codex → Windows 的 Claude →
+Mac 的 Codex → Mac 的 Claude → 瀏覽器 Tesseract**，不是誰先搶到 job 就誰做的競速制。
 
-- `ocr_claim_job()`（`db/039_ocr_jobs.sql`）用資料庫列鎖讓所有在線 Worker 對同一批 `queued`
-  工作**搶著做**，誰先搶到這張圖，就只由那一台的 Router 試 Codex→Claude；兩者都不行，這張圖
-  直接進 `fallback_required` 給瀏覽器 Tesseract，**不會釋放回佇列讓另一台機器重試**。
-- 因此實際上不存在「Windows-Codex → Windows-Claude → Mac-Codex → Mac-Claude → Tesseract」
-  這種五層接力；只有「這台機器的 Codex → 這台機器的 Claude → Tesseract」三層，套用在當下
-  搶到工作的那一台。
-- 兩台平常都預設 `OCR_AGENT_PRIMARY=codex`，降級順序相同；差別只在於瀏覽器判斷「AI 是否
-  ready」時優先採信新鮮的 Windows 心跳（`ocr-jobs/index.js` 的 `latestWorker()`），這只影響
-  「要不要允許上傳」的顯示邏輯，不影響實際 claim 到工作後的 Agent 順序。
-- 若要做到真正的跨機接力（這台機器兩個 Agent 都失敗時，換另一台機器重試同一張圖），需要修改
-  `OcrWorkerRunner`／`AgentQuotaRouter`：兩者皆不可用時把租約釋放回 `queued` 而不是直接標記
-  `fallback_required`，並限制重試次數避免無限接力。**目前程式沒有做這件事**，這是一項需要
-  另外設計與測試的功能，不在 2026-09-12 這輪復原範圍內。
+- `ocr_jobs` 新增 `windows_attempt_failed_at` 欄位；`ocr_claim_job()` 依呼叫端平台分流：
+  Windows 只能拿「還沒被 Windows 試過」的全新工作，非 Windows（Mac）只能拿「Windows 已確認
+  失敗」或「目前沒有新鮮 Windows 心跳」的工作——後者讓 Windows 離線時 Mac 可以直接當唯一
+  可用機器，不必空等一台不在線的機器「輪到」。
+- Windows 兩個 Agent 都不可用時，`OcrWorkerRunner` 呼叫新的 `relay` action → `ocr_relay_agent_failure()`：
+  若當下有新鮮的非 Windows Worker 在線，把工作**釋放回 `queued`** 並標記
+  `windows_attempt_failed_at`（這個 UPDATE 會觸發既有的 Realtime trigger，立刻廣播喚醒
+  Mac，不必等 Mac 自己的重連週期）；若沒有新鮮的其他機器，直接終結為 `fallback_required`，
+  不會讓工作卡在 `queued` 裡永遠等不到人接手。
+- Mac 兩個 Agent 都不可用時，同一個 `relay` action 一定終結為 `fallback_required`——這是最後
+  一站，沒有第三台機器可以再接力。
+- **既有的「lease 逾時回收」（Worker 中途當機）刻意不套用這個平台限制**，任何在線 Worker
+  都能接手逾期租約，不因這次改動而降低故障復原能力；只有「兩個 Agent 都確認失敗」這個乾淨
+  結果才會走平台接力判斷。
+- 平台判斷沿用既有 `platform ilike '%windows%'` 慣例（與 `ocr-jobs/index.js` 的
+  `isWindowsWorker()` 一致），不要求字串精確等於 `'Mac'`，避免 macOS 的
+  `RuntimeInformation.OSDescription` 沒有固定包含 `Mac` 字樣時誤判。
+- 評估工作（Low background shadow run）不套用這個接力：`ProcessEvaluationAsync` 失敗只記錄
+  錯誤碼，不影響使用者看到的 Max 結果，範圍上不需要接力。
+- 瀏覽器端 `readiness`/`submit` 判斷「AI 是否 ready」時，仍只看偏好的單一 Worker（優先新鮮
+  Windows）的 Agent 狀態，沒有因這次改動重新聚合兩台機器的狀態；這代表如果 Windows 心跳新鮮
+  但兩個 Agent 都不可用、同時 Mac 其實有能力做，瀏覽器可能仍會在上傳前就判斷不可用而直接走
+  Tesseract，不會等到接力機制介入。這是已知、範圍外的殘留落差，不在這輪修正內。
+
+程式位置：[db/049_ocr_agent_relay.sql](../../db/049_ocr_agent_relay.sql)、
+[OcrWorkerRunner.cs](../../src/Invest.Web/Features/Assets/Ocr/Services/OcrWorkerRunner.cs)、
+[OcrWorkerApiClient.cs](../../src/Invest.Web/Features/Assets/Ocr/Services/OcrWorkerApiClient.cs)、
+`ocr-jobs/index.js` 的 `handleRelay()`。
 
 #### 什麼時候啟用／停止／重啟
 
@@ -227,6 +248,77 @@ Supabase Edge Function 額度與約 2.5 GB egress。
   `succeeded`，也不構成 Golden Set 或正確率驗收證據。
 - Claude Pro 訂閱登入仍未完成（見 §14.6），目前仍是 Codex 單 Agent 實際服務中，Router 會
   正確略過未登入的 Claude。
+
+### 0.2 2026-09-12 Agent 跨機接力：Windows 兩個 Agent → Mac 兩個 Agent → Tesseract
+
+#### 需求
+
+使用者看過 0 節／0.1 節與先前的架構說明後，明確否決「誰先搶到 job 就誰做」的競速制，
+要求改成固定順序：**先確認 Windows 的 Codex→Claude，都不行才確認 Mac 的 Codex→Claude，
+都不行才回退瀏覽器 Tesseract**。這是刻意的產品決策，不是先前文件寫錯；競速制在使用者原始
+§14.6 設計脈絡下也不是既定契約，這次是新增的接力語意。
+
+#### 設計取捨
+
+沒有採用「兩個 Agent 都失敗就無條件釋放回佇列，讓任何在線 Worker 搶」的簡化版，因為那樣
+無法保證 Windows 一定先試——如果 Mac 剛好先醒來，會搶走本該先給 Windows 的新工作。改為在
+`ocr_claim_job()` 內依呼叫端平台分流（見上方「五層降級順序」），讓「Windows 優先」是資料庫
+層級保證，不是靠兩台機器喚醒時間差的僥倖。
+
+「lease 逾時回收」（Worker 中途當機，跟本次的「兩個 Agent 都確認失敗」是不同失效模式）刻意
+不套用平台限制：如果套用，Windows 當機且沒有回應時，一張已經 leased 給 Windows 的工作會卡在
+只能等 Windows 復活才能重派，反而降低可靠度，跟這次要解決的問題無關。
+
+#### 實作
+
+- `db/049_ocr_agent_relay.sql`：新增 `ocr_jobs.windows_attempt_failed_at` 欄位；
+  `ocr_claim_job()` 改為依呼叫端平台（`ocr_workers.platform`）分流可見的 `queued` 工作；
+  新增 `ocr_relay_agent_failure(p_worker_id, p_job_id, p_lease_token, p_fallback_reason, p_error_code)`，
+  回傳 `{relayed: true}`（已交給 Mac）或 `{relayed: false, completed: bool}`（終結為
+  `fallback_required`）。已透過 Management API 套用正式 Supabase，`schema_migrations` 已登記。
+- `ocr-jobs/index.js`：新增 `relay` action（`workerAction` 清單），呼叫上述 RPC；已部署為
+  v14，`verify_jwt` 維持既有的 `false`（手動驗證），未帶 JWT 的請求已實測回 401。
+- `OcrWorkerApiClient.cs`：新增 `RelayOrFallbackAsync()`，呼叫 `relay` action。
+- `OcrWorkerRunner.cs`：`ProcessJobAsync` 的 `execution.UsesTesseract` 分支改為先呼叫
+  `RelayOrFallbackAsync()`，依回傳值印出「已交給另一個平台的 Worker 接力」或「改由瀏覽器
+  Tesseract」，不再無條件直接呼叫 `CompleteAsync(..., "fallback_required", ...)`。
+
+#### 正式資料庫驗證（rollback，未留痕跡）
+
+在單一 transaction 內動態找出並暫時卸除 `ocr_workers.id`／`ocr_jobs.lease_owner` 的
+`auth.users` 外鍵（測試結束 `rollback` 會連同 DDL 一起復原），建立假的 Windows／Mac
+`ocr_workers` 列與一張假 `ocr_jobs`，依序驗證：Windows 搶得到全新工作、Mac 在 Windows
+失敗前搶不到同一張、Windows 兩個 Agent 都失敗且 Mac 新鮮在線時 `relayed=true`、relay 後
+Windows 不能再搶、Mac 能搶到、Mac 也失敗後 `relayed=false`／`completed=true`、最終
+`status='fallback_required'`、`fallback_reason='all_agents_quota_exhausted'`、
+`windows_attempt_failed_at` 已記錄——十項斷言全部通過。`rollback` 後查證假資料 0 筆殘留、
+兩個外鍵已恢復。
+
+`.NET 10.0.302` Release build 0 警告／0 錯誤，`Invest.Web.Tests` 458/458 全綠；Edge Function
+以 Node 24（`C:\Program Files\nodejs\node.exe`，這台機器 PATH 上優先的是過舊的 Node
+0.12.2，語法檢查要指到完整路徑）`--check` 通過。
+
+#### 公司 Windows 已重新發布並驗證
+
+停用排程 → `publish-ocr-worker-windows.ps1`（新 EXE `LastWriteTime` 2026-09-12 11:01）→
+`-Once` 診斷 exit code 0，啟動訊息仍是「Realtime 喚醒；斷線每 5 秒重連」→ 重新啟用並啟動，
+`State=Running`；重啟後心跳已於 20 秒內回到 Supabase，Codex 仍為
+`installed/authenticated/quotaAvailable=true`。
+
+#### 仍待處理
+
+- **家裡 Mac 尚未套用這次的接力邏輯**：Mac 是直接 `dotnet run` 從原始碼啟動，需要使用者
+  執行 `git pull` + 重載 LaunchAgent才會真正跑到含 `windows_attempt_failed_at`／`relay`
+  的版本；在那之前，即使 Windows 兩個 Agent 都失敗，`ocr_relay_agent_failure()` 也會因為
+  查不到「新鮮的非 Windows Worker」而直接終結為 `fallback_required`，不是接力失效，是
+  Mac 端還沒上線。
+- **跨機接力目前完全沒有實機驗證過**（沒有真的讓 Windows 兩個 Agent 同時失敗、觀察 Mac
+  是否真的接手），只驗證到資料庫層級的競速／權限規則；正式驗收仍需要兩台機器同時在線，
+  刻意讓 Windows 端額度或登入失效一次，確認 Mac 真的接手且瀏覽器最終看到 AI 結果。
+- **使用者回報 2026-09-12 手機上傳仍走 Tesseract，且當下 Windows 心跳／Codex 狀態其實正常**：
+  查證當時 `ocr_jobs` 完全沒有新工作列，代表卡在 `readiness`/`submit` 之前，不是 Worker 或
+  Agent 的問題；`readiness`/`submit` 需要登入帳號 `access_role=admin`，最可能原因是手機當下
+  登入的帳號不是最高權限帳號，待使用者確認登入身分後再判斷是否為其他問題（例如前端快取）。
 
 ### 1. 最終實作方式
 

@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 2026-09-12 公司 Windows 已重新 publish 並驗證恢復事件驅動版本（筆記 #61 收尾）；**家裡 Mac 仍待使用者重載 LaunchAgent**。另仍待 Claude Pro 登入、Golden Set、手機新圖、Windows 每張 ≤30 秒與長期斷線復原驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 2026-09-12 公司 Windows 已重新 publish 並驗證恢復事件驅動版本（筆記 #61 收尾），且已改為 Windows→Mac→Tesseract 固定跨機接力並重啟；**家裡 Mac 仍待使用者重載 LaunchAgent，跨機接力未實機驗證，且使用者回報手機上傳仍走 Tesseract 待查**。另仍待 Claude Pro 登入、Golden Set、手機新圖、Windows 每張 ≤30 秒與長期斷線復原驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🔵 市場切換已上線；美股／加密貨幣熱絡指標修正規劃完成，待實作與回放驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1229,6 +1229,28 @@ scripts/install-ocr-worker-launchagent-macos.sh
 
 **驗收條件：啟動訊息／log 必須是「Realtime 喚醒；斷線每 5 秒重連」，不能是「輪詢 N 秒」。**
 改對之後空轉從 140K 次／天降到 1,440 次／天（60 秒一次 heartbeat），約 −99%。
+
+### 🔵 2026-09-12 Agent 降級改為固定跨機接力（Windows→Mac→Tesseract），公司 Windows 已重啟
+
+使用者明確要求把 Agent 降級從「誰先搶到 job 就誰做」的競速制，改成固定順序：**Windows 的
+Codex→Claude 都不行才換 Mac 的 Codex→Claude，都不行才回退 Tesseract**。已完成並部署：
+
+- `db/049_ocr_agent_relay.sql`：`ocr_jobs` 新增 `windows_attempt_failed_at`；`ocr_claim_job()`
+  依平台分流、新增 `ocr_relay_agent_failure()` 決定接力或終結。已套用正式 Supabase，
+  rollback smoke test 十項斷言全過（過程與結果見
+  [AI OCR §0.2](Doc/技術文件/AI%20OCR.md#02-2026-09-12-agent-跨機接力windows-兩個-agent--mac-兩個-agent--tesseract)）。
+- `ocr-jobs` Edge Function 新增 `relay` action，已部署 v14，`verify_jwt=false` 維持不變，
+  未帶 JWT 已實測回 401。
+- `OcrWorkerApiClient.cs`／`OcrWorkerRunner.cs` 已接上 `RelayOrFallbackAsync()`；
+  `.NET 10.0.302` Release 458/458 全綠。
+- 公司 Windows 已依既定順序停用→重新 publish（EXE `LastWriteTime` 2026-09-12 11:01）→
+  `-Once` 確認 `Realtime 喚醒` 字樣→重新啟用，`Running`，心跳 20 秒內恢復。
+
+**仍待處理：** 家裡 Mac 尚未套用這次的接力邏輯（需 `git pull` + 重載 LaunchAgent，同上一節）；
+跨機接力本身完全沒有實機驗證（沒有真的讓 Windows 失敗過、觀察 Mac 是否接手），只驗證到資料庫
+層級。另外，**使用者 2026-09-12 回報手機上傳仍走 Tesseract**，但查證當下 Windows 心跳與
+Codex 狀態都正常、`ocr_jobs` 卻完全沒有新工作列——代表卡在 `readiness`/`submit` 之前，最可能
+是手機登入帳號不是 `access_role=admin`，待使用者確認登入身分後續查，不排除是另一個獨立問題。
 
 ### 已討論
 

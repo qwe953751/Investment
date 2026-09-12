@@ -154,6 +154,30 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         await EnsureSuccessAsync(response, "complete");
     }
 
+    /// <summary>
+    /// 兩個 Agent 都確認不可用時呼叫；伺服器依呼叫端平台決定「交給另一個平台的 Worker
+    /// 接力」還是「已經是最後一站，直接回退 Tesseract」。回傳 true 代表已交給另一台機器，
+    /// 這個 Worker 對這件工作已經沒有下一步；false 代表伺服器已經把工作標成 fallback_required。
+    /// </summary>
+    public async Task<bool> RelayOrFallbackAsync(
+        OcrClaimedJob job,
+        string? fallbackReason,
+        string? errorCode,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendJsonAsync(new
+        {
+            action = "relay",
+            jobId = job.Id,
+            leaseToken = job.LeaseToken,
+            fallbackReason,
+            errorCode
+        }, cancellationToken);
+        await EnsureSuccessAsync(response, "relay");
+        var body = await response.Content.ReadFromJsonAsync<OcrRelayResponse>(JsonOptions, cancellationToken);
+        return body?.Relayed ?? false;
+    }
+
     public async Task<OcrClaimedEvaluation?> ClaimEvaluationAsync(CancellationToken cancellationToken)
     {
         using var response = await SendJsonAsync(new { action = "evaluation-claim" }, cancellationToken);
@@ -513,6 +537,7 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         [property: JsonPropertyName("expires_in")] int? ExpiresIn);
     private sealed record OcrClaimResponse(OcrClaimedJob? Job);
     private sealed record OcrEvaluationClaimResponse(OcrClaimedEvaluation? Evaluation);
+    private sealed record OcrRelayResponse(bool Relayed);
 }
 
 public sealed record OcrEvaluationMetadata(

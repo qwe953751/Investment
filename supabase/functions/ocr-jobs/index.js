@@ -835,6 +835,36 @@ async function handleComplete(request, user, body) {
     return json(request, 200, { ok: true, evaluationQueued });
 }
 
+async function handleRelay(request, user, body) {
+    const jobId = String(body?.jobId ?? '');
+    const leaseToken = String(body?.leaseToken ?? '');
+    if (!/^[0-9a-f-]{36}$/i.test(jobId) || !/^[0-9a-f-]{36}$/i.test(leaseToken)) {
+        return json(request, 400, { error: 'invalid_relay' });
+    }
+
+    const response = await serviceFetch('/rest/v1/rpc/ocr_relay_agent_failure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            p_worker_id: user.id,
+            p_job_id: jobId,
+            p_lease_token: leaseToken,
+            p_fallback_reason: body?.fallbackReason ? String(body.fallbackReason).slice(0, 100) : null,
+            p_error_code: body?.errorCode ? String(body.errorCode).slice(0, 100) : null
+        })
+    });
+    if (!response.ok) {
+        return json(request, 502, { error: 'relay_failed' });
+    }
+
+    const result = await response.json();
+    if (!result || (result.relayed !== true && result.completed !== true)) {
+        return json(request, 409, { error: 'lease_lost' });
+    }
+
+    return json(request, 200, { ok: true, relayed: result.relayed === true });
+}
+
 async function handleEvaluationClaim(request, user) {
     const response = await serviceFetch('/rest/v1/rpc/ocr_claim_evaluation', {
         method: 'POST',
@@ -1003,7 +1033,7 @@ Deno.serve(async request => {
         const { action, body } = await parseAction(request);
         const role = accessRole(user);
         const adminAction = ['readiness', 'submit', 'status', 'download', 'wake', 'acknowledge', 'cancel', 'fallback', 'evaluation-truth'].includes(action);
-        const workerAction = ['heartbeat', 'claim', 'progress', 'complete', 'evaluation-claim', 'evaluation-complete'].includes(action);
+        const workerAction = ['heartbeat', 'claim', 'progress', 'complete', 'relay', 'evaluation-claim', 'evaluation-complete'].includes(action);
         if ((adminAction && role !== 'admin') || (workerAction && role !== 'ocr_worker')) {
             return json(request, 403, { error: 'forbidden' });
         }
@@ -1021,6 +1051,7 @@ Deno.serve(async request => {
         if (action === 'claim') return await handleClaim(request, user);
         if (action === 'progress') return await handleProgress(request, user, body);
         if (action === 'complete') return await handleComplete(request, user, body);
+        if (action === 'relay') return await handleRelay(request, user, body);
         if (action === 'evaluation-claim') return await handleEvaluationClaim(request, user);
         if (action === 'evaluation-complete') return await handleEvaluationComplete(request, user, body);
         return json(request, 404, { error: 'unknown_action' });

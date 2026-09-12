@@ -243,16 +243,17 @@ public sealed class OcrWorkerRunner(
 
             if (execution.UsesTesseract)
             {
+                var fallbackCode = ToFallbackCode(execution.FallbackReason);
                 await UpdateProgressSafeAsync(api, job, "fallback", 90, usage, cancellationToken);
-                await api.CompleteAsync(
-                    job,
-                    "fallback_required",
-                    null,
-                    ToFallbackCode(execution.FallbackReason),
-                    null,
-                    null,
-                    cancellationToken);
-                Console.WriteLine($"OCR 工作 {job.Id} 改由瀏覽器 Tesseract：{ToFallbackCode(execution.FallbackReason)}");
+                var relayed = await api.RelayOrFallbackAsync(job, fallbackCode, null, cancellationToken);
+                if (relayed)
+                {
+                    Console.WriteLine($"OCR 工作 {job.Id} 這台機器兩個 Agent 都不可用，已交給另一個平台的 Worker 接力：{fallbackCode}");
+                }
+                else
+                {
+                    Console.WriteLine($"OCR 工作 {job.Id} 改由瀏覽器 Tesseract：{fallbackCode}");
+                }
                 return;
             }
 
