@@ -216,6 +216,13 @@ Dashboard 與帳戶明細的折線圖共用版本 A：滑鼠移動／點擊或�
 
 ## 最新已發布版本
 
+本輪登入後資產／筆記空白修復已以 `main` commit `c47ebdf6` 推送，並由
+[`daily-snapshot.yml` publish-only run 34716807628](https://github.com/qwe953751/Investment/actions/runs/34716807628)
+完成測試、靜態輸出與兩個 Pages 發布。公開 manifest HTTP 200，版本為 `1789244509`、最新交易日
+`2026/09/11`、產生時間 `2026-09-13 04:21`；公開 `site.js` 已驗證一般 `fetchAllRows` 不帶
+`Authorization`，Excel 路徑包含 `fetchAuthenticatedAllRows`。publish-only 的行情回補、Supabase 同步、
+備份與心跳均依設計略過。
+
 本輪筆記 #64／#65 的手機裝置浮層定位與盤中歷史熱絡日期跳轉已完成；`main` commit
 `c2fee6003d2b0fe4a02fb535e29d56cffeab539a` 已推送，並由 [`daily-snapshot.yml` publish-only run 34579016939](https://github.com/qwe953751/Investment/actions/runs/34579016939)
 完成測試、靜態輸出與兩個 Pages 發布。公開 manifest HTTP 200，版本為 `1789089362`、最新交易日
