@@ -13,16 +13,35 @@ public sealed class OcrWorkerRunner(
     OcrRecognitionValidator validator)
 {
     private static readonly string[] SupportedExtensions = [".png", ".jpg", ".jpeg", ".webp"];
-    private static readonly TimeSpan ProbeCacheTtl = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(60);
+    // 探測顯示「沒有可用 Agent」時，心跳改用這個較短的間隔重新探測，讓額度／登入剛好
+    // 復原時能在十幾秒內回到可用，不必最多卡到下一個 60 秒心跳週期才被看見。
+    private static readonly TimeSpan WorkerHeartbeatRecoveryPollInterval = TimeSpan.FromSeconds(10);
+    // 探測 CLI 登入狀態偶爾會因為網路瞬斷、CLI 對遠端做 token 驗證時的暫時性錯誤而誤判成
+    // 未登入；2026-09-12 有一次上傳因此整批被判定「沒有可用 Agent」而全部改走 Tesseract，
+    // 事後查證 Worker／Codex 當下其實都正常。改成 5 秒內最多重試 5 次，只要有一次判定已
+    // 登入就立刻採用，不會把單次的抖動當成真的斷線。
+    private const int ProbeRetryAttempts = 5;
+    private static readonly TimeSpan ProbeRetryDelay = TimeSpan.FromSeconds(1);
 
-    private IReadOnlyDictionary<string, OcrWorkerAgentState>? _probeCache;
-    private DateTimeOffset _probeCacheAt;
     private volatile IReadOnlyDictionary<string, OcrWorkerAgentState> _agentStates =
         new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase);
 
     public async Task RunAsync(string[] args, CancellationToken cancellationToken = default)
     {
+        // 常駐排程用 Start-Process 把 stdout/stderr 導向檔案時，.NET 預設編碼會依系統 ANSI
+        // 頁碼寫出，中文字變成亂碼；明確指定 UTF-8（含 BOM，讓 Get-Content／記事本等工具
+        // 能自動判斷編碼）解決寫入端。排程以 -WindowStyle Hidden 啟動、完全沒有真正主控台
+        // 時，設定 Console.OutputEncoding 會拋 IOException；這時退回預設編碼即可（寧可
+        // log 偶爾亂碼，也不能讓這行擋住 Worker 完全無法啟動）。
+        try
+        {
+            Console.OutputEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+        }
+        catch (IOException)
+        {
+        }
+
         var once = args.Skip(1).Any(value => value.Equals("--once", StringComparison.OrdinalIgnoreCase));
         if (args.Skip(1).Any(value => !value.Equals("--once", StringComparison.OrdinalIgnoreCase)))
         {
@@ -191,7 +210,8 @@ public sealed class OcrWorkerRunner(
         {
             try
             {
-                await Task.Delay(WorkerHeartbeatInterval, cancellationToken);
+                var delay = wasAvailable ? WorkerHeartbeatInterval : WorkerHeartbeatRecoveryPollInterval;
+                await Task.Delay(delay, cancellationToken);
                 var agents = await ProbeAgentsAsync(cancellationToken);
                 _agentStates = agents;
                 await api.HeartbeatAsync(agents, cancellationToken);
@@ -453,34 +473,14 @@ public sealed class OcrWorkerRunner(
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-
-        // 每張圖都要 spawn 兩個 CLI 子行程確認登入狀態，是每輪固定的秒級開銷；登入
-        // 狀態變化很慢（通常是人工登出才會變），加短 TTL 快取即可，額度狀態
-        // （會隨每張圖即時變化）仍在下面用 WithQuota 即時疊加，不會被快取蓋掉。
-        if (_probeCache is not null && now - _probeCacheAt < ProbeCacheTtl)
-        {
-            return new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["claude"] = WithQuota(_probeCache["claude"], OcrAgentKind.Claude, now),
-                ["codex"] = WithQuota(_probeCache["codex"], OcrAgentKind.Codex, now)
-            };
-        }
-
-        var claude = await ProbeAsync(
+        var claude = await ProbeWithRetryAsync(
             OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude),
             ["auth", "status", "--text"],
             cancellationToken);
-        var codex = await ProbeAsync(
+        var codex = await ProbeWithRetryAsync(
             OcrAgentExecutableResolver.Resolve(OcrAgentKind.Codex),
             ["login", "status"],
             cancellationToken);
-
-        _probeCache = new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["claude"] = claude,
-            ["codex"] = codex
-        };
-        _probeCacheAt = now;
 
         return new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase)
         {
@@ -500,6 +500,29 @@ public sealed class OcrWorkerRunner(
         }
 
         return state with { QuotaAvailable = false, RetryAfter = retryAfter.ToString("O") };
+    }
+
+    private static async Task<OcrWorkerAgentState> ProbeWithRetryAsync(
+        string executable,
+        IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken)
+    {
+        var result = new OcrWorkerAgentState(false, false, false);
+        for (var attempt = 1; attempt <= ProbeRetryAttempts; attempt++)
+        {
+            result = await ProbeAsync(executable, arguments, cancellationToken);
+            if (result.Authenticated || !result.Installed)
+            {
+                return result;
+            }
+
+            if (attempt < ProbeRetryAttempts)
+            {
+                await Task.Delay(ProbeRetryDelay, cancellationToken);
+            }
+        }
+
+        return result;
     }
 
     private static async Task<OcrWorkerAgentState> ProbeAsync(

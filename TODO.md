@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 2026-09-12 找到並修正「一下走 AI 一下走 Tesseract」真正根因：Worker 3 個並行槽 claim 落空會永久死掉（改常駐槽）、前端用心跳新鮮度猜測離線就提早取消排隊工作（改成只信任事實與絕對時限）；458 個 .NET＋85 個 Node 測試全綠，**尚待使用者下次整批上傳做端到端驗證**。另已完成 Windows→Mac→Tesseract 固定跨機接力並重啟公司 Windows（筆記 #61 收尾）；**家裡 Mac 仍待使用者重載 LaunchAgent，跨機接力未實機驗證**。另仍待 Claude Pro 登入、Golden Set、Windows 每張 ≤30 秒與長期斷線復原驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 2026-09-12 已修三個獨立問題並重新發布公司 Windows：Worker 3 個並行槽 claim 落空會永久死掉（改常駐槽）、前端心跳誤判提早取消排隊工作（Worker 端已上線，**前端半套是否已隨同一天的 OCR 強制取消功能一起發布需重新查證**）、readiness 探測失敗 fail-closed 單次抖動整批靜默降級（改 5 秒內重試 5 次＋不可用時 10 秒加速重探＋常駐排程 log 檔，部署時順手修正 log 亂碼）；459 個 .NET 測試全綠，重啟後有真實上傳成功驗證。**部署時意外發現既有 bug**：`ai_recognition` 進度階段不在 Edge Function 合法清單裡，每次都靜默 400 失敗（只影響畫面進度百分比，不影響辨識結果），尚未修正待使用者決定。另已完成 Windows→Mac→Tesseract 固定跨機接力（筆記 #61 收尾）；**家裡 Mac 仍待使用者重載 LaunchAgent，跨機接力未實機驗證**。另仍待 Claude Pro 登入、Golden Set、Windows 每張 ≤30 秒與長期斷線復原驗收 |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🔵 四市場熱絡計算已實作；日韓風險／產業 symbol 等待實際回補驗證，網站尚未發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1321,6 +1321,44 @@ Codex 完全正常，`ocr_jobs` 這次**確實有**新工作列（推翻上一�
 無法自己在瀏覽器完成，下次使用者整批上傳時可直接查 `ocr_jobs` 確認是否全部走 AI。
 也沒有做「3 條並行是否會撞到 Codex 速率限制」的預防性處理，等實機測試若真的觀察到
 429 再依證據處理。
+
+### 🔵 2026-09-12（再續）第三個獨立問題：readiness fail-closed，探測抖動一次整批靜默降級
+
+上面兩節修完、Worker 重啟後，使用者當天稍晚再用同一支手機傳 6 張截圖，**全部**仍走
+Tesseract，質疑「到底為什麼還是跑 Tesseract？？？」。查 Edge Function log 證實這批
+圖完全沒有 `submit`（卡在上傳前，跟上一節排隊取消的問題無關）；`readiness` 呼叫
+16:10:07 回 200（admin 權限正常），但當下 `ocr_workers` 心跳 34 秒新鮮、Codex
+正常——代表 `readiness` 讀到的快照本身就是「假的不可用」。
+
+根因：`readiness` 只讀心跳表最新一筆快照，`agents` 完全來自 Worker 上次探測
+`codex login status`／`claude auth status` 的結果，探測**只跑一次**且失敗就
+fail-closed（逾時、非零結束碼都直接判定未登入，不保留上次已知正常狀態）。這類指令
+通常要對遠端驗證 token，一次網路瞬斷就能讓「未登入」寫進快照，卡到下一次心跳（最多
+60 秒）；剛好落在窗口內的上傳整批被靜默判不可用，60 秒後心跳自己恢復，事後查不出來。
+
+已修正：`ProbeAgentsAsync()` 改呼叫新的 `ProbeWithRetryAsync()`，同一探測 5 秒內
+最多重試 5 次、有一次成功就採用；`MaintainHeartbeatAsync()` 在「沒有可用 Agent」時
+把探測間隔從 60 秒縮短到 10 秒，加速偵測復原（連帶移除已無意義的探測快取）；
+`run-ocr-worker-windows.ps1` 常駐模式改用 `Start-Process` 把 stdout/stderr 分別
+導向 `logs/ocr-worker-<timestamp>.{out,err}.log`（保留 30 天），修補這次「完全沒有
+log 可查、只能反推」的盲點。`.NET Invest.Web.Tests` 459/459 全綠，完整診斷見
+[AI OCR §0.4](Doc/技術文件/AI%20OCR.md#04-2026-09-12同日再一次readiness-探測-fail-closed單次抖動整批靜默降級)。
+
+**誠實說明**：這次根因是反推的，不是第一手證據——沒有 log、使用者當下也沒回報畫面上
+顯示的回退原因文字。下次再發生，log 檔會直接留下探測的實際輸出。§0.3 的前端修正
+（拆掉排隊中的心跳誤判）仍未發布上線（另一個 session 的發佈流程問題延後），這次的
+修正全部在 Worker 端，不受影響。
+
+**部署時的追加發現**：常駐排程用 `Start-Process` 導向 log 後，中文字是亂碼（.NET
+沒有預設用 UTF-8 寫出重導向的串流）；已在 `RunAsync` 開頭設定
+`Console.OutputEncoding`，`-WindowStyle Hidden` 沒有真主控台時設定會拋
+`IOException`，已包 try/catch 吞掉不擋啟動。這是 log 檔第一次真的有內容，也因此
+第一次看到一個既有 bug：`OcrWorkerRunner` 送出的 `"ai_recognition"` 進度階段不在
+Edge Function 的合法清單裡，每次都靜默 400 失敗——每件工作在 AI 辨識階段的進度回報
+其實從來沒有成功過，只是沒有 log 可看才沒被發現；不影響辨識結果，只影響畫面上的
+進度百分比，尚未修正，留給使用者決定是否處理。重啟期間剛好有真實使用者上傳
+（`IMG_2083.png`）在跑，最終正確 `succeeded`，順帶驗證了跨越一次 Worker 重啟的
+lease 逾時回收沒有壞掉。
 
 ### 已討論
 
