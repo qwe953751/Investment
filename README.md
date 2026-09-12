@@ -10,7 +10,9 @@
 截圖辨識的目標架構採 D+ AI-first：以公司 Windows Worker 為預設執行節點；Windows 在線且至少一個訂閱 CLI
 可用時，圖片短期進入 Supabase 私有佇列並由單一 AI Agent 辨識；主要 Agent 登入／額度不可用時自動切換另一個，兩者都不可用才在瀏覽器回退 Tesseract。辨識後會先列出「覆蓋／新增／移除」差異，
 每一項都必須人工核對並勾選才會套用。相同代號直接覆蓋，移除項目預設不勾選。檢視權限不顯示此頁籤；
-密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收。**D+ 後端、AI-first 前端、Mac
+密碼登入前端已上線；資產資料的匿名 RLS 寫入收權限仍待驗收。2026-09-13 已修正登入後把既有
+anon 查詢誤帶 JWT、導致沒有 authenticated policy 時回傳空陣列的問題；一般筆記／資產／排行查詢
+固定走 anon，只有 Excel 專用表走 authenticated allowlist。**D+ 後端、AI-first 前端、Mac
  Worker 與正式網站已整合發布。**正式最高權限手機已確認兩張圖片由 D+ AI 完成（70／78 秒）；
 本輪已加入名稱唯一反查、非阻斷差異、進度 UI／Worker 回報、Codex 用量觀測、單次 AI 辨識、
 單實例鎖與 Mac／Windows 背景啟動腳本。`db/041_ocr_progress.sql` 已套用正式 Supabase，`ocr-jobs`
@@ -81,8 +83,10 @@ K 線、族群可跳到同一個節點、營收可開同一個 20 個月彈窗�
 表格欄位可拖曳換位，Buy／Stock／族群勾選可在編輯模式修改，單列可刪除，也可新增空白列；按「套用變更」
 會寫回 Supabase 的 `asset_operation_rows`，欄位順序寫回 `asset_operation_settings`。`營收創高` 不存在操作表的可編輯資料中，
 而是唯讀取 `revenue_latest.high_months`：創高月數大於等於 13 顯示勾選，其餘顯示 `X`。點擊 Stock 沿用盤中／盤後同一個
-K 線流程，因此 K 線尾端會依目前盤中快照同步。這兩張表由 `db/051_asset_operation_sheet.sql` 建立；migration 尚未套用前，
-正式頁面會顯示清楚的待套用提示，不使用本機示範資料。Google Sheet 維持唯讀參考，不由網站直接寫回。
+K 線流程，因此 K 線尾端會依目前盤中快照同步。這兩張表由 `db/051_asset_operation_sheet.sql` 建立，
+`db/053_asset_operation_rls_visibility.sql` 補上必要的管理者父列 policy 與 `invest_writer` 備份存取，
+已套用正式 Supabase 並完成 RLS 查證；首次啟用時操作列／欄位設定為空，必須由使用者在 Excel 表新增後套用，
+不使用本機示範資料。若未套用 migration，正式頁面會顯示清楚的待套用提示。Google Sheet 維持唯讀參考，不由網站直接寫回。
 「筆記」是個人工作區，只在最高權限樣板顯示；內容直接讀寫 Supabase 的 `notes` 表，任何裝置都能看到同一份資料，
 並每 60 秒重讀。檢視權限不顯示此頁籤。這是公開網站的刻意取捨：沒有登入邊界，知道網址的人也可能修改筆記，
 密碼登入會在網址下限之上提升權限；在 RLS 收回匿名寫入前，資料表仍沿用公開 anon 模型。
@@ -128,7 +132,7 @@ Dashboard 的資產圓餅圖中心會依格式化後金額的字元長度縮放�
 不是帳戶內再存一個容易失真的總數；每筆可記日期、方向、金額與備註。資料表由
 `db/030_asset_cash_flows.sql` 建立；正式 Supabase 已於 2026-08-31 套用並查證 RLS、權限與前端表單。
 金額欄位的無上限型別、美股最新價前收欄位、日行情 view 權限與資產日快照分別由
- `db/032_asset_cash_flows_unbounded_amount.sql`、`db/033_latest_us_quotes_previous_close.sql`、
+`db/032_asset_cash_flows_unbounded_amount.sql`、`db/033_latest_us_quotes_previous_close.sql`、
 `db/034_daily_quotes_view_security.sql`、`db/035_asset_value_snapshots.sql` 建立；四支 migration
 已於 2026-09-02 依獨立流程套用正式 Supabase 並查證。Dashboard 的「資產變化」折線圖讀取
 每日快照；當日總值完整時最多寫一筆，缺行情或匯率時不以成本假裝市值，也不寫不完整快照。
@@ -139,6 +143,7 @@ Dashboard 與帳戶明細的「每年總資產與試算淨值」共用同一個�
 Dashboard 的年度區塊只讀，總資產與該年度入金成本由各帳戶逐年彙總，排序固定由新到舊；
 新增只接受早於當年度的年份，避免把當年度自動值寫成可手動覆蓋的歷史資料。年度卡的試算淨值＝總資產－入金成本，
 年化報酬＝（今年（總資產－入金成本）－前一年總資產）／前一年總資產。
+Excel 專用操作表的 `051`／`053` migration 已於 2026-09-13 依獨立流程套用；這不改變既有資產／筆記的匿名 RLS 讀寫邊界。
 帳戶明細新增／編輯歷史年度時，台股以 TWD 輸入、美股以 USD 輸入；儲存前依最新 USD/TWD 參考匯率換算，年度表仍以 TWD 保存，無法取得匯率時不允許寫入。
 年度表的 `cost_twd` 欄位保存台幣入金成本作為資料相容／回退值，正式前端有出入金資料時以該年度紀錄為準，
 不是持倉投入成本；正式前端只使用 `account_id` scope 寫入與彙總，舊有 `owner_id` 欄位僅保留資料表相容性，

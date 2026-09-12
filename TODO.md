@@ -14,7 +14,7 @@
 |---|---|---|
 | 1 | [盤中與盤後的比較策略](#todo-1) | 🔵 進行中 |
 | 2 | [寫入帳號拆分：invest_writer_pc / invest_writer_ci](#todo-2) | ⚪ 未開始 |
-| 3 | [權限模型：密碼登入權限（前端已上線，RLS 收權限待驗收）](#todo-3) | 🟡 等驗收 |
+| 3 | [權限模型：密碼登入權限（登入空白事故已修，既有表 RLS 收權限待驗收）](#todo-3) | 🟡 等驗收 |
 | 4 | [Supabase Management API token 到期](#todo-4) | 🟡 等時間 |
 | 5 | [盤後「抓到有為止」碰上國定假日會誤紅燈](#todo-5) | 🟡 週末分支已驗證，等平日假日/颱風假驗收 |
 | 6 | [記住上次選的選項，重整後不要跳回預設](#todo-6) | 🟡 等實地驗收 |
@@ -151,6 +151,23 @@ CI 的密碼放在 GitHub Secrets，不能讓它擁有 DDL 權限。
   已由 `main` commit `ad7bb2a3156a115be278f5434a897c587765994e` 推送，並由 publish-only run `34191472515`
   發布為正式網站 manifest `1788846093`；正式網址已驗證登入後固定顯示 Frank 的台股／美股持股唯讀表格。
   `db/029_permission_accounts.sql` 已用受控流程套用到正式 Supabase；密碼不寫入 repo、文件或 log。
+
+### 2026-09-13 更新：登入後資產／筆記空白事故已修復
+
+正式資料沒有被 OCR 或 Supabase 刪除。根因是 `ac713cbc` 接線 Frank 台股操作 Excel 時，
+把全站共用 `fetchAllRows()` 改成登入後一律附帶 JWT；`notes`／既有資產表只有 `anon` policy，
+所以 PostgreSQL RLS 對 `authenticated` 合法回傳 200 + 空陣列，畫面才顯示「還沒有任何使用者」。
+現在共用讀取已恢復固定 `anon`，只有 `asset_operation_rows`／`asset_operation_settings` 透過
+allowlist 的 `fetchAuthenticatedAllRows()`，401 只重整一次，403／404 不降級。Excel 的編輯／新增／刪除
+仍由原本 `assetExcelWrite()` 送 authenticated request，不會因讀取拆分而改走匿名或失去功能。
+
+`db/051_asset_operation_sheet.sql` 已套用正式 Supabase；`db/053_asset_operation_rls_visibility.sql`
+只開放管理者讀取驗證 Frank／台股操作所需的父列，並補上 `invest_writer` 的操作表 policy。
+兩張操作表啟用時為空，沒有用示範資料冒充正式資料；正式既有資料查證仍為 notes 53、owners 3、accounts 5、holdings 100。
+Node 回歸測試已加入「公開 query 不帶 JWT」「Excel allowlist」「401 重整／403 不降級」與 migration 靜態斷言。
+
+這次只修復登入後讀取路由與 Excel 專用 schema，**沒有宣稱**既有 notes／資產表已收回匿名寫入；
+完整 RLS 收權限仍須另行規劃並做真密碼、多裝置端到端驗收，避免把修 A 變成壞 B。
 
 ### 尚未討論／待驗收
 

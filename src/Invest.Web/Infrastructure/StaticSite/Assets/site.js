@@ -697,9 +697,6 @@ async function fetchAllRows(table, select, extraQuery = '', timeoutMs = null) {
         const requestOptions = {
             headers: {
                 apikey: supabase.anonKey,
-                ...(authAccessToken === null
-                    ? {}
-                    : { Authorization: `Bearer ${authAccessToken}` }),
                 Range: `${offset}-${offset + PAGE_SIZE - 1}`
             },
             cache: 'no-store'
@@ -723,6 +720,62 @@ async function fetchAllRows(table, select, extraQuery = '', timeoutMs = null) {
         if (page.length < PAGE_SIZE) {
             return rows;
         }
+    }
+}
+
+// 只有刻意設計成登入後才可見的資料表才能走這條路。
+// 其他既有資料（筆記、資產與排行）沿用 anon + RLS 的公開模型；
+// 登入後也不能把 JWT 帶進去，否則沒有 authenticated SELECT policy 時會得到 200 + 空陣列，
+// 看起來像資料消失。新增受保護資料表時，必須同時加入 allowlist、專用 RLS policy 與回歸測試。
+const AUTHENTICATED_FETCH_TABLES = new Set([
+    'asset_operation_rows',
+    'asset_operation_settings'
+]);
+
+async function fetchAuthenticatedAllRows(
+    table,
+    select,
+    extraQuery = '',
+    timeoutMs = 8_000,
+    retryAuthentication = true) {
+    if (!AUTHENTICATED_FETCH_TABLES.has(table)) {
+        throw new Error(`不允許以 authenticated 讀取資料表：${table}`);
+    }
+
+    if (authAccessToken === null && !await refreshAuthAccessToken()) {
+        throw new Error('登入已失效，請重新登入最高權限帳號。');
+    }
+
+    const rows = [];
+
+    try {
+        for (let offset = 0; ; offset += PAGE_SIZE) {
+            const url = `${supabase.url}/rest/v1/${table}?select=${select}${extraQuery}`;
+            const page = await fetchJsonAttempt(url, {
+                headers: {
+                    apikey: supabase.anonKey,
+                    Authorization: `Bearer ${authAccessToken}`,
+                    Range: `${offset}-${offset + PAGE_SIZE - 1}`
+                },
+                cache: 'no-store'
+            }, timeoutMs);
+
+            rows.push(...page);
+
+            if (page.length < PAGE_SIZE) {
+                return rows;
+            }
+        }
+    } catch (error) {
+        // JWT 過期只重整一次；403／404／網路錯誤都直接回報，不能降級成 anon，
+        // 否則會把權限設定錯誤或尚未套用 migration 偽裝成正常資料。
+        if (retryAuthentication
+            && error?.status === 401
+            && await refreshAuthAccessToken()) {
+            return fetchAuthenticatedAllRows(table, select, extraQuery, timeoutMs, false);
+        }
+
+        throw error;
     }
 }
 
@@ -9331,7 +9384,7 @@ function assetExcelOperationRowFromDb(row) {
     return operationRow;
 }
 
-async function loadAssetExcelData(accountId, retryAuthentication = true) {
+async function loadAssetExcelData(accountId) {
     if (supabase === null) {
         throw new Error('正式 Excel 表需要 Supabase 連線。');
     }
@@ -9340,31 +9393,21 @@ async function loadAssetExcelData(accountId, retryAuthentication = true) {
         throw new Error('請先登入最高權限帳號，再開啟 Frank／台股操作 Excel。');
     }
 
-    try {
-        const accountQuery = `&account_id=eq.${encodeURIComponent(accountId)}`;
-        const [rows, settings] = await Promise.all([
-            fetchAllRows(
-                ASSET_OPERATION_ROWS_TABLE,
-                'id,account_id,buy,stock,cpo,pcb,asic,cooling,passive,other,memory,abf,power,hinge,pmic,testing,leadframe,bbu,sort_order,updated_at',
-                `${accountQuery}&order=sort_order.asc,id.asc`),
-            fetchAllRows(
-                ASSET_OPERATION_SETTINGS_TABLE,
-                'account_id,column_order,updated_at',
-                accountQuery)
-        ]);
+    const accountQuery = `&account_id=eq.${encodeURIComponent(accountId)}`;
+    const [rows, settings] = await Promise.all([
+        fetchAuthenticatedAllRows(
+            ASSET_OPERATION_ROWS_TABLE,
+            'id,account_id,buy,stock,cpo,pcb,asic,cooling,passive,other,memory,abf,power,hinge,pmic,testing,leadframe,bbu,sort_order,updated_at',
+            `${accountQuery}&order=sort_order.asc,id.asc`),
+        fetchAuthenticatedAllRows(
+            ASSET_OPERATION_SETTINGS_TABLE,
+            'account_id,column_order,updated_at',
+            accountQuery)
+    ]);
 
-        assetExcelAccountId = accountId;
-        assetExcelRows = rows.map(assetExcelOperationRowFromDb);
-        assetExcelColumnKeys = assetExcelColumnKeysFrom(settings[0]?.column_order);
-    } catch (error) {
-        if (retryAuthentication
-            && String(error?.message ?? '') === '401'
-            && await refreshAuthAccessToken()) {
-            return loadAssetExcelData(accountId, false);
-        }
-
-        throw error;
-    }
+    assetExcelAccountId = accountId;
+    assetExcelRows = rows.map(assetExcelOperationRowFromDb);
+    assetExcelColumnKeys = assetExcelColumnKeysFrom(settings[0]?.column_order);
 }
 
 async function assetExcelPersistColumnOrder() {
@@ -28819,7 +28862,9 @@ async function start() {
                 ]);
             } catch (error) {
                 const detail = String(error?.message ?? '');
-                assetExcelLoadError = detail === '400' || detail === '404'
+                const status = Number(error?.status)
+                    || Number(detail.match(/HTTP\s+(\d+)/i)?.[1]);
+                assetExcelLoadError = status === 400 || status === 404
                     ? '正式 Excel 表尚未完成資料庫 migration，請先套用 db/051_asset_operation_sheet.sql。'
                     : `正式 Excel 資料載入失敗：${detail || '資料庫連線或權限錯誤'}。`;
             }
