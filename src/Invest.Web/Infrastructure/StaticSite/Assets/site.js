@@ -1911,6 +1911,7 @@ let expandedKLineMarket = '';
 let klineUseLatestDate = false;
 let klineAnchor = null;
 let expandedIndexMarket = null;
+let expandedIndexEndDate = null;
 let indexKLineAnchor = null;
 let klineReferenceLines = { price: true, volume: true, turnover: true, cost: true };
 const revenueHistoryData = new Map();
@@ -15620,6 +15621,48 @@ function buildLocalIndexKLinePreview() {
     }
 }
 
+function buildLocalMspIndexKLinePreview(market, options) {
+    const dates = MSP_TEMPLATE_TRADING_DATES;
+    const base = Number(options.value);
+    const safeBase = Number.isFinite(base) && base > 0 ? base : 1_000;
+    const phase = market.includes('-jp-') ? 0.37 : 1.19;
+    const rawBars = [];
+    let previousClose = safeBase * 0.94;
+
+    dates.forEach((date, index) => {
+        const progress = dates.length <= 1 ? 1 : index / (dates.length - 1);
+        const trend = 0.94 + progress * 0.06;
+        const wave = Math.sin(index * 0.71 + phase) * 0.012
+            + Math.cos(index * 0.29 + phase) * 0.007;
+        const open = previousClose * (1 + Math.sin(index * 1.17 + phase) * 0.004);
+        const close = index === dates.length - 1
+            ? safeBase
+            : safeBase * trend * (1 + wave);
+        const high = Math.max(open, close) * (1 + 0.003 + Math.abs(Math.sin(index * 0.53)) * 0.005);
+        const low = Math.min(open, close) * (1 - 0.003 - Math.abs(Math.cos(index * 0.47)) * 0.005);
+
+        rawBars.push({
+            date,
+            open,
+            high,
+            low,
+            close,
+            previousClose: index === 0 ? null : previousClose,
+            tradingValue: 80_000_000_000 * (0.78 + progress * 0.22 + Math.sin(index * 0.41 + phase) * 0.1)
+        });
+        previousClose = close;
+    });
+
+    indexKLineData.set(market, {
+        market,
+        label: options.label,
+        turnoverLabel: options.turnoverLabel,
+        bars: buildIndexMovingAverages(rawBars),
+        local: true,
+        template: true
+    });
+}
+
 async function loadIndexKLineData() {
     if (indexKLineData.size > 0) {
         return;
@@ -15951,10 +15994,12 @@ function renderIndexKLinePopover(market, anchor) {
     header.append(title, close);
     card.append(header);
 
-    if (INDEX_KLINE_LOCAL_PREVIEW) {
+    if (INDEX_KLINE_LOCAL_PREVIEW || data?.template === true) {
         const localNote = document.createElement('p');
         localNote.className = 'index-kline-local-note';
-        localNote.textContent = '本機預覽：以下 K 棒與成交金額僅供排版確認，不代表正式行情。';
+        localNote.textContent = data?.template === true
+            ? '模板預覽：以下 K 棒與成交金額為示意資料，不代表正式行情。'
+            : '本機預覽：以下 K 棒與成交金額僅供排版確認，不代表正式行情。';
         card.append(localNote);
     }
 
@@ -16052,6 +16097,13 @@ async function loadTopicIntradayKLine(ticker) {
 }
 
 function klineEndDate() {
+    if (typeof expandedIndexMarket !== 'undefined'
+        && typeof expandedIndexEndDate !== 'undefined'
+        && expandedIndexMarket !== null
+        && expandedIndexEndDate !== null) {
+        return expandedIndexEndDate;
+    }
+
     if (klineUseLatestDate && expandedTicker !== null && klineData.has(expandedTicker)) {
         return klineData.get(expandedTicker)?.bars?.at(-1)?.date ?? '';
     }
@@ -16900,6 +16952,7 @@ function closeKLine(restoreFocus = true) {
     klineAnchor = null;
     klineError = '';
     expandedIndexMarket = null;
+    expandedIndexEndDate = null;
     indexKLineAnchor = null;
     indexKLineError = '';
     el('kline-popover').hidden = true;
@@ -17003,7 +17056,7 @@ async function toggleKLine(ticker, name, anchor, options = {}) {
     }
 }
 
-async function toggleIndexKLine(market, anchor) {
+async function toggleIndexKLine(market, anchor, options = {}) {
     if (expandedIndexMarket === market) {
         closeKLine();
         return;
@@ -17015,13 +17068,18 @@ async function toggleIndexKLine(market, anchor) {
 
     closeRevenueDetails(false);
     expandedIndexMarket = market;
+    expandedIndexEndDate = options.endDate || null;
     indexKLineAnchor = anchor;
     indexKLineError = '';
     setKLineButtonStates();
     renderIndexKLinePopover(market, anchor);
 
     try {
-        await loadIndexKLineData();
+        if (options.template === true) {
+            buildLocalMspIndexKLinePreview(market, options);
+        } else {
+            await loadIndexKLineData();
+        }
     } catch {
         indexKLineError = '讀不到指數 K 線資料';
     }
@@ -24345,7 +24403,7 @@ function startIntradayTimer() {
     }
 }
 
-// ---- 市場切換（台股／美股／加密貨幣）----
+// ---- 市場切換（台股／美股／日股／韓股／加密貨幣）----
 // 只有 initMarketSwitch() 這一支入口會被 start() 呼叫；其餘都是它的內部建構函式。
 // 台股維持既有頁面完全不重畫——切到美股／加密貨幣時只是用 CSS 把 .ranking-page
 // 整塊隱藏，改顯示這裡建立的假資料面板；切回台股就是把 .ranking-page 顯示回來，
@@ -24388,9 +24446,10 @@ async function ensureMarketOverviewData() {
     }
 }
 
-// ---- 美股總覽的交易日選擇器 ----
-// 只有美股組有歷史檔（見 StaticSiteExporter.WriteMarketOverviewHistoryAsync 的說明：
-// 加密貨幣是 24/7 市場，「哪一天算到齊」的概念跟美股平日收盤不同，不提供選擇器）。
+// ---- 市場總覽的交易日選擇器 ----
+// 美股有歷史檔（見 StaticSiteExporter.WriteMarketOverviewHistoryAsync 的說明）；日股／韓股
+// 的模板也提供同樣的交易日軸。加密貨幣是 24/7 市場，「哪一天算到齊」的概念跟收盤市場
+// 不同，因此不提供選擇器。
 // `proto.date === null` 代表「看最新」，直接沿用 marketOverviewData.us（already fetched，
 // 不必多打一次網路）；選到別的日期才需要另外抓 data/market-overview-us-{date}.json。
 const marketOverviewDateCache = new Map();
@@ -24435,24 +24494,116 @@ function resolveMarketOverviewUsGroup(proto, onSettled) {
 
 const MSP_SECTOR_TITLE = {
     us: '11 大類股表現',
-    crypto: '主力幣種表現'
+    crypto: '主力幣種表現',
+    jp: '11 大產業表現',
+    kr: '11 大產業表現'
 };
 
 const MSP_MARKETS = [
     { key: 'tw', text: '台股' },
     { key: 'us', text: '美股' },
+    // 日股／韓股先只開給最高權限做版面與資料規劃確認；尚未接入行情資料。
+    { key: 'jp', text: '日股', adminOnly: true },
+    { key: 'kr', text: '韓股', adminOnly: true },
     { key: 'crypto', text: '加密貨幣' }
 ];
 
-// 市場（台股／美股／加密貨幣）是情境選擇，主頁籤則是全域導覽；兩者不再塞進內容面板。
+function mspVisibleMarkets() {
+    return MSP_MARKETS.filter(market => !market.adminOnly || SITE_ACCESS === 'admin');
+}
+
+function mspTemplateTradingDates() {
+    const dates = [];
+    const cursor = new Date('2026-09-11T00:00:00Z');
+
+    while (dates.length < 90) {
+        const weekday = cursor.getUTCDay();
+        if (weekday !== 0 && weekday !== 6) {
+            dates.push(cursor.toISOString().slice(0, 10));
+        }
+        cursor.setUTCDate(cursor.getUTCDate() - 1);
+    }
+
+    return dates.reverse();
+}
+
+// 日股／韓股尚未完成正式行情管線；這組明確標示為模板資料的內容讓最高權限先確認
+// 「指數 → 熱絡指數 → 熱力圖」的內容密度、三個月 K 線與交易日選擇器。正式網站只對
+// 最高權限顯示，並保留模板／示意標籤；資料來源、交易日規則與公式定案後再替換成正式快照。
+const MSP_TEMPLATE_TRADING_DATES = mspTemplateTradingDates();
+const MSP_LAYOUT_PREVIEW_DATA = {
+    jp: {
+        preview: true,
+        dates: MSP_TEMPLATE_TRADING_DATES,
+        heatScore: 6.7,
+        indices: [
+            { name: '日經 225', symbol: 'JP-NIKKEI225', value: 43857.5, daily: 1.24, ytd: 10.42 },
+            { name: 'TOPIX', symbol: 'JP-TOPIX', value: 3152.6, daily: 0.86, ytd: 8.93 },
+            { name: 'JPX-Nikkei 400', symbol: 'JPX-NIKKEI400', value: 28450.1, daily: 0.71, ytd: 9.48 }
+        ],
+        sectors: [
+            { symbol: 'JP-AUTO', name: '汽車', change: 1.85, weight: 18.4 },
+            { symbol: 'JP-TECH', name: '科技・半導體', change: 1.42, weight: 16.7 },
+            { symbol: 'JP-BANK', name: '銀行', change: 0.92, weight: 13.6 },
+            { symbol: 'JP-TRADING', name: '商社', change: 0.68, weight: 11.4 },
+            { symbol: 'JP-MACHINERY', name: '機械', change: 0.55, weight: 9.7 },
+            { symbol: 'JP-PHARMA', name: '製藥', change: -0.24, weight: 7.6 },
+            { symbol: 'JP-RETAIL', name: '零售', change: -0.38, weight: 6.2 },
+            { symbol: 'JP-SERVICE', name: '資訊服務', change: 0.31, weight: 5.8 },
+            { symbol: 'JP-CONSTRUCT', name: '建設', change: -0.12, weight: 4.7 },
+            { symbol: 'JP-TRANSPORT', name: '運輸', change: 0.18, weight: 3.6 },
+            { symbol: 'JP-ENERGY', name: '能源', change: -0.57, weight: 2.3 }
+        ]
+    },
+    kr: {
+        preview: true,
+        dates: MSP_TEMPLATE_TRADING_DATES,
+        heatScore: 5.9,
+        indices: [
+            { name: 'KOSPI', symbol: 'KR-KOSPI', value: 2724.85, daily: -0.42, ytd: 2.18 },
+            { name: 'KOSDAQ', symbol: 'KR-KOSDAQ', value: 765.42, daily: 0.38, ytd: -3.74 },
+            { name: 'KRX 100', symbol: 'KR-KRX100', value: 5982.7, daily: -0.16, ytd: 1.64 }
+        ],
+        sectors: [
+            { symbol: 'KR-SEMICONDUCTOR', name: '半導體', change: 1.76, weight: 21.1 },
+            { symbol: 'KR-BATTERY', name: '電池・材料', change: -1.12, weight: 15.8 },
+            { symbol: 'KR-AUTO', name: '汽車', change: 0.84, weight: 12.9 },
+            { symbol: 'KR-FINANCE', name: '金融', change: 0.52, weight: 11.7 },
+            { symbol: 'KR-PLATFORM', name: '網路平台', change: 0.29, weight: 8.9 },
+            { symbol: 'KR-BIO', name: '生技', change: 1.08, weight: 7.4 },
+            { symbol: 'KR-SHIP', name: '造船・機械', change: -0.34, weight: 6.6 },
+            { symbol: 'KR-CHEMICAL', name: '化學', change: -0.47, weight: 5.8 },
+            { symbol: 'KR-RETAIL', name: '零售', change: 0.16, weight: 4.2 },
+            { symbol: 'KR-TELECOM', name: '電信', change: -0.08, weight: 3.2 },
+            { symbol: 'KR-ENERGY', name: '能源', change: 0.63, weight: 2.4 }
+        ]
+    }
+};
+
+function mspLayoutPreviewGroup(market) {
+    if (SITE_ACCESS !== 'admin') {
+        return null;
+    }
+
+    return MSP_LAYOUT_PREVIEW_DATA[market] ?? null;
+}
+
+// 市場（台股／美股／加密貨幣／日股／韓股）是情境選擇，主頁籤則是全域導覽；兩者不再塞進內容面板。
 function mspBuildMarketTabs(proto, paint) {
     const wrap = document.createElement('div');
     wrap.className = 'msp-market-segmented';
-    for (const market of MSP_MARKETS) {
+    const visibleMarkets = mspVisibleMarkets();
+    wrap.dataset.marketCount = String(visibleMarkets.length);
+
+    for (const market of visibleMarkets) {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = market.key === proto.market ? 'msp-market-segment selected' : 'msp-market-segment';
         button.textContent = market.text;
+        button.setAttribute('aria-pressed', String(market.key === proto.market));
+        button.dataset.hint = market.adminOnly
+            ? '只有最高權限可見；目前尚未接入日股／韓股行情。'
+            : `切換到${market.text}市場`;
         button.addEventListener('click', () => {
             proto.market = market.key;
 
@@ -24595,6 +24746,7 @@ function mspBuildPageHeaderPreviewRail(utilitySlot) {
     return { rail, status, snapshotNote };
 }
 
+// 日股／韓股本機預覽也沿用小數兩位，等正式資料規格確認後再按市場調整格式。
 // 美股指數印小數兩位（跟公開行情慣例一致），加密貨幣用 $ 前綴、大額數字不印小數。
 function mspFormatIndexValue(market, value) {
     if (missing(value)) {
@@ -24609,7 +24761,7 @@ function mspFormatIndexValue(market, value) {
 }
 
 // 指數用小方塊樣式，比原本的大卡片版緊湊，一行就能放下三檔指數。
-function mspBuildIndices(group, market) {
+function mspBuildIndices(group, market, proto) {
     const section = document.createElement('div');
     section.className = 'msp-index-tile-grid';
 
@@ -24624,14 +24776,29 @@ function mspBuildIndices(group, market) {
     for (const index of group.indices) {
         const tile = document.createElement('button');
         tile.type = 'button';
-        tile.className = 'msp-index-tile';
-        tile.dataset.mspTicker = index.symbol;
-        tile.dataset.hint = '點擊開啟這檔指數最近三個月的日 K';
-        tile.setAttribute('aria-expanded', String(expandedTicker === index.symbol));
-        tile.addEventListener('click', () => toggleKLine(index.symbol, index.name, tile, {
-            market: market === 'crypto' ? '加密貨幣' : '美股',
-            latest: true
-        }));
+        tile.className = group.preview === true ? 'msp-index-tile template' : 'msp-index-tile';
+
+        if (group.preview === true) {
+            const indexMarket = `msp-${market}-${index.symbol.toLowerCase()}`;
+            tile.dataset.indexMarket = indexMarket;
+            tile.dataset.hint = '點擊開啟這檔指數的三個月日 K、均線與成交金額（模板資料）。';
+            tile.setAttribute('aria-expanded', String(expandedIndexMarket === indexMarket));
+            tile.addEventListener('click', () => toggleIndexKLine(indexMarket, tile, {
+                template: true,
+                label: index.name,
+                value: index.value,
+                turnoverLabel: market === 'jp' ? '日股市場成交金額' : '韓股市場成交金額',
+                endDate: proto?.date ?? group.dates?.at(-1) ?? ''
+            }));
+        } else {
+            tile.dataset.mspTicker = index.symbol;
+            tile.dataset.hint = '點擊開啟這檔指數最近三個月的日 K';
+            tile.setAttribute('aria-expanded', String(expandedTicker === index.symbol));
+            tile.addEventListener('click', () => toggleKLine(index.symbol, index.name, tile, {
+                market: market === 'crypto' ? '加密貨幣' : '美股',
+                latest: true
+            }));
+        }
 
         const name = document.createElement('span');
         name.className = 'msp-index-tile-name';
@@ -24731,7 +24898,9 @@ function mspBuildSectorsSection(group, market, proto, paint) {
 
     const hint = document.createElement('p');
     hint.className = 'msp-card-detail';
-    hint.textContent = '方塊大小＝近 20 日平均成交值占比（資金關注度），不是市值權重。';
+    hint.textContent = group.preview === true
+        ? '模板預覽：方塊大小＝近 20 日平均成交值占比（示意）；顏色＝日漲跌（示意）。'
+        : '方塊大小＝近 20 日平均成交值占比（資金關注度），不是市值權重。';
     section.append(hint);
 
     section.append(proto.sectorView === 'list' ? mspBuildSectorsList(group, market) : mspBuildSectorsHeatmap(group, market));
@@ -24775,6 +24944,12 @@ function mspHexToRgb(hex) {
 
 // 點擊熱力圖方塊／列表項開啟該檔的三個月日 K，跟指數小卡共用同一套 toggleKLine 管線。
 function mspMakeTickerClickable(element, symbol, name, market) {
+    if (market === 'jp' || market === 'kr') {
+        element.dataset.hint = '本機版面預覽資料；日股／韓股標的 K 線尚未接入。';
+        element.classList.add('msp-preview-static-tile');
+        return;
+    }
+
     element.tabIndex = 0;
     element.setAttribute('role', 'button');
     element.dataset.mspTicker = symbol;
@@ -24857,23 +25032,25 @@ function mspSection(titleText, contentEl) {
     return section;
 }
 
-// 整體版面：指數（含 VIX）→市場熱絡度→類股/幣種熱力圖，依序往下排。
+// 整體版面：指數→市場熱絡度→類股／產業熱力圖，依序往下排。
 // VIX 併入指數小卡，不再另立情緒指標區塊；財報行事曆／漲跌家數比／恐懼貪婪指數
 // 這輪沒有資料來源，整塊不顯示（不是留假資料）。
-// 前後交易日各一顆按鈕瀏覽美股總覽的歷史資料，視覺與互動比照台股盤後的
+// 前後交易日各一顆按鈕瀏覽市場總覽的歷史資料，視覺與互動比照台股盤後的
 // renderDatePicker()／date-step；這裡刻意另外寫一份而不是直接呼叫那支函式——
 // 那支綁死模組層級的 state.date／dates／calendarOpen，是台股排行頁本身的狀態，
-// 跟這裡 proto 物件（美股／加密貨幣切換用的假資料面板狀態）混用風險比重寫一份還高。
-// 只給美股組：加密貨幣是 24/7 市場，沒有 dates 清單（見 WriteMarketOverviewHistoryAsync）。
-function mspBuildDateStepper(proto, paint) {
-    const usDates = marketOverviewData?.us?.dates ?? [];
-    const currentDate = proto.date ?? usDates.at(-1);
+// 跟這裡 proto 物件（美股／加密貨幣切換用的面板狀態）混用風險比重寫一份還高。
+// 美股、日股、韓股提供交易日軸；加密貨幣是 24/7 市場，沒有 dates 清單。
+function mspBuildDateStepper(group, market, proto, paint) {
+    const availableDates = market === 'us'
+        ? group?.dates ?? marketOverviewData?.us?.dates ?? []
+        : group?.dates ?? [];
+    const currentDate = proto.date ?? availableDates.at(-1);
 
     if (currentDate === undefined) {
         return null;
     }
 
-    const index = usDates.indexOf(currentDate);
+    const index = availableDates.indexOf(currentDate);
 
     const step = (text, direction, hint) => {
         const button = document.createElement('button');
@@ -24883,15 +25060,19 @@ function mspBuildDateStepper(proto, paint) {
         button.title = hint;
 
         const target = index + direction;
-        button.disabled = index === -1 || target < 0 || target >= usDates.length;
+        button.disabled = index === -1 || target < 0 || target >= availableDates.length;
 
         if (!button.disabled) {
             button.addEventListener('click', () => {
-                const targetDate = usDates[target];
-                // 選到清單最後一天（最新）就退回 null：直接沿用 market-overview.json
-                // 內建的即時 us 欄位，不必為了「回到最新」多打一次歷史檔案。
-                proto.date = targetDate === usDates.at(-1) ? null : targetDate;
+                const targetDate = availableDates[target];
+                // 選到清單最後一天（最新）就退回 null：美股直接沿用 market-overview.json，
+                // 日股／韓股則回到模板資料的最新交易日。
+                proto.date = targetDate === availableDates.at(-1) ? null : targetDate;
+                if (expandedIndexMarket?.startsWith(`msp-${market}-`)) {
+                    expandedIndexEndDate = proto.date ?? availableDates.at(-1) ?? null;
+                }
                 paint();
+                refreshKLinePopover();
             });
         }
 
@@ -24912,17 +25093,63 @@ function mspBuildDashboard(group, market, proto, paint) {
     const dashboard = document.createElement('div');
     dashboard.className = 'msp-dashboard';
 
-    if (market === 'us') {
-        const stepper = mspBuildDateStepper(proto, paint);
+    if (market === 'us' || Array.isArray(group?.dates)) {
+        const stepper = mspBuildDateStepper(group, market, proto, paint);
         if (stepper !== null) {
             dashboard.append(stepper);
         }
     }
 
-    dashboard.append(mspSection('指數', mspBuildIndices(group, market)));
+    dashboard.append(mspSection('指數', mspBuildIndices(group, market, proto)));
     dashboard.append(mspBuildHeatPanel(group, market));
     dashboard.append(mspBuildSectorsSection(group, market, proto, paint));
     return dashboard;
+}
+
+function mspBuildLayoutPreviewNotice(market) {
+    const marketLabel = MSP_MARKETS.find(item => item.key === market)?.text ?? '這個市場';
+    const notice = document.createElement('section');
+    notice.className = 'msp-layout-preview-notice';
+
+    const label = document.createElement('span');
+    label.className = 'msp-layout-preview-label';
+    label.textContent = '市場模板預覽';
+
+    const message = document.createElement('p');
+    message.className = 'msp-layout-preview-message';
+    message.textContent = `${marketLabel}的指數、熱絡指數與熱力圖目前使用模板示意資料，僅供確認內容排版。`;
+
+    const detail = document.createElement('p');
+    detail.className = 'msp-layout-preview-detail';
+    detail.textContent = '數值、漲跌與方塊大小不代表即時行情；正式資料接入前不作為市場判讀依據。';
+
+    notice.append(label, message, detail);
+    return notice;
+}
+
+function mspBuildUnavailableMarketPanel(market) {
+    const marketLabel = MSP_MARKETS.find(item => item.key === market)?.text ?? '這個市場';
+    const panel = document.createElement('section');
+    panel.className = 'msp-unavailable-market-panel';
+
+    const eyebrow = document.createElement('span');
+    eyebrow.className = 'msp-unavailable-market-eyebrow';
+    eyebrow.textContent = '最高權限預覽';
+
+    const title = document.createElement('h2');
+    title.className = 'msp-unavailable-market-title';
+    title.textContent = `${marketLabel}市場頁籤`;
+
+    const message = document.createElement('p');
+    message.className = 'msp-unavailable-market-message';
+    message.textContent = `已建立${marketLabel}市場入口，目前尚未接入行情資料。`;
+
+    const detail = document.createElement('p');
+    detail.className = 'msp-unavailable-market-detail';
+    detail.textContent = '待確認資料來源、交易日邊界與熱絡指標公式後，再開放指數、排行榜與市場熱度內容。';
+
+    panel.append(eyebrow, title, message, detail);
+    return panel;
 }
 
 function injectMarketSwitchStyle() {
@@ -25318,6 +25545,8 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
     cursor: pointer;
 }
 .msp-index-tile:hover { border-color: var(--text-muted); }
+.msp-index-tile[data-hint] { position: relative; }
+.msp-index-tile.template { cursor: pointer; }
 .msp-index-tile-name { font-size: 12px; color: var(--text-muted); }
 .msp-index-tile-value { font-size: 15px; font-weight: 700; }
 .msp-index-tile-changes { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
@@ -25344,6 +25573,51 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
 }
 .msp-market-segment:hover { color: var(--text); }
 .msp-market-segment.selected { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
+.msp-unavailable-market-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    min-height: 220px;
+    box-sizing: border-box;
+    margin-top: 12px;
+    padding: 28px clamp(18px, 4vw, 48px);
+    border: 1px dashed var(--border);
+    border-radius: 16px;
+    background: var(--surface-alt);
+}
+.msp-unavailable-market-eyebrow {
+    color: var(--text-faint);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .08em;
+}
+.msp-unavailable-market-title { margin: 0; font-size: 24px; }
+.msp-unavailable-market-message { margin: 2px 0 0; font-size: 16px; font-weight: 700; }
+.msp-unavailable-market-detail { max-width: 620px; margin: 0; color: var(--text-muted); line-height: 1.7; }
+.msp-layout-preview-notice {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 3px 12px;
+    margin: 4px 0 2px;
+    padding: 12px 14px;
+    border: 1px solid #f0c36d;
+    border-radius: 10px;
+    background: #fdf6e3;
+}
+.msp-layout-preview-label {
+    color: #9a6700;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    white-space: nowrap;
+}
+.msp-layout-preview-message,
+.msp-layout-preview-detail { grid-column: 2; margin: 0; }
+.msp-layout-preview-message { color: #7a5b00; font-size: 13px; font-weight: 700; }
+.msp-layout-preview-detail { color: #906f1b; font-size: 12px; line-height: 1.5; }
+.msp-preview-static-tile { cursor: default; }
 .msp-global-view-nav {
     display: flex;
     align-items: center;
@@ -25442,6 +25716,14 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
     .msp-market-segment { flex: 1 1 0; padding-right: 10px; padding-left: 10px; }
     .msp-global-view-nav { overflow-x: auto; justify-content: flex-start; }
     .msp-global-nav-group { flex: 0 0 auto; }
+    .msp-market-segmented[data-market-count="5"] {
+        justify-content: flex-start;
+        overflow-x: auto;
+    }
+    .msp-market-segmented[data-market-count="5"] .msp-market-segment {
+        flex: 0 0 auto;
+        white-space: nowrap;
+    }
     .market-switch-prototype { padding: 8px 16px 48px; }
     .msp-market-bar[data-nav-variant="a"],
     .msp-market-bar[data-nav-variant="b"],
@@ -25519,6 +25801,12 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
     }
     .msp-utility-group { flex: 0 1 auto; }
     .msp-nav-preview-label { min-width: 155px; }
+    .msp-layout-preview-notice {
+        grid-template-columns: 1fr;
+        gap: 3px;
+    }
+    .msp-layout-preview-message,
+    .msp-layout-preview-detail { grid-column: 1; }
 }
 
 /* 完整頁首原型：每一版都同時展示市場、子頁籤、小控件、標題與資料說明。 */
@@ -27017,6 +27305,10 @@ function initMarketSwitch() {
     bar.after(panel);
 
     const render = () => {
+        if (!mspVisibleMarkets().some(market => market.key === proto.market)) {
+            proto.market = 'tw';
+        }
+
         const workspaceView = state.view === 'assets' || state.view === 'notes';
         const showOverview = proto.market !== 'tw' && !workspaceView;
         const navVariant = MARKET_NAV_DEFAULT_VARIANT;
@@ -27050,6 +27342,9 @@ function initMarketSwitch() {
 
         if (!showOverview) {
             panel.hidden = true;
+            if (expandedIndexMarket !== null) {
+                closeKLine(false);
+            }
             return;
         }
 
@@ -27057,7 +27352,13 @@ function initMarketSwitch() {
         const inner = document.createElement('div');
         inner.className = 'msp-market-panel';
 
-        if (marketOverviewLoadError !== null) {
+        const localPreviewGroup = mspLayoutPreviewGroup(proto.market);
+        if (localPreviewGroup !== null) {
+            inner.append(mspBuildLayoutPreviewNotice(proto.market));
+            inner.append(mspBuildDashboard(localPreviewGroup, proto.market, proto, render));
+        } else if (proto.market === 'jp' || proto.market === 'kr') {
+            inner.append(mspBuildUnavailableMarketPanel(proto.market));
+        } else if (marketOverviewLoadError !== null) {
             const notice = document.createElement('section');
             notice.className = 'notice warning msp-overview-notice';
             notice.textContent = marketOverviewLoadError;
@@ -27091,6 +27392,7 @@ function initMarketSwitch() {
         }
 
         panel.replaceChildren(inner);
+        refreshKLinePopover();
     };
 
     marketSwitchRender = render;
