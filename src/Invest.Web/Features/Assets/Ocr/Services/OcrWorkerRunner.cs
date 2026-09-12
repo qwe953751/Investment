@@ -18,6 +18,8 @@ public sealed class OcrWorkerRunner(
 
     private IReadOnlyDictionary<string, OcrWorkerAgentState>? _probeCache;
     private DateTimeOffset _probeCacheAt;
+    private volatile IReadOnlyDictionary<string, OcrWorkerAgentState> _agentStates =
+        new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase);
 
     public async Task RunAsync(string[] args, CancellationToken cancellationToken = default)
     {
@@ -32,17 +34,17 @@ public sealed class OcrWorkerRunner(
         var api = new OcrWorkerApiClient(httpClientFactory.CreateClient(nameof(OcrWorkerApiClient)), options);
         Console.WriteLine(
             $"D+ OCR Worker 啟動：{options.Name}（Realtime 喚醒；斷線每 {options.PollInterval.TotalSeconds:0} 秒重連；"
-            + $"並行上限 {options.MaxConcurrency}；Max effort {options.MaxReasoningEffort}；"
+            + $"並行上限 {options.MaxConcurrency}（常駐槽）；Max effort {options.MaxReasoningEffort}；"
             + $"評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
 
-        var agents = await ProbeAgentsAsync(cancellationToken);
-        await api.HeartbeatAsync(agents, cancellationToken);
+        _agentStates = await ProbeAgentsAsync(cancellationToken);
+        await api.HeartbeatAsync(_agentStates, cancellationToken);
 
         if (once)
         {
-            if (AgentsCanWork(agents))
+            if (AgentsCanWork(_agentStates))
             {
-                await ProcessAvailableJobsAsync(api, agents, options, cancellationToken);
+                await DrainOnceAsync(api, options, cancellationToken);
             }
 
             return;
@@ -50,7 +52,7 @@ public sealed class OcrWorkerRunner(
 
         var wakeSignals = Channel.CreateUnbounded<bool>(new UnboundedChannelOptions
         {
-            SingleReader = true,
+            SingleReader = false,
             SingleWriter = false,
             AllowSynchronousContinuations = false
         });
@@ -62,27 +64,22 @@ public sealed class OcrWorkerRunner(
         var heartbeatTask = MaintainHeartbeatAsync(
             api,
             workerCancellation.Token,
-            AgentsCanWork(agents),
             () => wakeSignals.Writer.TryWrite(true));
+
+        // 常駐槽：每個槽在 Worker 存活期間持續跑自己的 while 迴圈，claim 落空就退回等
+        // 喚醒信號，不會像舊版那樣直接 return（return 後這個槽就永久死掉，只剩其他槽
+        // 還在跑；若剩下的槽剛好卡在一件很慢的工作上，新進的工作會完全沒有槽可以接）。
+        // 三個槽各自獨立、互不等待，任何一個槽處理完自己手上的工作就立刻回頭搶下一件，
+        // 不受同批裡其他槽是快是慢影響——這是 2026-09-12 診斷出的「感覺只有排隊沒有辨識」
+        // 根因：舊版把整批槽包在同一個 Task.WhenAll 裡，外層喚醒佇列要等這個 WhenAll
+        // 完全結束才處理下一個喚醒信號，慢工作會連帶卡住其他已經空出來的槽。
+        var slots = Enumerable.Range(0, options.MaxConcurrency)
+            .Select(_ => RunSlotAsync(api, options, wakeSignals.Reader, workerCancellation.Token))
+            .ToArray();
 
         try
         {
-            if (AgentsCanWork(agents))
-            {
-                await ProcessAvailableJobsAsync(api, agents, options, workerCancellation.Token);
-            }
-
-            while (await wakeSignals.Reader.WaitToReadAsync(workerCancellation.Token))
-            {
-                while (wakeSignals.Reader.TryRead(out _))
-                {
-                    agents = await ProbeAgentsAsync(workerCancellation.Token);
-                    if (AgentsCanWork(agents))
-                    {
-                        await ProcessAvailableJobsAsync(api, agents, options, workerCancellation.Token);
-                    }
-                }
-            }
+            await Task.WhenAll(slots);
         }
         catch (OperationCanceledException) when (workerCancellation.IsCancellationRequested)
         {
@@ -99,70 +96,104 @@ public sealed class OcrWorkerRunner(
     private static bool AgentsCanWork(IReadOnlyDictionary<string, OcrWorkerAgentState> agents)
         => agents.Values.Any(agent => agent.Authenticated && agent.QuotaAvailable);
 
-    private async Task<bool> ProcessAvailableJobsAsync(
+    // --once 診斷模式不常駐：用跟正式常駐槽相同的並行數各跑一輪「claim 到底再停」，
+    // 一次性把目前排得到的工作與評估都做完就結束，維持既有 -Once 驗收腳本的行為。
+    private async Task DrainOnceAsync(
         OcrWorkerApiClient api,
-        IReadOnlyDictionary<string, OcrWorkerAgentState> agentStates,
         OcrWorkerOptions options,
         CancellationToken cancellationToken)
     {
-        var dispatchState = new DispatchState();
         var workers = Enumerable.Range(0, options.MaxConcurrency)
-            .Select(_ => ClaimAndProcessJobsAsync(api, agentStates, options, dispatchState, cancellationToken));
-
+            .Select(_ => DrainJobsOnceAsync(api, options, cancellationToken));
         await Task.WhenAll(workers);
 
-        // 評估工作只在收到喚醒、且一般 OCR 佇列已排空後接續處理；待命時不另設 claim。
         while (await api.ClaimEvaluationAsync(cancellationToken) is { } evaluation)
         {
-            Interlocked.Exchange(ref dispatchState.ProcessedJobs, 1);
             await ProcessEvaluationAsync(api, evaluation, cancellationToken);
         }
-
-        return Volatile.Read(ref dispatchState.ProcessedJobs) > 0;
     }
 
-    private async Task ClaimAndProcessJobsAsync(
+    private async Task DrainJobsOnceAsync(
         OcrWorkerApiClient api,
-        IReadOnlyDictionary<string, OcrWorkerAgentState> agentStates,
         OcrWorkerOptions options,
-        DispatchState dispatchState,
         CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (!AgentsCanWork(_agentStates))
+            {
+                return;
+            }
+
             var job = await api.ClaimAsync(cancellationToken);
             if (job is null)
             {
                 return;
             }
 
-            Interlocked.Increment(ref dispatchState.ActiveJobs);
-            Interlocked.Exchange(ref dispatchState.ProcessedJobs, 1);
+            await ProcessJobAsync(api, job, _agentStates, options, cancellationToken);
+        }
+    }
 
-            try
+    private async Task RunSlotAsync(
+        OcrWorkerApiClient api,
+        OcrWorkerOptions options,
+        ChannelReader<bool> wakeReader,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            if (!AgentsCanWork(_agentStates))
             {
-                await ProcessJobAsync(api, job, agentStates, options, cancellationToken);
+                await WaitForWakeAsync(wakeReader, cancellationToken);
+                continue;
             }
-            finally
+
+            var job = await api.ClaimAsync(cancellationToken);
+            if (job is not null)
             {
-                Interlocked.Decrement(ref dispatchState.ActiveJobs);
+                await ProcessJobAsync(api, job, _agentStates, options, cancellationToken);
+                continue;
             }
+
+            // 一般 OCR 佇列目前是空的，趁這個槽有空順便看一眼評估佇列；兩者都沒有才真的
+            // 等喚醒信號，待命時不會對 Supabase 送出任何額外請求。
+            var evaluation = await api.ClaimEvaluationAsync(cancellationToken);
+            if (evaluation is not null)
+            {
+                await ProcessEvaluationAsync(api, evaluation, cancellationToken);
+                continue;
+            }
+
+            await WaitForWakeAsync(wakeReader, cancellationToken);
+        }
+    }
+
+    private static async Task WaitForWakeAsync(ChannelReader<bool> wakeReader, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await wakeReader.WaitToReadAsync(cancellationToken);
+            wakeReader.TryRead(out _);
+        }
+        catch (ChannelClosedException)
+        {
         }
     }
 
     private async Task MaintainHeartbeatAsync(
         OcrWorkerApiClient api,
         CancellationToken cancellationToken,
-        bool initiallyAvailable,
         Action signalWake)
     {
-        var wasAvailable = initiallyAvailable;
+        var wasAvailable = AgentsCanWork(_agentStates);
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(WorkerHeartbeatInterval, cancellationToken);
                 var agents = await ProbeAgentsAsync(cancellationToken);
+                _agentStates = agents;
                 await api.HeartbeatAsync(agents, cancellationToken);
                 var available = AgentsCanWork(agents);
                 if (available && !wasAvailable)
@@ -180,12 +211,6 @@ public sealed class OcrWorkerRunner(
                 Console.Error.WriteLine($"OCR Worker heartbeat 失敗：{Safe(exception.Message)}");
             }
         }
-    }
-
-    private sealed class DispatchState
-    {
-        public int ActiveJobs;
-        public int ProcessedJobs;
     }
 
     private async Task ProcessJobAsync(

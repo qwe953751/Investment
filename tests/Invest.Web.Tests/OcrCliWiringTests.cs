@@ -37,7 +37,7 @@ public sealed class OcrCliWiringTests
     }
 
     [Fact]
-    public void Worker收到喚醒後並行排空佇列且待命不輪詢()
+    public void Worker常駐槽持續平行運作不因單槽落空而提早結束()
     {
         var root = FindRepositoryRoot();
         var worker = File.ReadAllText(Path.Combine(
@@ -64,10 +64,13 @@ public sealed class OcrCliWiringTests
         Assert.Contains("RunWakeListenerAsync(", worker, StringComparison.Ordinal);
         Assert.Contains("await Task.Delay(WorkerHeartbeatInterval, cancellationToken)", worker, StringComparison.Ordinal);
         Assert.Contains("Enumerable.Range(0, options.MaxConcurrency)", worker, StringComparison.Ordinal);
-        Assert.Contains("ClaimAndProcessJobsAsync(api, agentStates, options, dispatchState, cancellationToken)", worker, StringComparison.Ordinal);
+        Assert.Contains(".Select(_ => RunSlotAsync(api, options, wakeSignals.Reader, workerCancellation.Token))", worker, StringComparison.Ordinal);
         Assert.Contains("var job = await api.ClaimAsync(cancellationToken);", worker, StringComparison.Ordinal);
-        Assert.Contains("await ProcessJobAsync(api, job, agentStates, options, cancellationToken);", worker, StringComparison.Ordinal);
-        Assert.Contains("public async Task RunWakeListenerAsync(", api, StringComparison.Ordinal);
+        Assert.Contains("await ProcessJobAsync(api, job, _agentStates, options, cancellationToken);", worker, StringComparison.Ordinal);
+        // 2026-09-12 修正的根因：舊版每個槽 claim 落空就直接 return，槽因此永久死掉；
+        // 槽必須改成落空時等喚醒信號再繼續迴圈，才不會讓新工作卡在沒有槽可接的窘境。
+        Assert.Contains("await WaitForWakeAsync(wakeReader, cancellationToken);", worker, StringComparison.Ordinal);
+        Assert.DoesNotContain("ClaimAndProcessJobsAsync", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("Task.Delay(options.PollInterval, cancellationToken)", worker, StringComparison.Ordinal);
     }
 

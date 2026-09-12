@@ -1648,7 +1648,7 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void AI佇列回退會取消即時工作並保留重整後取圖的備援工作()
+    public void AI佇列回退只依事實性絕對時限不再用心跳新鮮度提早取消()
     {
         var script = ReadAsset("site.js");
 
@@ -1656,8 +1656,14 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("async function assetAiOcrPrepareFallback(jobId)", script, StringComparison.Ordinal);
         Assert.Contains("async function assetAiOcrFinalizeFallback(jobId)", script, StringComparison.Ordinal);
         Assert.Contains("assetAiOcrAcknowledge(jobId, 'cancel')", script, StringComparison.Ordinal);
-        Assert.Contains("await assetAiOcrMarkFallback(job.jobId, unavailableReason);", script, StringComparison.Ordinal);
+        // 2026-09-12 修正：唯一觸發「放棄等待、改用 Tesseract」的條件是排隊工作自己的
+        // ASSET_AI_OCR_TIMEOUT_MS 絕對時限（事實：真的等了 9 分鐘），不是用 Worker
+        // 心跳新鮮度去猜「看起來像離線」；心跳判斷只留在上傳前的一次性 readiness 檢查。
+        Assert.Contains("if (finalStatus === null) {", script, StringComparison.Ordinal);
+        Assert.Contains("await assetAiOcrMarkFallback(job.jobId, 'ai_execution_failed').catch(() => {});", script, StringComparison.Ordinal);
         Assert.Contains("assetAiOcrRequest('fallback'", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("assetAiQueuedWorkerUnavailable", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("ASSET_AI_OCR_QUEUE_GRACE_MS", script, StringComparison.Ordinal);
     }
 
     [Fact]

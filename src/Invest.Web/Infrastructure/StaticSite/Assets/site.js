@@ -10279,13 +10279,18 @@ const ASSET_AI_OCR_FUNCTION = 'ocr-jobs';
 const ASSET_AI_OCR_POLL_FAST_MS = 700;
 const ASSET_AI_OCR_POLL_FAST_WINDOW_MS = 10_000;
 const ASSET_AI_OCR_POLL_SLOW_MS = 1_500;
-const ASSET_AI_OCR_QUEUE_GRACE_MS = 30_000;
+// 排隊中還沒被任何 Worker 接手，畫面上不會有新進度可看，拉長到 3 秒一次就夠即時，
+// 同時比照 leased 的輪詢頻率減少一半以上的 Edge Function 呼叫。
+const ASSET_AI_OCR_POLL_QUEUED_MS = 3_000;
 const ASSET_AI_OCR_WAKE_AFTER_MS = 5_000;
 const ASSET_AI_OCR_TIMEOUT_MS = 9 * 60_000;
 const ASSET_AI_OCR_CONCURRENCY = 3;
 const ASSET_AI_PENDING_JOBS_KEY = 'invest.assetAiOcrJobs.v1';
 
-function assetAiOcrPollDelayMs(queuedAt) {
+function assetAiOcrPollDelayMs(queuedAt, status) {
+    if (status === 'queued') {
+        return ASSET_AI_OCR_POLL_QUEUED_MS;
+    }
     return Date.now() - queuedAt < ASSET_AI_OCR_POLL_FAST_WINDOW_MS
         ? ASSET_AI_OCR_POLL_FAST_MS
         : ASSET_AI_OCR_POLL_SLOW_MS;
@@ -10365,19 +10370,6 @@ async function assetAiOcrReadiness(maxAgeSeconds = null) {
     const query = maxAgeSeconds === null ? '' : `&maxAgeSeconds=${encodeURIComponent(maxAgeSeconds)}`;
     const response = await assetAiOcrRequest('readiness', { method: 'GET', query });
     return assetAiOcrJson(response, '檢查 AI Worker');
-}
-
-async function assetAiQueuedWorkerUnavailable(queuedAt) {
-    if (Date.now() - queuedAt < ASSET_AI_OCR_QUEUE_GRACE_MS) {
-        return null;
-    }
-
-    try {
-        const readiness = await assetAiOcrReadiness(30);
-        return readiness?.ready === true ? null : (readiness?.fallbackReason ?? 'worker_offline');
-    } catch {
-        return 'ai_execution_failed';
-    }
 }
 
 async function assetAiOcrSubmit(file, accountId, market, idempotencyKey) {
@@ -10668,19 +10660,10 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                 };
             }
 
-            if (status.status === 'queued') {
-                const unavailableReason = await assetAiQueuedWorkerUnavailable(queuedAt);
-                if (unavailableReason !== null) {
-                    updateAssetAiProgress(index - 1, 'fallback_required', {
-                        stage: 'Worker 離線，切換 Tesseract',
-                        percent: 90,
-                        statusText: 'Worker 離線，切換 Tesseract…'
-                    });
-                    const fallback = await assetAiOcrPrepareFallback(jobId);
-                    return { ...fallback, reason: unavailableReason };
-                }
-            }
-
+            // 已送出的工作不再用心跳新鮮度猜測 Worker 是否離線就提早取消——心跳只是
+            // 「最近有無回報」的推測，工作本身在 queued／leased 就是事實：真的沒有任何
+            // Worker 在動，lease 逾時回收與 relay 機制會處理，不需要前端搶著幫它判死刑。
+            // 這裡只用queuedAt起算的 ASSET_AI_OCR_TIMEOUT_MS 這個事實性的絕對上限把關。
             await assetAiOcrWakeIfStalled(jobId, status, screenshot);
 
             const progress = assetAiProgressForStatus(status.status);
@@ -10692,7 +10675,7 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                 statusText: screenshot.status
             });
             setAssetOcrStatus(`第 ${index} / ${total} 張：${screenshot.status}`);
-            await new Promise(resolve => window.setTimeout(resolve, assetAiOcrPollDelayMs(queuedAt)));
+            await new Promise(resolve => window.setTimeout(resolve, assetAiOcrPollDelayMs(queuedAt, status.status)));
         }
 
         return { mode: 'tesseract', jobId, reason: 'ai_execution_failed' };
@@ -10772,14 +10755,6 @@ async function resumeAssetAiJobs(accountId) {
                         finalStatus = status;
                         break;
                     }
-                    if (status.status === 'queued') {
-                        const unavailableReason = await assetAiQueuedWorkerUnavailable(queuedAt);
-                        if (unavailableReason !== null) {
-                            await assetAiOcrMarkFallback(job.jobId, unavailableReason);
-                            finalStatus = { ...status, status: 'fallback_required', fallbackReason: unavailableReason };
-                            break;
-                        }
-                    }
                     await assetAiOcrWakeIfStalled(job.jobId, status, screenshot);
                     const progress = assetAiProgressForStatus(status.status);
                     screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';
@@ -10790,7 +10765,15 @@ async function resumeAssetAiJobs(accountId) {
                         statusText: screenshot.status
                     });
                     setAssetOcrStatus(`恢復第 ${index + 1} / ${pending.length} 張：${screenshot.status}`);
-                    await new Promise(resolve => window.setTimeout(resolve, assetAiOcrPollDelayMs(queuedAt)));
+                    await new Promise(resolve => window.setTimeout(resolve, assetAiOcrPollDelayMs(queuedAt, status.status)));
+                }
+
+                if (finalStatus === null) {
+                    // 等到事實性的絕對時限（ASSET_AI_OCR_TIMEOUT_MS）都還沒有任何終態，
+                    // 才判斷這件工作救不回來；不是靠心跳新鮮度提早猜測。標成
+                    // fallback_required 保留原圖，讓使用者仍能改用 Tesseract 備援。
+                    await assetAiOcrMarkFallback(job.jobId, 'ai_execution_failed').catch(() => {});
+                    finalStatus = { status: 'fallback_required', fallbackReason: 'ai_execution_failed' };
                 }
 
                 if (finalStatus?.status === 'succeeded') {

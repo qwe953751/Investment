@@ -2,16 +2,18 @@
 
 > 日期：2026-09-12
 >
-> 狀態：**Agent 降級已改為固定的跨機接力：Windows 的 Codex→Claude 都不行才換 Mac 的
+> 狀態：**找到並修正使用者回報「一下走 AI 一下走 Tesseract、感覺只有排隊沒有辨識」的
+> 真正根因（見 0.3 節）：(1) Worker 3 個並行槽會在 claim 落空時永久死掉，慢工作會連帶
+> 卡住其他已經空出來的槽，改成常駐槽；(2) 前端用「心跳新鮮度」猜測 Worker 是否離線，
+> 藉此提早取消排隊中的工作，改成只信任工作本身的事實狀態與絕對時限。兩者皆已修正、
+> 全套 458 個 .NET 測試＋78 個 Node 測試全綠，尚待使用者下次整批上傳做真正的端到端
+> 驗證。Agent 降級已改為固定的跨機接力：Windows 的 Codex→Claude 都不行才換 Mac 的
 > Codex→Claude，都不行才回退瀏覽器 Tesseract，不再是誰先搶到 job 就誰做的競速制
 > （`db/049_ocr_agent_relay.sql`、`ocr-jobs` v14，完整設計見 0.2 節）；正式資料庫 rollback
 > 測試十項斷言全過，公司 Windows 已重新發布並驗證，**家裡 Mac 尚未套用這次的接力邏輯，跨機
 > 接力本身也還沒有實機驗證過**。2026-09-11 發生的「常駐 EXE 版本落後」事故（公司 Windows
 > 跑的自包含 EXE 建於 09-09 00:57，早於同日 18:10 的事件驅動修正 `9654ab3f`，兩天半燒掉當期
-> 88% 的 Supabase Edge Function 額度）已於 09-12 復原，完整根因見 0.1 節。**使用者 09-12
-> 回報手機上傳仍走 Tesseract，且查證當下 Windows 心跳／Codex 狀態正常、`ocr_jobs` 卻完全沒有
-> 新工作列**——指向 `readiness`/`submit` 的 admin 權限或前端層問題，不是 Worker 本身，
-> 待確認登入身分後續查，見 0.2 節「仍待處理」。2026-09-10 已完成並套用
+> 88% 的 Supabase Edge Function 額度）已於 09-12 復原，完整根因見 0.1 節。2026-09-10 已完成並套用
 > `db/047_ocr_realtime_claim_wake.sql`，將兩張表的 Realtime trigger 分離，正式 `ocr-jobs`
 > 曾部署 v13，並加入管理者限定、資料庫原子節流的活躍工作 `wake`；正式 claim／trigger
 > rollback smoke test 已通過。正式手機新圖、Golden Set、圖片／模型效能調校、六張圖片整批與
@@ -315,10 +317,102 @@ Windows 不能再搶、Mac 能搶到、Mac 也失敗後 `relayed=false`／`compl
 - **跨機接力目前完全沒有實機驗證過**（沒有真的讓 Windows 兩個 Agent 同時失敗、觀察 Mac
   是否真的接手），只驗證到資料庫層級的競速／權限規則；正式驗收仍需要兩台機器同時在線，
   刻意讓 Windows 端額度或登入失效一次，確認 Mac 真的接手且瀏覽器最終看到 AI 結果。
-- **使用者回報 2026-09-12 手機上傳仍走 Tesseract，且當下 Windows 心跳／Codex 狀態其實正常**：
-  查證當時 `ocr_jobs` 完全沒有新工作列，代表卡在 `readiness`/`submit` 之前，不是 Worker 或
-  Agent 的問題；`readiness`/`submit` 需要登入帳號 `access_role=admin`，最可能原因是手機當下
-  登入的帳號不是最高權限帳號，待使用者確認登入身分後再判斷是否為其他問題（例如前端快取）。
+- ~~使用者回報 2026-09-12 手機上傳仍走 Tesseract，懷疑是 admin 權限問題~~
+  **已排除、已找到真正原因並修正，見 0.3 節**：那次是 `ocr_jobs` 剛好沒有新工作列的
+  單一樣本，這裡當下的猜測（admin 權限／前端快取）是錯的；後續使用者用同一支手機、
+  同一個登入身分再傳一批 6 張，`ocr_jobs` 這次確實有新工作列，但其中 2 張被前端自己
+  取消——真正的根因是 Worker 併行槽與前端心跳判斷的邏輯缺陷，不是登入或權限。
+
+### 0.3 2026-09-12 真正根因：Worker 併行槽會「陣亡」、前端用心跳猜測就取消排隊中的工作
+
+#### 使用者回報與現場證據
+
+同一天稍晚，使用者用手機一次上傳 6 張截圖（帳戶一直都是這樣用），回報「一下走 AI
+一下走 Tesseract」，且明確指出兩個懷疑方向：「你用各種心跳去卡要不要跑，好像都有
+漏洞」、「好像也不是多工處理（我記得會平行 3 筆），現在只有排隊沒有辨識」。
+
+直接查 Supabase 而不是憑印象猜測：那 6 張裡，`ocr_workers` 心跳新鮮、Codex
+`authenticated/quotaAvailable` 皆為 `true`（Worker 本身完全正常），但
+`ocr_jobs` 顯示：5 張 `succeeded`（真的跑了 AI，單張 91～254 秒），2 張
+`status='cancelled'`、`attempt_count=0`、`progress_stage='queued'`——這 2 張
+**從頭到尾沒有被任何 Worker 碰過**，是在還排隊的狀態下被別的東西取消掉的，不是
+AI 執行失敗。
+
+#### 根因 1：`ProcessAvailableJobsAsync` 把 3 個槽包在同一個 `Task.WhenAll` 裡，槽落空就永久死掉
+
+`OcrWorkerRunner`（修正前）收到 Realtime 喚醒信號時才呼叫
+`ProcessAvailableJobsAsync`：這個方法用 `Enumerable.Range(0, options.MaxConcurrency)`
+建立 3 個 `ClaimAndProcessJobsAsync` 迴圈，`await Task.WhenAll(workers)` 等全部結束才
+返回；每個迴圈 `claim` 落空就直接 `return`，這個槽對這一輪喚醒就永久結束了。外層
+「收到喚醒才處理」的迴圈是**逐一 await**、不是平行處理每個喚醒信號——也就是說，
+只要目前這次 `ProcessAvailableJobsAsync` 還沒 `Task.WhenAll` 完，下一個喚醒信號
+（例如新截圖進佇列的通知）完全不會被看到，得等這一輪**最慢的那個槽**（可能是一張
+254 秒的圖）跑完，外層才會去處理下一個信號、重新開一批 3 個槽。
+
+使用者送 6 張圖時，瀏覽器端本來就維持「3 張在飛」的併發池：前 3 張一送出，3 個槽
+各自搶到一張、真的平行處理；但只要有 1～2 張比較快跑完，瀏覽器立刻補送下一張
+（新 `INSERT` 進 `ocr_jobs`），這個新工作的 Realtime 廣播必須排隊等**目前這一整輪**
+`Task.WhenAll` 完全結束才會被處理——若當時還有一張慢圖在跑（91～254 秒都可能），
+新工作就會平白多等上百秒都排不到槽，這正是使用者說的「感覺只有排隊沒有辨識」。
+
+修正：把 3 個槽改成**常駐**——`RunAsync` 一開始就建立 3 個 `RunSlotAsync` 迴圈，
+在 Worker 存活期間持續跑；每個槽 `claim` 落空時退回等喚醒信號（`WaitForWakeAsync`），
+而不是 `return`。三個槽完全獨立、互不等待，任何一個槽處理完手上的工作就立刻自己
+回頭搶下一件，不受同批裡其他槽是快是慢影響。`--once` 診斷模式維持舊語意（跑完目前
+排得到的就結束），改用新的 `DrainOnceAsync`/`DrainJobsOnceAsync` 實作，行為對既有
+驗收腳本透明。程式位置：
+[OcrWorkerRunner.cs](../../src/Invest.Web/Features/Assets/Ocr/Services/OcrWorkerRunner.cs)。
+
+#### 根因 2：前端用「心跳新鮮度」猜測 Worker 是否離線，藉此提早取消排隊中的工作
+
+`assetAiQueuedWorkerUnavailable()`：工作排隊超過 30 秒後，每個輪詢週期都重新問一次
+「Worker 心跳是否在 30 秒內」，不是就直接判定離線並取消工作（`action=cancel`）、
+改走 Tesseract。但 Worker 心跳固定 60 秒一次，年齡本來就會在 0～60 秒之間來回擺盪，
+有一半時間會被這個 30 秒門檻誤判——**心跳新鮮與否是推測，工作已經在 `queued`／
+`leased` 是事實**，用推測去否決一個可能正要被接手的工作，門檻設多短都會有誤殺
+區間，這正是使用者說的「用心跳去卡，好像都有漏洞」。兩張被取消的截圖，正是排隊
+32～55 秒時撞上這個誤判。
+
+修正：**已送出的工作完全移除心跳重查**，只保留原本就存在、以工作自己
+`queuedAt` 起算的 `ASSET_AI_OCR_TIMEOUT_MS`（9 分鐘）絕對時限作為唯一的事實性
+下限——這個時限跟心跳無關，是「真的等了 9 分鐘還沒有結果」。頁面重整後的復原流程
+（`resumeAssetAiJobs`）原本也是用同一個心跳觸發 `assetAiOcrMarkFallback()`；改成
+只在絕對時限到期、`finalStatus` 仍是 `null` 時才呼叫，語意不變（保留原圖讓使用者
+仍可手動 Tesseract），只是觸發條件從「心跳看起來舊」改成「事實上等到時限」。
+心跳新鮮度判斷只保留在**上傳前的一次性 readiness 檢查**（`assetAiOcrReadiness()`，
+120 秒門檻，`ocr-jobs/index.js` 既有的 `MAX_HEARTBEAT_AGE_MS`，未改動）——這一關
+留著是必要的隱私決策：不能把持倉截圖傳到沒人會處理的雲端；但工作一旦送出去，
+後續只看工作本身的狀態，不再回頭看心跳。程式位置：
+[site.js](../../src/Invest.Web/Infrastructure/StaticSite/Assets/site.js) 的
+`assetAiOcrRecognize()`／`resumeAssetAiJobs()`。
+
+#### 順手做的事：排隊中輪詢降頻，減少 Supabase 流量
+
+`queued` 狀態下的圖片還沒被任何 Worker 接手，畫面不會有新進度可看，輪詢間隔從
+700ms／1,500ms 拉長到 3 秒一次（`leased` 狀態不變，仍用原本較快的頻率顯示辨識
+進度）；移除心跳重查後，排隊期間也不再每個週期多打一次 `readiness`。兩者合計，
+排隊期間的 Edge Function 呼叫量降到修正前的三分之一或更低；併行槽修好後排隊時間
+本身也大幅縮短，整體用量對修正前是持平到明顯下降，不會因為這次修正而增加
+09-11 那種燒額度風險。
+
+#### 刻意不做的事
+
+沒有实作「絕對時限到期後改成跳出對話框問使用者要繼續等還是切 Tesseract」——這是
+分析階段提過的方向性想法，不是這次修正承諾的一部分；目前到期後的行為維持原本的
+靜默切換 Tesseract（只是觸發條件已經從心跳改成事實性時限），要做互動式詢問是
+獨立的 UI 功能，之後有需要再另外討論範圍。也沒有處理「真正 3 條並行會不會撞到
+Codex 訂閱速率限制」——這是使用者要求直接上 3 並行時已知但尚未驗證的風險，等
+實機測試 6 張圖若真的觀察到 429，再依實際證據處理，不在這次修正內先做投機性改動。
+
+#### 驗證
+
+`.NET 10.0.302` Release build 0 警告／0 錯誤，`Invest.Web.Tests` 458/458 全綠
+（含更新後的兩個原始碼接線測試：`OcrCliWiringTests.cs` 改為驗證常駐槽不因落空
+而提早結束，`StaticKLineAssetTests.cs` 改為驗證回退只依絕對時限、不再依心跳）；
+Node 靜態頁回歸測試（`node --test tests/*.mjs`）78/78 全綠。尚未做的：真正兩台
+機器／真正 6 張截圖的端到端實機驗證——這需要使用者實際操作上傳（我沒有登入
+帳密，無法自己在瀏覽器完成），下一次使用者上傳整批圖片時，可以直接查
+`ocr_jobs`／worker console log 確認是否全部走 AI、且排隊時間明顯縮短。
 
 ### 1. 最終實作方式
 
