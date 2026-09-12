@@ -141,6 +141,13 @@ jobs:
         if: ${{ inputs.publish-only == true }}
         run: dotnet run -c Release --project src/Invest.Web -- verify-kline-cache "$TRADING_DAYS"
 
+      # 給 intraday.yml 純 bash 等待迴圈用的休市日曆快取，不必為了問「今天是不是假日」
+      # 讓每個空轉的 hop 都冷啟動 dotnet run。證交所讀不到時會回傳空清單（見
+      # TwseHolidayCalendar），等於「沒有已知假日」——intraday 那邊會退回原本靠
+      # MIS 即時偵測的保守判斷，不會因此把交易日誤判成假日。
+      - name: 更新交易日曆快取
+        run: dotnet run -c Release --project src/Invest.Web -- export-market-calendar data/market-calendar.json
+
       # 排程提早進場是為了搶 runner，不是為了提早抓。收盤行情下午三點才公布，
       # 太早抓只會抓到空的，所以睡到 18:00 整再開始。手動觸發時不等。
       # 18:00 這個時間定義在 CollectionSchedule.DailyRefresh（前端也讀同一份），
@@ -158,10 +165,33 @@ jobs:
           echo "現在 $(date +%H:%M)，睡 $(( wait / 60 )) 分鐘到 18:00。"
           sleep "$wait"
 
+      # 手動觸發常常是在假日按下去的（颱風假、週末想先看看），此時官方不會發布
+      # 今天的行情，之前的作法是硬等到 21:00 逾時，五個半小時才紅燈。
+      # 這裡跟盤中共用同一套三層判定（週末→證交所日曆→MIS 即時行情停滯），
+      # 確定休市就直接跳過回補；「不確定」時維持原本的重試行為，不能當成休市處理
+      # ——誤判成休市會被寫進快取而不再重試，代價遠比多等一輪大。
+      - name: 判斷今天是否開盤
+        id: market_day
+        if: ${{ inputs.publish-only != true }}
+        run: |
+          set +e
+          dotnet run -c Release --project src/Invest.Web -- market-day
+          code=$?
+          set -e
+
+          case "$code" in
+              0) status=open ;;
+              10) status=closed ;;
+              *) status=unknown ;;
+          esac
+
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "今天判定為 $status（exit $code）。"
+
       # 抓到有為止：官方偶爾晚公布或擋一下，一次失敗不算數，
       # 每 10 分鐘重跑一次直到今天的行情檔案落地，最晚撐到 21:00。
       - name: 回補行情
-        if: ${{ inputs.publish-only != true }}
+        if: ${{ inputs.publish-only != true && steps.market_day.outputs.status != 'closed' }}
         run: |
           today=$(date +%Y-%m-%d)
           deadline=$(date -d '21:00' +%s)
@@ -223,7 +253,7 @@ jobs:
         if: ${{ inputs.publish-only != true }}
         working-directory: data
         run: |
-          git add -A imports
+          git add -A imports market-calendar.json
 
           # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
           # 也不要把「刪掉歷史」這件事推上去。

@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 
 namespace Invest.Web.Infrastructure.MarketData.Twse;
@@ -26,11 +27,21 @@ public sealed class TwseHolidayCalendar(HttpClient httpClient, ILogger<TwseHolid
 
     public async Task<bool> IsClosedAsync(DateOnly date, CancellationToken cancellationToken = default)
     {
-        var closed = await GetClosedDatesAsync(cancellationToken);
+        var closed = await GetClosedDatesSetAsync(cancellationToken);
         return closed.Contains(date);
     }
 
-    private async Task<IReadOnlySet<DateOnly>> GetClosedDatesAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// 匯出目前的休市日清單，供不方便跑 .NET 的呼叫端（例如 GitHub Actions 的
+    /// bash 步驟）離線比對用，不必每次都自己打證交所 API。
+    /// </summary>
+    public async Task<IReadOnlyList<DateOnly>> GetClosedDatesAsync(CancellationToken cancellationToken = default)
+    {
+        var closed = await GetClosedDatesSetAsync(cancellationToken);
+        return [.. closed.OrderBy(date => date)];
+    }
+
+    private async Task<IReadOnlySet<DateOnly>> GetClosedDatesSetAsync(CancellationToken cancellationToken)
     {
         // 一天跑一次的批次程序，抓一次就夠了。
         await _gate.WaitAsync(cancellationToken);

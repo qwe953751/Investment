@@ -34,6 +34,8 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop|--probe]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
+//   dotnet run --project src/Invest.Web -- market-day
+//   dotnet run --project src/Invest.Web -- export-market-calendar <輸出檔路徑>
 //   dotnet run --project src/Invest.Web -- sync     [保留交易日數]
 //   dotnet run --project src/Invest.Web -- sync-fx
 //   dotnet run --project src/Invest.Web -- verify
@@ -49,7 +51,7 @@ using System.Text.Json.Serialization;
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat"
-        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker";
+        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -73,6 +75,9 @@ builder.Services.AddHttpClient<TpexNonRegularTradingClient>(ConfigureQuoteClient
 builder.Services.AddHttpClient<MarketFlagClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<CorporateActionClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseHolidayCalendar>(ConfigureQuoteClient);
+
+// 統一的「今天開不開盤」判定，intraday 探測跟休市日曆都在裡面。
+builder.Services.AddScoped<TradingDayResolver>();
 
 // 族群分類讀的是公開的 Google Sheet，一樣要帶 User-Agent 才不會被擋。
 builder.Services.AddHttpClient<GoogleSheetTopicClient>(ConfigureQuoteClient);
@@ -237,6 +242,18 @@ if (command is "sync-fx")
 if (command is "verify")
 {
     Environment.ExitCode = await RunVerifyAsync(app.Services);
+    return;
+}
+
+if (command is "market-day")
+{
+    Environment.ExitCode = await RunMarketDayAsync(app.Services);
+    return;
+}
+
+if (command is "export-market-calendar")
+{
+    await RunExportMarketCalendarAsync(app.Services, args);
     return;
 }
 
@@ -2085,6 +2102,68 @@ static async Task RunMaterialEventAsync(IServiceProvider services, string[] args
         Console.WriteLine();
         Console.WriteLine("已中斷。已寫入的日子都保留在資料庫，重跑會略過。");
     }
+}
+
+/// <summary>
+/// 統一的「今天是不是開盤日」入口，供 GitHub Actions 用 exit code 判斷，不必解析文字輸出。
+/// 0＝開盤、10＝確定休市、20＝不確定（呼叫端要維持原本重試行為，不能當成休市處理）。
+/// </summary>
+static async Task<int> RunMarketDayAsync(IServiceProvider services)
+{
+    using var scope = services.CreateScope();
+    var resolver = scope.ServiceProvider.GetRequiredService<TradingDayResolver>();
+
+    var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+    var localNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei);
+    var today = DateOnly.FromDateTime(localNow.DateTime);
+
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    var status = await resolver.ResolveAsync(
+        today, TimeOnly.FromDateTime(localNow.DateTime), CollectionSchedule.IntradayGiveUp, cts.Token);
+
+    Console.WriteLine($"{today:yyyy-MM-dd} {status}");
+
+    return status switch
+    {
+        MarketDayStatus.Open => 0,
+        MarketDayStatus.Closed => 10,
+        _ => 20
+    };
+}
+
+/// <summary>
+/// 匯出證交所休市日曆給不方便跑 .NET 的呼叫端（intraday.yml 開盤前的純 bash 等待迴圈）
+/// 用 curl 離線比對，不必每個空轉的 hop 都冷啟動 dotnet run。
+/// </summary>
+static async Task RunExportMarketCalendarAsync(IServiceProvider services, string[] args)
+{
+    if (args is not [_, var outputPath])
+    {
+        throw new ArgumentException("用法：export-market-calendar <輸出檔路徑>");
+    }
+
+    using var scope = services.CreateScope();
+    var holidayCalendar = scope.ServiceProvider.GetRequiredService<TwseHolidayCalendar>();
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+    var closedDates = await holidayCalendar.GetClosedDatesAsync(cts.Token);
+
+    var document = new
+    {
+        generatedAt = DateTimeOffset.UtcNow,
+        closedDates = closedDates.Select(date => date.ToString("yyyy-MM-dd")).ToArray()
+    };
+
+    var fullPath = Path.GetFullPath(outputPath);
+    var directory = Path.GetDirectoryName(fullPath);
+    if (!string.IsNullOrEmpty(directory))
+    {
+        Directory.CreateDirectory(directory);
+    }
+
+    await File.WriteAllTextAsync(fullPath, JsonSerializer.Serialize(document, new JsonSerializerOptions { WriteIndented = true }), cts.Token);
+
+    Console.WriteLine($"已寫入 {closedDates.Count} 個休市日到 {outputPath}。");
 }
 
 /// <summary>

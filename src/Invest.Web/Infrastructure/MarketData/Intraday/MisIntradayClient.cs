@@ -121,6 +121,30 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     }
 
     /// <summary>
+    /// 只問一檔（台積電），確認 MIS 現在給的交易日期。
+    ///
+    /// 用來回答「今天到底有沒有開盤」：休市時 MIS 照樣回應，只是日期停在
+    /// 上一個交易日；判斷這件事不需要全市場清單，一檔就夠，成本比
+    /// <see cref="GetQuotesAsync"/> 低得多。打不通或重試用盡一律回傳 null，
+    /// 交給呼叫端維持「不確定就不下判斷」的保守行為。
+    /// </summary>
+    public async Task<DateOnly?> ProbeTradeDateAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var (_, tradeDate, _) = await ReadBatchAsync(
+                [(Market.Twse, "2330")], includeMarketIndices: false, cancellationToken);
+
+            return tradeDate;
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(exception, "探測交易日失敗，視為無法判斷。");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// 打一批，抖一下就重試。
     ///
     /// 只有「這一次沒拿到東西」才重試——逾時、連線被切、JSON 被截斷。

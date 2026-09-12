@@ -143,11 +143,24 @@ jobs:
           started=$(date +%s)
           deadline=$(( started + HOP_BUDGET_SECONDS ))
 
+          # 證交所休市日曆快取（daily-snapshot.yml 每天用 export-market-calendar 更新，
+          # 推到 data 分支），純 bash 讀，不必為了問「今天是不是假日」冷啟動 dotnet run。
+          # 讀不到就當作「沒有已知假日」——退回原本純靠開盤時段判斷的行為，
+          # 真正的颱風假還是靠收集迴圈自己用 MIS 即時行情的停滯偵測抓（見
+          # RunIntradayAsync），這裡只是省掉週末以外「明知道是假日」的空等。
+          calendar_json=$(curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/data/market-calendar.json" 2>/dev/null || echo '{"closedDates":[]}')
+
+          is_holiday() {
+              # $1 是 yyyy-MM-dd。
+              echo "$calendar_json" | grep -q "\"$1\""
+          }
+
           in_session() {
-              local d h
+              local d h today
               d=$(date +%u)
               h=$(date +%H%M)
-              [ "$d" -le 5 ] && [ "$h" -ge "$SESSION_OPEN" ] && [ "$h" -lt "$SESSION_CLOSE" ]
+              today=$(date +%F)
+              [ "$d" -le 5 ] && [ "$h" -ge "$SESSION_OPEN" ] && [ "$h" -lt "$SESSION_CLOSE" ] && ! is_holiday "$today"
           }
 
           # 下一次開盤的 epoch。往後找一週，跳過週六日。
@@ -162,6 +175,7 @@ jobs:
                   dow=$(date -d "+$i day" +%u)
                   [ "$dow" -le 5 ] || continue
                   day=$(date -d "+$i day" +%F)
+                  is_holiday "$day" && continue
                   cand=$(date -d "$day ${SESSION_OPEN:0:2}:${SESSION_OPEN:2:2}:00" +%s)
                   if [ "$cand" -gt "$now" ]; then
                       echo "$cand"
