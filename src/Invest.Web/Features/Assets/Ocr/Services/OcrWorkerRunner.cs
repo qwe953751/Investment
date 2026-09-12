@@ -29,6 +29,19 @@ public sealed class OcrWorkerRunner(
 
     public async Task RunAsync(string[] args, CancellationToken cancellationToken = default)
     {
+        // 常駐排程用 Start-Process 把 stdout/stderr 導向檔案時，.NET 預設編碼會依系統 ANSI
+        // 頁碼寫出，中文字變成亂碼；明確指定 UTF-8（含 BOM，讓 Get-Content／記事本等工具
+        // 能自動判斷編碼）解決寫入端。排程以 -WindowStyle Hidden 啟動、完全沒有真正主控台
+        // 時，設定 Console.OutputEncoding 會拋 IOException；這時退回預設編碼即可（寧可
+        // log 偶爾亂碼，也不能讓這行擋住 Worker 完全無法啟動）。
+        try
+        {
+            Console.OutputEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+        }
+        catch (IOException)
+        {
+        }
+
         var once = args.Skip(1).Any(value => value.Equals("--once", StringComparison.OrdinalIgnoreCase));
         if (args.Skip(1).Any(value => !value.Equals("--once", StringComparison.OrdinalIgnoreCase)))
         {

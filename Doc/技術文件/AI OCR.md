@@ -512,6 +512,34 @@ Windows PowerShell 5.1 對原生程式 stderr 用 `2>&1` 會把每行包成
 一次探測抖動去驗證重試機制會不會生效；下次使用者上傳若再走 Tesseract，這次已有
 log 檔可以直接查探測的實際輸出，不必再靠反推。
 
+#### 部署後追加發現：log 亂碼、與一個因此才看得到的既有 bug
+
+重新發布並用排程實際啟動時發現兩個問題：
+
+1. **常駐排程的 log 是亂碼**：`Start-Process -RedirectStandardOutput` 導向檔案時，
+   .NET 沒有採用 UTF-8，中文依系統 ANSI 頁碼寫出。已在 `RunAsync` 開頭明確設定
+   `Console.OutputEncoding = new UTF8Encoding(true)`（含 BOM，方便 `Get-Content`／
+   記事本自動判斷）。排程以 `-WindowStyle Hidden` 啟動、完全沒有真正主控台時，設定
+   這個屬性會拋 `IOException`；已包 try/catch 吞掉，寧可退回預設編碼也不能讓這行
+   擋住 Worker 啟動——這個例外在真的有主控台（例如 `-Once` 手動執行）時不會發生。
+2. **log 檔案第一次真的有內容，就直接曝露一個既有的 bug**：`OcrWorkerRunner` 送出
+   `progress` 的 `"ai_recognition"` 階段，不在 `ocr-jobs/index.js` `handleProgress()`
+   的合法階段清單裡（`uploading/queued/claiming/downloading/extraction/audit/
+   validating/fallback/completed/failed`），每次都被 Edge Function 回
+   `400 invalid_progress`；`UpdateProgressSafeAsync` 又把這個失敗吞掉只印一行
+   log。也就是說**每一件 OCR 工作在真正跑 AI 辨識的階段，進度回報從一開始就沒有
+   成功過**——只是排程一直沒有 log 可看，才從來沒被發現。工作本身不受影響（最後
+   仍會補上 `validating`／`completed`，AI 辨識能不能成功完全不受這個回報失敗影響），
+   只有辨識中那段時間畫面上的進度百分比不會更新。**這是查證這次修正時的意外發現，
+   不在使用者這次核准的範圍內，尚未修正**，留給使用者決定是否要處理（例如把
+   `"ai_recognition"` 加進 Edge Function 的合法清單，或 Worker 改送清單裡已有的
+   階段名稱）。
+
+`.NET Invest.Web.Tests` 459/459 全綠（含此次新增的一個接線測試）。公司 Windows
+已依此重新 publish 並重啟：`-Once` 診斷與常駐排程都確認能正常啟動、log 顯示正確
+編碼；重啟期間剛好有使用者真實上傳（`IMG_2083.png`）在飛，最終仍正確
+`succeeded`，順帶驗證了跨越一次 Worker 重啟的 lease 逾時回收與重新 claim 沒有壞掉。
+
 ### 1. 最終實作方式
 
 ```text
