@@ -1,0 +1,77 @@
+# 日／韓收盤日線。這條流程只更新 data/imports-overview，不同步 Supabase Database、
+# 不執行 export、也不觸發 GitHub Pages 發佈；使用者可在驗收後自行安排發布。
+
+name: 日韓市場總覽盤後快取
+
+on:
+  schedule:
+    # UTC 07:45 = 台北 15:45，進場後等待到 17:30，給 Yahoo 日 K 足夠落地時間。
+    - cron: '45 7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      skip-wait:
+        description: 跳過等待，立刻回補（診斷用）
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: asia-market-overview-daily
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      TZ: Asia/Taipei
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 取出行情快取
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 等到台北 17:30
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip-wait != true }}
+        run: |
+          target=$(date -d '17:30' +%s)
+          wait=$(( target - $(date +%s) ))
+          if [ "$wait" -gt 0 ]; then
+              sleep "$wait"
+          fi
+
+      - name: 回補日韓市場總覽日線
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-overview --markets jp,kr
+
+      - name: 保存日韓市場總覽快取
+        working-directory: data
+        run: |
+          git add -A imports-overview
+
+          if git diff --cached --name-only --diff-filter=D | grep -q .; then
+              echo "偵測到市場總覽歷史檔案被刪除，中止：" >&2
+              git diff --cached --name-only --diff-filter=D >&2
+              exit 1
+          fi
+
+          if git diff --cached --quiet; then
+              echo "沒有新的日韓市場總覽日線。"
+              exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -qm "日韓市場總覽行情快取 $(date +%Y-%m-%d)"
+          git push -q

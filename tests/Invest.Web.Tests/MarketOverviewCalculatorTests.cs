@@ -190,6 +190,50 @@ public sealed class MarketOverviewCalculatorTests
     }
 
     [Fact]
+    public void 日本TOPIX17代理代碼與顯示產業正確對應()
+    {
+        // 不能只看 ETF 代碼「長得很像」：1629 是商業／批發、1628 是運輸物流、
+        // 1632 是銀行以外金融。這三個錯一個，畫面與產業確認分數都會被錯誤標示。
+        Assert.Equal("1631.T", MarketOverviewCatalog.JapanSectors.Single(symbol => symbol.DisplayName == "銀行").Symbol);
+        Assert.Equal("1630.T", MarketOverviewCatalog.JapanSectors.Single(symbol => symbol.DisplayName == "零售").Symbol);
+        Assert.Equal("1628.T", MarketOverviewCatalog.JapanSectors.Single(symbol => symbol.DisplayName == "運輸與物流").Symbol);
+    }
+
+    [Fact]
+    public void 限縮日韓市場時不會偷偷帶入美股與加密貨幣名冊()
+    {
+        var definitions = MarketOverviewCatalog.DefinitionsFor(["jp", "kr"]);
+        var symbols = MarketOverviewCatalog.All(["jp", "kr"]);
+
+        Assert.Equal(["jp", "kr"], definitions.Select(definition => definition.Key));
+        Assert.DoesNotContain(symbols, symbol => symbol.Symbol == "^GSPC" || symbol.Symbol == "BTC-USD");
+        Assert.Contains(symbols, symbol => symbol.Symbol == "^N225");
+        Assert.Contains(symbols, symbol => symbol.Symbol == "^KS11");
+    }
+
+    [Fact]
+    public void 盤中投影不會把昨天未更新的產業混入今天()
+    {
+        var date = new DateOnly(2026, 9, 14);
+        var previous = date.AddDays(-1);
+        var history = BuildHistoryForDefinition(MarketOverviewCatalog.Japan, previous)
+            .Append(Snapshot(date,
+                ("^N225", 101m, 0m),
+                ("^TOPX", 102m, 0m),
+                ("^JPXNK400", 103m, 0m),
+                ("1622.T", 104m, 1_000m)))
+            .ToArray();
+
+        var group = MarketOverviewProjection.ToIntradayGroup(history, MarketOverviewCatalog.Japan, date);
+
+        Assert.Equal(date.ToString("yyyy-MM-dd"), group.AsOf);
+        Assert.Equal(3, group.Indices.Count);
+        Assert.Single(group.Sectors);
+        Assert.Equal("1622.T", group.Sectors.Single().Symbol);
+        Assert.Null(group.HeatScore);
+    }
+
+    [Fact]
     public void 全部symbol日期一致時整批日期就是那一天()
     {
         var symbols = new[]
@@ -265,6 +309,23 @@ public sealed class MarketOverviewCalculatorTests
         return Enumerable.Range(0, 260)
             .Select(index => Snapshot(
                 new DateOnly(2025, 12, 20).AddDays(index),
+                symbols.Select(symbol => (
+                    symbol.Symbol,
+                    Close: symbol.Base + index * 0.1m,
+                    TradingValue: symbol.Volume)).ToArray()))
+            .ToArray();
+    }
+
+    private static MarketOverviewSnapshot[] BuildHistoryForDefinition(
+        MarketOverviewDefinition definition,
+        DateOnly lastDate)
+    {
+        var symbols = MarketOverviewCatalog.SymbolsFor(definition)
+            .Select(symbol => (symbol.Symbol, Base: 100m, Volume: 1_000m))
+            .ToArray();
+        return Enumerable.Range(0, 260)
+            .Select(index => Snapshot(
+                lastDate.AddDays(index - 259),
                 symbols.Select(symbol => (
                     symbol.Symbol,
                     Close: symbol.Base + index * 0.1m,

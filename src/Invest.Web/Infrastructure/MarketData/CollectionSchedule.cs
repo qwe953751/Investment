@@ -28,6 +28,18 @@ public static class CollectionSchedule
     /// </summary>
     public static readonly TimeSpan IntradayInterval = TimeSpan.FromMinutes(2);
 
+    /// <summary>日韓精簡盤中收集的第一輪前置時間（台北）。</summary>
+    public static readonly TimeOnly AsiaOverviewIntradayStart = new(7, 50);
+
+    /// <summary>日韓最晚 14:30 收盤，額外留五分鐘收最後一根 5 分鐘列（台北）。</summary>
+    public static readonly TimeOnly AsiaOverviewIntradayEnd = new(14, 35);
+
+    /// <summary>
+    /// 日韓只收指數、風險與產業代表，5 分鐘已足以涵蓋約 30 次逐檔 Yahoo 請求與退避餘裕。
+    /// 不得縮成台股的 2 分鐘，因來源不是可批次查詢的 MIS。
+    /// </summary>
+    public static readonly TimeSpan AsiaOverviewIntradayInterval = TimeSpan.FromMinutes(5);
+
     /// <summary>
     /// 判定休市、提早收工的時刻。
     ///

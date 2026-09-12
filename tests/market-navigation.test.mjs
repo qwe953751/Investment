@@ -58,7 +58,8 @@ test('日股／韓股指數可開啟三個月 K 線，並沿用交易日選擇�
     assert.match(siteScript, /bars: buildIndexMovingAverages\(rawBars\),[\s\S]*?template: true/);
     assert.match(siteScript, /toggleIndexKLine\(indexMarket, tile, \{\s*template: true,[\s\S]*?endDate: proto\?\.date \?\? group\.dates\?\.at\(-1\) \?\? ''/);
     assert.match(siteScript, /function mspBuildDateStepper\(group, market, proto, paint\)/);
-    assert.match(siteScript, /const availableDates = \['us', 'jp', 'kr'\]\.includes\(market\)/);
+    assert.match(siteScript, /const historicalDates = \['us', 'jp', 'kr'\]\.includes\(market\)/);
+    assert.match(siteScript, /group\?\.intraday === true && group\.asOf/);
     assert.match(siteScript, /if \(typeof expandedIndexMarket !== 'undefined'[\s\S]*?expandedIndexMarket !== null[\s\S]*?expandedIndexEndDate !== null\)/);
     assert.match(siteScript, /expandedIndexEndDate = options\.endDate \|\| null/);
     assert.match(siteScript, /if \(options\.template === true\) \{\s*buildLocalMspIndexKLinePreview\(market, options\);/);

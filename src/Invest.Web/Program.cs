@@ -30,7 +30,8 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- backfill-etfs [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- verify-kline-cache [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-us
-//   dotnet run --project src/Invest.Web -- backfill-overview
+//   dotnet run --project src/Invest.Web -- backfill-overview [--markets us,crypto|jp,kr]
+//   dotnet run --project src/Invest.Web -- market-overview-intraday [--markets jp,kr] [--loop]
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop|--probe]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
@@ -50,7 +51,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -94,12 +95,14 @@ builder.Services.AddSingleton<TopicSheetCacheStore>();
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
+builder.Services.AddHttpClient<MarketOverviewIntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
 
 // 美股主要資料源：Yahoo Finance 公開 chart API，UsMarketDataDownloader 實際呼叫這支。
 builder.Services.AddHttpClient<YahooFinanceDailyQuoteClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<YahooFinanceIntradayQuoteClient>(ConfigureQuoteClient);
 
 // 備援：Alpha Vantage，目前沒有接線，留著在 Yahoo Finance 被擋時可以手動切回。
 builder.Services.AddHttpClient<AlphaVantageDailyQuoteClient>(
@@ -122,6 +125,9 @@ builder.Services.AddSingleton<ExchangeRateStore>();
 builder.Services.AddTransient<MarketDataDownloader>();
 builder.Services.AddTransient<UsMarketDataDownloader>();
 builder.Services.AddTransient<MarketOverviewDownloader>();
+builder.Services.AddTransient<IMarketOverviewIntradayQuoteClient>(services =>
+    services.GetRequiredService<YahooFinanceIntradayQuoteClient>());
+builder.Services.AddTransient<MarketOverviewIntradayCollector>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
 builder.Services.AddTransient<StaticSiteExporter>();
@@ -178,7 +184,13 @@ if (command is "backfill-us")
 
 if (command is "backfill-overview")
 {
-    await RunMarketOverviewBackfillAsync(app.Services);
+    await RunMarketOverviewBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "market-overview-intraday")
+{
+    await RunMarketOverviewIntradayAsync(app.Services, args);
     return;
 }
 
@@ -1568,16 +1580,18 @@ static async Task RunUsBackfillAsync(IServiceProvider services)
 }
 
 /// <summary>
-/// 回補市場切換總覽（美股／加密貨幣）的指數、VIX、類股 ETF 與主力幣種（data/imports-overview）。
-/// 名冊固定在 <see cref="MarketOverviewCatalog"/>，不必先讀 Supabase。
+/// 回補市場切換總覽（data/imports-overview）。可用 <c>--markets jp,kr</c> 限縮市場，
+/// 防止日韓盤後流程重抓美股／加密貨幣的兩年資料。
 /// </summary>
-static async Task RunMarketOverviewBackfillAsync(IServiceProvider services)
+static async Task RunMarketOverviewBackfillAsync(IServiceProvider services, string[] args)
 {
     using var scope = services.CreateScope();
     var downloader = scope.ServiceProvider.GetRequiredService<MarketOverviewDownloader>();
     var store = scope.ServiceProvider.GetRequiredService<MarketOverviewStore>();
 
+    var markets = ParseMarketOverviewMarkets(args);
     Console.WriteLine($"快取位置：{store.Directory}");
+    Console.WriteLine($"市場：{string.Join(", ", MarketOverviewCatalog.DefinitionsFor(markets).Select(definition => definition.Key))}");
     Console.WriteLine("逐 symbol 呼叫 Yahoo Finance（禮貌性節流，無已知配額）。");
     Console.WriteLine();
 
@@ -1592,7 +1606,7 @@ static async Task RunMarketOverviewBackfillAsync(IServiceProvider services)
 
     try
     {
-        var report = await downloader.BackfillAsync(progress, cts.Token);
+        var report = await downloader.BackfillAsync(markets, progress, cts.Token);
 
         Console.WriteLine();
         Console.WriteLine(
@@ -1614,6 +1628,102 @@ static async Task RunMarketOverviewBackfillAsync(IServiceProvider services)
         Console.WriteLine();
         Console.WriteLine("已中斷。已處理的資料都保留在快取。");
     }
+}
+
+/// <summary>
+/// 收集一次或持續收集日韓精簡盤中快照。此命令只發佈 Storage CDN，不寫入台股
+/// intraday_* 資料表；每次輸出都是 index/risk/產業代表的固定小名冊。
+/// </summary>
+static async Task RunMarketOverviewIntradayAsync(IServiceProvider services, string[] args)
+{
+    var loop = args.Contains("--loop", StringComparer.OrdinalIgnoreCase);
+    var markets = ParseMarketOverviewMarkets(args) ?? ["jp", "kr"];
+    var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+    var publishedRounds = 0;
+    var failedRounds = 0;
+
+    using var scope = services.CreateScope();
+    var collector = scope.ServiceProvider.GetRequiredService<MarketOverviewIntradayCollector>();
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        Console.WriteLine(
+            $"日韓盤中市場總覽：{string.Join(", ", markets)}；"
+            + (loop
+                ? $"每 {CollectionSchedule.AsiaOverviewIntradayInterval.TotalMinutes:0} 分鐘一輪，至 {CollectionSchedule.AsiaOverviewIntradayEnd:HH\\:mm}。"
+                : "抓一輪後結束。"));
+
+        while (true)
+        {
+            var report = await collector.CollectOnceAsync(markets, new Progress<string>(Console.WriteLine), cts.Token);
+            publishedRounds += report.PublishedMarkets.Count;
+
+            if (report.IncompleteMarkets.Count > 0 || report.RateLimitedMarkets.Count > 0 || report.NotConfiguredMarkets.Count > 0)
+            {
+                failedRounds++;
+                foreach (var incomplete in report.IncompleteMarkets)
+                {
+                    Console.WriteLine(
+                        $"{incomplete.Market} 本輪不完整：指數缺 {string.Join(", ", incomplete.MissingIndices)}；"
+                        + $"產業 {incomplete.ValidSectorCount}/{incomplete.MinimumSectorCount}。保留上一份 latest。 ");
+                }
+            }
+
+            if (!loop)
+            {
+                break;
+            }
+
+            var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei);
+            var next = CollectionSchedule.NextRound(now, CollectionSchedule.AsiaOverviewIntradayInterval);
+            if (TimeOnly.FromDateTime(next.DateTime) > CollectionSchedule.AsiaOverviewIntradayEnd)
+            {
+                break;
+            }
+
+            await Task.Delay(next - now, cts.Token);
+        }
+    }
+    catch (OperationCanceledException) when (cts.IsCancellationRequested)
+    {
+        Console.WriteLine("日韓盤中收集已中斷；已發佈的不可變快照保留。 ");
+        return;
+    }
+
+    Console.WriteLine($"日韓盤中收工：發佈 {publishedRounds} 市場輪次，異常輪次 {failedRounds}。");
+    if (failedRounds > 0)
+    {
+        throw new InvalidOperationException("日韓盤中有不完整、限流或 Storage 設定錯誤的輪次；請查看 workflow 日誌。 ");
+    }
+}
+
+static IReadOnlyList<string>? ParseMarketOverviewMarkets(string[] args)
+{
+    var inline = args.FirstOrDefault(argument => argument.StartsWith("--markets=", StringComparison.OrdinalIgnoreCase));
+    var value = inline is null
+        ? args.SkipWhile(argument => !string.Equals(argument, "--markets", StringComparison.OrdinalIgnoreCase))
+            .Skip(1)
+            .FirstOrDefault()
+        : inline["--markets=".Length..];
+
+    if (value is null)
+    {
+        return null;
+    }
+
+    var markets = value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+    if (markets.Length == 0)
+    {
+        throw new ArgumentException("--markets 後必須帶至少一個市場 key，例如 --markets jp,kr。");
+    }
+
+    return markets;
 }
 
 /// <summary>

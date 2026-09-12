@@ -16,11 +16,12 @@ public sealed class MarketOverviewDownloader(
     private const int RequestDelayMilliseconds = 1_000;
 
     public async Task<MarketOverviewBackfillReport> BackfillAsync(
+        IEnumerable<string>? marketKeys = null,
         IProgress<string>? progress = null,
         CancellationToken cancellationToken = default)
     {
         var report = new MarketOverviewBackfillReport();
-        var symbols = MarketOverviewCatalog.All();
+        var symbols = MarketOverviewCatalog.All(marketKeys);
         var buffer = new Dictionary<DateOnly, Dictionary<string, MarketOverviewQuote>>();
         var callCount = 0;
 

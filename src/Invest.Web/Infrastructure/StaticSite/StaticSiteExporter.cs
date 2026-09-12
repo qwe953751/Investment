@@ -37,6 +37,7 @@ public sealed class StaticSiteExporter(
     GoogleSheetTopicClient topics,
     MaterialEventStore materialEvents,
     IntradaySnapshotPublisher snapshotPublisher,
+    MarketOverviewIntradaySnapshotPublisher marketOverviewIntradayPublisher,
     UsDailyQuoteStore usDailyQuotes,
     MarketOverviewStore marketOverview,
     IntradayCurveStore curveStore,
@@ -253,6 +254,7 @@ public sealed class StaticSiteExporter(
                 ToScheduleExport(),
                 ToSupabaseExport(),
                 await ToIntradayCdnExportAsync(cancellationToken),
+                await ToMarketOverviewIntradayCdnExportAsync(cancellationToken),
                 ToDispositionExports(dispositions),
                 [.. alteredTrading],
                 ToCurveExport(turnoverCalibration),
@@ -295,10 +297,10 @@ public sealed class StaticSiteExporter(
     private async Task WriteMarketOverviewAsync(string dataDirectory, CancellationToken cancellationToken)
     {
         var warnings = new List<string>();
-        MarketOverviewGroupExport? us = null;
-        MarketOverviewGroupExport? japan = null;
-        MarketOverviewGroupExport? korea = null;
-        MarketOverviewGroupExport? crypto = null;
+        MarketOverviewGroup? us = null;
+        MarketOverviewGroup? japan = null;
+        MarketOverviewGroup? korea = null;
+        MarketOverviewGroup? crypto = null;
 
         try
         {
@@ -402,54 +404,12 @@ public sealed class StaticSiteExporter(
             + "但其餘標的還沒到齊，畫面維持在整批到齊的那一天。");
     }
 
-    private static (MarketOverviewGroupExport Export, IReadOnlyList<string> AheadSymbols) ToGroupExport(
+    private static (MarketOverviewGroup Export, IReadOnlyList<string> AheadSymbols) ToGroupExport(
         IReadOnlyList<MarketOverviewSnapshot> history,
         MarketOverviewDefinition definition)
     {
-        IReadOnlyList<MarketOverviewSymbol> allSymbols = [
-            ..definition.Indices,
-            ..(definition.RiskSymbol is { } risk ? [risk] : Array.Empty<MarketOverviewSymbol>()),
-            ..definition.Sectors,
-            ..definition.CompositeSymbols];
-        var asOf = MarketOverviewCalculator.DetermineAsOfDate(history, allSymbols);
-
-        // 面板裡每一個數字都要對得起同一個交易日：asOf 之後的資料一律不看，
-        // 寧可整批停在落後那一天，也不要「指數今天、類股昨天」混在同一個面板裡
-        // 卻看不出來（2026-09-11 的根因，見 DetermineAsOfDate 的說明）。
-        var cappedHistory = asOf.AsOfDate is { } cutoff
-            ? history.Where(snapshot => snapshot.TradingDate <= cutoff).ToArray()
-            : [];
-
-        var heat = asOf.AsOfDate is { } heatDate
-            ? MarketOverviewCalculator.CalculateHeatAt(cappedHistory, definition, heatDate)
-            : new MarketOverviewHeatResult(null, new Dictionary<string, decimal?>(), null, null);
-
-        var indexResults = definition.Indices
-            .Select(symbol => MarketOverviewCalculator.CalculateIndex(cappedHistory, symbol.Symbol, symbol.DisplayName))
-            .Where(result => result is not null)
-            .Select(result => new MarketOverviewIndexExport(
-                result!.Name,
-                result.Symbol,
-                result.Value,
-                result.DailyChangePercent,
-                result.YearToDateChangePercent,
-                heat.IndexHeatScores.TryGetValue(result.Symbol, out var score) ? score : null))
-            .ToArray();
-
-        var sectorResults = MarketOverviewCalculator.CalculateSectors(cappedHistory, definition.Sectors)
-            .Select(result => new MarketOverviewSectorExport(result.Symbol, result.Name, result.ChangePercent, result.Weight))
-            .ToArray();
-
-        var export = new MarketOverviewGroupExport(
-            heat.CompositeHeatScore,
-            heat.SectorHeatScore,
-            heat.SectorValidCount,
-            indexResults,
-            sectorResults,
-            asOf.AsOfDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            []);
-
-        return (export, asOf.AheadSymbols);
+        var result = MarketOverviewProjection.ToLatestGroup(history, definition);
+        return (result.Group, result.AheadSymbols);
     }
 
     /// <summary>
@@ -468,11 +428,7 @@ public sealed class StaticSiteExporter(
         MarketOverviewDefinition definition,
         CancellationToken cancellationToken)
     {
-        IReadOnlyList<MarketOverviewSymbol> allSymbols = [
-            ..definition.Indices,
-            ..(definition.RiskSymbol is { } risk ? [risk] : Array.Empty<MarketOverviewSymbol>()),
-            ..definition.Sectors,
-            ..definition.CompositeSymbols];
+        var allSymbols = MarketOverviewCatalog.SymbolsFor(definition);
         var windowStart = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-MarketOverviewHistoryWindowDays));
 
         var candidateDates = history
@@ -1624,6 +1580,29 @@ public sealed class StaticSiteExporter(
     private sealed record IntradayCdnExport(string BaseUrl, string LatestUrl);
 
     /// <summary>
+    /// 日韓市場總覽盤中快照是與台股盤中完全獨立的 CDN bucket。至少一個市場已有
+    /// 可公開讀取的 latest 與完整檔時才寫進 manifest；尚未收過第一輪時前端維持盤後資料。
+    /// </summary>
+    private async Task<MarketOverviewIntradayCdnExport?> ToMarketOverviewIntradayCdnExportAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!MarketOverviewIntradaySnapshotPublisher.IsPublishingConfigured(configuration))
+        {
+            return null;
+        }
+
+        var baseUrl = MarketOverviewIntradaySnapshotPublisher.GetPublicBaseUrl(configuration);
+        if (baseUrl is null || !await marketOverviewIntradayPublisher.HasPublishedSnapshotAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new MarketOverviewIntradayCdnExport(baseUrl);
+    }
+
+    private sealed record MarketOverviewIntradayCdnExport(string BaseUrl);
+
+    /// <summary>
     /// 前端只需要「哪些股號被處置」加上滑鼠停上去要說什麼，所以日期在這裡就先轉成文字。
     /// </summary>
     private static IReadOnlyList<DispositionExport> ToDispositionExports(
@@ -1662,6 +1641,9 @@ public sealed class StaticSiteExporter(
         // 僅限盤中資料使用。其他頁面不讀這個網址，仍走既有資料來源。
         IntradayCdnExport? IntradayCdn,
 
+        // 日股／韓股精簡盤中總覽，與台股全市場 intradayCdn 的 bucket、latest 指標分離。
+        MarketOverviewIntradayCdnExport? MarketOverviewIntradayCdn,
+
         // 目前處於處置期間的個股。撮合被改成人工分盤，成交值會被壓低，名次不能照字面讀。
         IReadOnlyList<DispositionExport> Dispositions,
 
@@ -1698,34 +1680,10 @@ public sealed class StaticSiteExporter(
     /// </summary>
     private sealed record MarketOverviewExport(
         IReadOnlyList<string> Warnings,
-        MarketOverviewGroupExport? Us,
-        MarketOverviewGroupExport? Japan,
-        MarketOverviewGroupExport? Korea,
-        MarketOverviewGroupExport? Crypto);
-
-    /// <summary>
-    /// <c>AsOf</c> 是這組指數／類股整批到齊的交易日（yyyy-MM-dd），null 代表完全沒有資料。
-    /// <c>Dates</c> 是可以用交易日選擇器往回瀏覽的日期清單（遞增排序），收盤市場會非空——
-    /// 見 <see cref="StaticSiteExporter.WriteMarketOverviewHistoryAsync"/> 的說明。
-    /// </summary>
-    private sealed record MarketOverviewGroupExport(
-        decimal? HeatScore,
-        decimal? SectorHeatScore,
-        int? SectorValidCount,
-        IReadOnlyList<MarketOverviewIndexExport> Indices,
-        IReadOnlyList<MarketOverviewSectorExport> Sectors,
-        string? AsOf,
-        IReadOnlyList<string> Dates);
-
-    private sealed record MarketOverviewIndexExport(
-        string Name,
-        string Symbol,
-        decimal Value,
-        decimal? Daily,
-        decimal? Ytd,
-        decimal? HeatScore);
-
-    private sealed record MarketOverviewSectorExport(string Symbol, string Name, decimal? Change, decimal Weight);
+        MarketOverviewGroup? Us,
+        MarketOverviewGroup? Japan,
+        MarketOverviewGroup? Korea,
+        MarketOverviewGroup? Crypto);
 
     private sealed record KLineExport(
         string Market,

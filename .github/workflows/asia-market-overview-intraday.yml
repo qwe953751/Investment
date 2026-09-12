@@ -1,0 +1,93 @@
+# 日／韓市場總覽盤中：只收固定的指數、風險指數與產業代表，5 分鐘一輪。
+# 不寫入台股 intraday_* 資料表、不重新發佈 GitHub Pages；完整快照只送到獨立的
+# Supabase Storage bucket，再由未來的靜態網站 manifest 讀取公開 latest 指標。
+# Yahoo Finance chart API 沒有公開 SLA，429 或核心缺值會讓本輪保留前一份 latest 並使 run 失敗。
+
+name: 日韓市場總覽盤中快照
+
+on:
+  schedule:
+    # 台北週一到週五 07:45；GitHub cron 是復原火種，主要由下方 hop 自走接力。
+    - cron: '45 23 * * 0-4'
+    # 若前一棒的 dispatch 失敗，開盤後與日本午休結束前仍有獨立接手點。
+    - cron: '15 0 * * 1-5'
+    - cron: '30 3 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      hop:
+        description: 自走接力編號（僅 workflow 自己使用）
+        default: '0'
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: asia-market-overview-intraday
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    # 一棒最多跑 5 小時 55 分，留給 queued 的下一棒接到台北 14:35。
+    timeout-minutes: 355
+    env:
+      TZ: Asia/Taipei
+      HOP: ${{ inputs.hop || '0' }}
+
+    steps:
+      # 接力必須在 checkout／等待之前排隊；目前這棒被六小時上限砍掉時，下一棒仍會接手。
+      - name: 先排下一棒
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          now=$(date +%s)
+          end=$(date -d '14:35' +%s)
+          next=$(( HOP + 1 ))
+
+          if [ "$now" -lt "$end" ] && [ "$next" -le 2 ]; then
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/asia-market-overview-intraday.yml/dispatches" \
+                  -f ref="$GITHUB_REF_NAME" \
+                  -f "inputs[hop]=$next"
+              echo "已排第 $next 棒，避免本棒被 timeout 時斷鏈。"
+          else
+              echo "已接近收盤或已到最大 hop，不再排下一棒。"
+          fi
+
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      # 熱絡分數需要兩年日線；只讀 data branch，不把盤中原始列寫回 data。
+      - name: 取出市場總覽日線快取
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+          fetch-depth: 1
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 等到日韓盤中收集窗口
+        run: |
+          set +e
+          now=$(date +%s)
+          start=$(date -d '07:50' +%s)
+          end=$(date -d '14:35' +%s)
+
+          if [ "$now" -ge "$end" ]; then
+              echo "現在已過台北 14:35，本棒只作接力收尾。"
+              exit 0
+          fi
+
+          if [ "$now" -lt "$start" ]; then
+              sleep "$(( start - now ))"
+          fi
+
+      - name: 收集日韓精簡盤中快照
+        env:
+          # 僅能上傳 public 的 market-overview-intraday-snapshots bucket；絕不輸出到 log 或檔案。
+          SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
+        run: dotnet run -c Release --project src/Invest.Web -- market-overview-intraday --markets jp,kr --loop

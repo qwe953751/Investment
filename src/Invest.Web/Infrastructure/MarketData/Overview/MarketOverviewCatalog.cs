@@ -27,7 +27,8 @@ public sealed record MarketOverviewDefinition(
 
 /// <summary>
 /// 市場切換總覽要追蹤的固定名冊。
-/// 全部走 Yahoo Finance chart API；名冊是市場結構，不是使用者自選股。
+/// 目前的日線與盤中都走 Yahoo Finance chart API；名冊是市場結構，不是使用者自選股。
+/// Yahoo 沒有承諾公開 SLA，呼叫端必須把限流、缺值與過期資料明確回報，不能補成模板值。
 /// </summary>
 public static class MarketOverviewCatalog
 {
@@ -92,20 +93,21 @@ public static class MarketOverviewCatalog
         new("^JNIV", "日經波動率指數", MarketOverviewValueKind.Index);
 
     /// <summary>
-    /// NEXT FUNDS TOPIX-17 ETF 代理的 11 個產業；大小只影響產業確認，
-    /// 不會取代三個日本主要指數。
+    /// NEXT FUNDS TOPIX-17 ETF 中挑選的 11 個代表產業；大小只影響產業確認，
+    /// 不會取代三個日本主要指數。代碼與 TOPIX-17 官方分類逐一對應，不能用
+    /// 看似相近但屬於其他產業的 ETF 代替。
     /// </summary>
     public static readonly IReadOnlyList<MarketOverviewSymbol> JapanSectors =
     [
         new("1622.T", "汽車與運輸設備", MarketOverviewValueKind.ShareVolume),
         new("1625.T", "電機與精密儀器", MarketOverviewValueKind.ShareVolume),
-        new("1629.T", "銀行", MarketOverviewValueKind.ShareVolume),
+        new("1631.T", "銀行", MarketOverviewValueKind.ShareVolume),
         new("1624.T", "機械", MarketOverviewValueKind.ShareVolume),
         new("1621.T", "製藥", MarketOverviewValueKind.ShareVolume),
-        new("1628.T", "零售", MarketOverviewValueKind.ShareVolume),
+        new("1630.T", "零售", MarketOverviewValueKind.ShareVolume),
         new("1626.T", "資訊服務", MarketOverviewValueKind.ShareVolume),
         new("1619.T", "建設與材料", MarketOverviewValueKind.ShareVolume),
-        new("1632.T", "運輸與物流", MarketOverviewValueKind.ShareVolume),
+        new("1628.T", "運輸與物流", MarketOverviewValueKind.ShareVolume),
         new("1617.T", "食品", MarketOverviewValueKind.ShareVolume),
         new("1618.T", "能源與天然資源", MarketOverviewValueKind.ShareVolume)
     ];
@@ -169,17 +171,58 @@ public static class MarketOverviewCatalog
 
     public static readonly IReadOnlyList<MarketOverviewDefinition> Definitions = [Us, Japan, Korea, Crypto];
 
-    public static IReadOnlyList<MarketOverviewSymbol> All()
+    /// <summary>
+    /// 依市場取出設定。參數省略時保留既有的全市場行為；指定不存在的 key 時直接失敗，
+    /// 防止 workflow 打錯字卻悄悄改成回補全部 55 檔。
+    /// </summary>
+    public static IReadOnlyList<MarketOverviewDefinition> DefinitionsFor(
+        IEnumerable<string>? marketKeys = null)
+    {
+        if (marketKeys is null)
+        {
+            return Definitions;
+        }
+
+        var requested = marketKeys
+            .Select(key => key.Trim().ToLowerInvariant())
+            .Where(key => key.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+
+        if (requested.Count == 0)
+        {
+            throw new ArgumentException("至少要指定一個市場 key。", nameof(marketKeys));
+        }
+
+        var unknown = requested
+            .Except(Definitions.Select(definition => definition.Key), StringComparer.Ordinal)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray();
+
+        if (unknown.Length > 0)
+        {
+            throw new ArgumentException($"不支援的市場 key：{string.Join(", ", unknown)}。", nameof(marketKeys));
+        }
+
+        return [.. Definitions.Where(definition => requested.Contains(definition.Key))];
+    }
+
+    /// <summary>某市場完整收集名冊（指數、風險、產業與綜合成分去重後）。</summary>
+    public static IReadOnlyList<MarketOverviewSymbol> SymbolsFor(MarketOverviewDefinition definition)
+        => DistinctSymbols(
+            definition.Indices
+                .Concat(definition.RiskSymbol is null ? [] : [definition.RiskSymbol])
+                .Concat(definition.Sectors)
+                .Concat(definition.CompositeSymbols)
+                .Concat(definition.IsCrypto ? CryptoHeatmap : []));
+
+    public static IReadOnlyList<MarketOverviewSymbol> All(IEnumerable<string>? marketKeys = null)
     {
         var all = new List<MarketOverviewSymbol>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var definition in Definitions)
+        foreach (var definition in DefinitionsFor(marketKeys))
         {
-            foreach (var symbol in definition.Indices
-                .Concat(definition.RiskSymbol is null ? [] : [definition.RiskSymbol])
-                .Concat(definition.Sectors)
-                .Concat(definition.CompositeSymbols))
+            foreach (var symbol in SymbolsFor(definition))
             {
                 if (seen.Add(symbol.Symbol))
                 {
@@ -188,15 +231,23 @@ public static class MarketOverviewCatalog
             }
         }
 
-        foreach (var symbol in CryptoHeatmap)
+        return all;
+    }
+
+    private static IReadOnlyList<MarketOverviewSymbol> DistinctSymbols(IEnumerable<MarketOverviewSymbol> symbols)
+    {
+        var result = new List<MarketOverviewSymbol>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var symbol in symbols)
         {
             if (seen.Add(symbol.Symbol))
             {
-                all.Add(symbol);
+                result.Add(symbol);
             }
         }
 
-        return all;
+        return result;
     }
 }
 

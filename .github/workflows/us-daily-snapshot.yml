@@ -106,8 +106,9 @@ jobs:
 
       # 市場切換總覽（美股／加密貨幣指數、類股、VIX）跟 us_watchlist 無關、不需要
       # Supabase，名冊固定在 MarketOverviewCatalog，共用同一支 Yahoo Finance client。
+      # 一定要限縮 us,crypto：日／韓另有收盤後流程，不能在這裡每天重抓它們的兩年歷史。
       - name: 回補市場切換總覽（美股／加密貨幣）
-        run: dotnet run -c Release --project src/Invest.Web -- backfill-overview
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-overview --markets us,crypto
 
       - name: 保存行情快取
         id: cache

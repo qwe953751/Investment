@@ -2059,6 +2059,8 @@ let accelerationCoefficients = null;
 // 盤中資料若有 intradayCdn 則不使用這組連線；舊 manifest 才降級為原本的只讀查詢。
 let supabase = null;
 let intradayCdn = null;
+// 日韓市場總覽的 5 分鐘小快照；它跟台股全市場 intradayCdn 分 bucket、分 latest 指標。
+let marketOverviewIntradayCdn = null;
 
 // CDN 是省流量的正路，但它掛掉時不能讓盤中頁變成一片空白——那是這個網站最常被看的一頁。
 // 抓不到就自動退回 Supabase 直連（貴很多，每輪整份重抓，所以只當救命用），並把這個旗標
@@ -25531,6 +25533,11 @@ let marketOverviewData = null;
 let marketOverviewLoadError = null;
 let marketOverviewPromise = null;
 let marketSwitchRender = null;
+let marketSwitchProto = null;
+const marketOverviewIntradayGroups = new Map();
+const marketOverviewIntradayPromises = new Map();
+const MARKET_OVERVIEW_INTRADAY_CACHE_MS = 60_000;
+const MARKET_OVERVIEW_INTRADAY_STALE_MS = 20 * 60_000;
 
 async function ensureMarketOverviewData() {
     if (marketOverviewData !== null) {
@@ -25557,6 +25564,143 @@ async function ensureMarketOverviewData() {
         // 失敗時清掉 promise 讓下一次切換頁籤可以重試；成功時 marketOverviewData
         // 已經有值，ensureMarketOverviewData 一開始的檢查會直接短路，不會重抓。
         marketOverviewPromise = null;
+    }
+}
+
+// 日韓交易時段依各交易所當地時間判斷；日本午休期間絕不把上一根 5 分鐘列寫成「即時」。
+function mspIsIntradaySession(market, now = new Date()) {
+    const settings = market === 'jp'
+        ? { zone: 'Asia/Tokyo', segments: [[9 * 60, 11 * 60 + 30], [12 * 60 + 30, 15 * 60 + 30]] }
+        : market === 'kr'
+            ? { zone: 'Asia/Seoul', segments: [[9 * 60, 15 * 60 + 30]] }
+            : null;
+    if (settings === null) {
+        return false;
+    }
+
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: settings.zone,
+        weekday: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+    }).formatToParts(now);
+    const value = type => parts.find(part => part.type === type)?.value ?? '';
+    if (['Sat', 'Sun'].includes(value('weekday'))) {
+        return false;
+    }
+
+    const minute = Number(value('hour')) * 60 + Number(value('minute'));
+    return settings.segments.some(([start, end]) => minute >= start && minute <= end);
+}
+
+function mspExchangeDate(market, now = new Date()) {
+    const zone = market === 'jp' ? 'Asia/Tokyo' : market === 'kr' ? 'Asia/Seoul' : null;
+    if (zone === null) {
+        return '';
+    }
+
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(now);
+    const value = type => parts.find(part => part.type === type)?.value ?? '';
+    return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+async function ensureMarketOverviewIntradayGroup(market) {
+    if (marketOverviewIntradayCdn === null || !['jp', 'kr'].includes(market) || !mspIsIntradaySession(market)) {
+        return null;
+    }
+
+    const cached = marketOverviewIntradayGroups.get(market);
+    if (cached !== undefined && Date.now() - cached.loadedAt < MARKET_OVERVIEW_INTRADAY_CACHE_MS) {
+        return cached.group;
+    }
+
+    if (!marketOverviewIntradayPromises.has(market)) {
+        marketOverviewIntradayPromises.set(market, (async () => {
+            const baseUrl = marketOverviewIntradayCdn.baseUrl.replace(/\/$/, '');
+            const latestResponse = await fetch(`${baseUrl}/${market}/latest.json`, { cache: 'no-store' });
+            if (!latestResponse.ok) {
+                throw new Error(`latest HTTP ${latestResponse.status}`);
+            }
+
+            const pointer = await latestResponse.json();
+            if (pointer.schemaVersion !== 1 || pointer.market !== market || typeof pointer.file !== 'string') {
+                throw new Error('latest 格式不符');
+            }
+
+            const snapshotResponse = await fetch(`${baseUrl}/${pointer.file}`, { cache: 'no-store' });
+            if (!snapshotResponse.ok) {
+                throw new Error(`snapshot HTTP ${snapshotResponse.status}`);
+            }
+
+            const snapshot = await snapshotResponse.json();
+            const age = Date.now() - Date.parse(snapshot.capturedAt);
+            if (snapshot.schemaVersion !== 1
+                || snapshot.market !== market
+                || snapshot.tradeDate !== mspExchangeDate(market)
+                || !snapshot.group
+                || !Number.isFinite(age)
+                || age > MARKET_OVERVIEW_INTRADAY_STALE_MS) {
+                throw new Error('快照過期或交易日不符');
+            }
+
+            const group = {
+                ...snapshot.group,
+                intraday: true,
+                capturedAt: snapshot.capturedAt,
+                warnings: Array.isArray(snapshot.warnings) ? snapshot.warnings : []
+            };
+            marketOverviewIntradayGroups.set(market, { group, loadedAt: Date.now() });
+            return group;
+        })());
+    }
+
+    try {
+        return await marketOverviewIntradayPromises.get(market);
+    } catch (error) {
+        // 即時來源失敗時維持最後可用的盤後總覽，不能退回直連資料庫或保留過期盤中值。
+        console.warn('日韓市場總覽盤中快照讀取失敗，改顯示盤後資料', market, error);
+        marketOverviewIntradayGroups.delete(market);
+        return null;
+    } finally {
+        marketOverviewIntradayPromises.delete(market);
+    }
+}
+
+function refreshMarketOverviewIntradayIfDue() {
+    const proto = marketSwitchProto;
+    if (proto === null
+        || proto.date !== null
+        || !['jp', 'kr'].includes(proto.market)
+        || !mspIsIntradaySession(proto.market)) {
+        return;
+    }
+
+    const cached = marketOverviewIntradayGroups.get(proto.market);
+    if (cached !== undefined && Date.now() - cached.loadedAt < MARKET_OVERVIEW_INTRADAY_CACHE_MS) {
+        return;
+    }
+
+    void ensureMarketOverviewIntradayGroup(proto.market).then(group => {
+        if (group !== null && marketSwitchRender !== null) {
+            marketSwitchRender();
+        }
+    });
+}
+
+function startMarketOverviewIntradayRefresh() {
+    const tick = () => {
+        refreshMarketOverviewIntradayIfDue();
+        setTimeout(tick, MARKET_OVERVIEW_INTRADAY_CACHE_MS);
+    };
+    setTimeout(tick, MARKET_OVERVIEW_INTRADAY_CACHE_MS);
+    for (const name of ['visibilitychange', 'focus', 'pageshow', 'online']) {
+        window.addEventListener(name, refreshMarketOverviewIntradayIfDue);
     }
 }
 
@@ -25600,6 +25744,16 @@ function ensureMarketOverviewDate(market, date, onSettled) {
 // 回傳目前該顯示的收盤市場總覽 group，或 undefined（還在載入中，呼叫端顯示「載入中」）。
 function resolveMarketOverviewGroup(market, proto, onSettled) {
     if (proto.date === null) {
+        const intraday = marketOverviewIntradayGroups.get(market)?.group;
+        if (intraday !== undefined) {
+            return intraday;
+        }
+
+        void ensureMarketOverviewIntradayGroup(market).then(group => {
+            if (group !== null) {
+                onSettled();
+            }
+        });
         return marketOverviewData[market];
     }
 
@@ -25616,7 +25770,7 @@ const MSP_SECTOR_TITLE = {
     us: '11 大類股表現',
     crypto: '主力幣種表現',
     jp: '11 大產業表現',
-    kr: '11 大產業表現'
+    kr: '11 檔產業代表表現'
 };
 
 const MSP_MARKETS = [
@@ -26183,10 +26337,14 @@ function mspSection(titleText, contentEl) {
 // 跟這裡 proto 物件（市場切換用的面板狀態）混用風險比重寫一份還高。
 // 美股、日股、韓股提供交易日軸；加密貨幣是 24/7 市場，沒有 dates 清單。
 function mspBuildDateStepper(group, market, proto, paint) {
-    const availableDates = ['us', 'jp', 'kr'].includes(market)
-        ? group?.dates ?? marketOverviewData?.[market]?.dates ?? []
+    const historicalDates = ['us', 'jp', 'kr'].includes(market)
+        ? marketOverviewData?.[market]?.dates ?? []
         : group?.dates ?? [];
-    const currentDate = proto.date ?? availableDates.at(-1);
+    // 盤中組沒有自己的歷史檔；把它的交易日暫時接在盤後日期軸尾端，按上一日才會取靜態檔。
+    const availableDates = group?.intraday === true && group.asOf && historicalDates.at(-1) !== group.asOf
+        ? [...historicalDates, group.asOf]
+        : (group?.dates?.length > 0 ? group.dates : historicalDates);
+    const currentDate = proto.date ?? (group?.intraday === true ? group.asOf : availableDates.at(-1));
 
     if (currentDate === undefined) {
         return null;
@@ -26242,6 +26400,21 @@ function mspBuildDashboard(group, market, proto, paint) {
     }
 
     dashboard.append(mspSection('指數', mspBuildIndices(group, market, proto)));
+    if (group.intraday === true) {
+        const status = document.createElement('p');
+        status.className = 'msp-card-detail';
+        const captured = group.capturedAt ? new Date(group.capturedAt) : null;
+        status.textContent = `盤中暫估｜5 分鐘快照｜截至 ${captured && !Number.isNaN(captured.valueOf())
+            ? captured.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })
+            : '—'}`;
+        dashboard.append(status);
+    }
+    for (const warning of (group.warnings ?? [])) {
+        const notice = document.createElement('p');
+        notice.className = 'msp-card-detail';
+        notice.textContent = `⚠ ${warning}`;
+        dashboard.append(notice);
+    }
     dashboard.append(mspBuildHeatPanel(group, market));
     dashboard.append(mspBuildSectorsSection(group, market, proto, paint));
     return dashboard;
@@ -28429,6 +28602,7 @@ function initMarketSwitch() {
         // 收盤市場總覽目前選定的交易日；null 代表看最新（見 resolveMarketOverviewGroup）。
         date: null
     };
+    marketSwitchProto = proto;
 
     const bar = document.createElement('div');
     bar.className = 'msp-market-bar';
@@ -28556,6 +28730,9 @@ async function start() {
     accelerationCoefficients = manifest.acceleration ?? null;
     supabase = manifest.supabase ?? null;
     intradayCdn = manifest.intradayCdn ?? null;
+    marketOverviewIntradayCdn = manifest.marketOverviewIntradayCdn ?? null;
+    startMarketOverviewIntradayRefresh();
+    marketSwitchRender?.();
     dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));
     alteredTrading = new Set(manifest.alteredTrading ?? []);
     state.date = dates[dates.length - 1];
