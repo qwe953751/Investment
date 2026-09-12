@@ -1094,7 +1094,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("D+ 採 AI-first", script, StringComparison.Ordinal);
         Assert.Contains("Supabase 私有空間", script, StringComparison.Ordinal);
         Assert.Contains("最長保存 60 分鐘", script, StringComparison.Ordinal);
-        Assert.Contains("assetAiOcrReadiness()", script, StringComparison.Ordinal);
+        Assert.Contains("assetAiOcrReadiness(null, signal)", script, StringComparison.Ordinal);
         Assert.Contains("preflightFallbackReason", script, StringComparison.Ordinal);
         Assert.Contains("已回退 Tesseract", script, StringComparison.Ordinal);
 
@@ -1653,7 +1653,7 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
 
         Assert.Contains("async function assetAiOcrMarkFallback(jobId, fallbackReason)", script, StringComparison.Ordinal);
-        Assert.Contains("async function assetAiOcrPrepareFallback(jobId)", script, StringComparison.Ordinal);
+        Assert.Contains("async function assetAiOcrPrepareFallback(jobId, signal = null)", script, StringComparison.Ordinal);
         Assert.Contains("async function assetAiOcrFinalizeFallback(jobId)", script, StringComparison.Ordinal);
         Assert.Contains("assetAiOcrAcknowledge(jobId, 'cancel')", script, StringComparison.Ordinal);
         // 2026-09-12 修正：唯一觸發「放棄等待、改用 Tesseract」的條件是排隊工作自己的

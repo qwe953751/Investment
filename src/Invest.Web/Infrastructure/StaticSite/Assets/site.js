@@ -51,6 +51,7 @@ let assetDashboardScreen = 'dashboard';
 let assetSelectedAccountId = '';
 let assetEditorMode = '';
 let assetScreenshotDraft = null;
+let assetScreenshotScanController = null;
 let assetAiResumePromise = null;
 let assetActionNotice = '';
 let assetAnnualPreviewEditingKey = '';
@@ -103,6 +104,43 @@ let SITE_ACCESS = URL_ACCESS;
 let ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';
 let ASSET_HOLDINGS_VIEW_ENABLED = SITE_ACCESS === 'holdings';
 const ACCESS_PREVIEW = ACCESS_PREVIEW_QUERY !== null;
+
+function assetOcrCancelledError() {
+    const error = new Error('已強制取消這次 OCR 辨識。');
+    error.code = 'ocr_cancelled';
+    return error;
+}
+
+function assetOcrThrowIfCancelled(signal) {
+    if (signal?.aborted) {
+        throw assetOcrCancelledError();
+    }
+}
+
+function assetOcrDelay(milliseconds, signal = null) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (callback, value) => {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            window.clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+            callback(value);
+        };
+        const timer = window.setTimeout(() => finish(resolve), milliseconds);
+        const onAbort = () => finish(reject, assetOcrCancelledError());
+
+        if (signal?.aborted) {
+            onAbort();
+            return;
+        }
+
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+}
 
 function applyEffectiveAccess() {
     SITE_ACCESS = loginTier !== null && ACCESS_RANK[loginTier] > ACCESS_RANK[URL_ACCESS]
@@ -8575,7 +8613,26 @@ function makeAssetAccountValueTrend(view) {
         });
 }
 
-function discardAssetScreenshotDraft() {
+function discardAssetScreenshotDraft(options = {}) {
+    const scanning = assetScreenshotDraft?.scanning === true;
+    const jobIds = [...new Set((assetScreenshotDraft?.screenshots ?? [])
+        .map(screenshot => screenshot.jobId)
+        .filter(jobId => typeof jobId === 'string' && jobId !== ''))];
+
+    if (scanning) {
+        assetScreenshotScanController?.abort();
+        // Tesseract 沒有可靠的跨版本取消 API；離開帳戶頁時也要終止目前 WASM worker，
+        // 不讓背景辨識繼續佔住 CPU。
+        void resetAssetOcrWorker();
+
+        if (options.cancelRemoteJobs !== false && jobIds.length > 0) {
+            // 先清掉畫面與本機 WASM，遠端取消在背景送出，不讓使用者卡在按鈕上。
+            void cancelAssetAiJobs(jobIds);
+        }
+    }
+
+    assetScreenshotScanController = null;
+
     // 畫面草稿只保存 object URL；伺服器端原始圖由 Edge Function 在完成、取消或到期時刪除。
     for (const screenshot of assetScreenshotDraft?.screenshots ?? []) {
         URL.revokeObjectURL(screenshot.previewUrl);
@@ -8583,6 +8640,37 @@ function discardAssetScreenshotDraft() {
 
     assetScreenshotDraft = null;
     assetOcrStatus = '';
+}
+
+function cancelAssetScreenshotScan() {
+    const draft = assetScreenshotDraft;
+
+    if (draft?.scanning !== true) {
+        return;
+    }
+
+    const accountId = draft.accountId;
+    const jobIds = [...new Set((draft.screenshots ?? [])
+        .map(screenshot => screenshot.jobId)
+        .filter(jobId => typeof jobId === 'string' && jobId !== ''))];
+    assetScreenshotScanController?.abort();
+    assetScreenshotScanController = null;
+    discardAssetScreenshotDraft({ cancelRemoteJobs: false });
+    assetActionNotice = '已強制取消這次截圖辨識，持倉沒有變動。';
+    renderAssetsDashboard();
+
+    if (jobIds.length === 0) {
+        return;
+    }
+
+    void cancelAssetAiJobs(jobIds).then(failedJobIds => {
+        if (failedJobIds.length === 0 || assetScreenshotDraft !== null || assetSelectedAccountId !== accountId) {
+            return;
+        }
+
+        assetActionNotice = '已停止瀏覽器辨識；部分 AI 工作取消請求未完成，私有圖片會依伺服器到期清理。';
+        renderAssetsDashboard();
+    });
 }
 
 function openAssetAccount(accountId) {
@@ -10253,8 +10341,22 @@ function refreshAssetScreenshotDiff(holdings, rows) {
     assetScreenshotDraft.rows = rows;
     assetScreenshotDraft.diff = buildAssetHoldingDiff(holdings, rows);
     assetScreenshotDraft.confirmedFingerprint = assetScreenshotRowsFingerprint(rows);
-    assetScreenshotDraft.selections = {};
+    assetScreenshotDraft.selections = assetScreenshotSelectionDefaults(assetScreenshotDraft.diff);
     assetScreenshotDraft.diffStale = false;
+}
+
+function assetScreenshotSelectionDefaults(diff) {
+    const selections = {};
+
+    for (const change of [...(diff?.updates ?? []), ...(diff?.additions ?? [])]) {
+        selections[change.key] = true;
+    }
+
+    for (const change of diff?.removals ?? []) {
+        selections[change.key] = false;
+    }
+
+    return selections;
 }
 
 // 截圖辨識。D+ 是 AI-first：正式端點可證明 Worker 心跳新鮮、至少一個已登入且有額度
@@ -10327,6 +10429,8 @@ function forgetAssetAiJob(jobId) {
 }
 
 async function assetAiOcrRequest(action, options = {}, retryAuthentication = true) {
+    assetOcrThrowIfCancelled(options.signal);
+
     if (supabase === null || loginTier !== 'admin') {
         throw new Error('AI OCR 需要最高權限登入。');
     }
@@ -10335,6 +10439,7 @@ async function assetAiOcrRequest(action, options = {}, retryAuthentication = tru
         throw new Error('登入已失效。');
     }
 
+    assetOcrThrowIfCancelled(options.signal);
     const headers = new Headers(options.headers ?? {});
     headers.set('apikey', supabase.anonKey);
     headers.set('Authorization', `Bearer ${authAccessToken}`);
@@ -10342,8 +10447,12 @@ async function assetAiOcrRequest(action, options = {}, retryAuthentication = tru
         `${supabase.url}/functions/v1/${ASSET_AI_OCR_FUNCTION}?action=${encodeURIComponent(action)}${options.query ?? ''}`,
         { ...options, query: undefined, headers, cache: 'no-store' });
 
-    if (response.status === 401 && retryAuthentication && await refreshAuthAccessToken()) {
-        return assetAiOcrRequest(action, options, false);
+    if (response.status === 401 && retryAuthentication) {
+        assetOcrThrowIfCancelled(options.signal);
+
+        if (await refreshAuthAccessToken()) {
+            return assetAiOcrRequest(action, options, false);
+        }
     }
 
     return response;
@@ -10366,13 +10475,13 @@ async function assetAiOcrJson(response, operation) {
     return body;
 }
 
-async function assetAiOcrReadiness(maxAgeSeconds = null) {
+async function assetAiOcrReadiness(maxAgeSeconds = null, signal = null) {
     const query = maxAgeSeconds === null ? '' : `&maxAgeSeconds=${encodeURIComponent(maxAgeSeconds)}`;
-    const response = await assetAiOcrRequest('readiness', { method: 'GET', query });
+    const response = await assetAiOcrRequest('readiness', { method: 'GET', query, signal });
     return assetAiOcrJson(response, '檢查 AI Worker');
 }
 
-async function assetAiOcrSubmit(file, accountId, market, idempotencyKey) {
+async function assetAiOcrSubmit(file, accountId, market, idempotencyKey, signal = null) {
     const form = new FormData();
     form.append('file', file, file.name);
     form.append('accountId', accountId);
@@ -10380,29 +10489,33 @@ async function assetAiOcrSubmit(file, accountId, market, idempotencyKey) {
     const response = await assetAiOcrRequest('submit', {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
-        body: form
+        body: form,
+        signal
     });
     return assetAiOcrJson(response, '建立 AI OCR 工作');
 }
 
-async function assetAiOcrStatus(jobId) {
+async function assetAiOcrStatus(jobId, signal = null) {
     const response = await assetAiOcrRequest('status', {
         method: 'GET',
-        query: `&jobId=${encodeURIComponent(jobId)}`
+        query: `&jobId=${encodeURIComponent(jobId)}`,
+        signal
     });
     return assetAiOcrJson(response, '讀取 AI OCR 結果');
 }
 
-async function assetAiOcrWake(jobId) {
+async function assetAiOcrWake(jobId, signal = null) {
     const response = await assetAiOcrRequest('wake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'wake', jobId })
+        body: JSON.stringify({ action: 'wake', jobId }),
+        signal
     });
     return assetAiOcrJson(response, '喚醒 AI OCR Worker');
 }
 
-async function assetAiOcrWakeIfStalled(jobId, status, screenshot) {
+async function assetAiOcrWakeIfStalled(jobId, status, screenshot, signal = null) {
+    assetOcrThrowIfCancelled(signal);
     const progressAt = Date.parse(status.progressUpdatedAt ?? '');
     const lastWakeAt = Number(screenshot.lastWakeAt ?? 0);
     if (!['queued', 'leased'].includes(status.status)
@@ -10413,7 +10526,11 @@ async function assetAiOcrWakeIfStalled(jobId, status, screenshot) {
     }
 
     screenshot.lastWakeAt = Date.now();
-    await assetAiOcrWake(jobId).catch(() => {});
+    await assetAiOcrWake(jobId, signal).catch(error => {
+        if (signal?.aborted) {
+            throw error;
+        }
+    });
 }
 
 async function assetAiOcrAcknowledge(jobId, action = 'acknowledge') {
@@ -10434,9 +10551,10 @@ async function assetAiOcrMarkFallback(jobId, fallbackReason) {
     return assetAiOcrJson(response, '切換 AI OCR 備援');
 }
 
-async function assetAiOcrPrepareFallback(jobId) {
+async function assetAiOcrPrepareFallback(jobId, signal = null) {
     try {
-        const status = await assetAiOcrStatus(jobId);
+        assetOcrThrowIfCancelled(signal);
+        const status = await assetAiOcrStatus(jobId, signal);
         if (status.status === 'succeeded') {
             await assetAiOcrAcknowledge(jobId);
             forgetAssetAiJob(jobId);
@@ -10452,7 +10570,11 @@ async function assetAiOcrPrepareFallback(jobId) {
         }
         forgetAssetAiJob(jobId);
         return { mode: 'tesseract', jobId: null };
-    } catch {
+    } catch (error) {
+        if (signal?.aborted) {
+            throw error;
+        }
+
         // 若取消與狀態查詢同時遇到網路中斷，保留 job id，讓 finally／下次重整繼續清理。
         return { mode: 'tesseract', jobId };
     }
@@ -10475,6 +10597,24 @@ async function assetAiOcrFinalizeFallback(jobId) {
     }
 }
 
+async function cancelAssetAiJobs(jobIds) {
+    const failedJobIds = [];
+    const uniqueJobIds = [...new Set(jobIds.filter(jobId => typeof jobId === 'string' && jobId !== ''))];
+
+    await Promise.all(uniqueJobIds.map(async jobId => {
+        const cancelled = await assetAiOcrFinalizeFallback(jobId);
+        // 這是使用者明確按下取消後的工作，不再由重整流程恢復；伺服器端若暫時連不上，
+        // 仍會依既有到期清理機制刪除工作與私有圖片。
+        forgetAssetAiJob(jobId);
+
+        if (!cancelled) {
+            failedJobIds.push(jobId);
+        }
+    }));
+
+    return failedJobIds;
+}
+
 async function assetAiOcrRecordTruth(jobId, truthRows, confirmedChanges, complete) {
     const response = await assetAiOcrRequest('evaluation-truth', {
         method: 'POST',
@@ -10484,13 +10624,14 @@ async function assetAiOcrRecordTruth(jobId, truthRows, confirmedChanges, complet
     return assetAiOcrJson(response, '保存 OCR 評估答案');
 }
 
-async function assetAiOcrDownload(jobId) {
+async function assetAiOcrDownload(jobId, signal = null) {
     const response = await assetAiOcrRequest('download', {
         method: 'GET',
-        query: `&jobId=${encodeURIComponent(jobId)}`
+        query: `&jobId=${encodeURIComponent(jobId)}`,
+        signal
     });
     const descriptor = await assetAiOcrJson(response, '取回 AI OCR 備援圖片');
-    const image = await fetch(descriptor.downloadUrl, { cache: 'no-store' });
+    const image = await fetch(descriptor.downloadUrl, { cache: 'no-store', signal });
     if (!image.ok) throw new Error(`下載 AI OCR 備援圖片失敗（HTTP ${image.status}）`);
     const blob = await image.blob();
     return new File([blob], descriptor.fileName || `ocr-${jobId}.png`, {
@@ -10603,15 +10744,16 @@ function assetAiDraftRows(result, market = '', sourceJobId = null) {
     });
 }
 
-async function assetAiOcrRecognize(file, accountId, market, screenshot, index, total) {
+async function assetAiOcrRecognize(file, accountId, market, screenshot, index, total, signal = null) {
     let jobId = null;
     const idempotencyKey = crypto.randomUUID();
 
     try {
+        assetOcrThrowIfCancelled(signal);
         screenshot.status = '上傳至私有 AI 佇列…';
         updateAssetAiProgress(index - 1, 'queued', { stage: '上傳至私有 AI 佇列', percent: 5 });
         setAssetOcrStatus(`第 ${index} / ${total} 張：上傳至私有 AI 佇列…`);
-        const submitted = await assetAiOcrSubmit(file, accountId, market, idempotencyKey);
+        const submitted = await assetAiOcrSubmit(file, accountId, market, idempotencyKey, signal);
         jobId = submitted.jobId;
         screenshot.jobId = jobId;
         rememberAssetAiJob({
@@ -10627,12 +10769,14 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
         const queuedAt = Date.now();
 
         while (Date.now() < deadline) {
+            assetOcrThrowIfCancelled(signal);
+
             if (assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
                 await assetAiOcrAcknowledge(jobId, 'cancel').catch(() => {});
                 return null;
             }
 
-            const status = await assetAiOcrStatus(jobId);
+            const status = await assetAiOcrStatus(jobId, signal);
             if (status.status === 'succeeded') {
                 // Max 結果已拿到；若這張圖被抽中評估，acknowledge 只清掉 Max 草稿，
                 // private object 會保留到 Low 完成或 60 分鐘到期，不影響目前畫面。
@@ -10664,7 +10808,7 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
             // 「最近有無回報」的推測，工作本身在 queued／leased 就是事實：真的沒有任何
             // Worker 在動，lease 逾時回收與 relay 機制會處理，不需要前端搶著幫它判死刑。
             // 這裡只用queuedAt起算的 ASSET_AI_OCR_TIMEOUT_MS 這個事實性的絕對上限把關。
-            await assetAiOcrWakeIfStalled(jobId, status, screenshot);
+            await assetAiOcrWakeIfStalled(jobId, status, screenshot, signal);
 
             const progress = assetAiProgressForStatus(status.status);
             screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';
@@ -10675,13 +10819,18 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                 statusText: screenshot.status
             });
             setAssetOcrStatus(`第 ${index} / ${total} 張：${screenshot.status}`);
-            await new Promise(resolve => window.setTimeout(resolve, assetAiOcrPollDelayMs(queuedAt, status.status)));
+            await assetOcrDelay(assetAiOcrPollDelayMs(queuedAt, status.status), signal);
         }
 
+        assetOcrThrowIfCancelled(signal);
         return { mode: 'tesseract', jobId, reason: 'ai_execution_failed' };
     } catch (error) {
+        if (signal?.aborted) {
+            throw error;
+        }
+
         if (jobId !== null) {
-            const fallback = await assetAiOcrPrepareFallback(jobId);
+            const fallback = await assetAiOcrPrepareFallback(jobId, signal);
             if (fallback.mode === 'ai') {
                 return fallback;
             }
@@ -10709,6 +10858,9 @@ async function resumeAssetAiJobs(accountId) {
     if (account === null || pending.length === 0) return;
 
     assetAiResumePromise = (async () => {
+        const scanController = new AbortController();
+        const signal = scanController.signal;
+        assetScreenshotScanController = scanController;
         const view = assetAccountView(account);
         const placeholder = 'data:image/svg+xml;charset=utf-8,'
             + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">'
@@ -10750,12 +10902,13 @@ async function resumeAssetAiJobs(accountId) {
             try {
                 const deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
                 while (Date.now() < deadline) {
-                    const status = await assetAiOcrStatus(job.jobId);
+                    assetOcrThrowIfCancelled(signal);
+                    const status = await assetAiOcrStatus(job.jobId, signal);
                     if (['succeeded', 'fallback_required', 'failed', 'expired', 'cancelled'].includes(status.status)) {
                         finalStatus = status;
                         break;
                     }
-                    await assetAiOcrWakeIfStalled(job.jobId, status, screenshot);
+                    await assetAiOcrWakeIfStalled(job.jobId, status, screenshot, signal);
                     const progress = assetAiProgressForStatus(status.status);
                     screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';
                     updateAssetAiProgress(index, status.status, {
@@ -10765,7 +10918,7 @@ async function resumeAssetAiJobs(accountId) {
                         statusText: screenshot.status
                     });
                     setAssetOcrStatus(`恢復第 ${index + 1} / ${pending.length} 張：${screenshot.status}`);
-                    await new Promise(resolve => window.setTimeout(resolve, assetAiOcrPollDelayMs(queuedAt, status.status)));
+                    await assetOcrDelay(assetAiOcrPollDelayMs(queuedAt, status.status), signal);
                 }
 
                 if (finalStatus === null) {
@@ -10788,12 +10941,12 @@ async function resumeAssetAiJobs(accountId) {
                 }
 
                 if (finalStatus?.status === 'fallback_required') {
-                    const file = await assetAiOcrDownload(job.jobId);
+                    const file = await assetAiOcrDownload(job.jobId, signal);
                     screenshot.previewUrl = URL.createObjectURL(file);
                     screenshot.status = '取回圖片，Tesseract 備援中…';
                     updateAssetAiProgress(index, 'fallback_required', { stage: 'Tesseract 備援中', percent: 90, statusText: screenshot.status });
                     await getAssetOcrWorker();
-                    const result = await recognizeAssetScreenshot(file, index + 1, pending.length);
+                    const result = await recognizeAssetScreenshot(file, index + 1, pending.length, signal);
                     rows.push(...assetEnrichOcrRows(result.rows, view.market));
                     assetScreenshotDraft.usedTesseract = true;
                     screenshot.status = `Tesseract 備援完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
@@ -10811,13 +10964,17 @@ async function resumeAssetAiJobs(accountId) {
                     forgetAssetAiJob(job.jobId);
                 }
             } catch (error) {
+                if (signal.aborted) {
+                    return;
+                }
+
                 // 網路暫時中斷時保留 pending descriptor，下一次重新整理可再接續；不刪除原圖。
                 screenshot.status = '等待下次重新整理恢復';
                 fallbackNotices.push(`第 ${index + 1} 張：${String(error?.message ?? '恢復失敗')}`);
             }
         }
 
-        if (assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) return;
+        if (signal.aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) return;
         assetScreenshotDraft.scanning = false;
         assetScreenshotDraft.rows = mergeAssetOcrScreenshotRows(rows);
         if (assetScreenshotDraft.rows.length === 0) {
@@ -10831,6 +10988,9 @@ async function resumeAssetAiJobs(accountId) {
         assetOcrStatus = '';
         renderAssetsDashboard();
     })().finally(() => {
+        if (assetScreenshotScanController === scanController) {
+            assetScreenshotScanController = null;
+        }
         assetAiResumePromise = null;
     });
 
@@ -13255,16 +13415,19 @@ function assetOcrDeadline(promise, remainingMs) {
     });
 }
 
-async function recognizeAssetScreenshot(file, index, total) {
+async function recognizeAssetScreenshot(file, index, total, signal = null) {
     const startedAt = performance.now();
+    assetOcrThrowIfCancelled(signal);
     const bitmap = await createImageBitmap(file);
     let canvas;
     let identityCanvas = null;
     let identityCanvases = [];
 
     try {
+        assetOcrThrowIfCancelled(signal);
         canvas = assetOcrCanvas(bitmap);
         const worker = await getAssetOcrWorker();
+        assetOcrThrowIfCancelled(signal);
         const elapsedBeforeRecognition = performance.now() - startedAt;
         const remainingMs = ASSET_OCR_TIMEOUT_MS - elapsedBeforeRecognition;
 
@@ -13552,11 +13715,16 @@ async function recognizeAssetScreenshot(file, index, total) {
             parsed = { rows: [], matchedHeader: true };
         }
 
+        assetOcrThrowIfCancelled(signal);
         return {
             ...parsed,
             elapsedMs: Math.round(performance.now() - startedAt)
         };
     } catch (error) {
+        if (signal?.aborted) {
+            throw error;
+        }
+
         // worker 一旦逾時，不能再讓它偷偷佔著 CPU 跑到幾分鐘後；立刻丟掉，下次才不會
         // 接到上一張圖的殘留工作。
         if (String(error?.message ?? error).includes('10 秒')) {
@@ -13647,6 +13815,9 @@ function assetEnrichOcrRows(rows, market) {
 
 async function scanAssetScreenshots(files, accountId, holdings, market) {
     discardAssetScreenshotDraft();
+    const scanController = new AbortController();
+    const signal = scanController.signal;
+    assetScreenshotScanController = scanController;
     assetScreenshotDraft = {
         accountId,
         capturedAt: new Date().toISOString(),
@@ -13671,6 +13842,8 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         usedAi: false,
         usedTesseract: false
     };
+
+    try {
     assetActionNotice = '';
     setAssetOcrStatus('準備辨識…');
     renderAssetsDashboard();
@@ -13690,11 +13863,15 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
     let preflightFallbackReason = null;
     try {
         setAssetOcrStatus('檢查 D+ AI Worker…');
-        aiReadiness = await assetAiOcrReadiness();
+        aiReadiness = await assetAiOcrReadiness(null, signal);
         if (!aiReadiness?.ready) {
             preflightFallbackReason = aiReadiness?.fallbackReason ?? 'ai_execution_failed';
         }
-    } catch {
+    } catch (error) {
+        if (signal.aborted) {
+            return;
+        }
+
         preflightFallbackReason = 'ai_execution_failed';
     }
 
@@ -13716,7 +13893,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
     let tesseractQueue = Promise.resolve();
 
     async function processScreenshot(zeroBasedIndex, file) {
-        if (aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
+        if (aborted || signal.aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
             aborted = true;
             return;
         }
@@ -13730,7 +13907,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         try {
             const startedAt = performance.now();
             const aiResult = preflightFallbackReason === null
-                ? await assetAiOcrRecognize(file, accountId, market, screenshot, index, files.length)
+                ? await assetAiOcrRecognize(file, accountId, market, screenshot, index, files.length, signal)
                 : { mode: 'tesseract', jobId: null, reason: preflightFallbackReason };
 
             if (aiResult === null) {
@@ -13762,7 +13939,8 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             const runTesseract = async () => {
                 // 預先等本機備援引擎就緒，避免把 WASM／字庫暖機時間算進每張 10 秒辨識預算。
                 await getAssetOcrWorker();
-                const result = await recognizeAssetScreenshot(file, index, files.length);
+                assetOcrThrowIfCancelled(signal);
+                const result = await recognizeAssetScreenshot(file, index, files.length, signal);
                 screenshot.status = `Tesseract 備援完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
                 updateAssetAiProgress(zeroBasedIndex, 'succeeded', { stage: '完成（Tesseract 備援）', percent: 100, statusText: screenshot.status });
                 screenshot.elapsedMs = result.elapsedMs;
@@ -13780,6 +13958,11 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
                 }
             }
         } catch (error) {
+            if (signal.aborted || error?.code === 'ocr_cancelled') {
+                aborted = true;
+                return;
+            }
+
             screenshot.status = '失敗';
             failures.push(`第 ${index} 張：${String(error?.message ?? error)}`);
         } finally {
@@ -13787,14 +13970,14 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
                 await assetAiOcrFinalizeFallback(pendingAiJobId);
             }
             completedCount += 1;
-            if (!aborted) {
+            if (!aborted && !signal.aborted) {
                 setAssetOcrStatus(`辨識中：${completedCount} / ${files.length} 張已完成…`);
             }
         }
     }
 
     async function screenshotWorker() {
-        while (!aborted) {
+        while (!aborted && !signal.aborted) {
             const zeroBasedIndex = cursor++;
             if (zeroBasedIndex >= files.length) {
                 return;
@@ -13807,7 +13990,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
     await Promise.all(
         Array.from({ length: Math.min(ASSET_AI_OCR_CONCURRENCY, files.length) }, screenshotWorker));
 
-    if (aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
+    if (aborted || signal.aborted || assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
         setAssetOcrStatus('');
         return;
     }
@@ -13862,6 +14045,11 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         .filter(text => text !== '')
         .join(' ');
     renderAssetsDashboard();
+    } finally {
+        if (assetScreenshotScanController === scanController) {
+            assetScreenshotScanController = null;
+        }
+    }
 }
 
 function assetAiEvaluationTruthGroups(rows, changes, screenshots) {
@@ -13929,7 +14117,7 @@ function makeAssetScreenshotFlow(view) {
             ? '目前帳戶是美股，辨識金額以美元保存；最新收盤價與 USD/TWD 匯率由資料庫帶入。'
             : '目前帳戶是台股，辨識金額以台幣保存。')
         + `一次可選 1–${ASSET_OCR_MAX_FILES} 張；Tesseract 備援每張最多 10 秒。`
-        + '辨識完成後會先列出和目前持倉的差異；勾選代表已核對且要套用。相同代號直接覆蓋，移除項目預設不勾選。';
+        + '辨識完成後會先列出和目前持倉的差異；覆蓋與新增會自動勾選，請人工核對後套用，移除項目預設不勾選。';
     const inputLabel = document.createElement('label');
     inputLabel.className = 'asset-file-input';
     const inputText = document.createElement('span');
@@ -13964,7 +14152,18 @@ function makeAssetScreenshotFlow(view) {
         void scanAssetScreenshots(files, view.id, view.holdings, view.market);
     });
     inputLabel.append(inputText, input);
-    section.append(heading, description, inputLabel);
+    const filePickerRow = document.createElement('div');
+    filePickerRow.className = 'asset-file-picker-row';
+    filePickerRow.append(inputLabel);
+
+    if (assetScreenshotDraft?.accountId === view.id && assetScreenshotDraft.scanning === true) {
+        const cancelScan = assetButton('強制取消辨識', 'asset-danger-button', cancelAssetScreenshotScan);
+        cancelScan.setAttribute('aria-label', '強制取消這次截圖辨識');
+        cancelScan.title = '立即停止目前批次，不套用任何持倉變更。';
+        filePickerRow.append(cancelScan);
+    }
+
+    section.append(heading, description, filePickerRow);
 
     if (assetOcrWorker === null && assetScreenshotDraft?.accountId !== view.id) {
         const warmup = document.createElement('p');
@@ -14061,8 +14260,8 @@ function makeAssetScreenshotFlow(view) {
     const diffHeading = document.createElement('h4');
     diffHeading.textContent = '套用前差異';
     const diffDescription = document.createElement('p');
-    diffDescription.textContent = '每一項都需自行勾選才會套用；沒有勾選的持倉維持原樣。'
-        + '這取代了舊版「一次刪除全部再重建」的流程。';
+    diffDescription.textContent = '覆蓋與新增已自動勾選，請先人工核對；沒有勾選的持倉維持原樣。'
+        + '移除項目仍需手動勾選，避免 OCR 漏列誤刪。這取代了舊版「一次刪除全部再重建」的流程。';
     const selectionSummary = document.createElement('p');
     selectionSummary.className = 'asset-holding-diff-selection';
     const apply = assetButton('套用到持倉（0 項）', 'asset-primary-button');
@@ -14155,7 +14354,7 @@ function makeAssetScreenshotFlow(view) {
             }
 
             refreshAssetScreenshotDiff(view.holdings, rows);
-            assetScreenshotDraft.notice = '已依目前人工修正重新列出差異；請重新勾選要套用的項目。';
+            assetScreenshotDraft.notice = '已依目前人工修正重新列出差異；覆蓋與新增已自動勾選，移除仍需手動勾選。';
             renderAssetsDashboard();
         }),
         assetButton('取消', 'asset-secondary-button', () => {

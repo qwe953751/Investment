@@ -61,6 +61,13 @@ function screenshotSubmitDiff() {
     };
 }
 
+function screenshotSelectionDefaults() {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext(functionSource('assetScreenshotSelectionDefaults'), context);
+    return context.assetScreenshotSelectionDefaults;
+}
+
 function cashFlowNet() {
     const context = {};
     vm.createContext(context);
@@ -254,6 +261,30 @@ test('人工修改後若未重新確認，不可套用舊差異；確認後寫�
     const diff = submit(holdings, editedRows, fingerprint(editedRows), false);
     assert.equal(diff.updates[0].draft.quantity, '500');
     assert.equal(diff.updates[0].draft.cost, '42,000');
+});
+
+test('OCR 差異預設自動選取覆蓋與新增，移除保持未選', () => {
+    const select = screenshotSelectionDefaults();
+    const selections = select({
+        updates: [{ key: 'update:6530' }],
+        additions: [{ key: 'addition:2330' }],
+        removals: [{ key: 'removal:3189' }]
+    });
+
+    assert.deepEqual(JSON.parse(JSON.stringify(selections)), {
+        'update:6530': true,
+        'addition:2330': true,
+        'removal:3189': false
+    });
+});
+
+test('辨識中可從載入圖片旁強制取消並停止背景 OCR 工作', () => {
+    assert.match(siteScript, /className = 'asset-file-picker-row'/);
+    assert.match(siteScript, /assetButton\('強制取消辨識', 'asset-danger-button', cancelAssetScreenshotScan\)/);
+    assert.match(siteScript, /function cancelAssetScreenshotScan\(\)/);
+    assert.match(siteScript, /assetScreenshotScanController\?\.abort\(\)/);
+    assert.match(siteScript, /void resetAssetOcrWorker\(\)/);
+    assert.match(siteScript, /async function cancelAssetAiJobs\(jobIds\)/);
 });
 
 test('空白或重複代號不會被當成新增或覆蓋', () => {

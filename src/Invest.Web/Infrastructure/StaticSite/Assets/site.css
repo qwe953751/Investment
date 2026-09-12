@@ -2471,6 +2471,23 @@ body {
     font: inherit;
 }
 
+.asset-file-picker-row {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.asset-file-picker-row .asset-file-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.asset-file-picker-row > .asset-button {
+    flex: 0 0 auto;
+    align-self: stretch;
+    white-space: nowrap;
+}
+
 .asset-screenshot-preview {
     width: 100%;
     height: 180px;
