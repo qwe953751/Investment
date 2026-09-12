@@ -285,7 +285,7 @@ Runner 共用 `OcrAgentExecutableResolver`；公司 Windows 的專用 Worker 已
 已安裝、已登入且有額度，網站的兩分鐘 readiness 條件已具備。原先手機走 Tesseract 的直接原因是 Windows
 沒有可用的背景 Worker 心跳，不是前端把 AI 功能關掉。現在 `ocr-jobs` 會優先選取仍在線的 Windows Worker，
 只有 Windows 不在線才使用其他 Worker 備援；修正後仍應重新選一張圖片確認工作 `succeeded`，詳見
-[規劃 AI OCR §14.5](Doc/技術文件/規劃AI%20OCR.md#145-2026-09-07-正式-ai-成功後的名稱反查延遲進度與常駐第一階段已實作仍待外部驗收)。
+[AI OCR §14.5](Doc/技術文件/AI%20OCR.md#145-2026-09-07-正式-ai-成功後的名稱反查延遲進度與常駐第一階段已實作仍待外部驗收)。
 
 2026-09-07 公司 Windows 實機已重新發布自包含 EXE、重註冊登入時排程並驗證：從 repo 根目錄執行
 `run-ocr-worker-windows.ps1 -Once` exit code 0；排程改由 `powershell.exe -WindowStyle Hidden`
@@ -339,7 +339,7 @@ PowerShell host，不依賴使用者開啟的 CMD／PowerShell 視窗，也不�
 從目前使用者的 DPAPI 檔案解密憑證，只在記憶體中建立 Supabase 登入請求。Mac 使用 Keychain、Windows
 使用 DPAPI；兩邊都不把密碼、service role、Management token 或 AI API Key 寫進 repository。完整狀態機、
 權限與 Windows 驗收清單見
-[規劃 AI OCR §14](Doc/技術文件/規劃AI%20OCR.md#十四換模型接手前的預計修正與驗收清單)。
+[AI OCR §14](Doc/技術文件/AI%20OCR.md#十四換模型接手前的預計修正與驗收清單)。
 
 筆記 #21 的 ETF 行情、資產帳戶與盤中交易日防呆已由功能程式碼 commit `85e0504b`
 推送並以 `publish-only=true` 發布。`db/032`～`db/035` 已於 2026-09-02 依獨立 migration

@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 **⛔ 兩台 Worker 目前都停用中**（EXE 版本落後、燒掉整期 Edge 額度，筆記 #61）；重新 build 後才能恢復。另仍待 Claude Pro 登入、Golden Set、手機新圖、Windows 每張 ≤30 秒與長期斷線復原驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 2026-09-12 公司 Windows 已重新 publish 並驗證恢復事件驅動版本（筆記 #61 收尾）；**家裡 Mac 仍待使用者重載 LaunchAgent**。另仍待 Claude Pro 登入、Golden Set、手機新圖、Windows 每張 ≤30 秒與長期斷線復原驗收 |
 | 16 | [市場切換（台股／美股／加密貨幣）：UI 與真實資料已上正式網站](#todo-16) | 🔵 市場切換已上線；美股／加密貨幣熱絡指標修正規劃完成，待實作與回放驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1204,26 +1204,30 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
 預設值、CLI 分類器誤判、Claude Adapter 從未送出圖片等既有缺陷，並在公司 Windows 裝妥 Claude CLI
 `2.1.263`，但 **Claude Pro 訂閱登入需使用者自行以互動方式完成，本輪尚未登入，雙 Agent 仍未完整驗收**。**
 
-### ⛔ 2026-09-11 現況：兩台 Worker 都不在跑（筆記 #61）
+### ⛔→✅ 2026-09-11 事故／2026-09-12 復原：公司 Windows 已恢復，Mac 仍待處理（筆記 #61）
 
-公司 Windows 的 `Invest D+ OCR Worker` 排程已 **`Disabled`**、程序已停。
-原因不是 OCR 壞掉，是**它跑的 EXE 版本落後**：EXE 建於 09-09 00:57，比事件驅動修正
-（`9654ab3f`，09-09 18:10）早 17 小時，一直在跑舊的 2 秒輪詢迴圈，
-兩天半燒掉 443,155 次 Edge Function invocation（整期額度的 88%）與約 2.5 GB egress，
-詳見 [TODO 14](#todo-14) 的「2026-09-11 用量歸因」。
+公司 Windows 的 `Invest D+ OCR Worker` 排程曾在 2026-09-11 11:49 因 EXE 版本落後而被停用
+（程序已停）。原因不是 OCR 壞掉，是**它跑的 EXE 版本落後**：EXE 建於 09-09 00:57，比事件驅動
+修正（`9654ab3f`，09-09 18:10）早 17 小時，一直在跑舊的 2 秒輪詢迴圈，兩天半燒掉 443,155 次
+Edge Function invocation（整期額度的 88%）與約 2.5 GB egress，詳見 [TODO 14](#todo-14) 的
+「2026-09-11 用量歸因」。完整根因、Task Scheduler 事件記錄與本次復原步驟已寫入
+[AI OCR §0.1](Doc/技術文件/AI%20OCR.md#01-2026-09-11090-12-事件驅動版本落後事故與復原)。
 
-**恢復步驟（兩台都要做，順序不能顛倒——EXE 執行中會被鎖住無法覆寫）：**
+**2026-09-12 已完成公司 Windows 復原**：`Disable/Stop-ScheduledTask` → 重新
+`publish-ocr-worker-windows.ps1`（EXE `LastWriteTime` 確認為當天 10:22）→ `-Once` 診斷
+exit code 0，啟動訊息確認為「`Realtime 喚醒；斷線每 5 秒重連；並行上限 3；Max effort max；
+評估抽樣 10%`」→ `Enable/Start-ScheduledTask`，排程恢復 `Running`，`Invest.Web.exe` 程序存活。
+這只證明 Worker 能啟動、心跳正常、版本正確，**不構成正式手機新截圖 `succeeded` 或 Golden
+Set 驗收**。
 
-```powershell
-# 公司 Windows
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-ocr-worker-windows.ps1
-Enable-ScheduledTask -TaskName 'Invest D+ OCR Worker'
-Start-ScheduledTask  -TaskName 'Invest D+ OCR Worker'
+**家裡 Mac 仍未處理**，需要使用者本人到場執行：
+
+```bash
+git pull
+scripts/install-ocr-worker-launchagent-macos.sh
 ```
 
-家裡 Mac 走 `scripts/install-ocr-worker-launchagent-macos.sh`，同樣要先重新 build 再重載 LaunchAgent。
-
-**驗收條件：啟動訊息必須是「Realtime 喚醒；斷線每 5 秒重連」，不能是「輪詢 N 秒」。**
+**驗收條件：啟動訊息／log 必須是「Realtime 喚醒；斷線每 5 秒重連」，不能是「輪詢 N 秒」。**
 改對之後空轉從 140K 次／天降到 1,440 次／天（60 秒一次 heartbeat），約 −99%。
 
 ### 已討論
@@ -1289,7 +1293,7 @@ Start-ScheduledTask  -TaskName 'Invest D+ OCR Worker'
   60 秒只更新 `ocr_workers` 在線狀態，25 秒只維持 WebSocket，沒有截圖時 claim／evaluation／
   Codex／Claude 全為 0。健康空轉 30 天估算為 51,840 次 OCR Edge invocation；35 筆 Max 與 3 筆 Low
   的 token 實測、每張與每月公式及可靠性取捨詳見
-  [規劃 AI OCR：目前生效的 AI OCR 最終方案與用量](Doc/技術文件/規劃AI%20OCR.md#目前生效的-ai-ocr-最終方案與用量單一維護區塊)。
+  [AI OCR：目前生效的 AI OCR 最終方案與用量](Doc/技術文件/AI%20OCR.md#目前生效的-ai-ocr-最終方案與用量單一維護區塊)。
 
 ### 本輪已完成與仍待外部驗收
 
@@ -1308,7 +1312,7 @@ Start-ScheduledTask  -TaskName 'Invest D+ OCR Worker'
    Windows 已用官方原生安裝器裝上 Claude Code CLI `2.1.263`（真正 exe，非 npm shim），並釘選
    `OCR_CLAUDE_PATH`／`OCR_CODEX_PATH`／`OCR_AGENT_PRIMARY=codex` 為使用者環境變數；重新發布 Worker
    並以 `-Once` 驗證 exit code 0，排程重啟後恢復 `Running`。完整脈絡見
-   [規劃 AI OCR §14.6](Doc/技術文件/規劃AI%20OCR.md#146-2026-09-07-windows-agent-優先序修正與-claude-cli-安裝第一階段已實作仍待登入與外部驗收)。
+   [AI OCR §14.6](Doc/技術文件/AI%20OCR.md#146-2026-09-07-windows-agent-優先序修正與-claude-cli-安裝第一階段已實作仍待登入與外部驗收)。
 5. 2026-09-07（筆記 #52）：根因是前端逐張序列 `for...of` 與 Worker 單一 `do` 迴圈雙層序列化，DB
    `FOR UPDATE SKIP LOCKED` 早已支援並行、不是瓶頸。已實作：Worker 每輪依 `OCR_WORKER_MAX_CONCURRENCY`
    （預設 3）並行 claim／處理多件工作；`OcrWorkerApiClient` 用 `SemaphoreSlim` 序列化認證換發，

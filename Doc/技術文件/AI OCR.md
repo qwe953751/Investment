@@ -1,8 +1,17 @@
-# 規劃 AI OCR
+# AI OCR
 
-> 日期：2026-09-10
+> 日期：2026-09-12
 >
-> 狀態：**2026-09-10 已完成並套用 `db/047_ocr_realtime_claim_wake.sql`，將兩張表的 Realtime trigger 分離，正式 `ocr-jobs` 已部署 v13，並加入管理者限定、資料庫原子節流的活躍工作 `wake`；正式 claim／trigger rollback smoke test 已通過。`main` commit `4a2f6803` 已由 publish-only run `34378748000` 發布，公開版本化 `site.js` 已確認包含 wake 接線，公開 manifest 目前為 `1788972419`。公司 Windows 仍需重啟最新 Worker；正式手機新圖、Golden Set、圖片／模型效能調校、六張圖片整批與 Windows 長期斷線復原仍待外部驗收，不把資料庫 smoke test 當成 OCR 成功率證據。其他已發布的 Max／Agent fallback／Tesseract、權限分享、Low 背景抽樣與 OCR 校對規則維持不變**
+> 狀態：**2026-09-11 發生「常駐 EXE 版本落後」事故（公司 Windows 跑的自包含 EXE 建於 09-09
+> 00:57，早於同日 18:10 的事件驅動修正 `9654ab3f`，兩天半燒掉當期 88% 的 Supabase Edge
+> Function 額度），兩台 Worker 一度全部停用；2026-09-12 已重新發布並驗證公司 Windows 為事件
+> 驅動版本（`Realtime 喚醒；斷線每 5 秒重連`），排程恢復 `Running`，完整根因與復原步驟見
+> 0.1 節。家裡 Mac 的 LaunchAgent 仍待使用者本人到場重新載入。2026-09-10 已完成並套用
+> `db/047_ocr_realtime_claim_wake.sql`，將兩張表的 Realtime trigger 分離，正式 `ocr-jobs`
+> 已部署 v13，並加入管理者限定、資料庫原子節流的活躍工作 `wake`；正式 claim／trigger
+> rollback smoke test 已通過。正式手機新圖、Golden Set、圖片／模型效能調校、六張圖片整批與
+> Windows 長期斷線復原仍待外部驗收，不把資料庫 smoke test 或本次排程重啟當成 OCR 成功率證據。
+> 其他已發布的 Max／Agent fallback／Tesseract、權限分享、Low 背景抽樣與 OCR 校對規則維持不變**
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想
 
@@ -12,6 +21,95 @@
 > 操作或 Agent 用量，只更新本節的方案與表格；下方舊章節只保留推導、驗收與歷史決策，
 > 不再另立一份「下一版方案」。以下數字以 30 天、1 台健康在線 Worker、Free 方案額度作為
 > 可重現的容量估算；Supabase dashboard 與 Codex usage 仍是實際帳單／訂閱限制的最終依據。
+
+### 現況總覽：架構、生命週期與用量（一眼看懂）
+
+> 這節給只想花 30 秒搞懂現況的人看；每個小節都指向下面章節或程式檔案的完整依據，不是另一份
+> 獨立規格。跟下面章節或程式衝突時，以程式與 0.1 節的即時驗證結果為準。
+
+#### 整體管線
+
+```text
+瀏覽器（僅「最高權限」帳號看得到 AI OCR 入口）
+   │ ① action=readiness → 心跳 ≤120 秒 且 至少一個 CLI 已登入？
+   │      否 → 就地用瀏覽器 Tesseract，圖片不上傳，流程結束
+   │ ② action=submit（伺服器端重新驗證一次①）
+   ▼
+Supabase（大腦，只管排隊／記錄／通知，自己不執行任何 AI）
+   │ 圖片 → private Storage（ocr-private，≤10MB）
+   │ 工作 → ocr_jobs（狀態 queued）
+   │ DB trigger → private Realtime Broadcast（只帶 job_id）
+   ▼
+所有目前在線的 Worker 主機（Windows／Mac）同時收到 Broadcast
+   │ 各自呼叫 action=claim；ocr_claim_job() 用 FOR UPDATE SKIP LOCKED
+   │ 讓「哪台先搶到就哪台做」，不會兩台同時處理同一張圖，也不是固定順序接力
+   ▼
+搶到工作的那一台：下載圖片 → 探測 codex／claude 登入狀態（60 秒快取）
+   ▼
+該機器的 Agent Router：先試 Primary（預設 Codex）
+   │ 成功 → 直接用這次結果，不會再多跑另一個 Agent
+   │ 額度不足／未登入／逾時 → 換另一個 Agent 試一次
+   │ 兩個都不行 → 往上丟例外
+   ▼
+Worker：確定性驗證 → action=complete 回寫 Supabase
+   │ 通過 → succeeded（AI 草稿）
+   │ 驗證失敗，或這台機器的兩個 Agent 都不可用 → fallback_required
+   ▼
+瀏覽器輪詢 action=status
+   ├─ succeeded → 顯示 AI 草稿，人工勾選後才寫入持股
+   └─ fallback_required → action=download 拿回原圖 → 瀏覽器本機 Tesseract → 一樣要人工勾選
+```
+
+#### 三層降級順序，精確說法（澄清跨機容易誤解的地方）
+
+使用者原始設計是「**單一 Worker 內**的三層降級：Codex 主要 → 額度／權限不足才切 Claude →
+兩者都不行才回退 Tesseract」（見 §14.6）。**這是每一台機器各自的降級順序，不是
+「Windows 兩個 Agent 都失敗才換 Mac、Mac 兩個都失敗才 Tesseract」的跨機接力**：
+
+- `ocr_claim_job()`（`db/039_ocr_jobs.sql`）用資料庫列鎖讓所有在線 Worker 對同一批 `queued`
+  工作**搶著做**，誰先搶到這張圖，就只由那一台的 Router 試 Codex→Claude；兩者都不行，這張圖
+  直接進 `fallback_required` 給瀏覽器 Tesseract，**不會釋放回佇列讓另一台機器重試**。
+- 因此實際上不存在「Windows-Codex → Windows-Claude → Mac-Codex → Mac-Claude → Tesseract」
+  這種五層接力；只有「這台機器的 Codex → 這台機器的 Claude → Tesseract」三層，套用在當下
+  搶到工作的那一台。
+- 兩台平常都預設 `OCR_AGENT_PRIMARY=codex`，降級順序相同；差別只在於瀏覽器判斷「AI 是否
+  ready」時優先採信新鮮的 Windows 心跳（`ocr-jobs/index.js` 的 `latestWorker()`），這只影響
+  「要不要允許上傳」的顯示邏輯，不影響實際 claim 到工作後的 Agent 順序。
+- 若要做到真正的跨機接力（這台機器兩個 Agent 都失敗時，換另一台機器重試同一張圖），需要修改
+  `OcrWorkerRunner`／`AgentQuotaRouter`：兩者皆不可用時把租約釋放回 `queued` 而不是直接標記
+  `fallback_required`，並限制重試次數避免無限接力。**目前程式沒有做這件事**，這是一項需要
+  另外設計與測試的功能，不在 2026-09-12 這輪復原範圍內。
+
+#### 什麼時候啟用／停止／重啟
+
+正常待機不算重啟：25 秒 WebSocket 協定心跳（保活）、60 秒 Worker 狀態心跳（更新
+`ocr_workers`）、Realtime 斷線才固定 5 秒重連——沒有圖片時完全不 claim、不呼叫 Codex／Claude。
+
+| 情況 | 需要做什麼 |
+|---|---|
+| 改了 `src/Invest.Web/Features/Assets/Ocr/**` 或其依賴 | **必須**重新發布／重載；網站每日發布不會碰常駐 Worker，兩者互相獨立（見 0.1 事故） |
+| Windows 憑證密碼／Mac Keychain 密碼變更 | 需要重新設定憑證後重啟 Worker |
+| 想暫時強制全體改走 Tesseract | 直接停用 Worker；心跳老化超過 120 秒後 `readiness` 自動回 `worker_offline`，不用動程式碼 |
+| 額度用完／CLI 重新登入 | **不需要**重啟；Router 30 分鐘後自動重試，登入狀態每 60 秒重新探測 |
+
+**Windows 正確順序**（不能顛倒，自包含單檔 EXE 執行中會鎖檔）：`Disable`/`Stop-ScheduledTask`
+→ `scripts/publish-ocr-worker-windows.ps1` → 確認 EXE `LastWriteTime` 是剛剛 →
+`Enable`/`Start-ScheduledTask`。**驗收看啟動訊息**（`Realtime 喚醒；斷線每 5 秒重連`），不是
+排程狀態——`Running` 只代表有程序活著，不代表是新版；字串來源見 `OcrWorkerRunner.cs`。
+
+**Mac 正確順序**：`git pull` → `scripts/install-ocr-worker-launchagent-macos.sh`（內部會
+bootout 舊的 → 重建 plist → bootstrap → `kickstart -k` 強制重啟）。Mac 是直接 `dotnet run`
+從原始碼啟動，沒有發布步驟，理論上不會重演 Windows 這次的版本落後，但仍要重新 kickstart
+才會套用最新原始碼。
+
+完整依據：§1 最終實作方式、§6.4 Agent Router、§10 Windows Worker 執行規劃（含環境變數表）。
+
+#### 用量速覽
+
+健康空轉（有事件驅動 Worker、沒有截圖）30 天約 51,840 次 Edge Function invocation（Free 額度
+10.4%），Realtime Broadcast＝0，AI Agent 任務＝0。完整估算與每張截圖成本見下方「2. Supabase
+每月用量」「3. AI Agent 每月用量」；0.1 節記載的 443,155 次／約 2.5 GB egress 是**故障情境**
+（每 2 秒輪詢的舊版本連續跑了兩天半），不是這個健康待命數字，兩者不能混用估算下個月額度。
 
 ### 0. 2026-09-09～2026-09-10 正式環境查核與修復結論（優先於下方方案）
 
@@ -73,6 +171,62 @@ Worker claim → UPDATE ocr_jobs queued → leased
 
 本次修復已修改程式碼並套用資料庫／Edge，但沒有使用真實持倉截圖；重新上傳仍是判定最新 Windows Worker
 與完整 OCR 管線成功的唯一有效驗收輸入，不能沿用先前已過期且圖片已刪除的兩筆工作。
+
+### 0.1 2026-09-11～09-12 事件驅動版本落後事故與復原
+
+延續 0. 節的修復；本節記錄再次發生的「常駐 EXE 版本落後」事故與本次復原，避免只在
+`完成進度.md`／`TODO.md` 留下摘要而這裡的技術記錄脫節。完整用量歸因見 [TODO.md](../../TODO.md)
+的 TODO 14「2026-09-11 用量歸因」。
+
+#### 根因
+
+公司 Windows 的 `Invest D+ OCR Worker` 排程在 2026-09-11 11:49 被停用前，實際執行的
+`Invest.Web.exe` 建置時間是 **2026-09-09 00:57**——早於本文件事件驅動 claim／wake 修正
+（commit `9654ab3f`，已核對實際 commit 時間為 2026-09-09 18:10:41）達 17 小時。也就是說
+`main` 已經修好「Realtime 喚醒、健康空轉零 claim」，但公司 Windows 那台常駐 EXE 從未被重新
+`publish`，一直跑舊的「每 2 秒輪詢」迴圈，兩天半內耗用當期 88%（443,155 / 500,000）的
+Supabase Edge Function 額度與約 2.5 GB egress。
+
+直接查 Task Scheduler 操作記錄（`Microsoft-Windows-TaskScheduler/Operational`，2026-09-11
+11:40～11:55）還原出的實際順序：
+
+```text
+11:41:16／11:43:16  2 分鐘補啟動 trigger 判定舊 Worker 執行中（instance 仍在跑），依 IgnoreNew 略過
+11:44:38            舊 Worker 這個 instance 才真正結束
+11:45:16 → 11:45:17  補啟動 trigger 拉起新 instance，1 秒內就結束
+11:47:16 → 11:47:17  再拉起一次，1 秒內結束
+11:49:16 → 11:49:18  再拉起一次，2 秒內結束（LastTaskResult=1，非正常結束）
+11:49:39            使用者手動停用排程（event 142）
+```
+
+正常成功啟動的 Worker 是長駐的 Realtime 待命迴圈，不會在 1～2 秒內自行結束；這三次快速結束
+最可能是撞上單一實例鎖（`invest-ocr-worker.lock`）或與同時進行的 `dotnet publish` 互搶正在
+覆寫的 EXE 檔案——但 Task Scheduler 記錄的是外層 `powershell.exe` 啟動器的完成狀態，
+不包含子程序內部的例外訊息，這一段因果我沒有直接證據，不宣稱定論。可以確定的是本文件與
+`AGENTS.md` 記載的既定風險成立：**自包含單檔 EXE 執行中會被鎖住，重新 publish 前必須先
+停用／停止排程**，順序顛倒就會出現這種「拉起又立刻死掉」的迴圈。
+
+#### 本次復原（2026-09-12，Windows）
+
+1. `Disable-ScheduledTask` + `Stop-ScheduledTask`，確認無殘留 `Invest.Web` 程序。
+2. 重新執行 `scripts/publish-ocr-worker-windows.ps1`；新 EXE `LastWriteTime` 確認為
+   2026-09-12 10:22（不是 09-09 00:57 的舊版）。
+3. 直接執行 `scripts/run-ocr-worker-windows.ps1 -Once` 診斷，exit code 0，啟動訊息確認為
+   `Realtime 喚醒；斷線每 5 秒重連；並行上限 3；Max effort max；評估抽樣 10%`——不是「輪詢
+   N 秒」，證明這顆 EXE 是事件驅動版本。`OCR_CODEX_PATH`／`OCR_CLAUDE_PATH` 均解析到有效路徑。
+4. `Enable-ScheduledTask` + `Start-ScheduledTask`；5 秒後確認排程 `State=Running`，且有唯一
+   一個 `Invest.Web.exe` 程序在跑（對應本次發布的 EXE）。
+
+#### 仍待處理
+
+- **家裡 Mac 的 LaunchAgent 尚未重新載入**，需要使用者本人到場執行 `git pull` +
+  `scripts/install-ocr-worker-launchagent-macos.sh`；Mac 是直接 `dotnet run` 從原始碼啟動，
+  沒有 publish 這一步，理論上不會重演同一種「版本落後」，但仍需重新 `kickstart` 才會套用
+  `main` 最新原始碼。
+- 本次只證明 Windows Worker「能啟動、心跳正常、版本正確」；尚未用正式手機新截圖驗證端到端
+  `succeeded`，也不構成 Golden Set 或正確率驗收證據。
+- Claude Pro 訂閱登入仍未完成（見 §14.6），目前仍是 Codex 單 Agent 實際服務中，Router 會
+  正確略過未登入的 Claude。
 
 ### 1. 最終實作方式
 
