@@ -99,16 +99,25 @@ async function handleCreate(request, user, body) {
 
     const role = String(body?.role ?? '').toLowerCase();
     const targetEmail = SHARE_ROLES.get(role);
-    const hours = Number(body?.expiresInHours ?? 24);
-    const maxUses = Number(body?.maxUses ?? 1);
-    if (!targetEmail || !Number.isFinite(hours) || hours < 1 || hours > 168
-        || !Number.isSafeInteger(maxUses) || maxUses < 1 || maxUses > 10) {
+
+    // expiresInHours: null=永久, 或 1-8760
+    const expiresInHours = body?.expiresInHours;
+    const hours = expiresInHours === null ? null : Number(expiresInHours ?? 24);
+
+    // maxUses: null=不限次數, 或 1-100
+    const maxUses = body?.maxUses;
+    const uses = maxUses === null ? null : Number(maxUses ?? 1);
+
+    if (!targetEmail
+        || (hours !== null && (!Number.isFinite(hours) || hours < 1 || hours > 8760))
+        || (uses !== null && (!Number.isSafeInteger(uses) || uses < 1 || uses > 100))) {
         return json(request, 400, { error: 'invalid_share_policy' });
     }
 
     const token = randomToken();
     const tokenHash = await sha256Hex(token);
-    const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+    const expiresAt = hours === null ? null : new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+
     const response = await serviceFetch('/rest/v1/access_share_links', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' },
@@ -117,7 +126,7 @@ async function handleCreate(request, user, body) {
             role,
             target_email: targetEmail,
             expires_at: expiresAt,
-            max_uses: maxUses,
+            max_uses: uses,
             created_by: user.id
         })
     });
@@ -130,7 +139,7 @@ async function handleCreate(request, user, body) {
         id: rows[0]?.id ?? null,
         role,
         expiresAt,
-        maxUses,
+        maxUses: uses,
         url: `${shareOrigin(request)}/?invite=${encodeURIComponent(token)}`
     });
 }
@@ -142,8 +151,14 @@ async function findShare(tokenHash) {
     if (!response.ok) return null;
     const rows = await response.json();
     const share = rows[0] ?? null;
-    if (!share || share.revoked_at || Date.parse(share.expires_at) <= Date.now()
-        || Number(share.use_count) >= Number(share.max_uses)) {
+    if (!share || share.revoked_at) {
+        return null;
+    }
+    // expires_at=null 代表永久，否則要 > now()
+    const isExpired = share.expires_at !== null && Date.parse(share.expires_at) <= Date.now();
+    // max_uses=null 代表不限次數，否則 use_count < max_uses
+    const isExhausted = share.max_uses !== null && Number(share.use_count) >= Number(share.max_uses);
+    if (isExpired || isExhausted) {
         return null;
     }
     return share;
@@ -215,6 +230,21 @@ async function handleRevoke(request, user, body) {
         : json(request, 502, { error: 'share_revoke_failed' });
 }
 
+async function handleList(request, user) {
+    if (accessRole(user) !== 'admin') {
+        return json(request, 403, { error: 'forbidden' });
+    }
+
+    const response = await serviceFetch(
+        `/rest/v1/access_share_links?revoked_at=is.null&select=id,role,expires_at,max_uses,use_count,last_used_at,created_at&order=created_at.desc`);
+    if (!response.ok) {
+        return json(request, 502, { error: 'list_failed' });
+    }
+
+    const links = await response.json();
+    return json(request, 200, { links });
+}
+
 Deno.serve(async request => {
     if (request.method === 'OPTIONS') {
         return new Response(null, { status: 204, headers: corsHeaders(request) });
@@ -236,6 +266,7 @@ Deno.serve(async request => {
         }
         if (action === 'create') return await handleCreate(request, user, body);
         if (action === 'revoke') return await handleRevoke(request, user, body);
+        if (action === 'list') return await handleList(request, user);
         return json(request, 404, { error: 'unknown_action' });
     } catch (error) {
         console.error('access-share failed', error instanceof Error ? error.message : 'unknown');

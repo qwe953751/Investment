@@ -269,7 +269,8 @@ public static class TopicCatalogBuilder
         // 使用者在網站上改的排最後：他的決定要蓋得過上面每一層。
         // 排在產業別兜底之後也是為了這個——反過來的話，他把某檔股票移出「其他」，
         // 兜底會立刻照產業別再把它掛回「其他」，看起來就像剛剛那一下沒存進去。
-        graph.ApplyOverrides(userEdits, links, warnings);
+        // userEdits 內部先套「新增」，再套其他動作；新增必須排在最前以創建所需節點。
+        graph.ApplyUserEdits(userEdits, links, warnings);
 
         // 使用者已經搬走的就不該還列在待複判裡。
         provisional.RemoveAll(member => !graph.Contains(member.TopicId, member.Ticker));
@@ -379,39 +380,76 @@ public static class TopicCatalogBuilder
 
             foreach (var item in overrides)
             {
-                switch (item.Action)
-                {
-                    case TopicTreeOverrideLoader.MoveAction:
-                        Move(item, warnings);
-                        break;
-
-                    case TopicTreeOverrideLoader.RemoveAction:
-                        Remove(item, warnings);
-                        break;
-
-                    case TopicTreeOverrideLoader.AliasAction:
-                        AddAliases(item, warnings);
-                        break;
-
-                    case TopicTreeOverrideLoader.RenameAction:
-                        Rename(item, warnings);
-                        break;
-
-                    case TopicTreeOverrideLoader.JoinAction:
-                        Join(item, links, warnings);
-                        break;
-
-                    case TopicTreeOverrideLoader.LeaveAction:
-                        Leave(item, links, warnings);
-                        break;
-
-                    default:
-                        warnings.Add($"族群樹調整：不認得的動作「{item.Action}」（節點 {item.Node}），這一筆沒有套用。");
-                        break;
-                }
+                ApplySingleOverride(item, links, warnings);
             }
 
             RecomputePaths();
+        }
+
+        public void ApplyUserEdits(
+            IReadOnlyList<TopicTreeOverrideLoader.TreeOverride> edits,
+            List<StockTopicLink> links,
+            List<string> warnings)
+        {
+            if (edits.Count == 0)
+            {
+                return;
+            }
+
+            // 先做「新增」，建立所需節點
+            foreach (var item in edits.Where(e => e.Action == "新增"))
+            {
+                ApplySingleOverride(item, links, warnings);
+            }
+
+            // 再做其他動作
+            foreach (var item in edits.Where(e => e.Action != "新增"))
+            {
+                ApplySingleOverride(item, links, warnings);
+            }
+
+            RecomputePaths();
+        }
+
+        private void ApplySingleOverride(
+            TopicTreeOverrideLoader.TreeOverride item,
+            List<StockTopicLink> links,
+            List<string> warnings)
+        {
+            switch (item.Action)
+            {
+                case TopicTreeOverrideLoader.MoveAction:
+                    Move(item, warnings);
+                    break;
+
+                case TopicTreeOverrideLoader.RemoveAction:
+                    Remove(item, warnings);
+                    break;
+
+                case TopicTreeOverrideLoader.AliasAction:
+                    AddAliases(item, warnings);
+                    break;
+
+                case TopicTreeOverrideLoader.RenameAction:
+                    Rename(item, warnings);
+                    break;
+
+                case TopicTreeOverrideLoader.JoinAction:
+                    Join(item, links, warnings);
+                    break;
+
+                case TopicTreeOverrideLoader.LeaveAction:
+                    Leave(item, links, warnings);
+                    break;
+
+                case "新增":
+                    Create(item, warnings);
+                    break;
+
+                default:
+                    warnings.Add($"族群樹調整：不認得的動作「{item.Action}」（節點 {item.Node}），這一筆沒有套用。");
+                    break;
+            }
         }
 
         private void Move(TopicTreeOverrideLoader.TreeOverride item, List<string> warnings)
@@ -657,6 +695,51 @@ public static class TopicCatalogBuilder
             if (item.Note.Length > 0)
             {
                 node.MappingNotes.Add(item.Note);
+            }
+        }
+
+        private void Create(TopicTreeOverrideLoader.TreeOverride item, List<string> warnings)
+        {
+            var nodeName = item.Node.Trim();
+
+            if (nodeName.Length == 0)
+            {
+                warnings.Add("族群樹調整：「新增」動作沒有寫族群名稱，這一筆沒有套用。");
+                return;
+            }
+
+            if (FindByName(nodeName) is not null)
+            {
+                warnings.Add($"族群樹調整：族群「{nodeName}」已經存在，這一筆「新增」沒有套用。");
+                return;
+            }
+
+            var parentPath = item.Parent?.Trim() switch
+            {
+                null or "" => new[] { nodeName },
+                var p => new[] { p, nodeName }
+            };
+
+            if (item.Parent?.Trim().Length > 0 && FindByName(item.Parent) is null)
+            {
+                warnings.Add($"族群樹調整：父節點「{item.Parent}」不存在，無法建立「{nodeName}」，這一筆沒有套用。");
+                return;
+            }
+
+            var newNode = Ensure(parentPath);
+
+            if (item.Aliases.Count > 0)
+            {
+                foreach (var alias in item.Aliases)
+                {
+                    newNode.Aliases.Add(alias);
+                    _byName.TryAdd(TopicIdFactory.Normalize(alias), newNode.Id);
+                }
+            }
+
+            if (item.Note.Length > 0)
+            {
+                newNode.MappingNotes.Add(item.Note);
             }
         }
 

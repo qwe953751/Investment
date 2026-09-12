@@ -81,9 +81,31 @@
                             <option value="holdings">持倉檢視者</option>
                             <option value="monitor">監控者</option>
                         </select>
+                        <select id="access-bar-share-expiry" aria-label="連結時效">
+                            <option value="24">1 天</option>
+                            <option value="168">1 週</option>
+                            <option value="720">1 個月</option>
+                            <option value="">永久</option>
+                        </select>
                         <button type="button" id="access-bar-share"
-                                data-hint="建立不含密碼的一次性權限連結；24 小時後或使用一次後失效。">分享權限</button>
-                        <button type="button" id="access-bar-share-revoke" hidden>撤銷最後連結</button>
+                                data-hint="建立不含密碼的分享網址，對方可重複使用。">分享網址</button>
+                        <button type="button" id="access-bar-share-list" hidden
+                                data-hint="檢視與管理現有的分享連結。">管理連結</button>
+                    </div>
+                    <div class="access-bar-share-list-panel" id="access-bar-share-list-panel" hidden>
+                        <table id="access-bar-share-list-table" class="access-bar-share-list-table">
+                            <thead>
+                                <tr>
+                                    <th>權限</th>
+                                    <th>建立時間</th>
+                                    <th>時效</th>
+                                    <th>已用 / 上限</th>
+                                    <th>最後使用</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="access-bar-share-list-body"></tbody>
+                        </table>
                     </div>
                     <span class="access-bar-error" id="access-bar-error" hidden></span>
                 </div>

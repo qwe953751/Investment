@@ -1980,6 +1980,7 @@ function renderOptions(containerId, options, selected, onSelect) {
 
 function renderAccessBadge() {
     const badge = el('access-badge');
+    const errorLabel = el('access-bar-error');
 
     if (!badge || !ACCESS_PREVIEW) {
         return;
@@ -1997,6 +1998,15 @@ function renderAccessBadge() {
         : SITE_ACCESS === 'holdings'
             ? '本機預覽：只顯示 Frank 所有帳號的持股，可切換台股、美股與加密貨幣。'
             : '本機預覽：可使用目前網站的所有頁籤與族群功能。';
+
+    // 顯示分享連結兌換失敗的訊息
+    if (shareError && errorLabel && AUTOLOGIN_QUERY) {
+        errorLabel.textContent = `分享連結已失效或已被撤銷，目前是訪客模式。（${shareError}）要分享給別人請用下方的「分享網址」；網址列的連結不含權限。`;
+        errorLabel.hidden = false;
+    } else if (AUTOLOGIN_QUERY && errorLabel) {
+        errorLabel.textContent = '要分享給別人請用下方的「分享網址」；網址列的連結不含權限。';
+        errorLabel.hidden = false;
+    }
 }
 
 // 筆記 #37：登入列。跟網址決定的下限（URL_ACCESS）各自獨立，登入只會把權限往上加，
@@ -2267,8 +2277,20 @@ function renderAccessBar() {
     el('access-bar-login-form').hidden = loggedIn;
     el('access-bar-logout').hidden = !loggedIn;
     const shareTools = el('access-bar-share-tools');
+    const shareButton = el('access-bar-share');
+    const shareListButton = el('access-bar-share-list');
+    const shareListPanel = el('access-bar-share-list-panel');
     if (shareTools) {
         shareTools.hidden = loginTier !== 'admin';
+    }
+    if (shareButton) {
+        shareButton.hidden = loginTier !== 'admin';
+    }
+    if (shareListButton) {
+        shareListButton.hidden = loginTier !== 'admin';
+    }
+    if (shareListPanel) {
+        shareListPanel.hidden = true;
     }
 }
 
@@ -2294,6 +2316,9 @@ async function createAccessShareLink() {
     const errorLabel = el('access-bar-error');
     const button = el('access-bar-share');
     const role = el('access-bar-share-role')?.value ?? 'holdings';
+    const expirySelect = el('access-bar-share-expiry');
+    const expiryValue = expirySelect?.value ?? '24';
+    const expiresInHours = expiryValue === '' ? null : Number(expiryValue);
 
     if (loginTier !== 'admin' || !['holdings', 'monitor'].includes(role)) {
         return;
@@ -2304,28 +2329,30 @@ async function createAccessShareLink() {
     try {
         const response = await accessShareRequest('create', {
             role,
-            expiresInHours: 24,
-            maxUses: 1
+            expiresInHours,
+            maxUses: null
         });
         const share = await accessShareJson(response, '建立分享連結');
-        lastAccessShareId = share.id ?? '';
-        const revokeButton = el('access-bar-share-revoke');
-        if (revokeButton) {
-            revokeButton.hidden = lastAccessShareId === '';
-        }
         const link = String(share.url ?? '');
         if (!link) {
             throw new Error('分享連結回應不完整。');
         }
 
+        const expiryText = expiryValue === '' ? '永久'
+            : expiryValue === '24' ? '1 天'
+            : expiryValue === '168' ? '1 週'
+            : expiryValue === '720' ? '1 個月'
+            : expiryValue;
+
         try {
             await navigator.clipboard.writeText(link);
-            errorLabel.textContent = `已複製 ${ACCESS_TIER_TEXT[role]}的一次性分享連結（24 小時、限用 1 次）。`;
+            errorLabel.textContent = `已複製 ${ACCESS_TIER_TEXT[role]}的分享網址（${expiryText}、不限使用次數）。此連結不含密碼。`;
         } catch {
-            window.prompt('請複製這個一次性分享連結；連結不含密碼，使用一次後失效。', link);
-            errorLabel.textContent = `已建立 ${ACCESS_TIER_TEXT[role]}分享連結。`;
+            window.prompt('請複製這個分享網址（不含密碼）；時效為 ' + expiryText + '。', link);
+            errorLabel.textContent = `已建立 ${ACCESS_TIER_TEXT[role]}分享網址。`;
         }
         errorLabel.hidden = false;
+        await renderAccessShareList();
     } catch (error) {
         errorLabel.textContent = error.message || '分享連結建立失敗。';
         errorLabel.hidden = false;
@@ -2334,27 +2361,73 @@ async function createAccessShareLink() {
     }
 }
 
-async function revokeLastAccessShareLink() {
-    const errorLabel = el('access-bar-error');
-    const button = el('access-bar-share-revoke');
+async function renderAccessShareList() {
+    const listPanel = el('access-bar-share-list-panel');
+    const tbody = el('access-bar-share-list-body');
 
-    if (loginTier !== 'admin' || !lastAccessShareId) {
+    if (!listPanel || !tbody) {
         return;
     }
 
-    button.disabled = true;
     try {
-        const response = await accessShareRequest('revoke', { id: lastAccessShareId });
+        const response = await accessShareRequest('list');
+        if (!response.ok) {
+            return;
+        }
+        const result = await response.json();
+        const links = result.links ?? [];
+
+        tbody.innerHTML = '';
+
+        for (const link of links) {
+            const row = document.createElement('tr');
+            const expiresAt = link.expires_at ? new Date(link.expires_at) : null;
+            const now = new Date();
+            const isExpired = expiresAt && expiresAt <= now;
+            const expiryText = expiresAt === null ? '永久'
+                : isExpired ? '已過期'
+                : `${Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24))} 天`;
+            const usesText = link.max_uses === null ? '不限' : link.max_uses;
+            const lastUsedText = link.last_used_at
+                ? new Date(link.last_used_at).toLocaleString('zh-TW')
+                : '未使用';
+
+            row.innerHTML = `
+                <td>${ACCESS_TIER_TEXT[link.role] ?? link.role}</td>
+                <td>${new Date(link.created_at).toLocaleString('zh-TW')}</td>
+                <td>${expiryText}</td>
+                <td>${link.use_count} / ${usesText}</td>
+                <td>${lastUsedText}</td>
+                <td><button class="access-bar-share-revoke-link" data-id="${link.id}">撤銷</button></td>
+            `;
+            tbody.appendChild(row);
+        }
+
+        // 綁定撤銷按鈕
+        document.querySelectorAll('.access-bar-share-revoke-link').forEach(btn => {
+            btn.onclick = () => revokeAccessShareLink(btn.dataset.id);
+        });
+    } catch {
+        // 列表讀取失敗不影響分享按鈕功能
+    }
+}
+
+async function revokeAccessShareLink(id) {
+    const errorLabel = el('access-bar-error');
+
+    if (loginTier !== 'admin') {
+        return;
+    }
+
+    try {
+        const response = await accessShareRequest('revoke', { id });
         await accessShareJson(response, '撤銷分享連結');
-        lastAccessShareId = '';
-        button.hidden = true;
-        errorLabel.textContent = '最後建立的分享連結已撤銷。';
+        errorLabel.textContent = '分享連結已撤銷。';
         errorLabel.hidden = false;
+        await renderAccessShareList();
     } catch (error) {
-        errorLabel.textContent = error.message || '分享連結撤銷失敗。';
+        errorLabel.textContent = error.message || '撤銷失敗。';
         errorLabel.hidden = false;
-    } finally {
-        button.disabled = false;
     }
 }
 
@@ -2364,7 +2437,8 @@ function wireAccessBar() {
     const errorLabel = el('access-bar-error');
     const logoutButton = el('access-bar-logout');
     const shareButton = el('access-bar-share');
-    const shareRevokeButton = el('access-bar-share-revoke');
+    const shareListButton = el('access-bar-share-list');
+    const shareListPanel = el('access-bar-share-list-panel');
 
     if (!form) {
         return;
@@ -2398,7 +2472,14 @@ function wireAccessBar() {
     });
 
     shareButton?.addEventListener('click', () => void createAccessShareLink());
-    shareRevokeButton?.addEventListener('click', () => void revokeLastAccessShareLink());
+    shareListButton?.addEventListener('click', async () => {
+        if (shareListPanel) {
+            shareListPanel.hidden = !shareListPanel.hidden;
+            if (!shareListPanel.hidden) {
+                await renderAccessShareList();
+            }
+        }
+    });
 }
 
 // 盤後專用的篩選條件（期間、交易日、模式、門檻）在盤中沒有意義，直接收起來，
@@ -26861,6 +26942,7 @@ async function start() {
     // 權限分享連結先由 Edge Function 原子兌換，再用 Auth token hash 建立本機 session；
     // 只有管理者可以建立，接收者不會接觸任何固定帳號密碼。
     let sharedLogin = false;
+    let shareError = null;
     if (INVITE_QUERY) {
         try {
             const redeemed = await accessShareJson(
@@ -26874,8 +26956,9 @@ async function start() {
                 activateLoginAccount(account, session);
                 sharedLogin = true;
             }
-        } catch {
-            // 邀請碼無效、已使用或已撤銷時仍允許回復本機既有 session。
+        } catch (error) {
+            // 邀請碼無效、已使用或已撤銷時記下錯誤訊息，之後在權限列顯示。
+            shareError = error instanceof Error ? error.message : '分享連結已失效或已被撤銷。';
         }
     }
 

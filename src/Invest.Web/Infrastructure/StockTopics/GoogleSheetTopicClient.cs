@@ -4,22 +4,21 @@ using Invest.Web.Features.StockTopics.Services;
 namespace Invest.Web.Infrastructure.StockTopics;
 
 /// <summary>
-/// 從使用者維護的 Google Sheet 讀出族群分類。
+/// 讀取族群分類，可從 Supabase（預設）或 Google Sheet（切換用）。
 ///
-/// 那份試算表目前是「知道網址就讀得到」，所以這裡不帶任何憑證，只是兩個公開網址：
+/// (A) Source=supabase（預設）
+///     直接讀 Supabase 的 topic_source 表（族群樹與概念股快取），完全不發任何 HTTP 到 Google Sheet。
+///     讀不到就回 TopicCatalog.Empty 並記警告。
 ///
-///   族群樹    ?format=csv&amp;gid=…   單一分頁，直接就是 CSV。
-///   概念股    ?format=xlsx            整份試算表，因為概念股那一頁的 gid 我們手上沒有。
+/// (B) Source=sheet（緊急重新匯入用）
+///     讀 Google Sheet 的兩個部分（CSV 樹 + XLSX 概念股），成功後覆寫 topic_source，
+///     才依 (A) 的邏輯繼續。
 ///
-/// 試算表 ID 只能放設定檔，不可以寫死在程式碼裡：使用者近期會把這份表拆開並改權限，
-/// 到時候換的是設定，不是重新編譯。
+/// Google Sheet 現在只當唯讀備份；族群的權威來源是 Supabase。
+/// 使用者在網站上的人工編輯（topic_edits，包含新增動作）會在匯出時全部套用。
 ///
 /// 任何一步失敗都只記警告、回傳目前拿到的部分（甚至整份空的），
 /// 絕不讓整個靜態網站匯出跟著倒——族群是附加功能，排行榜本身跟它一點關係都沒有。
-///
-/// Google Sheet 讀成功時會把原始解析結果（<see cref="TopicSheetCacheStore"/>）存進 Supabase
-/// 當備援；讀失敗時改讀那份快取再照平常規則重新分類，比直接開天窗好，但快取只是保險，
-/// 分類的權威來源仍然是這份 Google Sheet 本身。
 /// </summary>
 public sealed class GoogleSheetTopicClient(
     HttpClient client,
@@ -30,6 +29,7 @@ public sealed class GoogleSheetTopicClient(
     ILogger<GoogleSheetTopicClient> logger)
 {
     public const string SpreadsheetIdKey = "StockTopics:SpreadsheetId";
+    public const string SourceKey = "StockTopics:Source";
 
     private const string TreeGidKey = "StockTopics:TreeGid";
 
@@ -37,21 +37,14 @@ public sealed class GoogleSheetTopicClient(
 
     public async Task<TopicCatalog> GetCatalogAsync(CancellationToken cancellationToken = default)
     {
-        var spreadsheetId = configuration[SpreadsheetIdKey];
-
-        if (string.IsNullOrWhiteSpace(spreadsheetId))
-        {
-            logger.LogWarning("沒有設定 {Key}，族群頁會顯示尚無資料。", SpreadsheetIdKey);
-
-            return TopicCatalog.Empty;
-        }
-
-        var treeGid = configuration[TreeGidKey];
-        var conceptSheetName = configuration[ConceptSheetNameKey] ?? "概念股";
+        var source = (configuration[SourceKey] ?? "supabase").ToLowerInvariant();
         var warnings = new List<string>();
 
-        var treePaths = await ReadTreeAsync(spreadsheetId, treeGid, warnings, cancellationToken);
-        var concepts = await ReadConceptsAsync(spreadsheetId, conceptSheetName, warnings, cancellationToken);
+        var (treePaths, concepts) = source switch
+        {
+            "sheet" => await GetFromSheetAsync(warnings, cancellationToken),
+            _ => await GetFromSupabaseAsync(warnings, cancellationToken)
+        };
 
         if (treePaths.Count == 0 && concepts.Columns.Count == 0)
         {
@@ -67,6 +60,53 @@ public sealed class GoogleSheetTopicClient(
         var userEdits = await edits.LoadAsync(cancellationToken);
 
         return TopicCatalogBuilder.Build(treePaths, concepts, warnings, industryByTicker, userEdits);
+    }
+
+    private async Task<(IReadOnlyList<string[]>, ConceptSheetParser.Result)> GetFromSupabaseAsync(
+        List<string> warnings, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tree = await cache.LoadTreeAsync(cancellationToken);
+            var concepts = await cache.LoadConceptsAsync(cancellationToken);
+
+            if (tree?.Count > 0 && concepts?.Count > 0)
+            {
+                logger.LogInformation("族群從 Supabase 讀到 {TreeCount} 條路徑、{ConceptCount} 個概念。",
+                    tree.Count, concepts.Count);
+                return (tree, new ConceptSheetParser.Result(concepts, []));
+            }
+
+            warnings.Add("族群資料不完整，既無樹也無概念。");
+            return (tree ?? [], new ConceptSheetParser.Result(concepts ?? [], [.. warnings]));
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "從 Supabase 讀取族群失敗。");
+            warnings.Add($"族群讀取失敗：{exception.Message}");
+            return ([], new ConceptSheetParser.Result([], [.. warnings]));
+        }
+    }
+
+    private async Task<(IReadOnlyList<string[]>, ConceptSheetParser.Result)> GetFromSheetAsync(
+        List<string> warnings, CancellationToken cancellationToken)
+    {
+        var spreadsheetId = configuration[SpreadsheetIdKey];
+
+        if (string.IsNullOrWhiteSpace(spreadsheetId))
+        {
+            logger.LogWarning("沒有設定 {Key}，無法重新匯入。", SpreadsheetIdKey);
+            warnings.Add("沒有設定 Google Sheet ID，無法重新匯入。");
+            return ([], new ConceptSheetParser.Result([], [.. warnings]));
+        }
+
+        var treeGid = configuration[TreeGidKey];
+        var conceptSheetName = configuration[ConceptSheetNameKey] ?? "概念股";
+
+        var treePaths = await ReadTreeAsync(spreadsheetId, treeGid, warnings, cancellationToken);
+        var concepts = await ReadConceptsAsync(spreadsheetId, conceptSheetName, warnings, cancellationToken);
+
+        return (treePaths, concepts);
     }
 
     private async Task<IReadOnlyList<string[]>> ReadTreeAsync(
