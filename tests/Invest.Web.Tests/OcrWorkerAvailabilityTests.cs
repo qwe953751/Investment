@@ -6,13 +6,17 @@ namespace Invest.Web.Tests;
 // 1. 樂觀語意的單一判定入口（checkAvailableWorkers）
 // 2. 事實優先、時間退路的存活判定（ocr_worker_alive）
 // 3. 工作層級的 stall 偵測，取代機器層級的心跳猜測（ocr_stall_to_fallback）
+//
+// 注意：所有原始碼一律用 .ReplaceLineEndings("\n") 正規化再比對。這些 .cs／.js 檔案
+// 在 git 索引裡以 LF 儲存，Windows 本機工作目錄因 core.autocrlf 會 checkout 成 CRLF，
+// 但 Linux CI runner 不會做這個轉換；斷言字面寫死 \r\n 會導致本機全綠、CI 卻找不到
+// 子字串（2026-09-13 CI 首跑就踩到這個坑，見版本紀錄的合併記錄）。
 public sealed class OcrWorkerAvailabilityTests
 {
     [Fact]
     public void Readiness使用樂觀語意只在no_worker或no_available_agent時擋下()
     {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(), "supabase", "functions", "ocr-jobs", "index.js"));
+        var source = ReadNormalized("supabase", "functions", "ocr-jobs", "index.js");
 
         Assert.Contains("async function checkAvailableWorkers()", source, StringComparison.Ordinal);
         Assert.Contains("decidedBy: 'no_worker'", source, StringComparison.Ordinal);
@@ -26,19 +30,17 @@ public sealed class OcrWorkerAvailabilityTests
     [Fact]
     public void HandleSubmit與HandleReadiness共用同一判定不可能互相矛盾()
     {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(), "supabase", "functions", "ocr-jobs", "index.js"));
+        var source = ReadNormalized("supabase", "functions", "ocr-jobs", "index.js");
 
         Assert.Contains("async function handleSubmit(request, user) {", source, StringComparison.Ordinal);
-        Assert.Contains("const state = await checkAvailableWorkers();\r\n    if (!state.ready) {", source, StringComparison.Ordinal);
+        Assert.Contains("const state = await checkAvailableWorkers();\n    if (!state.ready) {", source, StringComparison.Ordinal);
         Assert.Contains("fallbackReason: state.fallbackReason ?? 'worker_offline'", source, StringComparison.Ordinal);
     }
 
     [Fact]
     public void 存活判定事實優先時間退路其次且門檻隨機器自訂心跳週期調整()
     {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(), "db", "054_ocr_worker_availability.sql"));
+        var source = ReadNormalized("db", "054_ocr_worker_availability.sql");
 
         Assert.Contains("create or replace function public.ocr_worker_alive(w public.ocr_workers)", source, StringComparison.Ordinal);
         Assert.Contains("select w.realtime_connected", source, StringComparison.Ordinal);
@@ -55,16 +57,14 @@ public sealed class OcrWorkerAvailabilityTests
     [Fact]
     public void Stall偵測只處理queued狀態且與claim互斥不需要另外加鎖()
     {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(), "db", "054_ocr_worker_availability.sql"));
+        var source = ReadNormalized("db", "054_ocr_worker_availability.sql");
 
         Assert.Contains("create or replace function public.ocr_stall_to_fallback(", source, StringComparison.Ordinal);
         Assert.Contains("and status = 'queued'", source, StringComparison.Ordinal);
         Assert.Contains("and created_at < now() - make_interval(secs => p_min_age_seconds)", source, StringComparison.Ordinal);
         Assert.Contains("fallback_reason = 'worker_stalled'", source, StringComparison.Ordinal);
 
-        var edgeFunctionSource = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(), "supabase", "functions", "ocr-jobs", "index.js"));
+        var edgeFunctionSource = ReadNormalized("supabase", "functions", "ocr-jobs", "index.js");
 
         // 寄生在既有的 status 輪詢裡，不得另開排程或額外呼叫。
         Assert.Contains("async function handleStatus(request, user, jobId) {", edgeFunctionSource, StringComparison.Ordinal);
@@ -75,9 +75,8 @@ public sealed class OcrWorkerAvailabilityTests
     [Fact]
     public void 前端顯示stall與no_worker的真實原因而非籠統文案()
     {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "src", "Invest.Web", "Infrastructure", "StaticSite", "Assets", "site.js"));
+        var source = ReadNormalized(
+            "src", "Invest.Web", "Infrastructure", "StaticSite", "Assets", "site.js");
 
         Assert.Contains("case 'worker_stalled': return '沒有 Worker 接走這件工作';", source, StringComparison.Ordinal);
         Assert.Contains("case 'no_worker': return '尚未有任何 AI Worker 註冊';", source, StringComparison.Ordinal);
@@ -89,9 +88,8 @@ public sealed class OcrWorkerAvailabilityTests
     [Fact]
     public void Wake只在queued時送出且節流間隔拉長避免排隊期間灌爆額度()
     {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "src", "Invest.Web", "Infrastructure", "StaticSite", "Assets", "site.js"));
+        var source = ReadNormalized(
+            "src", "Invest.Web", "Infrastructure", "StaticSite", "Assets", "site.js");
 
         Assert.Contains("const ASSET_AI_OCR_WAKE_MIN_INTERVAL_MS = 30_000;", source, StringComparison.Ordinal);
         Assert.Contains("if (status.status !== 'queued'", source, StringComparison.Ordinal);
@@ -104,8 +102,7 @@ public sealed class OcrWorkerAvailabilityTests
     [Fact]
     public void HeartbeatAsync回報自訂心跳週期與連線事實供門檻換算使用()
     {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(), "supabase", "functions", "ocr-jobs", "index.js"));
+        var source = ReadNormalized("supabase", "functions", "ocr-jobs", "index.js");
 
         Assert.Contains("heartbeat_interval_seconds: heartbeatIntervalSeconds", source, StringComparison.Ordinal);
         Assert.Contains("realtime_connected: realtimeConnected", source, StringComparison.Ordinal);
@@ -121,9 +118,8 @@ public sealed class OcrWorkerAvailabilityTests
     [Fact]
     public void 治本二心跳降頻與探測快取不會讓復原輪詢形同虛設()
     {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "src", "Invest.Web", "Features", "Assets", "Ocr", "Services", "OcrWorkerRunner.cs"));
+        var source = ReadNormalized(
+            "src", "Invest.Web", "Features", "Assets", "Ocr", "Services", "OcrWorkerRunner.cs");
 
         Assert.Contains("private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(300);", source, StringComparison.Ordinal);
         Assert.Contains("private static readonly TimeSpan UnauthenticatedProbeCacheDuration = TimeSpan.FromMinutes(5);", source, StringComparison.Ordinal);
@@ -141,17 +137,20 @@ public sealed class OcrWorkerAvailabilityTests
     [Fact]
     public void 連線旗標由WebSocket生命週期更新且斷線一律重置為false()
     {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "src", "Invest.Web", "Features", "Assets", "Ocr", "Services", "OcrWorkerApiClient.cs"));
+        var source = ReadNormalized(
+            "src", "Invest.Web", "Features", "Assets", "Ocr", "Services", "OcrWorkerApiClient.cs");
 
         Assert.Contains("public volatile bool IsRealtimeConnected;", source, StringComparison.Ordinal);
-        Assert.Contains("joined = true;\r\n                        IsRealtimeConnected = true;", source, StringComparison.Ordinal);
+        Assert.Contains("joined = true;\n                        IsRealtimeConnected = true;", source, StringComparison.Ordinal);
         // 不管迴圈怎麼結束都要重置為 false（finally），不能只在某個特定分支才重置，
         // 否則某些斷線路徑會讓旗標永遠卡在 true，比完全沒有這個旗標更危險
         // （會讓其他機器誤以為它還活著，連 last_seen_at 的時間退路都被繞過）。
-        Assert.Contains("finally\r\n        {\r\n            IsRealtimeConnected = false;\r\n        }", source, StringComparison.Ordinal);
+        Assert.Contains("finally\n        {\n            IsRealtimeConnected = false;\n        }", source, StringComparison.Ordinal);
     }
+
+    private static string ReadNormalized(params string[] relativePathSegments)
+        => File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. relativePathSegments]))
+            .ReplaceLineEndings("\n");
 
     private static string FindRepositoryRoot()
     {
