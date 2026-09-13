@@ -11547,6 +11547,11 @@ const ASSET_AI_OCR_POLL_SLOW_MS = 1_500;
 // 同時比照 leased 的輪詢頻率減少一半以上的 Edge Function 呼叫。
 const ASSET_AI_OCR_POLL_QUEUED_MS = 3_000;
 const ASSET_AI_OCR_WAKE_AFTER_MS = 5_000;
+// 治本一流量優化：wake 只是喚醒 Realtime 讓 Worker 去 claim，工作一旦 leased
+// （已經有 Worker 接手）就對它沒有意義，卡住與否改由 stall 偵測（db/054 的
+// ocr_stall_to_fallback，寄生在 status 輪詢裡）處理。連續 wake 之間至少間隔這麼久，
+// 避免排隊期間每 5 秒打一次（2026-09-13 實測一批 6 張圖產生 91 次 wake 呼叫）。
+const ASSET_AI_OCR_WAKE_MIN_INTERVAL_MS = 30_000;
 const ASSET_AI_OCR_TIMEOUT_MS = 9 * 60_000;
 const ASSET_AI_OCR_CONCURRENCY = 3;
 const ASSET_AI_PENDING_JOBS_KEY = 'invest.assetAiOcrJobs.v1';
@@ -11680,10 +11685,12 @@ async function assetAiOcrWakeIfStalled(jobId, status, screenshot, signal = null)
     assetOcrThrowIfCancelled(signal);
     const progressAt = Date.parse(status.progressUpdatedAt ?? '');
     const lastWakeAt = Number(screenshot.lastWakeAt ?? 0);
-    if (!['queued', 'leased'].includes(status.status)
+    // 只有 queued（還沒被任何 Worker 接走）才需要用 wake 去喚醒 Realtime；
+    // leased 代表已經有 Worker 在處理，喚醒對它沒有意義，卡住與否交給 stall 偵測。
+    if (status.status !== 'queued'
         || !Number.isFinite(progressAt)
         || Date.now() - progressAt < ASSET_AI_OCR_WAKE_AFTER_MS
-        || Date.now() - lastWakeAt < ASSET_AI_OCR_WAKE_AFTER_MS) {
+        || Date.now() - lastWakeAt < ASSET_AI_OCR_WAKE_MIN_INTERVAL_MS) {
         return;
     }
 
@@ -11804,7 +11811,9 @@ async function assetAiOcrDownload(jobId, signal = null) {
 function assetAiOcrFallbackText(reason) {
     switch (reason) {
         case 'worker_offline': return 'AI Worker 離線';
+        case 'no_worker': return '尚未有任何 AI Worker 註冊';
         case 'no_available_agent': return '沒有已登入且有額度的 AI Agent';
+        case 'worker_stalled': return '沒有 Worker 接走這件工作';
         case 'all_agents_quota_exhausted': return '所有 AI Agent 額度不足';
         case 'ai_invalid_output': return 'AI 結果未通過格式驗證';
         case 'ai_execution_failed': return 'AI 執行失敗';
@@ -15030,8 +15039,10 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         // 代號仍可直接辨識；只有名稱反查會少一條路，不能因此阻斷手動校對流程。
     }
 
-    // 先問正式端點，而不是先跑 Tesseract 再猜 AI 是否值得用。只有 Worker 心跳新鮮且
-    // 至少一個訂閱 CLI 已登入、有可用額度，圖片才會離開瀏覽器。
+    // 先問正式端點，而不是先跑 Tesseract 再猜 AI 是否值得用。這一關現在是樂觀語意
+    // （見 supabase/functions/ocr-jobs/index.js 的 checkAvailableWorkers()）：只有
+    // 「查無任何 Worker」或「所有 Worker 都沒有已登入的 Agent」才會擋下，其餘一律放行，
+    // 真正的離線由 submit 之後的 claim／relay／stall 偵測（事實層級）處理。
     let aiReadiness = null;
     let preflightFallbackReason = null;
     try {
@@ -15039,6 +15050,16 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         aiReadiness = await assetAiOcrReadiness(null, signal);
         if (!aiReadiness?.ready) {
             preflightFallbackReason = aiReadiness?.fallbackReason ?? 'ai_execution_failed';
+            // 2026-09-13 事故教訓：畫面只顯示一句籠統的「AI 執行失敗」，查了 7 小時
+            // 才找到根因是 readiness 的時間門檻 bug。現在把真正原因與 Worker 清單
+            // 直接列出來，下次再發生同類問題不必再翻 log。
+            const workerSummary = (aiReadiness?.workers ?? [])
+                .map(w => `${w.name}（${w.agents?.length > 0 ? w.agents.join('/') : '無可用 Agent'}）`)
+                .join('、');
+            setAssetOcrStatus(
+                `D+ AI 目前不可用：${assetAiOcrFallbackText(preflightFallbackReason)}`
+                + (workerSummary === '' ? '（尚無 Worker 註冊）' : `（${workerSummary}）`)
+                + '，改用 Tesseract…');
         }
     } catch (error) {
         if (signal.aborted) {
@@ -15046,6 +15067,7 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         }
 
         preflightFallbackReason = 'ai_execution_failed';
+        setAssetOcrStatus('檢查 D+ AI Worker 時發生錯誤，改用 Tesseract…');
     }
 
     // 辨識期間使用者可能已經換帳戶或按了取消，那就別把結果硬塞回去。
@@ -15387,7 +15409,10 @@ function makeAssetScreenshotFlow(view) {
     caption.className = 'asset-screenshot-caption';
     caption.textContent = `${assetScreenshotDraft.screenshots.length} 張圖片 · ${assetTimeText(assetScreenshotDraft.capturedAt)}`
         + (assetScreenshotDraft.scanning
-            ? ' · D+ 正在判斷 AI／Tesseract 路徑'
+            // 真正的判定原因（readiness 的 fallbackReason／Worker 清單）已經在辨識開始時
+            // 寫進下方即時更新的 asset-ocr-status 那一行；這裡只做不隨時間變化的固定說明，
+            // 不重複維護一份可能過期的原因文字。
+            ? ' · D+ AI 優先，Worker 不可用時改用 Tesseract'
             : assetScreenshotDraft.usedAi
                 ? ' · AI 私有暫存已要求清除'
                 : ' · Tesseract 僅在此瀏覽器處理');

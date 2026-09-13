@@ -2,7 +2,9 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const OCR_BUCKET = 'ocr-private';
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_HEARTBEAT_AGE_MS = 120_000;
+// 心跳新鮮度門檻已移到 db/054 的 ocr_worker_alive()（2×該機器自己宣告的心跳週期），
+// 這裡不再保留任何寫死的秒數常數，避免又長出一份不同步的判定。
+const OCR_FIRST_CLAIM_STALL_MS = 20_000;
 const CLEANUP_SECRET = Deno.env.get('OCR_CLEANUP_SECRET') ?? '';
 const ALLOWED_ORIGINS = new Set([
     'https://frank-invest.github.io',
@@ -95,32 +97,10 @@ function availableAgents(agentStatus) {
         .map(([name]) => name);
 }
 
-// readinessHeartbeatAgeMs 已刪除（治本一：改用事實層級判定而非時間推測）
-
-function workerIsFresh(worker, maxHeartbeatAgeMs) {
-    const heartbeatAt = worker?.last_heartbeat_at ? Date.parse(worker.last_heartbeat_at) : NaN;
-    return Number.isFinite(heartbeatAt)
-        && Date.now() - heartbeatAt <= maxHeartbeatAgeMs;
-}
-
-function isWindowsWorker(worker) {
-    return /windows/i.test(String(worker?.platform ?? ''));
-}
-
-async function latestWorker(maxHeartbeatAgeMs = MAX_HEARTBEAT_AGE_MS) {
-    const response = await serviceFetch(
-        '/rest/v1/ocr_workers?select=id,name,platform,version,agent_status,last_heartbeat_at'
-        + '&order=last_heartbeat_at.desc&limit=20');
-    if (!response.ok) {
-        throw new Error(`worker_query_${response.status}`);
-    }
-
-    const rows = await response.json();
-    const workers = Array.isArray(rows) ? rows : [];
-    const preferredWindows = workers.find(worker =>
-        isWindowsWorker(worker) && workerIsFresh(worker, maxHeartbeatAgeMs));
-    return preferredWindows ?? workers[0] ?? null;
-}
+// readinessHeartbeatAgeMs／workerIsFresh／isWindowsWorker／latestWorker 已刪除
+// （治本一：五處各自判定收斂成 checkAvailableWorkers() 這唯一入口，
+//  時間判定移到 db/054 的 ocr_worker_alive()，門檻與 heartbeat_interval_seconds 綁定，
+//  不再有第二份寫死的門檻常數）
 
 async function cleanupExpiredObjects() {
     const cutoff = encodeURIComponent(new Date().toISOString());
@@ -242,26 +222,32 @@ async function insertJob(job) {
     });
 }
 
-async function handleReadiness(request) {
-    // 治本一：樂觀語意 —— 只有「有証據說不行」才擋；否則 ready:true
-    // 檢查：(1) ocr_workers 一筆都沒有？(2) 所有 worker 的 agent_status 都 authenticated=false？
-
+// 治本一：單一真相來源 —— handleReadiness 與 handleSubmit 都呼叫這個函式，
+// 保證兩者的判定不可能互相矛盾（這是本次事故根因之一：兩處各自維護一份門檻常數）。
+// 語意是樂觀的：只有「有証據說不行」才判定不可用；否則一律放行，讓 submit 之後的
+// claim／relay／lease 逾時（都是事實層級的判定）去處理真正的離線情況。
+async function checkAvailableWorkers() {
     const allWorkersResp = await serviceFetch(
         '/rest/v1/ocr_workers?select=id,name,platform,last_seen_at,realtime_connected,heartbeat_interval_seconds,agent_status');
     if (!allWorkersResp.ok) {
-        return json(request, 200, { ready: true, workers: [] });
+        // 查詢本身失敗（非「查到 0 筆」）不能因此擋下所有使用者；樂觀放行，
+        // 真正沒有 Worker 時 claim 階段一樣會發現並走 stall 偵測。
+        return { ready: true, workerPlatform: null, workers: [], decidedBy: 'query_failed', fallbackReason: null };
     }
 
     const workers = await allWorkersResp.json();
     if (!Array.isArray(workers) || workers.length === 0) {
-        return json(request, 200, {
+        return {
             ready: false,
-            fallbackReason: 'no_worker',
-            workers: []
-        });
+            workerPlatform: null,
+            workers: [],
+            decidedBy: 'no_worker',
+            fallbackReason: 'no_worker'
+        };
     }
 
-    // 計算每台的 alive 狀態和可用 agents
+    // 計算每台的 alive 狀態和可用 agents（alive 用「連線事實優先、時間退路其次」，
+    // 對齊 db/054 的 ocr_worker_alive() SQL 判定，門檻 = 2 × 該機器自己宣告的心跳週期）。
     const workerStates = workers.map(w => {
         const heartbeatInterval = Math.max(30, w.heartbeat_interval_seconds || 60);
         const lastSeenAt = w.last_seen_at ? Date.parse(w.last_seen_at) : NaN;
@@ -272,11 +258,10 @@ async function handleReadiness(request) {
         return { ...w, alive, availableAgents: agents };
     });
 
-    // 有可用 worker？
     const availableWorkers = workerStates.filter(w => w.alive && w.availableAgents.length > 0);
     const allAgentsFailed = workerStates.every(w => w.availableAgents.length === 0);
 
-    return json(request, 200, {
+    return {
         ready: availableWorkers.length > 0,
         workerPlatform: availableWorkers[0]?.platform ?? null,
         workers: workerStates.map(w => ({
@@ -295,7 +280,12 @@ async function handleReadiness(request) {
         fallbackReason: availableWorkers.length > 0
             ? null
             : (allAgentsFailed ? 'no_available_agent' : 'worker_offline')
-    });
+    };
+}
+
+async function handleReadiness(request) {
+    const state = await checkAvailableWorkers();
+    return json(request, 200, state);
 }
 
 async function handleWake(request, user, body) {
@@ -343,14 +333,14 @@ async function handleWake(request, user, body) {
 }
 
 async function handleSubmit(request, user) {
-    const worker = await latestWorker();
-    const online = workerIsFresh(worker, MAX_HEARTBEAT_AGE_MS);
-    const agents = online ? availableAgents(worker.agent_status) : [];
-    if (!online || agents.length === 0) {
+    // 與 handleReadiness 共用同一個判定（checkAvailableWorkers），
+    // 保證「① readiness 說可以」與「② submit 自己再驗一次」不可能互相矛盾。
+    const state = await checkAvailableWorkers();
+    if (!state.ready) {
         return json(request, 409, {
             error: 'ai_not_ready',
-            workerPlatform: worker?.platform ?? null,
-            fallbackReason: !online ? 'worker_offline' : 'no_available_agent'
+            workerPlatform: state.workerPlatform ?? null,
+            fallbackReason: state.fallbackReason ?? 'worker_offline'
         });
     }
 
@@ -452,9 +442,34 @@ async function handleStatus(request, user, jobId) {
         return json(request, 400, { error: 'invalid_job_id' });
     }
 
-    const job = await ownJob(user.id, jobId);
+    let job = await ownJob(user.id, jobId);
     if (!job) {
         return json(request, 404, { error: 'job_not_found' });
+    }
+
+    // 治本一：工作層級的 stall 偵測，取代機器層級的心跳猜測。
+    // 「這件工作 20 秒內沒有任何 Worker 接走」是事實，不是推測；Realtime 喚醒正常時
+    // claim 通常 <1 秒，20 秒是極安全的判準。寄生在既有的 status 輪詢裡，不新增任何
+    // 排程或額外呼叫（前端本來就每 1~幾秒問一次 status）。
+    const createdAtMs = Date.parse(job.created_at ?? '');
+    if (job.status === 'queued'
+        && Number.isFinite(createdAtMs)
+        && Date.now() - createdAtMs > OCR_FIRST_CLAIM_STALL_MS) {
+        const stallResponse = await serviceFetch('/rest/v1/rpc/ocr_stall_to_fallback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                p_job_id: jobId,
+                p_user_id: user.id,
+                p_min_age_seconds: Math.floor(OCR_FIRST_CLAIM_STALL_MS / 1000)
+            })
+        });
+        if (stallResponse.ok) {
+            const stalledJob = await stallResponse.json();
+            if (stalledJob) {
+                job = stalledJob;
+            }
+        }
     }
 
     return json(request, 200, {
@@ -563,14 +578,25 @@ async function handleCleanup(request) {
 }
 
 async function handleHeartbeat(request, user, body) {
+    const heartbeatIntervalSeconds = Number.isInteger(Number(body?.heartbeatIntervalSeconds))
+        && Number(body?.heartbeatIntervalSeconds) >= 10 && Number(body?.heartbeatIntervalSeconds) <= 600
+        ? Number(body.heartbeatIntervalSeconds)
+        : 60;
+    // realtimeConnected 是治本二（Worker 重 build 後）才會真的傳入的連線事實；
+    // 治本一先接受這個欄位，缺省維持 false，不影響現有行為。
+    const realtimeConnected = body?.realtimeConnected === true;
+    const now = new Date().toISOString();
     const payload = {
         id: user.id,
         name: String(body?.name ?? 'OCR Worker').slice(0, 100),
         platform: String(body?.platform ?? 'unknown').slice(0, 100),
         version: String(body?.version ?? 'unknown').slice(0, 100),
         agent_status: body?.agentStatus && typeof body.agentStatus === 'object' ? body.agentStatus : {},
-        last_heartbeat_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        last_heartbeat_at: now,
+        last_seen_at: now,
+        heartbeat_interval_seconds: heartbeatIntervalSeconds,
+        realtime_connected: realtimeConnected,
+        updated_at: now
     };
     const response = await serviceFetch('/rest/v1/ocr_workers?on_conflict=id', {
         method: 'POST',
@@ -667,7 +693,19 @@ async function handleProgress(request, user, body) {
         return json(request, 409, { error: 'lease_lost' });
     }
 
+    touchWorkerLastSeen(user.id);
     return json(request, 200, { ok: true });
+}
+
+// progress／complete 是 Worker 處理工作期間最頻繁的呼叫，用它們順手更新
+// ocr_workers.last_seen_at 比等下一次心跳更即時；失敗不影響主流程（不 await 結果、
+// 忽略錯誤），因為這只是輔助性的新鮮度證據，不是這次請求本身要保證的事。
+function touchWorkerLastSeen(workerId) {
+    void serviceFetch(`/rest/v1/ocr_workers?id=eq.${encodeURIComponent(workerId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+        body: JSON.stringify({ last_seen_at: new Date().toISOString() })
+    }).catch(() => {});
 }
 
 function finiteNonNegativeInteger(value) {
@@ -853,6 +891,8 @@ async function handleComplete(request, user, body) {
     if (!response.ok || await response.json() !== true) {
         return json(request, 409, { error: 'lease_lost' });
     }
+
+    touchWorkerLastSeen(user.id);
 
     if (status !== 'fallback_required' && !evaluationQueued) {
         const job = await serviceFetch(`/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(jobId)}&select=storage_path&limit=1`);

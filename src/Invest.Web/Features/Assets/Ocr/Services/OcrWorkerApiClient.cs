@@ -108,8 +108,18 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
     private string? _refreshToken;
     private DateTimeOffset _accessTokenExpiresAt = DateTimeOffset.MinValue;
 
+    /// <summary>
+    /// 治本二：連線事實旗標，由 <see cref="ReceiveRealtimeAsync"/> 的 WebSocket 生命週期
+    /// 更新（join 成功後 true；接收迴圈結束或例外前 false）。心跳送出時一併回報，
+    /// 讓 db/054 的 ocr_worker_alive() 優先信任這個事實，而不是每次都靠時間推測。
+    /// 這是「樂觀傾向」的設計：crash 會讓旗標卡在 true，由 last_seen_at 的時間退路
+    /// （2×心跳週期）吸收，不影響正確性，只是多等一個週期才會被判定離線。
+    /// </summary>
+    public volatile bool IsRealtimeConnected;
+
     public async Task HeartbeatAsync(
         IReadOnlyDictionary<string, OcrWorkerAgentState> agentStatus,
+        int heartbeatIntervalSeconds,
         CancellationToken cancellationToken)
     {
         using var response = await SendJsonAsync(new
@@ -118,7 +128,9 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
             name = options.Name,
             platform = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
             version = typeof(OcrWorkerApiClient).Assembly.GetName().Version?.ToString() ?? "unknown",
-            agentStatus
+            agentStatus,
+            heartbeatIntervalSeconds,
+            realtimeConnected = IsRealtimeConnected
         }, cancellationToken);
         await EnsureSuccessAsync(response, "heartbeat");
     }
@@ -334,68 +346,79 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         var nextHeartbeat = DateTimeOffset.UtcNow + RealtimeHeartbeatInterval;
         Task<string?> receiveTask = ReceiveTextAsync(socket, cancellationToken);
 
-        while (socket.State == WebSocketState.Open)
+        // 不管迴圈怎麼結束（連線被對方關閉、phx_error/phx_close、逾時例外、
+        // 取消），離開這個方法就代表這個連線不再是「已連線」，一律重置成 false；
+        // RunWakeListenerAsync 的重連迴圈會在下一輪重新設回 true。
+        try
         {
-            if (receiveTask.IsCompleted)
+            while (socket.State == WebSocketState.Open)
             {
-                var message = await receiveTask;
-                if (message is null)
+                if (receiveTask.IsCompleted)
                 {
-                    return;
-                }
-
-                using var document = JsonDocument.Parse(message);
-                var root = document.RootElement;
-                var eventName = root.TryGetProperty("event", out var eventElement)
-                    ? eventElement.GetString()
-                    : null;
-                if (eventName is "phx_error" or "phx_close")
-                {
-                    throw new InvalidOperationException($"realtime_{eventName}");
-                }
-
-                if (eventName == "phx_reply"
-                    && root.TryGetProperty("payload", out var replyPayload)
-                    && replyPayload.TryGetProperty("status", out var replyStatus)
-                    && !joined)
-                {
-                    if (replyStatus.GetString() != "ok")
+                    var message = await receiveTask;
+                    if (message is null)
                     {
-                        throw new InvalidOperationException("realtime_join_failed");
+                        return;
                     }
 
-                    joined = true;
-                    signalWake();
+                    using var document = JsonDocument.Parse(message);
+                    var root = document.RootElement;
+                    var eventName = root.TryGetProperty("event", out var eventElement)
+                        ? eventElement.GetString()
+                        : null;
+                    if (eventName is "phx_error" or "phx_close")
+                    {
+                        throw new InvalidOperationException($"realtime_{eventName}");
+                    }
+
+                    if (eventName == "phx_reply"
+                        && root.TryGetProperty("payload", out var replyPayload)
+                        && replyPayload.TryGetProperty("status", out var replyStatus)
+                        && !joined)
+                    {
+                        if (replyStatus.GetString() != "ok")
+                        {
+                            throw new InvalidOperationException("realtime_join_failed");
+                        }
+
+                        joined = true;
+                        IsRealtimeConnected = true;
+                        signalWake();
+                    }
+                    else if (eventName == "broadcast")
+                    {
+                        signalWake();
+                    }
+
+                    receiveTask = ReceiveTextAsync(socket, cancellationToken);
+                    continue;
                 }
-                else if (eventName == "broadcast")
+
+                var untilHeartbeat = nextHeartbeat - DateTimeOffset.UtcNow;
+                if (untilHeartbeat <= TimeSpan.Zero)
                 {
-                    signalWake();
+                    await SendRealtimeAsync(socket, new
+                    {
+                        topic = "phoenix",
+                        @event = "heartbeat",
+                        payload = new { },
+                        @ref = Guid.NewGuid().ToString("N")
+                    }, cancellationToken);
+                    nextHeartbeat = DateTimeOffset.UtcNow + RealtimeHeartbeatInterval;
+                    continue;
                 }
 
-                receiveTask = ReceiveTextAsync(socket, cancellationToken);
-                continue;
-            }
-
-            var untilHeartbeat = nextHeartbeat - DateTimeOffset.UtcNow;
-            if (untilHeartbeat <= TimeSpan.Zero)
-            {
-                await SendRealtimeAsync(socket, new
+                var timer = Task.Delay(untilHeartbeat, cancellationToken);
+                var completed = await Task.WhenAny(receiveTask, timer);
+                if (completed == timer)
                 {
-                    topic = "phoenix",
-                    @event = "heartbeat",
-                    payload = new { },
-                    @ref = Guid.NewGuid().ToString("N")
-                }, cancellationToken);
-                nextHeartbeat = DateTimeOffset.UtcNow + RealtimeHeartbeatInterval;
-                continue;
+                    continue;
+                }
             }
-
-            var timer = Task.Delay(untilHeartbeat, cancellationToken);
-            var completed = await Task.WhenAny(receiveTask, timer);
-            if (completed == timer)
-            {
-                continue;
-            }
+        }
+        finally
+        {
+            IsRealtimeConnected = false;
         }
     }
 

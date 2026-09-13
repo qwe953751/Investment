@@ -93,6 +93,9 @@ K 線流程，因此 K 線尾端會依目前盤中快照同步。這兩張表由
 
 「資產」可在 Dashboard 與帳戶明細間切換、新增使用者／帳戶，並以 D+ AI-first 讀券商未實現損益截圖。
 網站先查兩分鐘內的 Worker 心跳及 Agent 登入／額度狀態，優先選取新鮮的 Windows Worker；AI 可用才把圖片放入 `ocr-private`。
+**2026-09-13 已查明並修好此判定的根因 bug（幾乎每次都誤判離線改走 Tesseract），改為樂觀語意：只有
+查無 Worker 或所有 Agent 都未登入才擋下；程式已完成但 DB migration／Edge Function 部署／Worker
+重新 build 尚待執行，上述行為在此之前仍是正式網站的實際狀態，細節見 [版本紀錄.md](Doc/版本紀錄.md) 最新一節。**
 未抽樣的 Max 完成後立即刪除；抽樣工作會保留到背景 Low 完成／失敗，異常時最長 60 分鐘清理。
 AI 不可用時圖片不離開瀏覽器，直接由 Tesseract 備援；
 若工作建立後才耗盡額度，也會回傳 `fallback_required` 再用原頁記憶體中的圖片執行備援。

@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔵 2026-09-13 已修第四個獨立問題：「強制取消辨識」與重整恢復流程搶同一個全域狀態，取消後彈回掃描中、下一批可能被誤 abort（改用世代編號＋取消時同步清空本機清單）；並補上「取消後 Worker 也真的停手」，順手修掉讓這個檢查生效的前提 bug（`ai_recognition` 階段名稱不合法，`db/052`＋`ocr-jobs` v15）。461 個 .NET 測試全綠，正式資料庫 rollback 測試四項斷言全過；**前端修正沒有真正瀏覽器端到端測試**。09-12 已修三個獨立問題並重啟公司 Windows：並行槽陣亡、前端心跳誤判、readiness fail-closed（**前端那半是否已隨強制取消功能一起發布需重新查證**）。另已完成 Windows→Mac→Tesseract 固定跨機接力（筆記 #61 收尾）；**家裡 Mac 仍待使用者重載 LaunchAgent，跨機接力未實機驗證**。另仍待 Claude Pro 登入、Golden Set、Windows 每張 ≤30 秒與長期斷線復原驗收 |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔴 2026-09-13 查明第五個獨立問題並修好：連測多次幾乎都直接走 Tesseract，根因是 `readiness` 的時間門檻 `Number(null)=0` 被 clamp 成 15 秒、跟 Worker 心跳週期（67 秒）相位不同步，78% 機率誤判離線。已重構為樂觀語意單一入口＋事實優先存活判定＋工作層級 stall 偵測（`db/054`），並完成 Worker 端連線旗標／心跳降頻／CLI 探測快取；489 個 .NET＋94 個 Node 測試全綠。**🔴 DB migration／Edge Function 部署／Worker EXE 重新 build 這三步都還沒執行，正式環境的 bug 依然存在，尚未修好**，詳見 [版本紀錄.md](Doc/版本紀錄.md) 最新一節。09-13 稍早已修第四個獨立問題：「強制取消辨識」與重整恢復流程搶同一個全域狀態，取消後彈回掃描中、下一批可能被誤 abort（改用世代編號＋取消時同步清空本機清單）；並補上「取消後 Worker 也真的停手」，順手修掉讓這個檢查生效的前提 bug（`ai_recognition` 階段名稱不合法，`db/052`＋`ocr-jobs` v15）。461 個 .NET 測試全綠，正式資料庫 rollback 測試四項斷言全過；**前端修正沒有真正瀏覽器端到端測試**。09-12 已修三個獨立問題並重啟公司 Windows：並行槽陣亡、前端心跳誤判、readiness fail-closed（**前端那半是否已隨強制取消功能一起發布需重新查證**）。另已完成 Windows→Mac→Tesseract 固定跨機接力（筆記 #61 收尾）；**家裡 Mac 仍待使用者重載 LaunchAgent，跨機接力未實機驗證**。另仍待 Claude Pro 登入、Golden Set、Windows 每張 ≤30 秒與長期斷線復原驗收 |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 5 分鐘盤中程式已完成；等下一個交易日的來源、Storage 與回補驗收，網站尚未發布 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
@@ -1243,9 +1243,37 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 ---
 
 <a id="todo-15"></a>
-## 🔵 15. D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收
+## 🔴 15. D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收
 
 [↑ 回到 TODO 列表](#快速跳轉)
+
+### 🔴 2026-09-13：readiness 時間門檻根因（幾乎每次都走 Tesseract），修復已寫好但尚未部署
+
+使用者連測多次，AI 路徑幾乎都沒啟動、整批圖直接走瀏覽器 Tesseract。查證根因是
+`supabase/functions/ocr-jobs/index.js` 的 `readinessHeartbeatAgeMs()`：前端從不帶
+`maxAgeSeconds` 參數，`Number(null)` 是 `0`、`Number.isFinite(0)` 是 `true`，走不到 120 秒
+預設值，被 clamp 成下限 15 秒；而 Worker 心跳週期因 CLI 探測未登入時的重試被拖到實測 67 秒，
+readiness 只有 15/67≈22% 機率判定在線。當天實測 5 次 readiness 距上次心跳分別是
+16s／34s／43s／62s／52s，全部 > 15 秒；`ocr_jobs` 當天 0 筆，Worker 進程與 Codex 探測全程正常。
+
+更深層問題：同一個「Worker 可不可用」的判定被 readiness／submit／`db/049` 的 Windows-Mac
+分流／relay 五個地方各自維護一份門檻常數（15／120／120／120 秒），沒有單一真相來源，是同類
+事故第 N 次而非運氣問題。
+
+**已完成**（規格見 [`AI OCR 可用性重構實作規格.md`](Doc/技術文件/AI%20OCR%20可用性重構實作規格.md)，
+完整實作記錄見 [版本紀錄.md](Doc/版本紀錄.md) 最新一節）：
+- 治本一：`db/054_ocr_worker_availability.sql` 新增事實優先的存活判定
+  （`ocr_worker_alive()`／`ocr_worker_has_agent()`）與工作層級 stall 偵測（`ocr_stall_to_fallback()`）；
+  `ocr-jobs/index.js` 刪除舊的時間門檻死代碼，改用樂觀語意的單一判定入口 `checkAvailableWorkers()`。
+- 治本二：Worker C# 端新增連線事實旗標（`IsRealtimeConnected`）、心跳降頻 60→300 秒、CLI 探測快取
+  （5 分鐘 TTL，且復原輪詢時強制略過快取，避免重蹈本專案先前移除探測快取的覆轍）。
+- 489 個 .NET 測試＋94 個 Node 測試全綠；程式已 commit。
+
+**🔴 尚未完成、正式環境的 bug 依然存在**：
+1. `db/054` 尚未套用到正式 Supabase。
+2. `ocr-jobs` Edge Function 尚未重新部署（正式環境還在跑含 bug 的 v15）。
+3. Worker EXE 尚未在任何機器重新 build／部署（治本二對正式環境沒有效果）。
+4. 相位測試待正式環境驗收：修好後應間隔 20 秒連續觸發 5 次上傳，5 次都要有 `?action=submit`。
 
 **狀態：AI-first 前端、正式 Supabase 私有佇列、Validator、Mac Worker、重載恢復、submit 冪等、
 fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並發布；本輪已加入

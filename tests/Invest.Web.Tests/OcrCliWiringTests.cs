@@ -60,7 +60,10 @@ public sealed class OcrCliWiringTests
             "Services",
             "OcrWorkerApiClient.cs"));
 
-        Assert.Contains("WorkerHeartbeatInterval = TimeSpan.FromSeconds(60)", worker, StringComparison.Ordinal);
+        // 2026-09-13 治本二：連線事實旗標（OcrWorkerApiClient.IsRealtimeConnected）上線後，
+        // 心跳頻率從 60 秒降到 300 秒（省下約 33,000 次/月的 heartbeat invocation）；
+        // 沒有可用 Agent 時仍用下面的 10 秒回復輪詢，不受這個調整影響。
+        Assert.Contains("WorkerHeartbeatInterval = TimeSpan.FromSeconds(300)", worker, StringComparison.Ordinal);
         Assert.Contains("RunWakeListenerAsync(", worker, StringComparison.Ordinal);
         Assert.Contains("var delay = wasAvailable ? WorkerHeartbeatInterval : WorkerHeartbeatRecoveryPollInterval;", worker, StringComparison.Ordinal);
         Assert.Contains("Enumerable.Range(0, options.MaxConcurrency)", worker, StringComparison.Ordinal);

@@ -13,9 +13,15 @@ public sealed class OcrWorkerRunner(
     OcrRecognitionValidator validator)
 {
     private static readonly string[] SupportedExtensions = [".png", ".jpg", ".jpeg", ".webp"];
-    private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(60);
+    // 治本二：2026-09-13 事故根因是 readiness 的時間門檻與這個心跳週期的相位差
+    // （原本 60 秒設定值，因 CLI 探測重試被拖到實測 67 秒）。治本一已把離線判定
+    // 收斂成事實優先（OcrWorkerApiClient.IsRealtimeConnected）、時間退路其次
+    // （2×這個週期）；有了連線事實當主要依據，才把心跳頻率從 60 秒降到 300 秒，
+    // 省下約 33,000 次/月的 heartbeat invocation。這個降頻的前提是連線旗標必須
+    // 先上線——沒有它，300 秒的時間退路窗口（600 秒）在真正斷線時會太寬鬆。
+    private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(300);
     // 探測顯示「沒有可用 Agent」時，心跳改用這個較短的間隔重新探測，讓額度／登入剛好
-    // 復原時能在十幾秒內回到可用，不必最多卡到下一個 60 秒心跳週期才被看見。
+    // 復原時能在十幾秒內回到可用，不必最多卡到下一個心跳週期才被看見。
     private static readonly TimeSpan WorkerHeartbeatRecoveryPollInterval = TimeSpan.FromSeconds(10);
     // 探測 CLI 登入狀態偶爾會因為網路瞬斷、CLI 對遠端做 token 驗證時的暫時性錯誤而誤判成
     // 未登入；2026-09-12 有一次上傳因此整批被判定「沒有可用 Agent」而全部改走 Tesseract，
@@ -23,9 +29,18 @@ public sealed class OcrWorkerRunner(
     // 登入就立刻採用，不會把單次的抖動當成真的斷線。
     private const int ProbeRetryAttempts = 5;
     private static readonly TimeSpan ProbeRetryDelay = TimeSpan.FromSeconds(1);
+    // 治本二：確認「未登入」的 Agent 用這個較長的間隔才重新做一次完整探測（含上面的
+    // 5 次重試）；已登入或未安裝的探測本身很快（不會觸發重試迴圈），不快取，
+    // 才能儘快發現額度用盡、登出等狀態變化。這個快取解決的是 2026-09-13 診斷出的
+    // 另一個根因：固定未登入的 CLI 每輪心跳都白白付出最多 4 秒重試延遲，
+    // 把設定值 60 秒的心跳週期拖成實測 67 秒，讓 readiness 的命中率雪上加霜。
+    private static readonly TimeSpan UnauthenticatedProbeCacheDuration = TimeSpan.FromMinutes(5);
 
     private volatile IReadOnlyDictionary<string, OcrWorkerAgentState> _agentStates =
         new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase);
+    // 只被 ProbeAgentsAsync 呼叫，而該方法只在啟動時與 MaintainHeartbeatAsync 這一個
+    // 背景迴圈裡循序呼叫（不會有並行探測），不需要額外的執行緒安全機制。
+    private readonly Dictionary<OcrAgentKind, (OcrWorkerAgentState State, DateTimeOffset ProbedAt)> _unauthenticatedProbeCache = new();
 
     public async Task RunAsync(string[] args, CancellationToken cancellationToken = default)
     {
@@ -57,7 +72,7 @@ public sealed class OcrWorkerRunner(
             + $"評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
 
         _agentStates = await ProbeAgentsAsync(cancellationToken);
-        await api.HeartbeatAsync(_agentStates, cancellationToken);
+        await api.HeartbeatAsync(_agentStates, (int)WorkerHeartbeatInterval.TotalSeconds, cancellationToken);
 
         if (once)
         {
@@ -212,9 +227,12 @@ public sealed class OcrWorkerRunner(
             {
                 var delay = wasAvailable ? WorkerHeartbeatInterval : WorkerHeartbeatRecoveryPollInterval;
                 await Task.Delay(delay, cancellationToken);
-                var agents = await ProbeAgentsAsync(cancellationToken);
+                // 沒有可用 Agent、正在用 10 秒回復輪詢時，一定要強制真的重新探測，不能用
+                // 未登入快取擋下來——這正是這個較短間隔存在的唯一理由：儘快發現額度／登入
+                // 已經復原。快取只在「已有可用 Agent、走正常心跳週期」時才有意義。
+                var agents = await ProbeAgentsAsync(cancellationToken, allowUnauthenticatedCache: wasAvailable);
                 _agentStates = agents;
-                await api.HeartbeatAsync(agents, cancellationToken);
+                await api.HeartbeatAsync(agents, (int)WorkerHeartbeatInterval.TotalSeconds, cancellationToken);
                 var available = AgentsCanWork(agents);
                 if (available && !wasAvailable)
                 {
@@ -496,23 +514,62 @@ public sealed class OcrWorkerRunner(
     }
 
     private async Task<IReadOnlyDictionary<string, OcrWorkerAgentState>> ProbeAgentsAsync(
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowUnauthenticatedCache = true)
     {
         var now = DateTimeOffset.UtcNow;
-        var claude = await ProbeWithRetryAsync(
+        var claude = await ProbeWithCacheAsync(
+            OcrAgentKind.Claude,
             OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude),
             ["auth", "status", "--text"],
-            cancellationToken);
-        var codex = await ProbeWithRetryAsync(
+            cancellationToken,
+            allowUnauthenticatedCache);
+        var codex = await ProbeWithCacheAsync(
+            OcrAgentKind.Codex,
             OcrAgentExecutableResolver.Resolve(OcrAgentKind.Codex),
             ["login", "status"],
-            cancellationToken);
+            cancellationToken,
+            allowUnauthenticatedCache);
 
         return new Dictionary<string, OcrWorkerAgentState>(StringComparer.OrdinalIgnoreCase)
         {
             ["claude"] = WithQuota(claude, OcrAgentKind.Claude, now),
             ["codex"] = WithQuota(codex, OcrAgentKind.Codex, now)
         };
+    }
+
+    // 治本二：固定未登入的 Agent 不必每輪「正常」心跳都付出 ProbeWithRetryAsync 的完整
+    // 重試成本（最多 4 秒延遲，正是把 60 秒心跳實測拖成 67 秒、壓低 readiness 命中率的
+    // 元凶之一）。已登入或未安裝的探測本身很快（不會進入重試迴圈），維持每次都真的執行，
+    // 才能儘快發現額度用盡、登出等狀態變化——這裡只快取「安裝了但沒登入」這一種結果，
+    // 而且 allowUnauthenticatedCache=false（沒有可用 Agent、正在 10 秒回復輪詢）時
+    // 完全略過快取：這個較短間隔存在的唯一理由就是儘快發現復原，快取會讓它形同虛設
+    // （這正是本專案較早版本移除過一次探測快取的原因，見 OcrCliWiringTests 的既有測試）。
+    private async Task<OcrWorkerAgentState> ProbeWithCacheAsync(
+        OcrAgentKind kind,
+        string executable,
+        IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken,
+        bool allowUnauthenticatedCache)
+    {
+        if (allowUnauthenticatedCache
+            && _unauthenticatedProbeCache.TryGetValue(kind, out var cached)
+            && DateTimeOffset.UtcNow - cached.ProbedAt < UnauthenticatedProbeCacheDuration)
+        {
+            return cached.State;
+        }
+
+        var result = await ProbeWithRetryAsync(executable, arguments, cancellationToken);
+        if (result.Installed && !result.Authenticated)
+        {
+            _unauthenticatedProbeCache[kind] = (result, DateTimeOffset.UtcNow);
+        }
+        else
+        {
+            _unauthenticatedProbeCache.Remove(kind);
+        }
+
+        return result;
     }
 
     private OcrWorkerAgentState WithQuota(
