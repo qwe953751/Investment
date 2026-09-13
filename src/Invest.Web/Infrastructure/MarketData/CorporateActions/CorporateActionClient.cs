@@ -106,7 +106,7 @@ public sealed class CorporateActionClient(
 
     private static bool IsTransient(Exception exception, CancellationToken cancellationToken)
         => !cancellationToken.IsCancellationRequested
-            && exception is HttpRequestException or JsonException or IOException;
+            && exception is HttpRequestException or TaskCanceledException or JsonException or IOException;
 
     private async Task<IReadOnlyList<StockPriceAdjustment>> GetTwseAsync(
         DateOnly startDate,
