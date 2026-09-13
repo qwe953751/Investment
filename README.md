@@ -219,6 +219,12 @@ Dashboard 與帳戶明細的折線圖共用版本 A：滑鼠移動／點擊或�
 
 ## 最新已發布版本
 
+本輪筆記 #58／#59 的族群 Supabase 來源修正與 timeout 重試修正已由 `main` commit `2dc6871c` 推送，並由
+[`daily-snapshot.yml` publish-only run 34738818264](https://github.com/qwe953751/Investment/actions/runs/34738818264)
+完成靜態輸出與兩個 Pages 發布。公開 manifest HTTP 200，版本為 `1789275085`、最新交易日 `2026/09/11`、
+產生時間 `2026-09-13 12:51`；公開 `topics.json` 有 2 個 mappings、5 個 periods、每期 218 rows 且 `warnings=[]`，
+線上 `site.js` 已驗證包含 Supabase 空資料提示。publish-only 的行情回補、Supabase 同步、備份與心跳均依設計略過。
+
 本輪登入後資產／筆記空白修復已以 `main` commit `c47ebdf6` 推送，並由
 [`daily-snapshot.yml` publish-only run 34716807628](https://github.com/qwe953751/Investment/actions/runs/34716807628)
 完成測試、靜態輸出與兩個 Pages 發布。公開 manifest HTTP 200，版本為 `1789244509`、最新交易日
