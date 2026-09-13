@@ -73,6 +73,18 @@ public sealed class OcrWorkerAvailabilityTests
     }
 
     [Fact]
+    public void Stall偵測在Worker有可用Agent時不觸發fallback()
+    {
+        var source = ReadNormalized("db", "055_ocr_stall_guard.sql");
+
+        // 守衛條件：有任何可用 Worker 就不標 fallback_required，
+        // 分清楚「Worker 活著但槽全滿正在排隊」與「真的沒有 Worker」。
+        Assert.Contains("create or replace function public.ocr_stall_to_fallback(", source, StringComparison.Ordinal);
+        Assert.Contains("and not exists (select 1 from public.ocr_available_workers())", source, StringComparison.Ordinal);
+        Assert.Contains("fallback_reason = 'worker_stalled'", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 前端顯示stall與no_worker的真實原因而非籠統文案()
     {
         var source = ReadNormalized(
