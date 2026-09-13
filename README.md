@@ -34,7 +34,7 @@ Edge Function 已部署 v13，正式 claim／evaluation transition／wake rollba
 |---|---|
 | 這個專案想做什麼、為什麼長成這樣、不做什麼 | [Doc/專案計劃書.md](Doc/專案計劃書.md) |
 | 到目前為止做完了什麼、現在什麼狀態、踩過哪些坑 | [Doc/完成進度.md](Doc/完成進度.md) |
-| 在另一台裝置上要裝什麼、要什麼權限，主力機實際裝了哪些套件（接手時逐項對照） | [Doc/開發環境.md](Doc/開發環境.md) |
+| 在另一台裝置上要裝什麼、要什麼權限，以及 Codex／Claude 共用的 Supabase 變更後前端驗收規則 | [Doc/開發環境.md](Doc/開發環境.md) |
 | 最近發布了什麼、其他裝置接手先看哪裡 | [Doc/版本紀錄.md](Doc/版本紀錄.md) |
 | 還沒做的事，以及每一項已經談出來的結論 | [TODO.md](TODO.md) |
 

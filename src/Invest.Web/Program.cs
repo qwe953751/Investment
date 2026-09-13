@@ -89,7 +89,7 @@ builder.Services.AddHttpClient<CompanyIndustryClient>(ConfigureQuoteClient);
 // 使用者在人工編輯頁改過的族群分類，匯出時要套回樹上。
 builder.Services.AddSingleton<TopicEditStore>();
 
-// Google Sheet 讀不到時的備援快取（db/036_topic_sheet_cache.sql）。
+// Supabase 族群權威來源（db/050_topic_source_authority_and_share_policy.sql）。
 builder.Services.AddSingleton<TopicSheetCacheStore>();
 
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);

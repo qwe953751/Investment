@@ -1,9 +1,9 @@
 namespace Invest.Web.Features.StockTopics.Models;
 
 /// <summary>
-/// 一次讀取 Google Sheet 之後得到的完整族群資料：兩份分類、股票對應與名稱查表。
+/// 一次讀取 Supabase 族群來源之後得到的完整資料：兩份分類、股票對應與名稱查表。
 ///
-/// 抓不到 Sheet 時回 <see cref="Empty"/>，讓族群頁顯示「尚無資料」，
+/// 抓不到來源時回 <see cref="Empty"/>，讓族群頁顯示「尚無資料」，
 /// 而不是讓整個靜態網站匯出失敗——排行榜本身跟這份資料一點關係都沒有。
 /// </summary>
 public sealed class TopicCatalog
@@ -12,7 +12,7 @@ public sealed class TopicCatalog
 
     /// <summary>
     /// 兩份分類。為什麼要留兩份而不是直接換成新的：
-    /// 版本一是「Google Sheet 原本長什麼樣」，版本二是「把概念歸到 F:J 樹上之後長什麼樣」。
+    /// 版本一是「來源原本長什麼樣」，版本二是「把概念歸到 F:J 樹上之後長什麼樣」。
     /// 歸類還沒拍板（待合併、一概念多節點都還在），改壞了要能立刻跟原始資料對照，
     /// 所以兩份一起帶到畫面上，畫面預設顯示版本二。
     /// </summary>

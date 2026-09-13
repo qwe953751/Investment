@@ -582,7 +582,7 @@ public sealed class StaticSiteExporter(
     /// 族群分類與各期間的族群熱度，全部寫成一份 data/topics.json。
     ///
     /// 檔案只放數字與必要字串，顯示格式（百分比、億元、名次）一律交給前端，作法比照 RowExport。
-    /// 讀不到 Google Sheet 時仍然會寫出一份空的檔案並帶著警告文字：
+    /// 讀不到 Supabase 族群來源時仍然會寫出一份空的檔案並帶著警告文字：
     /// 前端才分得出「還沒發佈這個功能」與「這次沒抓到分類」，不必去猜 404 的意思。
     /// </summary>
     private async Task<string> WriteTopicsAsync(

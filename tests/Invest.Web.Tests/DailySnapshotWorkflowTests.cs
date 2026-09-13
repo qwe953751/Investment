@@ -59,6 +59,28 @@ public sealed class DailySnapshotWorkflowTests
     }
 
     [Fact]
+    public void 發布前會阻擋空的族群分類輸出()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+        var gateStart = workflow.IndexOf("- name: 驗證族群分類輸出", StringComparison.Ordinal);
+        Assert.True(gateStart >= 0, "找不到族群分類輸出驗證步驟。");
+
+        var publishStart = workflow.IndexOf(
+            "- name: 發佈到 frank-invest.github.io（單一網址，訪客為預設）",
+            gateStart,
+            StringComparison.Ordinal);
+
+        Assert.True(publishStart > gateStart, "族群分類驗證必須在正式發布前執行。");
+
+        var gate = workflow[gateStart..publishStart];
+        Assert.Contains("publish/site/data/topics.json", gate, StringComparison.Ordinal);
+        Assert.Contains(".mappings", gate, StringComparison.Ordinal);
+        Assert.Contains(".periods", gate, StringComparison.Ordinal);
+        Assert.Contains("exit 1", gate, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 補抓ETF歷史是手動選項而且預設不跑()
     {
         var workflow = File.ReadAllText(Path.Combine(

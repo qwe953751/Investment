@@ -7,11 +7,12 @@ using NpgsqlTypes;
 namespace Invest.Web.Infrastructure.StockTopics;
 
 /// <summary>
-/// 族群樹（F:J）與概念股分頁最近一次成功讀取結果的備援快取（db/036_topic_sheet_cache.sql）。
+/// Supabase <c>topic_source</c> 裡的族群樹（F:J）與概念股資料。
 ///
-/// 只在 <see cref="GoogleSheetTopicClient"/> 讀不到 Google Sheet 時才會被讀出來當退路；
-/// 讀得到的時候永遠用剛讀到的當下資料，不會去看這張表。任何一步失敗都只記警告、
-/// 回傳「沒有快取」，理由跟其他族群相關的儲存一樣：這是附加的保險，不該讓匯出跟著它倒。
+/// <see cref="GoogleSheetTopicClient"/> 在預設的 Supabase 模式直接讀這張表；
+/// 切到 Google Sheet 模式重新匯入時，也把成功解析的內容寫回同一張權威來源表。
+/// 任何一步失敗都只記警告、回傳「沒有來源資料」，理由跟其他族群相關的儲存一樣：
+/// 這是附加功能，不該讓匯出跟著它倒。
 /// </summary>
 public sealed class TopicSheetCacheStore(ILogger<TopicSheetCacheStore> logger)
 {
@@ -41,7 +42,7 @@ public sealed class TopicSheetCacheStore(ILogger<TopicSheetCacheStore> logger)
             await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
             await using var command = new NpgsqlCommand(
                 """
-                insert into topic_sheet_cache (kind, captured_at, payload)
+                insert into topic_source (kind, captured_at, payload)
                 values (@kind, now(), @payload)
                 on conflict (kind) do update set
                     captured_at = excluded.captured_at,
@@ -69,7 +70,7 @@ public sealed class TopicSheetCacheStore(ILogger<TopicSheetCacheStore> logger)
         {
             await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
             await using var command = new NpgsqlCommand(
-                "select payload from topic_sheet_cache where kind = @kind",
+                "select payload from topic_source where kind = @kind",
                 connection);
 
             command.Parameters.AddWithValue("kind", kind);

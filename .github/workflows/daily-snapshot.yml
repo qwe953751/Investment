@@ -351,6 +351,17 @@ jobs:
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
         run: dotnet run -c Release --project src/Invest.Web -- export "$GITHUB_WORKSPACE/publish/site"
 
+      # 族群是 Supabase 的權威來源。匯出程式對附加資料採容錯，不能讓資料庫讀取錯誤
+      # 被吞掉後仍把空的 topics.json 發到正式網站；這裡把關鍵輸出變成發布前硬門檻。
+      - name: 驗證族群分類輸出
+        if: ${{ !cancelled() }}
+        run: |
+          if ! jq -e '(.mappings | length) > 0 and (.periods | length) > 0 and all(.periods[]; (.rows | length) > 0)' publish/site/data/topics.json >/dev/null; then
+              echo "族群分類輸出為空或不完整，停止發布。請先檢查 export log 的 Supabase 讀取錯誤。" >&2
+              jq '{baseDate, activeVersion, warnings, mappings: (.mappings | length), periods: (.periods | length)}' publish/site/data/topics.json >&2
+              exit 1
+          fi
+
       # 舊網址（qwe953751.github.io/Investment/）已收掉內容：不帶 GH_PAGES_PUBLISH_ROOT，
       # publish-gh-pages.sh 只會發一頁空白頁，訪客看不到任何排行資料。這個 repo
       # 的 gh-pages 分支還留著（沒關 Pages），但打開網址什麼都看不到。

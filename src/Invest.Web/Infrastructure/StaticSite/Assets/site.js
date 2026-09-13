@@ -20934,14 +20934,14 @@ function renderTopicPanel() {
         return;
     }
 
-    if (topicActive === null || topicActive.topics.length === 0) {
-        panel.append(makeTopicNotice(
-            '這份快照沒有族群分類。分類來自 Google Sheet，export 當下抓不到就會是空的。', true));
-        return;
-    }
-
     if (topicData.warnings.length > 0) {
         panel.append(makeTopicWarnings(topicData.warnings));
+    }
+
+    if (topicActive === null || topicActive.topics.length === 0) {
+        panel.append(makeTopicNotice(
+            '這份快照沒有族群分類。分類權威來源是 Supabase；請檢查最近一次 export 的資料庫讀取紀錄。', true));
+        return;
     }
 
     if (state.topicTab === 'heat') {
@@ -20962,7 +20962,7 @@ function makeTopicWarnings(warnings) {
     const box = document.createElement('section');
     box.className = 'notice warning topic-warnings';
     const title = document.createElement('strong');
-    title.textContent = `分類匯入時有 ${warnings.length} 件事沒處理乾淨：`;
+    title.textContent = `分類資料載入時有 ${warnings.length} 件事沒處理乾淨：`;
     box.append(title);
 
     const list = document.createElement('ul');
