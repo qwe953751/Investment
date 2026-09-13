@@ -278,6 +278,7 @@ async function handleReadiness(request) {
 
     return json(request, 200, {
         ready: availableWorkers.length > 0,
+        workerPlatform: availableWorkers[0]?.platform ?? null,
         workers: workerStates.map(w => ({
             id: w.id,
             name: w.name,
@@ -348,6 +349,7 @@ async function handleSubmit(request, user) {
     if (!online || agents.length === 0) {
         return json(request, 409, {
             error: 'ai_not_ready',
+            workerPlatform: worker?.platform ?? null,
             fallbackReason: !online ? 'worker_offline' : 'no_available_agent'
         });
     }
