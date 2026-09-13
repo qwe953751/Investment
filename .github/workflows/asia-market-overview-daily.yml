@@ -1,11 +1,12 @@
 # 日／韓收盤日線。這條流程只更新 data/imports-overview，不同步 Supabase Database、
-# 不執行 export、也不觸發 GitHub Pages 發佈；使用者可在驗收後自行安排發布。
+# 不執行 export、也不觸發 GitHub Pages 發佈；backfill-overview 的品質門檻若未通過，
+# 指令會以非零狀態結束，下面的 data commit 不會執行，因此不會留下半套快取。
 
 name: 日韓市場總覽盤後快取
 
 on:
   schedule:
-    # UTC 07:45 = 台北 15:45，進場後等待到 17:30，給 Yahoo 日 K 足夠落地時間。
+    # UTC 07:45 = 台北 15:45，進場後等待到 17:30，給各來源日 K 足夠落地時間。
     - cron: '45 7 * * 1-5'
   workflow_dispatch:
     inputs:

@@ -61,9 +61,12 @@ public sealed class MarketOverviewIntradayCollector(
         var tradeDate = session.TradingDateAt(now);
         var quotes = new List<MarketOverviewIntradayQuote>();
         var failedSymbols = new List<string>();
+        var carriedRisk = false;
         var callCount = 0;
 
-        foreach (var symbol in MarketOverviewCatalog.SymbolsFor(definition))
+        foreach (var symbol in MarketOverviewCatalog.SymbolsFor(definition)
+            .Where(symbol => symbol.Source == MarketOverviewDataSource.YahooFinance
+                || symbol.IntradaySymbol is not null))
         {
             if (callCount > 0)
             {
@@ -100,6 +103,34 @@ public sealed class MarketOverviewIntradayCollector(
             }
         }
 
+        // Nikkei VI 與韓國 VKOSPI 代理目前只有可靠的收盤序列；盤中沿用最近一個
+        // 已完成交易日的風險值，並在快照 warning 明確標示，不把 20% 風險權重刪掉。
+        if (definition.RiskSymbol is { Source: not MarketOverviewDataSource.YahooFinance } risk
+            && !quotes.Any(quote => quote.Symbol == risk.Symbol))
+        {
+            var latestRisk = dailyHistory
+                .Where(snapshot => snapshot.TradingDate <= tradeDate)
+                .OrderByDescending(snapshot => snapshot.TradingDate)
+                .SelectMany(snapshot => snapshot.Quotes)
+                .FirstOrDefault(quote => quote.Symbol == risk.Symbol && quote.ClosePrice > 0m);
+            if (latestRisk is not null)
+            {
+                quotes.Add(new MarketOverviewIntradayQuote(
+                    risk.Symbol,
+                    risk.DisplayName,
+                    tradeDate,
+                    now,
+                    latestRisk.ClosePrice,
+                    latestRisk.OpenPrice,
+                    latestRisk.HighPrice,
+                    latestRisk.LowPrice,
+                    latestRisk.ClosePrice,
+                    latestRisk.TradingVolume,
+                    latestRisk.TradingValue));
+                carriedRisk = true;
+            }
+        }
+
         var receivedSymbols = quotes.Select(quote => quote.Symbol).ToHashSet(StringComparer.Ordinal);
         var missingIndices = definition.Indices
             .Where(symbol => !receivedSymbols.Contains(symbol.Symbol))
@@ -132,9 +163,14 @@ public sealed class MarketOverviewIntradayCollector(
             .ToArray();
         var group = MarketOverviewProjection.ToIntradayGroup(history, definition, tradeDate);
         var warnings = new List<string>();
-        if (definition.RiskSymbol is { } risk && !receivedSymbols.Contains(risk.Symbol))
+        if (carriedRisk && definition.RiskSymbol is { } carriedRiskSymbol)
         {
-            warnings.Add($"風險指數 {risk.Symbol} 本輪缺值；熱絡分數顯示 —，指數價格仍為本輪盤中值。");
+            warnings.Add(
+                $"風險指標 {carriedRiskSymbol.Symbol} 沒有 5 分鐘來源；沿用最近收盤值計算 20% 風險權重，並非即時風險報價。");
+        }
+        else if (definition.RiskSymbol is { } missingRisk && !receivedSymbols.Contains(missingRisk.Symbol))
+        {
+            warnings.Add($"風險指數 {missingRisk.Symbol} 本輪缺值；熱絡分數顯示 —，未將風險權重重新分配。");
         }
 
         if (failedSymbols.Count > 0)

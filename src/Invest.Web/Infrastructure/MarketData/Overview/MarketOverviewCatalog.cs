@@ -11,6 +11,14 @@ public enum MarketOverviewValueKind
     QuoteTurnover
 }
 
+/// <summary>市場總覽日線／盤中資料的來源語意。</summary>
+public enum MarketOverviewDataSource
+{
+    YahooFinance,
+    NikkeiOfficialCsv,
+    DerivedKoreaRealizedVolatility
+}
+
 /// <summary>
 /// 一個市場的計算設定。公式集中在 MarketOverviewCalculator，這裡只放市場差異。
 /// </summary>
@@ -85,12 +93,15 @@ public static class MarketOverviewCatalog
     public static readonly IReadOnlyList<MarketOverviewSymbol> JapanIndices =
     [
         new("^N225", "日經 225", MarketOverviewValueKind.Index),
-        new("^TOPX", "TOPIX", MarketOverviewValueKind.Index),
-        new("^JPXNK400", "JPX-Nikkei 400", MarketOverviewValueKind.Index)
+        new("^TOPX", "TOPIX（1306.T ETF 代理）", MarketOverviewValueKind.Index,
+            HistoricalSymbol: "1306.T", IntradaySymbol: "1306.T"),
+        new("^JPXNK400", "JPX-Nikkei 400", MarketOverviewValueKind.Index,
+            MarketOverviewDataSource.NikkeiOfficialCsv, "1591.T")
     ];
 
     public static readonly MarketOverviewSymbol JapanRisk =
-        new("^JNIV", "日經波動率指數", MarketOverviewValueKind.Index);
+        new("^JNIV", "日經波動率指數", MarketOverviewValueKind.Index,
+            MarketOverviewDataSource.NikkeiOfficialCsv);
 
     /// <summary>
     /// NEXT FUNDS TOPIX-17 ETF 中挑選的 11 個代表產業；大小只影響產業確認，
@@ -116,11 +127,13 @@ public static class MarketOverviewCatalog
     [
         new("^KS11", "KOSPI", MarketOverviewValueKind.Index),
         new("^KQ11", "KOSDAQ", MarketOverviewValueKind.Index),
-        new("^KRX100", "KRX 100", MarketOverviewValueKind.Index)
+        new("^KRX100", "KRX 100（KODEX 200 ETF 代理）", MarketOverviewValueKind.Index,
+            HistoricalSymbol: "069500.KS", IntradaySymbol: "069500.KS")
     ];
 
     public static readonly MarketOverviewSymbol KoreaRisk =
-        new("^VKOSPI", "VKOSPI", MarketOverviewValueKind.Index);
+        new("^VKOSPI", "KOSPI 20日實現波動率（VKOSPI 代理）", MarketOverviewValueKind.Index,
+            MarketOverviewDataSource.DerivedKoreaRealizedVolatility);
 
     /// <summary>
     /// 韓國免費來源對產業 ETF 的涵蓋不穩定，先使用可由 Yahoo 取得的產業代表標的。
@@ -254,4 +267,7 @@ public static class MarketOverviewCatalog
 public sealed record MarketOverviewSymbol(
     string Symbol,
     string DisplayName,
-    MarketOverviewValueKind ValueKind = MarketOverviewValueKind.ShareVolume);
+    MarketOverviewValueKind ValueKind = MarketOverviewValueKind.ShareVolume,
+    MarketOverviewDataSource Source = MarketOverviewDataSource.YahooFinance,
+    string? IntradaySymbol = null,
+    string? HistoricalSymbol = null);

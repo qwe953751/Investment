@@ -23,21 +23,22 @@ public sealed class YahooFinanceIntradayQuoteClient(
         MarketOverviewSymbol symbol,
         CancellationToken cancellationToken = default)
     {
+        var sourceSymbol = symbol.IntradaySymbol ?? symbol.Symbol;
         var url = "https://query1.finance.yahoo.com/v8/finance/chart/"
-            + Uri.EscapeDataString(symbol.Symbol)
+            + Uri.EscapeDataString(sourceSymbol)
             + "?range=1d&interval=5m&includePrePost=false";
         using var response = await httpClient.GetAsync(url, cancellationToken);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
-            logger.LogWarning("Yahoo Finance 查無盤中 {Symbol}（404）。", symbol.Symbol);
+            logger.LogWarning("Yahoo Finance 查無盤中 {Symbol}（404）。", sourceSymbol);
             return null;
         }
 
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
             throw new YahooFinanceRateLimitedException(
-                $"Yahoo Finance 回傳 429（{symbol.Symbol}），盤中收集停止本輪，不發佈半套快照。");
+                $"Yahoo Finance 回傳 429（{sourceSymbol}），盤中收集停止本輪，不發佈半套快照。");
         }
 
         response.EnsureSuccessStatusCode();

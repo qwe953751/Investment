@@ -103,6 +103,7 @@ builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
 // 美股主要資料源：Yahoo Finance 公開 chart API，UsMarketDataDownloader 實際呼叫這支。
 builder.Services.AddHttpClient<YahooFinanceDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<YahooFinanceIntradayQuoteClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<NikkeiIndexDailyQuoteClient>(ConfigureQuoteClient);
 
 // 備援：Alpha Vantage，目前沒有接線，留著在 Yahoo Finance 被擋時可以手動切回。
 builder.Services.AddHttpClient<AlphaVantageDailyQuoteClient>(
@@ -1592,7 +1593,7 @@ static async Task RunMarketOverviewBackfillAsync(IServiceProvider services, stri
     var markets = ParseMarketOverviewMarkets(args);
     Console.WriteLine($"快取位置：{store.Directory}");
     Console.WriteLine($"市場：{string.Join(", ", MarketOverviewCatalog.DefinitionsFor(markets).Select(definition => definition.Key))}");
-    Console.WriteLine("逐 symbol 呼叫 Yahoo Finance（禮貌性節流，無已知配額）。");
+    Console.WriteLine("日韓指數依來源分流：Yahoo 產業／指數、Nikkei 官方 CSV、KOSPI 20 日實現波動率代理。");
     Console.WriteLine();
 
     var progress = new Progress<string>(Console.WriteLine);
@@ -1622,6 +1623,11 @@ static async Task RunMarketOverviewBackfillAsync(IServiceProvider services, stri
         {
             Console.WriteLine($"失敗 {report.FailedSymbols.Count} 檔：{string.Join(", ", report.FailedSymbols)}");
         }
+    }
+    catch (MarketOverviewDataIncompleteException exception)
+    {
+        Console.Error.WriteLine($"資料品質門檻未通過：{exception.Message}");
+        Environment.ExitCode = 1;
     }
     catch (OperationCanceledException)
     {
