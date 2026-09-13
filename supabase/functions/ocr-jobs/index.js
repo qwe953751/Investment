@@ -95,11 +95,7 @@ function availableAgents(agentStatus) {
         .map(([name]) => name);
 }
 
-function readinessHeartbeatAgeMs(request) {
-    const value = Number(new URL(request.url).searchParams.get('maxAgeSeconds'));
-    if (!Number.isFinite(value)) return MAX_HEARTBEAT_AGE_MS;
-    return Math.min(120, Math.max(15, value)) * 1000;
-}
+// readinessHeartbeatAgeMs 已刪除（治本一：改用事實層級判定而非時間推測）
 
 function workerIsFresh(worker, maxHeartbeatAgeMs) {
     const heartbeatAt = worker?.last_heartbeat_at ? Date.parse(worker.last_heartbeat_at) : NaN;
@@ -247,20 +243,57 @@ async function insertJob(job) {
 }
 
 async function handleReadiness(request) {
-    const maxHeartbeatAgeMs = readinessHeartbeatAgeMs(request);
-    const worker = await latestWorker(maxHeartbeatAgeMs);
-    const online = workerIsFresh(worker, maxHeartbeatAgeMs);
-    const agents = online ? availableAgents(worker.agent_status) : [];
+    // 治本一：樂觀語意 —— 只有「有証據說不行」才擋；否則 ready:true
+    // 檢查：(1) ocr_workers 一筆都沒有？(2) 所有 worker 的 agent_status 都 authenticated=false？
+
+    const allWorkersResp = await serviceFetch(
+        '/rest/v1/ocr_workers?select=id,name,platform,last_seen_at,realtime_connected,heartbeat_interval_seconds,agent_status');
+    if (!allWorkersResp.ok) {
+        return json(request, 200, { ready: true, workers: [] });
+    }
+
+    const workers = await allWorkersResp.json();
+    if (!Array.isArray(workers) || workers.length === 0) {
+        return json(request, 200, {
+            ready: false,
+            fallbackReason: 'no_worker',
+            workers: []
+        });
+    }
+
+    // 計算每台的 alive 狀態和可用 agents
+    const workerStates = workers.map(w => {
+        const heartbeatInterval = Math.max(30, w.heartbeat_interval_seconds || 60);
+        const lastSeenAt = w.last_seen_at ? Date.parse(w.last_seen_at) : NaN;
+        const alive = w.realtime_connected
+            || (Number.isFinite(lastSeenAt) && Date.now() - lastSeenAt <= heartbeatInterval * 2000);
+        const agents = availableAgents(w.agent_status);
+
+        return { ...w, alive, availableAgents: agents };
+    });
+
+    // 有可用 worker？
+    const availableWorkers = workerStates.filter(w => w.alive && w.availableAgents.length > 0);
+    const allAgentsFailed = workerStates.every(w => w.availableAgents.length === 0);
 
     return json(request, 200, {
-        ready: online && agents.length > 0,
-        online,
-        agents,
-        lastHeartbeatAt: worker?.last_heartbeat_at ?? null,
-        maxHeartbeatAgeSeconds: maxHeartbeatAgeMs / 1000,
-        workerName: online ? worker?.name ?? null : null,
-        workerPlatform: online ? worker?.platform ?? null : null,
-        fallbackReason: !online ? 'worker_offline' : agents.length === 0 ? 'no_available_agent' : null
+        ready: availableWorkers.length > 0,
+        workers: workerStates.map(w => ({
+            id: w.id,
+            name: w.name,
+            platform: w.platform,
+            realtimeConnected: w.realtime_connected,
+            lastSeenAt: w.last_seen_at,
+            agents: w.availableAgents
+        })),
+        decidedBy: availableWorkers.length > 0
+            ? 'available'
+            : allAgentsFailed
+            ? 'no_available_agent'
+            : 'worker_offline',
+        fallbackReason: availableWorkers.length > 0
+            ? null
+            : (allAgentsFailed ? 'no_available_agent' : 'worker_offline')
     });
 }
 
