@@ -25622,6 +25622,21 @@ const marketOverviewIntradayPromises = new Map();
 const MARKET_OVERVIEW_INTRADAY_CACHE_MS = 60_000;
 const MARKET_OVERVIEW_INTRADAY_STALE_MS = 20 * 60_000;
 
+// 市場頁籤、歷史檔名與 Storage 路徑都使用 jp／kr。舊版 export 曾因 C# DTO
+// 屬性名輸出成 japan／korea，保留一次相容讀取，避免 CDN 新舊檔交錯時畫面變空白。
+function marketOverviewGroupForMarket(market) {
+    if (marketOverviewData === null) {
+        return undefined;
+    }
+
+    if (marketOverviewData[market] !== undefined) {
+        return marketOverviewData[market];
+    }
+
+    const legacyKey = market === 'jp' ? 'japan' : market === 'kr' ? 'korea' : null;
+    return legacyKey === null ? undefined : marketOverviewData[legacyKey];
+}
+
 async function ensureMarketOverviewData() {
     if (marketOverviewData !== null) {
         return;
@@ -25837,7 +25852,7 @@ function resolveMarketOverviewGroup(market, proto, onSettled) {
                 onSettled();
             }
         });
-        return marketOverviewData[market];
+        return marketOverviewGroupForMarket(market);
     }
 
     const key = marketOverviewDateKey(market, proto.date);
@@ -26421,7 +26436,7 @@ function mspSection(titleText, contentEl) {
 // 美股、日股、韓股提供交易日軸；加密貨幣是 24/7 市場，沒有 dates 清單。
 function mspBuildDateStepper(group, market, proto, paint) {
     const historicalDates = ['us', 'jp', 'kr'].includes(market)
-        ? marketOverviewData?.[market]?.dates ?? []
+        ? marketOverviewGroupForMarket(market)?.dates ?? []
         : group?.dates ?? [];
     // 盤中組沒有自己的歷史檔；把它的交易日暫時接在盤後日期軸尾端，按上一日才會取靜態檔。
     const availableDates = group?.intraday === true && group.asOf && historicalDates.at(-1) !== group.asOf
@@ -28761,7 +28776,7 @@ function initMarketSwitch() {
             notice.textContent = '載入中…';
             inner.append(notice);
             ensureMarketOverviewData().then(render);
-        } else if (marketOverviewData[proto.market] == null) {
+        } else if (marketOverviewGroupForMarket(proto.market) == null) {
             const notice = document.createElement('section');
             notice.className = 'notice warning msp-overview-notice';
             notice.textContent = (marketOverviewData.warnings ?? []).join(' ')
@@ -28771,7 +28786,7 @@ function initMarketSwitch() {
             // 美股／日股／韓股可回看歷史交易日；加密貨幣永遠使用最新組。
             const group = ['us', 'jp', 'kr'].includes(proto.market)
                 ? resolveMarketOverviewGroup(proto.market, proto, render)
-                : marketOverviewData[proto.market];
+                : marketOverviewGroupForMarket(proto.market);
 
             if (group === undefined) {
                 const notice = document.createElement('section');

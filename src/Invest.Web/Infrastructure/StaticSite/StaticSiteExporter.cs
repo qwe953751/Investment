@@ -1681,8 +1681,8 @@ public sealed class StaticSiteExporter(
     private sealed record MarketOverviewExport(
         IReadOnlyList<string> Warnings,
         MarketOverviewGroup? Us,
-        MarketOverviewGroup? Japan,
-        MarketOverviewGroup? Korea,
+        [property: JsonPropertyName("jp")] MarketOverviewGroup? Japan,
+        [property: JsonPropertyName("kr")] MarketOverviewGroup? Korea,
         MarketOverviewGroup? Crypto);
 
     private sealed record KLineExport(

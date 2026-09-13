@@ -39,6 +39,8 @@ test('筆記 #67 的日股／韓股市場頁籤只對最高權限顯示', () => 
 });
 
 test('日股／韓股使用各自市場總覽資料，不再走模板或美股快照', () => {
+    assert.match(siteScript, /function marketOverviewGroupForMarket\(market\)/);
+    assert.match(siteScript, /market === 'jp' \? 'japan' : market === 'kr' \? 'korea'/);
     assert.match(siteScript, /function resolveMarketOverviewGroup\(market, proto, onSettled\)/);
     assert.match(siteScript, /data\/market-overview-\$\{market\}-\$\{date\}\.json/);
     assert.match(siteScript, /const group = \['us', 'jp', 'kr'\]\.includes\(proto\.market\)\s*\? resolveMarketOverviewGroup\(proto\.market, proto, render\)/);

@@ -1,6 +1,9 @@
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.Overview;
+using Invest.Web.Infrastructure.StaticSite;
+using System.Reflection;
+using System.Text.Json;
 
 namespace Invest.Web.Tests;
 
@@ -67,6 +70,28 @@ public sealed class MarketOverviewSourceTests
 
         MarketOverviewDownloader.ValidateCompleteness([MarketOverviewCatalog.Japan], series, report);
         Assert.Empty(report.DataQualityErrors);
+    }
+
+    [Fact]
+    public void 市場總覽輸出使用前端jpkr契約()
+    {
+        var exportType = typeof(StaticSiteExporter).GetNestedType(
+            "MarketOverviewExport",
+            BindingFlags.NonPublic);
+        Assert.NotNull(exportType);
+
+        var constructor = exportType!.GetConstructors().Single();
+        var export = constructor.Invoke([Array.Empty<string>(), null, null, null, null]);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(export, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        }));
+
+        var root = document.RootElement;
+        Assert.True(root.TryGetProperty("jp", out _));
+        Assert.True(root.TryGetProperty("kr", out _));
+        Assert.False(root.TryGetProperty("japan", out _));
+        Assert.False(root.TryGetProperty("korea", out _));
     }
 
     private static DailyQuote Quote(string ticker, decimal close)
