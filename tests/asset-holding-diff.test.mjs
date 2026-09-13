@@ -263,7 +263,7 @@ test('人工修改後若未重新確認，不可套用舊差異；確認後寫�
     assert.equal(diff.updates[0].draft.cost, '42,000');
 });
 
-test('OCR 差異預設自動選取覆蓋與新增，移除保持未選', () => {
+test('OCR 差異預設自動選取覆蓋、新增與移除', () => {
     const select = screenshotSelectionDefaults();
     const selections = select({
         updates: [{ key: 'update:6530' }],
@@ -274,7 +274,7 @@ test('OCR 差異預設自動選取覆蓋與新增，移除保持未選', () => {
     assert.deepEqual(JSON.parse(JSON.stringify(selections)), {
         'update:6530': true,
         'addition:2330': true,
-        'removal:3189': false
+        'removal:3189': true
     });
 });
 
@@ -300,6 +300,23 @@ test('空白或重複代號不會被當成新增或覆蓋', () => {
     assert.equal(diff.updates.length, 0);
     assert.equal(diff.additions.length, 0);
     assert.equal(diff.removals.length, 0);
+});
+
+test('差異清單按標的編號排序', () => {
+    const diff = holdingDiff()(
+        [
+            { id: 'h-6530', ticker: '6530', name: '創威', quantity: 10 },
+            { id: 'h-2330', ticker: '2330', name: '台積電', quantity: 5 }
+        ],
+        [
+            { ticker: '8299', name: '群聯', quantity: '3' },
+            { ticker: '2368', name: '金像電', quantity: '7' },
+            { ticker: '6530', name: '創威', quantity: '15' }
+        ]);
+
+    assert.deepEqual(diff.updates.map(c => c.holding.ticker), ['6530']);
+    assert.deepEqual(diff.additions.map(c => c.draft.ticker), ['2368', '8299']);
+    assert.deepEqual(diff.removals.map(c => c.holding.ticker), ['2330']);
 });
 
 test('入金成本等於入金減出金，無效方向不會混入', () => {
