@@ -19,6 +19,7 @@ using Invest.Web.Infrastructure.MarketData.UsStocks;
 using Invest.Web.Infrastructure.StaticSite;
 using Invest.Web.Infrastructure.StockTopics;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -35,6 +36,7 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop|--probe]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
+//   dotnet run --project src/Invest.Web -- backfill-intraday-topic
 //   dotnet run --project src/Invest.Web -- market-day
 //   dotnet run --project src/Invest.Web -- export-market-calendar <輸出檔路徑>
 //   dotnet run --project src/Invest.Web -- sync     [保留交易日數]
@@ -51,7 +53,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -115,6 +117,7 @@ builder.Services.AddSingleton<MarketOverviewStore>();
 builder.Services.AddSingleton<IntradayQuoteStore>();
 builder.Services.AddSingleton<IntradayCurveStore>();
 builder.Services.AddSingleton<IntradayTopicHeatStore>();
+builder.Services.AddTransient<IntradayTopicHeatWorker>();
 builder.Services.AddSingleton<MarketFlagStore>();
 builder.Services.AddSingleton<RevenueStore>();
 builder.Services.AddSingleton<MaterialEventStore>();
@@ -237,6 +240,12 @@ if (command is "intraday")
 if (command is "backfill-intraday-heat")
 {
     await RunIntradayHeatBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-intraday-topic")
+{
+    await RunIntradayTopicBackfillAsync(app.Services);
     return;
 }
 
@@ -495,16 +504,8 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var dailyQuoteStore = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
     var marketFlagClient = scope.ServiceProvider.GetRequiredService<MarketFlagClient>();
     var marketFlagStore = scope.ServiceProvider.GetRequiredService<MarketFlagStore>();
-    var topicClient = scope.ServiceProvider.GetRequiredService<GoogleSheetTopicClient>();
-    var topicHeatStore = scope.ServiceProvider.GetRequiredService<IntradayTopicHeatStore>();
     var snapshotPublisher = scope.ServiceProvider.GetRequiredService<IntradaySnapshotPublisher>();
-    var topicWorker = new IntradayTopicHeatWorker(
-        store,
-        topicClient,
-        topicHeatStore,
-        snapshotPublisher,
-        scope.ServiceProvider.GetRequiredService<SiteAlertStore>(),
-        scope.ServiceProvider.GetRequiredService<ILogger<IntradayTopicHeatWorker>>());
+    var topicWorker = scope.ServiceProvider.GetRequiredService<IntradayTopicHeatWorker>();
     var curveStore = scope.ServiceProvider.GetRequiredService<IntradayCurveStore>();
 
     using var cts = new CancellationTokenSource();
@@ -791,6 +792,76 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     }
 
     Console.WriteLine("整場 MIS 都正常回應、但日期一直不是今天，判定為休市。");
+}
+
+/// <summary>
+/// 只補算已寫入資料庫、但尚未有族群熱度的盤中 raw run。
+///
+/// 這個維運命令不呼叫 MIS、不建立新的 intraday_runs，也不會以新的空快照覆蓋既有
+/// topic-latest；它只讓收盤後或 worker 暫停期間留下的 durable backlog 重新進入同一個
+/// IntradayTopicHeatWorker。執行前要求 057 migration 已套用，避免 recovery 成功但前端
+/// 仍被舊 view 隱藏。
+/// </summary>
+static async Task RunIntradayTopicBackfillAsync(IServiceProvider services)
+{
+    using var scope = services.CreateScope();
+    var migrations = scope.ServiceProvider.GetRequiredService<SchemaMigrations>();
+    var migrationStatus = await migrations.CheckAsync();
+    var topicMigrationApplied = migrationStatus.TableExists
+        && !migrationStatus.Unapplied.Any(file =>
+            string.Equals(file, "057_intraday_topic_async.sql", StringComparison.OrdinalIgnoreCase));
+
+    if (!topicMigrationApplied)
+    {
+        Console.Error.WriteLine(
+            "盤中族群 recovery 尚未執行：正式資料庫缺少 057_intraday_topic_async.sql。"
+            + "請先依獨立 migration 流程套用並驗證，再重試。 ");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+    if (!await HasIntradayTopicRunIdColumnAsync(cts.Token))
+    {
+        Console.Error.WriteLine(
+            "盤中族群 recovery 未執行：intraday_topic_heat_latest 尚未提供 run_id。"
+            + "請重新套用 057 並等待 PostgREST schema cache 更新。 ");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    var worker = scope.ServiceProvider.GetRequiredService<IntradayTopicHeatWorker>();
+
+    Console.WriteLine("開始補算盤中族群 backlog（只讀既有 raw，不重抓 MIS）。");
+    var complete = await worker.RunOnceAsync(cts.Token);
+
+    if (!complete)
+    {
+        Console.Error.WriteLine(
+            "盤中族群 recovery 未完成：仍有 pending run 或另一個 consumer 正在處理。"
+            + "保留待辦，下一次 recovery 會重試。 ");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    Console.WriteLine("盤中族群 backlog 已全部完成，topic-latest 只會指向最新成功 run。 ");
+}
+
+static async Task<bool> HasIntradayTopicRunIdColumnAsync(CancellationToken cancellationToken)
+{
+    await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+    await using var command = new NpgsqlCommand(
+        """
+        select exists (
+            select 1
+            from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'intraday_topic_heat_latest'
+              and column_name = 'run_id')
+        """,
+        connection);
+
+    return (bool)(await command.ExecuteScalarAsync(cancellationToken))!;
 }
 
 /// <summary>

@@ -273,6 +273,33 @@ public sealed class IntradayWorkflowTests
     }
 
     [Fact]
+    public void 收盤後族群補算流程只消費既有raw不重抓MIS()
+    {
+        var root = FindRepositoryRoot();
+        var workflow = File.ReadAllText(Path.Combine(
+            root, ".github", "workflows", "intraday-topic-recovery.yml"));
+        var program = File.ReadAllText(Path.Combine(root, "src", "Invest.Web", "Program.cs"));
+        var worker = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Invest.Web",
+            "Infrastructure",
+            "StockTopics",
+            "IntradayTopicHeatWorker.cs"));
+
+        Assert.Contains("workflow_run:", workflow, StringComparison.Ordinal);
+        Assert.Contains("workflows: [\"盤中報價收集\"]", workflow, StringComparison.Ordinal);
+        Assert.Contains("backfill-intraday-topic", workflow, StringComparison.Ordinal);
+        Assert.Contains("SUPABASE_STORAGE_SECRET_KEY", workflow, StringComparison.Ordinal);
+        Assert.Contains("RAW_LATEST_URL", workflow, StringComparison.Ordinal);
+        Assert.Contains("topic-latest runId=", workflow, StringComparison.Ordinal);
+        Assert.Contains("intraday-topic-[0-9]{8}", workflow, StringComparison.Ordinal);
+        Assert.Contains("backfill-intraday-topic", program, StringComparison.Ordinal);
+        Assert.Contains("RunOnceAsync", worker, StringComparison.Ordinal);
+        Assert.DoesNotContain("intraday --loop", workflow, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 動態Razor市場熱絡歷史也以最近交易日開頭()
     {
         var razor = ReadRankingRazor();

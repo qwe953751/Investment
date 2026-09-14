@@ -20917,26 +20917,37 @@ async function loadIntradayTopicHeat() {
         }
 
         if (!latest && supabase !== null) {
-            // migration 尚未套用時 view 沒有 run_id；先用新版查詢，失敗再退到舊欄位，
-            // 不讓資料庫相容路徑把整個族群頁清空。
+            // 先讀新版 view；migration 尚未套用或 view 暫時仍是舊版時，直接讀同一張
+            // 有 anon RLS 的衍生表，取「最近一份已完成」而不是被舊 view 的 latest raw
+            // 條件藏掉。這是相容救命路徑，不取代 057 的正式 view 契約。
             const base = `${supabase.url}/rest/v1/${INTRADAY_TOPIC_HEAT_VIEW}`;
             const headers = { apikey: supabase.anonKey };
             let response = await fetch(
                 `${base}?select=run_id,trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows&limit=1`,
                 { headers, cache: 'no-store' });
 
-            if (!response.ok) {
-                console.warn('盤中族群 view 尚未提供 run_id，退回舊欄位。');
-                response = await fetch(
-                    `${base}?select=trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows&limit=1`,
+            if (response.ok) {
+                [latest] = await response.json();
+            }
+
+            if (!latest) {
+                const tableBase = `${supabase.url}/rest/v1/intraday_topic_heat`;
+                const tableResponse = await fetch(
+                    `${tableBase}?select=run_id,trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows`
+                        + '&order=trade_date.desc,captured_at.desc,run_id.desc&limit=1',
                     { headers, cache: 'no-store' });
+
+                if (tableResponse.ok) {
+                    [latest] = await tableResponse.json();
+                    console.warn('盤中族群 view 沒有可用結果，改讀最近一份已完成的族群資料表列。');
+                } else if (!response.ok) {
+                    throw new Error(`族群 view/table 讀取失敗：${response.status}/${tableResponse.status}`);
+                }
             }
 
-            if (!response.ok) {
-                throw new Error(String(response.status));
+            if (!latest && response.ok) {
+                console.warn('盤中族群 view 回傳空結果，且資料表沒有可用結果。');
             }
-
-            [latest] = await response.json();
         }
 
         if (!latest) {

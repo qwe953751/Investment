@@ -1,0 +1,81 @@
+# 收盤後或盤中族群 consumer 暫停時，補算已寫入 Supabase 但尚未有 topic heat 的 raw run。
+# 這條流程只讀既有 intraday_runs，不呼叫 MIS、不建立新的 raw 快照，也不會阻塞 intraday.yml。
+
+name: 盤中族群補算
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["盤中報價收集"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intraday-topic-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 取出最新 main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: 設定 .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 補算盤中族群 backlog
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-intraday-topic
+
+      - name: 驗證族群公開快取
+        env:
+          RAW_LATEST_URL: https://dehzxlxyfvtnylwgbmqy.supabase.co/storage/v1/object/public/intraday-snapshots/latest.json
+          TOPIC_LATEST_URL: https://dehzxlxyfvtnylwgbmqy.supabase.co/storage/v1/object/public/intraday-snapshots/topic-latest.json
+        run: |
+          set -euo pipefail
+          raw_pointer=$(curl -fsSL --max-time 30 "$RAW_LATEST_URL")
+          raw_run_id=$(printf '%s' "$raw_pointer" | jq -er '.runId')
+          pointer=$(curl -fsSL --max-time 30 "$TOPIC_LATEST_URL")
+          printf '%s' "$pointer" | jq -e '
+            .schemaVersion == 1
+            and (.runId | type) == "number"
+            and (.rowCount | type) == "number"
+            and .rowCount > 0
+            and (.file | type) == "string"
+            and (.file | test("^intraday-topic-[0-9]{8}-[0-9]{4}-run[0-9]+\\.json$"))
+          ' >/dev/null
+          file=$(printf '%s' "$pointer" | jq -r '.file')
+          expected_run_id=$(printf '%s' "$pointer" | jq '.runId')
+          if [ "$expected_run_id" -ne "$raw_run_id" ]; then
+            echo "::error::topic-latest runId=$expected_run_id 落後 raw latest runId=$raw_run_id"
+            exit 1
+          fi
+          expected_trade_date=$(printf '%s' "$pointer" | jq -r '.tradeDate')
+          expected_captured_at=$(printf '%s' "$pointer" | jq -r '.capturedAt')
+          expected_count=$(printf '%s' "$pointer" | jq '.rowCount')
+          snapshot=$(curl -fsSL --max-time 30 "${TOPIC_LATEST_URL%/topic-latest.json}/$file")
+          printf '%s' "$snapshot" | jq -e \
+            --argjson expectedRunId "$expected_run_id" \
+            --arg expectedTradeDate "$expected_trade_date" \
+            --arg expectedCapturedAt "$expected_captured_at" \
+            --argjson count "$expected_count" '
+            .schemaVersion == 1
+            and .runId == $expectedRunId
+            and .tradeDate == $expectedTradeDate
+            and .capturedAt == $expectedCapturedAt
+            and (.rows | type) == "array"
+            and (.rows | length) == $count
+          ' >/dev/null
+          echo "topic-latest 可讀，已驗證 $file。"

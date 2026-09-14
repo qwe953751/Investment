@@ -60,6 +60,31 @@ public sealed class IntradayTopicHeatWorker(
         }
     }
 
+    /// <summary>
+    /// 只消費目前已保存、但尚未產生族群熱度的 raw run，供收盤後維運／補算流程使用。
+    /// 不會呼叫 MIS，也不會建立新的 intraday_runs；回傳 false 代表另一個 consumer 仍持有
+    /// lease，或 drain 後仍有 pending run，呼叫端應讓 workflow 失敗並留下警報。
+    /// </summary>
+    public async Task<bool> RunOnceAsync(CancellationToken cancellationToken = default)
+    {
+        if (!await TryAcquireConsumerLeaseAsync(cancellationToken))
+        {
+            logger.LogWarning("盤中族群 recovery 無法取得 consumer lease；保留 pending run 給下一次重試。");
+            return false;
+        }
+
+        try
+        {
+            await DrainPendingAsync(cancellationToken);
+            var remaining = await quoteStore.LoadNewestSnapshotMissingTopicHeatAsync(cancellationToken);
+            return remaining is null;
+        }
+        finally
+        {
+            await ReleaseConsumerLeaseAsync();
+        }
+    }
+
     private async Task RunAsync(CancellationToken cancellationToken)
     {
         try
@@ -96,11 +121,16 @@ public sealed class IntradayTopicHeatWorker(
         }
         finally
         {
-            if (consumerLease is not null)
-            {
-                await consumerLease.DisposeAsync();
-                consumerLease = null;
-            }
+            await ReleaseConsumerLeaseAsync();
+        }
+    }
+
+    private async Task ReleaseConsumerLeaseAsync()
+    {
+        if (consumerLease is not null)
+        {
+            await consumerLease.DisposeAsync();
+            consumerLease = null;
         }
     }
 

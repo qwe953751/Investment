@@ -192,6 +192,8 @@ public sealed class IntradayCdnGateTests
         Assert.Contains("fetchIntradayTopicCdnSnapshot()", topicHeat, StringComparison.Ordinal);
         Assert.Contains("if (!latest && supabase !== null)", topicHeat, StringComparison.Ordinal);
         Assert.Contains("改用資料庫 fallback", topicHeat, StringComparison.Ordinal);
+        Assert.Contains("/rest/v1/intraday_topic_heat", topicHeat, StringComparison.Ordinal);
+        Assert.Contains("order=trade_date.desc,captured_at.desc,run_id.desc", topicHeat, StringComparison.Ordinal);
         Assert.DoesNotContain("intradaySnapshotTopicHeat", topicHeat, StringComparison.Ordinal);
     }
 
