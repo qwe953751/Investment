@@ -56,10 +56,16 @@ jobs:
       - name: 回補日韓市場總覽日線
         run: dotnet run -c Release --project src/Invest.Web -- backfill-overview --markets jp,kr
 
+      - name: 回補日韓成交金額前 20
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+        run: dotnet run -c Release --project src/Invest.Web -- market-turnover --markets jp,kr
+
       - name: 保存日韓市場總覽快取
         working-directory: data
         run: |
-          git add -A imports-overview
+          git add -A imports-overview imports-turnover
 
           if git diff --cached --name-only --diff-filter=D | grep -q .; then
               echo "偵測到市場總覽歷史檔案被刪除，中止：" >&2

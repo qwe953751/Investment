@@ -13,6 +13,7 @@ using Invest.Web.Infrastructure.MarketData.CorporateActions;
 using Invest.Web.Infrastructure.MarketData.ForeignExchange;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Overview;
+using Invest.Web.Infrastructure.MarketData.Turnover;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
 using Invest.Web.Infrastructure.MarketData.UsStocks;
@@ -33,6 +34,7 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- backfill-us
 //   dotnet run --project src/Invest.Web -- backfill-overview [--markets us,crypto|jp,kr]
 //   dotnet run --project src/Invest.Web -- market-overview-intraday [--markets jp,kr] [--loop]
+//   dotnet run --project src/Invest.Web -- market-turnover --markets us,jp,kr [--intraday]
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop|--probe]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
@@ -53,7 +55,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -67,6 +69,10 @@ builder.Services.Configure<MarketDataOptions>(
     builder.Configuration.GetSection(MarketDataOptions.SectionName));
 builder.Services.Configure<UsMarketDataOptions>(
     builder.Configuration.GetSection(UsMarketDataOptions.SectionName));
+builder.Services.Configure<KisMarketDataOptions>(
+    builder.Configuration.GetSection(KisMarketDataOptions.SectionName));
+builder.Services.Configure<MassiveMarketDataOptions>(
+    builder.Configuration.GetSection(MassiveMarketDataOptions.SectionName));
 
 // 官方網站會擋掉沒有 User-Agent 的請求，這些 client 一定要帶。
 builder.Services.AddHttpClient<TwseDailyQuoteClient>(ConfigureQuoteClient);
@@ -98,6 +104,9 @@ builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<MarketOverviewIntradaySnapshotPublisher>();
+builder.Services.AddHttpClient<MarketTurnoverSnapshotPublisher>();
+builder.Services.AddHttpClient(nameof(KisMarketTurnoverClient), ConfigureQuoteClient);
+builder.Services.AddHttpClient(nameof(MassiveMarketTurnoverClient), ConfigureQuoteClient);
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
@@ -114,6 +123,7 @@ builder.Services.AddHttpClient<AlphaVantageDailyQuoteClient>(
 builder.Services.AddSingleton<DailyQuoteStore>();
 builder.Services.AddSingleton<UsDailyQuoteStore>();
 builder.Services.AddSingleton<MarketOverviewStore>();
+builder.Services.AddSingleton<MarketTurnoverStore>();
 builder.Services.AddSingleton<IntradayQuoteStore>();
 builder.Services.AddSingleton<IntradayCurveStore>();
 builder.Services.AddSingleton<IntradayTopicHeatStore>();
@@ -132,6 +142,9 @@ builder.Services.AddTransient<MarketOverviewDownloader>();
 builder.Services.AddTransient<IMarketOverviewIntradayQuoteClient>(services =>
     services.GetRequiredService<YahooFinanceIntradayQuoteClient>());
 builder.Services.AddTransient<MarketOverviewIntradayCollector>();
+builder.Services.AddTransient<KisMarketTurnoverClient>();
+builder.Services.AddTransient<MassiveMarketTurnoverClient>();
+builder.Services.AddTransient<MarketTurnoverCollector>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
 builder.Services.AddTransient<StaticSiteExporter>();
@@ -195,6 +208,12 @@ if (command is "backfill-overview")
 if (command is "market-overview-intraday")
 {
     await RunMarketOverviewIntradayAsync(app.Services, args);
+    return;
+}
+
+if (command is "market-turnover")
+{
+    await RunMarketTurnoverAsync(app.Services, args);
     return;
 }
 
@@ -1654,6 +1673,35 @@ static async Task RunMarketOverviewBackfillAsync(IServiceProvider services, stri
 }
 
 /// <summary>
+/// 抓取美／日／韓全市場成交金額前 20。來源密鑰未設定、來源回傳不足 20 列、
+/// 429／404 或任何欄位不完整都以非零結束，且不保存該市場的部分快取。
+/// </summary>
+static async Task RunMarketTurnoverAsync(IServiceProvider services, string[] args)
+{
+    var markets = ParseMarketOverviewMarkets(args) ?? ["us", "jp", "kr"];
+    var isIntraday = args.Contains("--intraday", StringComparer.OrdinalIgnoreCase);
+    using var scope = services.CreateScope();
+    var collector = scope.ServiceProvider.GetRequiredService<MarketTurnoverCollector>();
+
+    Console.WriteLine(
+        $"成交金額前 20：{string.Join(", ", markets)}；"
+        + (isIntraday ? "盤中快照，不視為收盤。" : "盤後快照，視為當日最終排行。"));
+
+    var report = await collector.CollectAsync(markets, !isIntraday);
+    foreach (var warning in report.Warnings)
+    {
+        Console.Error.WriteLine($"成交排行警告：{warning}");
+    }
+
+    Console.WriteLine($"成功 {report.Snapshots.Count} 市場，失敗 {report.SkippedMarkets.Count} 市場。");
+    if (report.SkippedMarkets.Count > 0)
+    {
+        throw new MarketTurnoverDataIncompleteException(
+            $"成交排行核心市場未完成：{string.Join(", ", report.SkippedMarkets)}；本次不視為成功，不提交部分排行。");
+    }
+}
+
+/// <summary>
 /// 收集一次或持續收集日韓精簡盤中快照。此命令只發佈 Storage CDN，不寫入台股
 /// intraday_* 資料表；每次輸出都是 index/risk/產業代表的固定小名冊。
 /// </summary>
@@ -1667,6 +1715,7 @@ static async Task RunMarketOverviewIntradayAsync(IServiceProvider services, stri
 
     using var scope = services.CreateScope();
     var collector = scope.ServiceProvider.GetRequiredService<MarketOverviewIntradayCollector>();
+    var turnoverCollector = scope.ServiceProvider.GetRequiredService<MarketTurnoverCollector>();
     using var cts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, eventArgs) =>
     {
@@ -1686,6 +1735,17 @@ static async Task RunMarketOverviewIntradayAsync(IServiceProvider services, stri
         {
             var report = await collector.CollectOnceAsync(markets, new Progress<string>(Console.WriteLine), cts.Token);
             publishedRounds += report.PublishedMarkets.Count;
+
+            var turnoverReport = await turnoverCollector.CollectAsync(
+                markets, isFinal: false, cancellationToken: cts.Token);
+            if (turnoverReport.SkippedMarkets.Count > 0)
+            {
+                failedRounds++;
+                foreach (var warning in turnoverReport.Warnings)
+                {
+                    Console.WriteLine($"成交排行本輪未發布：{warning}");
+                }
+            }
 
             if (report.IncompleteMarkets.Count > 0 || report.RateLimitedMarkets.Count > 0 || report.NotConfiguredMarkets.Count > 0)
             {

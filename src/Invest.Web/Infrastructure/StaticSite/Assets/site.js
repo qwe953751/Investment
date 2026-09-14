@@ -2126,6 +2126,8 @@ let supabase = null;
 let intradayCdn = null;
 // 日韓市場總覽的 5 分鐘小快照；它跟台股全市場 intradayCdn 分 bucket、分 latest 指標。
 let marketOverviewIntradayCdn = null;
+// 全市場成交金額排行也走同一套版本化 Storage；未通過公開授權時 manifest 不會帶這個值。
+let marketTurnoverCdn = null;
 
 // CDN 是省流量的正路，但它掛掉時不能讓盤中頁變成一片空白——那是這個網站最常被看的一頁。
 // 抓不到就自動退回 Supabase 直連（貴很多，每輪整份重抓，所以只當救命用），並把這個旗標
@@ -25970,6 +25972,48 @@ async function ensureMarketOverviewIntradayGroup(market) {
                 capturedAt: snapshot.capturedAt,
                 warnings: Array.isArray(snapshot.warnings) ? snapshot.warnings : []
             };
+
+            if (marketTurnoverCdn !== null) {
+                try {
+                    const turnoverBaseUrl = marketTurnoverCdn.baseUrl.replace(/\/$/, '');
+                    const turnoverLatestResponse = await fetch(
+                        `${turnoverBaseUrl}/${market}/latest.json`, { cache: 'no-store' });
+                    if (!turnoverLatestResponse.ok) {
+                        throw new Error(`排行 latest HTTP ${turnoverLatestResponse.status}`);
+                    }
+
+                    const turnoverPointer = await turnoverLatestResponse.json();
+                    const turnoverResponse = await fetch(
+                        `${turnoverBaseUrl}/${turnoverPointer.file}`, { cache: 'no-store' });
+                    if (!turnoverResponse.ok) {
+                        throw new Error(`排行 snapshot HTTP ${turnoverResponse.status}`);
+                    }
+
+                    const turnoverSnapshot = await turnoverResponse.json();
+                    const turnoverAge = Date.now() - Date.parse(turnoverSnapshot.capturedAt);
+                    if (turnoverSnapshot.schemaVersion !== 1
+                        || turnoverSnapshot.market !== market
+                        || turnoverSnapshot.tradingDate !== mspExchangeDate(market)
+                        || !Array.isArray(turnoverSnapshot.rows)
+                        || !Number.isFinite(turnoverAge)
+                        || turnoverAge > MARKET_OVERVIEW_INTRADAY_STALE_MS) {
+                        throw new Error('成交排行過期或交易日不符');
+                    }
+
+                    group.turnoverLeaders = turnoverSnapshot.rows.map(row => ({
+                        rank: row.rank,
+                        symbol: row.symbol,
+                        name: row.name,
+                        turnover: row.turnover,
+                        price: row.lastPrice ?? 0,
+                        change: row.changePercent ?? null,
+                        yearChange: null
+                    }));
+                } catch (error) {
+                    // 排行是附加流；總覽 CDN 成功時仍顯示指數／產業，排行維持盤後或空白。
+                    console.warn('日韓成交排行盤中快照讀取失敗，保留總覽資料', market, error);
+                }
+            }
             marketOverviewIntradayGroups.set(market, { group, loadedAt: Date.now() });
             return group;
         })());
@@ -29381,6 +29425,7 @@ async function start() {
     supabase = manifest.supabase ?? null;
     intradayCdn = manifest.intradayCdn ?? null;
     marketOverviewIntradayCdn = manifest.marketOverviewIntradayCdn ?? null;
+    marketTurnoverCdn = manifest.marketTurnoverCdn ?? null;
     startMarketOverviewIntradayRefresh();
     marketSwitchRender?.();
     dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));

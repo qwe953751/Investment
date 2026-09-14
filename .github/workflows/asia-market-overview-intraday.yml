@@ -90,4 +90,6 @@ jobs:
         env:
           # 僅能上傳 public 的 market-overview-intraday-snapshots bucket；絕不輸出到 log 或檔案。
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
         run: dotnet run -c Release --project src/Invest.Web -- market-overview-intraday --markets jp,kr --loop

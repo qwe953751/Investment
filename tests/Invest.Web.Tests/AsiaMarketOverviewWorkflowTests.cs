@@ -12,6 +12,9 @@ public sealed class AsiaMarketOverviewWorkflowTests
         Assert.DoesNotContain("daily-snapshot.yml", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("publish-gh-pages.sh", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("-- export", workflow, StringComparison.Ordinal);
+        Assert.Contains("market-turnover --markets jp,kr", workflow, StringComparison.Ordinal);
+        Assert.Contains("KIS_APP_KEY", workflow, StringComparison.Ordinal);
+        Assert.Contains("imports-turnover", workflow, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -23,6 +26,7 @@ public sealed class AsiaMarketOverviewWorkflowTests
         Assert.Contains("actions/workflows/asia-market-overview-intraday.yml/dispatches", workflow, StringComparison.Ordinal);
         Assert.Contains("market-overview-intraday --markets jp,kr --loop", workflow, StringComparison.Ordinal);
         Assert.Contains("SUPABASE_STORAGE_SECRET_KEY", workflow, StringComparison.Ordinal);
+        Assert.Contains("KIS_APP_KEY", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("SUPABASE_DB_URL", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("daily-snapshot.yml", workflow, StringComparison.Ordinal);
     }

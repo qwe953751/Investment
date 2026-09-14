@@ -203,6 +203,19 @@ Supabase 已寄出超額通知：**2026-09-27 起適用 Fair Use Policy，要把
 **不採用「只送前 N 檔」**：排行榜必須用全市場個股計算，任何功能都不接受只拿部分
 資料運作。這條沒有例外，不要在流量壓力下重新提案。
 
+### 5.3 美／日／韓成交金額前 20 的獨立資料流
+
+成交排行不是固定指數／產業代表的附屬欄位，因此採獨立 collector 與 bucket：美股盤後由
+Massive grouped daily aggregates 以 `v × vw` 估算原幣成交金額，日股／韓股由 KIS 的
+TSE／KRX 成交金額排行提供。盤後才寫 `data/imports-turnover`，盤中只寫版本化 Storage
+快照；瀏覽器只讀 `latest.json` 再讀它指向的 immutable 檔，不列 Storage、不直連來源、不查
+PostgreSQL。每輪至少 20 列、名次連續、代號不重複、成交金額為正才可發布，429／404／缺密鑰
+或不足 20 列都讓 workflow 失敗，避免部分資料被誤標成成功。
+
+公開再分發的授權尚未由來源方確認，因此 `MarketTurnoverCdn:Public` 預設為 `false`；在
+確認授權前只保留 data branch 與私有收集結果，不把 URL 寫入網站 manifest。這個開關不能
+用來繞過來源條款，也不能以公開 CDN 取代資料權威保存。
+
 ## 6. 準確性、權限與隱私的邊界
 
 1. **完整快照而非前 100 快照**：顯示前 100 只是 UI 分頁／排行結果；計算候選仍是

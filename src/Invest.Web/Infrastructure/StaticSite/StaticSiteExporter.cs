@@ -11,6 +11,7 @@ using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Overview;
+using Invest.Web.Infrastructure.MarketData.Turnover;
 using Invest.Web.Infrastructure.MarketData.UsStocks;
 using Invest.Web.Infrastructure.StockTopics;
 
@@ -38,8 +39,10 @@ public sealed class StaticSiteExporter(
     MaterialEventStore materialEvents,
     IntradaySnapshotPublisher snapshotPublisher,
     MarketOverviewIntradaySnapshotPublisher marketOverviewIntradayPublisher,
+    MarketTurnoverSnapshotPublisher marketTurnoverPublisher,
     UsDailyQuoteStore usDailyQuotes,
     MarketOverviewStore marketOverview,
+    MarketTurnoverStore marketTurnover,
     IntradayCurveStore curveStore,
     ILogger<StaticSiteExporter> logger,
     IConfiguration configuration)
@@ -255,6 +258,7 @@ public sealed class StaticSiteExporter(
                 ToSupabaseExport(),
                 await ToIntradayCdnExportAsync(cancellationToken),
                 await ToMarketOverviewIntradayCdnExportAsync(cancellationToken),
+                await ToMarketTurnoverCdnExportAsync(cancellationToken),
                 ToDispositionExports(dispositions),
                 [.. alteredTrading],
                 ToCurveExport(turnoverCalibration),
@@ -305,6 +309,7 @@ public sealed class StaticSiteExporter(
         try
         {
             var history = await marketOverview.LoadAllAsync(cancellationToken);
+            var turnoverHistory = await marketTurnover.LoadAllAsync(cancellationToken);
 
             if (history.Count == 0)
             {
@@ -314,7 +319,7 @@ public sealed class StaticSiteExporter(
             {
                 foreach (var definition in MarketOverviewCatalog.Definitions)
                 {
-                    var result = ToGroupExport(history, definition);
+                    var result = ToGroupExport(history, definition, turnoverHistory);
                     var label = definition.Key switch
                     {
                         "us" => "美股指數／VIX／類股 ETF",
@@ -345,6 +350,7 @@ public sealed class StaticSiteExporter(
                         var dates = await WriteMarketOverviewHistoryAsync(
                             dataDirectory,
                             history,
+                            turnoverHistory,
                             definition,
                             cancellationToken);
 
@@ -406,10 +412,17 @@ public sealed class StaticSiteExporter(
 
     private static (MarketOverviewGroup Export, IReadOnlyList<string> AheadSymbols) ToGroupExport(
         IReadOnlyList<MarketOverviewSnapshot> history,
-        MarketOverviewDefinition definition)
+        MarketOverviewDefinition definition,
+        IReadOnlyList<MarketTurnoverSnapshot> turnoverHistory)
     {
         var result = MarketOverviewProjection.ToLatestGroup(history, definition);
-        return (result.Group, result.AheadSymbols);
+        var asOf = result.Group.AsOf is { Length: > 0 } value
+            && DateOnly.TryParse(value, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : (DateOnly?)null;
+        return (
+            MarketTurnoverProjection.Apply(result.Group, turnoverHistory, definition.Key, asOf),
+            result.AheadSymbols);
     }
 
     /// <summary>
@@ -425,6 +438,7 @@ public sealed class StaticSiteExporter(
     private async Task<IReadOnlyList<string>> WriteMarketOverviewHistoryAsync(
         string dataDirectory,
         IReadOnlyList<MarketOverviewSnapshot> history,
+        IReadOnlyList<MarketTurnoverSnapshot> turnoverHistory,
         MarketOverviewDefinition definition,
         CancellationToken cancellationToken)
     {
@@ -452,7 +466,7 @@ public sealed class StaticSiteExporter(
             }
 
             qualifyingDates.Add(candidate);
-            var (export, _) = ToGroupExport(slice, definition);
+            var (export, _) = ToGroupExport(slice, definition, turnoverHistory);
 
             await WriteJsonAsync(
                 Path.Combine(dataDirectory, $"market-overview-{definition.Key}-{candidate:yyyy-MM-dd}.json"),
@@ -1612,6 +1626,25 @@ public sealed class StaticSiteExporter(
 
     private sealed record MarketOverviewIntradayCdnExport(string BaseUrl);
 
+    private async Task<MarketTurnoverCdnExport?> ToMarketTurnoverCdnExportAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!MarketTurnoverSnapshotPublisher.IsPublishingConfigured(configuration))
+        {
+            return null;
+        }
+
+        var baseUrl = MarketTurnoverSnapshotPublisher.GetPublicBaseUrl(configuration);
+        if (baseUrl is null || !await marketTurnoverPublisher.HasPublishedSnapshotAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new MarketTurnoverCdnExport(baseUrl);
+    }
+
+    private sealed record MarketTurnoverCdnExport(string BaseUrl);
+
     /// <summary>
     /// 前端只需要「哪些股號被處置」加上滑鼠停上去要說什麼，所以日期在這裡就先轉成文字。
     /// </summary>
@@ -1653,6 +1686,9 @@ public sealed class StaticSiteExporter(
 
         // 日股／韓股精簡盤中總覽，與台股全市場 intradayCdn 的 bucket、latest 指標分離。
         MarketOverviewIntradayCdnExport? MarketOverviewIntradayCdn,
+
+        // 全市場成交金額排行，固定快照與日韓盤中共用版本化 Storage CDN。
+        MarketTurnoverCdnExport? MarketTurnoverCdn,
 
         // 目前處於處置期間的個股。撮合被改成人工分盤，成交值會被壓低，名次不能照字面讀。
         IReadOnlyList<DispositionExport> Dispositions,

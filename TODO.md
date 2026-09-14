@@ -1753,11 +1753,14 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - 程式已新增 `MarketOverviewDefinition`／`MarketOverviewCalculator.CalculateHeatAt`，輸出四市場各自的個別分數、綜合分數、產業確認分數與 warning；網站本輪不發布。
 - 完整公式、資料邊界、驗收與日韓候選方案統一見 [熱絡指標](Doc/技術文件/熱絡指標.md)。
 
-### 2026-09-14 成交金額前 20（正式程式已接線，網站未發布）
+### 2026-09-15 成交金額前 20（來源與快取流程已接線，尚待密鑰／回補／發布）
 
 - 市場總覽 `MarketOverviewGroup` 新增 `turnoverLeaders` 契約；資料源必須在當日快照列明確標記，C# 才會依原幣成交金額取前 20，並集中計算日漲跌與年初至今漲跌。
 - 前端正式版面固定左欄 1～10、右欄 11～20；每列可開最近三個月 K 線，日／韓／加密 K 線 payload 也會保留正確市場標籤。localhost 的 `?preview=market-leaders-v1` 仍只供版面確認，示意資料不會進 production。
-- 目前 `data/imports-overview` 仍只有指數／產業代表等結構性名冊，沒有可支撐全市場前 20 的候選資料；正式頁面因此顯示資料不足，不能拿結構性樣本充數。尚待決定並接入美／日／韓的權威全市場成交排行來源，再回補資料與發布。
+- `MarketTurnoverCollector` 已接上 Massive grouped daily aggregates（美股）與 KIS TSE／KRX 成交金額排行（日／韓），通過至少 20 列、名次連續、代號不重複、金額有效的品質門檻後，盤後寫入 `data/imports-turnover`；盤中不寫 data branch，只送版本化 Storage 快照與 `latest.json`。
+- 尚待在 GitHub Actions 設定 `KIS_APP_KEY`、`KIS_APP_SECRET`、`MASSIVE_API_KEY`，實跑來源穩定性與授權確認，回補兩年（或來源可提供的歷史範圍）盤後排行；缺密鑰或來源不足必須維持 workflow 失敗，不以舊快取冒充。
+- 尚待確認來源允許公開再分發；目前 `MarketTurnoverCdn:Public=false`，所以 export 不會把排行 CDN 寫進 manifest。授權確認後才改為 public、先完成盤中首輪，再執行 export／發布網站。
+- 排行列的成交金額與現價已可顯示；若要讓每個排行標的都能開完整三個月 K 線，還需讓來源 collector 另外回補該標的日 K（目前固定市場總覽 K 線不會把單次排行列冒充成歷史序列）。
 
 ### 尚未討論
 

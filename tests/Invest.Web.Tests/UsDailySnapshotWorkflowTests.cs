@@ -26,6 +26,9 @@ public sealed class UsDailySnapshotWorkflowTests
         Assert.DoesNotContain("ALPHA_VANTAGE_API_KEY", workflow, StringComparison.Ordinal);
         Assert.Contains("-- backfill-us", workflow, StringComparison.Ordinal);
         Assert.Contains("git add -A imports-us", workflow, StringComparison.Ordinal);
+        Assert.Contains("market-turnover --markets us", workflow, StringComparison.Ordinal);
+        Assert.Contains("MASSIVE_API_KEY", workflow, StringComparison.Ordinal);
+        Assert.Contains("imports-turnover", workflow, StringComparison.Ordinal);
         Assert.Contains("--diff-filter=D", workflow, StringComparison.Ordinal);
     }
 
