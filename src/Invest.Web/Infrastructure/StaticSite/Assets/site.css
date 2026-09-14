@@ -2510,6 +2510,10 @@ body {
     gap: 10px;
 }
 
+.asset-screenshot-previews--multi {
+    grid-template-columns: repeat(2, 1fr);
+}
+
 .asset-screenshot-preview-item {
     display: grid;
     gap: 5px;

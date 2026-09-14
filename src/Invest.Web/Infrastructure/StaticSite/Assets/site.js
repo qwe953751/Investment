@@ -15390,7 +15390,7 @@ function makeAssetScreenshotFlow(view) {
         warmup.textContent = assetOcrStatus || '背景準備 Tesseract 備援引擎…';
         section.append(warmup);
 
-        if (assetOcrWorkerLoading === null) {
+        if (assetOcrWorkerLoading === null && assetOcrStatus.includes('失敗')) {
             section.append(assetButton('重新準備 Tesseract 備援', 'asset-secondary-button', () => {
                 assetOcrWarmupAttempted = false;
                 warmAssetOcrWorker();
@@ -15404,7 +15404,9 @@ function makeAssetScreenshotFlow(view) {
     }
 
     const previews = document.createElement('div');
-    previews.className = 'asset-screenshot-previews';
+    previews.className = assetScreenshotDraft.screenshots.length > 2
+        ? 'asset-screenshot-previews asset-screenshot-previews--multi'
+        : 'asset-screenshot-previews';
 
     for (const [index, screenshot] of assetScreenshotDraft.screenshots.entries()) {
         const item = document.createElement('figure');
@@ -15458,7 +15460,8 @@ function makeAssetScreenshotFlow(view) {
     table.className = 'asset-preview-table asset-review-table';
     const body = document.createElement('tbody');
 
-    for (const draft of assetScreenshotDraft.rows) {
+    for (const draft of [...assetScreenshotDraft.rows].sort((a, b) =>
+        assetHoldingTicker(a).localeCompare(assetHoldingTicker(b), 'en'))) {
         body.append(makeAssetDraftRow(draft));
     }
 
@@ -15510,11 +15513,16 @@ function makeAssetScreenshotFlow(view) {
         diffPanel.append(invalid);
     }
 
+    const sortByTicker = arr => [...arr].sort((a, b) => {
+        const ta = assetHoldingTicker(a.draft ?? a.holding);
+        const tb = assetHoldingTicker(b.draft ?? b.holding);
+        return ta.localeCompare(tb, 'en');
+    });
     diffPanel.append(
         makeAssetHoldingDiffSection(
             '覆蓋持倉',
             '截圖與帳戶都有同一代號；勾選後直接用截圖數字覆蓋。',
-            diff.updates,
+            sortByTicker(diff.updates),
             view.market,
             assetScreenshotDraft.selections,
             refreshSelectionSummary,
@@ -15522,7 +15530,7 @@ function makeAssetScreenshotFlow(view) {
         makeAssetHoldingDiffSection(
             '新增持倉',
             '截圖有、帳戶沒有的代號；勾選後新增。',
-            diff.additions,
+            sortByTicker(diff.additions),
             view.market,
             assetScreenshotDraft.selections,
             refreshSelectionSummary,
@@ -15530,7 +15538,7 @@ function makeAssetScreenshotFlow(view) {
         makeAssetHoldingDiffSection(
             '移除持倉',
             '帳戶有、截圖沒有的代號；已自動勾選，請人工確認是否確實要移除。',
-            diff.removals,
+            sortByTicker(diff.removals),
             view.market,
             assetScreenshotDraft.selections,
             refreshSelectionSummary,
