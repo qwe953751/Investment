@@ -28,7 +28,7 @@
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](Doc/版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照 |
-| 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 `057` 已套用；已修正 recovery 實測的 schema／Storage 缺檔相容性，待最新 recovery 與網站發布驗證 |
+| 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1770,7 +1770,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：程式、migration 與收盤後 recovery 已完成；待本輪發布後驗證最新 raw 與 topic CDN 同輪**
+**狀態：已完成並發布；下一交易日持續觀察盤中輪次**
 
 ### 已討論
 
@@ -1781,13 +1781,15 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - worker 使用 Supabase「尚未有 `intraday_topic_heat` 的 run」作 durable 待辦，memory Channel 只作喚醒，
   advisory lock 確保同時間只有一個 consumer；backlog 優先追最新 run，舊 run 完成較晚不得倒退 topic 指標。
 
-### 尚未完成
+### 已完成
 
 - `db/057_intraday_topic_async.sql` 已依獨立 migration 流程套用正式 Supabase；已確認 view 的
   `run_id` 與 RLS／PostgREST 回傳。新增 `backfill-intraday-topic` 與
   `.github/workflows/intraday-topic-recovery.yml`，收盤後只補算既有 raw backlog，不重抓 MIS。
-- `main` commit `2b943cea` 已由 publish-only run `34836076850` 發布，公開 manifest `1789383855` 已驗證；
-  本輪推送並發布後要以 recovery 驗證 raw／topic 兩個 latest 指標同輪，再以瀏覽器 Network 驗證落後提示與收盤後追上行為。
+- recovery `34844210705` 已成功補算 run 2580，公開 raw／topic latest 同為 `runId=2580`，topic 218 列；
+  immutable topic 檔案、Supabase view 與指標均已核對一致。
+- 修復 commit `1616b2c1` 已由 publish-only run `34844215670` 發布，公開 manifest `1789389763` 已驗證；
+  線上 `site.js` 已包含新版 view 與直接資料表 fallback。下一交易日只需觀察兩分鐘輪次是否持續自動追上。
 - recovery `34843425153` 發現 CTE 未帶入指數 OHLC 欄位（Postgres `42703`），`34843743795` 發現
   Storage 缺少 `topic-latest.json` 時會以 HTTP 400／`NoSuchKey` 回應；兩項均已修正並有回歸測試，
-  尚待下一次 recovery 實際補出第一份 topic 快取。
+  `34844210705` 已驗證修正後可補出第一份 topic 快取。
