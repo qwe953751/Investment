@@ -2482,21 +2482,17 @@ function renderAccessBar() {
     const loggedIn = loginTier !== null;
     el('access-bar-login-form').hidden = loggedIn;
     el('access-bar-logout').hidden = !loggedIn;
-    const shareTools = el('access-bar-share-tools');
-    const shareButton = el('access-bar-share');
-    const shareListButton = el('access-bar-share-list');
-    const shareListPanel = el('access-bar-share-list-panel');
-    if (shareTools) {
-        shareTools.hidden = loginTier !== 'admin';
+    const shareContainer = el('access-bar-share-container');
+    const sharePanel = el('access-bar-share-panel');
+    const shareToggle = el('access-bar-share-toggle');
+    if (shareContainer) {
+        shareContainer.hidden = loginTier !== 'admin';
     }
-    if (shareButton) {
-        shareButton.hidden = loginTier !== 'admin';
+    if (sharePanel) {
+        sharePanel.hidden = true;
     }
-    if (shareListButton) {
-        shareListButton.hidden = loginTier !== 'admin';
-    }
-    if (shareListPanel) {
-        shareListPanel.hidden = true;
+    if (shareToggle) {
+        shareToggle.setAttribute('aria-expanded', 'false');
     }
 }
 
@@ -2519,7 +2515,7 @@ function afterAccessChange() {
 let lastAccessShareId = '';
 
 async function createAccessShareLink() {
-    const errorLabel = el('access-bar-error');
+    const statusLabel = el('access-bar-share-status');
     const button = el('access-bar-share');
     const role = el('access-bar-share-role')?.value ?? 'holdings';
     const expirySelect = el('access-bar-share-expiry');
@@ -2531,7 +2527,7 @@ async function createAccessShareLink() {
     }
 
     button.disabled = true;
-    errorLabel.hidden = true;
+    if (statusLabel) statusLabel.hidden = true;
     try {
         const response = await accessShareRequest('create', {
             role,
@@ -2550,28 +2546,33 @@ async function createAccessShareLink() {
             : expiryValue === '720' ? '1 個月'
             : expiryValue;
 
+        if (statusLabel) {
+            statusLabel.classList.remove('is-error');
+        }
         try {
             await navigator.clipboard.writeText(link);
-            errorLabel.textContent = `已複製 ${ACCESS_TIER_TEXT[role]}的分享網址（${expiryText}、不限使用次數）。此連結不含密碼。`;
+            if (statusLabel) statusLabel.textContent = `已複製 ${ACCESS_TIER_TEXT[role]}的分享網址（${expiryText}、不限使用次數）。此連結不含密碼。`;
         } catch {
             window.prompt('請複製這個分享網址（不含密碼）；時效為 ' + expiryText + '。', link);
-            errorLabel.textContent = `已建立 ${ACCESS_TIER_TEXT[role]}分享網址。`;
+            if (statusLabel) statusLabel.textContent = `已建立 ${ACCESS_TIER_TEXT[role]}分享網址。`;
         }
-        errorLabel.hidden = false;
+        if (statusLabel) statusLabel.hidden = false;
         await renderAccessShareList();
     } catch (error) {
-        errorLabel.textContent = error.message || '分享連結建立失敗。';
-        errorLabel.hidden = false;
+        if (statusLabel) {
+            statusLabel.textContent = error.message || '分享連結建立失敗。';
+            statusLabel.classList.add('is-error');
+            statusLabel.hidden = false;
+        }
     } finally {
         button.disabled = false;
     }
 }
 
 async function renderAccessShareList() {
-    const listPanel = el('access-bar-share-list-panel');
     const tbody = el('access-bar-share-list-body');
 
-    if (!listPanel || !tbody) {
+    if (!tbody) {
         return;
     }
 
@@ -2619,7 +2620,7 @@ async function renderAccessShareList() {
 }
 
 async function revokeAccessShareLink(id) {
-    const errorLabel = el('access-bar-error');
+    const statusLabel = el('access-bar-share-status');
 
     if (loginTier !== 'admin') {
         return;
@@ -2628,12 +2629,18 @@ async function revokeAccessShareLink(id) {
     try {
         const response = await accessShareRequest('revoke', { id });
         await accessShareJson(response, '撤銷分享連結');
-        errorLabel.textContent = '分享連結已撤銷。';
-        errorLabel.hidden = false;
+        if (statusLabel) {
+            statusLabel.textContent = '分享連結已撤銷。';
+            statusLabel.classList.remove('is-error');
+            statusLabel.hidden = false;
+        }
         await renderAccessShareList();
     } catch (error) {
-        errorLabel.textContent = error.message || '撤銷失敗。';
-        errorLabel.hidden = false;
+        if (statusLabel) {
+            statusLabel.textContent = error.message || '撤銷失敗。';
+            statusLabel.classList.add('is-error');
+            statusLabel.hidden = false;
+        }
     }
 }
 
@@ -2642,9 +2649,9 @@ function wireAccessBar() {
     const passwordInput = el('access-bar-password');
     const errorLabel = el('access-bar-error');
     const logoutButton = el('access-bar-logout');
-    const shareButton = el('access-bar-share');
-    const shareListButton = el('access-bar-share-list');
-    const shareListPanel = el('access-bar-share-list-panel');
+    const shareCreateButton = el('access-bar-share');
+    const shareToggle = el('access-bar-share-toggle');
+    const sharePanel = el('access-bar-share-panel');
 
     if (!form) {
         return;
@@ -2677,13 +2684,28 @@ function wireAccessBar() {
         afterAccessChange();
     });
 
-    shareButton?.addEventListener('click', () => void createAccessShareLink());
-    shareListButton?.addEventListener('click', async () => {
-        if (shareListPanel) {
-            shareListPanel.hidden = !shareListPanel.hidden;
-            if (!shareListPanel.hidden) {
-                await renderAccessShareList();
-            }
+    shareCreateButton?.addEventListener('click', () => void createAccessShareLink());
+
+    shareToggle?.addEventListener('click', () => {
+        const opening = toggleHeaderPanel(shareToggle, sharePanel);
+        if (opening) {
+            void renderAccessShareList();
+        }
+    });
+
+    document.addEventListener('click', event => {
+        if (sharePanel && !sharePanel.hidden
+            && !el('access-bar-share-container').contains(event.target)) {
+            sharePanel.hidden = true;
+            shareToggle?.setAttribute('aria-expanded', 'false');
+        }
+    });
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && sharePanel && !sharePanel.hidden) {
+            sharePanel.hidden = true;
+            shareToggle?.setAttribute('aria-expanded', 'false');
+            shareToggle?.focus();
         }
     });
 }
@@ -27067,21 +27089,15 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
     border-radius: 7px;
     font-size: 12px;
 }
-.msp-utility-slot .access-bar-share-tools {
-    display: inline-flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 4px;
-}
-.msp-utility-slot #access-bar-share-role,
-.msp-utility-slot #access-bar-share-tools button {
+.msp-utility-slot .access-bar-share-toggle {
     min-height: 30px;
-    padding: 5px 8px;
-    border-radius: 7px;
+    padding: 5px 9px;
+    border-radius: 8px;
     font-size: 12px;
 }
 .msp-utility-slot .alert-panel,
 .msp-utility-slot .device-presence-panel,
+.msp-utility-slot .access-bar-share-panel,
 .msp-utility-slot .refresh-status-panel {
     top: calc(100% + 8px);
     right: 0;
