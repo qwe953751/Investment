@@ -447,10 +447,11 @@ async function handleStatus(request, user, jobId) {
         return json(request, 404, { error: 'job_not_found' });
     }
 
-    // 治本一：工作層級的 stall 偵測，取代機器層級的心跳猜測。
-    // 「這件工作 20 秒內沒有任何 Worker 接走」是事實，不是推測；Realtime 喚醒正常時
-    // claim 通常 <1 秒，20 秒是極安全的判準。寄生在既有的 status 輪詢裡，不新增任何
-    // 排程或額外呼叫（前端本來就每 1~幾秒問一次 status）。
+    // 治本一（db/054）＋守衛（db/055）：工作層級的 stall 偵測。
+    // ocr_stall_to_fallback 的 SQL 判定：queued 超過 20 秒「且」ocr_available_workers() 回傳空。
+    // 後者是 db/055 加入的守衛——Worker 槽全滿（正常排隊）時不 fallback，
+    // 只有真的沒有任何可用 Worker 時才降級。寄生在既有的 status 輪詢裡，
+    // 不新增任何排程或額外呼叫（前端本來就每 1~幾秒問一次 status）。
     const createdAtMs = Date.parse(job.created_at ?? '');
     if (job.status === 'queued'
         && Number.isFinite(createdAtMs)

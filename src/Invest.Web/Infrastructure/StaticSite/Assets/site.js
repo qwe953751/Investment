@@ -11552,8 +11552,9 @@ const ASSET_AI_OCR_POLL_SLOW_MS = 1_500;
 const ASSET_AI_OCR_POLL_QUEUED_MS = 3_000;
 const ASSET_AI_OCR_WAKE_AFTER_MS = 5_000;
 // 治本一流量優化：wake 只是喚醒 Realtime 讓 Worker 去 claim，工作一旦 leased
-// （已經有 Worker 接手）就對它沒有意義，卡住與否改由 stall 偵測（db/054 的
-// ocr_stall_to_fallback，寄生在 status 輪詢裡）處理。連續 wake 之間至少間隔這麼久，
+// （已經有 Worker 接手）就對它沒有意義，卡住與否改由 stall 偵測（db/055 的
+// ocr_stall_to_fallback，寄生在 status 輪詢裡；Worker 槽全滿時不 fallback）處理。
+// 連續 wake 之間至少間隔這麼久，
 // 避免排隊期間每 5 秒打一次（2026-09-13 實測一批 6 張圖產生 91 次 wake 呼叫）。
 const ASSET_AI_OCR_WAKE_MIN_INTERVAL_MS = 30_000;
 const ASSET_AI_OCR_TIMEOUT_MS = 9 * 60_000;
@@ -11817,7 +11818,7 @@ function assetAiOcrFallbackText(reason) {
         case 'worker_offline': return 'AI Worker 離線';
         case 'no_worker': return '尚未有任何 AI Worker 註冊';
         case 'no_available_agent': return '沒有已登入且有額度的 AI Agent';
-        case 'worker_stalled': return '沒有 Worker 接走這件工作';
+        case 'worker_stalled': return 'Worker 離線，無人接走這件工作';
         case 'all_agents_quota_exhausted': return '所有 AI Agent 額度不足';
         case 'ai_invalid_output': return 'AI 結果未通過格式驗證';
         case 'ai_execution_failed': return 'AI 執行失敗';
