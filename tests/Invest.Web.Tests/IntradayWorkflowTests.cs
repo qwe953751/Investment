@@ -252,6 +252,8 @@ public sealed class IntradayWorkflowTests
         Assert.Contains("information_schema.columns", store, StringComparison.Ordinal);
         Assert.Contains("先寫入盤中基本資料，指數當日 OHLC 暫不保存", store, StringComparison.Ordinal);
         Assert.Contains("UpdateIndexKlineAsync", store, StringComparison.Ordinal);
+        Assert.Contains("indexKlineRunColumns", store, StringComparison.Ordinal);
+        Assert.Contains("as twse_index_open", store, StringComparison.Ordinal);
 
         var insertStart = store.IndexOf("private static async Task<long> InsertRunAsync", StringComparison.Ordinal);
         var insertEnd = store.IndexOf("private static void AddNullableDecimal", insertStart, StringComparison.Ordinal);
@@ -296,6 +298,7 @@ public sealed class IntradayWorkflowTests
         Assert.Contains("intraday-topic-[0-9]{8}", workflow, StringComparison.Ordinal);
         Assert.Contains("backfill-intraday-topic", program, StringComparison.Ordinal);
         Assert.Contains("RunOnceAsync", worker, StringComparison.Ordinal);
+        Assert.Contains("if (!await DrainPendingAsync(cancellationToken))", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("intraday --loop", workflow, StringComparison.Ordinal);
     }
 

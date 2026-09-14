@@ -75,7 +75,11 @@ public sealed class IntradayTopicHeatWorker(
 
         try
         {
-            await DrainPendingAsync(cancellationToken);
+            if (!await DrainPendingAsync(cancellationToken))
+            {
+                return false;
+            }
+
             var remaining = await quoteStore.LoadNewestSnapshotMissingTopicHeatAsync(cancellationToken);
             return remaining is null;
         }
@@ -157,7 +161,7 @@ public sealed class IntradayTopicHeatWorker(
         return acquired;
     }
 
-    private async Task DrainPendingAsync(CancellationToken cancellationToken)
+    private async Task<bool> DrainPendingAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -171,20 +175,22 @@ public sealed class IntradayTopicHeatWorker(
                 when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 await RaiseAlertAsync("查詢待處理 run 失敗", exception, cancellationToken);
-                return;
+                return false;
             }
 
             if (pending is null)
             {
-                return;
+                return true;
             }
 
             if (!await ProcessAsync(pending, cancellationToken))
             {
                 // 分類／CDN 暫時失敗時停止這次 drain，保留 pending；下一輪訊號或程序重啟會重試。
-                return;
+                return false;
             }
         }
+
+        return true;
     }
 
     private async Task<bool> ProcessAsync(

@@ -200,17 +200,21 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
     {
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
         var hasIndexKlineColumns = await HasIndexKlineColumnsAsync(connection, cancellationToken);
-        var indexKlineColumns = hasIndexKlineColumns
-            ? "latest.twse_index_open, latest.twse_index_high, latest.twse_index_low,\n"
-                + "       latest.tpex_index_open, latest.tpex_index_high, latest.tpex_index_low"
-            : "null::numeric, null::numeric, null::numeric,\n"
-                + "       null::numeric, null::numeric, null::numeric";
+        // 021 已套用時把指數 OHLC 帶進 CTE；未套用時仍建立同名 NULL 欄位，
+        // 讓同一份查詢可在新舊資料庫 schema 讀取，不會在外層引用不存在的 CTE 欄位。
+        var indexKlineRunColumns = hasIndexKlineColumns
+            ? "twse_index_open, twse_index_high, twse_index_low,\n"
+                + "                       tpex_index_open, tpex_index_high, tpex_index_low"
+            : "null::numeric as twse_index_open, null::numeric as twse_index_high,\n"
+                + "                       null::numeric as twse_index_low, null::numeric as tpex_index_open,\n"
+                + "                       null::numeric as tpex_index_high, null::numeric as tpex_index_low";
         await using var command = new NpgsqlCommand(
             $"""
             with latest as (
                 select id, trade_date,
                        captured_at, twse_index, twse_change_percent,
-                       tpex_index, tpex_change_percent
+                       tpex_index, tpex_change_percent,
+                       {indexKlineRunColumns}
                 from intraday_runs
                 {runSelection}
             )
@@ -221,7 +225,8 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                    q.price, q.turnover, q.change_percent,
                    q.open_price, q.high_price, q.low_price,
                    latest.captured_at,
-                   {indexKlineColumns}
+                   latest.twse_index_open, latest.twse_index_high, latest.twse_index_low,
+                   latest.tpex_index_open, latest.tpex_index_high, latest.tpex_index_low
             from latest
             join intraday_quotes q on q.run_id = latest.id
             join securities s on s.id = q.security_id
