@@ -45,6 +45,9 @@ const TOPIC_EDITOR_PROTOTYPE_V3 = ['localhost', '127.0.0.1'].includes(window.loc
 const TOPIC_EDITOR_PROTOTYPE = TOPIC_EDITOR_PROTOTYPE_V1
     || TOPIC_EDITOR_PROTOTYPE_V2
     || TOPIC_EDITOR_PROTOTYPE_V3;
+// 本機專用：只檢查美／日／韓市場的「成交金額前 20」版面；示意列不會進正式資料。
+const MARKET_LEADERS_LOCAL_PREVIEW = LOCAL_HOSTNAMES.includes(window.location.hostname)
+    && PREVIEW_QUERY === 'market-leaders-v1';
 // 本機專用：用筆記 #62 的年度總資產／淨資產示意資料檢查正式資產頁版面與互動。
 // 正式網址走同一個 renderer，但歷史年度改讀 asset_annual_snapshots；本機 query 不讀寫 Supabase。
 const ASSET_ANNUALIZED_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
@@ -16794,7 +16797,9 @@ async function loadKLineData(ticker) {
 
             const validAdjustment = payload?.adjustmentMethod === 'forward-rights-dividends'
                 || payload?.adjustmentMethod === 'raw-tw-etf-daily'
-                || (payload?.market === 'US' && payload?.adjustmentMethod === 'raw-us-daily');
+                || (payload?.market === 'US' && payload?.adjustmentMethod === 'raw-us-daily')
+                || (['JP', 'KR', 'CRYPTO'].includes(payload?.market)
+                    && payload?.adjustmentMethod === 'raw-market-overview-daily');
 
             if (!validAdjustment || !Array.isArray(payload.bars)) {
                 throw new Error('invalid adjusted K-line payload');
@@ -18245,8 +18250,8 @@ function refreshKLinePopover() {
         return;
     }
 
-    const anchor = [...document.querySelectorAll('.stock-name-button[data-ticker]')]
-        .find(button => button.dataset.ticker === expandedTicker);
+    const anchor = [...document.querySelectorAll('.stock-name-button[data-ticker], [data-msp-ticker]')]
+        .find(button => button.dataset.ticker === expandedTicker || button.dataset.mspTicker === expandedTicker);
     const row = klineUseLatestDate
         ? null
         : current?.rows.find(candidate => candidate.ticker === expandedTicker);
@@ -26085,12 +26090,19 @@ const MSP_SECTOR_TITLE = {
 
 const MSP_MARKETS = [
     { key: 'tw', text: '台股' },
-    { key: 'us', text: '美股' },
     // 日股／韓股目前仍只對最高權限顯示；資料已由後端市場總覽匯出。
     { key: 'jp', text: '日股', adminOnly: true },
     { key: 'kr', text: '韓股', adminOnly: true },
-    { key: 'crypto', text: '加密貨幣' }
+    { key: 'us', text: '美股' },
+    { key: 'crypto', text: '加密' }
 ];
+
+const MSP_TURNOVER_LEADER_MARKETS = new Set(['us', 'jp', 'kr']);
+const MSP_TURNOVER_CONFIG = {
+    us: { prefix: 'US$', divisor: 1_000_000_000, suffix: 'B', unitLabel: '十億美元' },
+    jp: { prefix: '¥', divisor: 100_000_000, suffix: '億', unitLabel: '億日圓' },
+    kr: { prefix: '₩', divisor: 100_000_000, suffix: '億', unitLabel: '億韓元' }
+};
 
 function mspVisibleMarkets() {
     return MSP_MARKETS.filter(market => !market.adminOnly || SITE_ACCESS === 'admin');
@@ -26115,9 +26127,35 @@ function mspTemplateTradingDates() {
 // 會改讀後端輸出的日股／韓股快照。
 const MSP_TEMPLATE_TRADING_DATES = mspTemplateTradingDates();
 const MSP_LAYOUT_PREVIEW_DATA = {
+    us: {
+        preview: true,
+        dates: MSP_TEMPLATE_TRADING_DATES,
+        asOf: '2026-09-11',
+        heatScore: 5.4,
+        indices: [
+            { name: '道瓊工業指數', symbol: 'US-DJI', value: 45182.4, daily: 0.42, ytd: 6.82 },
+            { name: 'S&P 500', symbol: 'US-SP500', value: 6488.3, daily: 0.35, ytd: 9.74 },
+            { name: 'Nasdaq 綜合指數', symbol: 'US-NASDAQ', value: 21843.2, daily: 0.68, ytd: 12.42 },
+            { name: 'VIX 恐慌指數', symbol: 'US-VIX', value: 15.8, daily: -1.24, ytd: -8.36 }
+        ],
+        sectors: [
+            { symbol: 'US-TECH', name: '資訊科技', change: 1.08, weight: 19.4 },
+            { symbol: 'US-COMM', name: '通訊服務', change: 0.74, weight: 13.1 },
+            { symbol: 'US-FIN', name: '金融', change: 0.46, weight: 12.6 },
+            { symbol: 'US-IND', name: '工業', change: 0.22, weight: 10.7 },
+            { symbol: 'US-CONS', name: '非必需消費', change: 0.18, weight: 10.1 },
+            { symbol: 'US-HEALTH', name: '醫療保健', change: -0.12, weight: 9.0 },
+            { symbol: 'US-ENERGY', name: '能源', change: -0.28, weight: 7.3 },
+            { symbol: 'US-MAT', name: '原物料', change: -0.34, weight: 5.1 },
+            { symbol: 'US-STAPLES', name: '必需消費', change: -0.41, weight: 4.9 },
+            { symbol: 'US-UTIL', name: '公用事業', change: -0.55, weight: 4.5 },
+            { symbol: 'US-REIT', name: '不動產', change: -0.63, weight: 3.3 }
+        ]
+    },
     jp: {
         preview: true,
         dates: MSP_TEMPLATE_TRADING_DATES,
+        asOf: '2026-09-11',
         heatScore: 6.7,
         indices: [
             { name: '日經 225', symbol: 'JP-NIKKEI225', value: 43857.5, daily: 1.24, ytd: 10.42 },
@@ -26141,6 +26179,7 @@ const MSP_LAYOUT_PREVIEW_DATA = {
     kr: {
         preview: true,
         dates: MSP_TEMPLATE_TRADING_DATES,
+        asOf: '2026-09-11',
         heatScore: 5.9,
         indices: [
             { name: 'KOSPI', symbol: 'KR-KOSPI', value: 2724.85, daily: -0.42, ytd: 2.18 },
@@ -26163,12 +26202,72 @@ const MSP_LAYOUT_PREVIEW_DATA = {
     }
 };
 
+// 只供 ?preview=market-leaders-v1 排版預覽的示意資料；正式頁面不會走這個常數。
+// turnover 是市場原幣金額，change / yearChange 是百分比數字（例如 1.28 代表 +1.28%），price 是 K 線基準價。
+const MSP_TURNOVER_LEADER_PREVIEW_DATA = {
+    us: [
+        ['NVDA', 'NVIDIA', 68.4, 3.28, 128.4, 140], ['TSLA', 'Tesla', 54.7, -1.42, 32.8, 348], ['AAPL', 'Apple', 41.6, 0.84, 18.6, 238],
+        ['MSFT', 'Microsoft', 36.2, 0.38, 26.4, 505], ['AMD', 'Advanced Micro Devices', 29.8, 4.16, 72.1, 165], ['AMZN', 'Amazon', 27.4, 1.12, 41.3, 230],
+        ['META', 'Meta Platforms', 24.7, 1.86, 52.8, 735], ['AVGO', 'Broadcom', 22.9, 2.74, 81.2, 340], ['PLTR', 'Palantir', 20.8, 5.32, 144.6, 151],
+        ['MSTR', 'Strategy', 18.6, -2.18, 238.4, 320], ['COIN', 'Coinbase', 16.9, 3.94, 29.8, 310], ['GOOGL', 'Alphabet A', 16.1, 0.67, 38.2, 242],
+        ['NFLX', 'Netflix', 14.8, 1.44, 43.4, 1200], ['MU', 'Micron Technology', 13.6, 2.26, 91.5, 150], ['SMCI', 'Super Micro Computer', 12.9, -0.86, -18.7, 45],
+        ['INTC', 'Intel', 11.7, 1.08, -31.2, 24], ['QCOM', 'Qualcomm', 10.8, 0.52, 17.9, 170], ['ORCL', 'Oracle', 10.1, -0.34, 34.3, 245],
+        ['ARM', 'Arm Holdings', 9.6, 2.41, 26.8, 151], ['AMAT', 'Applied Materials', 9.1, 1.37, 18.5, 190]
+    ].map(([symbol, name, turnover, change, yearChange, price], index) => ({
+        rank: index + 1,
+        symbol,
+        name,
+        turnover: turnover * 1_000_000_000,
+        change,
+        yearChange,
+        price
+    })),
+    jp: [
+        ['7203.T', 'Toyota Motor', 3200, 1.42, 18.4, 2800], ['9984.T', 'SoftBank Group', 2860, -0.68, -12.6, 16500], ['6857.T', 'Advantest', 2410, 3.84, 85.2, 13000],
+        ['8306.T', 'Mitsubishi UFJ', 2180, 0.52, 24.1, 1900], ['8035.T', 'Tokyo Electron', 2050, 2.16, 31.8, 26000], ['7011.T', 'Mitsubishi Heavy', 1960, 1.74, 42.6, 3500],
+        ['8058.T', 'Mitsubishi Corp.', 1840, -0.24, 8.3, 3800], ['4063.T', 'Shin-Etsu Chemical', 1760, 0.86, 16.5, 4500], ['8316.T', 'Sumitomo Mitsui', 1680, 0.34, 11.2, 3700],
+        ['8031.T', 'Mitsui & Co.', 1540, 1.03, 6.9, 3100], ['6098.T', 'Recruit Holdings', 1490, -1.12, -4.7, 8500], ['9432.T', 'Nippon Telegraph', 1420, 0.18, 3.4, 155],
+        ['6758.T', 'Sony Group', 1370, 1.56, 22.8, 3200], ['6501.T', 'Hitachi', 1290, 2.08, 38.6, 3900], ['6920.T', 'Lasertec', 1210, 3.32, 54.1, 18000],
+        ['7267.T', 'Honda Motor', 1140, -0.47, 2.1, 1700], ['6762.T', 'TDK', 1080, 0.92, 19.7, 9000], ['6146.T', 'DISCO', 1020, 2.64, 7.8, 40000],
+        ['6594.T', 'Nidec', 980, -0.36, -8.9, 2500], ['4661.T', 'Oriental Land', 940, 0.28, 12.4, 23000]
+    ].map(([symbol, name, turnover, change, yearChange, price], index) => ({
+        rank: index + 1,
+        symbol,
+        name,
+        turnover: turnover * 100_000_000,
+        change,
+        yearChange,
+        price
+    })),
+    kr: [
+        ['005930.KS', 'Samsung Electronics', 18200, 1.34, 40.5, 72000], ['000660.KS', 'SK hynix', 14600, 3.18, 78.4, 260000], ['373220.KS', 'LG Energy Solution', 8640, -1.82, 29.8, 380000],
+        ['005380.KS', 'Hyundai Motor', 7280, 0.64, 15.7, 250000], ['207940.KS', 'Samsung Biologics', 6120, 1.96, 68.2, 1000000], ['005490.KS', 'POSCO Holdings', 5840, -0.42, 4.9, 320000],
+        ['035420.KS', 'NAVER', 5370, 2.24, -8.4, 240000], ['000270.KS', 'Kia', 5060, 0.88, 31.2, 150000], ['068270.KS', 'Celltrion', 4720, 1.12, 24.6, 170000],
+        ['012330.KS', 'Hyundai Mobis', 4310, -0.34, 12.9, 300000], ['105560.KS', 'KB Financial', 3960, 0.54, 21.4, 105000], ['055550.KS', 'Shinhan Financial', 3740, 0.18, 8.1, 58000],
+        ['028260.KS', 'Samsung C&T', 3520, 0.76, 18.6, 170000], ['329180.KS', 'HD Hyundai Heavy', 3310, 4.08, 92.3, 400000], ['010130.KS', 'Korea Zinc', 3140, -0.86, -14.2, 95000],
+        ['034730.KS', 'SK Inc.', 2980, 0.42, -2.8, 190000], ['035720.KS', 'Kakao', 2760, 1.74, 5.6, 42000], ['096770.KS', 'SK Innovation', 2540, -1.28, -11.7, 98000],
+        ['003550.KS', 'LG Corp.', 2390, 0.36, 3.4, 70000], ['086520.KS', 'EcoPro BM', 2260, 2.68, 18.9, 95000]
+    ].map(([symbol, name, turnover, change, yearChange, price], index) => ({
+        rank: index + 1,
+        symbol,
+        name,
+        turnover: turnover * 100_000_000,
+        change,
+        yearChange,
+        price
+    }))
+};
+
 function mspLayoutPreviewGroup(market) {
-    if (SITE_ACCESS !== 'admin') {
+    if (SITE_ACCESS !== 'admin' || !MARKET_LEADERS_LOCAL_PREVIEW) {
         return null;
     }
 
-    return MSP_LAYOUT_PREVIEW_DATA[market] ?? null;
+    const group = MSP_LAYOUT_PREVIEW_DATA[market];
+    const leaders = MSP_TURNOVER_LEADER_PREVIEW_DATA[market];
+    return group === undefined || leaders === undefined
+        ? null
+        : { ...group, turnoverLeaders: leaders };
 }
 
 // 市場（台股／美股／加密貨幣／日股／韓股）是情境選擇，主頁籤則是全域導覽；兩者不再塞進內容面板。
@@ -26411,6 +26510,142 @@ function mspBuildIndices(group, market, proto) {
         tile.append(name, value, changes);
         section.append(tile);
     }
+    return section;
+}
+
+function mspFormatTurnover(market, value) {
+    const config = MSP_TURNOVER_CONFIG[market];
+    const amount = Number(value);
+
+    if (config === undefined || !Number.isFinite(amount)) {
+        return '—';
+    }
+
+    const scaled = amount / config.divisor;
+    const decimals = market === 'us' ? 1 : 0;
+    return `${config.prefix}${scaled.toLocaleString('en-US', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
+    })}${config.suffix}`;
+}
+
+function mspBuildTurnoverLeaders(group, market) {
+    const section = document.createElement('section');
+    section.className = 'msp-section msp-turnover-leaders';
+
+    const config = MSP_TURNOVER_CONFIG[market];
+    const marketLabel = MSP_MARKETS.find(item => item.key === market)?.text ?? '市場';
+    const heading = document.createElement('div');
+    heading.className = 'msp-turnover-leaders-heading';
+
+    const copy = document.createElement('div');
+    const eyebrow = document.createElement('span');
+    eyebrow.className = 'msp-section-eyebrow';
+    eyebrow.textContent = group.preview === true ? '版面預覽 · 示意資料' : '市場成交活動';
+    const title = document.createElement('h2');
+    title.className = 'msp-section-title';
+    title.textContent = '成交金額前 20';
+    const detail = document.createElement('p');
+    detail.className = 'msp-turnover-leaders-detail';
+    detail.textContent = `依${marketLabel}成交金額排序 · 顯示原幣${config?.unitLabel ?? ''}`;
+    copy.append(eyebrow, title, detail);
+
+    const asOf = document.createElement('span');
+    asOf.className = 'msp-turnover-leaders-asof';
+    asOf.textContent = group.asOf ? `截至 ${group.asOf.replaceAll('-', '/')}` : '資料日 —';
+    heading.append(copy, asOf);
+    section.append(heading);
+
+    const rows = Array.isArray(group.turnoverLeaders)
+        ? group.turnoverLeaders
+            .map((row, index) => ({
+                ...row,
+                rank: Number.isFinite(Number(row.rank)) ? Number(row.rank) : index + 1,
+                turnover: Number(row.turnover),
+                change: missing(row.change) ? null : Number(row.change),
+                yearChange: missing(row.yearChange) ? null : Number(row.yearChange),
+                price: missing(row.price) ? null : Number(row.price)
+            }))
+            .filter(row => row.symbol && row.name && Number.isFinite(row.turnover))
+            .sort((left, right) => left.rank - right.rank || right.turnover - left.turnover)
+            .slice(0, 20)
+        : [];
+
+    if (rows.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'msp-turnover-leaders-empty';
+        empty.textContent = '目前快照尚未提供成交金額前 20；未以指數或產業代表標的代替。';
+        section.append(empty);
+        return section;
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'msp-turnover-leaders-grid';
+    grid.setAttribute('aria-label', `${marketLabel}成交金額前 ${rows.length} 名`);
+
+    for (const row of rows) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = `msp-turnover-leader${row.rank <= 3 ? ' is-top-three' : ''}`;
+
+        if (group.preview === true) {
+            const indexMarket = `msp-${market}-leader-${row.rank}-${row.symbol}`;
+            item.dataset.indexMarket = indexMarket;
+            item.dataset.hint = '點擊開啟這檔標的最近三個月日 K、均線與成交金額。';
+            item.setAttribute('aria-expanded', String(expandedIndexMarket === indexMarket));
+            item.addEventListener('click', () => toggleIndexKLine(indexMarket, item, {
+                template: true,
+                label: `${row.symbol} ${row.name}`,
+                value: row.price,
+                turnoverLabel: `${marketLabel}成交金額`,
+                endDate: group.asOf ?? group.dates?.at(-1) ?? ''
+            }));
+        } else {
+            item.dataset.mspTicker = row.symbol;
+            item.dataset.hint = '點擊開啟這檔標的最近三個月的日 K。';
+            item.setAttribute('aria-expanded', String(expandedTicker === row.symbol));
+            item.addEventListener('click', () => toggleKLine(row.symbol, row.name, item, {
+                market: marketLabel,
+                latest: true
+            }));
+        }
+
+        const rank = document.createElement('span');
+        rank.className = 'msp-turnover-leader-rank';
+        rank.textContent = String(row.rank).padStart(2, '0');
+
+        const identity = document.createElement('div');
+        identity.className = 'msp-turnover-leader-identity';
+        const symbol = document.createElement('strong');
+        symbol.className = 'msp-turnover-leader-symbol';
+        symbol.textContent = row.symbol;
+        const name = document.createElement('span');
+        name.className = 'msp-turnover-leader-name';
+        name.textContent = row.name;
+        identity.append(symbol, name);
+
+        const metrics = document.createElement('div');
+        metrics.className = 'msp-turnover-leader-metrics';
+        const amount = document.createElement('strong');
+        amount.className = 'msp-turnover-leader-amount';
+        amount.textContent = mspFormatTurnover(market, row.turnover);
+        const change = document.createElement('span');
+        change.className = `msp-turnover-leader-change ${toTrendClass(row.change)}`;
+        change.textContent = missing(row.change)
+            ? '日 —'
+            : `日 ${toSignedPercentText(row.change / 100, 2)}`;
+        const yearChange = document.createElement('span');
+        yearChange.className = `msp-turnover-leader-change ${toTrendClass(row.yearChange)}`;
+        yearChange.textContent = missing(row.yearChange)
+            ? '年 —'
+            : `年 ${toSignedPercentText(row.yearChange / 100, 2)}`;
+        metrics.append(amount, change, yearChange);
+
+        item.append(rank, identity, metrics);
+        grid.append(item);
+    }
+
+    section.append(grid);
     return section;
 }
 
@@ -26710,6 +26945,9 @@ function mspBuildDashboard(group, market, proto, paint) {
     }
 
     dashboard.append(mspSection('指數', mspBuildIndices(group, market, proto)));
+    if (MSP_TURNOVER_LEADER_MARKETS.has(market)) {
+        dashboard.append(mspBuildTurnoverLeaders(group, market));
+    }
     if (group.intraday === true) {
         const status = document.createElement('p');
         status.className = 'msp-card-detail';
@@ -26741,7 +26979,7 @@ function mspBuildLayoutPreviewNotice(market) {
 
     const message = document.createElement('p');
     message.className = 'msp-layout-preview-message';
-    message.textContent = `${marketLabel}的指數、熱絡指數與熱力圖目前使用模板示意資料，僅供確認內容排版。`;
+    message.textContent = `${marketLabel}的指數、成交金額前 20、熱絡指數與熱力圖目前使用模板示意資料，僅供確認內容排版。`;
 
     const detail = document.createElement('p');
     detail.className = 'msp-layout-preview-detail';
@@ -27143,6 +27381,109 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
 .msp-date-label { min-width: 84px; text-align: center; font-variant-numeric: tabular-nums; }
 .msp-card-detail { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
 .msp-section-title { margin: 0 0 10px; font-size: 15px; }
+.msp-turnover-leaders {
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
+}
+.msp-turnover-leaders-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 11px;
+}
+.msp-section-eyebrow {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--accent-strong);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .06em;
+}
+.msp-turnover-leaders .msp-section-title { margin-bottom: 3px; font-size: 17px; }
+.msp-turnover-leaders-detail,
+.msp-turnover-leaders-asof,
+.msp-turnover-leaders-empty {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.msp-turnover-leaders-asof {
+    flex: 0 0 auto;
+    padding-top: 3px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.msp-turnover-leaders-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(10, auto);
+    grid-auto-flow: column;
+    gap: 6px 10px;
+}
+.msp-turnover-leader {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    appearance: none;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+    transition: border-color .16s ease, transform .16s ease;
+}
+.msp-turnover-leader:hover,
+.msp-turnover-leader:focus-visible {
+    border-color: var(--accent);
+    outline: none;
+    transform: translateY(-1px);
+}
+.msp-turnover-leader-rank {
+    color: var(--text-faint);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+}
+.msp-turnover-leader.is-top-three .msp-turnover-leader-rank { color: var(--accent); }
+.msp-turnover-leader-identity { min-width: 0; }
+.msp-turnover-leader-symbol,
+.msp-turnover-leader-name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.msp-turnover-leader-symbol { font-size: 13px; line-height: 1.25; }
+.msp-turnover-leader-name { margin-top: 2px; color: var(--text-muted); font-size: 11px; }
+.msp-turnover-leader-metrics { min-width: 78px; text-align: right; }
+.msp-turnover-leader-amount {
+    display: block;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+}
+.msp-turnover-leader-change {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+@media (max-width: 720px) {
+    .msp-turnover-leaders-grid {
+        grid-template-columns: 1fr;
+        grid-template-rows: none;
+        grid-auto-flow: row;
+    }
+    .msp-turnover-leaders-heading { flex-direction: column; gap: 4px; }
+}
 .msp-section-compact {
     padding-top: 12px;
     border-top: 1px solid var(--border);
@@ -28970,8 +29311,13 @@ function initMarketSwitch() {
         panel.hidden = false;
         const inner = document.createElement('div');
         inner.className = 'msp-market-panel';
+        const localPreviewGroup = mspLayoutPreviewGroup(proto.market);
 
-        if (marketOverviewLoadError !== null) {
+        if (localPreviewGroup !== null) {
+            inner.append(
+                mspBuildLayoutPreviewNotice(proto.market),
+                mspBuildDashboard(localPreviewGroup, proto.market, proto, render));
+        } else if (marketOverviewLoadError !== null) {
             const notice = document.createElement('section');
             notice.className = 'notice warning msp-overview-notice';
             notice.textContent = marketOverviewLoadError;

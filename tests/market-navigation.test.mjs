@@ -29,13 +29,36 @@ test('U1 手機版先顯示完整工具列，再顯示市場與主頁籤', () =>
     assert.match(siteScript, /msp-utility-access/);
 });
 
-test('筆記 #67 的日股／韓股市場頁籤只對最高權限顯示', () => {
-    assert.match(siteScript, /const MSP_MARKETS = \[\s*\{ key: 'tw', text: '台股' \},\s*\{ key: 'us', text: '美股' \},[\s\S]*?\{ key: 'jp', text: '日股', adminOnly: true \},[\s\S]*?\{ key: 'kr', text: '韓股', adminOnly: true \},\s*\{ key: 'crypto', text: '加密貨幣' \}\s*\];/);
+test('市場頁籤依需求排列，且日股／韓股只對最高權限顯示', () => {
+    assert.match(siteScript, /const MSP_MARKETS = \[\s*\{ key: 'tw', text: '台股' \},[\s\S]*?\{ key: 'jp', text: '日股', adminOnly: true \},[\s\S]*?\{ key: 'kr', text: '韓股', adminOnly: true \},[\s\S]*?\{ key: 'us', text: '美股' \},\s*\{ key: 'crypto', text: '加密' \}\s*\];/);
     assert.match(siteScript, /\{ key: 'jp', text: '日股', adminOnly: true \}/);
     assert.match(siteScript, /\{ key: 'kr', text: '韓股', adminOnly: true \}/);
     assert.match(siteScript, /function mspVisibleMarkets\(\) \{\s*return MSP_MARKETS\.filter\(market => !market\.adminOnly \|\| SITE_ACCESS === 'admin'\);\s*\}/);
     assert.match(siteScript, /const visibleMarkets = mspVisibleMarkets\(\);/);
     assert.match(siteScript, /for \(const market of visibleMarkets\)/);
+});
+
+test('美股／日股／韓股市場總覽預留成交金額前 20 版面', () => {
+    assert.match(siteScript, /const MSP_TURNOVER_LEADER_MARKETS = new Set\(\['us', 'jp', 'kr'\]\)/);
+    assert.match(siteScript, /function mspBuildTurnoverLeaders\(group, market\)/);
+    assert.match(siteScript, /Array\.isArray\(group\.turnoverLeaders\)/);
+    assert.match(siteScript, /\.slice\(0, 20\)/);
+    assert.match(siteScript, /msp-turnover-leaders-grid/);
+    assert.match(siteScript, /mspBuildTurnoverLeaders\(group, market\)/);
+    assert.match(siteScript, /MARKET_LEADERS_LOCAL_PREVIEW/);
+    assert.match(siteScript, /目前快照尚未提供成交金額前 20；未以指數或產業代表標的代替/);
+});
+
+test('成交金額前20左欄1到10右欄11到20，標的可開三個月K線並顯示年漲跌幅', () => {
+    assert.match(siteScript, /grid-template-rows:\s*repeat\(10, auto\);/);
+    assert.match(siteScript, /grid-auto-flow:\s*column;/);
+    assert.match(siteScript, /grid-template-rows:\s*none;\s*grid-auto-flow:\s*row;/);
+    assert.match(siteScript, /item\.dataset\.indexMarket = indexMarket;/);
+    assert.match(siteScript, /toggleIndexKLine\(indexMarket, item, \{\s*template: true,[\s\S]*?value: row\.price,[\s\S]*?endDate: group\.asOf/);
+    assert.match(siteScript, /yearChange: missing\(row\.yearChange\) \? null : Number\(row\.yearChange\)/);
+    assert.match(siteScript, /yearChange\.className = `msp-turnover-leader-change \$\{toTrendClass\(row\.yearChange\)\}`/);
+    assert.match(siteScript, /`年 \$\{toSignedPercentText\(row\.yearChange \/ 100, 2\)\}`/);
+    assert.match(siteScript, /raw-market-overview-daily/);
 });
 
 test('日股／韓股使用各自市場總覽資料，不再走模板或美股快照', () => {

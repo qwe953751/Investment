@@ -65,6 +65,16 @@ public static class MarketOverviewProjection
         var sectors = MarketOverviewCalculator.CalculateSectors(history, sectorSymbols)
             .Select(result => new MarketOverviewSector(result.Symbol, result.Name, result.ChangePercent, result.Weight))
             .ToArray();
+        var turnoverLeaders = MarketOverviewCalculator.CalculateTurnoverLeaders(history, date)
+            .Select(result => new MarketOverviewTurnoverLeader(
+                result.Rank,
+                result.Symbol,
+                result.Name,
+                result.TradingValue,
+                result.ClosePrice,
+                result.DailyChangePercent,
+                result.YearToDateChangePercent))
+            .ToArray();
 
         return new MarketOverviewGroup(
             heat.CompositeHeatScore,
@@ -73,7 +83,10 @@ public static class MarketOverviewProjection
             indices,
             sectors,
             date.ToString("yyyy-MM-dd"),
-            []);
+            [])
+        {
+            TurnoverLeaders = turnoverLeaders
+        };
     }
 
     private static bool HasQuoteOn(
@@ -98,7 +111,22 @@ public sealed record MarketOverviewGroup(
     IReadOnlyList<MarketOverviewIndex> Indices,
     IReadOnlyList<MarketOverviewSector> Sectors,
     string? AsOf,
-    IReadOnlyList<string> Dates);
+    IReadOnlyList<string> Dates)
+{
+    /// <summary>
+    /// 只包含資料源明確標記的市場成交排行列；沒有來源資料時保持空陣列，不能用結構性樣本補值。
+    /// </summary>
+    public IReadOnlyList<MarketOverviewTurnoverLeader> TurnoverLeaders { get; init; } = [];
+}
+
+public sealed record MarketOverviewTurnoverLeader(
+    int Rank,
+    string Symbol,
+    string Name,
+    decimal Turnover,
+    decimal Price,
+    decimal? Change,
+    decimal? YearChange);
 
 public sealed record MarketOverviewIndex(
     string Name,

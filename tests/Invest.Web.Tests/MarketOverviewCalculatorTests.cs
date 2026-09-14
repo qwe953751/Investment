@@ -114,6 +114,53 @@ public sealed class MarketOverviewCalculatorTests
     }
 
     [Fact]
+    public void 成交排行只採用資料源標記的前二十並由CSharp計算日年漲跌()
+    {
+        var previousYear = new DateOnly(2025, 12, 31);
+        var previousDay = new DateOnly(2026, 9, 13);
+        var date = new DateOnly(2026, 9, 14);
+        var history = new[]
+        {
+            SnapshotWithTurnoverLeaders(previousYear,
+                ("LEADER", 100m, 100m, false),
+                ("UNMARKED", 1_000m, 9_999m, false)),
+            SnapshotWithTurnoverLeaders(previousDay,
+                ("LEADER", 110m, 100m, false)),
+            SnapshotWithTurnoverLeaders(date,
+                ("LEADER", 120m, 2_000m, true),
+                ("UNMARKED", 9_999m, 99_999m, false))
+        };
+
+        var result = MarketOverviewCalculator.CalculateTurnoverLeaders(history, date);
+
+        var leader = Assert.Single(result);
+        Assert.Equal(1, leader.Rank);
+        Assert.Equal("LEADER", leader.Symbol);
+        Assert.Equal(2_000m, leader.TradingValue);
+        Assert.Equal(9.09m, leader.DailyChangePercent);
+        Assert.Equal(20m, leader.YearToDateChangePercent);
+    }
+
+    [Fact]
+    public void 成交排行最多輸出二十列並依成交金額排序()
+    {
+        var date = new DateOnly(2026, 9, 14);
+        var quotes = Enumerable.Range(1, 21)
+            .Select(index => ($"LEADER{index:00}", 100m, index * 100m, true))
+            .ToArray();
+
+        var result = MarketOverviewCalculator.CalculateTurnoverLeaders(
+            [SnapshotWithTurnoverLeaders(date, quotes)],
+            date);
+
+        Assert.Equal(20, result.Count);
+        Assert.Equal("LEADER21", result[0].Symbol);
+        Assert.Equal(1, result[0].Rank);
+        Assert.DoesNotContain(result, leader => leader.Symbol == "LEADER01");
+        Assert.Equal(20, result[^1].Rank);
+    }
+
+    [Fact]
     public void 美股個別指數熱絡分數同時納入技術與VIX風險且輸出0到10()
     {
         var history = BuildHistory(
@@ -356,6 +403,24 @@ public sealed class MarketOverviewCalculatorTests
                 ClosePrice = q.Close,
                 TradingValue = q.TradingValue,
                 TradingVolume = q.TradingValue
+            })]
+        };
+
+    private static MarketOverviewSnapshot SnapshotWithTurnoverLeaders(
+        DateOnly date,
+        params (string Symbol, decimal Close, decimal TradingValue, bool IsTurnoverLeader)[] quotes)
+        => new()
+        {
+            TradingDate = date,
+            DownloadedAt = DateTimeOffset.Now,
+            Quotes = [.. quotes.Select(q => new MarketOverviewQuote
+            {
+                Symbol = q.Symbol,
+                Name = q.Symbol,
+                ClosePrice = q.Close,
+                TradingValue = q.TradingValue,
+                TradingVolume = q.TradingValue,
+                IsTurnoverLeader = q.IsTurnoverLeader
             })]
         };
 }

@@ -464,7 +464,7 @@ public sealed class StaticSiteExporter(
     }
 
     /// <summary>
-    /// 市場切換總覽的每個 symbol（指數／VIX／類股 ETF／幣種）各自的三個月日 K，
+    /// 市場切換總覽的每個 symbol（指數／VIX／類股 ETF／幣種／成交排行標的）各自的三個月日 K，
     /// 寫法照抄 <see cref="WriteUsKLineExportsAsync"/>：檔名沿用 symbol 本身，
     /// 前端點指數／類股／幣種小卡時走既有的 toggleKLine／data/kline 管線，不必另建一套。
     /// </summary>
@@ -515,9 +515,10 @@ public sealed class StaticSiteExporter(
                 continue;
             }
 
+            var marketCode = MarketOverviewTickerMarket(ticker);
             var export = new KLineExport(
-                "US",
-                "raw-us-daily",
+                marketCode,
+                marketCode == "US" ? "raw-us-daily" : "raw-market-overview-daily",
                 endDate.ToString("yyyy-MM-dd"),
                 0,
                 [.. points.Select(point => new KLineBarExport(
@@ -543,6 +544,15 @@ public sealed class StaticSiteExporter(
 
         return count;
     }
+
+    private static string MarketOverviewTickerMarket(string ticker)
+        => ticker.EndsWith(".T", StringComparison.Ordinal)
+            ? "JP"
+            : ticker.EndsWith(".KS", StringComparison.Ordinal)
+                ? "KR"
+                : ticker.EndsWith("-USD", StringComparison.Ordinal)
+                    ? "CRYPTO"
+                    : "US";
 
     private async Task<IReadOnlyDictionary<string, int>?> PreviousTopicRanksAsync(
         TopicMapping mapping,

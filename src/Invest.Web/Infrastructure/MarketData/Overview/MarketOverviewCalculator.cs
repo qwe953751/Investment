@@ -116,6 +116,52 @@ public static class MarketOverviewCalculator
     }
 
     /// <summary>
+    /// 從資料源明確標記的當日成交排行候選列，計算成交金額前 20。
+    /// 排名、日漲跌與年初至今漲跌都集中在 C#；前端只負責顯示與互動。
+    /// 沒有被標記的列（例如指數／產業代表）不會因成交值較大而被誤納入。
+    /// </summary>
+    public static IReadOnlyList<MarketOverviewTurnoverLeaderResult> CalculateTurnoverLeaders(
+        IReadOnlyList<MarketOverviewSnapshot> history,
+        DateOnly targetDate)
+    {
+        var currentQuotes = history
+            .Where(snapshot => snapshot.TradingDate == targetDate)
+            .SelectMany(snapshot => snapshot.Quotes)
+            .Where(quote => quote.IsTurnoverLeader
+                && quote.TradingValue > 0m
+                && quote.ClosePrice > 0m)
+            .GroupBy(quote => quote.Symbol, StringComparer.Ordinal)
+            .Select(group => group
+                .OrderByDescending(quote => quote.TradingValue)
+                .First())
+            .ToArray();
+
+        return [.. currentQuotes
+            .Select(quote =>
+            {
+                var series = ExtractSeries(history, quote.Symbol);
+                var latest = series.LastOrDefault(point => point.Date == targetDate);
+                var previous = series.LastOrDefault(point => point.Date < targetDate);
+
+                return new MarketOverviewTurnoverLeaderResult(
+                    quote.Symbol,
+                    quote.Name,
+                    quote.TradingValue,
+                    quote.ClosePrice,
+                    latest is not null && previous is not null
+                        ? PercentChange(previous.ClosePrice, quote.ClosePrice)
+                        : null,
+                    latest is not null
+                        ? YearToDateChangePercent(series, targetDate, quote.ClosePrice)
+                        : null);
+            })
+            .OrderByDescending(result => result.TradingValue)
+            .ThenBy(result => result.Symbol, StringComparer.Ordinal)
+            .Take(20)
+            .Select((result, index) => result with { Rank = index + 1 })];
+    }
+
+    /// <summary>
     /// 取整批 symbol 的最新共同日期。缺少整批中的某個 symbol 時不會拿舊日期冒充，
     /// 但仍回傳現有資料的共同日期，讓上層把缺資料明確列成 warning／null。
     /// </summary>
@@ -608,5 +654,16 @@ public sealed record MarketOverviewSectorResult(
     string Name,
     decimal? ChangePercent,
     decimal Weight);
+
+public sealed record MarketOverviewTurnoverLeaderResult(
+    string Symbol,
+    string Name,
+    decimal TradingValue,
+    decimal ClosePrice,
+    decimal? DailyChangePercent,
+    decimal? YearToDateChangePercent)
+{
+    public int Rank { get; init; }
+}
 
 public sealed record MarketOverviewAsOfResult(DateOnly? AsOfDate, IReadOnlyList<string> AheadSymbols);

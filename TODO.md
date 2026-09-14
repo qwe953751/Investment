@@ -1753,6 +1753,12 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - 程式已新增 `MarketOverviewDefinition`／`MarketOverviewCalculator.CalculateHeatAt`，輸出四市場各自的個別分數、綜合分數、產業確認分數與 warning；網站本輪不發布。
 - 完整公式、資料邊界、驗收與日韓候選方案統一見 [熱絡指標](Doc/技術文件/熱絡指標.md)。
 
+### 2026-09-14 成交金額前 20（正式程式已接線，網站未發布）
+
+- 市場總覽 `MarketOverviewGroup` 新增 `turnoverLeaders` 契約；資料源必須在當日快照列明確標記，C# 才會依原幣成交金額取前 20，並集中計算日漲跌與年初至今漲跌。
+- 前端正式版面固定左欄 1～10、右欄 11～20；每列可開最近三個月 K 線，日／韓／加密 K 線 payload 也會保留正確市場標籤。localhost 的 `?preview=market-leaders-v1` 仍只供版面確認，示意資料不會進 production。
+- 目前 `data/imports-overview` 仍只有指數／產業代表等結構性名冊，沒有可支撐全市場前 20 的候選資料；正式頁面因此顯示資料不足，不能拿結構性樣本充數。尚待決定並接入美／日／韓的權威全市場成交排行來源，再回補資料與發布。
+
 ### 尚未討論
 
 - 台股要不要也套用同一套小方塊／緊湊列表版型，還沒決定——目前維持完全不動。

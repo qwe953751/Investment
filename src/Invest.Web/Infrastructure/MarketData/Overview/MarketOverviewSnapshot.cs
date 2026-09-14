@@ -1,4 +1,5 @@
 using Invest.Web.Infrastructure.MarketData;
+using System.Text.Json.Serialization;
 
 namespace Invest.Web.Infrastructure.MarketData.Overview;
 
@@ -48,4 +49,11 @@ public sealed record MarketOverviewQuote
     public decimal? HighPrice { get; init; }
 
     public decimal? LowPrice { get; init; }
+
+    /// <summary>
+    /// 由市場成交排行資料源明確標記的候選列。市場結構用的指數／產業代表不會自行成為排行，
+    /// 避免資料不完整時把它們誤當成全市場前 20。
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsTurnoverLeader { get; init; }
 }
