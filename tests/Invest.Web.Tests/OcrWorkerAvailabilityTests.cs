@@ -90,7 +90,7 @@ public sealed class OcrWorkerAvailabilityTests
         var source = ReadNormalized(
             "src", "Invest.Web", "Infrastructure", "StaticSite", "Assets", "site.js");
 
-        Assert.Contains("case 'worker_stalled': return '沒有 Worker 接走這件工作';", source, StringComparison.Ordinal);
+        Assert.Contains("case 'worker_stalled': return 'Worker 離線，無人接走這件工作';", source, StringComparison.Ordinal);
         Assert.Contains("case 'no_worker': return '尚未有任何 AI Worker 註冊';", source, StringComparison.Ordinal);
         // 2026-09-13 事故教訓：不能再用一句籠統文案蓋掉真正原因，讓下次同類問題
         // 得花七小時查 log 才找到根因。
