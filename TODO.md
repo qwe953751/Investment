@@ -1788,7 +1788,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   `.github/workflows/intraday-topic-recovery.yml`，收盤後只補算既有 raw backlog，不重抓 MIS。
 - recovery `34844210705` 已成功補算 run 2580，公開 raw／topic latest 同為 `runId=2580`，topic 218 列；
   immutable topic 檔案、Supabase view 與指標均已核對一致。
-- 修復 commit `1616b2c1` 已由 publish-only run `34844215670` 發布，公開 manifest `1789389763` 已驗證；
+- 最新 `main` 已由 publish-only run `34846802903`（`headSha=3e70039f`）發布，公開 manifest `1789391040` 已驗證；
   線上 `site.js` 已包含新版 view 與直接資料表 fallback。下一交易日只需觀察兩分鐘輪次是否持續自動追上。
 - recovery `34843425153` 發現 CTE 未帶入指數 OHLC 欄位（Postgres `42703`），`34843743795` 發現
   Storage 缺少 `topic-latest.json` 時會以 HTTP 400／`NoSuchKey` 回應；兩項均已修正並有回歸測試，
