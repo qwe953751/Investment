@@ -135,6 +135,13 @@ test('正式路徑不再保存本機示範列，且套用會呼叫正式資料�
     assert.match(siteScript, /assetExcelWrite\(\s*ASSET_OPERATION_ROWS_TABLE,\s*'DELETE'/);
 });
 
+test('Excel 入口只開新 browsing context，不會把原持倉頁導走', () => {
+    const opener = functionSource('openAssetExcelView');
+
+    assert.match(opener, /window\.open\(url\.href, '_blank', 'noopener'\)/);
+    assert.doesNotMatch(opener, /window\.location\.assign/);
+});
+
 test('公開資料讀取永遠使用 anon，只有 Excel 操作表走 allowlist 的 authenticated helper', () => {
     const publicReader = functionSource('fetchAllRows');
     const authenticatedReader = functionSource('fetchAuthenticatedAllRows');

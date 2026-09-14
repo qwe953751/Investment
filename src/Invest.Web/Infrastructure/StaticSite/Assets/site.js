@@ -9801,10 +9801,9 @@ function openAssetExcelView(view) {
         url.searchParams.delete('preview');
     }
 
-    const newTab = window.open(url.href, '_blank', 'noopener');
-    if (newTab === null) {
-        window.location.assign(url.href);
-    }
+    // `noopener` 會讓成功開啟的新 browsing context 回傳 null；不能把 null 當成
+    // 被擋截後再導向原頁，否則會同時開新頁並破壞目前持倉頁的狀態。
+    window.open(url.href, '_blank', 'noopener');
 }
 
 function makeAssetExcelSummaryRow(summary, rowKind, columns) {

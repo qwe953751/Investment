@@ -1,6 +1,7 @@
 using Invest.Web.Components;
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.Assets.Ocr.Services;
+using Invest.Web.Features.Assets.Services;
 using Invest.Web.Features.Revenue;
 using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.StockTopics.Services;
@@ -8,6 +9,7 @@ using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.Database;
 using Invest.Web.Infrastructure.Ai.Cli;
+using Invest.Web.Infrastructure.Assets;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.CorporateActions;
 using Invest.Web.Infrastructure.MarketData.ForeignExchange;
@@ -41,6 +43,7 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- backfill-intraday-topic
 //   dotnet run --project src/Invest.Web -- market-day
 //   dotnet run --project src/Invest.Web -- export-market-calendar <輸出檔路徑>
+//   dotnet run --project src/Invest.Web -- import-asset-operation-sheet [--write]
 //   dotnet run --project src/Invest.Web -- sync     [保留交易日數]
 //   dotnet run --project src/Invest.Web -- sync-fx
 //   dotnet run --project src/Invest.Web -- verify
@@ -56,7 +59,7 @@ using System.Text.Json.Serialization;
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
-        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar";
+        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -90,6 +93,8 @@ builder.Services.AddScoped<TradingDayResolver>();
 
 // 族群分類讀的是公開的 Google Sheet，一樣要帶 User-Agent 才不會被擋。
 builder.Services.AddHttpClient<GoogleSheetTopicClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<AssetOperationSheetClient>(ConfigureQuoteClient);
+builder.Services.AddTransient<AssetOperationSheetImporter>();
 
 // 分類的最後兜底：交易所登記的產業別。
 builder.Services.AddHttpClient<CompanyIndustryClient>(ConfigureQuoteClient);
@@ -238,6 +243,12 @@ if (command is "export")
         Environment.ExitCode = 1;
     }
 
+    return;
+}
+
+if (command is "import-asset-operation-sheet")
+{
+    await RunAssetOperationSheetImportAsync(app.Services, args);
     return;
 }
 
@@ -439,6 +450,47 @@ static async Task RunExportAsync(IServiceProvider services, string[] args)
     Console.WriteLine(
         $"完成。{report.TradingDayCount} 個交易日、"
         + $"{report.SelectableDateCount} 個可選基準日、{report.FileCount} 個檔案。");
+}
+
+static async Task RunAssetOperationSheetImportAsync(IServiceProvider services, string[] args)
+{
+    var write = args.Contains("--write", StringComparer.OrdinalIgnoreCase);
+    using var scope = services.CreateScope();
+    var importer = scope.ServiceProvider.GetRequiredService<AssetOperationSheetImporter>();
+
+    Console.WriteLine(write
+        ? "開始執行 Google Sheet → Supabase 操作表匯入（已要求寫入）。"
+        : "開始執行 Google Sheet → Supabase 操作表 dry-run（不寫入）。");
+
+    var report = await importer.RunAsync(write);
+    foreach (var warning in report.Warnings)
+    {
+        Console.WriteLine($"警告：{warning}");
+    }
+
+    foreach (var ignored in report.IgnoredColumns)
+    {
+        Console.WriteLine(
+            $"未投影欄位：{ignored.SourceColumn}「{ignored.Label}」；"
+            + $"非空資料 {ignored.NonEmptyValueCount} 格。");
+    }
+
+    if (report.Errors.Count > 0)
+    {
+        foreach (var error in report.Errors)
+        {
+            Console.Error.WriteLine($"錯誤：{error}");
+        }
+
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    Console.WriteLine(
+        $"完成：來源 {report.SourceRowCount} 列；新增 {report.AddedCount}、"
+        + $"更新 {report.UpdatedCount}、不變 {report.UnchangedCount}；"
+        + $"Supabase 既有 {report.ExistingCount} 列。"
+        + (write ? " 已在 transaction 內提交。" : " 尚未寫入；確認結果後加 --write 才會提交。"));
 }
 
 /// <summary>

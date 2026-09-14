@@ -1,4 +1,4 @@
-# 待辦事項（17 件）
+# 待辦事項（18 件）
 
 這份檔案是討論的存放處，不是進度表。每次要談某件事之前先讀這裡，
 就不用把前幾次的結論重講一遍。
@@ -29,6 +29,7 @@
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](Doc/版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
+| 18 | [Google Sheet 操作(台)完整 48 欄支援](#todo-18) | ⚪ 目前只完成現行 14 欄受控投影 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1796,3 +1797,23 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - recovery `34843425153` 發現 CTE 未帶入指數 OHLC 欄位（Postgres `42703`），`34843743795` 發現
   Storage 缺少 `topic-latest.json` 時會以 HTTP 400／`NoSuchKey` 回應；兩項均已修正並有回歸測試，
   `34844210705` 已驗證修正後可補出第一份 topic 快取。
+
+<a id="todo-18"></a>
+## ⚪ 18. Google Sheet 操作(台)完整 48 欄支援
+
+[↑ 回到 TODO 列表](#快速跳轉)
+
+**狀態：目前只完成現行 14 欄受控投影。**
+
+### 已討論
+
+2026-09-15 已新增 `import-asset-operation-sheet`。它固定驗證 `操作(台)` 的 `Buy`／`Stock` 與目前
+`asset_operation_rows` 的 14 個 boolean 欄，先 dry-run 再由明確 `--write` transaction 匯入 Supabase。
+未支援的 34 個欄位會列出，不會靜默合併；目前來源 K 欄「資服(軟體)」有 3 格資料，兩個「導線架」中
+R 欄核准映射、AI 欄目前全為 0。完整欄位支援尚未改 schema，也不影響目前正式 Excel 編輯流程。
+
+### 尚未討論
+
+若要與 Google Sheet 48 個族群欄完整一致，需先核准動態欄位 schema（欄定義／穩定 key／順序／RLS）及
+同名「導線架」的永久身分，再新增 migration、前端欄位 renderer、寫回契約與對帳測試；在此之前維持
+14 欄投影，不把額外來源欄位冒充成已支援功能。
