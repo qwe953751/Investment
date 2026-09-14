@@ -220,15 +220,20 @@ public sealed class IntradayWorkflowTests
         var start = program.IndexOf("static async Task RunIntradayAsync", StringComparison.Ordinal);
         var end = program.IndexOf("static async Task RunIntradayHeatBackfillAsync", start, StringComparison.Ordinal);
         var intraday = program[start..end];
-        var helperStart = program.IndexOf("static async Task<TopicMapping?> LoadIntradayTopicMappingAsync", StringComparison.Ordinal);
-        Assert.True(helperStart >= 0, "找不到盤中族群分類非阻塞載入器。");
-        var helperEnd = program.IndexOf("static async Task RunIntradayHeatBackfillAsync", helperStart, StringComparison.Ordinal);
-        var helper = program[helperStart..helperEnd];
+        var worker = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "Invest.Web",
+            "Infrastructure",
+            "StockTopics",
+            "IntradayTopicHeatWorker.cs"));
 
-        Assert.Contains("Task<TopicMapping?>? topicMappingTask = null", intraday, StringComparison.Ordinal);
-        Assert.Contains("topicMappingTask = LoadIntradayTopicMappingAsync(topicClient, cts.Token)", intraday, StringComparison.Ordinal);
+        Assert.Contains("topicWorker.Start(cts.Token)", intraday, StringComparison.Ordinal);
+        Assert.Contains("topicWorker.Signal()", intraday, StringComparison.Ordinal);
+        Assert.Contains("LoadNewestSnapshotMissingTopicHeatAsync", worker, StringComparison.Ordinal);
+        Assert.Contains("Channel.CreateBounded<bool>", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("await topicClient.GetCatalogAsync(cts.Token)", intraday, StringComparison.Ordinal);
-        Assert.Contains("CancelAfter(TimeSpan.FromSeconds(30))", helper, StringComparison.Ordinal);
+        Assert.Contains("PublishTopicAsync", worker, StringComparison.Ordinal);
     }
 
     [Fact]

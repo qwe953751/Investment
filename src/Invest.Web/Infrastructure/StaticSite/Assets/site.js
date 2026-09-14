@@ -12,6 +12,7 @@ const KLINE_DIRECTORY = 'data/kline';
 const REVENUE_HISTORY_TABLE = 'revenue_history';
 const INTRADAY_TOPIC_PERIOD = 'intraday';
 const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
+const INTRADAY_TOPIC_CDN_LATEST = 'topic-latest.json';
 // 「盤中」不是只指排行頁：族群熱度與族群列表都會顯示同一輪的即時結果，
 // 從列表展開的個股 K 線也必須取同一份快照。所有是否走 CDN／是否輪詢的判斷都
 // 經由 usesIntradaySnapshot()，不可再各頁各自列舉，以免新增一個盤中入口就漏掉。
@@ -2135,6 +2136,14 @@ function hasIntradaySnapshotSource() {
 // 「manifest 有宣告 CDN」和「這一刻真的在用 CDN」是兩件事，判斷路徑一律問這個。
 function usingIntradayCdn() {
     return intradayCdn !== null && !intradayCdnDegraded;
+}
+
+// 族群是原始 MIS 快照的非同步衍生資料。raw run 先前進時，topic run 可以暫時落後；
+// 這個比較只決定「是否繼續追」與提示文字，不會把上一份完整族群資料清空。
+function intradayTopicNeedsUpdate() {
+    return Number.isInteger(intradaySnapshotRunId)
+        && (!Number.isInteger(intradayTopicRunId)
+            || intradayTopicRunId < intradaySnapshotRunId);
 }
 
 const intradaySourceLabel = () => intradayCdn === null
@@ -19487,7 +19496,7 @@ let intradayRaw = null;
 let intradaySummary = null;
 let intradayRawLoadedAt = 0;
 let intradaySnapshotRunId = null;
-let intradaySnapshotTopicHeat = null;
+let intradayTopicRunId = null;
 const INTRADAY_CHANNEL_NAME = 'frank-invest-intraday-snapshot-v1';
 const INTRADAY_LEASE_KEY = 'frank-invest.intraday-poller.v1';
 const INTRADAY_LEASE_MS = 30_000;
@@ -19539,8 +19548,14 @@ function claimIntradayPollingLease() {
 }
 
 function publishIntradaySnapshotToSiblingTabs(document) {
-    if (intradayPollingLeader && intradayChannel !== null) {
+    if (intradayChannel !== null) {
         intradayChannel.postMessage({ type: 'snapshot', document });
+    }
+}
+
+function publishIntradayTopicToSiblingTabs(document) {
+    if (intradayChannel !== null) {
+        intradayChannel.postMessage({ type: 'topic', document });
     }
 }
 
@@ -19567,6 +19582,29 @@ function initializeIntradayBroadcastChannel() {
 
     intradayChannel = new BroadcastChannel(INTRADAY_CHANNEL_NAME);
     intradayChannel.addEventListener('message', event => {
+        if (event.data?.type === 'topic') {
+            let applied = false;
+
+            try {
+                applied = applyIntradayTopicHeat(event.data.document, false);
+            } catch {
+                // BroadcastChannel 內容不是可信來源；格式錯誤只丟棄這則訊息，不能讓
+                // 這個分頁的盤中計時器一起停止。
+                return;
+            }
+
+            if (!applied) {
+                return;
+            }
+
+            if (isIntradayTopicDataView()) {
+                renderSnapshotNote();
+                renderTopicPanel();
+            }
+
+            return;
+        }
+
         const document = event.data?.type === 'snapshot' ? event.data.document : null;
 
         if (!document
@@ -19654,6 +19692,51 @@ async function fetchIntradayCdnSnapshot() {
     return document;
 }
 
+async function fetchIntradayTopicCdnSnapshot() {
+    const latest = new URL(intradayCdnUrl(INTRADAY_TOPIC_CDN_LATEST));
+    latest.searchParams.set('slot', String(Math.floor(Date.now() / 10_000)));
+    const pointer = await fetchJsonAttempt(latest, { cache: 'no-store' }, 10_000);
+
+    if (pointer?.schemaVersion !== 1
+        || !Number.isInteger(pointer.runId)
+        || !Number.isInteger(pointer.rowCount)
+        || pointer.rowCount < 0
+        || typeof pointer.file !== 'string'
+        || !/^intraday-topic-\d{8}-\d{4}-run\d+\.json$/.test(pointer.file)
+        || typeof pointer.tradeDate !== 'string'
+        || typeof pointer.capturedAt !== 'string') {
+        throw new TypeError('盤中族群 CDN topic-latest 指標格式不正確。');
+    }
+
+    const document = await fetchJsonAttempt(
+        intradayCdnUrl(pointer.file),
+        { cache: 'force-cache' },
+        15_000);
+
+    if (document?.schemaVersion !== 1
+        || !Number.isInteger(document.runId)
+        || document.runId !== pointer.runId
+        || document.tradeDate !== pointer.tradeDate
+        || document.capturedAt !== pointer.capturedAt
+        || !Number.isInteger(document.mappingVersion)
+        || typeof document.mappingLabel !== 'string'
+        || !Array.isArray(document.rows)
+        || document.rows.length !== pointer.rowCount) {
+        throw new TypeError('盤中族群 CDN 快照格式或版本不一致。');
+    }
+
+    return {
+        run_id: document.runId,
+        trade_date: document.tradeDate,
+        captured_at: document.capturedAt,
+        mapping_version: document.mappingVersion,
+        mapping_label: document.mappingLabel,
+        has_sufficient_data: document.hasSufficientData === true,
+        message: document.message ?? null,
+        rows: document.rows
+    };
+}
+
 function applyIntradaySnapshot(document, broadcast = true) {
     const nextRunId = Number.isInteger(document.runId) ? document.runId : null;
     const currentRunId = Number.isInteger(intradaySnapshotRunId)
@@ -19675,7 +19758,6 @@ function applyIntradaySnapshot(document, broadcast = true) {
     intradaySummary = document.summary;
     // fallback 沒有 runId 時保留已知版本，避免下一個舊 CDN 回應重新取得套用資格。
     intradaySnapshotRunId = nextRunId ?? intradaySnapshotRunId;
-    intradaySnapshotTopicHeat = document.topicHeat ?? null;
     intradayRawLoadedAt = Date.now();
     lastIntradayLoadedAt = intradayRawLoadedAt;
     if (broadcast) {
@@ -20784,8 +20866,11 @@ const topicPeriod = () => state.topicPeriod === INTRADAY_TOPIC_PERIOD
     : (topicData?.periods ?? []).find(period => period.periodDays === state.topicPeriod) ?? null;
 
 async function loadIntradayTopicHeat() {
+    lastIntradayTopicLoadedAt = Date.now();
+
     if (!hasIntradaySnapshotSource()) {
         intradayTopicPeriod = null;
+        intradayTopicRunId = null;
         intradayTopicLoadError = '盤中族群熱度需要盤中資料來源，這份舊快照沒有提供。';
         return;
     }
@@ -20793,75 +20878,124 @@ async function loadIntradayTopicHeat() {
     try {
         let latest;
 
-        if (usingIntradayCdn()) {
+        if (usingIntradayCdn() && intradayCdn !== null) {
             if (!await ensureIntradaySnapshot(true)) {
                 throw new Error('讀不到盤中快照。');
             }
 
-            // 上面那一步有可能把 CDN 判定為失效並退回資料庫，那時候手上這份快照就沒有
-            // 族群熱度，要跟著改走下面的資料庫路徑，不能顯示成「還沒有這一輪的熱度」。
-            latest = usingIntradayCdn() ? intradaySnapshotTopicHeat : null;
+            // raw 與 topic 是兩個獨立的小指標。raw 先更新時，topic-latest 可能暫時
+            // 落後；先保留舊的完整族群資料，等 topic consumer 完成後再換檔。
+            try {
+                latest = await fetchIntradayTopicCdnSnapshot();
+            } catch (error) {
+                // topic CDN 尚未產生、正在傳播或暫時失敗，不影響 raw CDN；下面仍可
+                // 用 Supabase view 救回上一份已完成熱度。
+                console.warn('盤中族群 CDN 讀取失敗，改用資料庫 fallback：', error);
+            }
         }
 
-        if (!usingIntradayCdn()) {
-            // 舊 manifest 的常態路徑，也是 CDN 失效時的救命路徑。
-            // 新版正常情況會連同個股完整快照一起讀 CDN，確保族群與行情同輪。
-            const response = await fetch(
-                `${supabase.url}/rest/v1/${INTRADAY_TOPIC_HEAT_VIEW}`
-                + '?select=trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows&limit=1',
-                { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+        if (!latest && supabase !== null) {
+            // migration 尚未套用時 view 沒有 run_id；先用新版查詢，失敗再退到舊欄位，
+            // 不讓資料庫相容路徑把整個族群頁清空。
+            const base = `${supabase.url}/rest/v1/${INTRADAY_TOPIC_HEAT_VIEW}`;
+            const headers = { apikey: supabase.anonKey };
+            let response = await fetch(
+                `${base}?select=run_id,trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows&limit=1`,
+                { headers, cache: 'no-store' });
+
+            if (!response.ok) {
+                console.warn('盤中族群 view 尚未提供 run_id，退回舊欄位。');
+                response = await fetch(
+                    `${base}?select=trade_date,captured_at,mapping_version,mapping_label,has_sufficient_data,message,rows&limit=1`,
+                    { headers, cache: 'no-store' });
+            }
 
             if (!response.ok) {
                 throw new Error(String(response.status));
             }
 
             [latest] = await response.json();
-            lastIntradayLoadedAt = Date.now();
         }
 
         if (!latest) {
-            intradayTopicPeriod = null;
-            intradayTopicLoadError = '目前還沒有與最新盤中報價同一輪的族群熱度。';
+            intradayTopicLoadError = intradayTopicPeriod === null
+                ? '目前還沒有已完成的盤中族群熱度。'
+                : '目前沒有新的族群熱度，保留上一輪完整資料。';
             return;
         }
 
-        const rows = Array.isArray(latest.rows)
-            ? latest.rows
-            : typeof latest.rows === 'string'
-                ? JSON.parse(latest.rows)
-                : null;
-
-        if (!Array.isArray(rows)) {
-            throw new TypeError('盤中族群熱度 rows 不是陣列。');
-        }
-
-        const capturedAt = String(latest.captured_at ?? '');
-
-        if (topicIntradayKLineCapturedAt !== capturedAt) {
-            topicIntradayKLineCapturedAt = capturedAt;
-            topicIntradayKLines.clear();
-            topicIntradayKLinePromises.clear();
-        }
-
-        const aligned = alignIntradayTopicMembers(rows);
-
-        intradayTopicPeriod = {
-            hasSufficientData: latest.has_sufficient_data === true,
-            message: latest.message ?? null,
-            period: `盤中 ${String(latest.trade_date).replaceAll('-', '/')} ${toTaipeiText(latest.captured_at)}`,
-            tradeDate: String(latest.trade_date),
-            rows: aligned.rows,
-            isIntraday: true,
-            capturedAt: latest.captured_at,
-            mappingLabel: latest.mapping_label ?? null,
-            realignedTopicCount: aligned.realignedCount
-        };
-        intradayTopicLoadError = '';
+        applyIntradayTopicHeat(latest);
     } catch {
         intradayTopicLoadError = intradayTopicPeriod === null
             ? '讀不到盤中族群熱度，請確認收集器與資料表 migration。'
             : '本次盤中族群熱度更新失敗，暫時保留上一輪與資料時間。';
     }
+}
+
+function applyIntradayTopicHeat(latest, broadcast = true) {
+    const rows = Array.isArray(latest?.rows)
+        ? latest.rows
+        : typeof latest?.rows === 'string'
+            ? JSON.parse(latest.rows)
+            : null;
+
+    if (!Array.isArray(rows)) {
+        throw new TypeError('盤中族群熱度 rows 不是陣列。');
+    }
+
+    const nextRunId = Number.isInteger(latest?.runId)
+        ? latest.runId
+        : Number.isInteger(latest?.run_id)
+            ? latest.run_id
+            : null;
+    if (nextRunId !== null
+        && Number.isInteger(intradayTopicRunId)
+        && nextRunId < intradayTopicRunId) {
+        // CDN／DB 回應完成順序不代表新舊；舊輪次不能覆蓋已顯示的新輪次。
+        intradayTopicLoadError = '族群熱度回應較舊，保留目前資料。';
+        return false;
+    }
+
+    intradayTopicRunId = nextRunId ?? intradayTopicRunId;
+    const capturedAt = String(latest.captured_at ?? '');
+
+    if (topicIntradayKLineCapturedAt !== capturedAt) {
+        topicIntradayKLineCapturedAt = capturedAt;
+        topicIntradayKLines.clear();
+        topicIntradayKLinePromises.clear();
+    }
+
+    const aligned = alignIntradayTopicMembers(rows);
+
+    intradayTopicPeriod = {
+        hasSufficientData: latest.has_sufficient_data === true,
+        message: latest.message ?? null,
+        period: `盤中 ${String(latest.trade_date).replaceAll('-', '/')} ${toTaipeiText(latest.captured_at)}`,
+        tradeDate: String(latest.trade_date),
+        rows: aligned.rows,
+        isIntraday: true,
+        capturedAt: latest.captured_at,
+        mappingLabel: latest.mapping_label ?? null,
+        realignedTopicCount: aligned.realignedCount,
+        runId: intradayTopicRunId
+    };
+    lastIntradayTopicLoadedAt = Date.now();
+    intradayTopicLoadError = '';
+
+    if (broadcast) {
+        publishIntradayTopicToSiblingTabs({
+            run_id: intradayTopicRunId,
+            trade_date: intradayTopicPeriod.tradeDate,
+            captured_at: intradayTopicPeriod.capturedAt,
+            mapping_version: latest.mapping_version ?? null,
+            mapping_label: intradayTopicPeriod.mappingLabel,
+            has_sufficient_data: intradayTopicPeriod.hasSufficientData,
+            message: intradayTopicPeriod.message,
+            rows
+        });
+    }
+
+    return true;
 }
 
 // 盤中族群熱度的成員名單，是 intraday.yml 在盤中擷取那一刻就算好、整包存進資料庫的，
@@ -25388,8 +25522,11 @@ function renderSnapshotNote() {
     }
 
     if (state.view === 'topics') {
+        const topicCatchUp = isIntradayTopicDataView() && intradayTopicNeedsUpdate()
+            ? `行情已更新至第 ${intradaySnapshotRunId} 輪，族群熱度目前第 ${intradayTopicRunId ?? '—'} 輪，計算中；`
+            : '';
         el('snapshot-note').textContent = isIntradayTopicDataView()
-            ? `盤中族群${state.topicTab === 'tree' ? '列表' : '熱度'}使用同一輪${intradaySourceLabel()}，`
+            ? topicCatchUp + `盤中族群${state.topicTab === 'tree' ? '列表' : '熱度'}使用已完成的${intradaySourceLabel()}，`
                 + `每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。`
                 + collector
             : topicNote || snapshotNote;
@@ -25415,9 +25552,14 @@ function renderSnapshotNote() {
 // 好幾分鐘前的數字而畫面上完全看不出來。改成每次自己排下一次，並且一律
 // 拿牆上時鐘判斷該不該抓——凍多久都只會讓下一次立刻補抓，不會愈拖愈遠。
 let lastIntradayLoadedAt = 0;
+let lastIntradayTopicLoadedAt = 0;
 
 function intradayIsStale() {
     return Date.now() - lastIntradayLoadedAt >= intradayRefreshMs;
+}
+
+function intradayTopicIsStale() {
+    return Date.now() - lastIntradayTopicLoadedAt >= intradayRefreshMs;
 }
 
 // 資料時間旁邊那句「幾分鐘前」。手機上最難判斷的就是「這個數字是現在的嗎」。
@@ -25523,9 +25665,12 @@ async function refreshRevenueIfDue() {
 function refreshIntradayIfDue() {
     const isIntradayView = isIntradayDataView();
     const isIntradayTopic = isIntradayTopicDataView();
+    const topicWaitingForRaw = isIntradayTopic && intradayTopicNeedsUpdate();
+    const isSessionOrTopicCatchUp = isTaiwanIntradaySession() || topicWaitingForRaw;
+    const stale = isIntradayView ? intradayIsStale() : intradayTopicIsStale();
 
-    if (!usesIntradaySnapshot() || document.hidden || !isTaiwanIntradaySession() || !intradayIsStale()) {
-        if (!usesIntradaySnapshot() || document.hidden || !isTaiwanIntradaySession()) {
+    if (!usesIntradaySnapshot() || document.hidden || !isSessionOrTopicCatchUp || !stale) {
+        if (!usesIntradaySnapshot() || document.hidden || !isSessionOrTopicCatchUp) {
             releaseIntradayPollingLease();
         }
 

@@ -498,6 +498,13 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var topicClient = scope.ServiceProvider.GetRequiredService<GoogleSheetTopicClient>();
     var topicHeatStore = scope.ServiceProvider.GetRequiredService<IntradayTopicHeatStore>();
     var snapshotPublisher = scope.ServiceProvider.GetRequiredService<IntradaySnapshotPublisher>();
+    var topicWorker = new IntradayTopicHeatWorker(
+        store,
+        topicClient,
+        topicHeatStore,
+        snapshotPublisher,
+        scope.ServiceProvider.GetRequiredService<SiteAlertStore>(),
+        scope.ServiceProvider.GetRequiredService<ILogger<IntradayTopicHeatWorker>>());
     var curveStore = scope.ServiceProvider.GetRequiredService<IntradayCurveStore>();
 
     using var cts = new CancellationTokenSource();
@@ -506,6 +513,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
         eventArgs.Cancel = true;
         cts.Cancel();
     };
+    topicWorker.Start(cts.Token);
 
     // 收工時要靠這三個數字判斷這一場到底算成功還是失敗，所以每一輪的結果都要記。
     var writtenRounds = 0;
@@ -531,13 +539,6 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
-
-    // 同一個交易時段分類不會隨兩分鐘快照變動；成功讀到後固定重用，避免 Google Sheet
-    // 一時連不上就讓收集器每輪都多打一個外部來源。分類是附加資料，必須在背景讀取；
-    // 不能讓一份慢的 xlsx 或產業分類來源卡住原始 MIS 快照。若一開始失敗，每 15 分鐘才重試一次。
-    TopicMapping? topicMapping = null;
-    Task<TopicMapping?>? topicMappingTask = null;
-    var nextTopicCatalogLoadAt = DateTimeOffset.MinValue;
 
     try
     {
@@ -630,51 +631,16 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
                     if (result.Written)
                     {
-                        if (topicMapping is null && topicMappingTask is { IsCompleted: true })
-                        {
-                            topicMapping = await topicMappingTask;
-                            topicMappingTask = null;
-
-                            if (topicMapping is null)
-                            {
-                                nextTopicCatalogLoadAt = capturedAt.AddMinutes(15);
-                                Console.WriteLine(
-                                    $"{localTime:HH:mm:ss} 讀不到可用族群分類，15 分鐘後再試；"
-                                    + "本輪原始盤中資料已保留。");
-                            }
-                        }
-
-                        if (topicMapping is null
-                            && topicMappingTask is null
-                            && capturedAt >= nextTopicCatalogLoadAt)
-                        {
-                            topicMappingTask = LoadIntradayTopicMappingAsync(topicClient, cts.Token);
-                        }
-
-                        TopicHeatResult? topicHeat = null;
-
-                        if (topicMapping is not null && result.RunId is { } runId)
-                        {
-                            topicHeat = IntradayTopicHeatCalculator.Calculate(topicMapping, snapshot);
-                            await topicHeatStore.SaveAsync(
-                                runId,
-                                snapshot.TradeDate,
-                                capturedAt,
-                                topicMapping,
-                                topicHeat,
-                                cts.Token);
-                        }
-
                         if (result.RunId is { } publishedRunId)
                         {
                             try
                             {
-                                await snapshotPublisher.PublishAsync(
+                                // Collector 只負責 raw 報價與 raw CDN；分類、計算與 topic CDN
+                                // 由獨立 consumer 追同一個 run，不得阻塞下一個兩分鐘輪次。
+                                await snapshotPublisher.PublishRawAsync(
                                     publishedRunId,
                                     snapshot,
                                     capturedAt,
-                                    topicMapping,
-                                    topicHeat,
                                     cts.Token);
                             }
                             catch (Exception exception)
@@ -687,6 +653,10 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                                     $"{localTime:HH:mm:ss} CDN 快照發佈失敗（第 {cdnPublishFailures} 次）：{exception.Message}");
                             }
                         }
+
+                        // Channel 只是低成本喚醒；若訊號遺失，worker 仍會從 Supabase
+                        // 的「尚未有族群熱度」待辦掃描補回。
+                        topicWorker.Signal();
 
                         writtenRounds++;
 
@@ -767,6 +737,10 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
         Console.WriteLine("已中斷。已寫入的快照都保留在資料庫。");
         return;
     }
+    finally
+    {
+        await topicWorker.StopAsync();
+    }
 
     Console.WriteLine();
     Console.WriteLine(
@@ -817,34 +791,6 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     }
 
     Console.WriteLine("整場 MIS 都正常回應、但日期一直不是今天，判定為休市。");
-}
-
-/// <summary>
-/// 族群分類是盤中原始快照的附加資料，外部來源慢或暫時失敗時不可阻塞下一輪 MIS。
-/// 任務在背景執行，最長 30 秒；呼叫端只在已完成時讀取結果，失敗後再依 15 分鐘節流重試。
-/// </summary>
-static async Task<TopicMapping?> LoadIntradayTopicMappingAsync(
-    GoogleSheetTopicClient topicClient,
-    CancellationToken cancellationToken)
-{
-    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-    timeout.CancelAfter(TimeSpan.FromSeconds(30));
-
-    try
-    {
-        return (await topicClient.GetCatalogAsync(timeout.Token)).Active;
-    }
-    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-    {
-        Console.WriteLine("族群分類讀取超過 30 秒，原始盤中報價不中斷；15 分鐘後再試。");
-        return null;
-    }
-    catch (Exception exception)
-        when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-    {
-        Console.WriteLine($"族群分類讀取失敗，原始盤中報價不中斷；15 分鐘後再試：{exception.Message}");
-        return null;
-    }
 }
 
 /// <summary>

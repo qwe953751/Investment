@@ -185,13 +185,14 @@ public sealed class IntradayCdnGateTests
         // 現在到底走哪條路要看得出來，否則 CDN 默默壞掉就沒人會發現。
         Assert.Contains("CDN 暫時讀不到", script, StringComparison.Ordinal);
 
-        // 族群熱度要跟著同一個判斷走：退回資料庫時它也得改走資料庫，
-        // 不能顯示成「還沒有這一輪的熱度」。
+        // 族群熱度有自己的 topic-latest 指標：raw CDN 失效或 topic 尚未產生時，
+        // 仍要退回已完成的資料庫熱度，不能把上一份完整資料清空。
         Assert.Contains("function usingIntradayCdn()", script, StringComparison.Ordinal);
-        var topicHeat = Slice(script, "async function loadIntradayTopicHeat() {", "const rows = Array.isArray(latest.rows)");
-        Assert.Contains("if (usingIntradayCdn()) {", topicHeat, StringComparison.Ordinal);
-        Assert.Contains("if (!usingIntradayCdn()) {", topicHeat, StringComparison.Ordinal);
-        Assert.DoesNotContain("if (intradayCdn !== null) {", topicHeat, StringComparison.Ordinal);
+        var topicHeat = Slice(script, "async function loadIntradayTopicHeat() {", "function applyIntradayTopicHeat(");
+        Assert.Contains("fetchIntradayTopicCdnSnapshot()", topicHeat, StringComparison.Ordinal);
+        Assert.Contains("if (!latest && supabase !== null)", topicHeat, StringComparison.Ordinal);
+        Assert.Contains("改用資料庫 fallback", topicHeat, StringComparison.Ordinal);
+        Assert.DoesNotContain("intradaySnapshotTopicHeat", topicHeat, StringComparison.Ordinal);
     }
 
     private static IntradaySnapshotPublisher CreatePublisher(FakeHandler handler)

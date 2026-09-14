@@ -21,9 +21,8 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
     /// <summary>
     /// 單次請求的上限。共用的 HttpClient 設 60 秒是為了盤後那些大報表，
-    /// 對這裡太長了：一輪只有 <see cref="CollectionSchedule.IntradayInterval"/>，
-    /// 一次卡住就吃掉半輪。實測一批 150 檔約 0.3～2 秒，15 秒已經是八倍餘裕，
-    /// 超過就當它不會回來了，重試比等它划算。
+    /// 對這裡太長了：單批一次卡住就會讓整輪無法完成。實測一批 150 檔約 0.3～2 秒，
+    /// 15 秒已經是八倍餘裕，超過就當它不會回來了，重試比等它划算。
     /// </summary>
     private static readonly TimeSpan AttemptTimeout = TimeSpan.FromSeconds(15);
 
@@ -39,6 +38,12 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     /// <summary>台股一張等於 1000 股，API 給的累計量單位是張。</summary>
     private const decimal SharesPerLot = 1000m;
 
+    /// <summary>
+    /// 收集器的兩分鐘是「下一輪排程節奏」，不是整輪 API 的取消期限。
+    /// 因此一輪若在 13:34 開始、MIS 到 13:40 才完成，仍須讓它完成並保存；
+    /// 每批仍由 <see cref="AttemptTimeout"/> 與 <see cref="MaxAttempts"/> 控制傳輸層重試，
+    /// 不會因單一請求永久卡住。慢輪完成後，呼叫端依牆上時鐘決定下一輪，不會把族群處理混進來阻塞。
+    /// </summary>
     public async Task<IntradaySnapshot> GetQuotesAsync(
         IReadOnlyList<(Market Market, string Ticker)> universe,
         CancellationToken cancellationToken = default)
@@ -46,13 +51,6 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         var quotes = new List<IntradayQuote>(universe.Count);
         var tradeDate = default(DateOnly?);
         var marketIndices = new Dictionary<Market, MarketIndexQuote>();
-
-        // 一輪的硬上限就是一輪的間隔：重試再怎麼慢也不能拖到下一輪的時間。
-        // 真的超時就讓這一輪失敗，收集器會直接跳到下一格重來（CollectionSchedule.NextRound），
-        // 而不是兩輪擠在一起。
-        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        budget.CancelAfter(CollectionSchedule.IntradayInterval);
 
         var batchNumber = 0;
 
@@ -63,7 +61,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             var (batchQuotes, batchDate, batchIndices) = await ReadBatchAsync(
                 batch,
                 includeMarketIndices: batchNumber == 0,
-                budget.Token);
+                cancellationToken);
 
             batchNumber++;
 
@@ -79,7 +77,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
                 tradeDate = date;
             }
 
-            await Task.Delay(BatchDelayMilliseconds, budget.Token);
+            await Task.Delay(BatchDelayMilliseconds, cancellationToken);
         }
 
         if (tradeDate is null)
@@ -191,7 +189,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     /// 值得重試的失敗：逾時與連線問題（<see cref="HttpRequestException"/>、
     /// 被自己的 <see cref="AttemptTimeout"/> 取消）、以及讀到一半被切斷的 JSON。
     ///
-    /// 外層真的要求停止（Ctrl-C、整輪預算用完）時一律不重試，否則就停不下來了。
+    /// 外層真的要求停止（Ctrl-C 或程序收工）時一律不重試，否則就停不下來了。
     /// </summary>
     private static bool IsTransient(Exception exception, CancellationToken cancellationToken)
         => !cancellationToken.IsCancellationRequested

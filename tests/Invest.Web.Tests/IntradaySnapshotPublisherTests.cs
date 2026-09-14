@@ -102,7 +102,7 @@ public sealed class IntradaySnapshotPublisherTests
     [Fact]
     public async Task 完整快照上傳送出immutable的長TTL且不落在ContentHeaders()
     {
-        // PublishAsync 一開始就靠這個環境變數判斷「有沒有設定發佈」，沒設定會直接
+        // PublishRawAsync 一開始就靠這個環境變數判斷「有沒有設定發佈」，沒設定會直接
         // 回傳 NotConfigured、完全不打任何請求——要驗證真正送出去的 header 就一定要設它。
         // 跟這個測試專案既有的 OcrWorkerApiClientTests 同一套 try/finally 慣例，
         // 避免留下製程層級的環境變數影響到其他測試。
@@ -132,12 +132,10 @@ public sealed class IntradaySnapshotPublisherTests
                 }
             };
 
-            await publisher.PublishAsync(
+            await publisher.PublishRawAsync(
                 runId: 99,
                 snapshot,
                 new DateTimeOffset(2026, 9, 11, 5, 36, 0, TimeSpan.Zero),
-                topicMapping: null,
-                topicHeat: null,
                 CancellationToken.None);
 
             var snapshotUpload = capturedRequests.Single(request =>

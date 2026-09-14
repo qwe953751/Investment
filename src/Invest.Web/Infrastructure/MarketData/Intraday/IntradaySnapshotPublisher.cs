@@ -14,8 +14,8 @@ namespace Invest.Web.Infrastructure.MarketData.Intraday;
 /// 將已確認寫入的單一盤中輪次送到 Supabase Storage 的公開 CDN bucket。
 ///
 /// 這裡刻意只處理公開行情與由行情導出的族群熱度；筆記、資產、提醒、營收等資料
-/// 絕不可經過這條路徑。完整快照使用不重複的檔名，<c>latest.json</c> 只是一個很小的指標，
-/// 因此瀏覽器不會因為 CDN 的舊物件覆寫傳播時間而讀到兩份不同輪次的內容。
+/// 絕不可經過這條路徑。raw 與 topic 都使用不重複的檔名，各自以很小的 latest 指標
+/// 晉升，因此瀏覽器不會因為 CDN 的舊物件覆寫傳播時間而讀到兩份不同輪次的內容。
 /// </summary>
 public sealed class IntradaySnapshotPublisher(
     IConfiguration configuration,
@@ -31,6 +31,9 @@ public sealed class IntradaySnapshotPublisher(
     private const int SchemaVersion = 1;
     private static readonly Regex SnapshotFileName = new(
         "^intraday-\\d{8}-\\d{4}-run\\d+\\.json$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex TopicSnapshotFileName = new(
+        "^intraday-topic-\\d{8}-\\d{4}-run\\d+\\.json$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -136,12 +139,14 @@ public sealed class IntradaySnapshotPublisher(
         }
     }
 
-    public async Task<IntradaySnapshotPublishResult> PublishAsync(
+    /// <summary>
+    /// 發布原始盤中快照。這條路徑不等待族群計算，讓 Collector 維持兩分鐘節奏；
+    /// 族群結果由 <see cref="PublishTopicAsync"/> 以同一個 run id 另行追上。
+    /// </summary>
+    public async Task<IntradaySnapshotPublishResult> PublishRawAsync(
         long runId,
         IntradaySnapshot snapshot,
         DateTimeOffset capturedAt,
-        TopicMapping? topicMapping,
-        TopicHeatResult? topicHeat,
         CancellationToken cancellationToken = default)
     {
         var settings = ReadSettings();
@@ -159,7 +164,7 @@ public sealed class IntradaySnapshotPublisher(
             return IntradaySnapshotPublishResult.NotConfigured;
         }
 
-        var snapshotBytes = SerializeSnapshot(runId, snapshot, capturedAt, topicMapping, topicHeat);
+        var snapshotBytes = SerializeSnapshot(runId, snapshot, capturedAt);
         var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
         var localCapturedAt = TimeZoneInfo.ConvertTime(capturedAt, taipei);
         var fileName = $"intraday-{localCapturedAt:yyyyMMdd-HHmm}-run{runId}.json";
@@ -186,7 +191,13 @@ public sealed class IntradaySnapshotPublisher(
         // 這個清理放在 latest 成功之後，且失敗不回滾剛發佈的新快照；最差只會暫時多留檔案。
         try
         {
-            await PruneExpiredSnapshotsAsync(settings, fileName, cancellationToken);
+            await PruneExpiredSnapshotsAsync(
+                settings,
+                fileName,
+                settings.RetainedSnapshotCount,
+                SnapshotFileName,
+                "盤中 CDN 舊快照清理",
+                cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
@@ -194,13 +205,138 @@ public sealed class IntradaySnapshotPublisher(
         }
 
         logger.LogInformation(
-            "已發佈盤中 CDN 快照 {FileName}（run {RunId}、{QuoteCount} 檔、族群熱度 {TopicHeat}）。",
+            "已發佈盤中原始 CDN 快照 {FileName}（run {RunId}、{QuoteCount} 檔）。",
             fileName,
             runId,
-            snapshot.Quotes.Count,
-            topicHeat is null ? "無" : "有");
+            snapshot.Quotes.Count);
 
         return new IntradaySnapshotPublishResult(true, fileName);
+    }
+
+    /// <summary>
+    /// 發布某一輪已算好的族群熱度。失敗時不會覆寫上一份 topic-latest.json，
+    /// 族群頁會繼續顯示上一份完整資料並等待追上。
+    /// </summary>
+    public async Task<IntradayTopicSnapshotPublishResult> PublishTopicAsync(
+        long runId,
+        DateOnly tradeDate,
+        DateTimeOffset capturedAt,
+        TopicMapping mapping,
+        TopicHeatResult heat,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+        ArgumentNullException.ThrowIfNull(heat);
+
+        var settings = ReadSettings();
+
+        if (settings is null)
+        {
+            if (!configurationWarningLogged)
+            {
+                configurationWarningLogged = true;
+                logger.LogWarning(
+                    "未設定 {StorageSecretVariable}，族群盤中資料只寫入資料庫，不發佈 CDN 快取。",
+                    StorageSecretVariable);
+            }
+
+            return IntradayTopicSnapshotPublishResult.NotConfigured;
+        }
+
+        var topicBytes = SerializeTopicSnapshot(runId, tradeDate, capturedAt, mapping, heat);
+        var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+        var localCapturedAt = TimeZoneInfo.ConvertTime(capturedAt, taipei);
+        var fileName = $"intraday-topic-{localCapturedAt:yyyyMMdd-HHmm}-run{runId}.json";
+
+        // topic-latest 不得先於 raw latest 公開，否則 raw CDN 失敗時，族群頁會先看到一輪
+        // 沒有對應公開行情的熱度。raw 上傳成功後才允許同一輪 topic 晉升；raw 失敗則保留
+        // durable pending，下一次訊號或程序重啟會重試。
+        var currentRaw = await ReadRawLatestAsync(settings, cancellationToken);
+        if (currentRaw is null || currentRaw.RunId < runId)
+        {
+            throw new InvalidOperationException(
+                $"原始 CDN latest 尚未追上族群 run {runId}，暫不發布 topic 指標。");
+        }
+
+        // backlog 會優先處理最新 run；較早 run 完成時不得把 topic-latest 倒退。
+        // 這個檢查放在發布指標前，並由 worker 的 advisory lock 保護跨程序競爭。
+        var currentLatest = await ReadTopicLatestAsync(settings, cancellationToken);
+        if (currentLatest is not null && currentLatest.RunId > runId)
+        {
+            logger.LogInformation(
+                "跳過較舊的族群 CDN 指標覆寫（目前 run {CurrentRunId}，完成較晚的舊 run {RunId}）。",
+                currentLatest.RunId,
+                runId);
+            return new IntradayTopicSnapshotPublishResult(true, fileName);
+        }
+
+        await UploadAsync(settings, fileName, topicBytes, cacheSeconds: 31_536_000, immutable: true, cancellationToken);
+
+        var latest = new TopicLatestDocument(
+            SchemaVersion,
+            runId,
+            tradeDate.ToString("yyyy-MM-dd"),
+            capturedAt,
+            fileName,
+            heat.Rows.Count,
+            mapping.Version,
+            Convert.ToHexString(SHA256.HashData(topicBytes)).ToLowerInvariant());
+        var latestBytes = JsonSerializer.SerializeToUtf8Bytes(latest, JsonOptions);
+
+        await UploadAsync(settings, "topic-latest.json", latestBytes, cacheSeconds: 10, immutable: false, cancellationToken);
+
+        try
+        {
+            await PruneExpiredSnapshotsAsync(
+                settings,
+                fileName,
+                settings.RetainedSnapshotCount,
+                TopicSnapshotFileName,
+                "族群盤中 CDN 舊快照清理",
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(exception, "族群盤中 CDN 舊快照清理失敗，保留新快照與 topic-latest 指標。");
+        }
+
+        logger.LogInformation(
+            "已發佈族群盤中 CDN 快照 {FileName}（run {RunId}、{TopicCount} 個族群、分類 v{MappingVersion}）。",
+            fileName,
+            runId,
+            heat.Rows.Count,
+            mapping.Version);
+
+        return new IntradayTopicSnapshotPublishResult(true, fileName);
+    }
+
+    /// <summary>
+    /// 相容舊呼叫端的完整發布入口。現在明確要求族群結果存在，避免再次用
+    /// topicHeat=null 覆寫公開快照；新的 Collector 應分別呼叫 Raw／Topic 兩條路徑。
+    /// </summary>
+    public async Task<IntradaySnapshotPublishResult> PublishAsync(
+        long runId,
+        IntradaySnapshot snapshot,
+        DateTimeOffset capturedAt,
+        TopicMapping? topicMapping,
+        TopicHeatResult? topicHeat,
+        CancellationToken cancellationToken = default)
+    {
+        if (topicMapping is null || topicHeat is null)
+        {
+            throw new InvalidOperationException(
+                $"run {runId} 缺少同輪族群熱度，不得發布不完整盤中快照。");
+        }
+
+        var result = await PublishRawAsync(runId, snapshot, capturedAt, cancellationToken);
+        await PublishTopicAsync(
+            runId,
+            snapshot.TradeDate,
+            capturedAt,
+            topicMapping,
+            topicHeat,
+            cancellationToken);
+        return result;
     }
 
     internal static byte[] SerializeSnapshot(
@@ -211,6 +347,25 @@ public sealed class IntradaySnapshotPublisher(
         TopicHeatResult? topicHeat = null)
         => JsonSerializer.SerializeToUtf8Bytes(
             ToDocument(runId, snapshot, capturedAt, topicMapping, topicHeat),
+            JsonOptions);
+
+    internal static byte[] SerializeTopicSnapshot(
+        long runId,
+        DateOnly tradeDate,
+        DateTimeOffset capturedAt,
+        TopicMapping mapping,
+        TopicHeatResult heat)
+        => JsonSerializer.SerializeToUtf8Bytes(
+            new TopicSnapshotDocument(
+                SchemaVersion,
+                runId,
+                tradeDate.ToString("yyyy-MM-dd"),
+                capturedAt,
+                mapping.Version,
+                mapping.Label,
+                heat.HasSufficientData,
+                heat.Message,
+                JsonSerializer.SerializeToElement(heat.Rows, JsonOptions)),
             JsonOptions);
 
     private async Task UploadAsync(
@@ -260,6 +415,9 @@ public sealed class IntradaySnapshotPublisher(
     private async Task PruneExpiredSnapshotsAsync(
         PublisherSettings settings,
         string currentFile,
+        int retainedSnapshotCount,
+        Regex fileNamePattern,
+        string operation,
         CancellationToken cancellationToken)
     {
         // Storage API 的 list/remove 都是 bucket-scoped。沒有直接刪 storage.objects，避免留下
@@ -287,7 +445,7 @@ public sealed class IntradaySnapshotPublisher(
                 .Cast<string>()
                 .ToArray()
             : [];
-        var expired = SelectExpiredSnapshotFiles(files, currentFile, settings.RetainedSnapshotCount);
+        var expired = SelectExpiredSnapshotFiles(files, currentFile, retainedSnapshotCount, fileNamePattern);
 
         if (expired.Count == 0)
         {
@@ -298,21 +456,99 @@ public sealed class IntradaySnapshotPublisher(
         using var deleteRequest = CreateAuthorizedRequest(HttpMethod.Delete, deleteEndpoint, settings.Secret);
         deleteRequest.Content = JsonContent.Create(new { prefixes = expired });
         using var deleteResponse = await httpClient.SendAsync(deleteRequest, cancellationToken);
-        await EnsureSuccessAsync(deleteResponse, "盤中 CDN 舊快照清理", cancellationToken);
+        await EnsureSuccessAsync(deleteResponse, operation, cancellationToken);
 
-        logger.LogInformation("已清理 {DeletedCount} 份過期盤中 CDN 快照，保留最近 {RetainedCount} 份。", expired.Count, settings.RetainedSnapshotCount);
+        logger.LogInformation("已清理 {DeletedCount} 份過期盤中 CDN 快照，保留最近 {RetainedCount} 份。", expired.Count, retainedSnapshotCount);
+    }
+
+    private async Task<TopicLatestDocument?> ReadTopicLatestAsync(
+        PublisherSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = $"{settings.SupabaseUrl}/storage/v1/object/public/"
+            + $"{Uri.EscapeDataString(settings.Bucket)}/topic-latest.json"
+            + $"?guard={DateTimeOffset.UtcNow.Ticks}";
+
+        using var response = await httpClient.GetAsync(endpoint, cancellationToken);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        await EnsureSuccessAsync(response, "讀取族群 CDN latest 指標", cancellationToken);
+
+        var latest = await response.Content.ReadFromJsonAsync<TopicLatestDocument>(
+            JsonOptions,
+            cancellationToken);
+
+        if (latest is null
+            || latest.SchemaVersion != SchemaVersion
+            || latest.RunId < 0
+            || !TopicSnapshotFileName.IsMatch(latest.File))
+        {
+            throw new InvalidOperationException("族群 CDN topic-latest.json 格式不正確。");
+        }
+
+        return latest;
+    }
+
+    private async Task<LatestDocument?> ReadRawLatestAsync(
+        PublisherSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = $"{settings.SupabaseUrl}/storage/v1/object/public/"
+            + $"{Uri.EscapeDataString(settings.Bucket)}/latest.json"
+            + $"?guard={DateTimeOffset.UtcNow.Ticks}";
+
+        using var response = await httpClient.GetAsync(endpoint, cancellationToken);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        await EnsureSuccessAsync(response, "讀取盤中 CDN latest 指標", cancellationToken);
+
+        var latest = await response.Content.ReadFromJsonAsync<LatestDocument>(
+            JsonOptions,
+            cancellationToken);
+
+        if (latest is null
+            || latest.SchemaVersion != SchemaVersion
+            || latest.RunId < 0
+            || latest.RowCount <= 0
+            || !SnapshotFileName.IsMatch(latest.File))
+        {
+            throw new InvalidOperationException("盤中 CDN latest.json 格式不正確。 ");
+        }
+
+        return latest;
     }
 
     internal static IReadOnlyList<string> SelectExpiredSnapshotFiles(
         IEnumerable<string> objectNames,
         string currentFile,
         int retainedSnapshotCount)
+        => SelectExpiredSnapshotFiles(objectNames, currentFile, retainedSnapshotCount, SnapshotFileName);
+
+    internal static IReadOnlyList<string> SelectExpiredTopicSnapshotFiles(
+        IEnumerable<string> objectNames,
+        string currentFile,
+        int retainedSnapshotCount)
+        => SelectExpiredSnapshotFiles(objectNames, currentFile, retainedSnapshotCount, TopicSnapshotFileName);
+
+    private static IReadOnlyList<string> SelectExpiredSnapshotFiles(
+        IEnumerable<string> objectNames,
+        string currentFile,
+        int retainedSnapshotCount,
+        Regex fileNamePattern)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(retainedSnapshotCount, 1);
 
         // 只處理這個功能產生的檔名；latest.json、未知檔案與任何其他功能的檔案都不能刪。
         var snapshots = objectNames
-            .Where(name => SnapshotFileName.IsMatch(name))
+            .Where(name => fileNamePattern.IsMatch(name))
             .OrderByDescending(name => name, StringComparer.Ordinal)
             .ToArray();
         var retained = snapshots
@@ -469,6 +705,17 @@ public sealed class IntradaySnapshotPublisher(
         IReadOnlyList<SnapshotRow> Rows,
         SnapshotTopicHeat? TopicHeat);
 
+    private sealed record TopicSnapshotDocument(
+        int SchemaVersion,
+        long RunId,
+        string TradeDate,
+        DateTimeOffset CapturedAt,
+        int MappingVersion,
+        string MappingLabel,
+        bool HasSufficientData,
+        string? Message,
+        JsonElement Rows);
+
     private sealed record SnapshotRow(
         [property: JsonPropertyName("symbol")] string Symbol,
         [property: JsonPropertyName("name")] string Name,
@@ -497,9 +744,24 @@ public sealed class IntradaySnapshotPublisher(
         string File,
         int RowCount,
         string Sha256);
+
+    private sealed record TopicLatestDocument(
+        int SchemaVersion,
+        long RunId,
+        string TradeDate,
+        DateTimeOffset CapturedAt,
+        string File,
+        int RowCount,
+        int MappingVersion,
+        string Sha256);
 }
 
 public sealed record IntradaySnapshotPublishResult(bool Published, string? File)
 {
     public static readonly IntradaySnapshotPublishResult NotConfigured = new(false, null);
+}
+
+public sealed record IntradayTopicSnapshotPublishResult(bool Published, string? File)
+{
+    public static readonly IntradayTopicSnapshotPublishResult NotConfigured = new(false, null);
 }

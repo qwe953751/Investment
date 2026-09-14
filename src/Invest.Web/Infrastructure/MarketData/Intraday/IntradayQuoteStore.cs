@@ -10,8 +10,8 @@ namespace Invest.Web.Infrastructure.MarketData.Intraday;
 /// <summary>
 /// 把盤中快照寫進 Supabase 上的 PostgreSQL。資料表定義在 db/001_intraday.sql。
 ///
-/// 盤中明細只保留最新交易日：下一個較新交易日的有效快照寫入成功後，
-/// 才在同一筆交易內刪除舊日期。休市、來源失敗或壞資料都不會先把舊資料清空。
+/// 盤中明細只保留最新交易日：下一個較新交易日的族群衍生資料成功保存後，
+/// 才刪除舊日期。raw 休市、來源失敗、族群分類失敗或壞資料都不會先把舊資料清空。
 ///
 /// 唯一留下來的是 intraday_curve：每輪一列的全市場成交額合計，
 /// 用來累積台股的日內量能曲線。定義在 db/004_intraday_curve.sql。
@@ -104,22 +104,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 
         await InsertCurveAsync(connection, runId, snapshot.TradeDate, capturedAt, cancellationToken);
 
-        // 先把新輪次與量能曲線都寫好，再清理舊交易日。
-        // 全部都在同一筆 transaction：後面任一步失敗會整批 rollback，舊資料仍在。
-        var deletedCachedRuns = await DeleteSupersededRunsAsync(
-            connection, snapshot.TradeDate, cancellationToken);
-
         await transaction.CommitAsync(cancellationToken);
 
         logger.LogInformation("寫入 {Count} 檔盤中報價（run {RunId}）。", written, runId);
-
-        if (deletedCachedRuns > 0)
-        {
-            logger.LogInformation(
-                "新交易日 {TradeDate:yyyy-MM-dd} 已成功寫入，刪除 {Count} 輪舊盤中快照。",
-                snapshot.TradeDate,
-                deletedCachedRuns);
-        }
 
         return new IntradaySaveResult
         {
@@ -132,11 +119,84 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
     }
 
     /// <summary>
+    /// 在新交易日的第一輪族群熱度成功保存後，才清理更舊的盤中資料。
+    ///
+    /// 原始報價與族群熱度現在是非同步兩階段：若在 raw Save 立刻刪除舊日資料，
+    /// 族群分類或 CDN 暫時失敗時，資料庫 fallback 會連上一份完整族群快照都沒有。
+    /// 因此清理延後到衍生資料成功後；失敗時保留資料，下一次仍可補做。
+    /// </summary>
+    public async Task<int> DeleteSupersededRunsAsync(
+        DateOnly tradeDate,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var deleted = await DeleteSupersededRunsAsync(connection, tradeDate, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        if (deleted > 0)
+        {
+            logger.LogInformation(
+                "新交易日 {TradeDate:yyyy-MM-dd} 的族群熱度已完成，刪除 {Count} 輪舊盤中快照。",
+                tradeDate,
+                deleted);
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
     /// 讀取目前網站會顯示的最新一輪盤中快照，供 migration 後補回衍生欄位。
     /// 這裡只讀既有資料，不會動到明細或量能曲線。
     /// </summary>
-    public async Task<StoredIntradaySnapshot?> LoadLatestSnapshotAsync(
+    public Task<StoredIntradaySnapshot?> LoadLatestSnapshotAsync(
         CancellationToken cancellationToken = default)
+        => LoadSnapshotAsync(
+            """
+            order by trade_date desc, captured_at desc
+            limit 1
+            """,
+            cancellationToken);
+
+    /// <summary>
+    /// 讀取最早一輪尚未產生族群熱度的原始快照，作為衍生處理器的 durable 待辦。
+    /// 記憶體喚醒遺失或 Collector 重啟時，仍可從這裡補回，不依賴單次通知。
+    /// </summary>
+    public Task<StoredIntradaySnapshot?> LoadOldestSnapshotMissingTopicHeatAsync(
+        CancellationToken cancellationToken = default)
+        => LoadSnapshotAsync(
+            """
+            where not exists (
+                select 1
+                from intraday_topic_heat heat
+                where heat.run_id = intraday_runs.id)
+            order by trade_date asc, captured_at asc, id asc
+            limit 1
+            """,
+            cancellationToken);
+
+    /// <summary>
+    /// 讀取最新一輪尚未產生族群熱度的原始快照。
+    /// 背景 consumer 有 backlog 時先追最新輪，讓公開 topic-latest 儘快接近 raw；
+    /// 舊輪次仍留在 durable 待辦，稍後再補算。
+    /// </summary>
+    public Task<StoredIntradaySnapshot?> LoadNewestSnapshotMissingTopicHeatAsync(
+        CancellationToken cancellationToken = default)
+        => LoadSnapshotAsync(
+            """
+            where not exists (
+                select 1
+                from intraday_topic_heat heat
+                where heat.run_id = intraday_runs.id)
+            order by trade_date desc, captured_at desc, id desc
+            limit 1
+            """,
+            cancellationToken);
+
+    private async Task<StoredIntradaySnapshot?> LoadSnapshotAsync(
+        string runSelection,
+        CancellationToken cancellationToken)
     {
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
         var hasIndexKlineColumns = await HasIndexKlineColumnsAsync(connection, cancellationToken);
@@ -152,8 +212,7 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                        captured_at, twse_index, twse_change_percent,
                        tpex_index, tpex_change_percent
                 from intraday_runs
-                order by trade_date desc, captured_at desc
-                limit 1
+                {runSelection}
             )
             select latest.id, latest.trade_date,
                    latest.twse_index, latest.twse_change_percent,

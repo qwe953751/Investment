@@ -1,4 +1,4 @@
-# 待辦事項（16 件）
+# 待辦事項（17 件）
 
 這份檔案是討論的存放處，不是進度表。每次要談某件事之前先讀這裡，
 就不用把前幾次的結論重講一遍。
@@ -28,6 +28,7 @@
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](Doc/版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照 |
+| 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 程式與 migration 已完成，網站發布後仍待正式 Supabase 套用與下一交易日端到端驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1757,3 +1758,26 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - 台股要不要也套用同一套小方塊／緊湊列表版型，還沒決定——目前維持完全不動。
 - 加密貨幣只用 Yahoo Finance，拿不到全市場總市值／BTC 主導率／賽道分類——若要
   這些指標需另外接 CoinGecko 之類的資料商，目前刻意不做（見規劃討論）。
+
+<a id="todo-17"></a>
+## 🟡 17. 盤中族群非同步追蹤與 topic CDN
+
+[↑ 回到 TODO 列表](#快速跳轉)
+
+**狀態：程式與 migration 已完成，網站發布後等正式 Supabase 套用與下一交易日驗收**
+
+### 已討論
+
+- Collector 維持兩分鐘節奏；MIS 的原始抓取、驗證與寫入不以完成時間是否超過 13:35 判定失效，
+  慢輪允許完成。分類、計算與 topic CDN 由背景 worker 處理，不阻塞下一輪。
+- `latest.json` 是最新 raw run，`topic-latest.json` 是最新已完成 topic run。前端以 `runId` 判斷落後，
+  落後時保留上一份完整族群 JSON 並繼續輪詢，完成後自動切換；不以 `topicHeat:null` 覆蓋公開資料。
+- worker 使用 Supabase「尚未有 `intraday_topic_heat` 的 run」作 durable 待辦，memory Channel 只作喚醒，
+  advisory lock 確保同時間只有一個 consumer；backlog 優先追最新 run，舊 run 完成較晚不得倒退 topic 指標。
+
+### 尚未完成
+
+- `db/057_intraday_topic_async.sql` 尚未依獨立 migration 流程套用正式 Supabase；套用後要確認 view 的
+  `run_id` 與 RLS／PostgREST 回傳。
+- 本輪 `main` 推送後需用 `publish-only=true` 發布；套用 migration 後再以瀏覽器 Network 驗證 raw／topic
+  兩個 latest 指標、落後提示與收盤後追上行為。
