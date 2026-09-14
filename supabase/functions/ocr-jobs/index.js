@@ -472,6 +472,19 @@ async function handleStatus(request, user, jobId) {
         }
     }
 
+    let queuePosition = null;
+    if (job.status === 'queued') {
+        try {
+            const aheadRes = await serviceFetch(
+                `/rest/v1/ocr_jobs?status=eq.queued&created_at=lt.${encodeURIComponent(job.created_at)}&select=id&limit=50`
+            );
+            if (aheadRes.ok) {
+                const ahead = await aheadRes.json();
+                queuePosition = ahead.length;
+            }
+        } catch (_) { /* non-critical */ }
+    }
+
     return json(request, 200, {
         jobId: job.id,
         status: job.status,
@@ -483,7 +496,8 @@ async function handleStatus(request, user, jobId) {
         progressStage: job.progress_stage ?? 'queued',
         progressPercent: job.progress_percent ?? 5,
         progressUpdatedAt: job.progress_updated_at ?? job.updated_at,
-        usageSummary: job.usage_summary ?? null
+        usageSummary: job.usage_summary ?? null,
+        queuePosition
     });
 }
 

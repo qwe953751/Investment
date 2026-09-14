@@ -11204,6 +11204,14 @@ function buildAssetHoldingDiff(holdings, draftRows) {
         }
     }
 
+    const tickerOf = change => change.kind === 'addition'
+        ? assetHoldingTicker(change.draft)
+        : assetHoldingTicker(change.holding);
+    const byTicker = (a, b) => tickerOf(a).localeCompare(tickerOf(b), undefined, { numeric: true });
+    additions.sort(byTicker);
+    updates.sort(byTicker);
+    removals.sort(byTicker);
+
     return { additions, updates, removals, invalid };
 }
 
@@ -11510,12 +11518,8 @@ function refreshAssetScreenshotDiff(holdings, rows) {
 function assetScreenshotSelectionDefaults(diff) {
     const selections = {};
 
-    for (const change of [...(diff?.updates ?? []), ...(diff?.additions ?? [])]) {
+    for (const change of [...(diff?.updates ?? []), ...(diff?.additions ?? []), ...(diff?.removals ?? [])]) {
         selections[change.key] = true;
-    }
-
-    for (const change of diff?.removals ?? []) {
-        selections[change.key] = false;
     }
 
     return selections;
@@ -11936,7 +11940,8 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
             createdAt: new Date().toISOString(),
             expiresAt: submitted.expiresAt ?? null
         });
-        const deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
+        let deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
+        let leasedDeadlineReset = false;
         const queuedAt = Date.now();
 
         while (Date.now() < deadline) {
@@ -11975,14 +11980,21 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                 };
             }
 
-            // 已送出的工作不再用心跳新鮮度猜測 Worker 是否離線就提早取消——心跳只是
-            // 「最近有無回報」的推測，工作本身在 queued／leased 就是事實：真的沒有任何
-            // Worker 在動，lease 逾時回收與 relay 機制會處理，不需要前端搶著幫它判死刑。
-            // 這裡只用queuedAt起算的 ASSET_AI_OCR_TIMEOUT_MS 這個事實性的絕對上限把關。
+            // 初次切到 leased（Worker 真的開始處理）才起算處理時限，排隊等候時間不計入。
+            if (status.status === 'leased' && !leasedDeadlineReset) {
+                leasedDeadlineReset = true;
+                deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
+            }
             await assetAiOcrWakeIfStalled(jobId, status, screenshot, signal);
 
             const progress = assetAiProgressForStatus(status.status);
-            screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';
+            screenshot.status = status.status === 'leased'
+                ? 'AI 辨識中…'
+                : status.queuePosition > 0
+                    ? `AI 佇列等待中（前方還有 ${status.queuePosition} 張）`
+                    : status.queuePosition === 0
+                        ? 'AI 佇列等待中（即將開始）'
+                        : 'AI 佇列等待中…';
             updateAssetAiProgress(index - 1, status.status, {
                 stage: status.progressStage ?? progress.stage,
                 percent: status.progressPercent ?? progress.percent,
@@ -12078,7 +12090,8 @@ async function resumeAssetAiJobs(accountId) {
             let finalStatus = null;
             const queuedAt = Date.parse(job.createdAt ?? '') || Date.now();
             try {
-                const deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
+                let deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
+                let leasedDeadlineReset = false;
                 while (Date.now() < deadline) {
                     assetOcrThrowIfCancelled(signal);
                     const status = await assetAiOcrStatus(job.jobId, signal);
@@ -12086,9 +12099,19 @@ async function resumeAssetAiJobs(accountId) {
                         finalStatus = status;
                         break;
                     }
+                    if (status.status === 'leased' && !leasedDeadlineReset) {
+                        leasedDeadlineReset = true;
+                        deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
+                    }
                     await assetAiOcrWakeIfStalled(job.jobId, status, screenshot, signal);
                     const progress = assetAiProgressForStatus(status.status);
-                    screenshot.status = status.status === 'leased' ? 'AI 辨識中…' : 'AI 佇列等待中…';
+                    screenshot.status = status.status === 'leased'
+                        ? 'AI 辨識中…'
+                        : status.queuePosition > 0
+                            ? `AI 佇列等待中（前方還有 ${status.queuePosition} 張）`
+                            : status.queuePosition === 0
+                                ? 'AI 佇列等待中（即將開始）'
+                                : 'AI 佇列等待中…';
                     updateAssetAiProgress(index, status.status, {
                         stage: status.progressStage ?? progress.stage,
                         percent: status.progressPercent ?? progress.percent,
@@ -15458,8 +15481,7 @@ function makeAssetScreenshotFlow(view) {
     const diffHeading = document.createElement('h4');
     diffHeading.textContent = '套用前差異';
     const diffDescription = document.createElement('p');
-    diffDescription.textContent = '覆蓋與新增已自動勾選，請先人工核對；沒有勾選的持倉維持原樣。'
-        + '移除項目仍需手動勾選，避免 OCR 漏列誤刪。這取代了舊版「一次刪除全部再重建」的流程。';
+    diffDescription.textContent = '覆蓋、新增與移除均已自動勾選；請人工核對，取消不確定的項目後再套用。沒有勾選的持倉維持原樣。';
     const selectionSummary = document.createElement('p');
     selectionSummary.className = 'asset-holding-diff-selection';
     const apply = assetButton('套用到持倉（0 項）', 'asset-primary-button');
@@ -15506,7 +15528,7 @@ function makeAssetScreenshotFlow(view) {
             'addition'),
         makeAssetHoldingDiffSection(
             '移除持倉',
-            '帳戶有、截圖沒有的代號；為避免 OCR 漏列誤刪，預設不勾選。',
+            '帳戶有、截圖沒有的代號；已自動勾選，請人工確認是否確實要移除。',
             diff.removals,
             view.market,
             assetScreenshotDraft.selections,
@@ -15552,7 +15574,7 @@ function makeAssetScreenshotFlow(view) {
             }
 
             refreshAssetScreenshotDiff(view.holdings, rows);
-            assetScreenshotDraft.notice = '已依目前人工修正重新列出差異；覆蓋與新增已自動勾選，移除仍需手動勾選。';
+            assetScreenshotDraft.notice = '已依目前人工修正重新列出差異；覆蓋、新增與移除均已自動勾選，請人工核對再套用。';
             renderAssetsDashboard();
         }),
         assetButton('取消', 'asset-secondary-button', () => {
