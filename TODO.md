@@ -933,6 +933,20 @@ org 管理畫面**，不是訪客看到的樣子。那兩個按鈕本來就只�
   獨立的 GitHub Pages 來源）已經不需要了，除非你之後改變主意想要自訂網域
   （例如想要更好記的名字），需要的話再重談。
 
+### 2026-09-14 更新：筆記 #59 分享連結三缺陷已修復
+
+分享連結功能從 2026-09-09 上線到 2026-09-14，`use_count` 一直是 0，從未成功兌換過一次。
+三個缺陷疊在一起，全部於 2026-09-14 修復並重新部署：
+
+1. `generateAuthToken()` 讀了 `body.properties.hashed_token`，但 GoTrue REST 回應是扁平的，`properties` 那層只存在於 SDK。已改成 `body?.properties ?? body` 同時相容兩種格式。
+2. `access-share` Edge Function 停在 v1（2026-09-09），`449da439` 的修改從未部署。已重新部署至 v2。
+3. `access_share_redeem` RPC 的 WHERE 條件沒跟著 `db/050` 改成 null-safe，永久／不限次數的連結永遠回 `410`。已新增 `db/056` 修正，並補設 `fortune@investment.local` 的 `access_role=admin`。
+
+端對端驗證：永久＋不限次數連結連續兌換兩次，`use_count=2`，session 帶到 `holdings` tier。
+**前端不需要任何修改**（線上版已是正確的，與本機一致）。
+
+使用者手動驗收項目：見 [Doc/版本紀錄.md](Doc/版本紀錄.md) 最新條目。
+
 ---
 
 <a id="todo-12"></a>

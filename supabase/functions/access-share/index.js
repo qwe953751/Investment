@@ -176,7 +176,9 @@ async function generateAuthToken(request, share) {
     });
     if (!response.ok) return null;
     const body = await response.json();
-    const properties = body?.properties;
+    // GoTrue REST /auth/v1/admin/generate_link 把 hashed_token 放在頂層；
+    // supabase-js SDK 的 admin.generateLink() 才會包一層 properties。兩種都收。
+    const properties = body?.properties ?? body;
     if (!properties?.hashed_token || !properties?.verification_type) return null;
     return {
         tokenHash: properties.hashed_token,
