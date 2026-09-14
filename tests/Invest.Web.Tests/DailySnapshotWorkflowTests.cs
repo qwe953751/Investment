@@ -80,6 +80,74 @@ public sealed class DailySnapshotWorkflowTests
         Assert.Contains("exit 1", gate, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 2026-09-14：台北 11:29 手動觸發完整流程，「回補行情」空轉到被人取消。
+    /// 官方收盤行情 15:00 才公布，盤中啟動必然等到 21:00 才紅燈。
+    ///
+    /// 守衛只擋手動觸發：schedule 進到這裡一定已經睡過 18:00。
+    /// 確定休市時回補整步會被跳過，守衛也必須一起跳過，否則休市日手動觸發
+    /// 會被擋成紅燈，但它根本不需要等任何行情。
+    /// </summary>
+    [Fact]
+    public void 盤中啟動完整流程會直接中止而不是空轉到晚上()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        var gateStart = workflow.IndexOf("- name: 擋下盤中啟動的完整流程", StringComparison.Ordinal);
+        Assert.True(gateStart >= 0, "找不到盤中完整流程的守衛步驟。");
+
+        var backfillStart = workflow.IndexOf("- name: 回補行情", gateStart, StringComparison.Ordinal);
+        Assert.True(backfillStart > gateStart, "守衛必須在回補迴圈之前執行，否則擋不住空轉。");
+
+        var gate = workflow[gateStart..backfillStart];
+
+        // 少任何一段條件，守衛就會擴大到它不該擋的情境。
+        Assert.Contains("github.event_name == 'workflow_dispatch'", gate, StringComparison.Ordinal);
+        Assert.Contains("inputs.publish-only != true", gate, StringComparison.Ordinal);
+        Assert.Contains("steps.market_day.outputs.status != 'closed'", gate, StringComparison.Ordinal);
+
+        // 門檻是官方公布收盤行情的 15:00，不是排程自己等的 18:00：
+        // 15:00～18:00 之間手動補今天的行情是合理的，不該一併擋掉。
+        Assert.Contains("date -d '15:00' +%s", gate, StringComparison.Ordinal);
+        Assert.Contains("exit 1", gate, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 手動觸發幾乎都是「把目前 main 發出去」：AI agent 走 CLI，族群人工編輯頁的
+    /// 「立即發布」連結則是人直接開 GitHub UI。GitHub 沒辦法用 query string 預填
+    /// inputs，checkbox 的初始狀態只能由 default 決定，所以這是唯一能做防呆的地方。
+    ///
+    /// 排程是 schedule 事件、不套用 workflow_dispatch 的 default，照樣跑完整流程。
+    /// </summary>
+    [Fact]
+    public void 手動觸發預設只發布不回補()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        var inputStart = workflow.IndexOf("      publish-only:", StringComparison.Ordinal);
+        Assert.True(inputStart >= 0, "找不到 publish-only 這個 workflow_dispatch input。");
+
+        var input = workflow[inputStart..workflow.IndexOf("permissions:", inputStart, StringComparison.Ordinal)];
+        Assert.Contains("type: boolean", input, StringComparison.Ordinal);
+        Assert.Contains("default: true", input, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 族群人工編輯頁那段引導文字跟上面的 default 綁在一起：預設已經勾好時還叫人
+    /// 「打勾 publish-only」，使用者很容易當成要切換而反手點掉，結果正好跑成完整流程。
+    /// </summary>
+    [Fact]
+    public void 族群編輯頁的立即發布引導不再要求自己打勾()
+    {
+        var site = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), "src", "Invest.Web", "Infrastructure", "StaticSite", "Assets", "site.js"));
+
+        Assert.Contains("publish-only 已經預設勾好", site, StringComparison.Ordinal);
+        Assert.DoesNotContain("打勾 publish-only 再送出", site, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void 補抓ETF歷史是手動選項而且預設不跑()
     {

@@ -23,10 +23,20 @@ on:
       trading-days:
         description: 回補幾個交易日（從今天往回）
         default: '300'
+      # 預設 true，因為手動觸發幾乎都是「把目前 main 的程式碼／畫面發出去」：
+      # AI agent 走 `gh workflow run ... -f publish-only=true`，族群人工編輯頁的
+      # 「立即發布」連結則是人直接開 GitHub UI 按 Run workflow。真正要完整回補的
+      # 是排程，而排程是 schedule 事件、不套用 workflow_dispatch 的 default，
+      # 所以把預設翻過來不會影響每天那三場。
+      #
+      # 原本預設 false，代價是 UI 那條路要自己記得打勾；2026-09-14 台北 11:29
+      # 就是漏勾而讓「回補行情」空轉到被手動取消（見 TODO #5）。
+      # GitHub 的 UI 沒辦法用 query string 預填 inputs，checkbox 的初始狀態
+      # 只能由這裡的 default 決定，所以防呆只有這一個地方能做。
       publish-only:
-        description: 只用 data 分支現有快取重新輸出並發布，不等待今日行情
+        description: 只用 data 分支現有快取重新輸出並發布，不等待今日行情（要連今天的行情一起更新才取消勾選，且須等收盤後）
         type: boolean
-        default: false
+        default: true
       etf-backfill-days:
         description: 補抓幾個交易日的 ETF 歷史（0 表示不補；只有 2026-09-01 之前的舊快取需要）
         default: '0'
@@ -187,6 +197,33 @@ jobs:
 
           echo "status=$status" >> "$GITHUB_OUTPUT"
           echo "今天判定為 $status（exit $code）。"
+
+      # 上面那一步只回答「今天開不開盤」，回答不了「今天的收盤行情公布了沒」。
+      # 開盤日的盤中手動觸發完整流程，下面的回補迴圈每 10 分鐘試一次、撐到 21:00
+      # 才紅燈——台北 11:29 按下去就是空轉 9.5 小時，畫面上看起來就是卡住
+      # （2026-09-14 實際發生過，最後由人手動取消）。這裡在進迴圈前先擋下來，
+      # 幾秒紅燈換掉整個下午的假等待。
+      #
+      # 門檻取 15:00：官方收盤行情大約那時公布（見 CollectionSchedule.DailyRefresh
+      # 的註解，排程本身再往後留三小時緩衝到 18:00）。不跟著用 18:00，是因為
+      # 15:00～18:00 之間手動補今天的行情是合理的，不該一併擋掉。
+      # YAML 讀不到 C#，改那邊要順手改這裡。
+      #
+      # 只擋手動觸發：schedule 進到這裡一定已經睡過 18:00。
+      # 確定休市時回補整步會被跳過，這裡也要一起跳過，否則休市日手動觸發
+      # 會被這道守衛擋成紅燈，但它其實根本不需要等任何行情。
+      - name: 擋下盤中啟動的完整流程
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish-only != true && steps.market_day.outputs.status != 'closed' }}
+        run: |
+          if [ "$(date +%s)" -ge "$(date -d '15:00' +%s)" ]; then
+              echo "現在 $(date +%H:%M)，收盤行情應該已經公布，繼續完整流程。"
+              exit 0
+          fi
+
+          echo "現在 $(date +%H:%M)，官方收盤行情要 15:00 之後才公布。" >&2
+          echo "完整流程會在「回補行情」空轉重試到 21:00 才紅燈，所以直接中止。" >&2
+          echo "只是要發布目前 main 的程式碼或畫面，請用 publish-only=true（手動觸發的預設值）。" >&2
+          exit 1
 
       # 抓到有為止：官方偶爾晚公布或擋一下，一次失敗不算數，
       # 每 10 分鐘重跑一次直到今天的行情檔案落地，最晚撐到 21:00。

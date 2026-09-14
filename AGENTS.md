@@ -75,10 +75,15 @@
 
 | 情境 | Actions 參數 | 行為 |
 |---|---|---|
-| 只有程式碼／畫面／文件要更新，或收盤行情尚未公布 | `publish-only=true` | 使用 `data` branch 既有快取，跑測試、export、發布；不回補今日行情、不寫入 `data`、不同步 Supabase、不做備份／心跳 |
-| 要更新今天的行情、資料庫與網站 | `publish-only=false`（預設） | 完整執行「回補 → 保存 `data` → 同步／對帳 Supabase → 備份 → export → 發布」；收盤行情尚未公布時不要手動啟動 |
+| 只有程式碼／畫面／文件要更新，或收盤行情尚未公布 | `publish-only=true`（**手動觸發的預設值**） | 使用 `data` branch 既有快取，跑測試、export、發布；不回補今日行情、不寫入 `data`、不同步 Supabase、不做備份／心跳 |
+| 要更新今天的行情、資料庫與網站 | `publish-only=false`（**要顯式指定**） | 完整執行「回補 → 保存 `data` → 同步／對帳 Supabase → 備份 → export → 發布」；15:00 前啟動會被守衛擋下 |
 
-不要在收盤前為了發布畫面而跑完整流程。完整流程會等今天的 `data/imports/YYYY-MM-DD.json`，最晚重試到台北時間 21:00；只改程式碼時直接用 `publish-only=true`。
+手動觸發（`workflow_dispatch`）的預設值是 `publish-only=true`，因為手動觸發幾乎都是「把目前 `main` 發出去」。
+每天那三場排程是 `schedule` 事件，**不套用 `workflow_dispatch` 的 default**，所以照樣跑完整流程。
+
+不要在收盤前為了發布畫面而跑完整流程。完整流程會等今天的 `data/imports/YYYY-MM-DD.json`，最晚重試到台北時間 21:00。
+`daily-snapshot.yml` 已有「擋下盤中啟動的完整流程」守衛：手動觸發、`publish-only=false`、今天不是確定休市、而且現在還不到 15:00 時，
+直接紅燈中止而不進回補迴圈。看到那個紅燈不要重跑，改用 `publish-only=true`，或等收盤行情公布後再跑完整流程。
 
 `daily-snapshot.yml` 已將兩種流程分開併發鎖：完整快照使用 `daily-snapshot`，
 `publish-only=true` 使用 `daily-snapshot-publish`。因此完整流程正在回補或備份時，
@@ -124,10 +129,12 @@ git push origin main
 
 ```powershell
 # 只發布目前 main 的程式碼／畫面，使用 data branch 現有快取（最常用）
+# publish-only 已是手動觸發的預設值，但仍顯式帶著：指令本身要看得出跑的是哪一種流程。
 gh workflow run daily-snapshot.yml --ref main -f trading-days=300 -f publish-only=true
 
-# 收盤後確定要完整更新今日資料時才使用
-gh workflow run daily-snapshot.yml --ref main -f trading-days=300
+# 收盤後確定要完整更新今日資料時才使用；publish-only 必須顯式指定 false，
+# 省略會套用預設值 true 而變成純發布。15:00 前執行會被守衛擋成紅燈。
+gh workflow run daily-snapshot.yml --ref main -f trading-days=300 -f publish-only=false
 ```
 
 指令會回傳 workflow run URL；取出其中的 run ID 後監看：
@@ -187,6 +194,7 @@ repo 的讀取權，否則 `gh api repos/frank-invest/...` 會 404 而不是權�
 1. 先用 `gh run view <RUN_ID> --json jobs` 找第一個失敗步驟，不要直接重跑整輪。
 2. 若是發布步驟失敗，檢查 `publish/site` 是否由本次 export 產生、以及 `scripts/publish-gh-pages.sh` 的輸出；不要手改 `gh-pages`。
 3. 若是完整流程的回補失敗，先判斷是否尚未到收盤資料公布時間、官方 API 被擋或確實是休市日；只改畫面時改用 `publish-only=true`。
+   若失敗的是「擋下盤中啟動的完整流程」，代表在 15:00 前用 `publish-only=false` 啟動了完整流程，這是守衛按預期擋下，不是故障——不要重跑同一組參數。
 4. 若是 `心跳與狀態` 因 `db/013_intraday_topic_heat.sql` 未套用而失敗，確認 workflow 已包含 `publish-only != true` 的跳過條件，再用目前 `main` 重新觸發 publish-only；publish-only 不會偷偷套 migration。
 5. `db/013_intraday_topic_heat.sql` 必須在明確授權後，以獨立的資料庫 migration 流程套用；不可為了讓網站發布成功把 DDL 混進一般發布流程，也不可用假資料補結果。
 

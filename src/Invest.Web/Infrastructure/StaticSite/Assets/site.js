@@ -23961,8 +23961,11 @@ function makeTopicEditIntro() {
     publishLink.href = TOPIC_EDIT_PUBLISH_URL;
     publishLink.target = '_blank';
     publishLink.rel = 'noopener noreferrer';
-    publishLink.textContent = '不想等下一輪排程？前往「立即發布」（GitHub 頁面上按 Run workflow，'
-        + '打勾 publish-only 再送出，約 4 分鐘）→';
+    // 這段字跟 daily-snapshot.yml 的 publish-only default 綁在一起，改一邊就要改另一邊。
+    // 現在預設是勾的，所以不能再叫人「打勾」——看到已經勾好卻讀到「去打勾」，
+    // 很容易當成要切換而反手點掉，那就變成跑完整流程，盤中按下去會空轉整個下午。
+    publishLink.textContent = '不想等下一輪排程？前往「立即發布」（GitHub 頁面上按 Run workflow '
+        + '直接送出即可，publish-only 已經預設勾好、不用動它，約 4 分鐘）→';
     publishRow.append(publishLink);
     box.append(publishRow);
 
