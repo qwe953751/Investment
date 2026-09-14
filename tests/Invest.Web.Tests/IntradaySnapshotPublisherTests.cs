@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.Intraday;
@@ -164,6 +165,72 @@ public sealed class IntradaySnapshotPublisherTests
         }
     }
 
+    [Fact]
+    public async Task 第一次發布族群時Storage以400回NoSuchKey仍可建立topic快取()
+    {
+        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, "test-secret");
+
+        try
+        {
+            var capturedRequests = new List<HttpRequestMessage>();
+            var publisher = CreatePublisher(new CapturingHandler(capturedRequests, request =>
+            {
+                var url = request.RequestUri!.ToString();
+                if (url.Contains("/latest.json?", StringComparison.Ordinal))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            "{\"schemaVersion\":1,\"runId\":7,\"tradeDate\":\"2026-08-31\","
+                                + "\"capturedAt\":\"2026-08-31T00:42:00+00:00\","
+                                + "\"file\":\"intraday-20260831-0842-run7.json\",\"rowCount\":1}",
+                            Encoding.UTF8,
+                            "application/json")
+                    };
+                }
+
+                if (url.Contains("/topic-latest.json?", StringComparison.Ordinal))
+                {
+                    return Respond(
+                        HttpStatusCode.BadRequest,
+                        "{\"statusCode\":\"404\",\"error\":\"not_found\","
+                            + "\"message\":\"Object not found\",\"code\":\"NoSuchKey\"}");
+                }
+
+                return Respond(HttpStatusCode.OK, "[]");
+            }));
+
+            var result = await publisher.PublishTopicAsync(
+                runId: 7,
+                tradeDate: new DateOnly(2026, 8, 31),
+                capturedAt: new DateTimeOffset(2026, 8, 31, 0, 42, 0, TimeSpan.Zero),
+                mapping: new TopicMapping
+                {
+                    Version = 2,
+                    Label = "測試分類",
+                    Description = string.Empty
+                },
+                heat: new TopicHeatResult
+                {
+                    PeriodDays = 1,
+                    HasSufficientData = true
+                },
+                CancellationToken.None);
+
+            Assert.True(result.Published);
+            Assert.Contains(
+                capturedRequests,
+                request => request.RequestUri!.ToString().Contains("intraday-topic-20260831-0842-run7.json", StringComparison.Ordinal));
+            Assert.Contains(
+                capturedRequests,
+                request => request.RequestUri!.ToString().EndsWith("/topic-latest.json", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, null);
+        }
+    }
+
     private static IntradaySnapshotPublisher CreatePublisher(CapturingHandler handler)
     {
         var configuration = new ConfigurationBuilder()
@@ -175,6 +242,9 @@ public sealed class IntradaySnapshotPublisherTests
             new HttpClient(handler),
             NullLogger<IntradaySnapshotPublisher>.Instance);
     }
+
+    private static HttpResponseMessage Respond(HttpStatusCode status, string body)
+        => new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
     private sealed class CapturingHandler(
         List<HttpRequestMessage> capturedRequests,

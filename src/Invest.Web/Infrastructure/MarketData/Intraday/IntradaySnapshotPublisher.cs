@@ -476,6 +476,24 @@ public sealed class IntradaySnapshotPublisher(
             return null;
         }
 
+        // Supabase Storage 對不存在的 public object 有時回 HTTP 400，而不是 HTTP 404；
+        // body 仍會帶 NoSuchKey/not_found。第一次發布 topic 時沒有 topic-latest 是正常的，
+        // 必須把這個等價的「尚未建立」狀態視為 null，不能阻塞第一份族群快取。
+        if (response.StatusCode == System.Net.HttpStatusCode.BadRequest)
+        {
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (detail.Contains("NoSuchKey", StringComparison.OrdinalIgnoreCase)
+                || detail.Contains("\"not_found\"", StringComparison.OrdinalIgnoreCase)
+                || detail.Contains("\"statusCode\":\"404\"", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            throw new InvalidOperationException(
+                $"讀取族群 CDN latest 指標失敗（HTTP {(int)response.StatusCode}）："
+                + detail[..Math.Min(detail.Length, 300)]);
+        }
+
         await EnsureSuccessAsync(response, "讀取族群 CDN latest 指標", cancellationToken);
 
         var latest = await response.Content.ReadFromJsonAsync<TopicLatestDocument>(
