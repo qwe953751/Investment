@@ -1779,5 +1779,5 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 - `db/057_intraday_topic_async.sql` 尚未依獨立 migration 流程套用正式 Supabase；套用後要確認 view 的
   `run_id` 與 RLS／PostgREST 回傳。
-- 本輪 `main` 推送後需用 `publish-only=true` 發布；套用 migration 後再以瀏覽器 Network 驗證 raw／topic
-  兩個 latest 指標、落後提示與收盤後追上行為。
+- `main` commit `2b943cea` 已由 publish-only run `34836076850` 發布，公開 manifest `1789383855` 已驗證；
+  套用 migration 後再以瀏覽器 Network 驗證 raw／topic 兩個 latest 指標、落後提示與收盤後追上行為。
