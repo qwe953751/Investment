@@ -53,7 +53,12 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
     {
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
 
-        var total = snapshot.Quotes.Sum(quote => quote.EstimatedTradingValue);
+        // ETF 跟一般股票共用同一輪快照，但全市場成交額曲線是個股口徑，
+        // 不能讓 ETF 的成交值改變既有熱度、校準與回退資料。
+        var commonQuotes = snapshot.Quotes
+            .Where(quote => quote.Kind == StockKind.CommonStock)
+            .ToArray();
+        var total = commonQuotes.Sum(quote => quote.EstimatedTradingValue);
         var previousTotal = await ReadPreviousTotalAsync(
             connection, snapshot.TradeDate, capturedAt, cancellationToken);
 
@@ -102,7 +107,13 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             cancellationToken);
         var written = await InsertQuotesAsync(connection, runId, snapshot.Quotes, securityIds, cancellationToken);
 
-        await InsertCurveAsync(connection, runId, snapshot.TradeDate, capturedAt, cancellationToken);
+        await InsertCurveAsync(
+            connection,
+            snapshot.TradeDate,
+            capturedAt,
+            total,
+            commonQuotes.Length,
+            cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
 
@@ -247,12 +258,16 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             tradeDate = reader.GetFieldValue<DateOnly>(1);
             capturedAt = reader.GetFieldValue<DateTimeOffset>(15);
             marketIndices ??= ReadMarketIndices(reader);
+            var ticker = reader.GetString(6);
 
             quotes.Add(new IntradayQuote
             {
-                Ticker = reader.GetString(6),
+                Ticker = ticker,
                 Name = reader.GetString(7),
                 Market = ParseMarket(reader.GetString(8)),
+                Kind = QuoteFieldParser.IsTaiwanEtfTicker(ticker)
+                    ? StockKind.Etf
+                    : StockKind.CommonStock,
                 Price = ReadNullableDecimal(reader, 9),
                 EstimatedTradingValue = reader.GetFieldValue<long>(10),
                 ChangePercent = ReadNullableDecimal(reader, 11),
@@ -621,17 +636,16 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
     /// </summary>
     private static async Task InsertCurveAsync(
         NpgsqlConnection connection,
-        long runId,
         DateOnly tradeDate,
         DateTimeOffset capturedAt,
+        decimal turnoverTotal,
+        int quoteCount,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
             """
             insert into intraday_curve (trade_date, captured_at, turnover_total, quote_count)
-            select @tradeDate, @capturedAt, coalesce(sum(turnover), 0), count(*)
-            from intraday_quotes
-            where run_id = @runId
+            values (@tradeDate, @capturedAt, @turnoverTotal, @quoteCount)
             on conflict (trade_date, captured_at)
                 do update set turnover_total = excluded.turnover_total,
                               quote_count = excluded.quote_count
@@ -640,7 +654,8 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 
         command.Parameters.AddWithValue("tradeDate", tradeDate);
         command.Parameters.AddWithValue("capturedAt", capturedAt);
-        command.Parameters.AddWithValue("runId", runId);
+        command.Parameters.AddWithValue("turnoverTotal", turnoverTotal);
+        command.Parameters.AddWithValue("quoteCount", quoteCount);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

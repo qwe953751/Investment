@@ -1,5 +1,6 @@
 using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.TradingValueRanking.Models;
+using Invest.Web.Domain.Stocks;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 
 namespace Invest.Web.Features.StockTopics.Services;
@@ -15,6 +16,7 @@ public static class IntradayTopicHeatCalculator
     public static TopicHeatResult Calculate(TopicMapping mapping, IntradaySnapshot snapshot)
     {
         var quotes = snapshot.Quotes
+            .Where(quote => quote.Kind == StockKind.CommonStock)
             .Where(quote => quote.EstimatedTradingValue > 0m)
             .OrderByDescending(quote => quote.EstimatedTradingValue)
             .ThenBy(quote => quote.Ticker, StringComparer.Ordinal)

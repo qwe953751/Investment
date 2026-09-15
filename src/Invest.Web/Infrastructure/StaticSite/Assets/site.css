@@ -753,6 +753,15 @@ body {
     font-size: 13px;
 }
 
+.etf-time-row {
+    gap: 24px;
+}
+
+.etf-session-group,
+.etf-date-group {
+    flex: 0 1 auto;
+}
+
 .filter-label {
     font-weight: 600;
     white-space: nowrap;
@@ -3741,6 +3750,22 @@ body {
     min-width: 820px;
 }
 
+.ranking-table.etf-table {
+    min-width: 900px;
+}
+
+.ranking-table.etf-table .col-name {
+    min-width: 180px;
+}
+
+.ranking-table.etf-table .col-price {
+    min-width: 128px;
+}
+
+.ranking-table.etf-table .col-tradingValue {
+    min-width: 120px;
+}
+
 .pagination {
     display: flex;
     align-items: center;
@@ -4524,6 +4549,10 @@ td.stock-name.stock-name-change-down {
     font-size: 14px;
 }
 
+.metric-tertiary {
+    font-size: 13px;
+}
+
 .metric-label {
     margin-right: 4px;
     color: var(--text-muted);
@@ -4905,6 +4934,10 @@ td.stock-name.stock-name-change-down {
         width: 100%;
     }
 
+    .etf-time-row {
+        gap: 14px;
+    }
+
     .button-row {
         flex-wrap: wrap;
     }
@@ -4948,6 +4981,10 @@ td.stock-name.stock-name-change-down {
     }
 
     .ranking-table.custom-table {
+        min-width: 780px;
+    }
+
+    .ranking-table.etf-table {
         min-width: 780px;
     }
 

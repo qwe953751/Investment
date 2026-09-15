@@ -172,6 +172,7 @@ function assetKLineFlow() {
         current: null,
         topicIntradayKLines: new Map(),
         isIntradayDataView: () => false,
+        isEtfIntradayView: () => false,
         topicUsesIntradayData: () => false,
         klineStartDate: () => '2026-06-07'
     };
@@ -196,6 +197,7 @@ function klineDateFlow() {
         intradayTopicPeriod: null,
         topicData: null,
         isIntradayDataView: () => false,
+        isEtfIntradayView: () => false,
         topicUsesIntradayData: () => false
     };
     vm.createContext(context);

@@ -545,10 +545,12 @@ static void ValidateIntradaySnapshot(
         1,
         (int)Math.Ceiling(universe.Count * minimumQuoteCoverage));
 
-    if (snapshot.Quotes.Count < minimumQuotes)
+    var commonQuoteCount = snapshot.Quotes.Count(quote => quote.Kind == StockKind.CommonStock);
+
+    if (commonQuoteCount < minimumQuotes)
     {
         throw new InvalidOperationException(
-            $"MIS 全市場回應只有 {snapshot.Quotes.Count}/{universe.Count} 檔，"
+            $"MIS 全市場回應只有 {commonQuoteCount}/{universe.Count} 檔，"
             + $"低於 {minimumQuoteCoverage:P0} 健康門檻；整輪不寫入。 ");
     }
 }
@@ -570,6 +572,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
     using var scope = services.CreateScope();
     var universeClient = scope.ServiceProvider.GetRequiredService<StockUniverseClient>();
+    var etfCatalogClient = scope.ServiceProvider.GetRequiredService<TaiwanEtfCatalogClient>();
     var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
     var store = scope.ServiceProvider.GetRequiredService<IntradayQuoteStore>();
     var dailyQuoteStore = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
@@ -611,6 +614,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
+    IReadOnlyList<(Market Market, string Ticker)>? etfUniverse = null;
 
     try
     {
@@ -632,6 +636,23 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                 {
                     universe = await universeClient.GetTickersAsync(cts.Token);
                     Console.WriteLine($"{localTime:HH:mm:ss} 個股清單共 {universe.Count} 檔。");
+
+                    try
+                    {
+                        var etfCatalog = await etfCatalogClient.GetAsync(cts.Token);
+                        etfUniverse = [.. etfCatalog.Securities
+                            .Select(security => (security.Market, security.Ticker))];
+                        Console.WriteLine($"{localTime:HH:mm:ss} ETF 清單共 {etfUniverse.Count} 檔。");
+                    }
+                    catch (Exception exception)
+                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                    {
+                        // 官方 ETF 名冊暫時不可用不能阻塞個股盤中收集；這一場 ETF 盤中
+                        // 會沒有新增快照，下一場重新建立程序時再嘗試取得名冊。
+                        etfUniverse = [];
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} ETF 名冊更新失敗，這一場只收集個股：{exception.Message}");
+                    }
 
                     // 處置與全額交割不會在交易時段中途變動，開場抓一次寫進 market_flags 就夠。
                     // 盤中頁面直接讀那張表，不再沿用 manifest.json 裡「上次盤後 export」時的舊快照
@@ -658,6 +679,36 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
                 var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
                 ValidateIntradaySnapshot(universe, snapshot);
+
+                if (etfUniverse is { Count: > 0 })
+                {
+                    try
+                    {
+                        var etfSnapshot = await quoteClient.GetEtfQuotesAsync(etfUniverse, cts.Token);
+
+                        if (etfSnapshot.TradeDate == snapshot.TradeDate)
+                        {
+                            snapshot = snapshot with
+                            {
+                                Quotes = [.. snapshot.Quotes, .. etfSnapshot.Quotes]
+                            };
+                        }
+                        else
+                        {
+                            Console.WriteLine(
+                                $"{localTime:HH:mm:ss} ETF API 日期 {etfSnapshot.TradeDate:yyyy-MM-dd} "
+                                + $"與個股 {snapshot.TradeDate:yyyy-MM-dd} 不同，本輪不併入 ETF。");
+                        }
+                    }
+                    catch (Exception exception)
+                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                    {
+                        // ETF 是額外資料源；個股快照已通過健康檢查時，不能因 ETF 端點抖動
+                        // 丟掉整個市場的盤中輪次。
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} ETF 盤中報價失敗，本輪保留個股：{exception.Message}");
+                    }
+                }
 
                 // 休市時 MIS 照樣回應，但給的是上一個交易日的數字。日期對不上就是不寫，
                 // 但也不能因此收工——開盤前本來就會對不上，盤中對不上則代表還沒輪到我們。
@@ -1004,7 +1055,9 @@ static async Task<MarketDataSet> LoadMarketHeatHistoryAsync(
     {
         Stocks = [],
         DailyTrading = snapshots
-            .SelectMany(snapshot => snapshot.Quotes.Select(quote => new DailyStockTrading
+            .SelectMany(snapshot => snapshot.Quotes
+                .Where(quote => quote.Kind == StockKind.CommonStock)
+                .Select(quote => new DailyStockTrading
             {
                 TradingDate = snapshot.TradingDate,
                 Ticker = quote.Ticker,
@@ -1058,7 +1111,10 @@ static MarketHeatMetrics? CalculateIntradayMarketHeat(
 {
     var history = historicalDataSet.DailyTrading
         .Where(row => row.TradingDate < snapshot.TradeDate);
-    var currentTrading = snapshot.Quotes
+    var commonQuotes = snapshot.Quotes
+        .Where(quote => quote.Kind == StockKind.CommonStock)
+        .ToArray();
+    var currentTrading = commonQuotes
         .Select(quote => new DailyStockTrading
         {
             TradingDate = snapshot.TradeDate,
@@ -1081,7 +1137,7 @@ static MarketHeatMetrics? CalculateIntradayMarketHeat(
     var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
     var capturedAtTaipei = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTime(capturedAt, taipei).DateTime);
     var projectedTurnover = IntradayTurnoverProjection.Estimate(
-        snapshot.Quotes.Sum(quote => quote.EstimatedTradingValue),
+        commonQuotes.Sum(quote => quote.EstimatedTradingValue),
         capturedAtTaipei,
         turnoverCalibration);
 
@@ -1157,6 +1213,9 @@ static async Task<PublicIntradaySnapshot?> LoadLatestIntradaySnapshotFromPublicA
                 Ticker = row.Symbol,
                 Name = row.Name,
                 Market = ParseMarket(row.Market),
+                Kind = QuoteFieldParser.IsTaiwanEtfTicker(row.Symbol)
+                    ? StockKind.Etf
+                    : StockKind.CommonStock,
                 Price = row.Price,
                 OpenPrice = row.OpenPrice,
                 HighPrice = row.HighPrice,

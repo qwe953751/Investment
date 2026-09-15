@@ -626,7 +626,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("class=\"custom-time-row\"", html, StringComparison.Ordinal);
         Assert.Contains("class=\"filter-group custom-date-group\" data-view=\"custom\" data-custom-source=\"daily\"", html, StringComparison.Ordinal);
         Assert.Contains("id=\"custom-date-picker\"", html, StringComparison.Ordinal);
-        Assert.Contains("state.view === 'custom' ? 'custom-date-picker' : 'date-picker'", script, StringComparison.Ordinal);
+        Assert.Contains("? 'custom-date-picker'", script, StringComparison.Ordinal);
         Assert.Contains("data-custom-source=\"daily\"", html, StringComparison.Ordinal);
         Assert.Contains("data-custom-source=\"intraday\"", html, StringComparison.Ordinal);
         Assert.Contains("const CUSTOM_DATA_SOURCES", script, StringComparison.Ordinal);
@@ -652,7 +652,7 @@ public sealed class StaticKLineAssetTests
         var customIntraday = script[start..end];
 
         Assert.Contains("ensureIntradaySnapshot(silent, force, true)", customIntraday, StringComparison.Ordinal);
-        Assert.Contains("mapIntradayRows(raw, summary)", customIntraday, StringComparison.Ordinal);
+        Assert.Contains("raw.filter(row => !isEtfIntradayRawRow(row))", customIntraday, StringComparison.Ordinal);
         Assert.Contains("totalStockCount: liveRows.length", customIntraday, StringComparison.Ordinal);
         Assert.Contains("rows,", customIntraday, StringComparison.Ordinal);
         Assert.DoesNotContain("slice(0, TOP_COUNT)", customIntraday, StringComparison.Ordinal);
@@ -668,7 +668,7 @@ public sealed class StaticKLineAssetTests
 
         Assert.Contains("const INTRADAY_TOPIC_TABS = new Set(['heat', 'tree']);", script, StringComparison.Ordinal);
         Assert.Contains("function usesIntradaySnapshot()", script, StringComparison.Ordinal);
-        Assert.Contains("return isIntradayDataView() || isIntradayTopicDataView();", script, StringComparison.Ordinal);
+        Assert.Contains("return isIntradayDataView() || isIntradayTopicDataView() || isEtfIntradayView();", script, StringComparison.Ordinal);
         Assert.Contains("function isIntradayTopicDataView()", script, StringComparison.Ordinal);
         Assert.Contains("if (isIntradayTopicDataView()) {", script, StringComparison.Ordinal);
         Assert.Contains("await loadIntradayTopicHeat();", script, StringComparison.Ordinal);
@@ -681,6 +681,26 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("function initializeIntradayBroadcastChannel()", script, StringComparison.Ordinal);
         Assert.Contains("function isTaiwanIntradaySession()", script, StringComparison.Ordinal);
         Assert.Contains("void Promise.all([loadMarketFlags(), loadRevenue(force)])", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ETF頁籤支援雙時段交易日三層漲跌幅與成交值且不顯示資料日欄()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var start = script.IndexOf("const ETF_COLUMNS", StringComparison.Ordinal);
+        var end = script.IndexOf("];", start, StringComparison.Ordinal);
+        var etfColumns = script[start..end];
+
+        Assert.Contains("{ key: 'etf', text: 'ETF'", script, StringComparison.Ordinal);
+        Assert.Contains("const ETF_SESSIONS", script, StringComparison.Ordinal);
+        Assert.Contains("id=\"etf-session-options\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"etf-date-picker\"", html, StringComparison.Ordinal);
+        Assert.Contains("function loadEtfIntraday", script, StringComparison.Ordinal);
+        Assert.Contains("data/etf/${key}.json", script, StringComparison.Ordinal);
+        Assert.Contains("row.yearToDatePriceChange", etfColumns, StringComparison.Ordinal);
+        Assert.Contains("title: '成交值（億）'", etfColumns, StringComparison.Ordinal);
+        Assert.DoesNotContain("quoteDate", etfColumns, StringComparison.Ordinal);
     }
 
     [Fact]

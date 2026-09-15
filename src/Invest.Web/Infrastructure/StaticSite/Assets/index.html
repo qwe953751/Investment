@@ -149,6 +149,19 @@
                 </div>
             </div>
 
+            <div class="custom-time-row etf-time-row" data-view="etf">
+                <div class="filter-group etf-session-group">
+                    <span class="filter-label" data-hint="盤中顯示最新一輪 ETF 報價；盤後可選擇要看的交易日。">資料時間</span>
+                    <div class="button-row" id="etf-session-options"></div>
+                    <span class="custom-source-note" id="etf-session-note"></span>
+                </div>
+
+                <div class="filter-group etf-date-group" id="etf-date-group">
+                    <span class="filter-label" data-hint="盤後 ETF 行情的交易日；切換到盤中時這個選擇器會隱藏。">交易日</span>
+                    <div class="date-picker" id="etf-date-picker"></div>
+                </div>
+            </div>
+
             <div class="filter-group" data-view="daily">
                 <span class="filter-label" data-hint="觀察期間的最後一天。往回選一天，該日之後的行情就完全不列入計算，看到的是當天收盤後的排行。">交易日</span>
                 <div class="date-picker" id="date-picker"></div>
@@ -190,6 +203,16 @@
                 <span class="custom-control" id="custom-search"></span>
             </div>
 
+            <div class="filter-group etf-filter-group" data-view="etf">
+                <span class="filter-label" data-hint="ETF 只依上市／上櫃市場篩選，不套用個股成交值門檻。">市場</span>
+                <div class="button-row" id="etf-market-options"></div>
+            </div>
+
+            <div class="filter-group etf-filter-group" data-view="etf">
+                <span class="filter-label">搜尋</span>
+                <span class="custom-control" id="etf-search"></span>
+            </div>
+
             <div class="filter-group" data-view="daily intraday">
                 <span class="filter-label" data-hint="輸入股號追蹤個股。鎖定的標的會顯示目前名次並在排行榜上整列標色；名次是通過市場與門檻篩選後的完整名次，掉出前 100 名也看得到。">鎖定</span>
                 <div class="lock-row" id="lock-row"></div>
@@ -203,7 +226,7 @@
             </table>
         </div>
 
-        <nav class="pagination" id="pagination" aria-label="自訂資料分頁" hidden></nav>
+        <nav class="pagination" id="pagination" aria-label="資料分頁" hidden></nav>
 
         <footer class="page-footer">
             <p data-view="daily">成交值只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除，與玩股網、籌碼K 的成交值排行一致。</p>
@@ -232,6 +255,7 @@
             <p data-view="custom" data-custom-source="daily">營收增減顯示上個月的 YOY 與 MOM；點擊儲存格可查看 20 個月圖表與最近 5 個月列表。交易限制可複選，搜尋股號或名稱會只留下符合內容並跳到第一筆。</p>
             <p data-view="custom" data-custom-source="intraday">盤中資料直接來自資料庫最新一輪，全市場個股都會列出；切換到盤後才可選交易日。</p>
             <p data-view="custom" data-custom-source="intraday">成交值是自開盤起的累計值，盤中資料依目前收集輪次更新；交易限制可複選，搜尋股號或名稱會只留下符合內容並跳到第一筆。</p>
+            <p data-view="etf">ETF 可切換盤中／盤後；盤後能選交易日。現價／收盤價、K 線與資料時段同步，漲跌幅分層顯示日／週／年，並列出成交值；不混入個股成交值排行。</p>
         </footer>
     </div>
 

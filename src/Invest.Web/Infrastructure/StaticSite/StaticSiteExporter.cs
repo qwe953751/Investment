@@ -97,6 +97,7 @@ public sealed class StaticSiteExporter(
         var latestRankings = new Dictionary<int, TradingValueRankingResult>();
 
         var kLineFileCount = 0;
+        var etfFileCount = 0;
         var usKLineFileCount = 0;
         var marketIndexKLineWritten = false;
 
@@ -111,6 +112,12 @@ public sealed class StaticSiteExporter(
                 selectableDates,
                 dataSet.PriceAdjustments,
                 tradingDates[^1],
+                cancellationToken);
+
+            etfFileCount = await WriteEtfExportsAsync(
+                Path.Combine(dataDirectory, "etf"),
+                dataSet,
+                selectableDates,
                 cancellationToken);
 
             // 指數檔保留完整可用歷史；前端仍只畫三個月，盤中替換當日棒時
@@ -146,6 +153,7 @@ public sealed class StaticSiteExporter(
 
         progress?.Report(
             $"已寫出 {kLineFileCount} 檔台股最近三個月還原權息日 K 資料"
+            + (etfFileCount > 0 ? $"、{etfFileCount} 個 ETF 交易日資料" : string.Empty)
             + (usKLineFileCount > 0 ? $"、{usKLineFileCount} 檔美股原始日 K 資料" : string.Empty)
             + $"、{assetCatalogCount} 檔持倉名冊"
             + (marketIndexKLineWritten ? "，以及指數 K 線資料" : string.Empty));
@@ -1231,6 +1239,84 @@ public sealed class StaticSiteExporter(
     }
 
     /// <summary>
+    /// ETF 表格的逐交易日快照。ETF 的日／週／年初至今漲跌幅在這裡由同一個
+    /// C# 計算器預先產生，前端只依日期載入、篩選與格式化。
+    /// </summary>
+    private static async Task<int> WriteEtfExportsAsync(
+        string directory,
+        MarketDataSet dataSet,
+        IReadOnlyList<DateOnly> selectableDates,
+        CancellationToken cancellationToken)
+    {
+        if (selectableDates.Count == 0)
+        {
+            return 0;
+        }
+
+        Directory.CreateDirectory(directory);
+
+        var rowsByTicker = dataSet.DailyTrading
+            .GroupBy(row => row.Ticker, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<DailyStockTrading>)group
+                    .OrderBy(row => row.TradingDate)
+                    .ToArray(),
+                StringComparer.Ordinal);
+        var etfs = dataSet.Stocks
+            .Where(stock => stock.Kind == StockKind.Etf
+                && stock.Market is Market.Twse or Market.Tpex)
+            .OrderBy(stock => stock.Market)
+            .ThenBy(stock => stock.Ticker, StringComparer.Ordinal)
+            .ToArray();
+
+        var count = 0;
+
+        foreach (var date in selectableDates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var rows = etfs
+                .Select(stock =>
+                {
+                    rowsByTicker.TryGetValue(stock.Ticker, out var history);
+                    history ??= [];
+
+                    var day = history.LastOrDefault(row => row.TradingDate == date);
+
+                    if (day is null)
+                    {
+                        return null;
+                    }
+
+                    var performance = PricePerformanceCalculator.Calculate(history, [], date);
+
+                    return new EtfRowExport(
+                        stock.Ticker,
+                        stock.Name,
+                        stock.Market == Market.Twse ? "twse" : "tpex",
+                        Round(day.ClosePrice),
+                        Round(performance.DailyChangeRate),
+                        Round(performance.WeeklyChangeRate),
+                        Round(performance.YearToDateChangeRate),
+                        Round(performance.WeeklyBaselineClose),
+                        Round(performance.YearToDateBaselineClose),
+                        day.TradingValue is { } tradingValue ? Math.Round(tradingValue) : null);
+                })
+                .OfType<EtfRowExport>()
+                .ToArray();
+
+            await WriteJsonAsync(
+                Path.Combine(directory, $"{date:yyyy-MM-dd}.json"),
+                new EtfDailyExport(date.ToString("yyyy-MM-dd"), rows),
+                cancellationToken);
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
     /// 資產頁只需一份輕量名冊：輸入代號時帶回名稱，並用最新可用收盤／前收顯示漲跌。
     /// ETF 仍保留在這份資料內；是否參加成交值排行由排名計算器的 StockKind 篩選決定。
     /// </summary>
@@ -1737,6 +1823,22 @@ public sealed class StaticSiteExporter(
         string AdjustmentThrough,
         int AdjustmentEventCount,
         IReadOnlyList<KLineBarExport> Bars);
+
+    private sealed record EtfDailyExport(
+        string TradeDate,
+        IReadOnlyList<EtfRowExport> Rows);
+
+    private sealed record EtfRowExport(
+        string Ticker,
+        string Name,
+        string Market,
+        decimal? Close,
+        decimal? DailyPriceChange,
+        decimal? WeeklyPriceChange,
+        decimal? YearToDatePriceChange,
+        decimal? WeeklyBaselineClose,
+        decimal? YearToDateBaselineClose,
+        decimal? TradingValue);
 
     private sealed record AssetCatalogExport(IReadOnlyList<AssetCatalogEntry> Entries);
 

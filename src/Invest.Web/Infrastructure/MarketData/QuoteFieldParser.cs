@@ -72,6 +72,20 @@ internal static class QuoteFieldParser
     }
 
     /// <summary>
+    /// ETF 名冊與 MIS 盤中代號共用的形狀檢查。真正是否為 ETF 仍由官方名冊決定；
+    /// 這個方法只在已經分流到 ETF 查詢或讀取資料庫舊快照時，避免把權證等非股票標的
+    /// 當成一般股票的保守判斷。
+    /// </summary>
+    public static bool IsTaiwanEtfTicker(string? ticker)
+    {
+        var normalized = ticker?.Trim().ToUpperInvariant();
+
+        return normalized is { Length: >= 4 and <= 6 }
+            && normalized.StartsWith('0')
+            && normalized.All(char.IsAsciiLetterOrDigit);
+    }
+
+    /// <summary>
     /// 只讓官方 ETF 名冊明確列出的代號成為 ETF；日行情裡其餘非一般股票一律略過。
     /// </summary>
     public static StockKind? GetTaiwanStockKind(string? ticker, IReadOnlySet<string>? etfTickers)

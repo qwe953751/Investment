@@ -47,6 +47,26 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     public async Task<IntradaySnapshot> GetQuotesAsync(
         IReadOnlyList<(Market Market, string Ticker)> universe,
         CancellationToken cancellationToken = default)
+        => await GetQuotesCoreAsync(
+            universe,
+            StockKind.CommonStock,
+            includeMarketIndices: true,
+            cancellationToken: cancellationToken);
+
+    public async Task<IntradaySnapshot> GetEtfQuotesAsync(
+        IReadOnlyList<(Market Market, string Ticker)> universe,
+        CancellationToken cancellationToken = default)
+        => await GetQuotesCoreAsync(
+            universe,
+            StockKind.Etf,
+            includeMarketIndices: false,
+            cancellationToken: cancellationToken);
+
+    private async Task<IntradaySnapshot> GetQuotesCoreAsync(
+        IReadOnlyList<(Market Market, string Ticker)> universe,
+        StockKind expectedKind,
+        bool includeMarketIndices,
+        CancellationToken cancellationToken)
     {
         var quotes = new List<IntradayQuote>(universe.Count);
         var tradeDate = default(DateOnly?);
@@ -60,8 +80,9 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
             var (batchQuotes, batchDate, batchIndices) = await ReadBatchAsync(
                 batch,
-                includeMarketIndices: batchNumber == 0,
-                cancellationToken);
+                includeMarketIndices: includeMarketIndices && batchNumber == 0,
+                expectedKind: expectedKind,
+                cancellationToken: cancellationToken);
 
             batchNumber++;
 
@@ -90,9 +111,10 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         var pricelessWithVolume = quotes.Count(quote => quote.Price is null && quote.TradingVolume > 0);
 
         logger.LogInformation(
-            "盤中報價 {Date:yyyy-MM-dd}：查詢 {Requested} 檔、取得 {Received} 檔，"
+            "盤中{Kind}報價 {Date:yyyy-MM-dd}：查詢 {Requested} 檔、取得 {Received} 檔，"
             + "現價來源 成交價 {LastTrade}／買賣中價 {BidAskMid}／高低中價 {HighLowMid}／開盤 {Open}／昨收 {PreviousClose}，"
             + "有量卻沒價 {PricelessWithVolume} 檔。",
+            expectedKind == StockKind.Etf ? "ETF " : string.Empty,
             tradeDate,
             universe.Count,
             quotes.Count,
@@ -131,7 +153,10 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         try
         {
             var (_, tradeDate, _) = await ReadBatchAsync(
-                [(Market.Twse, "2330")], includeMarketIndices: false, cancellationToken);
+                [(Market.Twse, "2330")],
+                includeMarketIndices: false,
+                expectedKind: StockKind.CommonStock,
+                cancellationToken: cancellationToken);
 
             return tradeDate;
         }
@@ -159,6 +184,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         IReadOnlyList<MarketIndexQuote> MarketIndices)> ReadBatchAsync(
         (Market Market, string Ticker)[] batch,
         bool includeMarketIndices,
+        StockKind expectedKind,
         CancellationToken cancellationToken)
     {
         for (var attempt = 1; ; attempt++)
@@ -170,7 +196,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
             try
             {
-                return await ReadBatchOnceAsync(batch, includeMarketIndices, timeout.Token);
+                return await ReadBatchOnceAsync(batch, includeMarketIndices, expectedKind, timeout.Token);
             }
             catch (Exception exception) when (IsTransient(exception, cancellationToken) && attempt < MaxAttempts)
             {
@@ -201,6 +227,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         IReadOnlyList<MarketIndexQuote> MarketIndices)> ReadBatchOnceAsync(
         (Market Market, string Ticker)[] batch,
         bool includeMarketIndices,
+        StockKind expectedKind,
         CancellationToken cancellationToken)
     {
         var channels = new StringBuilder();
@@ -255,7 +282,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             {
                 marketIndices.Add(index);
             }
-            else if (ParseQuote(item) is { } quote)
+            else if (ParseQuote(item, expectedKind) is { } quote)
             {
                 quotes.Add(quote);
             }
@@ -319,11 +346,15 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     /// 欄位：c 代號、n 簡稱、z 當盤成交價、pz 前一盤成交價、a／b 最佳五檔賣／買價、
     /// o 開盤、h 最高、l 最低、y 昨收、v 累計成交量（張）、ex 市場別。
     /// </summary>
-    private static IntradayQuote? ParseQuote(JsonElement item)
+    private static IntradayQuote? ParseQuote(JsonElement item, StockKind expectedKind)
     {
         var ticker = ReadString(item, "c");
 
-        if (!QuoteFieldParser.IsCommonStockTicker(ticker))
+        var isExpectedTicker = expectedKind == StockKind.CommonStock
+            ? QuoteFieldParser.IsCommonStockTicker(ticker)
+            : QuoteFieldParser.IsTaiwanEtfTicker(ticker);
+
+        if (!isExpectedTicker)
         {
             return null;
         }
@@ -341,6 +372,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             Market = ReadString(item, "ex") == "otc" ? Market.Tpex : Market.Twse,
             Ticker = ticker!,
             Name = ReadString(item, "n")?.Trim() ?? ticker!,
+            Kind = expectedKind,
             Price = price,
             PriceSource = priceSource,
             OpenPrice = open,

@@ -163,7 +163,7 @@ public sealed class TradingValueRankingCalculator
         var rows = ranked
             .Select((candidate, index) =>
             {
-                var price = CalculatePriceChanges(
+                var price = PricePerformanceCalculator.Calculate(
                     _byTicker[candidate.Stock.Ticker],
                     _adjustmentsByTicker.GetValueOrDefault(candidate.Stock.Ticker, []),
                     current[^1]);
@@ -437,59 +437,6 @@ public sealed class TradingValueRankingCalculator
     private static decimal Share(decimal part, decimal total)
         => total == 0m ? 0m : part / total;
 
-    private static PriceChanges CalculatePriceChanges(
-        IReadOnlyList<DailyStockTrading> rows,
-        IReadOnlyList<StockPriceAdjustment> adjustments,
-        DateOnly endDate)
-    {
-        var daysSinceMonday = ((int)endDate.DayOfWeek + 6) % 7;
-        var weekStart = endDate.AddDays(-daysSinceMonday);
-        decimal? dailyBaseline = null;
-        DateOnly? dailyBaselineDate = null;
-        decimal? weeklyBaseline = null;
-        DateOnly? weeklyBaselineDate = null;
-        decimal? endClose = null;
-        DateOnly? endCloseDate = null;
-
-        foreach (var row in rows)
-        {
-            if (row.TradingDate > endDate)
-            {
-                break;
-            }
-
-            if (row.ClosePrice is not { } close)
-            {
-                continue;
-            }
-
-            if (row.TradingDate < weekStart)
-            {
-                weeklyBaseline = close;
-                weeklyBaselineDate = row.TradingDate;
-            }
-
-            if (row.TradingDate < endDate)
-            {
-                dailyBaseline = close;
-                dailyBaselineDate = row.TradingDate;
-            }
-            else
-            {
-                endClose = close;
-                endCloseDate = row.TradingDate;
-            }
-        }
-
-        var adjustedDaily = Rebase(dailyBaseline, dailyBaselineDate, endCloseDate, adjustments);
-        var adjustedWeekly = Rebase(weeklyBaseline, weeklyBaselineDate, endCloseDate, adjustments);
-
-        return new PriceChanges(
-            ChangeRate(endClose, adjustedDaily),
-            ChangeRate(endClose, adjustedWeekly),
-            adjustedWeekly);
-    }
-
     /// <summary>
     /// 把過去某天的收盤價換算到 <paramref name="basisDate"/> 當天的價格基準上。
     ///
@@ -504,35 +451,6 @@ public sealed class TradingValueRankingCalculator
     /// 只調整基準，不動 <c>endClose</c>：基準日之後的事件才會被乘進來，
     /// 基準日本身就是最新那天時倍數是 1，所以畫面上的「現價」永遠是真正成交的價格。
     /// </summary>
-    private static decimal? Rebase(
-        decimal? baseline,
-        DateOnly? baselineDate,
-        DateOnly? basisDate,
-        IReadOnlyList<StockPriceAdjustment> adjustments)
-    {
-        if (baseline is not { } value || baselineDate is not { } from || basisDate is not { } through)
-        {
-            return baseline;
-        }
-
-        var factor = 1m;
-
-        foreach (var adjustment in adjustments)
-        {
-            if (adjustment.EffectiveDate > from && adjustment.EffectiveDate <= through)
-            {
-                factor *= adjustment.Factor;
-            }
-        }
-
-        return value * factor;
-    }
-
-    private static decimal? ChangeRate(decimal? current, decimal? baseline)
-        => current is { } value && baseline is > 0m
-            ? (value - baseline.Value) / baseline.Value
-            : null;
-
     private static bool MatchesMarket(Stock stock, MarketFilter filter)
         => stock.Kind == StockKind.CommonStock && filter switch
     {
@@ -609,7 +527,7 @@ public sealed class TradingValueRankingCalculator
                 // 分母用區間實際的交易日數，而不是使用者選的 N，遇到資料缺漏時才不會失真。
                 AverageDailyTradingValue = total / window.Length,
                 ActiveDayCount = activeDays,
-                BaselineClose = Rebase(
+                BaselineClose = PricePerformanceCalculator.Rebase(
                     baselineClose,
                     baselineDate,
                     endCloseDate,
@@ -690,8 +608,4 @@ public sealed class TradingValueRankingCalculator
             && (mode == RankingMode.CapitalAcceleration || Previous.AverageDailyTradingValue > 0m);
     }
 
-    private sealed record PriceChanges(
-        decimal? DailyChangeRate,
-        decimal? WeeklyChangeRate,
-        decimal? WeeklyBaselineClose);
 }

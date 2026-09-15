@@ -41,6 +41,12 @@ public sealed record IntradayQuote
     public required string Name { get; init; }
 
     /// <summary>
+    /// 盤中快照裡的標的種類。ETF 與一般股票共用同一輪 MIS，
+    /// 但市場成交額與族群熱度只應計一般股票。
+    /// </summary>
+    public StockKind Kind { get; init; } = StockKind.CommonStock;
+
+    /// <summary>
     /// 現價。MIS 的成交價欄位（z、pz）只有在該次快照剛好有成交才會有值，
     /// 對絕大多數個股整天都是 "-"，所以缺的時候依序退到買賣中價、最高最低中價、開盤、昨收。
     /// 全部都沒有才是 null。

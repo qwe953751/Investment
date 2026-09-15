@@ -28,6 +28,22 @@ const INDEX_KLINE_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.loc
 // 正式網址不會進入這個分支，正式盤中一律讀資料庫的最新輪次。
 const CUSTOM_INTRADAY_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'custom-intraday-v1';
+// 本機專用：用少量明確標示的 ETF 樣本確認新頁籤與表格版面；正式網址不會進入這個分支。
+const ETF_LOCAL_PREVIEW = LOCAL_HOSTNAMES.includes(window.location.hostname)
+    && PREVIEW_QUERY === 'etf-v1';
+const ETF_LOCAL_PREVIEW_TRADE_DATE = '2026-08-21';
+const ETF_LOCAL_PREVIEW_ROWS = [
+    { ticker: '0050', name: '元大台灣50', market: 'twse', close: 184.20, priceChange: 0.0058, weeklyPriceChange: 0.0124, yearToDatePriceChange: 0.183, tradingValue: 18_420_000_000, intradayClose: 184.86, intradayPriceChange: 0.0091, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE },
+    { ticker: '0056', name: '元大高股息', market: 'twse', close: 38.76, priceChange: -0.0026, weeklyPriceChange: 0.0086, yearToDatePriceChange: 0.126, tradingValue: 12_760_000_000, intradayClose: 38.68, intradayPriceChange: -0.0047, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE },
+    { ticker: '006208', name: '富邦台50', market: 'twse', close: 107.40, priceChange: 0.0047, weeklyPriceChange: 0.0149, yearToDatePriceChange: 0.191, tradingValue: 9_840_000_000, intradayClose: 107.82, intradayPriceChange: 0.0086, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE },
+    { ticker: '00646', name: '元大 S&P500', market: 'twse', close: 72.35, priceChange: 0.0014, weeklyPriceChange: -0.0068, yearToDatePriceChange: 0.084, tradingValue: 4_360_000_000, intradayClose: 72.58, intradayPriceChange: 0.0046, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE },
+    { ticker: '00679B', name: '元大美債20年', market: 'twse', close: 28.92, priceChange: -0.0031, weeklyPriceChange: -0.0112, yearToDatePriceChange: -0.042, tradingValue: 3_190_000_000, intradayClose: 28.88, intradayPriceChange: -0.0014, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE },
+    { ticker: '00713', name: '元大台灣高息低波', market: 'twse', close: 51.18, priceChange: 0.0039, weeklyPriceChange: 0.0182, yearToDatePriceChange: 0.147, tradingValue: 8_120_000_000, intradayClose: 51.42, intradayPriceChange: 0.0078, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE },
+    { ticker: '00878', name: '國泰永續高股息', market: 'twse', close: 23.64, priceChange: 0.0085, weeklyPriceChange: 0.0216, yearToDatePriceChange: 0.164, tradingValue: 16_870_000_000, intradayClose: 23.84, intradayPriceChange: 0.0112, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE },
+    { ticker: '00919', name: '群益台灣精選高息', market: 'twse', close: 22.31, priceChange: -0.0018, weeklyPriceChange: 0.0062, yearToDatePriceChange: 0.132, tradingValue: 11_280_000_000, intradayClose: 22.26, intradayPriceChange: -0.0039, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE },
+    { ticker: '00929', name: '復華台灣科技優息', market: 'twse', close: 19.87, priceChange: 0.0061, weeklyPriceChange: 0.0107, yearToDatePriceChange: 0.098, tradingValue: 7_460_000_000, intradayClose: 19.98, intradayPriceChange: 0.0096, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE },
+    { ticker: '00940', name: '兆豐台灣優選高息等權', market: 'tpex', close: 10.42, priceChange: 0.0022, weeklyPriceChange: -0.0034, yearToDatePriceChange: 0.051, tradingValue: 2_760_000_000, intradayClose: 10.45, intradayPriceChange: 0.0041, quoteDate: ETF_LOCAL_PREVIEW_TRADE_DATE }
+];
 // 本機專用：不連資料庫也能檢查筆記的永久編號與版面。只影響筆記頁，資產頁一律讀寫資料庫。
 const NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'review-20260826-notes-v1';
@@ -388,6 +404,17 @@ const MARKETS = [
     { key: 'tpex', text: '上櫃' }
 ];
 
+const ETF_MARKETS = [
+    { key: 'all', text: '全部', hint: '顯示上市與上櫃 ETF。' },
+    { key: 'twse', text: '上市', hint: '只顯示證交所掛牌的 ETF。' },
+    { key: 'tpex', text: '上櫃', hint: '只顯示櫃買中心掛牌的 ETF。' }
+];
+
+const ETF_SESSIONS = [
+    { key: 'intraday', text: '盤中', hint: '顯示最新一輪 ETF 現價、日漲跌幅與成交值；ETF 當日 K 棒同步接上。' },
+    { key: 'daily', text: '盤後', hint: '顯示指定交易日的 ETF 收盤價、日／週／年漲跌幅與成交值。' }
+];
+
 // 兩種資料來源，也是兩套欄位。盤後看的是「這段期間累積下來的樣子」，
 // 盤中看的是「今天到現在為止」，兩邊沒有共用的期間概念，所以連篩選條件都不一樣。
 // 盤中排在左邊，但預設仍然是盤後（state.view）：開盤時間以外盤中沒有東西可看。
@@ -396,6 +423,7 @@ const VIEWS = [
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
     { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' },
     { key: 'custom', text: '自訂', hint: '瀏覽指定交易日的全部上市櫃收盤資料，或最新一輪的全市場盤中資料；不建立預設排行。' },
+    { key: 'etf', text: 'ETF', hint: '瀏覽官方 ETF 名冊的最近收盤價與日漲跌；不混入個股成交值排行。' },
     { key: 'assets', text: '資產', hint: '自己維護的帳戶與持倉：使用者、帳戶、現金與持倉存在資料庫，任何裝置打開都看得到；可上傳券商截圖辨識後套用。' },
     { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' }
 ];
@@ -1558,6 +1586,17 @@ function customSearchMatches(row) {
         || row.name.toLocaleLowerCase().includes(search);
 }
 
+function etfSearchMatches(row) {
+    const search = state.etfSearch.trim().toLocaleLowerCase();
+
+    if (search.length === 0) {
+        return true;
+    }
+
+    return row.ticker.toLocaleLowerCase().includes(search)
+        || row.name.toLocaleLowerCase().includes(search);
+}
+
 // 漲跌幅與營收增減共用同一套上下層排版；營收排序時仍只看 YOY。
 function toRevenueGrowthCell(ticker, fallback = null) {
     const revenue = revenueOf(ticker) ?? fallback;
@@ -1580,21 +1619,31 @@ function toRevenueGrowthCell(ticker, fallback = null) {
     };
 }
 
-function toPriceChangeCell(daily, weekly) {
+function toPriceChangeCell(daily, weekly, year) {
+    const lines = [
+        {
+            label: '日',
+            text: toSignedPercentText(daily),
+            cls: 'metric-line metric-primary ' + toTrendClass(daily)
+        },
+        {
+            label: '週',
+            text: toSignedPercentText(weekly),
+            cls: 'metric-line metric-secondary ' + toTrendClass(weekly)
+        }
+    ];
+
+    if (year !== undefined) {
+        lines.push({
+            label: '年',
+            text: toSignedPercentText(year),
+            cls: 'metric-line metric-tertiary ' + toTrendClass(year)
+        });
+    }
+
     return {
         cls: 'numeric metric-stack price-change',
-        lines: [
-            {
-                label: '日',
-                text: toSignedPercentText(daily),
-                cls: 'metric-line metric-primary ' + toTrendClass(daily)
-            },
-            {
-                label: '週',
-                text: toSignedPercentText(weekly),
-                cls: 'metric-line metric-secondary ' + toTrendClass(weekly)
-            }
-        ]
+        lines
     };
 }
 
@@ -1701,12 +1750,30 @@ const SINGLE_DAY_COLUMN_HINTS = {
 };
 
 function rankingColumnTitle(column) {
+    if (state.view === 'etf' && column.key === 'close') {
+        return isEtfIntradayView() ? '現價' : '收盤價';
+    }
+
     return state.view === 'daily' && state.comparisonMode === 'single' && column.key === 'value'
         ? '單日成交值（億）'
         : column.title;
 }
 
 function rankingColumnHint(column) {
+    if (state.view === 'etf') {
+        const etfHints = {
+            close: isEtfIntradayView()
+                ? 'ETF 最新一輪盤中現價；尚未取得有效價格時顯示 —。'
+                : '所選交易日 ETF 的收盤價；尚未取得有效行情時顯示 —。',
+            price: '分層顯示日／週／年漲跌幅：日是相對前一有效收盤，週是相對本週開始前最後有效收盤，年是年初至今；排序以日漲跌幅為準。',
+            tradingValue: isEtfIntradayView()
+                ? '自開盤起累計成交值；盤中使用現價 × 累計成交量估算。'
+                : '所選交易日 ETF 的一般交易成交值。'
+        };
+
+        return etfHints[column.key] ?? column.hint;
+    }
+
     return state.view === 'daily' && state.comparisonMode === 'single'
         ? SINGLE_DAY_COLUMN_HINTS[column.key] ?? column.hint
         : column.hint;
@@ -1743,6 +1810,16 @@ const CUSTOM_COLUMNS = [
     { key: 'value', title: '成交值（億）', hint: '所選單一交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) }
 ];
 
+// ETF 使用官方名冊與逐交易日快照，不硬套個股成交值排行的期間、門檻與營收欄位。
+// 名稱仍沿用同一個 K 線入口，讓使用者不必學另一套操作。
+const ETF_COLUMNS = [
+    { key: 'ticker', title: '代號', hint: 'ETF 代號；右側「市／櫃」代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔 ETF 最近三個月的日 K。名稱底色表示日漲跌。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true, klineOptions: { market: '台股', etf: true } }) },
+    { key: 'close', title: '收盤價', hint: 'ETF 名冊中最近一個有效交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
+    { key: 'price', title: '漲跌幅', hint: '分層顯示日／週／年漲跌幅；排序以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange) },
+    { key: 'tradingValue', title: '成交值（億）', hint: '所選交易日或盤中最新一輪的 ETF 成交值。', value: row => row.tradingValue, cell: row => ({ text: toBillionText(row.tradingValue), cls: 'numeric' }) }
+];
+
 // 自訂頁的盤中欄位沿用同一組個股欄位，只改成即時資料的語意。
 // 這樣盤後與盤中的排序、搜尋、營收與 K 線互動不會各自長一套。
 const CUSTOM_INTRADAY_COLUMNS = CUSTOM_COLUMNS.map(column => {
@@ -1763,13 +1840,15 @@ const CUSTOM_INTRADAY_COLUMNS = CUSTOM_COLUMNS.map(column => {
 
 const columnsForView = view => view === 'intraday'
     ? INTRADAY_COLUMNS
+    : view === 'etf'
+        ? ETF_COLUMNS
     : view === 'custom'
         ? (state.customSource === 'intraday' ? CUSTOM_INTRADAY_COLUMNS : CUSTOM_COLUMNS)
         : COLUMNS;
 
 const columns = () => columnsForView(state.view);
 
-const VIEW_PREFERENCE_VIEWS = ['daily', 'intraday', 'custom'];
+const VIEW_PREFERENCE_VIEWS = ['daily', 'intraday', 'custom', 'etf'];
 
 const NOTES_TABLE = 'notes';
 const NOTE_CATEGORIES = [
@@ -1891,7 +1970,8 @@ function defaultViewPreferences() {
     return {
         daily: { period: DEFAULT_PERIOD.daily, comparisonMode: 'range', sortKey: 'rank', sortDescending: false },
         intraday: { period: DEFAULT_PERIOD.intraday, sortKey: 'rank', sortDescending: false },
-        custom: { sortKey: 'ticker', sortDescending: false }
+        custom: { sortKey: 'ticker', sortDescending: false },
+        etf: { sortKey: 'ticker', sortDescending: false }
     };
 }
 
@@ -1908,6 +1988,13 @@ const state = {
     threshold: 100_000_000,
     customThreshold: 0,
     customPage: 1,
+    etfPage: 1,
+    etfMarket: 'all',
+    etfSession: 'daily',
+    etfSearch: '',
+    etfSearchDraft: '',
+    etfSortKey: 'ticker',
+    etfSortDescending: false,
     customStatusFilters: {
         all: true,
         disposition: false,
@@ -1931,12 +2018,16 @@ const state = {
     sortDescending: false,
 
     // 每個主頁籤各記自己的期間與排序。盤中 5 日、盤後前一交易日是不同問題，
-    // 不能在切換時硬套預設，也不能讓自訂頁的股票代號排序污染排行榜。
+    // 不能在切換時硬套預設，也不能讓自訂頁或 ETF 頁的排序污染排行榜。
     viewPreferences: defaultViewPreferences()
 };
 
 function isCustomIntradayView() {
     return state.view === 'custom' && state.customSource === 'intraday';
+}
+
+function isEtfIntradayView() {
+    return state.view === 'etf' && state.etfSession === 'intraday';
 }
 
 function isIntradayDataView() {
@@ -1952,7 +2043,7 @@ function isIntradayTopicDataView() {
 // 這是盤中資料流唯一的入口旗標。它同時涵蓋：排行、自訂盤中、族群熱度、族群列表，
 // 以及列表裡展開的盤中個股 K 線；筆記、資產、提醒、營收、盤後與其他族群頁面都會是 false。
 function usesIntradaySnapshot() {
-    return isIntradayDataView() || isIntradayTopicDataView();
+    return isIntradayDataView() || isIntradayTopicDataView() || isEtfIntradayView();
 }
 
 const thresholdStateKey = () => (state.view === 'custom' ? 'customThreshold' : 'threshold');
@@ -1973,6 +2064,9 @@ function rememberViewPreferences(view = state.view) {
     if (view === 'custom') {
         preference.sortKey = state.customSortKey;
         preference.sortDescending = state.customSortDescending;
+    } else if (view === 'etf') {
+        preference.sortKey = state.etfSortKey;
+        preference.sortDescending = state.etfSortDescending;
     } else {
         preference.period = state.period;
         if (view === 'daily') {
@@ -1997,7 +2091,7 @@ function restoreViewPreferences(view, changes) {
         : defaults.sortKey;
     const sortDescending = preference.sortDescending === true;
 
-    if (view !== 'custom' && changes.period === undefined) {
+    if (['daily', 'intraday'].includes(view) && changes.period === undefined) {
         changes.period = PERIODS.some(period => period.days === preference.period)
             ? preference.period
             : defaults.period;
@@ -2020,6 +2114,9 @@ function restoreViewPreferences(view, changes) {
     if (view === 'custom') {
         changes.customSortKey = sortKey;
         changes.customSortDescending = sortDescending;
+    } else if (view === 'etf') {
+        changes.etfSortKey = sortKey;
+        changes.etfSortDescending = sortDescending;
     }
 }
 
@@ -2038,7 +2135,7 @@ function restoreStoredViewPreferences(preferences) {
         const defaults = defaultViewPreferences()[view];
         const preference = state.viewPreferences[view];
 
-        if (view !== 'custom' && PERIODS.some(period => period.days === stored.period)) {
+        if (['daily', 'intraday'].includes(view) && PERIODS.some(period => period.days === stored.period)) {
             preference.period = stored.period;
         }
 
@@ -2068,6 +2165,7 @@ let klineError = '';
 let expandedTicker = null;
 let expandedKLineName = '';
 let expandedKLineMarket = '';
+let expandedKLineIsEtf = false;
 let klineUseLatestDate = false;
 let klineAnchor = null;
 let expandedIndexMarket = null;
@@ -2205,7 +2303,7 @@ function renderAccessBadge() {
             ? '預覽｜持倉檢視者'
             : '預覽｜最高權限';
     badge.dataset.hint = SITE_ACCESS === 'viewer'
-        ? '本機預覽：可使用盤中、盤後、自訂、族群的熱度排行。族群列表、催化事件、人工編輯屬最高權限。'
+        ? '本機預覽：可使用盤中、盤後、自訂、ETF、族群的熱度排行。族群列表、催化事件、人工編輯屬最高權限。'
         : SITE_ACCESS === 'holdings'
             ? '本機預覽：只顯示 Frank 所有帳號的持股，可切換台股、美股與加密貨幣。'
             : '本機預覽：可使用目前網站的所有頁籤與族群功能。';
@@ -2752,6 +2850,7 @@ function applyViewVisibility() {
 
 const PAGE_HEADINGS = {
     custom: '自訂資料瀏覽',
+    etf: 'ETF 行情瀏覽',
     topics: '族群分類與熱度',
     notes: '筆記',
     assets: '資產總覽'
@@ -2842,6 +2941,7 @@ function renderFilters() {
 
     renderThresholdInput();
     renderCustomControls();
+    renderEtfControls();
     renderLockRow();
 
     if (state.view === 'notes') {
@@ -3023,6 +3123,66 @@ function renderCustomControls() {
     searchHost.append(form);
 }
 
+function renderEtfControls() {
+    renderOptions(
+        'etf-session-options',
+        ETF_SESSIONS.map(session => ({
+            ...session,
+            disabled: session.key === 'intraday'
+                && !ETF_LOCAL_PREVIEW
+                && !hasIntradaySnapshotSource()
+        })),
+        state.etfSession,
+        session => update({ etfSession: session, etfPage: 1 }));
+
+    const dateGroup = el('etf-date-group');
+    dateGroup.hidden = state.etfSession !== 'daily';
+
+    const sessionNote = el('etf-session-note');
+    sessionNote.textContent = state.etfSession === 'intraday'
+        ? ETF_LOCAL_PREVIEW ? '最新輪次示意' : '自動重讀最新輪次'
+        : '可切換交易日';
+
+    renderOptions(
+        'etf-market-options',
+        ETF_MARKETS,
+        state.etfMarket,
+        market => update({ etfMarket: market, etfPage: 1 }));
+
+    const searchHost = el('etf-search');
+    searchHost.replaceChildren();
+    const form = document.createElement('form');
+    form.className = 'custom-search-form';
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        update({
+            etfSearch: search.value.trim(),
+            etfSearchDraft: search.value,
+            etfPage: 1
+        });
+    });
+
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'custom-search-input';
+    search.placeholder = 'ETF 代號／名稱';
+    search.setAttribute('aria-label', '搜尋 ETF 代號或名稱');
+    search.setAttribute('aria-controls', 'table-body');
+    search.value = state.etfSearchDraft;
+    search.addEventListener('input', () => {
+        state.etfSearchDraft = search.value;
+        writeSettings();
+    });
+
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'custom-search-submit';
+    submit.textContent = '確認';
+    submit.setAttribute('aria-label', '確認 ETF 搜尋');
+    form.append(search, submit);
+    searchHost.append(form);
+}
+
 // 上次選的篩選條件。有效期跟著取資料的時間走：
 //
 //     盤中收集開跑（intradayStart）  → 從這裡開始記
@@ -3087,6 +3247,9 @@ function applyStoredSettings() {
         if (state.view === 'custom') {
             state.sortKey = state.customSortKey;
             state.sortDescending = state.customSortDescending;
+        } else if (state.view === 'etf') {
+            state.sortKey = state.etfSortKey;
+            state.sortDescending = state.etfSortDescending;
         }
     }
 
@@ -3109,6 +3272,15 @@ function applyStoredSettings() {
 
     if (MARKETS.some(market => market.key === stored.market)) {
         state.market = stored.market;
+    }
+
+    if (ETF_MARKETS.some(market => market.key === stored.etfMarket)) {
+        state.etfMarket = stored.etfMarket;
+    }
+
+    if (ETF_SESSIONS.some(session => session.key === stored.etfSession)
+        && (stored.etfSession !== 'intraday' || ETF_LOCAL_PREVIEW || hasIntradaySnapshotSource())) {
+        state.etfSession = stored.etfSession;
     }
 
     if (TOPIC_TABS.some(tab => tab.key === stored.topicTab)) {
@@ -3159,6 +3331,16 @@ function applyStoredSettings() {
         state.customSearchDraft = state.customSearch;
     }
 
+    if (typeof stored.etfSearch === 'string') {
+        state.etfSearch = stored.etfSearch;
+    }
+
+    if (typeof stored.etfSearchDraft === 'string') {
+        state.etfSearchDraft = stored.etfSearchDraft;
+    } else {
+        state.etfSearchDraft = state.etfSearch;
+    }
+
     if (stored.customStatusFilters && typeof stored.customStatusFilters === 'object') {
         const filters = stored.customStatusFilters;
         const next = {
@@ -3185,10 +3367,24 @@ function applyStoredSettings() {
         state.customSortDescending = storedCustomSortDescending === true;
     }
 
+    const storedEtfSortKey = stored.etfSortKey
+        ?? (stored.view === 'etf' ? stored.sortKey : null);
+    const storedEtfSortDescending = stored.etfSortDescending
+        ?? (stored.view === 'etf' ? stored.sortDescending : false);
+
+    if (ETF_COLUMNS.some(column =>
+        column.key === storedEtfSortKey && column.fixed !== true && column.sortable !== false)) {
+        state.etfSortKey = storedEtfSortKey;
+        state.etfSortDescending = storedEtfSortDescending === true;
+    }
+
     // 排序欄位得屬於這個檢視，而且是可排序的那些。view 上面可能已經改過，所以放最後驗。
     if (state.view === 'custom') {
         state.sortKey = state.customSortKey;
         state.sortDescending = state.customSortDescending;
+    } else if (state.view === 'etf') {
+        state.sortKey = state.etfSortKey;
+        state.sortDescending = state.etfSortDescending;
     } else if (columns().some(column => column.key === stored.sortKey && column.fixed !== true && column.sortable !== false)) {
         state.sortKey = stored.sortKey;
         state.sortDescending = stored.sortDescending === true;
@@ -16388,7 +16584,12 @@ const weekStartKey = key => {
 const monthIndex = date => date.getFullYear() * 12 + date.getMonth();
 
 function renderDatePicker() {
-    const host = el(state.view === 'custom' ? 'custom-date-picker' : 'date-picker');
+    const hostId = state.view === 'custom'
+        ? 'custom-date-picker'
+        : state.view === 'etf'
+            ? 'etf-date-picker'
+            : 'date-picker';
+    const host = el(hostId);
     host.replaceChildren();
 
     // 前後交易日各一顆按鈕，看連續幾天的變化不必每次開月曆。
@@ -16675,27 +16876,29 @@ function sortedRows(rows) {
 function rowsForCurrentPage() {
     const sorted = sortedRows(current.rows);
 
-    if (state.view !== 'custom') {
+    if (!['custom', 'etf'].includes(state.view)) {
         return sorted;
     }
 
     const pageCount = Math.max(1, Math.ceil(sorted.length / CUSTOM_PAGE_SIZE));
-    state.customPage = Math.min(Math.max(state.customPage, 1), pageCount);
-    const start = (state.customPage - 1) * CUSTOM_PAGE_SIZE;
+    const pageKey = state.view === 'etf' ? 'etfPage' : 'customPage';
+    state[pageKey] = Math.min(Math.max(state[pageKey], 1), pageCount);
+    const start = (state[pageKey] - 1) * CUSTOM_PAGE_SIZE;
 
     return sorted.slice(start, start + CUSTOM_PAGE_SIZE);
 }
 
-function setCustomPage(page) {
+function setCurrentTablePage(page) {
     const pageCount = Math.max(1, Math.ceil(current.rows.length / CUSTOM_PAGE_SIZE));
     const nextPage = Math.min(Math.max(page, 1), pageCount);
+    const pageKey = state.view === 'etf' ? 'etfPage' : 'customPage';
 
-    if (nextPage === state.customPage) {
+    if (nextPage === state[pageKey]) {
         return;
     }
 
     closeKLine(false);
-    state.customPage = nextPage;
+    state[pageKey] = nextPage;
     renderTable();
     el('table-container').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -16721,12 +16924,15 @@ function renderPagination() {
     const host = el('pagination');
     host.replaceChildren();
 
-    if (state.view !== 'custom' || current.rows.length <= CUSTOM_PAGE_SIZE) {
+    if (!['custom', 'etf'].includes(state.view) || current.rows.length <= CUSTOM_PAGE_SIZE) {
         host.hidden = true;
         return;
     }
 
     const pageCount = Math.ceil(current.rows.length / CUSTOM_PAGE_SIZE);
+    const pageKey = state.view === 'etf' ? 'etfPage' : 'customPage';
+    const page = state[pageKey];
+    host.setAttribute('aria-label', state.view === 'etf' ? 'ETF 資料分頁' : '自訂資料分頁');
 
     const button = (text, page, disabled) => {
         const control = document.createElement('button');
@@ -16734,7 +16940,7 @@ function renderPagination() {
         control.className = 'pagination-button';
         control.textContent = text;
         control.disabled = disabled;
-        control.addEventListener('click', () => setCustomPage(page));
+        control.addEventListener('click', () => setCurrentTablePage(page));
         return control;
     };
 
@@ -16750,11 +16956,11 @@ function renderPagination() {
         const option = document.createElement('option');
         option.value = String(page);
         option.textContent = String(page);
-        option.selected = page === state.customPage;
+        option.selected = page === state[pageKey];
         pageSelect.append(option);
     }
 
-    pageSelect.addEventListener('change', () => setCustomPage(Number(pageSelect.value)));
+    pageSelect.addEventListener('change', () => setCurrentTablePage(Number(pageSelect.value)));
     pageLabel.append(pageSelect, ` / ${pageCount} 頁`);
 
     const count = document.createElement('span');
@@ -16762,9 +16968,9 @@ function renderPagination() {
     count.textContent = `共 ${current.rows.length} 檔`;
 
     host.append(
-        button('‹ 上一頁', state.customPage - 1, state.customPage === 1),
+        button('‹ 上一頁', page - 1, page === 1),
         pageLabel,
-        button('下一頁 ›', state.customPage + 1, state.customPage === pageCount),
+        button('下一頁 ›', page + 1, page === pageCount),
         count);
     host.hidden = false;
 }
@@ -17377,7 +17583,7 @@ function klineEndDate() {
         return klineData.get(expandedTicker)?.bars?.at(-1)?.date ?? '';
     }
 
-    if (isIntradayDataView()) {
+    if (isIntradayDataView() || isEtfIntradayView()) {
         return current?.tradeDate;
     }
 
@@ -17460,7 +17666,7 @@ function selectedKLineBars(ticker) {
     // 都讀各自正在呈現的同一輪盤中資料，不能拿前一次切換頁籤的排名資料湊。
     // 資產頁的台股持倉另外接自己那份 assetIntradayQuotes（見 fetchAssetIntradayQuotes），
     // 不是排行榜的 current.rows，否則從資產頁開的彈窗會永遠停在最近一個已收盤日。
-    const liveBar = isIntradayDataView()
+    const liveBar = isIntradayDataView() || isEtfIntradayView()
         ? current?.rows.find(row => row.ticker === ticker)?.liveKLine
         : topicUsesIntradayData()
             ? topicIntradayKLines.get(ticker)
@@ -18102,6 +18308,7 @@ function renderKLinePopover(ticker, name, anchor) {
     const title = document.createElement('div');
     const payload = klineData.get(ticker);
     const isUs = expandedKLineMarket === '美股' || payload?.market === 'US';
+    const isEtf = expandedKLineIsEtf || payload?.adjustmentMethod === 'raw-tw-etf-daily';
     const holdingCost = klineHoldingCost(ticker, expandedKLineMarket);
 
     // id 留在外層的 <strong> 上：index.html 的 aria-labelledby 指著它。
@@ -18122,7 +18329,7 @@ function renderKLinePopover(ticker, name, anchor) {
     const requestedStartDate = endDate ? klineStartDate(endDate) : '';
     const bars = klineData.has(ticker) ? selectedKLineBars(ticker) : [];
     const actualStartDate = bars[0]?.date ?? requestedStartDate;
-    const periodLabel = isUs ? '美股日 K' : '還原權息日 K';
+    const periodLabel = isEtf ? 'ETF 日 K' : isUs ? '美股日 K' : '還原權息日 K';
     period.textContent = endDate
         ? `${periodLabel}・${actualStartDate.replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
         : periodLabel;
@@ -18140,7 +18347,7 @@ function renderKLinePopover(ticker, name, anchor) {
     nameByTicker.set(ticker, name);
     card.append(header);
 
-    if (!isUs) {
+    if (!isUs && !isEtf) {
         const topicRow = document.createElement('div');
         topicRow.className = 'daily-kline-topic-row';
         const topicLabel = document.createElement('span');
@@ -18153,7 +18360,9 @@ function renderKLinePopover(ticker, name, anchor) {
     if (klineError) {
         const message = document.createElement('p');
         message.className = 'daily-kline-empty';
-        message.textContent = isUs
+        message.textContent = isEtf
+            ? '尚無可用的 ETF 日 K 資料，請重新產生靜態網站。'
+            : isUs
             ? '尚無可用的日 K 資料，請稍後再試或重新產生靜態網站。'
             : '讀不到已驗證的還原權息日 K，請重新產生靜態網站。';
         card.append(message);
@@ -18217,6 +18426,7 @@ function closeKLine(restoreFocus = true) {
     expandedTicker = null;
     expandedKLineName = '';
     expandedKLineMarket = '';
+    expandedKLineIsEtf = false;
     klineUseLatestDate = false;
     klineAnchor = null;
     klineError = '';
@@ -18284,6 +18494,7 @@ async function toggleKLine(ticker, name, anchor, options = {}) {
     expandedTicker = ticker;
     expandedKLineName = name;
     expandedKLineMarket = options.market ?? '';
+    expandedKLineIsEtf = options.etf === true;
     klineUseLatestDate = options.latest === true;
     klineAnchor = anchor;
     klineError = '';
@@ -18770,7 +18981,7 @@ function configureRevenuePopover() {
 // 排行榜與持倉檢視共用同一套儲存格內容：代號市場標記／交易限制、名稱 K 線、族群連結、
 // 日週漲跌、營收彈窗與創高月數都在這裡畫。呼叫端只負責提供資料列與 K 線尾端選項。
 function appendRankingCell(tr, row, column, options = {}) {
-    const { text, cls, lines, kline, marketMark, revenueDetails, topic, tickerBadges } = column.cell(row);
+    const { text, cls, lines, kline, klineOptions, marketMark, revenueDetails, topic, tickerBadges } = column.cell(row);
     const td = document.createElement('td');
     td.className = cls;
 
@@ -18855,7 +19066,11 @@ function appendRankingCell(tr, row, column, options = {}) {
     }
 
     if (kline && row.ticker !== '') {
-        td.append(makeKLineButton(row.ticker, String(text), options.kline ?? {}));
+        if (klineOptions !== undefined) {
+            td.append(makeKLineButton(row.ticker, String(text), klineOptions));
+        } else {
+            td.append(makeKLineButton(row.ticker, String(text), options.kline ?? {}));
+        }
     } else {
         td.append(String(text));
 
@@ -18875,6 +19090,7 @@ function appendRankingCell(tr, row, column, options = {}) {
 
 function renderTable() {
     el('data-table').classList.toggle('custom-table', state.view === 'custom');
+    el('data-table').classList.toggle('etf-table', state.view === 'etf');
 
     const head = el('table-head');
     head.replaceChildren();
@@ -18922,6 +19138,10 @@ function renderTable() {
                 state.customPage = 1;
                 state.customSortKey = state.sortKey;
                 state.customSortDescending = state.sortDescending;
+            } else if (state.view === 'etf') {
+                state.etfPage = 1;
+                state.etfSortKey = state.sortKey;
+                state.etfSortDescending = state.sortDescending;
             }
 
             rememberViewPreferences();
@@ -18962,6 +19182,41 @@ function renderSummary() {
     // 掛在這裡而不是各個 load*()：摘要重畫的時機就是資料換過的時機，
     // 兩者綁在一起才不會有「資料換了、警告還留在上一輪」的空窗。
     renderStaleBanner();
+
+    if (state.view === 'etf') {
+        const items = isEtfIntradayView()
+            ? [
+                ['交易日', current.tradeDate ? current.tradeDate.replaceAll('-', '/') : '—'],
+                ['資料時間', ETF_LOCAL_PREVIEW ? '本機示意' : current.capturedAt + intradayAgeText()],
+                ['ETF 名冊', `${current.totalEtfCount} 檔`],
+                ['盤中報價', `${current.liveEtfCount ?? 0}／${current.totalEtfCount} 檔`],
+                ['上市／上櫃', `${current.listedCount}／${current.otcCount}`],
+                ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
+            ]
+            : [
+                ['交易日', current.tradeDate ? current.tradeDate.replaceAll('-', '/') : '—'],
+                ['ETF 名冊', `${current.totalEtfCount} 檔`],
+                ['上市／上櫃', `${current.listedCount}／${current.otcCount}`],
+                ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
+            ];
+
+        const summary = el('summary');
+        summary.replaceChildren();
+        const row = document.createElement('div');
+        row.className = 'summary-row summary-explanation-row';
+
+        for (const [label, value] of items) {
+            const item = document.createElement('div');
+            const tag = document.createElement('span');
+            tag.className = 'summary-label';
+            tag.textContent = label;
+            item.append(tag, value);
+            row.append(item);
+        }
+
+        summary.append(row);
+        return;
+    }
 
     if (state.view === 'custom') {
         const threshold = activeThreshold();
@@ -19455,16 +19710,28 @@ function wireRefreshButton() {
 
         try {
             // 盤中資料的「新資料」是資料庫裡的下一輪，不是重新發佈的網站。
-            if (isIntradayDataView()) {
+            if (isIntradayDataView() || isEtfIntradayView()) {
                 // 使用者親手按的「檢查更新」要跳過新鮮度判斷，真的去問一次資料庫。
                 if (state.view === 'intraday') {
                     await loadIntraday(true, true);
-                } else {
+                } else if (state.view === 'custom') {
                     await loadCustom(true, true);
+                } else {
+                    await loadEtf(true);
                 }
-                showStatusPopup(revenueLoadFailed
-                    ? '盤中行情已更新；營收暫時讀取失敗，保留上一份資料'
-                    : current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料');
+                const status = state.view === 'etf'
+                    ? current ? `已更新（資料時間 ${current.capturedAt || current.tradeDate}）` : '還沒有 ETF 盤中資料'
+                    : revenueLoadFailed
+                        ? '盤中行情已更新；營收暫時讀取失敗，保留上一份資料'
+                        : current ? `已更新（資料時間 ${current.capturedAt}）` : '還沒有盤中資料';
+                showStatusPopup(status);
+                button.disabled = false;
+                return;
+            }
+
+            if (state.view === 'etf') {
+                await loadEtf(true);
+                showStatusPopup(current ? `已更新（交易日 ${current.tradeDate}）` : '還沒有 ETF 盤後資料');
                 button.disabled = false;
                 return;
             }
@@ -19590,6 +19857,11 @@ function publishIntradayTopicToSiblingTabs(document) {
 }
 
 function renderReceivedIntradaySnapshot() {
+    if (isEtfIntradayView()) {
+        void loadEtf(true);
+        return;
+    }
+
     if (isIntradayDataView()) {
         void (state.view === 'intraday' ? loadIntraday(true) : loadCustom(true));
         return;
@@ -19876,14 +20148,24 @@ async function ensureIntradaySnapshot(silent = false, force = false, loadSupport
     return true;
 }
 
+function isEtfIntradayRawRow(row) {
+    const ticker = String(row?.symbol ?? '').trim().toUpperCase();
+    const kind = String(row?.kind ?? '').trim().toLocaleLowerCase();
+
+    // 新版快照有 kind；舊版資料庫／CDN 快照沒有這欄時，以台股 ETF 代號的
+    // 0 開頭規則回退辨識，避免 ETF 合併進個股成交值排行的分母。
+    return kind === 'etf' || /^0[A-Z0-9]{3,5}$/.test(ticker);
+}
+
 function mapIntradayRows(raw, summary, includeEstimate = false) {
     const fraction = turnoverFraction(summary.captured_at);
     const estimable = fraction !== null && fraction >= INTRADAY_TURNOVER_MIN_FRACTION;
 
     return raw.map(row => ({
-        ticker: row.symbol,
+        ticker: String(row.symbol ?? '').trim().toUpperCase(),
         name: row.name,
-        market: row.market.toLowerCase(),
+        kind: String(row.kind ?? '').trim().toLocaleLowerCase(),
+        market: String(row.market ?? '').toLocaleLowerCase(),
         value: Number(row.turnover),
         estimate: includeEstimate && estimable ? Number(row.turnover) / fraction : null,
         priceChange: missing(row.change_percent) ? null : Number(row.change_percent) / 100,
@@ -19937,7 +20219,10 @@ async function loadIntraday(silent = false, force = false) {
     // change_percent 存的是百分比（-0.39 就是 -0.39%），
     // 顯示用的函式吃的是比率，這裡除掉一次，兩種檢視才會是同一套格式。
     const progress = sessionProgress(summary.captured_at);
-    const rows = mapIntradayRows(raw, summary, true);
+    const rows = mapIntradayRows(
+        raw.filter(row => !isEtfIntradayRawRow(row)),
+        summary,
+        true);
 
     nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
 
@@ -20380,7 +20665,9 @@ async function loadCustomIntraday(silent = false, force = false) {
         return;
     }
 
-    const liveRows = mapIntradayRows(raw, summary);
+    const liveRows = mapIntradayRows(
+        raw.filter(row => !isEtfIntradayRawRow(row)),
+        summary);
     const referenceDate = dates.filter(date => date < summary.trade_date).at(-1);
     const reference = referenceDate
         ? await fetchPeriod(`1-${referenceDate}`)
@@ -20492,6 +20779,350 @@ async function loadCustom(silent = false, force = false) {
     renderSummary();
     renderTable();
     renderLockRow();
+}
+
+function normalizeEtfCatalogRows(entries) {
+    return (Array.isArray(entries) ? entries : [])
+        .map(entry => {
+            const ticker = String(entry?.ticker ?? '').trim().toUpperCase();
+            const name = String(entry?.name ?? '').trim();
+            const kind = String(entry?.kind ?? '').trim().toLocaleLowerCase();
+            const market = String(entry?.market ?? '').trim().toLocaleLowerCase();
+            const changePercent = assetNumber(entry?.changePercent);
+
+            if (kind !== 'etf' || ticker === '' || name === '' || !['twse', 'tpex'].includes(market)) {
+                return null;
+            }
+
+            return {
+                ticker,
+                name,
+                market,
+                close: assetNumber(entry?.closePrice),
+                priceChange: changePercent === null ? null : changePercent / 100,
+                quoteDate: String(entry?.quoteDate ?? '').trim()
+            };
+        })
+        .filter(row => row !== null);
+}
+
+let etfCatalogRows = null;
+let etfCatalogLoading = null;
+const etfDailyCache = new Map();
+const etfDailyLoading = new Map();
+
+async function loadEtfCatalog(force = false) {
+    if (ETF_LOCAL_PREVIEW) {
+        return ETF_LOCAL_PREVIEW_ROWS.map(row => ({ ...row }));
+    }
+
+    if (force) {
+        etfCatalogRows = null;
+    }
+
+    if (etfCatalogRows !== null) {
+        return etfCatalogRows;
+    }
+
+    if (etfCatalogLoading === null) {
+        etfCatalogLoading = (async () => {
+            const catalog = await fetchJsonWithRetry(`data/asset-catalog.json?v=${version}`);
+            etfCatalogRows = normalizeEtfCatalogRows(catalog.entries);
+            return etfCatalogRows;
+        })().finally(() => {
+            etfCatalogLoading = null;
+        });
+    }
+
+    return etfCatalogLoading;
+}
+
+function normalizeEtfDailyRows(entries, fallbackDate) {
+    return (Array.isArray(entries) ? entries : [])
+        .map(entry => {
+            const ticker = String(entry?.ticker ?? '').trim().toUpperCase();
+            const name = String(entry?.name ?? '').trim();
+            const market = String(entry?.market ?? '').trim().toLocaleLowerCase();
+
+            if (ticker === '' || name === '' || !['twse', 'tpex'].includes(market)) {
+                return null;
+            }
+
+            return {
+                ticker,
+                name,
+                market,
+                close: assetNumber(entry?.close),
+                priceChange: assetNumber(entry?.dailyPriceChange),
+                weeklyPriceChange: assetNumber(entry?.weeklyPriceChange),
+                yearToDatePriceChange: assetNumber(entry?.yearToDatePriceChange),
+                weeklyBaselineClose: assetNumber(entry?.weeklyBaselineClose),
+                yearToDateBaselineClose: assetNumber(entry?.yearToDateBaselineClose),
+                tradingValue: assetNumber(entry?.tradingValue),
+                quoteDate: String(entry?.tradeDate ?? fallbackDate ?? '').trim()
+            };
+        })
+        .filter(row => row !== null);
+}
+
+async function fetchEtfDaily(date, force = false) {
+    const key = String(date ?? '').trim();
+
+    if (key === '') {
+        return null;
+    }
+
+    if (force) {
+        etfDailyCache.delete(key);
+    }
+
+    if (etfDailyCache.has(key)) {
+        return etfDailyCache.get(key);
+    }
+
+    if (!etfDailyLoading.has(key)) {
+        const loading = (async () => {
+            const payload = await fetchJsonWithRetry(
+                `data/etf/${key}.json?v=${version}`,
+                {},
+                { timeoutMs: 30_000, retryDelays: [1_000] });
+            const result = {
+                tradeDate: String(payload?.tradeDate ?? key),
+                rows: normalizeEtfDailyRows(payload?.rows, key)
+            };
+            etfDailyCache.set(key, result);
+            return result;
+        })().finally(() => {
+            etfDailyLoading.delete(key);
+        });
+
+        etfDailyLoading.set(key, loading);
+    }
+
+    return etfDailyLoading.get(key);
+}
+
+function localEtfRows(session, tradeDate) {
+    const intraday = session === 'intraday';
+    const date = tradeDate || ETF_LOCAL_PREVIEW_TRADE_DATE;
+
+    return ETF_LOCAL_PREVIEW_ROWS.map(row => {
+        const close = intraday ? row.intradayClose : row.close;
+        const weeklyBaselineClose = row.close / (1 + row.weeklyPriceChange);
+        const yearToDateBaselineClose = row.close / (1 + row.yearToDatePriceChange);
+
+        return {
+            ...row,
+            session,
+            close,
+            priceChange: intraday ? row.intradayPriceChange : row.priceChange,
+            weeklyBaselineClose,
+            yearToDateBaselineClose,
+            quoteDate: date,
+            liveKLine: intraday
+                ? {
+                    date,
+                    open: close * 0.997,
+                    high: close * 1.006,
+                    low: close * 0.994,
+                    close,
+                    tradingVolume: row.tradingValue / close
+                }
+                : null
+        };
+    });
+}
+
+async function loadPublishedEtfDailyForIntraday(tradeDate) {
+    try {
+        return await fetchEtfDaily(tradeDate);
+    } catch (error) {
+        if (error?.status !== 404) {
+            console.warn('ETF 盤後資料讀取失敗，盤中先顯示現價：', error);
+            return null;
+        }
+
+        const previousDate = dates.filter(date => date < tradeDate).at(-1);
+
+        if (!previousDate) {
+            return null;
+        }
+
+        try {
+            return await fetchEtfDaily(previousDate);
+        } catch (fallbackError) {
+            console.warn('ETF 前一交易日資料也讀取失敗，盤中先顯示現價：', fallbackError);
+            return null;
+        }
+    }
+}
+
+function renderEtfRows(allRows, session, tradeDate, capturedAtIso = '', liveEtfCount = null) {
+    if (state.view !== 'etf') {
+        return;
+    }
+
+    nameByTicker = new Map(allRows.map(row => [row.ticker, row.name]));
+    const rows = allRows.filter(row =>
+        (state.etfMarket === 'all' || row.market === state.etfMarket)
+        && etfSearchMatches(row));
+    const isIntraday = session === 'intraday';
+
+    current = {
+        session,
+        rows,
+        tradeDate,
+        quoteDate: tradeDate,
+        capturedAt: isIntraday && capturedAtIso ? toTaipeiText(capturedAtIso) : '',
+        capturedAtIso: isIntraday ? capturedAtIso : '',
+        progress: isIntraday && capturedAtIso ? sessionProgress(capturedAtIso) : null,
+        totalEtfCount: allRows.length,
+        liveEtfCount: isIntraday ? liveEtfCount ?? 0 : null,
+        listedCount: allRows.filter(row => row.market === 'twse').length,
+        otcCount: allRows.filter(row => row.market === 'tpex').length,
+        rankedStockCount: rows.length,
+        rankByTicker: new Map()
+    };
+
+    const pageCount = Math.max(1, Math.ceil(rows.length / CUSTOM_PAGE_SIZE));
+    state.etfPage = Math.min(Math.max(state.etfPage, 1), pageCount);
+
+    el('notice').hidden = true;
+    el('ranking').hidden = false;
+
+    renderSummary();
+    renderTable();
+}
+
+async function loadEtfDaily(force = false) {
+    if (ETF_LOCAL_PREVIEW) {
+        renderEtfRows(
+            localEtfRows('daily', state.date),
+            'daily',
+            state.date || ETF_LOCAL_PREVIEW_TRADE_DATE);
+        return;
+    }
+
+    if (!force) {
+        showNotice('ETF 盤後資料載入中…', false);
+    }
+
+    let data;
+
+    try {
+        data = await fetchEtfDaily(state.date, force);
+    } catch (error) {
+        if (state.view !== 'etf') {
+            return;
+        }
+
+        if (error?.status === 404 && await reloadIfStale()) {
+            return;
+        }
+
+        const message = error?.status === 404
+            ? `ETF 尚未匯出 ${state.date} 的盤後資料；請先完成 ETF 行情回補，再重新產生靜態網站。`
+            : staticJsonLoadErrorMessage(`data/etf/${state.date}.json`, error);
+        showNotice(message, true, () => {
+            void loadEtf(true).catch(reportLoadFailure);
+        });
+        return;
+    }
+
+    if (data === null || data.rows.length === 0) {
+        showNotice(`ETF ${state.date} 沒有可顯示的盤後資料，請確認 data branch 已完成 ETF 行情回補。`, true, () => {
+            void loadEtf(true).catch(reportLoadFailure);
+        });
+        return;
+    }
+
+    renderEtfRows(data.rows, 'daily', data.tradeDate || state.date);
+}
+
+async function loadEtfIntraday(silent = false, force = false) {
+    if (ETF_LOCAL_PREVIEW) {
+        const capturedAtIso = `${ETF_LOCAL_PREVIEW_TRADE_DATE}T10:16:00+08:00`;
+        lastIntradayLoadedAt = Date.now();
+        renderEtfRows(
+            localEtfRows('intraday', ETF_LOCAL_PREVIEW_TRADE_DATE),
+            'intraday',
+            ETF_LOCAL_PREVIEW_TRADE_DATE,
+            capturedAtIso,
+            ETF_LOCAL_PREVIEW_ROWS.length);
+        return;
+    }
+
+    if (supabase === null && intradayCdn === null) {
+        showNotice('ETF 盤中需要盤中資料來源；目前這份網站沒有資料庫或 CDN 連線。', true);
+        return;
+    }
+
+    if (!await ensureIntradaySnapshot(silent, force, false)) {
+        return;
+    }
+
+    const raw = intradayRaw;
+    const summary = intradaySummary;
+
+    if (raw === null || raw.length === 0 || summary === null) {
+        showNotice('今天還沒有 ETF 盤中資料，請等收集器寫入第一輪。', true);
+        return;
+    }
+
+    let catalog;
+
+    try {
+        catalog = await loadEtfCatalog(force);
+    } catch (error) {
+        showNotice(error?.status === 404
+            ? 'ETF 名冊尚未匯出；請先重新產生靜態網站。'
+            : staticJsonLoadErrorMessage('data/asset-catalog.json', error), true, () => {
+                void loadEtf(true).catch(reportLoadFailure);
+            });
+        return;
+    }
+
+    const liveRows = mapIntradayRows(
+        raw.filter(isEtfIntradayRawRow),
+        summary);
+    const liveByKey = new Map(liveRows.map(row => [`${row.market}:${row.ticker}`, row]));
+    const daily = await loadPublishedEtfDailyForIntraday(summary.trade_date);
+    const dailyByTicker = new Map((daily?.rows ?? []).map(row => [row.ticker, row]));
+    const rows = catalog.map(row => {
+        const live = liveByKey.get(`${row.market}:${row.ticker}`);
+        const historical = dailyByTicker.get(row.ticker);
+        const close = live?.close ?? null;
+        const weeklyBaseline = historical?.weeklyBaselineClose;
+        const yearToDateBaseline = historical?.yearToDateBaselineClose;
+
+        return {
+            ...row,
+            session: 'intraday',
+            close,
+            priceChange: live?.priceChange ?? null,
+            weeklyPriceChange: close !== null && weeklyBaseline > 0
+                ? (close - weeklyBaseline) / weeklyBaseline
+                : historical?.weeklyPriceChange ?? null,
+            yearToDatePriceChange: close !== null && yearToDateBaseline > 0
+                ? (close - yearToDateBaseline) / yearToDateBaseline
+                : historical?.yearToDatePriceChange ?? null,
+            tradingValue: live?.value ?? null,
+            quoteDate: summary.trade_date,
+            liveKLine: live?.liveKLine ?? null
+        };
+    });
+
+    lastIntradayLoadedAt = Date.now();
+    renderEtfRows(rows, 'intraday', summary.trade_date, summary.captured_at, liveRows.length);
+}
+
+async function loadEtf(force = false) {
+    if (isEtfIntradayView()) {
+        await loadEtfIntraday(false, force);
+        return;
+    }
+
+    await loadEtfDaily(force);
 }
 
 // ───────────────────────── 族群分類與熱度 ─────────────────────────
@@ -25414,6 +26045,11 @@ async function load() {
         return;
     }
 
+    if (state.view === 'etf') {
+        await loadEtf();
+        return;
+    }
+
     const key = state.view === 'daily' && state.comparisonMode === 'single'
         ? `1-${state.date}`
         : `${state.period}-${state.date}`;
@@ -25485,7 +26121,10 @@ function update(changes) {
 
     if (changes.view !== undefined
         || changes.date !== undefined
-        || changes.customSource !== undefined) {
+        || changes.customSource !== undefined
+        || changes.etfSession !== undefined
+        || changes.etfMarket !== undefined
+        || changes.etfSearch !== undefined) {
         closeKLine(false);
         closeRevenueDetails(false);
         calendarOpen = false;
@@ -25505,6 +26144,14 @@ function update(changes) {
             || changes.customStatusFilters !== undefined
             || changes.customSearch !== undefined)) {
         changes.customPage = 1;
+    }
+
+    if (nextView === 'etf'
+        && (changes.etfSession !== undefined
+            || changes.date !== undefined
+            || changes.etfMarket !== undefined
+            || changes.etfSearch !== undefined)) {
+        changes.etfPage = 1;
     }
 
     if (changes.customSearch !== undefined) {
@@ -25571,6 +26218,15 @@ function renderSnapshotNote() {
                 + `每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。`
                 + collector
             : topicNote || snapshotNote;
+        return;
+    }
+
+    if (state.view === 'etf') {
+        el('snapshot-note').textContent = ETF_LOCAL_PREVIEW
+            ? '本機 ETF 示意資料：可切換盤中／盤後與交易日，只用來確認版面，不代表即時行情。'
+            : isEtfIntradayView()
+                ? `ETF 盤中資料使用${intradaySourceLabel()}，每 ${Math.round(intradayRefreshMs / 60_000)} 分鐘自動重讀一次。` + collector
+                : 'ETF 盤後資料使用靜態日行情；可選交易日，日／週／年漲跌幅由 C# 預先計算。';
         return;
     }
 
@@ -25685,7 +26341,9 @@ function renderStaleBanner() {
         return;
     }
 
-    const text = state.view === 'intraday' && current !== null
+    const text = !ETF_LOCAL_PREVIEW
+        && (state.view === 'intraday' || isEtfIntradayView())
+        && current !== null
         ? intradayStaleText(current.tradeDate, current.capturedAtIso)
         : '';
 
@@ -25704,7 +26362,8 @@ async function refreshRevenueIfDue() {
 }
 
 function refreshIntradayIfDue() {
-    const isIntradayView = isIntradayDataView();
+    const isEtfIntraday = isEtfIntradayView();
+    const isIntradayView = isIntradayDataView() || isEtfIntraday;
     const isIntradayTopic = isIntradayTopicDataView();
     const topicWaitingForRaw = isIntradayTopic && intradayTopicNeedsUpdate();
     const isSessionOrTopicCatchUp = isTaiwanIntradaySession() || topicWaitingForRaw;
@@ -25727,7 +26386,9 @@ function refreshIntradayIfDue() {
     if (isIntradayView) {
         void (state.view === 'intraday'
             ? loadIntraday(true)
-            : loadCustom(true));
+            : state.view === 'custom'
+                ? loadCustom(true)
+                : loadEtf(true));
         return;
     }
 
@@ -25760,7 +26421,9 @@ function startIntradayTimer() {
 
             // 「幾分鐘前」要自己走，不能等下一次抓資料才更新——
             // 抓不到的時候正是最需要看到它一直往上加的時候。
-            if (isIntradayDataView() && !document.hidden && current !== null) {
+            if ((isIntradayDataView() || isEtfIntradayView())
+                && !document.hidden
+                && current !== null) {
                 renderSummary();
             }
 
