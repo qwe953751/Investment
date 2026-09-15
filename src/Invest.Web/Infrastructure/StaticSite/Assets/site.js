@@ -9769,8 +9769,12 @@ function assetExcelButton(text, className, onClick) {
 
 function assetExcelPreviewBackUrl() {
     const url = new URL(window.location.href);
-    url.searchParams.delete('view');
-    url.searchParams.delete('account');
+    url.searchParams.set('view', 'assets');
+    if (ASSET_EXCEL_ACCOUNT_QUERY) {
+        url.searchParams.set('account', ASSET_EXCEL_ACCOUNT_QUERY);
+    } else {
+        url.searchParams.delete('account');
+    }
     url.searchParams.set('access', 'admin');
 
     if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
@@ -9801,9 +9805,7 @@ function openAssetExcelView(view) {
         url.searchParams.delete('preview');
     }
 
-    // `noopener` 會讓成功開啟的新 browsing context 回傳 null；不能把 null 當成
-    // 被擋截後再導向原頁，否則會同時開新頁並破壞目前持倉頁的狀態。
-    window.open(url.href, '_blank', 'noopener');
+    window.location.assign(url.href);
 }
 
 function makeAssetExcelSummaryRow(summary, rowKind, columns) {
@@ -29521,6 +29523,11 @@ async function start() {
 
     if (ASSET_ANNUALIZED_LOCAL_PREVIEW) {
         state.view = 'assets';
+    }
+
+    if (state.view === 'assets' && ASSET_EXCEL_ACCOUNT_QUERY) {
+        assetSelectedAccountId = ASSET_EXCEL_ACCOUNT_QUERY;
+        assetDashboardScreen = 'account';
     }
 
     if (CUSTOM_INTRADAY_LOCAL_PREVIEW && state.view === 'custom') {

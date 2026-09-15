@@ -135,11 +135,33 @@ test('正式路徑不再保存本機示範列，且套用會呼叫正式資料�
     assert.match(siteScript, /assetExcelWrite\(\s*ASSET_OPERATION_ROWS_TABLE,\s*'DELETE'/);
 });
 
-test('Excel 入口只開新 browsing context，不會把原持倉頁導走', () => {
+test('Excel 入口在同一分頁切換，返回時回到原台股操作持倉', () => {
     const opener = functionSource('openAssetExcelView');
 
-    assert.match(opener, /window\.open\(url\.href, '_blank', 'noopener'\)/);
-    assert.doesNotMatch(opener, /window\.location\.assign/);
+    assert.match(opener, /window\.location\.assign\(url\.href\)/);
+    assert.doesNotMatch(opener, /window\.open/);
+
+    const backUrl = functionSource('assetExcelPreviewBackUrl');
+    assert.match(backUrl, /url\.searchParams\.set\('view', 'assets'\)/);
+    assert.match(backUrl, /url\.searchParams\.set\('account', ASSET_EXCEL_ACCOUNT_QUERY\)/);
+
+    const context = {
+        URL,
+        ASSET_EXCEL_ACCOUNT_QUERY: 'account-1',
+        window: {
+            location: {
+                hostname: 'frank-invest.github.io',
+                href: 'https://frank-invest.github.io/?access=admin&view=excel&account=account-1'
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(`${backUrl}\nresult = assetExcelPreviewBackUrl();`, context);
+
+    assert.equal(
+        context.result,
+        'https://frank-invest.github.io/?access=admin&view=assets&account=account-1');
+    assert.match(siteScript, /if \(state\.view === 'assets' && ASSET_EXCEL_ACCOUNT_QUERY\) \{\s*assetSelectedAccountId = ASSET_EXCEL_ACCOUNT_QUERY;\s*assetDashboardScreen = 'account';\s*\}/);
 });
 
 test('公開資料讀取永遠使用 anon，只有 Excel 操作表走 allowlist 的 authenticated helper', () => {
