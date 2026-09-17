@@ -1517,7 +1517,7 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 熱絡卡片提供就地走勢分析並讀取精簡歷史()
+    public void 熱絡卡片提供就地走勢分析並讀取近三個月交易日()
     {
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css").Replace("\r\n", "\n", StringComparison.Ordinal);
@@ -1530,6 +1530,9 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("marketHeatPercentLine(points, point => point.volumeRatio)", script, StringComparison.Ordinal);
         Assert.Contains("marketHeatPriceLines", script, StringComparison.Ordinal);
         Assert.Contains("marketHeatTurnoverLines", script, StringComparison.Ordinal);
+        Assert.Contains("renderMarketHeatAnalysis(heat, index, current?.marketTurnovers)", script, StringComparison.Ordinal);
+        Assert.Contains("assetTrendPeriodStartDate(endDate, '3M')", script, StringComparison.Ordinal);
+        Assert.Contains("近 3 個月交易日", script, StringComparison.Ordinal);
         Assert.Contains("marketHeatPercentLine(points, point => point.twseIndex)", script, StringComparison.Ordinal);
         Assert.Contains("marketHeatPercentLine(points, point => point.tpexIndex)", script, StringComparison.Ordinal);
         Assert.Contains("marketHeatPercentLine(points, point => point.twseTurnover)", script, StringComparison.Ordinal);
@@ -1561,6 +1564,8 @@ public sealed class StaticKLineAssetTests
         Assert.Contains(".market-heat-chart-line--twse-price", styles, StringComparison.Ordinal);
         Assert.Contains(".market-heat-chart-line--twse-turnover", styles, StringComparison.Ordinal);
         Assert.Contains(".market-heat-chart-line--tpex-turnover", styles, StringComparison.Ordinal);
+        Assert.Contains("background: #d97706;", styles, StringComparison.Ordinal);
+        Assert.Contains("stroke-width: 1.5;", styles, StringComparison.Ordinal);
     }
 
     [Fact]

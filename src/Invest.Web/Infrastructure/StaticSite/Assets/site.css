@@ -3537,6 +3537,7 @@ body {
     color: #d97706;
     stroke: #d97706;
     fill: #d97706;
+    background: #d97706;
 }
 
 .market-heat-chart-legend-dot--volume,
@@ -3545,6 +3546,7 @@ body {
     color: #64748b;
     stroke: #64748b;
     fill: #64748b;
+    background: #64748b;
 }
 
 .market-heat-chart-legend-dot--twse-price,
@@ -3553,6 +3555,7 @@ body {
     color: #2563eb;
     stroke: #2563eb;
     fill: #2563eb;
+    background: #2563eb;
 }
 
 .market-heat-chart-legend-dot--twse-turnover,
@@ -3561,6 +3564,7 @@ body {
     color: #0f766e;
     stroke: #0f766e;
     fill: #0f766e;
+    background: #0f766e;
 }
 
 .market-heat-chart-legend-dot--tpex-price,
@@ -3569,6 +3573,7 @@ body {
     color: #7c3aed;
     stroke: #7c3aed;
     fill: #7c3aed;
+    background: #7c3aed;
 }
 
 .market-heat-chart-legend-dot--tpex-turnover,
@@ -3577,6 +3582,7 @@ body {
     color: #db2777;
     stroke: #db2777;
     fill: #db2777;
+    background: #db2777;
 }
 
 .market-heat-chart-svg {
@@ -3601,7 +3607,7 @@ body {
 
 .market-heat-chart-line {
     fill: none;
-    stroke-width: 2;
+    stroke-width: 1.5;
     stroke-linecap: round;
     stroke-linejoin: round;
 }

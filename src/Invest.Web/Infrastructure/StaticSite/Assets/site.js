@@ -19740,7 +19740,7 @@ function renderMarketHeat(heat, index) {
     panel.append(overview, indicators, indices, meta);
 
     if (marketHeatAnalysisOpen) {
-        panel.append(renderMarketHeatAnalysis(heat));
+        panel.append(renderMarketHeatAnalysis(heat, index, current?.marketTurnovers));
     }
 
     return panel;
@@ -19755,14 +19755,18 @@ function marketHeatChartNumber(value) {
     return Number.isFinite(number) ? number : null;
 }
 
-function marketHeatChartPoints(heat) {
+function marketHeatChartPoints(heat, index, marketTurnovers) {
     const endDate = String(heat.tradingDate ?? '');
+    const startDate = assetTrendPeriodStartDate(endDate, '3M');
     const byDate = new Map();
+    const inRange = tradingDate => tradingDate
+        && (!startDate || tradingDate >= startDate)
+        && (!endDate || tradingDate <= endDate);
 
     for (const item of Array.isArray(marketHeatHistory) ? marketHeatHistory : []) {
         const tradingDate = String(item.tradingDate ?? item.date ?? '');
 
-        if (!tradingDate || (endDate && tradingDate > endDate)) {
+        if (!inRange(tradingDate)) {
             continue;
         }
 
@@ -19782,7 +19786,7 @@ function marketHeatChartPoints(heat) {
     for (const day of heat.previousDays ?? []) {
         const tradingDate = String(day.tradingDate ?? '');
 
-        if (tradingDate && !byDate.has(tradingDate)) {
+        if (inRange(tradingDate) && !byDate.has(tradingDate)) {
             byDate.set(tradingDate, {
                 tradingDate,
                 score: marketHeatChartNumber(day.score),
@@ -19803,16 +19807,25 @@ function marketHeatChartPoints(heat) {
             tradingDate: endDate,
             score: marketHeatChartNumber(heat.score) ?? currentPoint.score ?? null,
             volumeRatio: marketHeatChartNumber(heat.volumeRatio) ?? currentPoint.volumeRatio ?? null,
-            twseIndex: currentPoint.twseIndex ?? marketHeatChartNumber(currentIndex?.twseIndex) ?? null,
-            twseTurnover: currentPoint.twseTurnover ?? null,
-            tpexIndex: currentPoint.tpexIndex ?? marketHeatChartNumber(currentIndex?.tpexIndex) ?? null,
-            tpexTurnover: currentPoint.tpexTurnover ?? null
+            twseIndex: marketHeatChartNumber(index?.twseIndex)
+                ?? currentPoint.twseIndex
+                ?? marketHeatChartNumber(currentIndex?.twseIndex)
+                ?? null,
+            twseTurnover: marketHeatChartNumber(marketTurnovers?.twse)
+                ?? currentPoint.twseTurnover
+                ?? null,
+            tpexIndex: marketHeatChartNumber(index?.tpexIndex)
+                ?? currentPoint.tpexIndex
+                ?? marketHeatChartNumber(currentIndex?.tpexIndex)
+                ?? null,
+            tpexTurnover: marketHeatChartNumber(marketTurnovers?.tpex)
+                ?? currentPoint.tpexTurnover
+                ?? null
         });
     }
 
     return [...byDate.values()]
-        .sort((left, right) => left.tradingDate.localeCompare(right.tradingDate))
-        .slice(-20);
+        .sort((left, right) => left.tradingDate.localeCompare(right.tradingDate));
 }
 
 function marketHeatPercentLine(points, value, fixedMaximum = null) {
@@ -19877,8 +19890,8 @@ function marketHeatTurnoverLines(points) {
     ];
 }
 
-function renderMarketHeatAnalysis(heat) {
-    const points = marketHeatChartPoints(heat);
+function renderMarketHeatAnalysis(heat, index, marketTurnovers) {
+    const points = marketHeatChartPoints(heat, index, marketTurnovers);
     const priceLines = marketHeatPriceLines(points);
     const turnoverLines = marketHeatTurnoverLines(points);
     const analysis = document.createElement('section');
@@ -19895,8 +19908,8 @@ function renderMarketHeatAnalysis(heat) {
     title.textContent = '熱絡與大盤走勢疊圖';
     const description = document.createElement('span');
     description.textContent = points.length > 1
-        ? '拆成兩張三線疊圖，分開觀察熱絡／指數與量能／成交額。'
-        : '目前快照只有少量歷史熱絡資料；正式匯出後會顯示近 20 個交易日。';
+        ? '拆成兩張三線疊圖，顯示近 3 個月交易日，分開觀察熱絡／指數與量能／成交額。'
+        : '目前快照只有少量歷史熱絡資料；正式匯出後會顯示近 3 個月交易日。';
     heading.append(title, description);
 
     const note = document.createElement('small');
