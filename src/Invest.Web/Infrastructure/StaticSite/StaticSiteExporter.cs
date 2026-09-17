@@ -90,6 +90,8 @@ public sealed class StaticSiteExporter(
 
         var selectableDates = RankingDates.Selectable(tradingDates);
         var fileCount = 0;
+        var marketHeatHistory = new List<MarketHeatChartExport>();
+        var marketTradingTurnovers = ToMarketTradingTurnovers(dataSet);
 
         // 族群熱度只做最新一個基準日。這一版的族群分類是「現在這一份」，
         // 拿今天的名單回頭套三個月前的行情，算出來的是一份從來沒存在過的歷史，
@@ -201,6 +203,11 @@ public sealed class StaticSiteExporter(
 
                 if (periodDays == 1)
                 {
+                    if (result.MarketHeat is { } heat)
+                    {
+                        marketHeatHistory.Add(ToMarketHeatChartExport(heat, dataSet, marketTradingTurnovers));
+                    }
+
                     var comparisons = new List<SingleComparisonExport>(PeriodDayOptions.Length);
 
                     foreach (var singlePeriodDays in PeriodDayOptions)
@@ -261,6 +268,7 @@ public sealed class StaticSiteExporter(
                 ToThresholdExports(),
                 [.. selectableDates.Select(date => date.ToString("yyyy-MM-dd"))],
                 ToMarketIndexExports(dataSet, selectableDates),
+                [.. marketHeatHistory],
                 ToMarketIndexYearStartExports(dataSet, tradingDates),
                 ToScheduleExport(),
                 ToSupabaseExport(),
@@ -1013,6 +1021,49 @@ public sealed class StaticSiteExporter(
                     day.TradingDate.ToString("yyyy-MM-dd"),
                     Round(day.Score)))]);
 
+    private static MarketHeatChartExport ToMarketHeatChartExport(
+        MarketHeatMetrics heat,
+        MarketDataSet dataSet,
+        IReadOnlyDictionary<(DateOnly TradingDate, Domain.Stocks.Market Market), decimal> marketTradingTurnovers)
+    {
+        var day = dataSet.MarketIndices.FirstOrDefault(item => item.TradingDate == heat.TradingDate);
+        var twse = day?.Quotes.FirstOrDefault(index => index.Market == Domain.Stocks.Market.Twse);
+        var tpex = day?.Quotes.FirstOrDefault(index => index.Market == Domain.Stocks.Market.Tpex);
+
+        return new MarketHeatChartExport(
+            heat.TradingDate.ToString("yyyy-MM-dd"),
+            Round(heat.Score),
+            Round(heat.VolumeRatio),
+            Round(twse?.Value),
+            marketTradingTurnovers.TryGetValue(
+                (heat.TradingDate, Domain.Stocks.Market.Twse),
+                out var twseTurnover)
+                ? Round(twseTurnover)
+                : null,
+            Round(tpex?.Value),
+            marketTradingTurnovers.TryGetValue(
+                (heat.TradingDate, Domain.Stocks.Market.Tpex),
+                out var tpexTurnover)
+                ? Round(tpexTurnover)
+                : null);
+    }
+
+    private static IReadOnlyDictionary<(DateOnly TradingDate, Domain.Stocks.Market Market), decimal>
+        ToMarketTradingTurnovers(MarketDataSet dataSet)
+    {
+        var stockMarkets = dataSet.Stocks.ToDictionary(
+            stock => stock.Ticker,
+            stock => stock.Market,
+            StringComparer.Ordinal);
+
+        return dataSet.DailyTrading
+            .Where(row => row.TradingValue > 0 && stockMarkets.ContainsKey(row.Ticker))
+            .GroupBy(row => (row.TradingDate, Market: stockMarkets[row.Ticker]))
+            .ToDictionary(
+                group => group.Key,
+                group => group.Sum(row => row.TradingValue));
+    }
+
     /// <summary>
     /// 一列只寫數字，顯示文字由前端套用格式。
     ///
@@ -1759,6 +1810,9 @@ public sealed class StaticSiteExporter(
         // 所選交易日的加權／櫃買收盤指數與漲跌幅。舊快照缺資料時欄位會是 null。
         IReadOnlyList<MarketIndexExport> MarketIndices,
 
+        // 熱絡分析用的精簡歷史；保存兩張三線疊圖需要的原始指數與成交額，百分比轉換交給前端呈現。
+        IReadOnlyList<MarketHeatChartExport> MarketHeatHistory,
+
         // 盤中舊版資料庫沒有年初欄位時的降級基準。沒有基準就顯示 —。
         IReadOnlyList<MarketIndexYearStartExport> MarketIndexYearStarts,
 
@@ -1800,6 +1854,15 @@ public sealed class StaticSiteExporter(
         decimal? TpexIndex,
         decimal? TpexChangePercent,
         decimal? TpexYearToDateChangePercent);
+
+    private sealed record MarketHeatChartExport(
+        string TradingDate,
+        decimal? Score,
+        decimal? VolumeRatio,
+        decimal? TwseIndex,
+        decimal? TwseTurnover,
+        decimal? TpexIndex,
+        decimal? TpexTurnover);
 
     private sealed record MarketIndexYearStartExport(
         string Year,

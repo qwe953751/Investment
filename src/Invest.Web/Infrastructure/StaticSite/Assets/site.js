@@ -2187,9 +2187,11 @@ let customSearchJumpPending = false;
 let thresholds = [];
 let dates = [];
 let marketIndices = new Map();
+let marketHeatHistory = [];
 let marketIndexYearStarts = new Map();
 let version = '';
 let latestTradingDate = '';
+let marketHeatAnalysisOpen = false;
 
 // 這份快照是什麼時候輸出的（毫秒）。人工編輯頁靠它把編輯切成「已套用」與「待套用」：
 // 比這個時間早的編輯，眼前這份分類就是套過它之後的結果。
@@ -19503,7 +19505,20 @@ function renderMarketHeat(heat, index) {
 
     const heading = document.createElement('div');
     heading.className = 'market-heat-heading';
-    heading.append(title, score, levelTag);
+
+    const analysisToggle = document.createElement('button');
+    analysisToggle.type = 'button';
+    analysisToggle.className = 'market-heat-analysis-toggle';
+    analysisToggle.textContent = marketHeatAnalysisOpen ? '收起走勢' : '看走勢';
+    analysisToggle.setAttribute('aria-expanded', String(marketHeatAnalysisOpen));
+    analysisToggle.setAttribute('aria-controls', 'market-heat-analysis');
+    analysisToggle.dataset.hint = '在這張卡片內展開兩張三線百分比疊圖：分數／指數與量能／成交額。';
+    analysisToggle.addEventListener('click', () => {
+        marketHeatAnalysisOpen = !marketHeatAnalysisOpen;
+        renderSummary();
+    });
+
+    heading.append(title, score, levelTag, analysisToggle);
 
     const progress = document.createElement('div');
     progress.className = 'market-heat-progress';
@@ -19723,7 +19738,338 @@ function renderMarketHeat(heat, index) {
             : '全市場成交額是上市與上櫃一般交易的正式合計；下方比較正式成交額相較前一交易日的增減率與增減金額。');
 
     panel.append(overview, indicators, indices, meta);
+
+    if (marketHeatAnalysisOpen) {
+        panel.append(renderMarketHeatAnalysis(heat));
+    }
+
     return panel;
+}
+
+function marketHeatChartNumber(value) {
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
+
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function marketHeatChartPoints(heat) {
+    const endDate = String(heat.tradingDate ?? '');
+    const byDate = new Map();
+
+    for (const item of Array.isArray(marketHeatHistory) ? marketHeatHistory : []) {
+        const tradingDate = String(item.tradingDate ?? item.date ?? '');
+
+        if (!tradingDate || (endDate && tradingDate > endDate)) {
+            continue;
+        }
+
+        byDate.set(tradingDate, {
+            tradingDate,
+            score: marketHeatChartNumber(item.score),
+            volumeRatio: marketHeatChartNumber(item.volumeRatio),
+            twseIndex: marketHeatChartNumber(item.twseIndex),
+            twseTurnover: marketHeatChartNumber(item.twseTurnover),
+            tpexIndex: marketHeatChartNumber(item.tpexIndex),
+            tpexTurnover: marketHeatChartNumber(item.tpexTurnover)
+        });
+    }
+
+    // 舊版快照還沒有 manifest.marketHeatHistory 時，至少保留卡片原有的前五日，
+    // 讓本機舊預覽與已發布的舊快照仍能看到分析區，而不是整塊消失。
+    for (const day of heat.previousDays ?? []) {
+        const tradingDate = String(day.tradingDate ?? '');
+
+        if (tradingDate && !byDate.has(tradingDate)) {
+            byDate.set(tradingDate, {
+                tradingDate,
+                score: marketHeatChartNumber(day.score),
+                volumeRatio: null,
+                twseIndex: null,
+                twseTurnover: null,
+                tpexIndex: null,
+                tpexTurnover: null
+            });
+        }
+    }
+
+    if (endDate) {
+        const currentPoint = byDate.get(endDate) ?? { tradingDate: endDate };
+        const currentIndex = marketIndices.get(endDate);
+        byDate.set(endDate, {
+            ...currentPoint,
+            tradingDate: endDate,
+            score: marketHeatChartNumber(heat.score) ?? currentPoint.score ?? null,
+            volumeRatio: marketHeatChartNumber(heat.volumeRatio) ?? currentPoint.volumeRatio ?? null,
+            twseIndex: currentPoint.twseIndex ?? marketHeatChartNumber(currentIndex?.twseIndex) ?? null,
+            twseTurnover: currentPoint.twseTurnover ?? null,
+            tpexIndex: currentPoint.tpexIndex ?? marketHeatChartNumber(currentIndex?.tpexIndex) ?? null,
+            tpexTurnover: currentPoint.tpexTurnover ?? null
+        });
+    }
+
+    return [...byDate.values()]
+        .sort((left, right) => left.tradingDate.localeCompare(right.tradingDate))
+        .slice(-20);
+}
+
+function marketHeatPercentLine(points, value, fixedMaximum = null) {
+    const maximum = fixedMaximum ?? Math.max(
+        0,
+        ...points
+            .map(point => marketHeatChartNumber(value(point)))
+            .filter(number => number !== null && number > 0)
+    );
+
+    return point => {
+        const number = marketHeatChartNumber(value(point));
+        return number === null || maximum <= 0
+            ? null
+            : number / maximum * 100;
+    };
+}
+
+function marketHeatPriceLines(points) {
+    return [
+        {
+            value: marketHeatPercentLine(points, point => point.score, 10),
+            lineClass: 'market-heat-chart-line--heat',
+            dotClass: 'market-heat-chart-legend-dot--heat',
+            label: '市場熱絡分數'
+        },
+        {
+            value: marketHeatPercentLine(points, point => point.twseIndex),
+            lineClass: 'market-heat-chart-line--twse-price',
+            dotClass: 'market-heat-chart-legend-dot--twse-price',
+            label: '加權指數'
+        },
+        {
+            value: marketHeatPercentLine(points, point => point.tpexIndex),
+            lineClass: 'market-heat-chart-line--tpex-price',
+            dotClass: 'market-heat-chart-legend-dot--tpex-price',
+            label: '上櫃指數'
+        },
+    ];
+}
+
+function marketHeatTurnoverLines(points) {
+    return [
+        {
+            value: marketHeatPercentLine(points, point => point.volumeRatio),
+            lineClass: 'market-heat-chart-line--volume',
+            dotClass: 'market-heat-chart-legend-dot--volume',
+            label: '市場量能'
+        },
+        {
+            value: marketHeatPercentLine(points, point => point.twseTurnover),
+            lineClass: 'market-heat-chart-line--twse-turnover',
+            dotClass: 'market-heat-chart-legend-dot--twse-turnover',
+            label: '加權成交額'
+        },
+        {
+            value: marketHeatPercentLine(points, point => point.tpexTurnover),
+            lineClass: 'market-heat-chart-line--tpex-turnover',
+            dotClass: 'market-heat-chart-legend-dot--tpex-turnover',
+            label: '上櫃成交額'
+        }
+    ];
+}
+
+function renderMarketHeatAnalysis(heat) {
+    const points = marketHeatChartPoints(heat);
+    const priceLines = marketHeatPriceLines(points);
+    const turnoverLines = marketHeatTurnoverLines(points);
+    const analysis = document.createElement('section');
+    analysis.id = 'market-heat-analysis';
+    analysis.className = 'market-heat-analysis';
+    analysis.setAttribute('aria-label', '市場熱絡走勢分析');
+
+    const header = document.createElement('div');
+    header.className = 'market-heat-analysis-header';
+
+    const heading = document.createElement('div');
+    heading.className = 'market-heat-analysis-heading';
+    const title = document.createElement('strong');
+    title.textContent = '熱絡與大盤走勢疊圖';
+    const description = document.createElement('span');
+    description.textContent = points.length > 1
+        ? '拆成兩張三線疊圖，分開觀察熱絡／指數與量能／成交額。'
+        : '目前快照只有少量歷史熱絡資料；正式匯出後會顯示近 20 個交易日。';
+    heading.append(title, description);
+
+    const note = document.createElement('small');
+    note.className = 'market-heat-analysis-note';
+    note.textContent = '左軸固定 0～100%：熱絡分數以 10 分為 100%；其餘每條線以各自區間最高值為 100%。';
+    header.append(heading, note);
+
+    const charts = document.createElement('div');
+    charts.className = 'market-heat-analysis-grid';
+    charts.append(
+        renderMarketHeatChartCard(
+            '市場熱絡分數 × 指數',
+            '三線先各自換算百分比，再共用 0～100% 左軸',
+            points,
+            {
+                domain: [0, 100],
+                axisFormat: value => `${Math.round(value)}%`,
+                lines: priceLines,
+                legend: priceLines.map(line => [line.dotClass, line.label])
+            }),
+        renderMarketHeatChartCard(
+            '市場量能 × 成交額',
+            '三線先各自換算百分比，再共用 0～100% 左軸',
+            points,
+            {
+                domain: [0, 100],
+                axisFormat: value => `${Math.round(value)}%`,
+                lines: turnoverLines,
+                legend: turnoverLines.map(line => [line.dotClass, line.label])
+            })
+    );
+
+    analysis.append(header, charts);
+    return analysis;
+}
+
+function renderMarketHeatChartCard(titleText, subtitleText, points, options) {
+    const card = document.createElement('article');
+    card.className = 'market-heat-chart-card';
+
+    const header = document.createElement('div');
+    header.className = 'market-heat-chart-card-header';
+    const title = document.createElement('strong');
+    title.textContent = titleText;
+    const subtitle = document.createElement('span');
+    subtitle.textContent = subtitleText;
+    header.append(title, subtitle);
+
+    const legend = document.createElement('div');
+    legend.className = 'market-heat-chart-legend';
+    for (const [dotClass, labelText] of options.legend ?? []) {
+        const item = document.createElement('span');
+        const dot = document.createElement('i');
+        dot.className = `market-heat-chart-legend-dot ${dotClass}`;
+        item.append(dot, labelText);
+        legend.append(item);
+    }
+
+    card.append(header, legend, renderMarketHeatChartSvg(points, options));
+    return card;
+}
+
+function renderMarketHeatChartSvg(points, options) {
+    const width = 520;
+    const height = 190;
+    const left = 42;
+    const right = 508;
+    const top = 14;
+    const bottom = 142;
+    const lines = options.lines ?? [{ value: options.value, lineClass: options.lineClass }];
+    const values = lines
+        .flatMap(line => points.map(point => marketHeatChartNumber(line.value(point))))
+        .filter(value => value !== null);
+
+    const svg = svgElement('svg', {
+        class: 'market-heat-chart-svg',
+        viewBox: `0 0 ${width} ${height}`,
+        role: 'img',
+        'aria-label': '市場熱絡歷史走勢圖'
+    });
+    svg.append(svgElement('title', {}, '市場熱絡歷史走勢圖'));
+
+    if (values.length === 0) {
+        svg.append(svgElement('text', {
+            x: width / 2,
+            y: 86,
+            class: 'market-heat-chart-empty',
+            'text-anchor': 'middle'
+        }, '尚無可繪製資料'));
+        return svg;
+    }
+
+    let [minimum, maximum] = options.domain ?? [Math.min(...values), Math.max(...values)];
+    if (minimum === maximum) {
+        const padding = Math.max(Math.abs(minimum) * 0.08, 1);
+        minimum -= padding;
+        maximum += padding;
+    }
+
+    const x = index => points.length <= 1
+        ? (left + right) / 2
+        : left + index / (points.length - 1) * (right - left);
+    const y = value => bottom - (value - minimum) / (maximum - minimum) * (bottom - top);
+
+    for (let index = 0; index < 3; index += 1) {
+        const ratio = index / 2;
+        const lineY = top + ratio * (bottom - top);
+        const labelValue = maximum - ratio * (maximum - minimum);
+        svg.append(
+            svgElement('line', {
+                x1: left,
+                x2: right,
+                y1: lineY,
+                y2: lineY,
+                class: 'market-heat-chart-grid-line'
+            }),
+            svgElement('text', {
+                x: left - 8,
+                y: lineY + 4,
+                class: 'market-heat-chart-axis-label',
+                'text-anchor': 'end'
+            }, options.axisFormat(labelValue))
+        );
+    }
+
+    for (const line of lines) {
+        let path = '';
+        points.forEach((point, index) => {
+            const value = marketHeatChartNumber(line.value(point));
+            if (value === null) {
+                return;
+            }
+
+            path += `${path ? 'L' : 'M'} ${x(index)} ${y(value)} `;
+        });
+
+        if (!path) {
+            continue;
+        }
+
+        const lineClass = line.lineClass ?? '';
+        svg.append(svgElement('path', {
+            d: path.trim(),
+            class: `market-heat-chart-line ${lineClass}`.trim()
+        }));
+
+        points.forEach((point, index) => {
+            const value = marketHeatChartNumber(line.value(point));
+            if (value !== null) {
+                svg.append(svgElement('circle', {
+                    cx: x(index),
+                    cy: y(value),
+                    r: 2.5,
+                    class: `market-heat-chart-point ${lineClass}`.trim()
+                }));
+            }
+        });
+    }
+
+    const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+    for (const index of labelIndexes) {
+        const date = points[index]?.tradingDate;
+        if (date) {
+            svg.append(svgElement('text', {
+                x: x(index),
+                y: bottom + 24,
+                class: 'market-heat-chart-date-label',
+                'text-anchor': index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle'
+            }, date.slice(5).replace('-', '/')));
+        }
+    }
+
+    return svg;
 }
 
 function makeLoadRetryButton(onRetry) {
@@ -30280,6 +30626,7 @@ async function start() {
     thresholds = manifest.thresholds;
     dates = manifest.dates;
     marketIndices = new Map((manifest.marketIndices ?? []).map(entry => [entry.date, entry]));
+    marketHeatHistory = manifest.marketHeatHistory ?? [];
     marketIndexYearStarts = new Map((manifest.marketIndexYearStarts ?? [])
         .map(entry => [String(entry.year), entry]));
     version = manifest.version;

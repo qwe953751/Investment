@@ -3413,6 +3413,209 @@ body {
     color: #2563eb;
 }
 
+.market-heat-analysis-toggle {
+    margin-left: auto;
+    padding: 4px 10px;
+    border: 1px solid #b9c9df;
+    border-radius: 999px;
+    background: var(--surface);
+    color: #4b6384;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color .15s ease, background-color .15s ease, color .15s ease;
+}
+
+.market-heat-analysis-toggle:hover,
+.market-heat-analysis-toggle:focus-visible {
+    border-color: #7ea6e3;
+    background: #edf4ff;
+    color: #1f4f96;
+    outline: none;
+}
+
+.market-heat-analysis {
+    grid-column: 1 / -1;
+    padding: 12px;
+    border-top: 1px solid #dce3ed;
+    border-radius: 8px;
+    background: #f8fafd;
+}
+
+.market-heat-analysis-header,
+.market-heat-analysis-heading,
+.market-heat-chart-card-header,
+.market-heat-chart-legend {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.market-heat-analysis-header {
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.market-heat-analysis-heading {
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+.market-heat-analysis-heading strong {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.market-heat-analysis-heading span,
+.market-heat-analysis-note,
+.market-heat-chart-card-header span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.market-heat-analysis-note {
+    white-space: nowrap;
+}
+
+.market-heat-analysis-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.market-heat-chart-card {
+    min-width: 0;
+    padding: 10px 10px 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+.market-heat-chart-card-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.market-heat-chart-card-header strong {
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.market-heat-chart-card-header span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: normal;
+}
+
+.market-heat-chart-legend {
+    margin-top: 5px;
+    color: var(--text-muted);
+    font-size: 11px;
+    flex-wrap: wrap;
+    row-gap: 4px;
+}
+
+.market-heat-chart-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.market-heat-chart-legend-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #94a3b8;
+}
+
+.market-heat-chart-legend-dot--heat,
+.market-heat-chart-line--heat,
+.market-heat-chart-point.market-heat-chart-line--heat {
+    color: #d97706;
+    stroke: #d97706;
+    fill: #d97706;
+}
+
+.market-heat-chart-legend-dot--volume,
+.market-heat-chart-line--volume,
+.market-heat-chart-point.market-heat-chart-line--volume {
+    color: #64748b;
+    stroke: #64748b;
+    fill: #64748b;
+}
+
+.market-heat-chart-legend-dot--twse-price,
+.market-heat-chart-line--twse-price,
+.market-heat-chart-point.market-heat-chart-line--twse-price {
+    color: #2563eb;
+    stroke: #2563eb;
+    fill: #2563eb;
+}
+
+.market-heat-chart-legend-dot--twse-turnover,
+.market-heat-chart-line--twse-turnover,
+.market-heat-chart-point.market-heat-chart-line--twse-turnover {
+    color: #0f766e;
+    stroke: #0f766e;
+    fill: #0f766e;
+}
+
+.market-heat-chart-legend-dot--tpex-price,
+.market-heat-chart-line--tpex-price,
+.market-heat-chart-point.market-heat-chart-line--tpex-price {
+    color: #7c3aed;
+    stroke: #7c3aed;
+    fill: #7c3aed;
+}
+
+.market-heat-chart-legend-dot--tpex-turnover,
+.market-heat-chart-line--tpex-turnover,
+.market-heat-chart-point.market-heat-chart-line--tpex-turnover {
+    color: #db2777;
+    stroke: #db2777;
+    fill: #db2777;
+}
+
+.market-heat-chart-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin-top: 2px;
+    overflow: visible;
+}
+
+.market-heat-chart-grid-line {
+    stroke: #e8edf4;
+    stroke-width: 1;
+}
+
+.market-heat-chart-axis-label,
+.market-heat-chart-date-label {
+    fill: #8b95a7;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.market-heat-chart-line {
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.market-heat-chart-point {
+    stroke: var(--surface);
+    stroke-width: 1.5;
+}
+
+.market-heat-chart-empty {
+    fill: #8b95a7;
+    font-size: 12px;
+}
+
 .market-heat-progress {
     margin-top: 10px;
     height: 12px;
@@ -4814,6 +5017,22 @@ td.stock-name.stock-name-change-down {
 
     .page-header p {
         font-size: 14px;
+    }
+
+    .market-heat-analysis-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .market-heat-analysis-header,
+    .market-heat-chart-card-header {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 3px;
+    }
+
+    .market-heat-analysis-note,
+    .market-heat-chart-card-header span {
+        white-space: normal;
     }
 
     /* 手機上鈴鐺會落在標題列中間，面板照著按鈕靠左對齊一定會被切掉右半邊。

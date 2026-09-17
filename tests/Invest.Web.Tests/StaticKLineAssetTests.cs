@@ -1517,6 +1517,53 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 熱絡卡片提供就地走勢分析並讀取精簡歷史()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css").Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("marketHeatHistory = manifest.marketHeatHistory ?? [];", script, StringComparison.Ordinal);
+        Assert.Contains("market-heat-analysis-toggle", script, StringComparison.Ordinal);
+        Assert.Contains("renderMarketHeatAnalysis", script, StringComparison.Ordinal);
+        Assert.Contains("熱絡與大盤走勢疊圖", script, StringComparison.Ordinal);
+        Assert.Contains("marketHeatPercentLine(points, point => point.score, 10)", script, StringComparison.Ordinal);
+        Assert.Contains("marketHeatPercentLine(points, point => point.volumeRatio)", script, StringComparison.Ordinal);
+        Assert.Contains("marketHeatPriceLines", script, StringComparison.Ordinal);
+        Assert.Contains("marketHeatTurnoverLines", script, StringComparison.Ordinal);
+        Assert.Contains("marketHeatPercentLine(points, point => point.twseIndex)", script, StringComparison.Ordinal);
+        Assert.Contains("marketHeatPercentLine(points, point => point.tpexIndex)", script, StringComparison.Ordinal);
+        Assert.Contains("marketHeatPercentLine(points, point => point.twseTurnover)", script, StringComparison.Ordinal);
+        Assert.Contains("marketHeatPercentLine(points, point => point.tpexTurnover)", script, StringComparison.Ordinal);
+        Assert.Contains("domain: [0, 100]", script, StringComparison.Ordinal);
+        Assert.Contains("左軸固定 0～100%", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("marketHeatBaselinePercent", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("marketHeatOverlayDomain", script, StringComparison.Ordinal);
+        foreach (var label in new[]
+                 {
+                     "市場熱絡分數",
+                     "加權指數",
+                     "上櫃指數",
+                     "市場量能",
+                     "加權成交額",
+                     "上櫃成交額"
+                 })
+        {
+            Assert.Contains(label, script, StringComparison.Ordinal);
+        }
+        Assert.DoesNotContain("六層市場熱絡疊圖", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("加權指數成交量", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("櫃買指數成交量", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("加權指數與上市成交額", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("櫃買指數與上櫃成交額", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("兩個市場指數對照圖", script, StringComparison.Ordinal);
+        Assert.Contains(".market-heat-analysis {\n    grid-column: 1 / -1;", styles, StringComparison.Ordinal);
+        Assert.Contains(".market-heat-analysis-grid", styles, StringComparison.Ordinal);
+        Assert.Contains(".market-heat-chart-line--twse-price", styles, StringComparison.Ordinal);
+        Assert.Contains(".market-heat-chart-line--twse-turnover", styles, StringComparison.Ordinal);
+        Assert.Contains(".market-heat-chart-line--tpex-turnover", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 族群熱度提供盤中觀察期並使用同一個兩分鐘刷新時鐘()
     {
         var script = ReadAsset("site.js");
