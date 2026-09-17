@@ -15,7 +15,7 @@ function startupAuthSource() {
 
     const restore = siteScript.indexOf('    await restoreSession();', start);
     const autoLogin = siteScript.indexOf('    if (!sharedLogin && AUTOLOGIN_QUERY', start);
-    const cleanup = siteScript.indexOf('    // 用過就把 key 從網址列拿掉', start);
+    const cleanup = siteScript.indexOf('    // 用過就把網址上的一次性參數拿掉', start);
     assert.ok(restore >= 0, '找不到 restoreSession 啟動接線。');
     assert.ok(autoLogin >= 0, '找不到 AUTOLOGIN_QUERY 啟動接線。');
     assert.ok(cleanup > 0, '找不到 key 清除接線。');
@@ -50,6 +50,12 @@ async function runStartupAuth({ key, loginSucceeds }) {
 
                 return false;
             }
+
+            // 這段登入接線之後緊接著操作記憶讀取盤中標記（見 site.js 的
+            // settingsMarkers／intradayMarkerPromise），跟這支測試要驗的登入優先序無關，
+            // 這裡只給最小可執行的替身讓抽出來的原始碼片段跑得動。
+            const intradayMarkerPromise = Promise.resolve(null);
+            let settingsMarkers = { dailyDate: null, intradayDate: null };
 
             ${source}
 

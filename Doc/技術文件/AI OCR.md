@@ -214,7 +214,7 @@ Worker claim → UPDATE ocr_jobs queued → leased
 ### 0.1 2026-09-11～09-12 事件驅動版本落後事故與復原
 
 延續 0. 節的修復；本節記錄再次發生的「常駐 EXE 版本落後」事故與本次復原，避免只在
-`完成進度.md`／`TODO.md` 留下摘要而這裡的技術記錄脫節。完整用量歸因見 [TODO.md](../../TODO.md)
+`完成進度.md`／`TODO.md` 留下摘要而這裡的技術記錄脫節。完整用量歸因見 [TODO.md](../TODO.md)
 的 TODO 14「2026-09-11 用量歸因」。
 
 #### 根因
@@ -2166,7 +2166,7 @@ Claude CLI 並修好雙 Agent 接線，而不是繼續維持「不裝 Claude」�
 - [README](../../README.md)
 - [版本紀錄](../版本紀錄.md)
 - [完成進度](../完成進度.md)
-- [TODO](../../TODO.md)
+- [TODO](../TODO.md)
 - [現有前端 OCR 與資產流程](../../src/Invest.Web/Infrastructure/StaticSite/Assets/site.js)
 - [資產資料表與目前 RLS](../../db/019_assets.sql)
 - [筆記圖片 Storage 與 RLS](../../db/023_notes_images.sql)

@@ -19,7 +19,7 @@ anon 查詢誤帶 JWT、導致沒有 authenticated policy 時回傳空陣列的�
 Edge Function v11 已更新並具備 Windows 優先的 Worker 選擇；公司 Windows Worker 的背景排程與正式心跳已驗收。本輪另加入
 Max／Low／人工答案三方評估資料集：預設抽樣約 10%，Low 只在背景執行、不會替換 Max；`db/042_ocr_evaluation.sql` 已套用正式 Supabase。
 Golden Set、圖片／模型
-效能調校、多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收，限制與下一步見 [TODO.md](TODO.md)。
+效能調校、多圖 concurrency 與修復後的手機新圖片 AI 成功仍待驗收，限制與下一步見 [TODO.md](Doc/TODO.md)。
 2026-09-10 已修復正式 `ocr_jobs` claim 502 的共用 trigger 欄位錯誤：`db/047_ocr_realtime_claim_wake.sql`
 分離兩張表的 Realtime trigger，並加入管理者本人限定、5 秒資料庫原子節流的活躍工作 `wake`；`ocr-jobs`
 Edge Function 已部署 v13，正式 claim／evaluation transition／wake rollback smoke test 通過。`main` commit
@@ -36,7 +36,7 @@ Edge Function 已部署 v13，正式 claim／evaluation transition／wake rollba
 | 到目前為止做完了什麼、現在什麼狀態、踩過哪些坑 | [Doc/完成進度.md](Doc/完成進度.md) |
 | 在另一台裝置上要裝什麼、要什麼權限，以及 Codex／Claude 共用的 Supabase 變更後前端驗收規則 | [Doc/開發環境.md](Doc/開發環境.md) |
 | 最近發布了什麼、其他裝置接手先看哪裡 | [Doc/版本紀錄.md](Doc/版本紀錄.md) |
-| 還沒做的事，以及每一項已經談出來的結論 | [TODO.md](TODO.md) |
+| 還沒做的事，以及每一項已經談出來的結論 | [TODO.md](Doc/TODO.md) |
 
 `Doc/Google Sheet網頁化/` 底下的 PDF 是最初的需求文件，保留原件不修改。
 
@@ -180,7 +180,7 @@ Dashboard 與帳戶明細的折線圖共用版本 A：滑鼠移動／點擊或�
 
 `db/023_notes_images.sql` 已套用正式 Supabase；`note-images` bucket、`notes.attachments` 與三條 Storage policy 均已查證存在，匿名上傳／刪除測試皆回 HTTP 200。它沿用目前筆記的公開 anon 模型，請勿上傳含帳號、密碼或敏感金融資訊的原始截圖。
 
-清除網站資料、使用無痕視窗或更換裝置後仍會讀到同一份筆記；要把「網址可編輯」收斂成真正的資料庫權限，仍須完成 [TODO.md](TODO.md) 的 RLS 收權限驗收。
+清除網站資料、使用無痕視窗或更換裝置後仍會讀到同一份筆記；要把「網址可編輯」收斂成真正的資料庫權限，仍須完成 [TODO.md](Doc/TODO.md) 的 RLS 收權限驗收。
 
 ## 本次已發布修改
 
@@ -275,7 +275,7 @@ publish-only run [33509783439](https://github.com/qwe953751/Investment/actions/r
 `33509427363` 曾因 TPEx `exDailyQ` 暫時回 HTTP 520 失敗，未以不完整權息資料發布，
 端點恢復後重跑成功。最高權限網站為
 `https://frank-invest.github.io/admin888/`，檢視網址為 `https://frank-invest.github.io/viewer/`。
-密碼登入已上線，資產相關匿名 RLS 收權限仍以 `TODO.md` 為準。
+密碼登入已上線，資產相關匿名 RLS 收權限仍以 `Doc/TODO.md` 為準。
 這一版已完成並驗收：
 
 - 盤中、盤後旁新增「自訂」頁；可瀏覽單一交易日的完整上市櫃資料，不建立預設排行。
@@ -666,7 +666,7 @@ dotnet run --project src/Invest.Web -- curve
 曲線來自 `intraday_curve`，收集器每輪寫一列。這張表不會被 `sync` 刪掉——
 日內的量能形狀只有盤中看得到，盤後行情裡沒有，刪掉就永遠算不回來。
 累積滿 10 個交易日之後，`status` 會在 STATUS.md 提醒可以換公式了。
-細節與尚未決定的事項在 [TODO.md](TODO.md)。
+細節與尚未決定的事項在 [TODO.md](Doc/TODO.md)。
 
 ## 盤中成交金額對照（暫時的）
 
@@ -692,7 +692,7 @@ dotnet run --project src/Invest.Web -- turnover-audit --loop   # 整場每 5 分
 `src/Invest.Web/Infrastructure/TurnoverAudit/`、
 `tests/Invest.Web.Tests/TurnoverAuditTests.cs`、
 那支 workflow，以及 `Program.cs` 裡的指令與 DI 註冊。
-背景與後續實作寫在 [TODO.md](TODO.md) 第 9 項。
+背景與後續實作寫在 [TODO.md](Doc/TODO.md) 第 9 項。
 
 ## 對帳
 
@@ -733,8 +733,7 @@ scripts/backup-supabase.sh [快照目錄]        # 預設 data/snapshots
 ```
 Invest/
 ├── .github/workflows/                   每日自動回補發佈、盤中收集、月營收、每週還原測試
-├── Doc/                                原始需求與交接文件
-├── TODO.md                              待辦事項與每一項的討論結論
+├── Doc/                                原始需求與交接文件（含待辦事項 TODO.md）
 ├── db/                                  資料表定義（依編號手動貼進 Supabase）
 ├── scripts/                             發佈與備份用的指令稿（本機與 CI 共用同一份）
 ├── data/imports/                        行情快取（不進版控，內容存在 data 分支）

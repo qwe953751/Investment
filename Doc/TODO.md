@@ -3,7 +3,7 @@
 這份檔案是討論的存放處，不是進度表。每次要談某件事之前先讀這裡，
 就不用把前幾次的結論重講一遍。
 
-**已經做完的事不寫在這裡**，看 [Doc/完成進度.md](Doc/完成進度.md)。
+**已經做完的事不寫在這裡**，看 [Doc/完成進度.md](完成進度.md)。
 一件事上線並驗收完成之後就從這裡移除，只留還沒定案或還在等的。
 
 ## 快速跳轉
@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](Doc/版本紀錄.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [Google Sheet 操作(台)完整 48 欄支援](#todo-18) | ⚪ 目前只完成現行 14 欄受控投影 |
@@ -55,7 +55,7 @@
 問題出在「今天還沒過完」：半天的量拿去比人家一整天的量，一定小。
 如果先把今天的量推估成全日再比，那準確度就整個綁在預估值上——
 早盤預估值的分母原本是線性時間比例，現已改用校準過的日內量能曲線
-f(t)（2026-09-05，筆記 #42，見 [Doc/完成進度.md](Doc/完成進度.md)），
+f(t)（2026-09-05，筆記 #42，見 [Doc/完成進度.md](完成進度.md)），
 但盤中與盤後比較這件事本身仍然選擇繞開預估值，見下面的作法。
 
 改看比例就繞開了這件事：
@@ -265,7 +265,7 @@ Node 回歸測試已加入「公開 query 不帶 JWT」「Excel allowlist」「4
 `MarketDataDownloader` 的回補迴圈另外自己判斷週末與證交所日曆，
 盤中收集迴圈則是靠 MIS 停滯偵測抓颱風假——三處邏輯互相不知道對方的存在。
 
-**做法**：新增 `TradingDayResolver`（[TradingDayResolver.cs](src/Invest.Web/Infrastructure/MarketData/TradingDayResolver.cs)），
+**做法**：新增 `TradingDayResolver`（[TradingDayResolver.cs](../src/Invest.Web/Infrastructure/MarketData/TradingDayResolver.cs)），
 把「今天開不開盤」收斂成單一入口，三層判定由確定到不確定：
 週末不必問任何人 → 證交所休市日曆 → MIS 即時行情的成交日期停在上一個
 交易日且過了 `CollectionSchedule.IntradayGiveUp`（10:00）才算數，
@@ -343,7 +343,7 @@ Node 回歸測試已加入「公開 query 不帶 JWT」「Excel allowlist」「4
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：已上線，等明天 07:00–18:00 實際用過一輪**
+**狀態：2026-09-17 改版已上線，等實地驗收**
 
 ### 已討論
 
@@ -354,7 +354,7 @@ Node 回歸測試已加入「公開 query 不帶 JWT」「Excel allowlist」「4
 
 | 欄位 | 現在的預設 | 是什麼 |
 |---|---|---|
-| `view` | `'daily'` | 盤後／盤中 |
+| `view` | 依資料標記：盤中資料比盤後新且有盤中資料來源時是盤中，否則盤後 | 盤後／盤中 |
 | `period` | 盤後 1 日／盤中 5 日 | 觀察期間幾個交易日 |
 | `date` | manifest 最新的一天 | 基準交易日 |
 | `mode` | `'heat'` | 排行模式 |
@@ -365,44 +365,56 @@ Node 回歸測試已加入「公開 query 不帶 JWT」「Excel allowlist」「4
 做法上不用另外發明：鎖定股號已經是這個模式（`localStorage`、
 key 是 `invest.lockedTickers`、讀寫都包 try/catch 讓無痕模式不會炸）。
 
-**記憶的有效期跟著取資料的時間走（已定案）**：
+**記憶的有效期改成看資料標記，不再看台北時鐘（2026-09-17 改版，已定案）**：
 
 ```
-07:00  盤中收集開跑  → 從這裡開始記上次的設定
-18:00  盤後回補開跑  → 存的東西作廢，回到預設
+manifest.dates 最後一天前進（盤後新交易日發布，約 18:10）  → 存的東西作廢，回到預設盤後
+盤中 CDN latest 指標的 tradeDate 前進（今天出現新一輪，約 08:40–09:00）→ 作廢，回到預設盤中
+其餘時間（含 18:00 之後、美股快照、程式部署、publish-only 重發、週末、休市日）→ 保持記憶
 ```
 
-也就是 07:00–18:00 之間選的設定會被記住、重整不會跑掉；
-跨過 18:00 之後再開就是全新的預設值，因為那時候換的是新一天的盤後資料。
-`view` 與 `date` 不另外訂規則，一起吃這個有效期——18:00 之後開一定是盤後頁、
-一定是最新一天，早上七點以後才開始沿用。
+**為什麼從舊規則（07:00–18:00 台北時鐘窗口）改掉**：
+1. 舊規則寫死 18:00 作廢，但盤後正式發布實測約在 18:10–18:17，時鐘窗口跟資料到位時間對不上。
+2. 每天還有好幾次「只重發網站、不換資料」的部署（美股快照約 09:20、程式部署、盤中 CDN 補發），
+   舊規則測不出這些跟「資料真的換了」的差別；改看資料標記後，這些重發都不會誤觸發作廢。
+3. 舊規則在 07:00–18:00 以外完全不記，18:00 後（含晚上）重新整理一律跳回預設，
+   使用者實際回報過「切到盤中後按重新整理會回到資產」——這個情境在窗口外也不該遺失記憶。
 
-**這兩個時間不可以在前端寫死。** 使用者的原話是「盤中與盤後獲取資料時機同步，
-避免下次換時間就不一樣了」：改了排程卻忘了改前端，記憶就會在錯的時間點作廢。
-要有單一來源，由後端寫進 `manifest.json`，`site.js` 讀它。
+**這兩個標記不可以在前端寫死。**
+盤後標記讀 `manifest.dates` 最後一天（既有欄位，不必新增）；
+盤中標記讀盤中 CDN 的 `latest.json` 指標（只有數百 bytes，`start()` 開頁時讀一次，
+之後每次套用新一輪盤中快照時更新），沒有 CDN 或逾時就當作讀不到，不因此擋住開頁。
 
 **存著的舊值一律驗證，驗不過就退回預設（已定案）**。
 例如 `PERIODS` 或門檻級距改版之後，存的值可能已經不存在。
 
 **不寫進網址列（已定案）**。使用者明確說不要改網址，分享連結維持乾淨。
+2026-09-17 額外定案：**進站用的一次性網址參數（`view`、`account`）用完即清**——
+Excel「返回持倉」等導頁動作會帶著這兩個參數，套用後不清掉的話會一路蓋掉這裡的操作記憶，
+`view=excel` 除外（那是 Excel 頁本身的網址）。
 
-**實作（已上線）**：
+**實作（2026-09-17 改版已上線）**：
 
-- 時間的單一來源是 `CollectionSchedule`（C#），由 export 寫進 `manifest.json` 的
-  `schedule`，`site.js` 讀它。前端刻意**不留預設時間**：抄一份就會漏改。
-  manifest 給不出 `schedule` 時就整個關掉記憶功能，一律用預設選項。
-- 記憶期用「台北日期」當標記存進 `localStorage`（`invest.settings`）。
-  存的時候不在期內就不寫；讀的時候標記對不上就整份忽略。
-  這樣「跨過 18:00 就作廢」不必真的去比時間差。
+- 兩個標記存在 `settingsMarkers`（`site.js`），`dailyDate` 在 `start()` 讀完 manifest 後立刻設定，
+  `intradayDate` 由 `fetchIntradayCdnPointer()` 與 `applyIntradaySnapshot()` 維護，只會往前推進。
+- 記憶紀錄格式升版為 `invest.settings.v2`（`isSettingsRecordCurrent()` 判斷是否過期），
+  同時寫 `sessionStorage`（本分頁專用）與 `localStorage`（新分頁沿用的共用記憶）；
+  **每個分頁各自記自己的位置**，不會被另一個分頁的切換蓋掉——這是這次一併解掉的第二個問題
+  （多分頁互相覆蓋）。舊版 `invest.settings` key 開頁時清掉，不轉換內容。
+- 沒有有效記憶時的預設頁籤看 `defaultViewForMarkers()`：盤中標記比盤後標記新且有資料來源
+  就是盤中，否則盤後；退回盤後預設時，期間也要蓋回盤後自己的預設（1 日），不能沿用
+  `state` 初始值（那是給盤中準備的 5 日）。
 - 每一項分開驗（期間、基準日、模式、市場、門檻、排序欄位），
   驗不過的那一項留在預設，不會因為一項壞了整組丟掉。
   門檻只驗「是不是合理的數字」，因為它可以自己輸入任意金額。
-- `view` 額外擋一層：沒有資料庫連線時盤中頁是停用的，存著的值不能繞過。
-- 盤中那句說明（收集器幾點開始、幾分鐘一輪）以前是寫死的 08:40，
-  現在也讀 `schedule`，不會再跟排程講不一樣的話。
+- `view` 額外擋一層：沒有資料庫連線、也沒有 CDN 快照來源時盤中頁是停用的，存著的值不能繞過。
+- 上方市場列（台股／日股／韓股／美股／加密）現在也記，切換時寫入、開頁時還原。
+- 盤中那句說明（收集器幾點開始、幾分鐘一輪）讀 `schedule`，跟排程講同一件事，這點沒變。
 
-瀏覽器實測過四種情況：期內選了會記、重整後回得來（含排序欄位）、
-跨日標記過期回預設、期外（22:39）選了完全不寫。塞壞值進去只有合法的兩項生效。
+本機瀏覽器實測過（用 `?fakeclock=` 模擬台北時間、擋掉所有寫入請求，細節見交接規格）：
+乾淨網址切換後重新整理會保留；帶一次性 `view`／`account` 網址進站後套用一次就清掉，
+之後重新整理不會被蓋掉；模擬台北 20:00 切換仍會被記住（證明時段限制已經拿掉）；
+兩個分頁互相切換不會互相覆蓋。
 
 **觀察期間的預設值兩邊不一樣（已定案）**：盤後 1 日、盤中 5 日。
 盤後回答的是「昨天發生了什麼」，比一天最直接；盤中是拿今天跟一段有代表性的
@@ -703,7 +715,7 @@ key 是 `invest.lockedTickers`、讀寫都包 try/catch 讓無痕模式不會炸
 **所以先修的是另一頭。** 使用者回報「用手機看有時候超過 7 分鐘沒更新」，
 但收集端最壞只到 4 分鐘——差額出在前端：手機把分頁凍住時 `setInterval`
 整個停擺，解凍後是「接著跑」不是「補跑」。這件事已經修掉（見
-[Doc/完成進度.md](Doc/完成進度.md)），實際感受應該會直接改善。
+[Doc/完成進度.md](完成進度.md)），實際感受應該會直接改善。
 
 ### 2026-09-05 用正式資料庫再驗一次（筆記 #13）
 
@@ -947,7 +959,7 @@ org 管理畫面**，不是訪客看到的樣子。那兩個按鈕本來就只�
 端對端驗證：永久＋不限次數連結連續兌換兩次，`use_count=2`，session 帶到 `holdings` tier。
 **前端不需要任何修改**（線上版已是正確的，與本機一致）。
 
-使用者手動驗收項目：見 [Doc/版本紀錄.md](Doc/版本紀錄.md) 最新條目。
+使用者手動驗收項目：見 [Doc/版本紀錄.md](版本紀錄.md) 最新條目。
 
 ---
 
@@ -1190,7 +1202,7 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 ### 已經做的
 
 盤中全市場讀取改走 Supabase Storage 的公開 CDN，詳見
-[Doc/技術文件/Supabase多裝置流量節流與盤中CDN決策.md](Doc/技術文件/Supabase多裝置流量節流與盤中CDN決策.md)。
+[Doc/技術文件/Supabase多裝置流量節流與盤中CDN決策.md](技術文件/Supabase多裝置流量節流與盤中CDN決策.md)。
 `publish-manifest` 會自動監看有沒有掉回資料庫直連並報警（同上文件 §7）。
 
 ### 還沒定案的：計費算壓縮前還是壓縮後
@@ -1215,7 +1227,7 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 兩個檔案（`latest.json`、`intraday-*.json`）的 `cache_control` 欄位都是 `no-cache`。
 
 **根因比表面深一層，不是值的格式錯，是 header 從來沒送出去過**：
-[IntradaySnapshotPublisher.cs](src/Invest.Web/Infrastructure/MarketData/Intraday/IntradaySnapshotPublisher.cs)
+[IntradaySnapshotPublisher.cs](../src/Invest.Web/Infrastructure/MarketData/Intraday/IntradaySnapshotPublisher.cs)
 的 `UploadAsync` 把 `cache-control` 掛在 `request.Content.Headers`（`HttpContentHeaders`）上，
 但 `Cache-Control` 在 HTTP 規格裡是 general header 不是 content header，`HttpContentHeaders`
 會直接拒收；`TryAddWithoutValidation` 回傳 `false`，但呼叫端沒檢查回傳值，於是這個 header
@@ -1237,7 +1249,7 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 `UploadAsync` 的 `Cache-Control` 改掛 `request.Headers`，值改成合法語法
 `max-age={cacheSeconds}`（快照另加 `, immutable`，因為它的內容確實永不變；`latest.json`
 會被覆寫，不能標 immutable）；`TryAddWithoutValidation` 的回傳值現在會被檢查，失敗就丟例外，
-不再靜默吞掉。順手把 `note-images`（[site.js](src/Invest.Web/Infrastructure/StaticSite/Assets/site.js)
+不再靜默吞掉。順手把 `note-images`（[site.js](../src/Invest.Web/Infrastructure/StaticSite/Assets/site.js)
 的 `uploadNoteImage`）也補上 `max-age=31536000, immutable`——那是全站少數「路徑帶 UUID、
 `x-upsert: false`、內容永不變」、長 TTL 真的有意義的檔案，原本完全沒送這個 header。
 新增 `.NET` 測試直接組出 `HttpRequestMessage` 斷言 header 落在正確集合、值合法；
@@ -1293,7 +1305,7 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 這一期兩次超額，成因都不是架構太貴，而是兩個沒人看得見的狀態：
 
 1. **已部署的二進位會落後 repo，完全無徵兆。** 這次燒掉 2.5 天 × 140K 次／天。
-   已寫進 [AGENTS.md](AGENTS.md) 的推送前檢查：改動 `src/Invest.Web/Features/Assets/Ocr/**`
+   已寫進 [AGENTS.md](../AGENTS.md) 的推送前檢查：改動 `src/Invest.Web/Features/Assets/Ocr/**`
    之後必須重新發布 Windows EXE 與 Mac LaunchAgent，並用啟動訊息核對版本。
 2. **開發時的 local preview 指向正式 Supabase。** 單日 4.2 GB。目前只靠人自己記得，
    還沒有機制擋。要不要做（離線旗標，或另開 dev project）尚未討論。
@@ -1318,8 +1330,8 @@ readiness 只有 15/67≈22% 機率判定在線。當天實測 5 次 readiness �
 分流／relay 五個地方各自維護一份門檻常數（15／120／120／120 秒），沒有單一真相來源，是同類
 事故第 N 次而非運氣問題。
 
-**已完成**（規格見 [`AI OCR 可用性重構實作規格.md`](Doc/技術文件/AI%20OCR%20可用性重構實作規格.md)，
-完整實作記錄見 [版本紀錄.md](Doc/版本紀錄.md) 最新一節）：
+**已完成**（規格見 [`AI OCR 可用性重構實作規格.md`](技術文件/AI%20OCR%20可用性重構實作規格.md)，
+完整實作記錄見 [版本紀錄.md](版本紀錄.md) 最新一節）：
 - 治本一：`db/054_ocr_worker_availability.sql` 新增事實優先的存活判定
   （`ocr_worker_alive()`／`ocr_worker_has_agent()`）與工作層級 stall 偵測（`ocr_stall_to_fallback()`）；
   `ocr-jobs/index.js` 刪除舊的時間門檻死代碼，改用樂觀語意的單一判定入口 `checkAvailableWorkers()`。
@@ -1354,7 +1366,7 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
 修正（`9654ab3f`，09-09 18:10）早 17 小時，一直在跑舊的 2 秒輪詢迴圈，兩天半燒掉 443,155 次
 Edge Function invocation（整期額度的 88%）與約 2.5 GB egress，詳見 [TODO 14](#todo-14) 的
 「2026-09-11 用量歸因」。完整根因、Task Scheduler 事件記錄與本次復原步驟已寫入
-[AI OCR §0.1](Doc/技術文件/AI%20OCR.md#01-2026-09-11090-12-事件驅動版本落後事故與復原)。
+[AI OCR §0.1](技術文件/AI%20OCR.md#01-2026-09-11090-12-事件驅動版本落後事故與復原)。
 
 **2026-09-12 已完成公司 Windows 復原**：`Disable/Stop-ScheduledTask` → 重新
 `publish-ocr-worker-windows.ps1`（EXE `LastWriteTime` 確認為當天 10:22）→ `-Once` 診斷
@@ -1381,7 +1393,7 @@ Codex→Claude 都不行才換 Mac 的 Codex→Claude，都不行才回退 Tesse
 - `db/049_ocr_agent_relay.sql`：`ocr_jobs` 新增 `windows_attempt_failed_at`；`ocr_claim_job()`
   依平台分流、新增 `ocr_relay_agent_failure()` 決定接力或終結。已套用正式 Supabase，
   rollback smoke test 十項斷言全過（過程與結果見
-  [AI OCR §0.2](Doc/技術文件/AI%20OCR.md#02-2026-09-12-agent-跨機接力windows-兩個-agent--mac-兩個-agent--tesseract)）。
+  [AI OCR §0.2](技術文件/AI%20OCR.md#02-2026-09-12-agent-跨機接力windows-兩個-agent--mac-兩個-agent--tesseract)）。
 - `ocr-jobs` Edge Function 新增 `relay` action，已部署 v14，`verify_jwt=false` 維持不變，
   未帶 JWT 已實測回 401。
 - `OcrWorkerApiClient.cs`／`OcrWorkerRunner.cs` 已接上 `RelayOrFallbackAsync()`；
@@ -1404,7 +1416,7 @@ Codex 完全正常，`ocr_jobs` 這次**確實有**新工作列（推翻上一�
 排隊時被取消的。
 
 兩個真正根因，完整診斷與修正見
-[AI OCR §0.3](Doc/技術文件/AI%20OCR.md#03-2026-09-12-真正根因worker-併行槽會陣亡前端用心跳猜測就取消排隊中的工作)：
+[AI OCR §0.3](技術文件/AI%20OCR.md#03-2026-09-12-真正根因worker-併行槽會陣亡前端用心跳猜測就取消排隊中的工作)：
 
 1. **`OcrWorkerRunner` 的 3 個並行槽包在同一個 `Task.WhenAll` 裡**，`claim` 落空就
    永久 `return`；外層「收到喚醒才處理」的迴圈逐一 await、不平行，新工作的喚醒信號
@@ -1445,7 +1457,7 @@ fail-closed（逾時、非零結束碼都直接判定未登入，不保留上次
 `run-ocr-worker-windows.ps1` 常駐模式改用 `Start-Process` 把 stdout/stderr 分別
 導向 `logs/ocr-worker-<timestamp>.{out,err}.log`（保留 30 天），修補這次「完全沒有
 log 可查、只能反推」的盲點。`.NET Invest.Web.Tests` 459/459 全綠，完整診斷見
-[AI OCR §0.4](Doc/技術文件/AI%20OCR.md#04-2026-09-12同日再一次readiness-探測-fail-closed單次抖動整批靜默降級)。
+[AI OCR §0.4](技術文件/AI%20OCR.md#04-2026-09-12同日再一次readiness-探測-fail-closed單次抖動整批靜默降級)。
 
 **誠實說明**：這次根因是反推的，不是第一手證據——沒有 log、使用者當下也沒回報畫面上
 顯示的回退原因文字。下次再發生，log 檔會直接留下探測的實際輸出。§0.3 的前端修正
@@ -1494,7 +1506,7 @@ resume 於是把它當成「還在排隊」重新生出一份掃描中的新草�
 **修正（後端）**：使用者的規格包含「我不要這輪的資料」，伺服器端也要真的停手。
 `ocr_update_progress` 遇到已取消的租約本來就會回 409，只是 Worker 完全沒利用這個
 訊號；但要先修掉讓 §0.4 發現的既有 bug——`"ai_recognition"` 階段名稱不合法，
-新增 [db/052](db/052_ocr_progress_ai_recognition_stage.sql)（原本要編號 051，與
+新增 [db/052](../db/052_ocr_progress_ai_recognition_stage.sql)（原本要編號 051，與
 另一個 session 同一時間新增的 `db/051_asset_operation_sheet.sql` 撞號，改成 052）
 補進合法清單（DB
 constraint 與 RPC 內部驗證各自一份，`ocr-jobs` 同步更新部署為 v15）。
@@ -1517,7 +1529,7 @@ constraint 與 RPC 內部驗證各自一份，`ocr-jobs` 同步更新部署為 v
 downloading→回報 ai_recognition（成功，證明新階段合法）→模擬使用者取消→Worker
 不知情繼續用舊 lease_token 回報 ai_recognition（回傳 false，證明 S5 正確運作）」，
 四項斷言全過、rollback 後無殘留。完整診斷見
-[AI OCR §0.5](Doc/技術文件/AI%20OCR.md#05-2026-09-13強制取消辨識與重整恢復流程競態導致取消後彈回掃描中下一批誤判離線)。
+[AI OCR §0.5](技術文件/AI%20OCR.md#05-2026-09-13強制取消辨識與重整恢復流程競態導致取消後彈回掃描中下一批誤判離線)。
 
 **尚未做的**：前端修正沒有真正的瀏覽器端到端測試（沒有登入帳密，只驗證到程式
 邏輯層級），下次使用者實際照這個流程操作會是第一次真正驗證。
@@ -1585,7 +1597,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   60 秒只更新 `ocr_workers` 在線狀態，25 秒只維持 WebSocket，沒有截圖時 claim／evaluation／
   Codex／Claude 全為 0。健康空轉 30 天估算為 51,840 次 OCR Edge invocation；35 筆 Max 與 3 筆 Low
   的 token 實測、每張與每月公式及可靠性取捨詳見
-  [AI OCR：目前生效的 AI OCR 最終方案與用量](Doc/技術文件/AI%20OCR.md#目前生效的-ai-ocr-最終方案與用量單一維護區塊)。
+  [AI OCR：目前生效的 AI OCR 最終方案與用量](技術文件/AI%20OCR.md#目前生效的-ai-ocr-最終方案與用量單一維護區塊)。
 
 ### 本輪已完成與仍待外部驗收
 
@@ -1604,7 +1616,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
    Windows 已用官方原生安裝器裝上 Claude Code CLI `2.1.263`（真正 exe，非 npm shim），並釘選
    `OCR_CLAUDE_PATH`／`OCR_CODEX_PATH`／`OCR_AGENT_PRIMARY=codex` 為使用者環境變數；重新發布 Worker
    並以 `-Once` 驗證 exit code 0，排程重啟後恢復 `Running`。完整脈絡見
-   [AI OCR §14.6](Doc/技術文件/AI%20OCR.md#146-2026-09-07-windows-agent-優先序修正與-claude-cli-安裝第一階段已實作仍待登入與外部驗收)。
+   [AI OCR §14.6](技術文件/AI%20OCR.md#146-2026-09-07-windows-agent-優先序修正與-claude-cli-安裝第一階段已實作仍待登入與外部驗收)。
 5. 2026-09-07（筆記 #52）：根因是前端逐張序列 `for...of` 與 Worker 單一 `do` 迴圈雙層序列化，DB
    `FOR UPDATE SKIP LOCKED` 早已支援並行、不是瓶頸。已實作：Worker 每輪依 `OCR_WORKER_MAX_CONCURRENCY`
    （預設 3）並行 claim／處理多件工作；`OcrWorkerApiClient` 用 `SemaphoreSlim` 序列化認證換發，
@@ -1752,7 +1764,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   資料不足為 `null`，不當作 0 也不默默重新分配權重。
 - 日股與韓股已比照美股接入同一引擎，並完成 `jp,kr` 專屬日線回補與 5 分鐘 Storage CDN 路徑；`^JNIV`、`^VKOSPI`、韓國產業代表名冊與 Yahoo 供應穩定性仍需下一個交易日實際驗收，可由設定替換。
 - 程式已新增 `MarketOverviewDefinition`／`MarketOverviewCalculator.CalculateHeatAt`，輸出四市場各自的個別分數、綜合分數、產業確認分數與 warning；網站本輪不發布。
-- 完整公式、資料邊界、驗收與日韓候選方案統一見 [熱絡指標](Doc/技術文件/熱絡指標.md)。
+- 完整公式、資料邊界、驗收與日韓候選方案統一見 [熱絡指標](技術文件/熱絡指標.md)。
 
 ### 2026-09-15 成交金額前 20（來源與快取流程已接線，尚待密鑰／回補／發布）
 

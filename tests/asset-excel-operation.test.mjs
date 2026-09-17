@@ -145,7 +145,9 @@ test('Excel 入口在同一分頁切換，返回時回到原台股操作持倉',
     assert.match(backUrl, /url\.searchParams\.set\('view', 'assets'\)/);
     assert.match(backUrl, /url\.searchParams\.set\('account', ASSET_EXCEL_ACCOUNT_QUERY\)/);
 
-    const context = {
+    // 正式網址：2026-09-17 起不再帶 access——那個一次性參數留在網址上會蓋掉操作記憶
+    // （見 site.js 的 settingsMarkers／isSettingsRecordCurrent）。access 只有 localhost 會讀。
+    const productionContext = {
         URL,
         ASSET_EXCEL_ACCOUNT_QUERY: 'account-1',
         window: {
@@ -155,12 +157,31 @@ test('Excel 入口在同一分頁切換，返回時回到原台股操作持倉',
             }
         }
     };
-    vm.createContext(context);
-    vm.runInContext(`${backUrl}\nresult = assetExcelPreviewBackUrl();`, context);
+    vm.createContext(productionContext);
+    vm.runInContext(`${backUrl}\nresult = assetExcelPreviewBackUrl();`, productionContext);
 
     assert.equal(
-        context.result,
-        'https://frank-invest.github.io/?access=admin&view=assets&account=account-1');
+        productionContext.result,
+        'https://frank-invest.github.io/?view=assets&account=account-1');
+
+    // localhost：仍要帶 access=admin 與 preview，本機權限預覽與版面驗證要繼續能用。
+    const localhostContext = {
+        URL,
+        ASSET_EXCEL_ACCOUNT_QUERY: 'account-1',
+        window: {
+            location: {
+                hostname: 'localhost',
+                href: 'http://localhost:5199/?access=admin&view=excel&account=account-1'
+            }
+        }
+    };
+    vm.createContext(localhostContext);
+    vm.runInContext(`${backUrl}\nresult = assetExcelPreviewBackUrl();`, localhostContext);
+
+    assert.equal(
+        localhostContext.result,
+        'http://localhost:5199/?access=admin&view=assets&account=account-1&preview=asset-annualized-v1');
+
     assert.match(siteScript, /if \(state\.view === 'assets' && ASSET_EXCEL_ACCOUNT_QUERY\) \{\s*assetSelectedAccountId = ASSET_EXCEL_ACCOUNT_QUERY;\s*assetDashboardScreen = 'account';\s*\}/);
 });
 

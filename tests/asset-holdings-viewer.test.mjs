@@ -258,6 +258,6 @@ test('正式模板保留唯讀欄位，不含刪除、編輯或清除控制', ()
     assert.match(siteScript, /function appendRankingCell\(tr, row, column, options = \{\}\)/);
     assert.match(siteScript, /makeKLineButton\(row\.ticker, String\(text\), options\.kline \?\? \{\}\)/);
     assert.match(siteScript, /target\.className = 'revenue-cell-button'/);
-    assert.match(siteScript, /loadRevenue\(\),\n                loadAttributions\(\),/);
+    assert.match(siteScript, /loadRevenue\(\),\n                ensureAttributions\(\),/);
     assert.doesNotMatch(viewerRenderer, /assetButton\(|assetRemove\(|assetUpdate\(|assetInsert\(/);
 });

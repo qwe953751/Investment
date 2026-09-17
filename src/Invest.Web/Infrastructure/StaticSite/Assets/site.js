@@ -2604,7 +2604,10 @@ function renderAccessBar() {
 // 這裡要一併重新判斷一次，不然登出後畫面還留著最高權限才看得到的按鈕。
 function afterAccessChange() {
     if (!availableViews().some(view => view.key === state.view)) {
-        state.view = SITE_ACCESS === 'holdings' ? 'assets' : 'daily';
+        state.view = SITE_ACCESS === 'holdings'
+            ? 'assets'
+            : defaultViewForMarkers(settingsMarkers, hasIntradaySnapshotSource());
+        writeSettings();
     }
 
     renderFilters();
@@ -3183,65 +3186,175 @@ function renderEtfControls() {
     searchHost.append(form);
 }
 
-// 上次選的篩選條件。有效期跟著取資料的時間走：
+// 上次選的篩選條件。有效期跟著「資料真的換了」走，不再看時鐘：
 //
-//     盤中收集開跑（intradayStart）  → 從這裡開始記
-//     盤後回補開跑（dailyRefresh）  → 存的東西作廢，回到預設
+//     manifest.dates 最後一天前進（盤後新交易日發布）  → 存的東西作廢，回到預設盤後
+//     盤中 CDN latest 指標的 tradeDate 前進（今天第一輪盤中資料出現）→ 作廢，回到預設盤中
 //
-// 也就是這兩個時刻之間選的東西重整不會跑掉，跨過盤後那一刻再開就是全新的預設值——
-// 那時候換的是新一天的盤後資料，停在昨天的基準日或空的盤中頁只會誤導人。
-// 鎖定的股號不吃這個有效期，那是長期追蹤名單，見下面的 LOCK_STORAGE_KEY。
-const SETTINGS_STORAGE_KEY = 'invest.settings';
+// 2026-09-17 改版原因：舊規則用台北時鐘 07:00–18:00 當窗口，但
+// ①實際發佈時間（約 18:10）跟時鐘寫死的 18:00 對不上，
+// ②每天還有美股快照、程式部署、盤中 CDN 補發等好幾次「重發網站」，時鐘窗口攔不住這些，
+// ③時段外（含 18:00 後）完全不記，重新整理一律回到預設，使用者體驗不一致。
+// 改成看 settingsMarkers 這兩個資料標記，只有資料真的往前推進才作廢，時間點跟排程本身
+// 自然對齊，也不必再讀 manifest.schedule 判斷有效期。
+// 鎖定的股號不吃這一套，那是長期追蹤名單，見下面的 LOCK_STORAGE_KEY。
+const SETTINGS_STORAGE_KEY = 'invest.settings.v2';
+// 舊版 key，只用來在讀取時清掉，不再讀寫其內容。
+const LEGACY_SETTINGS_STORAGE_KEY = 'invest.settings';
 
-/// 現在落在哪一段記憶期。回傳台北日期字串當標記，不在記憶期內回傳 null。
-function settingsWindow() {
-    if (schedule === null) {
-        return null;
+// 判斷記憶是否過期的兩個資料標記。dailyDate 在 start() 讀完 manifest 後立刻設定；
+// intradayDate 由 start() 啟動時讀一次 CDN 指標、之後每次 applyIntradaySnapshot()
+// 套用新一輪快照時更新（見該函式），兩者都只會往前推進，不會被舊資料倒退蓋掉。
+let settingsMarkers = { dailyDate: null, intradayDate: null };
+
+// 記憶紀錄是否仍然有效：純函式，不讀任何全域狀態，方便測試。
+// record 是從 storage 讀出來、可能是任意形狀的物件；markers 是目前的 settingsMarkers。
+function isSettingsRecordCurrent(record, markers) {
+    if (record === null || typeof record !== 'object' || record.schema !== 2) {
+        return false;
     }
 
-    // 'HH:mm' 補零過，直接字串比大小就是時間比大小。
-    const now = TAIPEI_CLOCK.format(new Date());
-
-    if (now < schedule.intradayStart || now >= schedule.dailyRefresh) {
-        return null;
+    if (typeof record.dailyDate !== 'string') {
+        return false;
     }
 
-    return TAIPEI_DATE.format(new Date());
+    if (markers.dailyDate !== null && markers.dailyDate > record.dailyDate) {
+        return false;
+    }
+
+    if (markers.intradayDate !== null) {
+        if (typeof record.intradayDate === 'string') {
+            if (markers.intradayDate > record.intradayDate) {
+                return false;
+            }
+        } else {
+            // 紀錄存下來的時候還沒有盤中標記（例如那次開頁讀不到 CDN 指標）：
+            // 退而求其次比對存檔時間的台北日期，早於目前的盤中標記就視為過期。
+            const savedAtDate = typeof record.savedAt === 'string'
+                ? TAIPEI_DATE.format(new Date(record.savedAt))
+                : null;
+
+            if (savedAtDate === null || savedAtDate < markers.intradayDate) {
+                return false;
+            }
+        }
+    }
+
+    return true;
 }
 
-function writeSettings() {
-    const windowKey = settingsWindow();
+// 沒有有效記憶時（第一次開站，或記憶剛作廢）該用哪個預設頁籤：純函式，方便測試。
+function defaultViewForMarkers(markers, hasIntradaySource) {
+    if (markers.intradayDate !== null
+        && markers.dailyDate !== null
+        && markers.intradayDate > markers.dailyDate
+        && hasIntradaySource) {
+        return 'intraday';
+    }
 
-    if (windowKey === null) {
-        return;
+    return 'daily';
+}
+
+// 每個分頁各自記自己的位置（sessionStorage），新分頁沿用最後一次的共用記憶
+// （localStorage）。回傳陣列裡活得下來的 storage，任何一個存取本身丟例外
+// （無痕模式、被封鎖）都不擋住另一個。
+function settingsStorages() {
+    const storages = [];
+
+    try {
+        storages.push(sessionStorage);
+    } catch {
+        // 忽略：這個分頁就只靠 localStorage。
     }
 
     try {
-        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ window: windowKey, ...state }));
+        storages.push(localStorage);
     } catch {
-        // 無痕模式寫不進去。這一次的選擇照樣有效，只是重整後回到預設。
+        // 忽略：無痕模式或儲存被封鎖時完全不記，不擋畫面。
     }
+
+    return storages;
+}
+
+function writeSettings() {
+    const record = {
+        schema: 2,
+        dailyDate: settingsMarkers.dailyDate,
+        intradayDate: settingsMarkers.intradayDate,
+        savedAt: new Date().toISOString(),
+        marketSwitch: marketSwitchProto?.market ?? null,
+        ...state
+    };
+    const payload = JSON.stringify(record);
+
+    for (const storage of settingsStorages()) {
+        try {
+            storage.setItem(SETTINGS_STORAGE_KEY, payload);
+        } catch {
+            // 無痕模式或儲存空間滿時寫不進去。這一次的選擇照樣有效，只是重整後回到預設。
+        }
+    }
+}
+
+// 先看本分頁自己存的（sessionStorage），沒有或已過期才看跨分頁共用的（localStorage）。
+// 這樣同一分頁重新整理一定回到自己最後的位置，不會被另一個分頁的切換蓋掉；
+// 全新分頁則自然沿用最後一次的共用記憶。
+function currentSettingsRecord() {
+    for (const storage of settingsStorages()) {
+        let record;
+
+        try {
+            record = JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY));
+        } catch {
+            continue;
+        }
+
+        if (isSettingsRecordCurrent(record, settingsMarkers)) {
+            return record;
+        }
+    }
+
+    return null;
 }
 
 // 存著的值可能已經不存在了（期間或門檻改版、交易日滾掉、資料庫連線沒了），
 // 所以一個一個驗，驗不過的那一項就留在預設值，不要因為一項壞了整組丟掉。
 function applyStoredSettings() {
-    let stored;
-
     try {
-        stored = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY));
+        localStorage.removeItem(LEGACY_SETTINGS_STORAGE_KEY);
     } catch {
+        // 忽略：清不掉舊 key 不影響這次要不要套用新記憶。
+    }
+
+    const stored = currentSettingsRecord();
+
+    if (stored === null) {
+        // 沒有有效記憶：用資料標記決定預設頁籤，不再看時鐘。
+        const defaultView = defaultViewForMarkers(settingsMarkers, hasIntradaySnapshotSource());
+
+        if (availableViews().some(view => view.key === defaultView)) {
+            state.view = defaultView;
+        }
+
+        if (state.view === 'daily') {
+            // state 的初始值（見 const state = {...}）是給盤中準備的 5 日，
+            // 退回盤後預設時要蓋回盤後自己的預設期間，不能沿用盤中那份。
+            const defaults = defaultViewPreferences().daily;
+            state.period = defaults.period;
+            state.comparisonMode = defaults.comparisonMode;
+        }
+
+        rememberViewPreferences();
         return;
     }
 
-    // window 對不上就是跨過了盤後那一刻，這份記憶已經過期。
-    if (stored === null || typeof stored !== 'object' || stored.window !== settingsWindow()) {
-        return;
+    if (MSP_MARKETS.some(market => market.key === stored.marketSwitch) && marketSwitchProto !== null) {
+        marketSwitchProto.market = stored.marketSwitch;
     }
 
-    // 盤中頁在沒有資料庫連線時是停用的，存著的值不能繞過這件事。
+    // 盤中頁在沒有資料庫連線、也沒有 CDN 快照來源時是停用的，存著的值不能繞過這件事。
     if (availableViews().some(view => view.key === stored.view)
-        && (stored.view !== 'intraday' || supabase !== null)) {
+        && (stored.view !== 'intraday' || hasIntradaySnapshotSource())) {
         state.view = stored.view;
 
         if (state.view === 'custom') {
@@ -9971,11 +10084,14 @@ function assetExcelPreviewBackUrl() {
     } else {
         url.searchParams.delete('account');
     }
-    url.searchParams.set('access', 'admin');
 
+    // access 只有 localhost 會讀（見 ACCESS_PREVIEW_QUERY），正式網址本來就不需要它；
+    // 2026-09-17 起也一併不再帶著它，避免這個一次性參數殘留在網址上。
     if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+        url.searchParams.set('access', 'admin');
         url.searchParams.set('preview', 'asset-annualized-v1');
     } else {
+        url.searchParams.delete('access');
         url.searchParams.delete('preview');
     }
 
@@ -9991,13 +10107,16 @@ function openAssetExcelView(view) {
     }
 
     const url = new URL(window.location.href);
-    url.searchParams.set('access', 'admin');
     url.searchParams.set('view', 'excel');
     url.searchParams.set('account', view.id);
 
+    // access 只有 localhost 會讀（見 ACCESS_PREVIEW_QUERY），正式網址本來就不需要它；
+    // 2026-09-17 起也一併不再帶著它，避免這個一次性參數殘留在網址上。
     if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+        url.searchParams.set('access', 'admin');
         url.searchParams.set('preview', 'asset-excel-v1');
     } else {
+        url.searchParams.delete('access');
         url.searchParams.delete('preview');
     }
 
@@ -19961,13 +20080,16 @@ function validateIntradayCdnSnapshot(pointer, document) {
     }
 }
 
-async function fetchIntradayCdnSnapshot() {
+// 只讀 latest 指標本身（數百 bytes），不下載完整快照。settingsMarkers 的盤中標記
+// 開頁時就要知道今天有沒有新的一輪，用這支輕量版就夠了，不必等 fetchIntradayCdnSnapshot()
+// 把完整資料也抓下來。
+async function fetchIntradayCdnPointer(timeoutMs = 10_000) {
     const latest = new URL(intradayCdn.latestUrl, location.href);
 
     // latest 本身只有數百 bytes；用十秒 time slot 讓多裝置仍可共用 CDN 命中，又不會長時間
     // 停在上一個指標。完整資料一律依不可變檔名快取，絕不覆寫後再賭 CDN 傳播速度。
     latest.searchParams.set('slot', String(Math.floor(Date.now() / 10_000)));
-    const pointer = await fetchJsonAttempt(latest, { cache: 'no-store' }, 10_000);
+    const pointer = await fetchJsonAttempt(latest, { cache: 'no-store' }, timeoutMs);
 
     if (pointer?.schemaVersion !== 1
         || !Number.isInteger(pointer.runId)
@@ -19979,6 +20101,12 @@ async function fetchIntradayCdnSnapshot() {
         || typeof pointer.capturedAt !== 'string') {
         throw new TypeError('盤中 CDN latest 指標格式不正確。');
     }
+
+    return pointer;
+}
+
+async function fetchIntradayCdnSnapshot() {
+    const pointer = await fetchIntradayCdnPointer();
 
     if (intradaySnapshotRunId === pointer.runId
         && intradayRaw !== null
@@ -20062,6 +20190,16 @@ function applyIntradaySnapshot(document, broadcast = true) {
     intradaySnapshotRunId = nextRunId ?? intradaySnapshotRunId;
     intradayRawLoadedAt = Date.now();
     lastIntradayLoadedAt = intradayRawLoadedAt;
+
+    // 操作記憶的作廢判斷要知道「今天有沒有出現新的盤中交易日」，CDN、資料庫直連、
+    // 兄弟分頁廣播都會經過這裡，是唯一能可靠攔到這件事的地方。只往前推，不往後退：
+    // 舊 CDN 回應或休市日仍停在昨天的交易日時，不能讓已經知道的較新標記被蓋回去。
+    const tradeDate = document.summary?.trade_date;
+    if (typeof tradeDate === 'string'
+        && (settingsMarkers.intradayDate === null || tradeDate > settingsMarkers.intradayDate)) {
+        settingsMarkers.intradayDate = tradeDate;
+    }
+
     if (broadcast) {
         publishIntradaySnapshotToSiblingTabs(document);
     }
@@ -21406,13 +21544,47 @@ function focusTopic(topicId) {
 }
 
 // 排行榜那一欄要的東西很小，跟族群頁的完整資料分開抓，讓沒切過去的人不必付那 2 MB。
-async function loadAttributions() {
-    try {
-        const data = await fetchJsonWithRetry(`data/topic-attributions.json?v=${version}`);
-        attributionByTicker = new Map(data.attributions.map(item => [item.ticker, item]));
-    } catch {
-        // 族群欄是附加資訊，抓不到就整欄顯示待分類，不能擋住排行榜。
+//
+// 不能只在 start() 呼叫一次：資產、筆記、Excel 這三個入口的啟動流程會提前 return，
+// 走不到那一次呼叫，之後切到盤中／盤後也不會再補——整個頁面生命週期都只顯示「待分類」。
+// 改成跟營收欄一樣「需要時自己載、失敗會重試」：load() 每次都呼叫一次，已經載過的
+// 話立刻回傳、正在載的話共用同一個請求、失敗的話 60 秒後才准再試一次。
+const ATTRIBUTIONS_RETRY_MS = 60_000;
+let attributionsLoaded = false;
+let attributionsPromise = null;
+let attributionsLastFailedAt = 0;
+
+async function ensureAttributions() {
+    if (attributionsLoaded) {
+        return false;
     }
+
+    if (attributionsPromise !== null) {
+        return attributionsPromise;
+    }
+
+    if (attributionsLastFailedAt > 0 && Date.now() - attributionsLastFailedAt < ATTRIBUTIONS_RETRY_MS) {
+        return false;
+    }
+
+    attributionsPromise = (async () => {
+        try {
+            const data = await fetchJsonWithRetry(`data/topic-attributions.json?v=${version}`);
+            attributionByTicker = new Map(data.attributions.map(item => [item.ticker, item]));
+            attributionsLoaded = true;
+            return true;
+        } catch (error) {
+            // 族群欄是附加資訊，抓不到就整欄顯示待分類，不能擋住排行榜；
+            // 但要記下失敗時間，讓計時器與下一次 load() 之後能自動重試，不必使用者手動重新整理。
+            attributionsLastFailedAt = Date.now();
+            console.warn('族群欄資料載入失敗，稍後會自動重試：', error);
+            return false;
+        } finally {
+            attributionsPromise = null;
+        }
+    })();
+
+    return attributionsPromise;
 }
 
 let topicLoading = false;
@@ -25988,6 +26160,16 @@ function makeTopicPendingList(title, lines) {
 }
 
 async function load() {
+    // 族群欄跟從哪一頁進站無關：任何非筆記頁籤都需要它，在這裡統一背景補載一次。
+    // ensureAttributions() 自己會判斷「已經載過」「正在載」「剛失敗要冷卻」，這裡不用重複判斷。
+    if (state.view !== 'notes') {
+        void ensureAttributions().then(loaded => {
+            if (loaded) {
+                renderRevenueForCurrentView();
+            }
+        });
+    }
+
     if (state.view === 'assets') {
         el('notice').hidden = true;
         el('ranking').hidden = true;
@@ -25998,7 +26180,7 @@ async function load() {
         const viewerSupplement = ASSET_HOLDINGS_VIEW_ENABLED
             ? Promise.all([
                 loadRevenue(),
-                loadAttributions(),
+                ensureAttributions(),
                 loadAssetHoldingsViewerLatestRows()
             ])
             : Promise.resolve();
@@ -26419,6 +26601,16 @@ function startIntradayTimer() {
             void refreshRevenueIfDue();
             refreshIntradayIfDue();
 
+            // 族群欄跟營收一樣自己會判斷是否需要重試；只在還沒載成功時才呼叫，
+            // 避免每一輪都白白呼叫一次已經知道會立刻回傳 false 的函式。
+            if (!attributionsLoaded && state.view !== 'notes') {
+                void ensureAttributions().then(loaded => {
+                    if (loaded) {
+                        renderRevenueForCurrentView();
+                    }
+                });
+            }
+
             // 「幾分鐘前」要自己走，不能等下一次抓資料才更新——
             // 抓不到的時候正是最需要看到它一直往上加的時候。
             if ((isIntradayDataView() || isEtfIntradayView())
@@ -26482,6 +26674,15 @@ function startIntradayTimer() {
         window.addEventListener(name, refreshIntradayIfDue);
         window.addEventListener(name, () => { void refreshRevenueIfDue(); });
         window.addEventListener(name, refreshAssetsIfDue);
+        window.addEventListener(name, () => {
+            if (!attributionsLoaded && state.view !== 'notes') {
+                void ensureAttributions().then(loaded => {
+                    if (loaded) {
+                        renderRevenueForCurrentView();
+                    }
+                });
+            }
+        });
     }
 }
 
@@ -26996,6 +27197,7 @@ function mspBuildMarketTabs(proto, paint) {
             : `切換到${market.text}市場`;
         button.addEventListener('click', () => {
             proto.market = market.key;
+            writeSettings();
 
             if (SITE_ACCESS === 'holdings' && state.view === 'assets') {
                 assetHoldingsMarket = market.key === 'us' ? '美股' : market.key === 'crypto' ? '其他' : '台股';
@@ -30095,6 +30297,16 @@ async function start() {
     dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));
     alteredTrading = new Set(manifest.alteredTrading ?? []);
     state.date = dates[dates.length - 1];
+    // 操作記憶的「盤後標記」：台股最新交易日，manifest 每次盤後回補才會前進一天。
+    settingsMarkers.dailyDate = state.date;
+
+    // 操作記憶的「盤中標記」：今天最新一輪盤中資料的交易日，只讀 latest 指標本身
+    // （數百 bytes），不下載完整快照。跟下面的 invite／autologin／restoreSession()
+    // 平行送出，晚一點才 await，不要為了這個多等一次網路來回。逾時或沒有 CDN
+    // 就當作讀不到，不影響開頁——只是這次沒辦法用盤中標記判斷記憶是否作廢。
+    const intradayMarkerPromise = intradayCdn !== null
+        ? fetchIntradayCdnPointer(3_000).catch(() => null)
+        : Promise.resolve(null);
 
     // 權限分享連結先由 Edge Function 原子兌換，再用 Auth token hash 建立本機 session；
     // 只有管理者可以建立，接收者不會接觸任何固定帳號密碼。
@@ -30133,12 +30345,42 @@ async function start() {
         await restoreSession();
     }
 
-    // 用過就把 key 從網址列拿掉：分享畫面截圖、瀏覽器歷史記錄都不會留下明文密碼。
-    // 沒有 key 時則靠 restoreSession() 的 refresh token 記得住，不用再帶著這段網址。
+    const intradayMarker = await intradayMarkerPromise;
+    settingsMarkers.intradayDate = intradayMarker?.tradeDate ?? null;
+
+    // 用過就把網址上的一次性參數拿掉，分享畫面截圖、瀏覽器歷史記錄都不會留下明文密碼，
+    // 之後每次重新整理、版本自動重載也不會被這些一次性參數蓋掉操作記憶。
+    //
+    // - key／invite：沒有 key 時則靠 restoreSession() 的 refresh token 記得住，不用再帶著這段網址。
+    // - view／account：Excel「返回持倉」等導頁動作用的一次性指令，2026-09-17 查出
+    //   套用後不清掉的話會一路蓋掉操作記憶——切到別的頁籤、重新整理又被這個網址參數帶回去。
+    //   `view=excel` 例外，那是 Excel 頁本身的網址，不能清。
+    // - access：只有 localhost 會讀它做權限預覽，正式網址上這個參數本來就不起作用，
+    //   但沿用舊網址（例如 Excel 返回連結）打開時一併清掉，維持網址乾淨。
+    const cleanUrl = new URL(window.location.href);
+    let cleanUrlChanged = false;
+
     if (AUTOLOGIN_QUERY || INVITE_QUERY) {
-        const cleanUrl = new URL(window.location.href);
         cleanUrl.searchParams.delete('key');
         cleanUrl.searchParams.delete('invite');
+        cleanUrlChanged = true;
+    }
+
+    if (!ASSET_EXCEL_VIEW) {
+        for (const param of ['view', 'account']) {
+            if (cleanUrl.searchParams.has(param)) {
+                cleanUrl.searchParams.delete(param);
+                cleanUrlChanged = true;
+            }
+        }
+
+        if (!LOCAL_HOSTNAMES.includes(window.location.hostname) && cleanUrl.searchParams.has('access')) {
+            cleanUrl.searchParams.delete('access');
+            cleanUrlChanged = true;
+        }
+    }
+
+    if (cleanUrlChanged) {
         window.history.replaceState(null, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
     }
 
@@ -30197,6 +30439,11 @@ async function start() {
         state.customSource = 'intraday';
     }
 
+    // 這次進站最終落在哪個頁籤（可能是記憶、預設，或被網址參數／權限覆蓋過），
+    // 就當作這次的操作記憶寫回去。例如從 Excel 返回資產、重新整理後要停在資產，
+    // 而不是回到網址被清掉之前完全查不到的那次選擇。
+    writeSettings();
+
     marketSwitchRender?.();
 
     snapshotNote =
@@ -30240,15 +30487,13 @@ async function start() {
     // 盤中／自訂盤中會在快照完成後自己背景載入營收，避免同時打兩份 Supabase 請求；
     // 族群的盤中模式仍需營收欄，所以它不屬於 isIntradayDataView()。
     if (!isIntradayDataView()) {
-        // 補充欄位先在背景載入，不能因為營收或族群欄的網路請求卡住而擋住核心排行。
-        // 各自完成就重畫一次；失敗時保留既有的 —／待分類狀態，不影響主表。
+        // 補充欄位先在背景載入，不能因為營收的網路請求卡住而擋住核心排行。
+        // 失敗時保留既有的 — 狀態，不影響主表。
         void loadRevenue()
             .then(() => renderRevenueForCurrentView())
             .catch(reportLoadFailure);
     }
-    void loadAttributions()
-        .then(() => renderRevenueForCurrentView())
-        .catch(reportLoadFailure);
+    // 族群欄改由 load() 自己統一補載（見 ensureAttributions()），這裡不用再呼叫一次。
     await load();
 }
 

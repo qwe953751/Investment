@@ -185,7 +185,11 @@ function intradayCdnHarness() {
     };
 
     vm.createContext(context);
-    vm.runInContext(functionSource('fetchIntradayCdnSnapshot'), context);
+    // fetchIntradayCdnSnapshot() 已把 latest 指標的讀取抽成 fetchIntradayCdnPointer()
+    // 共用（操作記憶的盤中標記也靠它），兩支都要注入才組得出完整呼叫鏈。
+    vm.runInContext(
+        `${functionSource('fetchIntradayCdnPointer')}\n${functionSource('fetchIntradayCdnSnapshot')}`,
+        context);
 
     return {
         fetchIntradayCdnSnapshot: context.fetchIntradayCdnSnapshot,
@@ -347,7 +351,13 @@ test('啟動流程不應以補充資料 Promise.all 阻塞核心排行', () => {
     assert.doesNotMatch(start, /await Promise\.all\(\[loadRevenue\(\), loadAttributions\(\)\]\)/);
     assert.match(start, /if \(!isIntradayDataView\(\)\)/);
     assert.match(start, /loadRevenue\(\)/);
-    assert.match(start, /loadAttributions\(\)/);
+
+    // 族群欄改由 load() 自己統一補載（見 ensureAttributions()），start() 不再直接呼叫，
+    // 也不能殘留舊名字——資產、筆記、Excel 這三個提前 return 的入口才是原本漏補的原因。
+    assert.doesNotMatch(start, /loadAttributions\(/);
+
+    const load = functionSource('load');
+    assert.match(load, /if \(state\.view !== 'notes'\) \{\s*void ensureAttributions\(\)/);
 });
 
 test('盤中快照完成後才背景載入補充資料，不等待補充資料', () => {

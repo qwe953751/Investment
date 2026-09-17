@@ -39,6 +39,8 @@ function applySnapshot() {
         intradaySnapshotTopicHeat: null,
         intradayRawLoadedAt: 0,
         lastIntradayLoadedAt: 0,
+        // 操作記憶的盤中標記由 applyIntradaySnapshot() 一併維護，見 settings-memory.test.mjs。
+        settingsMarkers: { dailyDate: null, intradayDate: null },
         publishIntradaySnapshotToSiblingTabs() {}
     };
 
