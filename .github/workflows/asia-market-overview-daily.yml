@@ -66,7 +66,13 @@ jobs:
       - name: 保存日韓市場總覽快取
         working-directory: data
         run: |
-          git add -A imports-overview imports-turnover
+          git add -A imports-overview
+
+          # imports-turnover 要等排行來源接線才會生出第一個檔案；目錄還不存在時
+          # git add 會以 pathspec 錯誤整步中止，連帶擋掉已經回補好的總覽日線。
+          if [ -d imports-turnover ]; then
+              git add -A imports-turnover
+          fi
 
           if git diff --cached --name-only --diff-filter=D | grep -q .; then
               echo "偵測到市場總覽歷史檔案被刪除，中止：" >&2

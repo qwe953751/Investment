@@ -120,7 +120,13 @@ jobs:
         id: cache
         working-directory: data
         run: |
-          git add -A imports-us imports-overview imports-turnover
+          git add -A imports-us imports-overview
+
+          # imports-turnover 要等排行來源接線才會生出第一個檔案。目錄還不存在時
+          # git add 會以 pathspec 錯誤整步中止，連帶擋掉上面已經抓好的行情。
+          if [ -d imports-turnover ]; then
+              git add -A imports-turnover
+          fi
 
           # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
           # 也不要把「刪掉歷史」這件事推上去。
