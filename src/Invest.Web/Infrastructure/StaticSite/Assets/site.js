@@ -10478,40 +10478,12 @@ function makeAssetExcelView() {
 
     const topbar = document.createElement('header');
     topbar.className = 'asset-excel-topbar';
-    const brand = document.createElement('div');
-    brand.className = 'asset-excel-brand';
-    const mark = document.createElement('span');
-    mark.className = 'asset-excel-brand-mark';
-    mark.textContent = '▦';
-    const titleBlock = document.createElement('div');
-    titleBlock.className = 'asset-excel-title-block';
-    const title = document.createElement('h1');
-    title.textContent = 'Stock';
-    const subtitle = document.createElement('span');
-    subtitle.textContent = 'Frank／台股操作';
-    titleBlock.append(title, subtitle);
-    brand.append(mark, titleBlock);
-
-    const status = document.createElement('span');
-    status.className = 'asset-excel-save-status';
-    status.textContent = ASSET_EXCEL_LOCAL_PREVIEW
-        ? '本機預覽｜尚未連動正式資料'
-        : '正式資料｜Supabase asset_operation_rows';
     const topActions = document.createElement('div');
     topActions.className = 'asset-excel-top-actions';
     topActions.append(
         assetExcelButton('返回持倉', 'asset-excel-secondary-button', () => {
             window.location.assign(assetExcelPreviewBackUrl());
         }));
-    brand.append(status);
-    topbar.append(brand, topActions);
-
-    const toolbar = document.createElement('div');
-    toolbar.className = 'asset-excel-toolbar';
-    toolbar.append(
-        assetExcelButton('⌕', 'asset-excel-icon-button', () => {}),
-        assetExcelButton('列印', 'asset-excel-secondary-button', () => window.print()),
-        assetExcelButton('100%', 'asset-excel-secondary-button', () => {}));
 
     const editActions = document.createElement('div');
     editActions.className = 'asset-excel-edit-actions';
@@ -10542,21 +10514,22 @@ function makeAssetExcelView() {
             renderAssetExcelView(el('asset-excel-page'));
         }));
     }
-    toolbar.append(editActions);
+    topActions.append(editActions);
+    topbar.append(topActions);
 
-    const notice = document.createElement('p');
-    notice.className = 'asset-excel-preview-note';
-    notice.textContent = assetExcelNotice || (assetExcelEditing
-        ? `編輯模式：可修改 Buy、Stock 與族群勾選；營收創高由創高月數衍生且唯讀。可點擊欄名排序，新增空白列或逐列刪除，${ASSET_EXCEL_LOCAL_PREVIEW ? '按「套用變更」保存本機預覽草稿。' : '按「套用變更」寫回正式資料庫。'}`
-        : ASSET_EXCEL_LOCAL_PREVIEW
-            ? '操作(台)｜本機唯讀樣本。點擊欄名或排序圖示可切換升冪／降冪，標題下方資料列會同步移動。'
-            : '操作(台)｜正式資料。營收創高依 revenue_latest 的創高月數判斷（≥13 個月為 V），不可直接修改。');
+    if (assetExcelNotice) {
+        const notice = document.createElement('p');
+        notice.className = 'asset-excel-preview-note';
+        notice.textContent = assetExcelNotice;
+        shell.append(notice);
+    }
 
     const grid = document.createElement('div');
     grid.className = 'asset-excel-grid';
     grid.append(makeAssetExcelTable());
 
-    shell.append(topbar, toolbar, notice, grid);
+    shell.prepend(topbar);
+    shell.append(grid);
     return shell;
 }
 

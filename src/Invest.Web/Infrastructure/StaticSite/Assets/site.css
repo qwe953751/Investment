@@ -9927,8 +9927,8 @@ button.podcast-preview-database-row:hover {
     .asset-holdings-viewer-status { text-align: left; }
 }
 
-/* Excel／Google 試算表版面預覽：只在由最高權限持倉入口開出的獨立分頁使用。
-   表格保留原始欄位順序與核取方塊；資料庫與 Google Sheets 寫入留到版面確認後。 */
+/* Excel／Google 試算表版面：由最高權限持倉入口開出的操作表使用。
+   表格保留原始欄位順序與核取方塊；正式操作資料由 Supabase 提供，Google Sheet 僅作唯讀參考。 */
 body.asset-excel-view-active {
     background: #fff;
 }
@@ -9947,80 +9947,27 @@ body.asset-excel-view-active .ranking-page {
 .asset-excel-shell {
     display: grid;
     min-height: 100vh;
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .asset-excel-topbar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 18px;
-    min-height: 68px;
+    min-height: 60px;
     padding: 10px 22px;
     border-bottom: 1px solid #dadce0;
     box-sizing: border-box;
 }
 
-.asset-excel-brand,
 .asset-excel-top-actions,
 .asset-excel-edit-actions {
     display: flex;
     align-items: center;
     gap: 10px;
-}
-
-.asset-excel-brand {
-    min-width: 0;
-}
-
-.asset-excel-brand-mark {
-    display: grid;
-    width: 34px;
-    height: 34px;
-    place-items: center;
-    border-radius: 4px;
-    background: #0f9d58;
-    color: #fff;
-    font-size: 25px;
-    line-height: 1;
-}
-
-.asset-excel-title-block {
-    display: grid;
-    min-width: 100px;
-    gap: 2px;
-}
-
-.asset-excel-title-block h1 {
-    margin: 0;
-    color: #3c4043;
-    font-size: 20px;
-    font-weight: 400;
-}
-
-.asset-excel-title-block span,
-.asset-excel-save-status {
-    color: #5f6368;
-    font-size: 12px;
-    white-space: nowrap;
-}
-
-.asset-excel-save-status {
-    margin-left: 8px;
-}
-
-.asset-excel-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    min-height: 48px;
-    padding: 5px 22px;
-    border-bottom: 1px solid #dadce0;
-    background: #f8f9fa;
-    box-sizing: border-box;
-}
-
-.asset-excel-edit-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
     margin-left: auto;
 }
 
@@ -10058,13 +10005,6 @@ body.asset-excel-view-active .ranking-page {
 .asset-excel-secondary-button {
     border-color: #dadce0;
     background: #fff;
-}
-
-.asset-excel-icon-button {
-    width: 36px;
-    padding-inline: 6px;
-    font-size: 20px;
-    line-height: 1;
 }
 
 .asset-excel-preview-note {
@@ -10312,23 +10252,12 @@ body.asset-excel-view-active .ranking-page {
 
 @media (max-width: 720px) {
     .asset-excel-topbar {
-        align-items: flex-start;
-        flex-direction: column;
-        gap: 10px;
         padding: 12px 14px;
     }
 
     .asset-excel-top-actions {
         width: 100%;
         justify-content: flex-end;
-    }
-
-    .asset-excel-save-status {
-        display: none;
-    }
-
-    .asset-excel-toolbar {
-        padding-inline: 10px;
     }
 
     .asset-excel-preview-note {
@@ -10341,7 +10270,6 @@ body.asset-excel-view-active .ranking-page {
 }
 
 @media print {
-    body.asset-excel-view-active .asset-excel-toolbar,
     body.asset-excel-view-active .asset-excel-preview-note,
     body.asset-excel-view-active .asset-excel-top-actions {
         display: none;
