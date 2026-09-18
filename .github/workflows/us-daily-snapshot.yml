@@ -145,7 +145,23 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -qm "美股與市場總覽行情快取 $(date +%Y-%m-%d)"
-          git push -q
+
+          # data 分支也被日韓總覽流程推送，兩邊時間一重疊 push 就會被拒。
+          # 各自寫的是不同市場的檔案，rebase 之後重推即可。
+          for attempt in 1 2 3 4 5; do
+              if git push -q origin data; then
+                  break
+              fi
+
+              if [ "$attempt" -eq 5 ]; then
+                  echo "data 分支連續 5 次推送失敗。" >&2
+                  exit 1
+              fi
+
+              echo "data 分支已被其他流程更新，rebase 後重試（第 $attempt 次）。"
+              git pull -q --rebase origin data
+          done
+
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       # 2026-09-11 查出「回補成功」不等於「拿到今天的收盤」：Yahoo Finance 的
