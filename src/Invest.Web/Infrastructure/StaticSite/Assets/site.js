@@ -19489,6 +19489,16 @@ function renderMarketHeat(heat, index) {
     analysisToggle.addEventListener('click', () => {
         marketHeatAnalysisOpen = !marketHeatAnalysisOpen;
         renderSummary();
+
+        if (marketHeatAnalysisOpen) {
+            void loadIndexKLineData().then(() => {
+                if (marketHeatAnalysisOpen) {
+                    renderSummary();
+                }
+            }).catch(() => {
+                // 舊本機快照可能沒有指數 K 線檔；畫面保留收盤價 fallback。
+            });
+        }
     });
 
     heading.append(title, score, levelTag, analysisToggle);
@@ -19801,6 +19811,62 @@ function marketHeatChartPoints(heat, index, marketTurnovers) {
         .sort((left, right) => left.tradingDate.localeCompare(right.tradingDate));
 }
 
+function marketHeatIndexKLineBars(market, endDate) {
+    const data = indexKLineData.get(market);
+    const startDate = assetTrendPeriodStartDate(endDate, '3M');
+
+    if (!data || !startDate || !endDate) {
+        return [];
+    }
+
+    const bars = (data.bars ?? [])
+        .filter(bar => bar.date >= startDate && bar.date <= endDate)
+        .sort((left, right) => left.date.localeCompare(right.date));
+    const liveBar = isIntradayDataView() ? intradayIndexKLineBar(market) : null;
+
+    if (!liveBar || liveBar.date !== endDate) {
+        return bars;
+    }
+
+    return buildIndexMovingAverages([
+        ...(data.bars ?? []).filter(bar => bar.date !== endDate),
+        liveBar
+    ].sort((left, right) => left.date.localeCompare(right.date)))
+        .filter(bar => bar.date >= startDate && bar.date <= endDate);
+}
+
+function marketHeatIndexPriceRange(points, market) {
+    const endDate = points.at(-1)?.tradingDate ?? '';
+    const bars = marketHeatIndexKLineBars(market, endDate);
+
+    if (bars.length > 0) {
+        const range = indexKLinePriceRange(bars);
+
+        if (Number.isFinite(range.min) && Number.isFinite(range.max) && range.max > range.min) {
+            return range;
+        }
+    }
+
+    const field = market === 'twse' ? 'twseIndex' : 'tpexIndex';
+    const values = points
+        .map(point => marketHeatChartNumber(point[field]))
+        .filter(number => number !== null && number > 0);
+
+    if (values.length === 0) {
+        return null;
+    }
+
+    const dataMin = Math.min(...values);
+    const dataMax = Math.max(...values);
+    const dataRange = dataMax > dataMin ? dataMax - dataMin : Math.max(dataMax * 0.02, 1);
+    const padding = dataRange * 0.05;
+
+    return {
+        min: dataMin - padding,
+        max: dataMax + padding
+    };
+}
+
 function marketHeatPercentLine(points, value, fixedMaximum = null) {
     const maximum = fixedMaximum ?? Math.max(
         0,
@@ -19817,7 +19883,35 @@ function marketHeatPercentLine(points, value, fixedMaximum = null) {
     };
 }
 
+function marketHeatRangePercentLine(points, value, range) {
+    const values = points
+        .map(point => marketHeatChartNumber(value(point)))
+        .filter(number => number !== null && number > 0);
+    const fallbackMinimum = values.length > 0 ? Math.min(...values) : null;
+    const fallbackMaximum = values.length > 0 ? Math.max(...values) : null;
+    const minimum = marketHeatChartNumber(range?.min) ?? fallbackMinimum;
+    const maximum = marketHeatChartNumber(range?.max) ?? fallbackMaximum;
+    const span = minimum === null || maximum === null ? null : maximum - minimum;
+
+    return point => {
+        const number = marketHeatChartNumber(value(point));
+
+        if (number === null || span === null || !Number.isFinite(span)) {
+            return null;
+        }
+
+        if (span <= 0) {
+            return 50;
+        }
+
+        return Math.max(0, Math.min(100, (number - minimum) / span * 100));
+    };
+}
+
 function marketHeatPriceLines(points) {
+    const twseRange = marketHeatIndexPriceRange(points, 'twse');
+    const tpexRange = marketHeatIndexPriceRange(points, 'tpex');
+
     return [
         {
             value: marketHeatPercentLine(points, point => point.score, 10),
@@ -19826,13 +19920,13 @@ function marketHeatPriceLines(points) {
             label: '市場熱絡分數'
         },
         {
-            value: marketHeatPercentLine(points, point => point.twseIndex),
+            value: marketHeatRangePercentLine(points, point => point.twseIndex, twseRange),
             lineClass: 'market-heat-chart-line--twse-price',
             dotClass: 'market-heat-chart-legend-dot--twse-price',
             label: '加權指數'
         },
         {
-            value: marketHeatPercentLine(points, point => point.tpexIndex),
+            value: marketHeatRangePercentLine(points, point => point.tpexIndex, tpexRange),
             lineClass: 'market-heat-chart-line--tpex-price',
             dotClass: 'market-heat-chart-legend-dot--tpex-price',
             label: '上櫃指數'
@@ -19843,19 +19937,19 @@ function marketHeatPriceLines(points) {
 function marketHeatTurnoverLines(points) {
     return [
         {
-            value: marketHeatPercentLine(points, point => point.volumeRatio),
+            value: marketHeatRangePercentLine(points, point => point.volumeRatio),
             lineClass: 'market-heat-chart-line--volume',
             dotClass: 'market-heat-chart-legend-dot--volume',
             label: '市場量能'
         },
         {
-            value: marketHeatPercentLine(points, point => point.twseTurnover),
+            value: marketHeatRangePercentLine(points, point => point.twseTurnover),
             lineClass: 'market-heat-chart-line--twse-turnover',
             dotClass: 'market-heat-chart-legend-dot--twse-turnover',
             label: '加權成交額'
         },
         {
-            value: marketHeatPercentLine(points, point => point.tpexTurnover),
+            value: marketHeatRangePercentLine(points, point => point.tpexTurnover),
             lineClass: 'market-heat-chart-line--tpex-turnover',
             dotClass: 'market-heat-chart-legend-dot--tpex-turnover',
             label: '上櫃成交額'
@@ -19887,7 +19981,7 @@ function renderMarketHeatAnalysis(heat, index, marketTurnovers) {
 
     const note = document.createElement('small');
     note.className = 'market-heat-analysis-note';
-    note.textContent = '左軸固定 0～100%：熱絡分數以 10 分為 100%；其餘每條線以各自區間最高值為 100%。';
+    note.textContent = '左軸固定 0～100%：指數依三個月 K 線縱軸高低點換算；熱絡分數以 10 分為 100%；量能與成交額各自依三個月最低／最高值換算。';
     header.append(heading, note);
 
     const charts = document.createElement('div');
@@ -19895,7 +19989,7 @@ function renderMarketHeatAnalysis(heat, index, marketTurnovers) {
     charts.append(
         renderMarketHeatChartCard(
             '市場熱絡分數 × 指數',
-            '三線先各自換算百分比，再共用 0～100% 左軸',
+            '指數依三個月 K 線縱軸換算；分數以 10 分為 100%',
             points,
             {
                 domain: [0, 100],
@@ -19905,7 +19999,7 @@ function renderMarketHeatAnalysis(heat, index, marketTurnovers) {
             }),
         renderMarketHeatChartCard(
             '市場量能 × 成交額',
-            '三線先各自換算百分比，再共用 0～100% 左軸',
+            '量能與成交額各自依三個月最低／最高值換算，再共用 0～100% 左軸',
             points,
             {
                 domain: [0, 100],
