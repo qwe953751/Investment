@@ -27,7 +27,7 @@
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](版本紀錄.md) |
-| 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），本機對 us/jp/kr 三市場實測涵蓋證明皆成立，`MarketTurnoverCdn:Public` 已開啟，尚待第一次 GitHub Actions 實跑與網站發布驗收 |
+| 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），GitHub Actions 實跑並修掉 jp/kr 同輪 bucket 重複建立的發布 bug 後，Storage 發布與正式網站 manifest／site.js 均已線上驗收通過 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [Google Sheet 操作(台)完整 48 欄支援](#todo-18) | ⚪ 目前只完成現行 14 欄受控投影 |
 
@@ -1786,8 +1786,8 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - `KisMarketTurnoverClient`／`MassiveMarketTurnoverClient` 兩個檔案整支刪除，`appsettings.json` 的 `KisMarketData`／`MassiveMarketData` 換成 `YahooScreenerMarketData`（`VolumePages`／`PricePages` 預設 us=12/2、jp=8/2、kr=8/2）。`us-daily-snapshot.yml`／`asia-market-overview-daily.yml`／`asia-market-overview-intraday.yml` 三個 workflow 都拿掉 `MASSIVE_API_KEY`／`KIS_APP_KEY`／`KIS_APP_SECRET`，`market-turnover` 之後不需要任何密鑰。
 - `MarketTurnoverQualityGate`（≥20 列、名次連續、代號不重複、金額為正）完全沒動；新的涵蓋證明是在 client 內部另外把關，不是改品質門檻本身。
 - 本機用 `dotnet run -- market-turnover --markets us` 與 `--markets jp,kr` 對三個市場各實測過一輪，涵蓋證明皆成立，實際抓到 NVDA／AAPL／SK hynix／Samsung 等真實個股，符合預期；`dotnet test` 516 項全過，新增 `YahooScreenerMarketTurnoverClientTests`（欄位對應含代號後綴保留、缺股價／缺量列直接丟棄不補零、分頁在 offset 翻到底時的重複偵測、涵蓋證明通過／失敗兩種情境、高股價低成交量標的只能靠股價軸候選池抓到）。
-- `MarketTurnoverCdn:Public` 已從 `false` 改為 `true`；本機沒有 `SUPABASE_STORAGE_SECRET_KEY`，Storage 發布與 manifest 是否正確指向排行 CDN 要等 push 後由 GitHub Actions（已設定這把密鑰）跑第一輪盤中／盤後才能實際驗收。
-- 成交金額是股價 × 成交量換算的估計值，不是交易所公告值；前端 `mspBuildTurnoverLeaders` 的說明文字已加註「成交金額為估計值（股價×成交量）」，日／韓盤中快照另外加註「約延遲 20 分鐘」。
+- `MarketTurnoverCdn:Public` 已從 `false` 改為 `true`；成交金額是股價 × 成交量換算的估計值，不是交易所公告值，前端 `mspBuildTurnoverLeaders` 的說明文字已加註「成交金額為估計值（股價×成交量）」，日／韓盤中快照另外加註「約延遲 20 分鐘」。
+- **線上驗收（同日完成）**：push 後手動觸發 `us-daily-snapshot.yml`／`asia-market-overview-daily.yml`（`skip-wait=true`）與 `asia-market-overview-intraday.yml`（新增同款 `skip-wait` 測試輸入，比照另兩個 workflow）三個 workflow 實跑。過程中發現並修掉一個真實 bug：同一輪跑 jp 再跑 kr 共用同一個 `MarketTurnoverSnapshotPublisher` 實例，重複呼叫 `EnsureBucketAsync` 對已存在的 bucket id 建立，Supabase 不保證回 409 Conflict（實測是 HTTP 400，訊息帶 `already exists`），導致 kr 每輪都發布失敗。修法比照 `MarketOverviewIntradaySnapshotPublisher` 既有的 `bucketChecked` 快取寫法，同一實例只真正呼叫一次，另外多留一層「400 訊息含 duplicate 也視為成功」的防呆；新增 `MarketTurnoverSnapshotPublisherTests` 三項測試覆蓋，`dotnet test` 519 項全過。修完後重跑確認 jp／kr 同輪都成功發布（抓到 KIOXIA、SoftBank、Advantest 等真實個股），直接對 Supabase Storage 公開網址（`market-turnover-snapshots/{market}/latest.json`）驗證資料存在；接著觸發 `daily-snapshot.yml -f publish-only=true` 重新輸出並發布網站，確認正式 manifest.json 已含 `marketTurnoverCdn.baseUrl`，正式 `site.js` 也已包含估計值／延遲標示的最新版本。工項 A～E 全部完成並線上驗收通過。
 
 ### 尚未討論
 
