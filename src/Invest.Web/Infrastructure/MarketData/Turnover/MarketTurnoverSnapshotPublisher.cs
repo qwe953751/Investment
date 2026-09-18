@@ -25,6 +25,11 @@ public sealed class MarketTurnoverSnapshotPublisher(
         "^(us|jp|kr)/market-turnover-\\d{8}-\\d{4}\\.json$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    // 同一輪跑多個市場（例如 jp/kr）會重複用同一個 publisher 實例；bucket 只需要建立一次，
+    // 重複 POST 有時會撞 Supabase 對同一 bucket id 的重複建立回傳 HTTP 400（不是穩定的 409），
+    // 跟 MarketOverviewIntradaySnapshotPublisher 用同一套快取避免重打。
+    private bool bucketChecked;
+
     public static bool IsPublishingConfigured(IConfiguration configuration)
         => bool.TryParse(configuration[PublicConfigurationKey], out var isPublic)
             && isPublic
@@ -134,6 +139,11 @@ public sealed class MarketTurnoverSnapshotPublisher(
 
     private async Task EnsureBucketAsync(PublisherSettings settings, CancellationToken cancellationToken)
     {
+        if (bucketChecked)
+        {
+            return;
+        }
+
         using var request = CreateRequest(HttpMethod.Post, $"{settings.Url}/storage/v1/bucket", settings.Secret);
         request.Content = JsonContent.Create(new
         {
@@ -146,8 +156,20 @@ public sealed class MarketTurnoverSnapshotPublisher(
         using var response = await httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.Conflict)
         {
-            throw new HttpRequestException($"建立成交排行 Storage bucket 失敗：HTTP {(int)response.StatusCode}。");
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            // Supabase 對已存在的 bucket id 不保證回 409：實測同一輪 jp 建立成功後，
+            // kr 緊接著再 POST 同一個 id 收到的是 400，訊息裡帶 "already exists"／"Duplicate"。
+            // bucketChecked 快取已經避免同一個 publisher 實例重打，這裡多留一層防呆給外部重建實例的情境。
+            var looksLikeDuplicate = body.Contains("already exists", StringComparison.OrdinalIgnoreCase)
+                || body.Contains("Duplicate", StringComparison.OrdinalIgnoreCase);
+            if (!looksLikeDuplicate)
+            {
+                throw new HttpRequestException(
+                    $"建立成交排行 Storage bucket 失敗：HTTP {(int)response.StatusCode}；{body[..Math.Min(body.Length, 300)]}");
+            }
         }
+
+        bucketChecked = true;
     }
 
     private async Task UploadAsync(
