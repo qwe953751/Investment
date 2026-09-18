@@ -27959,7 +27959,11 @@ function mspBuildTurnoverLeaders(group, market) {
     title.textContent = '成交金額前 20';
     const detail = document.createElement('p');
     detail.className = 'msp-turnover-leaders-detail';
-    detail.textContent = `依${marketLabel}成交金額排序 · 顯示原幣${config?.unitLabel ?? ''}`;
+    // 成交金額是股價 × 成交量換算的估計值，不是交易所公告的實際成交金額；
+    // 盤中快照另有約 20 分鐘資料延遲，兩者都要讓使用者看得到，不能只在文件裡寫。
+    const delayNote = group.intraday === true ? ' · 盤中快照約延遲 20 分鐘' : '';
+    detail.textContent =
+        `依${marketLabel}成交金額排序 · 顯示原幣${config?.unitLabel ?? ''} · 成交金額為估計值（股價×成交量）${delayNote}`;
     copy.append(eyebrow, title, detail);
 
     const asOf = document.createElement('span');

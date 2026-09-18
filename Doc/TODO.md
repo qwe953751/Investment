@@ -27,7 +27,7 @@
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](版本紀錄.md) |
-| 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0，尚待補回落後資料並驗證網站 |
+| 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），本機對 us/jp/kr 三市場實測涵蓋證明皆成立，`MarketTurnoverCdn:Public` 已開啟，尚待第一次 GitHub Actions 實跑與網站發布驗收 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [Google Sheet 操作(台)完整 48 欄支援](#todo-18) | ⚪ 目前只完成現行 14 欄受控投影 |
 
@@ -1766,21 +1766,28 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - 程式已新增 `MarketOverviewDefinition`／`MarketOverviewCalculator.CalculateHeatAt`，輸出四市場各自的個別分數、綜合分數、產業確認分數與 warning；網站本輪不發布。
 - 完整公式、資料邊界、驗收與日韓候選方案統一見 [熱絡指標](技術文件/熱絡指標.md)。
 
-### 2026-09-15 成交金額前 20（來源與快取流程已接線，尚待密鑰／回補／發布）
+### 2026-09-15 成交金額前 20（來源與快取流程已接線，尚待密鑰／回補／發布）—— 已被 2026-09-19 取代
 
 - 市場總覽 `MarketOverviewGroup` 新增 `turnoverLeaders` 契約；資料源必須在當日快照列明確標記，C# 才會依原幣成交金額取前 20，並集中計算日漲跌與年初至今漲跌。
 - 前端正式版面固定左欄 1～10、右欄 11～20；每列可開最近三個月 K 線，日／韓／加密 K 線 payload 也會保留正確市場標籤。localhost 的 `?preview=market-leaders-v1` 仍只供版面確認，示意資料不會進 production。
-- `MarketTurnoverCollector` 已接上 Massive grouped daily aggregates（美股）與 KIS TSE／KRX 成交金額排行（日／韓），通過至少 20 列、名次連續、代號不重複、金額有效的品質門檻後，盤後寫入 `data/imports-turnover`；盤中不寫 data branch，只送版本化 Storage 快照與 `latest.json`。
-- 尚待在 GitHub Actions 設定 `KIS_APP_KEY`、`KIS_APP_SECRET`、`MASSIVE_API_KEY`，實跑來源穩定性與授權確認，回補兩年（或來源可提供的歷史範圍）盤後排行。
-- 尚待確認來源允許公開再分發；目前 `MarketTurnoverCdn:Public=false`，所以 export 不會把排行 CDN 寫進 manifest。授權確認後才改為 public、先完成盤中首輪，再執行 export／發布網站。
 - 排行列的成交金額與現價已可顯示；若要讓每個排行標的都能開完整三個月 K 線，還需讓來源 collector 另外回補該標的日 K（目前固定市場總覽 K 線不會把單次排行列冒充成歷史序列）。
-- 非台股（美／日／韓）成交金額前 20 的免金鑰替代方案（Yahoo Finance screener）已完成規劃與存活驗證，交由另一個模型實作，見 [非台股市場成交金額前20實作規格.md](技術文件/非台股市場成交金額前20實作規格.md)。
+- 原本規劃的 Massive／KIS 付費金鑰來源從未實際設定過，`imports-turnover` 一直是空的；根因與後續解法見下面兩節。
 
 ### 2026-09-18 P0：排行未接線導致美股快取與日韓總覽落後、網站沒有更新
 
 - 根因：`market-turnover` 尚未設定密鑰（`MASSIVE_API_KEY`／`KIS_APP_KEY`／`KIS_APP_SECRET`），`MarketTurnoverCollector` 本身把每個市場的失敗都收進 `SkippedMarkets`、正常回傳，但 `Program.cs` 的 `RunMarketTurnoverAsync` 與 `RunMarketOverviewIntradayAsync` 卻把「有市場被跳過」當成整支指令失敗而 `throw`，造成 process exit 134。`us-daily-snapshot.yml`／`asia-market-overview-daily.yml` 裡沒有 `if: ${{ !cancelled() }}` 的後續步驟（隱含 `success()` 閘門）因此被跳過：美股「保存行情快取」與「發布含美股資料的資產快照」連續 7 天沒跑，日韓「保存日韓市場總覽快取」連續 4 天沒跑（此 workflow 沒有 Supabase 同步／警報，完全靜默失敗）。Supabase 同步、對帳、警報更新這幾步本身有 `!cancelled()` 保護，並未受影響。
 - 修法：`RunMarketTurnoverAsync` 不再把 `SkippedMarkets` 轉成例外，只印警告；`RunMarketOverviewIntradayAsync` 迴圈內同一段判斷拿掉 `failedRounds++`（仍保留警告輸出），真正的總覽不完整／限流／設定錯誤判斷維持原樣、照樣會讓 workflow 失敗。兩個 workflow 的「回補…成交金額前 20」步驟另外加 `continue-on-error: true` 作第二層防線。`MarketTurnoverQualityGate`（≥20 列、名次連續、代號不重複、金額為正）完全沒動，排行資料本身的品質把關不受影響。
 - 「排行來源尚未接線」與「已發布資料本身不完整／限流／設定錯誤」是兩種不同語意：前者現在不擋既有功能，後者維持會讓 workflow 失敗。
+
+### 2026-09-19 成交金額前 20 改用 Yahoo screener（免金鑰），全面取代 Massive／KIS
+
+- 背景：Massive／KIS 付費金鑰從未實際設定過，`imports-turnover` 從功能上線起就一直是空的；規格見 [非台股市場成交金額前20實作規格.md](技術文件/非台股市場成交金額前20實作規格.md)。
+- 新增 `YahooScreenerMarketTurnoverClient`，打 Yahoo Finance 未公開 screener 端點（cookie + crumb 認證，不需要付費金鑰），用「成交量前 N 頁」∪「股價前 M 頁」的雙軸候選池取代全市場掃描；每次收集都算出候選池外任何個股的成交金額上限（`bound = 候選池最小成交量 × 候選池最小股價`），只有 `bound < 候選池算出的第 20 名成交金額` 才視為涵蓋全市場前 20，否則整個市場當輪跳過、不發布部分排行（`YahooScreenerMarketTurnoverClient.RankPool`）。
+- `KisMarketTurnoverClient`／`MassiveMarketTurnoverClient` 兩個檔案整支刪除，`appsettings.json` 的 `KisMarketData`／`MassiveMarketData` 換成 `YahooScreenerMarketData`（`VolumePages`／`PricePages` 預設 us=12/2、jp=8/2、kr=8/2）。`us-daily-snapshot.yml`／`asia-market-overview-daily.yml`／`asia-market-overview-intraday.yml` 三個 workflow 都拿掉 `MASSIVE_API_KEY`／`KIS_APP_KEY`／`KIS_APP_SECRET`，`market-turnover` 之後不需要任何密鑰。
+- `MarketTurnoverQualityGate`（≥20 列、名次連續、代號不重複、金額為正）完全沒動；新的涵蓋證明是在 client 內部另外把關，不是改品質門檻本身。
+- 本機用 `dotnet run -- market-turnover --markets us` 與 `--markets jp,kr` 對三個市場各實測過一輪，涵蓋證明皆成立，實際抓到 NVDA／AAPL／SK hynix／Samsung 等真實個股，符合預期；`dotnet test` 516 項全過，新增 `YahooScreenerMarketTurnoverClientTests`（欄位對應含代號後綴保留、缺股價／缺量列直接丟棄不補零、分頁在 offset 翻到底時的重複偵測、涵蓋證明通過／失敗兩種情境、高股價低成交量標的只能靠股價軸候選池抓到）。
+- `MarketTurnoverCdn:Public` 已從 `false` 改為 `true`；本機沒有 `SUPABASE_STORAGE_SECRET_KEY`，Storage 發布與 manifest 是否正確指向排行 CDN 要等 push 後由 GitHub Actions（已設定這把密鑰）跑第一輪盤中／盤後才能實際驗收。
+- 成交金額是股價 × 成交量換算的估計值，不是交易所公告值；前端 `mspBuildTurnoverLeaders` 的說明文字已加註「成交金額為估計值（股價×成交量）」，日／韓盤中快照另外加註「約延遲 20 分鐘」。
 
 ### 尚未討論
 

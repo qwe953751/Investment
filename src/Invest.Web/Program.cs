@@ -72,10 +72,8 @@ builder.Services.Configure<MarketDataOptions>(
     builder.Configuration.GetSection(MarketDataOptions.SectionName));
 builder.Services.Configure<UsMarketDataOptions>(
     builder.Configuration.GetSection(UsMarketDataOptions.SectionName));
-builder.Services.Configure<KisMarketDataOptions>(
-    builder.Configuration.GetSection(KisMarketDataOptions.SectionName));
-builder.Services.Configure<MassiveMarketDataOptions>(
-    builder.Configuration.GetSection(MassiveMarketDataOptions.SectionName));
+builder.Services.Configure<YahooScreenerMarketDataOptions>(
+    builder.Configuration.GetSection(YahooScreenerMarketDataOptions.SectionName));
 
 // 官方網站會擋掉沒有 User-Agent 的請求，這些 client 一定要帶。
 builder.Services.AddHttpClient<TwseDailyQuoteClient>(ConfigureQuoteClient);
@@ -110,8 +108,13 @@ builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<MarketOverviewIntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<MarketTurnoverSnapshotPublisher>();
-builder.Services.AddHttpClient(nameof(KisMarketTurnoverClient), ConfigureQuoteClient);
-builder.Services.AddHttpClient(nameof(MassiveMarketTurnoverClient), ConfigureQuoteClient);
+// crumb 認證需要跨 GET/POST 帶同一組 cookie，handler 要固定用同一個 CookieContainer。
+builder.Services.AddHttpClient(nameof(YahooScreenerMarketTurnoverClient), ConfigureQuoteClient)
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        CookieContainer = new System.Net.CookieContainer(),
+        UseCookies = true
+    });
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
@@ -147,8 +150,7 @@ builder.Services.AddTransient<MarketOverviewDownloader>();
 builder.Services.AddTransient<IMarketOverviewIntradayQuoteClient>(services =>
     services.GetRequiredService<YahooFinanceIntradayQuoteClient>());
 builder.Services.AddTransient<MarketOverviewIntradayCollector>();
-builder.Services.AddTransient<KisMarketTurnoverClient>();
-builder.Services.AddTransient<MassiveMarketTurnoverClient>();
+builder.Services.AddTransient<YahooScreenerMarketTurnoverClient>();
 builder.Services.AddTransient<MarketTurnoverCollector>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();

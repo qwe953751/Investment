@@ -2,8 +2,7 @@ namespace Invest.Web.Infrastructure.MarketData.Turnover;
 
 /// <summary>集中抓取入口：每個市場每輪各一個來源呼叫，通過品質門檻後才原子保存／發布。</summary>
 public sealed class MarketTurnoverCollector(
-    KisMarketTurnoverClient kisClient,
-    MassiveMarketTurnoverClient massiveClient,
+    YahooScreenerMarketTurnoverClient yahooScreenerClient,
     MarketTurnoverStore store,
     MarketTurnoverSnapshotPublisher publisher,
     ILogger<MarketTurnoverCollector> logger)
@@ -23,9 +22,7 @@ public sealed class MarketTurnoverCollector(
             {
                 var now = DateTimeOffset.UtcNow;
                 var tradingDate = ToMarketDate(market, now);
-                var rows = market == "us"
-                    ? await massiveClient.GetAsync(tradingDate, cancellationToken)
-                    : await kisClient.GetAsync(market, tradingDate, cancellationToken);
+                var rows = await yahooScreenerClient.GetAsync(market, tradingDate, cancellationToken);
                 var snapshot = new MarketTurnoverSnapshot
                 {
                     Market = market,

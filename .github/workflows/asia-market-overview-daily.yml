@@ -56,11 +56,9 @@ jobs:
       - name: 回補日韓市場總覽日線
         run: dotnet run -c Release --project src/Invest.Web -- backfill-overview --markets jp,kr
 
+      # Yahoo screener 是未公開端點、不需要金鑰；沒有 SLA，失敗就跳過這步，不擋後面的保存快取。
       - name: 回補日韓成交金額前 20
         continue-on-error: true
-        env:
-          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
-          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
         run: dotnet run -c Release --project src/Invest.Web -- market-turnover --markets jp,kr
 
       - name: 保存日韓市場總覽快取

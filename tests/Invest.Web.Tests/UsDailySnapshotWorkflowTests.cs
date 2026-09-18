@@ -27,7 +27,8 @@ public sealed class UsDailySnapshotWorkflowTests
         Assert.Contains("-- backfill-us", workflow, StringComparison.Ordinal);
         Assert.Contains("git add -A imports-us", workflow, StringComparison.Ordinal);
         Assert.Contains("market-turnover --markets us", workflow, StringComparison.Ordinal);
-        Assert.Contains("MASSIVE_API_KEY", workflow, StringComparison.Ordinal);
+        // 成交金額前 20 改用 Yahoo screener（未公開端點），不再需要付費金鑰。
+        Assert.DoesNotContain("MASSIVE_API_KEY", workflow, StringComparison.Ordinal);
         Assert.Contains("imports-turnover", workflow, StringComparison.Ordinal);
         Assert.Contains("--diff-filter=D", workflow, StringComparison.Ordinal);
     }

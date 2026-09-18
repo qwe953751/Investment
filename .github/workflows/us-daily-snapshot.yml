@@ -110,10 +110,9 @@ jobs:
       - name: 回補市場切換總覽（美股／加密貨幣）
         run: dotnet run -c Release --project src/Invest.Web -- backfill-overview --markets us,crypto
 
+      # Yahoo screener 是未公開端點、不需要金鑰；沒有 SLA，失敗就跳過這步，不擋後面的保存快取。
       - name: 回補美股成交金額前 20
         continue-on-error: true
-        env:
-          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
         run: dotnet run -c Release --project src/Invest.Web -- market-turnover --markets us
 
       - name: 保存行情快取

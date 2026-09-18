@@ -41,22 +41,22 @@ public sealed record MarketTurnoverCollectionReport(
 
 public sealed class MarketTurnoverDataIncompleteException(string message) : Exception(message);
 
-public sealed class KisMarketDataOptions
+/// <summary>
+/// Yahoo Finance 未公開 screener API 設定。不需要付費金鑰；靠雙軸候選池（成交量前 N 頁
+/// ∪ 股價前 M 頁）加上數學證明涵蓋全市場前 20，取代原本從未接上金鑰的 KIS／Massive。
+/// </summary>
+public sealed class YahooScreenerMarketDataOptions
 {
-    public const string SectionName = "KisMarketData";
+    public const string SectionName = "YahooScreenerMarketData";
 
-    public string BaseUrl { get; set; } = "https://openapi.koreainvestment.com:9443";
-    public string AppKeyEnvironmentVariable { get; set; } = "KIS_APP_KEY";
-    public string AppSecretEnvironmentVariable { get; set; } = "KIS_APP_SECRET";
-    public int RequestDelayMilliseconds { get; set; } = 300;
-}
-
-public sealed class MassiveMarketDataOptions
-{
-    public const string SectionName = "MassiveMarketData";
-
-    public string BaseUrl { get; set; } = "https://api.massive.com";
-    public string ApiKeyEnvironmentVariable { get; set; } = "MASSIVE_API_KEY";
+    public string BaseUrl { get; set; } = "https://query1.finance.yahoo.com";
+    public int PageSize { get; set; } = 250;
+    public int MaxOffset { get; set; } = 10000;
+    public int RequestDelayMilliseconds { get; set; } = 250;
+    public IReadOnlyDictionary<string, int> VolumePages { get; set; } =
+        new Dictionary<string, int> { ["us"] = 12, ["jp"] = 8, ["kr"] = 8 };
+    public IReadOnlyDictionary<string, int> PricePages { get; set; } =
+        new Dictionary<string, int> { ["us"] = 2, ["jp"] = 2, ["kr"] = 2 };
 }
 
 public static class MarketTurnoverQualityGate
