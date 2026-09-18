@@ -2153,6 +2153,9 @@ function restoreStoredViewPreferences(preferences) {
 // 同一個組合切回來時不重打一次 fetch。
 const cache = new Map();
 let current = null;
+// 自訂頁的兩個內部資料類型共用這份數量快取，避免切換後按鈕只剩目前檢視的數字。
+let assetTypeCounts = { stock: null, etf: null };
+let assetTypeCountLoading = false;
 const klineData = new Map();
 const klinePromises = new Map();
 const indexKLineData = new Map();
@@ -2855,7 +2858,8 @@ function applyViewVisibility() {
 
 const PAGE_HEADINGS = {
     custom: '自訂資料瀏覽',
-    etf: 'ETF 行情瀏覽',
+    // ETF 是自訂頁內的資料類型，不再另占一個主頁籤。
+    etf: '自訂資料瀏覽',
     topics: '族群分類與熱度',
     notes: '筆記',
     assets: '資產總覽'
@@ -2874,15 +2878,18 @@ function renderFilters() {
 
     renderOptions(
         'view-options',
-        availableViews().map(view => ({
-            ...view,
-            disabled: view.key === 'intraday' && !hasIntradaySnapshotSource()
-        })),
-        state.view,
+        availableViews()
+            .filter(view => view.key !== 'etf')
+            .map(view => ({
+                ...view,
+                disabled: view.key === 'intraday' && !hasIntradaySnapshotSource()
+            })),
+        state.view === 'etf' ? 'custom' : state.view,
         view => update({ view }));
 
     wireNotes();
     applyViewVisibility();
+    renderCustomAssetSwitch();
     renderCustomSourceOptions();
 
     const intraday = state.view === 'intraday';
@@ -2951,6 +2958,68 @@ function renderFilters() {
 
     if (state.view === 'notes') {
         renderNotes();
+    }
+}
+
+function renderCustomAssetSwitch() {
+    const host = el('custom-asset-switch');
+
+    if (!host) {
+        return;
+    }
+
+    host.replaceChildren();
+
+    if (!['custom', 'etf'].includes(state.view)) {
+        return;
+    }
+
+    const options = [
+        { key: 'custom', label: '個股', count: assetTypeCounts.stock },
+        { key: 'etf', label: 'ETF', count: assetTypeCounts.etf }
+    ];
+
+    for (const option of options) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = state.view === option.key
+            ? 'custom-asset-option selected'
+            : 'custom-asset-option';
+        button.setAttribute('role', 'tab');
+        button.setAttribute('aria-selected', String(state.view === option.key));
+        button.setAttribute('aria-controls', 'ranking');
+        button.dataset.hint = option.key === 'custom'
+            ? '切換到自訂個股資料。'
+            : '切換到自訂 ETF 資料。';
+
+        const label = document.createElement('span');
+        label.className = 'custom-asset-option-label';
+        label.textContent = option.label;
+
+        const count = document.createElement('span');
+        count.className = 'custom-asset-option-count';
+        count.textContent = option.count === null
+            ? '—'
+            : `${option.count.toLocaleString('zh-TW')} 檔`;
+
+        button.append(label, count);
+        button.addEventListener('click', () => update({ view: option.key }));
+        host.append(button);
+    }
+
+    if (assetTypeCounts.etf === null && !assetTypeCountLoading) {
+        assetTypeCountLoading = true;
+        void loadEtfCatalog()
+            .then(rows => {
+                assetTypeCounts.etf = rows.length;
+                renderCustomAssetSwitch();
+            })
+            .catch(() => {
+                // 類型切換不應因名冊數量讀取失敗而被停用。
+            })
+            .finally(() => {
+                assetTypeCountLoading = false;
+            });
     }
 }
 
@@ -19078,6 +19147,7 @@ function appendRankingCell(tr, row, column, options = {}) {
     const { text, cls, lines, kline, klineOptions, marketMark, revenueDetails, topic, tickerBadges } = column.cell(row);
     const td = document.createElement('td');
     td.className = cls;
+    td.classList.add('col-' + column.key);
 
     // 交易限制移到代號右側，讓名稱儲存格可以安全使用漲跌底色。
     if (tickerBadges !== undefined) {
@@ -19276,6 +19346,7 @@ function renderSummary() {
     // 掛在這裡而不是各個 load*()：摘要重畫的時機就是資料換過的時機，
     // 兩者綁在一起才不會有「資料換了、警告還留在上一輪」的空窗。
     renderStaleBanner();
+    renderCustomAssetSwitch();
 
     if (state.view === 'etf') {
         const items = isEtfIntradayView()
@@ -21271,6 +21342,7 @@ async function loadCustomIntraday(silent = false, force = false) {
         rankedStockCount: rows.length,
         rankByTicker: new Map()
     };
+    assetTypeCounts.stock = liveRows.length;
 
     const pageCount = Math.max(1, Math.ceil(rows.length / CUSTOM_PAGE_SIZE));
     state.customPage = Math.min(state.customPage, pageCount);
@@ -21333,6 +21405,7 @@ async function loadCustom(silent = false, force = false) {
         rankedStockCount: rows.length,
         rankByTicker: new Map()
     };
+    assetTypeCounts.stock = data.rows.length;
 
     const pageCount = Math.max(1, Math.ceil(rows.length / CUSTOM_PAGE_SIZE));
     state.customPage = Math.min(state.customPage, pageCount);
@@ -21547,6 +21620,7 @@ function renderEtfRows(allRows, session, tradeDate, capturedAtIso = '', liveEtfC
         rankedStockCount: rows.length,
         rankByTicker: new Map()
     };
+    assetTypeCounts.etf = allRows.length;
 
     const pageCount = Math.max(1, Math.ceil(rows.length / CUSTOM_PAGE_SIZE));
     state.etfPage = Math.min(Math.max(state.etfPage, 1), pageCount);
@@ -27647,6 +27721,8 @@ function mspBuildViewTabs(proto) {
 
     const dataTabs = proto.market === 'tw'
         ? VIEWS.filter(view => !['assets', 'notes'].includes(view.key))
+            // ETF 是自訂頁內的資料類型，不在主導覽重複佔一格。
+            .filter(view => view.key !== 'etf')
             .filter(view => availableViews().some(item => item.key === view.key))
         : [{ key: 'overview', text: '總覽', hint: '查看目前選定市場的指數、熱絡程度與類股／幣種表現。' }];
     const workspaceTabs = availableViews()
@@ -27656,7 +27732,7 @@ function mspBuildViewTabs(proto) {
     const activeKey = workspaceView
         ? state.view
         : proto.market === 'tw'
-            ? state.view
+            ? (state.view === 'etf' ? 'custom' : state.view)
             : 'overview';
 
     groups.forEach((tabs, groupIndex) => {

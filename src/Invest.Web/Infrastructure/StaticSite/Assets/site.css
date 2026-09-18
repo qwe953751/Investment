@@ -713,6 +713,50 @@ body {
     color: white;
 }
 
+/* 自訂是主頁籤；個股／ETF 是同一頁內的資料類型，沿用正式網站的
+   細邊框、藍色選取線與緊湊高度，不再各自畫一張大卡片。 */
+.custom-asset-switch {
+    display: inline-flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.custom-asset-option {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 148px;
+    padding: 9px 16px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    font: inherit;
+    cursor: pointer;
+}
+
+.custom-asset-option:hover:not(.selected),
+.custom-asset-option:focus-visible:not(.selected) {
+    background: var(--surface-hover);
+}
+
+.custom-asset-option.selected {
+    border-color: var(--accent);
+    box-shadow: inset 3px 0 0 var(--accent);
+    background: var(--accent-bg);
+    color: var(--accent-strong);
+}
+
+.custom-asset-option-label {
+    font-weight: 600;
+}
+
+.custom-asset-option-count {
+    color: var(--text-secondary);
+    font-size: 18px;
+    font-variant-numeric: tabular-nums;
+}
+
 .snapshot-note {
     margin-top: 8px !important;
     font-size: 13px;
@@ -3957,10 +4001,51 @@ body {
 
 .ranking-table.custom-table {
     min-width: 820px;
+    table-layout: fixed;
+}
+
+.ranking-table.custom-table .col-ticker {
+    width: 15%;
+}
+
+.ranking-table.custom-table .col-name {
+    width: 15%;
+}
+
+.ranking-table.custom-table .col-close {
+    width: 10%;
+}
+
+.ranking-table.custom-table .col-price,
+.ranking-table.custom-table .col-revenue,
+.ranking-table.custom-table .col-revenueHigh,
+.ranking-table.custom-table .col-value {
+    width: 15%;
 }
 
 .ranking-table.etf-table {
     min-width: 900px;
+    table-layout: fixed;
+}
+
+.ranking-table.etf-table .col-ticker {
+    width: 16%;
+}
+
+.ranking-table.etf-table .col-name {
+    width: 30%;
+}
+
+.ranking-table.etf-table .col-close {
+    width: 19%;
+}
+
+.ranking-table.etf-table .col-price {
+    width: 21%;
+}
+
+.ranking-table.etf-table .col-tradingValue {
+    width: 14%;
 }
 
 .ranking-table.etf-table .col-name {
@@ -5090,6 +5175,20 @@ td.stock-name.stock-name-change-down {
         flex: 1 1 0;
         padding-right: 10px;
         padding-left: 10px;
+    }
+
+    .custom-asset-switch {
+        display: flex;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .custom-asset-option {
+        min-width: 0;
+        flex: 1 1 0;
+        justify-content: center;
+        padding-right: 12px;
+        padding-left: 12px;
     }
 
     .access-bar {

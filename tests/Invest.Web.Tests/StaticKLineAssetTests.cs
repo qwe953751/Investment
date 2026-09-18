@@ -704,6 +704,33 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 自訂是主頁籤且個股ETF共用正式表格版面()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        Assert.Contains("id=\"custom-asset-switch\"", html, StringComparison.Ordinal);
+        Assert.Contains("data-view=\"custom etf\"", html, StringComparison.Ordinal);
+        Assert.Contains("function renderCustomAssetSwitch()", script, StringComparison.Ordinal);
+        Assert.Contains("{ key: 'custom', label: '個股'", script, StringComparison.Ordinal);
+        Assert.Contains("{ key: 'etf', label: 'ETF'", script, StringComparison.Ordinal);
+
+        var navigationStart = script.IndexOf("const dataTabs = proto.market === 'tw'", StringComparison.Ordinal);
+        var navigationEnd = script.IndexOf("const workspaceTabs", navigationStart, StringComparison.Ordinal);
+        Assert.True(navigationStart >= 0 && navigationEnd > navigationStart);
+        var navigation = script[navigationStart..navigationEnd];
+        Assert.Contains(".filter(view => view.key !== 'etf')", navigation, StringComparison.Ordinal);
+        Assert.Contains("state.view === 'etf' ? 'custom' : state.view", script, StringComparison.Ordinal);
+
+        Assert.Contains("table-layout: fixed", styles, StringComparison.Ordinal);
+        Assert.Contains(".ranking-table.custom-table .col-name", styles, StringComparison.Ordinal);
+        Assert.Contains(".ranking-table.etf-table .col-name", styles, StringComparison.Ordinal);
+        Assert.Contains("width: 15%", styles, StringComparison.Ordinal);
+        Assert.Contains("width: 30%", styles, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 自訂頁顯示營收增減而非單月營收金額()
     {
         var script = ReadAsset("site.js");
