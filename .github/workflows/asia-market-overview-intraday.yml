@@ -17,6 +17,10 @@ on:
       hop:
         description: 自走接力編號（僅 workflow 自己使用）
         default: '0'
+      skip-wait:
+        description: 跳過等待，立刻收集一輪（測試用；不影響排程自走接力邏輯）
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -71,6 +75,7 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: 等到日韓盤中收集窗口
+        if: ${{ github.event.inputs.skip-wait != 'true' }}
         run: |
           set +e
           now=$(date +%s)
