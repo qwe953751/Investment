@@ -1805,11 +1805,11 @@ static async Task RunMarketTurnoverAsync(IServiceProvider services, string[] arg
     }
 
     Console.WriteLine($"成功 {report.Snapshots.Count} 市場，失敗 {report.SkippedMarkets.Count} 市場。");
-    if (report.SkippedMarkets.Count > 0)
-    {
-        throw new MarketTurnoverDataIncompleteException(
-            $"成交排行核心市場未完成：{string.Join(", ", report.SkippedMarkets)}；本次不視為成功，不提交部分排行。");
-    }
+
+    // 排行來源尚未接線是目前的預期狀態，不能讓它擋掉已經上線的行情回補、data 分支
+    // 提交與 Supabase 同步——2026-09-15 起這裡的例外讓美股快取落後 7 天、日韓落後
+    // 4 天，卻沒有任何一項失敗跟這些既有功能本身有關。缺資料的市場已經在上面
+    // 印出警告，指令本身不再視為失敗。
 }
 
 /// <summary>
@@ -1851,7 +1851,7 @@ static async Task RunMarketOverviewIntradayAsync(IServiceProvider services, stri
                 markets, isFinal: false, cancellationToken: cts.Token);
             if (turnoverReport.SkippedMarkets.Count > 0)
             {
-                failedRounds++;
+                // 排行來源尚未接線，不能讓它拖累已經在跑的總覽盤中輪次（同一個 P0 原則）。
                 foreach (var warning in turnoverReport.Warnings)
                 {
                     Console.WriteLine($"成交排行本輪未發布：{warning}");

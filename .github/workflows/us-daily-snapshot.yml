@@ -111,6 +111,7 @@ jobs:
         run: dotnet run -c Release --project src/Invest.Web -- backfill-overview --markets us,crypto
 
       - name: 回補美股成交金額前 20
+        continue-on-error: true
         env:
           MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
         run: dotnet run -c Release --project src/Invest.Web -- market-turnover --markets us

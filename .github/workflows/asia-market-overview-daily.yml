@@ -57,6 +57,7 @@ jobs:
         run: dotnet run -c Release --project src/Invest.Web -- backfill-overview --markets jp,kr
 
       - name: 回補日韓成交金額前 20
+        continue-on-error: true
         env:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
