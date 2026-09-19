@@ -1849,6 +1849,10 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   補上 `.KQ → KR`，並把「跳過已存在檔案」的判斷改成「檔案內容 market／adjustmentMethod 跟預期不符也
   要重寫」避免舊錯誤檔案卡住不會被覆蓋。`dotnet test` 529/529、本機 export 抽查與全量掃描確認 0 檔
   殘留錯誤格式，完整細節見 [版本紀錄.md](版本紀錄.md) 2026-09-20「修復排行標的 K 線…」那節。
+  已推送 `main`（commit `f42462bbf`）並手動觸發 `daily-snapshot.yml`（`publish-only=true`，
+  run 35468023600）完成發布；正式站線上驗證（用隨機查詢字串繞過 GitHub Pages CDN 快取）美／日／韓
+  三市場各 20 檔排行標的 K 線的 `market`／`adjustmentMethod` 全數正確，無任何殘留 `raw-turnover-
+  leader-daily`。D／A／B／C 全部完成並線上驗證通過，本輪任務結束。
 
 ### 尚未討論
 
