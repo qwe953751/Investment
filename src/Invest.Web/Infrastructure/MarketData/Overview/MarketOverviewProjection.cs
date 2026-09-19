@@ -117,6 +117,12 @@ public sealed record MarketOverviewGroup(
     /// 只包含資料源明確標記的市場成交排行列；沒有來源資料時保持空陣列，不能用結構性樣本補值。
     /// </summary>
     public IReadOnlyList<MarketOverviewTurnoverLeader> TurnoverLeaders { get; init; } = [];
+
+    /// <summary>
+    /// 排行實際對應的交易日；日線 <see cref="AsOf"/> 卡在某些標的還沒到齊時，排行仍可能是
+    /// 更新的一天，兩者不保證相等。前端要用這個日期標示排行，不能誤植成 <see cref="AsOf"/>。
+    /// </summary>
+    public string? TurnoverLeadersAsOf { get; init; }
 }
 
 public sealed record MarketOverviewTurnoverLeader(

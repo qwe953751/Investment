@@ -10,7 +10,8 @@ public sealed class MarketTurnoverCollector(
     public async Task<MarketTurnoverCollectionReport> CollectAsync(
         IEnumerable<string> markets,
         bool isFinal,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? now = null)
     {
         var snapshots = new List<MarketTurnoverSnapshot>();
         var skipped = new List<string>();
@@ -20,14 +21,24 @@ public sealed class MarketTurnoverCollector(
         {
             try
             {
-                var now = DateTimeOffset.UtcNow;
-                var tradingDate = ToMarketDate(market, now);
+                var collectedAt = now ?? DateTimeOffset.UtcNow;
+                var tradingDate = ToMarketDate(market, collectedAt);
+                // 2026-09-19 事故：手動在週六觸發收集，把週五收盤資料標成週六日期寫進
+                // data 分支與 Storage。這裡只擋掉最確定的一種非交易日（週末）；國定假日
+                // 沒有可用的日曆來源，仍會照抓，跟 us/jp/kr 原本的行為一致。
+                if (tradingDate.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+                {
+                    skipped.Add(market);
+                    warnings.Add($"{market}: {tradingDate:yyyy-MM-dd} 是週末非交易日，略過收集。");
+                    logger.LogInformation("成交排行 {Market} 略過：{Date} 是週末非交易日。", market, tradingDate);
+                    continue;
+                }
                 var rows = await yahooScreenerClient.GetAsync(market, tradingDate, cancellationToken);
                 var snapshot = new MarketTurnoverSnapshot
                 {
                     Market = market,
                     TradingDate = tradingDate,
-                    CapturedAt = now,
+                    CapturedAt = collectedAt,
                     IsFinal = isFinal,
                     Rows = rows
                 };

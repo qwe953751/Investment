@@ -1789,6 +1789,39 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - `MarketTurnoverCdn:Public` 已從 `false` 改為 `true`；成交金額是股價 × 成交量換算的估計值，不是交易所公告值，前端 `mspBuildTurnoverLeaders` 的說明文字已加註「成交金額為估計值（股價×成交量）」，日／韓盤中快照另外加註「約延遲 20 分鐘」。
 - **線上驗收（同日完成）**：push 後手動觸發 `us-daily-snapshot.yml`／`asia-market-overview-daily.yml`（`skip-wait=true`）與 `asia-market-overview-intraday.yml`（新增同款 `skip-wait` 測試輸入，比照另兩個 workflow）三個 workflow 實跑。過程中發現並修掉一個真實 bug：同一輪跑 jp 再跑 kr 共用同一個 `MarketTurnoverSnapshotPublisher` 實例，重複呼叫 `EnsureBucketAsync` 對已存在的 bucket id 建立，Supabase 不保證回 409 Conflict（實測是 HTTP 400，訊息帶 `already exists`），導致 kr 每輪都發布失敗。修法比照 `MarketOverviewIntradaySnapshotPublisher` 既有的 `bucketChecked` 快取寫法，同一實例只真正呼叫一次，另外多留一層「400 訊息含 duplicate 也視為成功」的防呆；新增 `MarketTurnoverSnapshotPublisherTests` 三項測試覆蓋，`dotnet test` 519 項全過。修完後重跑確認 jp／kr 同輪都成功發布（抓到 KIOXIA、SoftBank、Advantest 等真實個股），直接對 Supabase Storage 公開網址（`market-turnover-snapshots/{market}/latest.json`）驗證資料存在；接著觸發 `daily-snapshot.yml -f publish-only=true` 重新輸出並發布網站，確認正式 manifest.json 已含 `marketTurnoverCdn.baseUrl`，正式 `site.js` 也已包含估計值／延遲標示的最新版本。工項 A～E 全部完成並線上驗收通過。
 
+### 2026-09-19 修復日韓成值前 20 空白與盤中／盤後切換不生效
+
+- 根因一：`MarketTurnoverProjection.Apply()` 原本要求排行快照的 `TradingDate` 跟市場總覽的
+  `asOf` 嚴格相等。排行（Yahoo screener）跟日線總覽（既有指數／產業管線）是兩條獨立收集流程，
+  到齊時間點不保證同一天——日線卡在還沒到齊的舊 `asOf`、排行已經是新的一天時，嚴格比對讓排行
+  整個消失，且沒有任何警告或提示。改成「`asOf` 往前找 5 個日曆天內最新一筆 `IsFinal` 快照」，
+  超過容忍範圍寧可空白，不拿更舊的排行冒充當天資料；`MarketOverviewGroup` 新增
+  `TurnoverLeadersAsOf` 欄位標示排行實際對應的交易日（可能跟總覽 `AsOf` 不同天），年度漲跌幅
+  基準也改用這個實際交易日對齊，不再沿用可能不同天的 `asOf`。
+- 根因二：`site.js` 原本把排行 CDN 抓取寫在 `ensureMarketOverviewIntradayGroup` 的成功路徑內，
+  總覽盤中快照失敗或還沒到時，排行連嘗試抓取都不會發生——兩條互相獨立的資料流被誤綁在一起。
+  拆成兩個完全獨立的 fetch／cache／promise（`ensureMarketOverviewIntradayGroup` 只管總覽，新增
+  `ensureMarketTurnoverIntraday` 只管排行），任一方失敗都不影響另一方，快取策略沿用既有總覽盤中
+  60 秒 TTL／20 分鐘過期的 stale-while-revalidate 寫法。
+- 新增日股／韓股面板內「盤中／盤後」手動切換：與台股既有的自訂頁籤（永遠可切、不依交易時段
+  自動隱藏，沒資料時顯示提示文字而非整段消失）同一種設計精神，但因為這是巢狀在市場面板內的
+  第二層選單，改用面板局部的藥丸樣式（`.msp-session-switch`／`.msp-session-option`）跟最上層
+  底線頁籤（`.view-switch`）區分視覺語言，不會疊成兩排同款按鈕。切到「盤中」但目前沒有可用快照
+  時，顯示「目前沒有可用的盤中快照，顯示最近一次盤後資料」並自動退回盤後排行，不留白畫面。
+- `MarketTurnoverCollector` 加週末略過：算出的交易日若落在週六／週日直接跳過該市場的收集（計入
+  `SkippedMarkets`＋警告，不拋例外、不擋其他市場），避免重演 2026-09-19 手動在週六觸發收集、把
+  週五收盤資料標成週六日期寫進 `data` 分支與 Storage 的事故。國定假日目前沒有可用的日曆來源，
+  仍會照抓，跟 us/jp/kr 原本的行為一致（刻意不建 jp/kr 專屬假日曆，範圍只到週末）。
+- 資料清理：`data` 分支上兩個週六誤標的測試檔 `imports-turnover/{jp,kr}/2026-09-19.json`（內容是
+  真的週五收盤，只是日期標錯）直接刪除，避免改用容忍區間比對後被當成最新排行顯示成錯誤日期。
+- 新增 `MarketTurnoverProjectionTests`（容忍區間內外、日期相等、未來資料不套用、跨市場互不干擾、
+  年度漲跌幅基準對齊排行實際交易日、無 `asOf` 時原樣回傳）與 `MarketTurnoverCollectorTests`（週
+  六／週日落在非交易日時略過，且完全不呼叫 Yahoo screener 或任何寫入／發布動作）；`CollectAsync`
+  新增可選的 `now` 參數供測試注入時間，預設仍用 `DateTimeOffset.UtcNow`。`dotnet test` 528 項全過
+  （較前一輪新增 9 項）。
+- 待週一 2026-09-21 日韓開盤後，用線上 `market-overview.json`／盤中 CDN `latest.json` 實際確認排行
+  不再空白、盤中／盤後切換正確反映對應資料來源。
+
 ### 尚未討論
 
 - 台股要不要也套用同一套小方塊／緊湊列表版型，還沒決定——目前維持完全不動。

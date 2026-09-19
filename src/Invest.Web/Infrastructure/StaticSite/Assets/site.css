@@ -757,6 +757,38 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+/* 日／韓市場總覽面板內的盤中／盤後切換：面板裡的第二層選擇，用藥丸樣式跟最上層
+   底線頁籤（.view-switch）區分開，同一畫面兩層選單不會疊成同一種視覺語言。 */
+.msp-session-switch {
+    display: inline-flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.msp-session-option {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.msp-session-option:hover:not(.selected),
+.msp-session-option:focus-visible:not(.selected) {
+    background: var(--surface-hover);
+}
+
+.msp-session-option.selected {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    color: var(--accent-strong);
+}
+
 .snapshot-note {
     margin-top: 8px !important;
     font-size: 13px;

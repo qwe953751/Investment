@@ -27292,8 +27292,20 @@ function mspExchangeDate(market, now = new Date()) {
     return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
-async function ensureMarketOverviewIntradayGroup(market) {
-    if (marketOverviewIntradayCdn === null || !['jp', 'kr'].includes(market) || !mspIsIntradaySession(market)) {
+// proto.session 是使用者手動選的盤中／盤後（見 mspBuildSessionSwitch）；沒選過時是
+// 'auto'，沿用原本「依交易時段自動判斷」的行為，不影響既有使用者。
+function mspEffectiveSession(market, proto) {
+    if (!['jp', 'kr'].includes(market)) {
+        return 'daily';
+    }
+
+    return proto.session === 'intraday' || proto.session === 'daily'
+        ? proto.session
+        : (mspIsIntradaySession(market) ? 'intraday' : 'daily');
+}
+
+async function ensureMarketOverviewIntradayGroup(market, { force = false } = {}) {
+    if (marketOverviewIntradayCdn === null || !['jp', 'kr'].includes(market) || (!force && !mspIsIntradaySession(market))) {
         return null;
     }
 
@@ -27338,47 +27350,6 @@ async function ensureMarketOverviewIntradayGroup(market) {
                 warnings: Array.isArray(snapshot.warnings) ? snapshot.warnings : []
             };
 
-            if (marketTurnoverCdn !== null) {
-                try {
-                    const turnoverBaseUrl = marketTurnoverCdn.baseUrl.replace(/\/$/, '');
-                    const turnoverLatestResponse = await fetch(
-                        `${turnoverBaseUrl}/${market}/latest.json`, { cache: 'no-store' });
-                    if (!turnoverLatestResponse.ok) {
-                        throw new Error(`排行 latest HTTP ${turnoverLatestResponse.status}`);
-                    }
-
-                    const turnoverPointer = await turnoverLatestResponse.json();
-                    const turnoverResponse = await fetch(
-                        `${turnoverBaseUrl}/${turnoverPointer.file}`, { cache: 'no-store' });
-                    if (!turnoverResponse.ok) {
-                        throw new Error(`排行 snapshot HTTP ${turnoverResponse.status}`);
-                    }
-
-                    const turnoverSnapshot = await turnoverResponse.json();
-                    const turnoverAge = Date.now() - Date.parse(turnoverSnapshot.capturedAt);
-                    if (turnoverSnapshot.schemaVersion !== 1
-                        || turnoverSnapshot.market !== market
-                        || turnoverSnapshot.tradingDate !== mspExchangeDate(market)
-                        || !Array.isArray(turnoverSnapshot.rows)
-                        || !Number.isFinite(turnoverAge)
-                        || turnoverAge > MARKET_OVERVIEW_INTRADAY_STALE_MS) {
-                        throw new Error('成交排行過期或交易日不符');
-                    }
-
-                    group.turnoverLeaders = turnoverSnapshot.rows.map(row => ({
-                        rank: row.rank,
-                        symbol: row.symbol,
-                        name: row.name,
-                        turnover: row.turnover,
-                        price: row.lastPrice ?? 0,
-                        change: row.changePercent ?? null,
-                        yearChange: null
-                    }));
-                } catch (error) {
-                    // 排行是附加流；總覽 CDN 成功時仍顯示指數／產業，排行維持盤後或空白。
-                    console.warn('日韓成交排行盤中快照讀取失敗，保留總覽資料', market, error);
-                }
-            }
             marketOverviewIntradayGroups.set(market, { group, loadedAt: Date.now() });
             return group;
         })());
@@ -27396,12 +27367,82 @@ async function ensureMarketOverviewIntradayGroup(market) {
     }
 }
 
+// 排行 CDN 跟總覽 CDN 是兩條獨立收集流程（見 MarketTurnoverCollector／
+// MarketOverviewIntradayCollector 各自的 workflow），任一邊斷流不能拖累另一邊：
+// 曾經把排行抓取包在總覽快照驗證成功之後，總覽一失敗排行就連帶拿不到。
+const marketTurnoverIntradayCache = new Map();
+const marketTurnoverIntradayPromises = new Map();
+
+async function ensureMarketTurnoverIntraday(market) {
+    if (marketTurnoverCdn === null || !MSP_TURNOVER_LEADER_MARKETS.has(market)) {
+        return null;
+    }
+
+    const cached = marketTurnoverIntradayCache.get(market);
+    if (cached !== undefined && Date.now() - cached.loadedAt < MARKET_OVERVIEW_INTRADAY_CACHE_MS) {
+        return cached;
+    }
+
+    if (!marketTurnoverIntradayPromises.has(market)) {
+        marketTurnoverIntradayPromises.set(market, (async () => {
+            const baseUrl = marketTurnoverCdn.baseUrl.replace(/\/$/, '');
+            const latestResponse = await fetch(`${baseUrl}/${market}/latest.json`, { cache: 'no-store' });
+            if (!latestResponse.ok) {
+                throw new Error(`排行 latest HTTP ${latestResponse.status}`);
+            }
+
+            const pointer = await latestResponse.json();
+            const snapshotResponse = await fetch(`${baseUrl}/${pointer.file}`, { cache: 'no-store' });
+            if (!snapshotResponse.ok) {
+                throw new Error(`排行 snapshot HTTP ${snapshotResponse.status}`);
+            }
+
+            const snapshot = await snapshotResponse.json();
+            const age = Date.now() - Date.parse(snapshot.capturedAt);
+            if (snapshot.schemaVersion !== 1
+                || snapshot.market !== market
+                || snapshot.tradingDate !== mspExchangeDate(market)
+                || !Array.isArray(snapshot.rows)
+                || !Number.isFinite(age)
+                || age > MARKET_OVERVIEW_INTRADAY_STALE_MS) {
+                throw new Error('成交排行過期或交易日不符');
+            }
+
+            const entry = {
+                rows: snapshot.rows.map(row => ({
+                    rank: row.rank,
+                    symbol: row.symbol,
+                    name: row.name,
+                    turnover: row.turnover,
+                    price: row.lastPrice ?? 0,
+                    change: row.changePercent ?? null,
+                    yearChange: null
+                })),
+                tradingDate: snapshot.tradingDate,
+                loadedAt: Date.now()
+            };
+            marketTurnoverIntradayCache.set(market, entry);
+            return entry;
+        })());
+    }
+
+    try {
+        return await marketTurnoverIntradayPromises.get(market);
+    } catch (error) {
+        // 排行是獨立流；失敗時交給呼叫端 fallback 回盤後排行，不能拖累總覽指數／產業。
+        console.warn('日韓成交排行盤中快照讀取失敗', market, error);
+        return marketTurnoverIntradayCache.get(market) ?? null;
+    } finally {
+        marketTurnoverIntradayPromises.delete(market);
+    }
+}
+
 function refreshMarketOverviewIntradayIfDue() {
     const proto = marketSwitchProto;
     if (proto === null
         || proto.date !== null
         || !['jp', 'kr'].includes(proto.market)
-        || !mspIsIntradaySession(proto.market)) {
+        || mspEffectiveSession(proto.market, proto) !== 'intraday') {
         return;
     }
 
@@ -27410,7 +27451,7 @@ function refreshMarketOverviewIntradayIfDue() {
         return;
     }
 
-    void ensureMarketOverviewIntradayGroup(proto.market).then(group => {
+    void ensureMarketOverviewIntradayGroup(proto.market, { force: proto.session === 'intraday' }).then(group => {
         if (group !== null && marketSwitchRender !== null) {
             marketSwitchRender();
         }
@@ -27468,12 +27509,17 @@ function ensureMarketOverviewDate(market, date, onSettled) {
 // 回傳目前該顯示的收盤市場總覽 group，或 undefined（還在載入中，呼叫端顯示「載入中」）。
 function resolveMarketOverviewGroup(market, proto, onSettled) {
     if (proto.date === null) {
+        // 使用者手動選「盤後」時完全不嘗試抓盤中 CDN，尊重手動選擇，不被背景輪詢蓋掉。
+        if (mspEffectiveSession(market, proto) !== 'intraday') {
+            return marketOverviewGroupForMarket(market);
+        }
+
         const intraday = marketOverviewIntradayGroups.get(market)?.group;
         if (intraday !== undefined) {
             return intraday;
         }
 
-        void ensureMarketOverviewIntradayGroup(market).then(group => {
+        void ensureMarketOverviewIntradayGroup(market, { force: proto.session === 'intraday' }).then(group => {
             if (group !== null) {
                 onSettled();
             }
@@ -28349,9 +28395,92 @@ function mspBuildDateStepper(group, market, proto, paint) {
     return wrap;
 }
 
+// 日／韓總覽與排行都各自有「盤中 CDN 抓不到就退回盤後」的 fallback；使用者手動選了
+// 盤中卻實際顯示盤後內容時，畫面要說清楚，不能讓人誤以為盤後資料就是最新盤中報價。
+function mspBuildSessionSwitch(market, proto, paint) {
+    if (!['jp', 'kr'].includes(market)) {
+        return null;
+    }
+
+    const host = document.createElement('div');
+    host.className = 'msp-session-switch';
+    host.setAttribute('role', 'tablist');
+
+    const effective = mspEffectiveSession(market, proto);
+    const options = [
+        { key: 'intraday', label: '盤中' },
+        { key: 'daily', label: '盤後' }
+    ];
+
+    for (const option of options) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = effective === option.key
+            ? 'msp-session-option selected'
+            : 'msp-session-option';
+        button.setAttribute('role', 'tab');
+        button.setAttribute('aria-selected', String(effective === option.key));
+        button.textContent = option.label;
+        button.addEventListener('click', () => {
+            if (proto.session !== option.key) {
+                proto.session = option.key;
+                paint();
+            }
+        });
+        host.append(button);
+    }
+
+    return host;
+}
+
+// 排行 CDN（盤中）跟 market-overview.json 裡的排行（盤後，見 MarketTurnoverProjection）
+// 是兩條獨立來源；這裡依目前 session 決定顯示哪一組，盤中抓不到／過期就退回盤後那組，
+// 不會因為總覽本身的盤中快照失敗而連帶消失（B 項解耦）。
+function mspResolveTurnoverGroup(group, market, proto) {
+    if (group.preview === true || !MSP_TURNOVER_LEADER_MARKETS.has(market)) {
+        return group;
+    }
+
+    const dailyGroup = ['jp', 'kr'].includes(market) ? marketOverviewGroupForMarket(market) : group;
+    const fallback = {
+        ...group,
+        turnoverLeaders: dailyGroup?.turnoverLeaders ?? [],
+        asOf: dailyGroup?.turnoverLeadersAsOf ?? dailyGroup?.asOf ?? group.asOf,
+        intraday: false
+    };
+
+    if (mspEffectiveSession(market, proto) !== 'intraday') {
+        return fallback;
+    }
+
+    const cached = marketTurnoverIntradayCache.get(market);
+    if (cached === undefined || Date.now() - cached.loadedAt >= MARKET_OVERVIEW_INTRADAY_CACHE_MS) {
+        void ensureMarketTurnoverIntraday(market).then(entry => {
+            if (entry !== null && marketSwitchRender !== null) {
+                marketSwitchRender();
+            }
+        });
+    }
+
+    return cached === undefined
+        ? fallback
+        : { ...group, turnoverLeaders: cached.rows, asOf: cached.tradingDate, intraday: true };
+}
+
 function mspBuildDashboard(group, market, proto, paint) {
     const dashboard = document.createElement('div');
     dashboard.className = 'msp-dashboard';
+
+    const sessionSwitch = mspBuildSessionSwitch(market, proto, paint);
+    if (sessionSwitch !== null) {
+        dashboard.append(sessionSwitch);
+        if (proto.session === 'intraday' && group.intraday !== true && group.preview !== true) {
+            const notice = document.createElement('p');
+            notice.className = 'msp-card-detail';
+            notice.textContent = '目前沒有可用的盤中快照，顯示最近一次盤後資料。';
+            dashboard.append(notice);
+        }
+    }
 
     if (market === 'us' || Array.isArray(group?.dates)) {
         const stepper = mspBuildDateStepper(group, market, proto, paint);
@@ -28362,7 +28491,7 @@ function mspBuildDashboard(group, market, proto, paint) {
 
     dashboard.append(mspSection('指數', mspBuildIndices(group, market, proto)));
     if (MSP_TURNOVER_LEADER_MARKETS.has(market)) {
-        dashboard.append(mspBuildTurnoverLeaders(group, market));
+        dashboard.append(mspBuildTurnoverLeaders(mspResolveTurnoverGroup(group, market, proto), market));
     }
     if (group.intraday === true) {
         const status = document.createElement('p');
@@ -30661,7 +30790,9 @@ function initMarketSwitch() {
         market: 'tw',
         sectorView: 'heatmap',
         // 收盤市場總覽目前選定的交易日；null 代表看最新（見 resolveMarketOverviewGroup）。
-        date: null
+        date: null,
+        // 日／韓盤中／盤後的手動切換；'auto' 沿用依交易時段自動判斷（見 mspEffectiveSession）。
+        session: 'auto'
     };
     marketSwitchProto = proto;
 
