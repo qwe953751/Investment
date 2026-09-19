@@ -1822,6 +1822,24 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - 待週一 2026-09-21 日韓開盤後，用線上 `market-overview.json`／盤中 CDN `latest.json` 實際確認排行
   不再空白、盤中／盤後切換正確反映對應資料來源。
 
+### 2026-09-20 更新：成交排行歷史回補、120 交易日選擇器與排行 K 線 export（已完成，待下次排程發布）
+
+- 新增 `backfill-turnover` CLI，用即時排行同一組候選池逐檔抓 2 年日線本地重算前 20 名；美股 3,163
+  檔候選池全數成功，寫入 178 個交易日（2026-01-02～2026-09-17）；日股 2,178 檔全數成功，寫入 175
+  個交易日（2026-01-05～2026-09-18）；韓股 2,097 檔全數成功，寫入 176 個交易日（2026-01-02～
+  2026-09-18）；三個市場都 0 檔失敗。已推送 `data` 分支（commit `b2a16a874`）。
+- `StaticSiteExporter.WriteMarketOverviewHistoryAsync` 改用跟台股排行榜同一套 `RankingDates.Selectable`
+  （120 交易日），修掉原本誤用「120 日曆日」導致實際可選天數少三分之一的問題；export 驗證美股／
+  日股／韓股各自 78／83／81 個可選交易日。
+- 新增 `WriteTurnoverLeaderKLineExportsAsync`：排行歷史出現過的所有 symbol 去重後各自寫出
+  `data/kline/{symbol}.json`；export 驗證美日韓合計 60 檔排行標的全數有 K 線檔案，前端排行小卡
+  K 線改傳目前瀏覽的市場總覽交易日。
+- 本機 `.NET 10.0.302` build 0 警告 0 錯誤，`dotnet test` **529/529** 通過；export 完成 328 個交易日、
+  120 個可選基準日、600 個檔案，美股／日股／韓股 `market-overview.json` 的 `turnoverLeaders`／
+  `dates`／`asOf` 全數有值。程式碼與上述回補資料已分別推送 `main`／`data`；完整細節見
+  [版本紀錄.md](版本紀錄.md) 2026-09-20 那節。
+- 尚待下一次排程或手動觸發 `daily-snapshot.yml` 等 workflow 才會把這輪回補與修復實際發布到正式網站。
+
 ### 尚未討論
 
 - 台股要不要也套用同一套小方塊／緊湊列表版型，還沒決定——目前維持完全不動。
