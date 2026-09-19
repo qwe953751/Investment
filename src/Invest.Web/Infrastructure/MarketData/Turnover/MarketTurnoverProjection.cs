@@ -43,11 +43,13 @@ public static class MarketTurnoverProjection
 
         // 年度漲跌幅的基準要跟排行實際的交易日（snapshot.TradingDate）對齊，不能沿用
         // 可能不同天的 asOf——否則排行落在 asOf 之外的容忍範圍內時，年度比較基準會錯位。
+        // 基準要取同年「最早」一筆（年初價），不是「最近」一筆——用最近一筆算出來的
+        // 其實是日漲跌幅，快照只有一天時兩者剛好同值，回補齊每日快照後才會顯形成 bug。
         var previousPrices = snapshots
             .Where(item => item.Market.Equals(market, StringComparison.OrdinalIgnoreCase)
                 && item.TradingDate.Year == snapshot.TradingDate.Year
                 && item.TradingDate < snapshot.TradingDate)
-            .OrderByDescending(item => item.TradingDate)
+            .OrderBy(item => item.TradingDate)
             .SelectMany(item => item.Rows.Select(row => (item.TradingDate, Row: row)))
             .GroupBy(item => item.Row.Symbol, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(

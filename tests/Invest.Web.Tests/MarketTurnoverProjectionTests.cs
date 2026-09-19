@@ -90,6 +90,24 @@ public sealed class MarketTurnoverProjectionTests
     }
 
     [Fact]
+    public void 年度漲跌幅基準取同年最早一筆而非最近一筆()
+    {
+        var group = CreateGroup(asOf: "2026-09-19");
+        var snapshots = new[]
+        {
+            CreateSnapshot("jp", new DateOnly(2026, 1, 5), lastPrice: 80m),
+            CreateSnapshot("jp", new DateOnly(2026, 6, 15), lastPrice: 95m),
+            CreateSnapshot("jp", new DateOnly(2026, 9, 17), lastPrice: 100m)
+        };
+
+        var result = MarketTurnoverProjection.Apply(group, snapshots, "jp", new DateOnly(2026, 9, 19));
+
+        var leader = Assert.Single(result.TurnoverLeaders, item => item.Symbol == "jp-0001");
+        Assert.NotNull(leader.YearChange);
+        Assert.Equal((100m - 80m) / 80m * 100m, leader.YearChange!.Value);
+    }
+
+    [Fact]
     public void 沒有asOf時直接回傳原group()
     {
         var group = CreateGroup(asOf: "2026-09-19");

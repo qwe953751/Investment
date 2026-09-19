@@ -7,8 +7,8 @@ using NpgsqlTypes;
 namespace Invest.Web.Infrastructure.Assets;
 
 /// <summary>
-/// 將 Google Sheet 受控投影到 Frank／台股／台股操作 的 Supabase 操作表。
-/// 預設只做 dry-run；只有明確傳入 --write 才會在 transaction 內 upsert，且不會自動刪除缺列。
+/// 解析舊版 Google Sheet 14 欄投影並產生 dry-run 差異報告。
+/// 正式寫入已移交 asset-operation-sync Edge Function；此類別保留 write 參數只為相容既有測試／呼叫契約。
 /// </summary>
 public sealed class AssetOperationSheetImporter(AssetOperationSheetClient source)
 {

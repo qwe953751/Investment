@@ -221,6 +221,9 @@ let assetExcelEditing = false;
 let assetExcelEditingSnapshot = null;
 let assetExcelNotice = '';
 let assetExcelColumnKeys = null;
+let assetExcelGroupColumns = [];
+let assetExcelSyncState = null;
+let assetExcelSyncing = false;
 let assetExcelDraggingColumn = null;
 let assetExcelSortKey = null;
 let assetExcelSortDescending = false;
@@ -761,7 +764,10 @@ async function fetchAllRows(table, select, extraQuery = '', timeoutMs = null) {
 // 看起來像資料消失。新增受保護資料表時，必須同時加入 allowlist、專用 RLS policy 與回歸測試。
 const AUTHENTICATED_FETCH_TABLES = new Set([
     'asset_operation_rows',
-    'asset_operation_settings'
+    'asset_operation_settings',
+    'asset_operation_group_columns',
+    'asset_operation_sync_state',
+    'asset_operation_snapshots'
 ]);
 
 async function fetchAuthenticatedAllRows(
@@ -2170,6 +2176,9 @@ let expandedKLineName = '';
 let expandedKLineMarket = '';
 let expandedKLineIsEtf = false;
 let klineUseLatestDate = false;
+// 市場總覽小卡／排行標的用：切到過往交易日時要帶那天當 K 線終點，
+// 不能一律 latest，否則瀏覽過去日期時圖表還是顯示最新三個月（跟瀏覽的日期對不起來）。
+let klineOverrideEndDate = null;
 let klineAnchor = null;
 let expandedIndexMarket = null;
 let expandedIndexEndDate = null;
@@ -9664,6 +9673,94 @@ function assetExcelCloneRows(rows) {
     return rows.map(row => ({ ...row }));
 }
 
+function assetExcelInstallGroupColumns(groups) {
+    const legacyKeys = new Set([
+        'cpo', 'pcb', 'asic', 'cooling', 'passive', 'other', 'memory', 'abf',
+        'power', 'hinge', 'pmic', 'testing', 'leadframe', 'bbu'
+    ]);
+    const dynamicKeys = new Set(assetExcelGroupColumns.map(column => column.key));
+    for (let index = ASSET_EXCEL_PREVIEW_COLUMNS.length - 1; index >= 0; index -= 1) {
+        if (legacyKeys.has(ASSET_EXCEL_PREVIEW_COLUMNS[index].key)
+            || dynamicKeys.has(ASSET_EXCEL_PREVIEW_COLUMNS[index].key)) {
+            ASSET_EXCEL_PREVIEW_COLUMNS.splice(index, 1);
+        }
+    }
+
+    const installedGroups = (Array.isArray(groups) ? groups : [])
+        .filter(group => group && typeof group.id === 'string')
+        .sort((left, right) => Number(left.display_order ?? 0) - Number(right.display_order ?? 0))
+        .map(group => ({
+            key: `group:${group.id}`,
+            groupId: group.id,
+            label: String(group.label ?? ''),
+            kind: 'checkbox'
+        }));
+    assetExcelGroupColumns = installedGroups;
+
+    // migration 尚未套用或本機預覽沒有 metadata 時，保留附件中的 14 個舊欄位作為
+    // 可操作的 fallback；正式匯入取得 48 個 metadata 後，畫面只顯示那 48 欄，不能重複。
+    const fallbackColumns = [
+        { key: 'cpo', label: 'CPO', kind: 'checkbox' },
+        { key: 'pcb', label: 'PCB', kind: 'checkbox' },
+        { key: 'asic', label: 'ASIC', kind: 'checkbox' },
+        { key: 'cooling', label: '散熱', kind: 'checkbox' },
+        { key: 'passive', label: '被動\n元件', kind: 'checkbox' },
+        { key: 'other', label: 'Other', kind: 'checkbox' },
+        { key: 'memory', label: '記憶體', kind: 'checkbox' },
+        { key: 'abf', label: 'ABF', kind: 'checkbox' },
+        { key: 'power', label: '電源', kind: 'checkbox' },
+        { key: 'hinge', label: '軸承/\n摺疊機', kind: 'checkbox' },
+        { key: 'pmic', label: 'PMIC', kind: 'checkbox' },
+        { key: 'testing', label: '封測/\n探針', kind: 'checkbox' },
+        { key: 'leadframe', label: '導線架', kind: 'checkbox' },
+        { key: 'bbu', label: 'BBU', kind: 'checkbox' }
+    ];
+
+    // 插在營收創高之後，保持目前附件的主要欄位順序；所有實際族群欄由 Sheet metadata 決定。
+    const revenueIndex = ASSET_EXCEL_PREVIEW_COLUMNS.findIndex(column => column.key === 'revenueHigh');
+    ASSET_EXCEL_PREVIEW_COLUMNS.splice(
+        revenueIndex + 1,
+        0,
+        ...(installedGroups.length > 0 ? installedGroups : fallbackColumns));
+    assetExcelColumnKeys = null;
+}
+
+function assetExcelSyncUrl() {
+    if (supabase === null) {
+        throw new Error('沒有 Supabase 連線。');
+    }
+
+    return `${supabase.url}/functions/v1/asset-operation-sync`;
+}
+
+async function assetExcelSyncAction(action, body = {}, retryAuthentication = true) {
+    if (authAccessToken === null && !await refreshAuthAccessToken()) {
+        throw new Error('登入已失效，請重新登入最高權限帳號。');
+    }
+
+    const response = await fetch(assetExcelSyncUrl(), {
+        method: 'POST',
+        headers: {
+            apikey: supabase.anonKey,
+            Authorization: `Bearer ${authAccessToken}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ action, accountId: assetExcelAccountId, ...body }),
+        cache: 'no-store'
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && retryAuthentication && await refreshAuthAccessToken()) {
+        return assetExcelSyncAction(action, body, false);
+    }
+    if (!response.ok) {
+        const error = new Error(payload.message ?? `同步失敗（HTTP ${response.status}）。`);
+        error.status = response.status;
+        error.code = payload.code;
+        throw error;
+    }
+    return payload;
+}
+
 function assetExcelTargetAccount() {
     if (!ASSET_DASHBOARD_ENABLED) {
         return null;
@@ -9693,6 +9790,7 @@ function assetExcelColumnKeysFrom(keys) {
 }
 
 function assetExcelOperationBody(row, accountId) {
+    const groupFlags = {};
     const body = {
         account_id: accountId,
         buy: row.buy === '' || row.buy === null || row.buy === undefined ? 0 : Number(row.buy),
@@ -9703,9 +9801,15 @@ function assetExcelOperationBody(row, accountId) {
 
     for (const column of ASSET_EXCEL_PREVIEW_COLUMNS) {
         if (column.kind === 'checkbox' && column.key !== 'revenueHigh') {
-            body[column.key] = assetExcelCellChecked(row[column.key]);
+            if (column.groupId) {
+                groupFlags[column.groupId] = assetExcelCellChecked(row[column.key]);
+            } else {
+                body[column.key] = assetExcelCellChecked(row[column.key]);
+            }
         }
     }
+
+    body.group_flags = groupFlags;
 
     return body;
 }
@@ -9719,7 +9823,9 @@ function assetExcelValidateRows(rows) {
             && body.buy === 0
             && ASSET_EXCEL_PREVIEW_COLUMNS
                 .filter(column => column.kind === 'checkbox' && column.key !== 'revenueHigh')
-                .every(column => body[column.key] === false);
+                .every(column => column.groupId
+                    ? body.group_flags?.[column.groupId] !== true
+                    : body[column.key] !== true);
 
         // 新增的空白列可以留白；套用時不把它寫成一筆沒有標的的資料。
         if (isEmpty && !row.id) {
@@ -9743,57 +9849,24 @@ function assetExcelValidateRows(rows) {
     }
 }
 
-async function assetExcelWrite(
-    table,
-    method,
-    body = null,
-    query = '',
-    prefer = 'return=minimal',
-    retryAuthentication = true) {
-    if (supabase === null) {
-        throw new Error('沒有資料庫連線。');
-    }
-
-    if (authAccessToken === null && !await refreshAuthAccessToken()) {
-        throw new Error('登入已失效，請重新登入最高權限帳號。');
-    }
-
-    const headers = {
-        apikey: supabase.anonKey,
-        Authorization: `Bearer ${authAccessToken}`,
-        'Content-Type': 'application/json',
-        Prefer: prefer
-    };
-    const response = await fetch(`${supabase.url}/rest/v1/${table}${query}`, {
-        method,
-        headers,
-        body: body === null ? undefined : JSON.stringify(body),
-        cache: 'no-store'
-    });
-
-    if (response.status === 401 && retryAuthentication
-        && await refreshAuthAccessToken()) {
-        return assetExcelWrite(table, method, body, query, prefer, false);
-    }
-
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-    }
-}
-
 function assetExcelOperationRowFromDb(row) {
     const operationRow = {
         id: String(row.id),
         accountId: String(row.account_id),
         buy: assetNumber(row.buy) ?? 0,
         stock: String(row.stock ?? ''),
+        stockCode: String(row.stock_code ?? ''),
+        stockName: String(row.stock_name ?? ''),
+        groupFlags: row.group_flags && typeof row.group_flags === 'object' ? row.group_flags : {},
         sortOrder: assetNumber(row.sort_order) ?? 0,
         updatedAt: String(row.updated_at ?? '')
     };
 
     for (const column of ASSET_EXCEL_PREVIEW_COLUMNS) {
         if (column.kind === 'checkbox' && column.key !== 'revenueHigh') {
-            operationRow[column.key] = row[column.key] === true;
+            operationRow[column.key] = column.groupId
+                ? row.group_flags?.[column.groupId] === true
+                : row[column.key] === true;
         }
     }
 
@@ -9810,20 +9883,30 @@ async function loadAssetExcelData(accountId) {
     }
 
     const accountQuery = `&account_id=eq.${encodeURIComponent(accountId)}`;
-    const [rows, settings] = await Promise.all([
+    const [rows, settings, groups, syncState] = await Promise.all([
         fetchAuthenticatedAllRows(
             ASSET_OPERATION_ROWS_TABLE,
-            'id,account_id,buy,stock,cpo,pcb,asic,cooling,passive,other,memory,abf,power,hinge,pmic,testing,leadframe,bbu,sort_order,updated_at',
+            'id,account_id,buy,stock,stock_code,stock_name,group_flags,cpo,pcb,asic,cooling,passive,other,memory,abf,power,hinge,pmic,testing,leadframe,bbu,sort_order,updated_at',
             `${accountQuery}&order=sort_order.asc,id.asc`),
         fetchAuthenticatedAllRows(
             ASSET_OPERATION_SETTINGS_TABLE,
             'account_id,column_order,updated_at',
+            accountQuery),
+        fetchAuthenticatedAllRows(
+            'asset_operation_group_columns',
+            'id,account_id,label,metadata_key,sheet_column_index,display_order,active,legacy_key,updated_at',
+            `${accountQuery}&active=eq.true&order=display_order.asc,id.asc`),
+        fetchAuthenticatedAllRows(
+            'asset_operation_sync_state',
+            'account_id,version,active_snapshot_id,base_google_hash,last_google_hash,status,last_checked_at,last_imported_at,last_exported_at,last_error_code,last_error_message,updated_at',
             accountQuery)
     ]);
 
     assetExcelAccountId = accountId;
+    assetExcelInstallGroupColumns(groups);
     assetExcelRows = rows.map(assetExcelOperationRowFromDb);
     assetExcelColumnKeys = assetExcelColumnKeysFrom(settings[0]?.column_order);
+    assetExcelSyncState = syncState[0] ?? null;
 }
 
 async function assetExcelPersistColumnOrder() {
@@ -9831,16 +9914,9 @@ async function assetExcelPersistColumnOrder() {
         return;
     }
 
-    await assetExcelWrite(
-        ASSET_OPERATION_SETTINGS_TABLE,
-        'POST',
-        {
-            account_id: assetExcelAccountId,
-            column_order: assetExcelColumnKeysFrom(assetExcelColumnKeys),
-            updated_at: new Date().toISOString()
-        },
-        '?on_conflict=account_id',
-        'resolution=merge-duplicates,return=minimal');
+    await assetExcelSyncAction('save-column-order', {
+        columnOrder: assetExcelColumnKeysFrom(assetExcelColumnKeys)
+    });
 }
 
 function assetExcelPreviewRows() {
@@ -10479,64 +10555,88 @@ async function assetExcelApplyChanges() {
     }
 
     assetExcelSaving = true;
-    assetExcelNotice = '正在保存正式資料…';
+    assetExcelNotice = '正在保存網站草稿…';
     renderAssetExcelView(el('asset-excel-page'));
 
     try {
-        const rows = assetExcelPreviewRows();
+        const rows = assetExcelPreviewRows()
+            .filter(row => String(row.stock ?? '').trim() !== '')
+            .map((row, index) => {
+                const body = assetExcelOperationBody(row, assetExcelAccountId);
+                body.sort_order = index;
+                return body;
+            });
+        if (rows.length === 0 && !window.confirm(
+            '目前沒有任何標的；匯出後會清空 Google Sheet 的受控資料列，確定繼續嗎？')) {
+            assetExcelNotice = '已取消清空操作表。';
+            return;
+        }
         assetExcelValidateRows(rows);
-        const snapshot = assetExcelEditingSnapshot ?? [];
-        const currentIds = new Set(rows.filter(row => row.id).map(row => row.id));
-        const accountQuery = `&account_id=eq.${encodeURIComponent(assetExcelAccountId)}`;
-
-        for (const row of snapshot) {
-            if (row.id && !currentIds.has(row.id)) {
-                await assetExcelWrite(
-                    ASSET_OPERATION_ROWS_TABLE,
-                    'DELETE',
-                    null,
-                    `?id=eq.${encodeURIComponent(row.id)}${accountQuery}`);
-            }
-        }
-
-        let nextSortOrder = rows.reduce(
-            (max, row) => Math.max(max, Number(row.sortOrder) || 0),
-            0) + 1;
-
-        for (const row of rows) {
-            const body = assetExcelOperationBody(row, assetExcelAccountId);
-
-            if (!row.id && body.stock === '' && body.buy === 0
-                && Object.entries(body)
-                    .filter(([key]) => ASSET_EXCEL_PREVIEW_COLUMNS.some(column => column.key === key))
-                    .every(([, value]) => value !== true)) {
-                continue;
-            }
-
-            if (!row.id) {
-                body.sort_order = nextSortOrder++;
-                await assetExcelWrite(ASSET_OPERATION_ROWS_TABLE, 'POST', body);
-                continue;
-            }
-
-            body.sort_order = Number.isInteger(row.sortOrder) ? row.sortOrder : nextSortOrder++;
-            await assetExcelWrite(
-                ASSET_OPERATION_ROWS_TABLE,
-                'PATCH',
-                body,
-                `?id=eq.${encodeURIComponent(row.id)}${accountQuery}`);
-        }
-
-        // 這裡再保存一次欄位順序，讓「套用變更」也是完整的表格狀態保存點。
-        await assetExcelPersistColumnOrder();
-        await loadAssetExcelData(assetExcelAccountId);
+        await assetExcelSyncAction('save-draft', {
+            expectedVersion: Number(assetExcelSyncState?.version ?? 0),
+            rows,
+            groups: [],
+            allowEmpty: rows.length === 0
+        });
+        assetExcelSyncState = {
+            ...(assetExcelSyncState ?? {}),
+            status: 'dirty',
+            version: Number(assetExcelSyncState?.version ?? 0) + 1
+        };
         assetExcelEditing = false;
         assetExcelEditingSnapshot = null;
-        assetExcelNotice = '已套用變更，正式資料已寫回 Supabase。';
+        assetExcelNotice = '已儲存網站草稿；尚未匯出 Google Sheet。';
     } catch (error) {
-        assetExcelNotice = `套用變更失敗：${error.message}。目前仍在編輯模式，請重新載入確認已保存的列。`;
+        assetExcelNotice = `儲存草稿失敗：${error.message}。目前仍在編輯模式。`;
     } finally {
         assetExcelSaving = false;
+        renderAssetExcelView(el('asset-excel-page'));
+    }
+}
+
+async function assetExcelImportLatest() {
+    if (assetExcelSyncing || assetExcelEditing) return;
+    if (assetExcelSyncState?.status === 'dirty'
+        && !window.confirm('網站有尚未匯出的草稿。匯入 Google Sheet 會捨棄網站草稿，確定繼續嗎？')) {
+        return;
+    }
+
+    assetExcelSyncing = true;
+    assetExcelNotice = '正在從 Google Sheet 匯入…';
+    renderAssetExcelView(el('asset-excel-page'));
+    try {
+        await assetExcelSyncAction('import');
+        await loadAssetExcelData(assetExcelAccountId);
+        assetExcelNotice = '已匯入 Google Sheet，網站資料已更新。';
+    } catch (error) {
+        assetExcelNotice = `匯入失敗：${error.message}`;
+    } finally {
+        assetExcelSyncing = false;
+        renderAssetExcelView(el('asset-excel-page'));
+    }
+}
+
+async function assetExcelExportLatest() {
+    if (assetExcelSyncing || assetExcelEditing) return;
+    if (assetExcelSyncState?.status !== 'dirty') {
+        assetExcelNotice = '目前沒有尚未匯出的網站草稿。';
+        renderAssetExcelView(el('asset-excel-page'));
+        return;
+    }
+
+    assetExcelSyncing = true;
+    assetExcelNotice = '正在匯出並驗證 Google Sheet…';
+    renderAssetExcelView(el('asset-excel-page'));
+    try {
+        await assetExcelSyncAction('export');
+        await loadAssetExcelData(assetExcelAccountId);
+        assetExcelNotice = '匯出成功；Google Sheet 與網站資料列已一致。';
+    } catch (error) {
+        assetExcelNotice = error.status === 409
+            ? 'Google Sheet 已有較新修改，匯出被停止；請先匯入最新資料。'
+            : `匯出失敗：${error.message}`;
+    } finally {
+        assetExcelSyncing = false;
         renderAssetExcelView(el('asset-excel-page'));
     }
 }
@@ -10549,6 +10649,15 @@ function makeAssetExcelView() {
     topbar.className = 'asset-excel-topbar';
     const topActions = document.createElement('div');
     topActions.className = 'asset-excel-top-actions';
+    topActions.append(
+        assetExcelButton('從 Google Sheet 匯入', 'asset-excel-secondary-button', () => {
+            void assetExcelImportLatest();
+        }),
+        assetExcelButton('匯出到 Google Sheet', 'asset-excel-primary-button', () => {
+            void assetExcelExportLatest();
+        }));
+    topActions.lastChild.disabled = assetExcelSyncing || assetExcelEditing || assetExcelSyncState?.status !== 'dirty';
+    topActions.firstChild.disabled = assetExcelSyncing || assetExcelEditing;
     topActions.append(
         assetExcelButton('返回持倉', 'asset-excel-secondary-button', () => {
             window.location.assign(assetExcelPreviewBackUrl());
@@ -17746,6 +17855,10 @@ function klineEndDate() {
         return klineData.get(expandedTicker)?.bars?.at(-1)?.date ?? '';
     }
 
+    if (klineOverrideEndDate) {
+        return klineOverrideEndDate;
+    }
+
     if (isIntradayDataView() || isEtfIntradayView()) {
         return current?.tradeDate;
     }
@@ -18591,6 +18704,7 @@ function closeKLine(restoreFocus = true) {
     expandedKLineMarket = '';
     expandedKLineIsEtf = false;
     klineUseLatestDate = false;
+    klineOverrideEndDate = null;
     klineAnchor = null;
     klineError = '';
     expandedIndexMarket = null;
@@ -18659,6 +18773,7 @@ async function toggleKLine(ticker, name, anchor, options = {}) {
     expandedKLineMarket = options.market ?? '';
     expandedKLineIsEtf = options.etf === true;
     klineUseLatestDate = options.latest === true;
+    klineOverrideEndDate = options.endDate ?? null;
     klineAnchor = anchor;
     klineError = '';
     setKLineButtonStates();
@@ -27942,7 +28057,8 @@ function mspBuildIndices(group, market, proto) {
                         : market === 'kr'
                             ? '韓股'
                             : '美股',
-                latest: true
+                // 切到過往交易日時要帶那天當 K 線終點，latest 只在瀏覽最新一天時才對。
+                endDate: proto?.date ?? group.dates?.at(-1) ?? ''
             }));
         }
 
@@ -28068,7 +28184,9 @@ function mspBuildTurnoverLeaders(group, market) {
             item.setAttribute('aria-expanded', String(expandedTicker === row.symbol));
             item.addEventListener('click', () => toggleKLine(row.symbol, row.name, item, {
                 market: marketLabel,
-                latest: true
+                // 排行標的的資料日跟即時最新日不保證同一天，要帶 group.asOf（該筆排行實際的
+                // 交易日）當 K 線終點，不能用 latest：否則切到過往日期還是畫最新三個月。
+                endDate: group.asOf ?? group.dates?.at(-1) ?? ''
             }));
         }
 
@@ -28206,7 +28324,7 @@ function mspBuildSectorsSection(group, market, proto, paint) {
                 : '方塊大小＝近 20 日平均成交值占比（資金關注度），不是市值權重。';
     section.append(hint);
 
-    section.append(proto.sectorView === 'list' ? mspBuildSectorsList(group, market) : mspBuildSectorsHeatmap(group, market));
+    section.append(proto.sectorView === 'list' ? mspBuildSectorsList(group, market, proto) : mspBuildSectorsHeatmap(group, market, proto));
     return section;
 }
 
@@ -28246,7 +28364,7 @@ function mspHexToRgb(hex) {
 }
 
 // 點擊熱力圖方塊／列表項開啟該檔的三個月日 K，跟指數小卡共用同一套 toggleKLine 管線。
-function mspMakeTickerClickable(element, symbol, name, market) {
+function mspMakeTickerClickable(element, symbol, name, market, endDate) {
     element.tabIndex = 0;
     element.setAttribute('role', 'button');
     element.dataset.mspTicker = symbol;
@@ -28260,7 +28378,8 @@ function mspMakeTickerClickable(element, symbol, name, market) {
                 : market === 'kr'
                     ? '韓股'
                     : '美股',
-        latest: true
+        // 切到過往交易日時要帶那天當 K 線終點，latest 只在瀏覽最新一天時才對。
+        endDate: endDate ?? ''
     });
     element.addEventListener('click', open);
     element.addEventListener('keydown', event => {
@@ -28271,7 +28390,7 @@ function mspMakeTickerClickable(element, symbol, name, market) {
     });
 }
 
-function mspBuildSectorsHeatmap(group, market) {
+function mspBuildSectorsHeatmap(group, market, proto) {
     const grid = document.createElement('div');
     grid.className = 'msp-heatmap-grid';
 
@@ -28279,13 +28398,14 @@ function mspBuildSectorsHeatmap(group, market) {
     const upRgb = mspHexToRgb(rootStyle.getPropertyValue('--up-fill'));
     const downRgb = mspHexToRgb(rootStyle.getPropertyValue('--down-fill'));
     const neutralRgb = mspHexToRgb(rootStyle.getPropertyValue('--border'));
+    const endDate = proto?.date ?? group.dates?.at(-1) ?? '';
 
     for (const sector of group.sectors) {
         const tier = mspSectorTier(sector, group.sectors);
         const trend = toTrendClass(sector.change ?? 0);
         const tile = document.createElement('div');
         tile.className = `msp-heatmap-tile msp-heatmap-tile-${tier}`;
-        mspMakeTickerClickable(tile, sector.symbol, sector.name, market);
+        mspMakeTickerClickable(tile, sector.symbol, sector.name, market, endDate);
 
         // 顏色深淺依漲跌幅大小：跌幅/漲幅越大越飽和，越接近平盤越淡，
         // 呼應附件參考圖裡「小波動偏暗、大波動鮮豔」的視覺效果。
@@ -28306,13 +28426,14 @@ function mspBuildSectorsHeatmap(group, market) {
     return grid;
 }
 
-function mspBuildSectorsList(group, market) {
+function mspBuildSectorsList(group, market, proto) {
     const list = document.createElement('ul');
     list.className = 'msp-sector-list';
     const sorted = [...group.sectors].sort((a, b) => (b.change ?? 0) - (a.change ?? 0));
+    const endDate = proto?.date ?? group.dates?.at(-1) ?? '';
     for (const sector of sorted) {
         const item = document.createElement('li');
-        mspMakeTickerClickable(item, sector.symbol, sector.name, market);
+        mspMakeTickerClickable(item, sector.symbol, sector.name, market, endDate);
         const name = document.createElement('span');
         name.textContent = sector.name;
         const change = document.createElement('strong');

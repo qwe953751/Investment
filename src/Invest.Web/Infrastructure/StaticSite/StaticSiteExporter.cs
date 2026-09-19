@@ -44,6 +44,7 @@ public sealed class StaticSiteExporter(
     MarketOverviewStore marketOverview,
     MarketTurnoverStore marketTurnover,
     IntradayCurveStore curveStore,
+    YahooFinanceDailyQuoteClient turnoverKLineClient,
     ILogger<StaticSiteExporter> logger,
     IConfiguration configuration)
 {
@@ -63,6 +64,9 @@ public sealed class StaticSiteExporter(
     /// 門檻按鈕的金額，單位為萬元（平均每日）。使用者也可以直接輸入任意金額。
     /// </summary>
     private static readonly int[] ThresholdOptionsInTenThousand = [0, 10_000, 100_000, 1_000_000];
+
+    /// <summary>跟回補指令同一個節流間隔，避免被 Yahoo 判定成異常流量。</summary>
+    private const int TurnoverLeaderKLineRequestDelayMilliseconds = 250;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -298,14 +302,6 @@ public sealed class StaticSiteExporter(
     }
 
     /// <summary>
-    /// 市場總覽的「交易日選擇器」最多往回看幾天（日曆天，不是交易日）。
-    /// 這個功能剛上線、本機快取才幾天歷史，數字暫時不會頂到；抓一個跟
-    /// K 線視窗（<see cref="DailyKLineSelector.DefaultMonths"/>＝3 個月）同量級的
-    /// 上限，之後快取愈存愈多年也不會讓 market-overview.json 或個別交易日檔案無限長大。
-    /// </summary>
-    private const int MarketOverviewHistoryWindowDays = 120;
-
-    /// <summary>
     /// 市場切換總覽（美股／日股／韓股／加密貨幣）的指數、產業熱力圖與風險指數，寫成 data/market-overview.json，
     /// 並把收盤市場整批到齊的歷史交易日各自寫成 data/market-overview-{market}-{date}.json，
     /// 供前端「交易日選擇器」瀏覽過去的資料。跟族群分類一樣是附加功能：抓不到資料就寫一份
@@ -389,6 +385,11 @@ public sealed class StaticSiteExporter(
                     Path.Combine(dataDirectory, "kline"),
                     history,
                     cancellationToken);
+
+                await WriteTurnoverLeaderKLineExportsAsync(
+                    Path.Combine(dataDirectory, "kline"),
+                    turnoverHistory,
+                    cancellationToken);
             }
         }
         catch (Exception exception)
@@ -444,8 +445,8 @@ public sealed class StaticSiteExporter(
     /// <summary>
     /// 收盤市場總覽整批到齊的歷史交易日，各自寫成 data/market-overview-{market}-{date}.json
     /// （形狀跟 market-overview.json 的 <c>us</c> 欄位相同），供交易日選擇器瀏覽過去的資料；
-    /// 同時把可選日期清單（近 <see cref="MarketOverviewHistoryWindowDays"/> 天內、整批到齊的
-    /// 那幾天）寫回傳出去，讓 <see cref="WriteMarketOverviewAsync"/> 併進 market-overview.json。
+    /// 同時把可選日期清單（近 <see cref="RankingDates.SelectableTradingDayCount"/> 個交易日、
+    /// 整批到齊的那幾天）寫回傳出去，讓 <see cref="WriteMarketOverviewAsync"/> 併進 market-overview.json。
     ///
     /// 「整批到齊」用跟即時面板同一套判斷（<see cref="MarketOverviewCalculator.DetermineAsOfDate"/>），
     /// 逐一往回看候選日期，只收「這天真的是那次計算出的 AsOfDate」的日子——這樣選擇器上
@@ -459,14 +460,11 @@ public sealed class StaticSiteExporter(
         CancellationToken cancellationToken)
     {
         var allSymbols = MarketOverviewCatalog.SymbolsFor(definition);
-        var windowStart = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-MarketOverviewHistoryWindowDays));
 
-        var candidateDates = history
-            .Select(snapshot => snapshot.TradingDate)
-            .Where(date => date >= windowStart)
-            .Distinct()
-            .OrderBy(date => date)
-            .ToArray();
+        // 原本用「120 日曆日」篩選，跟台股日期選擇器的 RankingDates.SelectableTradingDayCount
+        // （120 交易日）算法不同，同樣掛「120」實際可選天數卻少了三分之一（遇到週末／休市）。
+        // 改成共用 RankingDates.Selectable，兩邊選擇器看到的可選範圍才會對齊。
+        var candidateDates = RankingDates.Selectable(history.Select(snapshot => snapshot.TradingDate));
 
         var qualifyingDates = new List<DateOnly>();
 
@@ -573,6 +571,127 @@ public sealed class StaticSiteExporter(
         }
 
         return count;
+    }
+
+    /// <summary>
+    /// 成交排行 2026-09-19 發現的 K 線缺口：<see cref="WriteMarketOverviewKLineExportsAsync"/>
+    /// 只覆蓋指數／VIX／類股 ETF 這份固定名冊，<see cref="WriteUsKLineExportsAsync"/> 也只認
+    /// imports-us 的固定持倉；排行前 20 的個股（imports-turnover 快照）落在兩份名冊之外，
+    /// 快照本身也只留 <see cref="MarketTurnoverRow.LastPrice"/>，沒有 OHLC，畫不出 K 線。
+    ///
+    /// 只幫「還沒有檔案」的 symbol 另外打一次 Yahoo chart API——已經被上面兩個既有匯出
+    /// 涵蓋的指數／類股／美股持倉不重複打；第一次執行涵蓋所有歷史排行標的後，之後每次
+    /// 匯出只需要補「新進榜」的少數幾檔，不是每次都重跑全部。
+    /// </summary>
+    private async Task<int> WriteTurnoverLeaderKLineExportsAsync(
+        string directory,
+        IReadOnlyList<MarketTurnoverSnapshot> turnoverHistory,
+        CancellationToken cancellationToken)
+    {
+        if (turnoverHistory.Count == 0)
+        {
+            return 0;
+        }
+
+        Directory.CreateDirectory(directory);
+
+        var missingSymbols = turnoverHistory
+            .SelectMany(snapshot => snapshot.Rows)
+            .GroupBy(row => row.Symbol, StringComparer.OrdinalIgnoreCase)
+            .Select(group => (Symbol: group.Key, Name: group.First().Name))
+            .Where(item => !File.Exists(Path.Combine(directory, item.Symbol + ".json")))
+            .OrderBy(item => item.Symbol, StringComparer.Ordinal)
+            .ToArray();
+
+        var count = 0;
+
+        foreach (var (symbol, name) in missingSymbols)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var series = await FetchTurnoverLeaderSeriesAsync(symbol, name, cancellationToken);
+            if (series is not { Count: > 0 })
+            {
+                continue;
+            }
+
+            var trading = series
+                .OrderBy(pair => pair.Key)
+                .Select(pair => new DailyStockTrading
+                {
+                    TradingDate = pair.Key,
+                    Ticker = symbol,
+                    OpenPrice = pair.Value.OpenPrice,
+                    HighPrice = pair.Value.HighPrice,
+                    LowPrice = pair.Value.LowPrice,
+                    ClosePrice = pair.Value.ClosePrice,
+                    TradingValue = pair.Value.TradingValue,
+                    TradingVolume = pair.Value.TradingVolume
+                })
+                .ToArray();
+
+            var endDate = trading[^1].TradingDate;
+            var startDate = endDate.AddMonths(-DailyKLineSelector.DefaultMonths);
+            var points = DailyKLineCalculator.Calculate(trading, [], symbol, startDate, endDate, endDate);
+
+            if (points.Count > 0)
+            {
+                var marketCode = MarketOverviewTickerMarket(symbol);
+                var export = new KLineExport(
+                    marketCode,
+                    "raw-turnover-leader-daily",
+                    endDate.ToString("yyyy-MM-dd"),
+                    0,
+                    [.. points.Select(point => new KLineBarExport(
+                        point.TradingDate.ToString("yyyy-MM-dd"),
+                        RoundKLine(point.Open),
+                        RoundKLine(point.High),
+                        RoundKLine(point.Low),
+                        RoundKLine(point.Close),
+                        RoundKLine(point.PreviousClose),
+                        RoundKLine(point.Ma5),
+                        RoundKLine(point.Ma10),
+                        RoundKLine(point.Ma20),
+                        RoundKLine(point.Ma60),
+                        RoundKLine(point.Ma240),
+                        RoundKLine(point.TradingVolume)))]);
+
+                await WriteJsonAsync(Path.Combine(directory, symbol + ".json"), export, cancellationToken);
+                count++;
+            }
+
+            await Task.Delay(TurnoverLeaderKLineRequestDelayMilliseconds, cancellationToken);
+        }
+
+        return count;
+    }
+
+    private async Task<IReadOnlyDictionary<DateOnly, DailyQuote>?> FetchTurnoverLeaderSeriesAsync(
+        string symbol, string name, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await turnoverKLineClient.GetDailyTimeSeriesAsync(symbol, name, cancellationToken);
+        }
+        catch (YahooFinanceRateLimitedException)
+        {
+            // 跟回補指令的重試原則一致：不做重試風暴，429 只退避一次再試一次。
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            try
+            {
+                return await turnoverKLineClient.GetDailyTimeSeriesAsync(symbol, name, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "排行標的 {Symbol} K 線補齊重試後仍失敗。", symbol);
+                return null;
+            }
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "排行標的 {Symbol} K 線補齊失敗。", symbol);
+            return null;
+        }
     }
 
     private static string MarketOverviewTickerMarket(string ticker)

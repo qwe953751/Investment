@@ -35,6 +35,7 @@ Edge Function 已部署 v13，正式 claim／evaluation transition／wake rollba
 | 這個專案想做什麼、為什麼長成這樣、不做什麼 | [Doc/專案計劃書.md](Doc/專案計劃書.md) |
 | 到目前為止做完了什麼、現在什麼狀態、踩過哪些坑 | [Doc/完成進度.md](Doc/完成進度.md) |
 | 在另一台裝置上要裝什麼、要什麼權限，以及 Codex／Claude 共用的 Supabase 變更後前端驗收規則 | [Doc/開發環境.md](Doc/開發環境.md) |
+| 台股操作表 Google Sheet／Supabase 雙向同步契約與部署順序 | [Doc/技術文件/台股操作表雙向同步實作規格.md](Doc/技術文件/台股操作表雙向同步實作規格.md) |
 | 最近發布了什麼、其他裝置接手先看哪裡 | [Doc/版本紀錄.md](Doc/版本紀錄.md) |
 | 還沒做的事，以及每一項已經談出來的結論 | [TODO.md](Doc/TODO.md) |
 
@@ -81,13 +82,17 @@ K 線、族群可跳到同一個節點、營收可開同一個 20 個月彈窗�
 再依子帳戶順序合併，不做跨帳戶全域排序。
 
 最高權限登入者在 `資產 → Frank → 台股操作` 的持倉標題旁按下 `Excel`，會在同一分頁切換到與附件相同的操作表；按「返回持倉」會回到原本的台股操作持倉明細。
-表格欄位可拖曳換位，Buy／Stock／族群勾選可在編輯模式修改，單列可刪除，也可新增空白列；按「套用變更」
-會寫回 Supabase 的 `asset_operation_rows`，欄位順序寫回 `asset_operation_settings`。`營收創高` 不存在操作表的可編輯資料中，
-而是唯讀取 `revenue_latest.high_months`：創高月數大於等於 13 顯示勾選，其餘顯示 `X`。點擊 Stock 沿用盤中／盤後同一個
-K 線流程，因此 K 線尾端會依目前盤中快照同步。這兩張表由 `db/051_asset_operation_sheet.sql` 建立，
-`db/053_asset_operation_rls_visibility.sql` 補上必要的管理者父列 policy 與 `invest_writer` 備份存取，
-已套用正式 Supabase 並完成 RLS 查證；首次啟用時操作列／欄位設定為空，必須由使用者在 Excel 表新增後套用，
-不使用本機示範資料。若未套用 migration，正式頁面會顯示清楚的待套用提示。Google Sheet 維持唯讀參考，不由網站直接寫回。
+Google Sheet 是操作表的主檔，Supabase 是網站讀取、版本與草稿的鏡像。第一次使用先按「從 Google Sheet 匯入」；
+之後可在網站新增／刪除標的，按「套用變更」只保存一個網站草稿，按「匯出到 Google Sheet」才會在 hash 未衝突時以單一批次更新整份受控區域。
+因此網站刪除 2 列後匯出，Google Sheet 也會清掉多出的 2 列，兩邊標的數量一致；匯出後會重新讀取並驗證列數、48 個族群勾選與 D 欄「營收創高」結果。
+表格欄位可拖曳換位，Buy／Stock／48 個族群勾選可在編輯模式修改，單列可刪除，也可新增空白列。`營收創高` 不存在操作表的可編輯資料中，
+而是由既有 D 欄公式自動填入 Google Sheet：網站匯出永遠不寫 D 欄，避免取代公式、格式與驗證；Stock 更新／新增列時沿用第 4 列版型讓公式重算，
+並用 `revenue_latest.high_months` 計算應有結果（大於等於 13 為 `TRUE`，其餘為 `X`）做回讀驗證。公式結果不符時匯出停止，不以硬寫值掩蓋問題。
+族群欄以 Google Sheet 第 3 列的 developer metadata 對應，避免重複名稱（目前有兩個「導線架」）造成錯欄。
+`db/058_asset_operation_full_sheet_sync.sql` 建立快照、48 欄定義、同步狀態與受控 RPC；`db/059_asset_operation_sync_write_hardening.sql`
+收回 authenticated 直接寫入，正式變更只能經 Edge Function；`db/060_asset_operation_sync_cron.sql` 預設台北 18:30 自動匯入（需先設定 Vault secret）。
+`supabase/functions/asset-operation-sync/index.js` 保存 Google 憑證在 Edge secrets，瀏覽器只帶登入 JWT，不把 service role 或私鑰送到前端。
+舊版 `import-asset-operation-sheet --write` 已停用，只可 dry-run；避免繞過 48 欄、刪除同步、版本衝突與營收創高規則。
 「筆記」是個人工作區，只在最高權限樣板顯示；內容直接讀寫 Supabase 的 `notes` 表，任何裝置都能看到同一份資料，
 並每 60 秒重讀。檢視權限不顯示此頁籤。這是公開網站的刻意取捨：沒有登入邊界，知道網址的人也可能修改筆記，
 密碼登入會在網址下限之上提升權限；在 RLS 收回匿名寫入前，資料表仍沿用公開 anon 模型。

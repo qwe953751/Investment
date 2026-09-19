@@ -123,6 +123,38 @@ public sealed class YahooScreenerMarketTurnoverClient(
             .ToArray();
     }
 
+    /// <summary>
+    /// 回補歷史用：Yahoo screener 只能查「當下」報價，無法回溯過去某一天的排行，
+    /// 所以只能拿「今天」的候選池（成交量前 N 頁 ∪ 股價前 M 頁，跟即時排行同一組
+    /// VolumePages／PricePages）當 symbol 清單，逐檔另外抓歷史日線後在本地重算每天
+    /// 的排名。候選池用今天的量價選出來，可能漏掉當時熱門、現在已退燒或下市的個股，
+    /// 覆蓋度不如 <see cref="GetAsync"/> 的數學證明，只能算「盡量還原」。
+    /// </summary>
+    public async Task<IReadOnlyList<ScreenerQuote>> GetCandidateSymbolsAsync(
+        string market,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedMarket = market.Trim().ToLowerInvariant();
+        var configured = options.Value;
+        if (!configured.VolumePages.TryGetValue(normalizedMarket, out var volumePages)
+            || !configured.PricePages.TryGetValue(normalizedMarket, out var pricePages))
+        {
+            throw new ArgumentException(
+                $"Yahoo screener 沒有設定市場 {normalizedMarket} 的候選頁數（VolumePages／PricePages）。", nameof(market));
+        }
+
+        var byVolume = await CollectPagesAsync(normalizedMarket, "dayvolume", volumePages, cancellationToken);
+        var byPrice = await CollectPagesAsync(normalizedMarket, "intradayprice", pricePages, cancellationToken);
+
+        var pool = new Dictionary<string, ScreenerQuote>(StringComparer.OrdinalIgnoreCase);
+        foreach (var quote in byVolume.Concat(byPrice))
+        {
+            pool[quote.Symbol] = quote;
+        }
+
+        return [.. pool.Values];
+    }
+
     private async Task<List<ScreenerQuote>> CollectPagesAsync(
         string market, string sortField, int maxPages, CancellationToken cancellationToken)
     {
@@ -363,7 +395,7 @@ public sealed class YahooScreenerMarketTurnoverClient(
 }
 
 /// <summary>Yahoo screener 一列解析後的原始個股資料，尚未排名、尚未套用市場成交金額 schema。</summary>
-internal sealed record ScreenerQuote(
+public sealed record ScreenerQuote(
     string Symbol,
     string Name,
     decimal Price,

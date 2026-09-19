@@ -29,7 +29,7 @@
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），GitHub Actions 實跑並修掉 jp/kr 同輪 bucket 重複建立的發布 bug 後，Storage 發布與正式網站 manifest／site.js 均已線上驗收通過 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
-| 18 | [Google Sheet 操作(台)完整 48 欄支援](#todo-18) | ⚪ 目前只完成現行 14 欄受控投影 |
+| 18 | [Google Sheet 操作(台)雙向同步與完整 48 欄支援](#todo-18) | 🟡 程式與 migration 完成，待正式 Supabase／Edge secrets 部署驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1858,21 +1858,27 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   `34844210705` 已驗證修正後可補出第一份 topic 快取。
 
 <a id="todo-18"></a>
-## ⚪ 18. Google Sheet 操作(台)完整 48 欄支援
+## 🟡 18. Google Sheet 操作(台)雙向同步與完整 48 欄支援
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：目前只完成現行 14 欄受控投影。**
+**狀態：程式、測試與 migration 已完成；正式套用卡在過期的 Supabase Management API token 與尚未提供的 Google service account secrets。**
 
 ### 已討論
 
-2026-09-15 已新增 `import-asset-operation-sheet`。它固定驗證 `操作(台)` 的 `Buy`／`Stock` 與目前
-`asset_operation_rows` 的 14 個 boolean 欄，先 dry-run 再由明確 `--write` transaction 匯入 Supabase。
-未支援的 34 個欄位會列出，不會靜默合併；目前來源 K 欄「資服(軟體)」有 3 格資料，兩個「導線架」中
-R 欄核准映射、AI 欄目前全為 0。完整欄位支援尚未改 schema，也不影響目前正式 Excel 編輯流程。
+本輪改為以 Google Sheet 為主檔、Supabase 為鏡像／版本層：`db/058_asset_operation_full_sheet_sync.sql`
+建立 48 欄 metadata 定義、快照、同步狀態與版本檢查 RPC；`db/059_asset_operation_sync_write_hardening.sql`
+收回 authenticated 直接寫入；`db/060_asset_operation_sync_cron.sql` 預設台北 18:30 自動匯入。
+`supabase/functions/asset-operation-sync/index.js` 實作 import／save-draft／export／status／欄位順序保存：
+Google API 使用 developer metadata 鎖定 Buy、Stock、D 欄與 48 個族群，匯出時整批更新 B:C、E:AZ（刻意跳過 D），先清掉
+多出的舊列，再讀回驗證列數、勾選值與 D 欄公式結果。網站新增／刪除會在同一份 snapshot 中取代整批標的，
+因此匯出後兩邊數量一致；Google hash 改變則回報 409，不覆蓋人工修改。D 欄公式依
+`revenue_latest.high_months >= 13` 應為 `TRUE`、否則 `X`，公式結果不符就停止匯出。舊版 CLI `--write` 已停用，只能 dry-run。
 
 ### 尚未討論
 
-若要與 Google Sheet 48 個族群欄完整一致，需先核准動態欄位 schema（欄定義／穩定 key／順序／RLS）及
-同名「導線架」的永久身分，再新增 migration、前端欄位 renderer、寫回契約與對帳測試；在此之前維持
-14 欄投影，不把額外來源欄位冒充成已支援功能。
+尚待正式環境執行：套用 058～060、設定 `GOOGLE_SHEETS_CLIENT_EMAIL`、
+`GOOGLE_SHEETS_PRIVATE_KEY`、`ASSET_OPERATION_SPREADSHEET_ID`、`ASSET_OPERATION_SHEET_ID=58931507`、
+`ASSET_OPERATION_WRITE_ENABLED=true`、`ASSET_OPERATION_CRON_SECRET`，把 Google Sheet 分享給 service account，
+先呼叫 `bootstrap-metadata` 再做 import／export smoke test。若正式網站要發布，必須在上述 migration 與 Edge
+Function 部署完成後再觸發 `daily-snapshot.yml publish-only=true`；不能先發布會查詢新表的前端。

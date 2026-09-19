@@ -14,6 +14,18 @@ const migration = fs.readFileSync(
 const visibilityMigration = fs.readFileSync(
     path.join(repositoryRoot, 'db', '053_asset_operation_rls_visibility.sql'),
     'utf8');
+const fullSyncMigration = fs.readFileSync(
+    path.join(repositoryRoot, 'db', '058_asset_operation_full_sheet_sync.sql'),
+    'utf8');
+const hardeningMigration = fs.readFileSync(
+    path.join(repositoryRoot, 'db', '059_asset_operation_sync_write_hardening.sql'),
+    'utf8');
+const cronMigration = fs.readFileSync(
+    path.join(repositoryRoot, 'db', '060_asset_operation_sync_cron.sql'),
+    'utf8');
+const syncFunction = fs.readFileSync(
+    path.join(repositoryRoot, 'supabase', 'functions', 'asset-operation-sync', 'index.js'),
+    'utf8');
 
 function functionSource(name) {
     const asyncStart = siteScript.indexOf(`async function ${name}(`);
@@ -126,13 +138,37 @@ test('摘要不把尚未填寫的新增空白列算成標的', () => {
     assert.equal(summary.groups.find(group => group.key === 'pcb').count, 1);
 });
 
-test('正式路徑不再保存本機示範列，且套用會呼叫正式資料表寫入', () => {
+test('正式路徑不再保存本機示範列，且套用會經由同步 Edge Function 保存完整草稿', () => {
     assert.match(siteScript, /if \(!ASSET_EXCEL_LOCAL_PREVIEW\) \{/);
     assert.match(siteScript, /assetExcelApplyChanges\(\)/);
     assert.match(siteScript, /ASSET_OPERATION_ROWS_TABLE/);
-    assert.match(siteScript, /assetExcelWrite\(ASSET_OPERATION_ROWS_TABLE, 'POST', body\)/);
-    assert.match(siteScript, /assetExcelWrite\(\s*ASSET_OPERATION_ROWS_TABLE,\s*'PATCH'/);
-    assert.match(siteScript, /assetExcelWrite\(\s*ASSET_OPERATION_ROWS_TABLE,\s*'DELETE'/);
+    assert.match(siteScript, /assetExcelSyncAction\('save-draft'/);
+    assert.match(siteScript, /assetExcelSyncAction\('import'/);
+    assert.match(siteScript, /assetExcelSyncAction\('export'/);
+    assert.match(siteScript, /group_flags/);
+    assert.match(siteScript, /save-column-order/);
+});
+
+test('正式 metadata 有 48 個族群時不會把舊 14 欄重複畫出來', () => {
+    const context = {
+        ASSET_EXCEL_PREVIEW_COLUMNS: [
+            ...columns,
+            { key: 'cpo', label: 'CPO', kind: 'checkbox' },
+            { key: 'pcb', label: 'PCB', kind: 'checkbox' }
+        ],
+        assetExcelGroupColumns: [],
+        assetExcelColumnKeys: ['pcb']
+    };
+    vm.createContext(context);
+    vm.runInContext(functionSource('assetExcelInstallGroupColumns'), context);
+    vm.runInContext(`assetExcelInstallGroupColumns(${JSON.stringify(
+        Array.from({ length: 48 }, (_, index) => ({ id: `group-${index}`, label: `G${index}`, display_order: index }))
+    )});`, context);
+
+    assert.equal(context.assetExcelGroupColumns.length, 48);
+    assert.equal(context.ASSET_EXCEL_PREVIEW_COLUMNS.filter(column => column.kind === 'checkbox').length, 49);
+    assert.equal(context.ASSET_EXCEL_PREVIEW_COLUMNS.some(column => column.key === 'pcb'), false);
+    assert.equal(context.ASSET_EXCEL_PREVIEW_COLUMNS.filter(column => column.key.startsWith('group:')).length, 48);
 });
 
 test('Excel 入口在同一分頁切換，返回時回到原台股操作持倉', () => {
@@ -269,4 +305,28 @@ test('visibility migration 只開放必要父列，並保留 invest_writer 備�
     assert.match(visibilityMigration, /market = '台股'/);
     assert.match(visibilityMigration, /to invest_writer/);
     assert.match(visibilityMigration, /filename.*053_asset_operation_rls_visibility\.sql/);
+});
+
+test('完整同步 migration 建立快照、版本、48 欄定義與受控 RPC', () => {
+    assert.match(fullSyncMigration, /asset_operation_group_columns/);
+    assert.match(fullSyncMigration, /asset_operation_snapshots/);
+    assert.match(fullSyncMigration, /asset_operation_sync_state/);
+    assert.match(fullSyncMigration, /replace_asset_operation_snapshot/);
+    assert.match(fullSyncMigration, /security invoker/i);
+    assert.match(fullSyncMigration, /source = excluded\.source/);
+    assert.match(hardeningMigration, /revoke insert, update, delete on public\.asset_operation_rows from authenticated/);
+    assert.match(hardeningMigration, /for select/);
+});
+
+test('Edge Function 具備 import／草稿／export、Google hash 衝突與 18:30 排程契約', () => {
+    assert.match(syncFunction, /action === 'import'/);
+    assert.match(syncFunction, /action === 'save-draft'/);
+    assert.match(syncFunction, /action === 'export'/);
+    assert.match(syncFunction, /status = 409/);
+    assert.match(syncFunction, /verifyRevenueHigh/);
+    assert.match(syncFunction, /copyPaste/);
+    assert.match(syncFunction, /save-column-order/);
+    assert.match(cronMigration, /30 10 \* \* \*/);
+    assert.match(cronMigration, /asset_operation_cron_secret/);
+    assert.match(cronMigration, /net\.http_post/);
 });

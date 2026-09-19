@@ -15,3 +15,8 @@ verify_jwt = false
 [functions.ocr-jobs]
 entrypoint = './functions/ocr-jobs/index.js'
 verify_jwt = false
+
+# 操作表同步同時接受管理者 JWT 與受限的排程 secret，由函式自行驗證。
+[functions.asset-operation-sync]
+entrypoint = './functions/asset-operation-sync/index.js'
+verify_jwt = false

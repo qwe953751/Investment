@@ -37,13 +37,14 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- backfill-overview [--markets us,crypto|jp,kr]
 //   dotnet run --project src/Invest.Web -- market-overview-intraday [--markets jp,kr] [--loop]
 //   dotnet run --project src/Invest.Web -- market-turnover --markets us,jp,kr [--intraday]
+//   dotnet run --project src/Invest.Web -- backfill-turnover --markets us,jp,kr [--since yyyy-MM-dd] [--overwrite]
 //   dotnet run --project src/Invest.Web -- export   [輸出目錄]
 //   dotnet run --project src/Invest.Web -- intraday [--loop|--probe]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-topic
 //   dotnet run --project src/Invest.Web -- market-day
 //   dotnet run --project src/Invest.Web -- export-market-calendar <輸出檔路徑>
-//   dotnet run --project src/Invest.Web -- import-asset-operation-sheet [--write]
+//   dotnet run --project src/Invest.Web -- import-asset-operation-sheet
 //   dotnet run --project src/Invest.Web -- sync     [保留交易日數]
 //   dotnet run --project src/Invest.Web -- sync-fx
 //   dotnet run --project src/Invest.Web -- verify
@@ -58,7 +59,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -152,6 +153,7 @@ builder.Services.AddTransient<IMarketOverviewIntradayQuoteClient>(services =>
 builder.Services.AddTransient<MarketOverviewIntradayCollector>();
 builder.Services.AddTransient<YahooScreenerMarketTurnoverClient>();
 builder.Services.AddTransient<MarketTurnoverCollector>();
+builder.Services.AddTransient<MarketTurnoverBackfiller>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
 builder.Services.AddTransient<StaticSiteExporter>();
@@ -221,6 +223,12 @@ if (command is "market-overview-intraday")
 if (command is "market-turnover")
 {
     await RunMarketTurnoverAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-turnover")
+{
+    await RunMarketTurnoverBackfillAsync(app.Services, args);
     return;
 }
 
@@ -457,12 +465,20 @@ static async Task RunExportAsync(IServiceProvider services, string[] args)
 static async Task RunAssetOperationSheetImportAsync(IServiceProvider services, string[] args)
 {
     var write = args.Contains("--write", StringComparer.OrdinalIgnoreCase);
+    if (write)
+    {
+        Console.Error.WriteLine(
+            "已停用舊版 --write：完整 48 欄、刪除同步、營收創高與 Google hash 對帳 "
+            + "必須透過 asset-operation-sync Edge Function 執行。此命令只允許 dry-run。"
+        );
+        Environment.ExitCode = 2;
+        return;
+    }
+
     using var scope = services.CreateScope();
     var importer = scope.ServiceProvider.GetRequiredService<AssetOperationSheetImporter>();
 
-    Console.WriteLine(write
-        ? "開始執行 Google Sheet → Supabase 操作表匯入（已要求寫入）。"
-        : "開始執行 Google Sheet → Supabase 操作表 dry-run（不寫入）。");
+    Console.WriteLine("開始執行 Google Sheet → Supabase 操作表 dry-run（不寫入）。");
 
     var report = await importer.RunAsync(write);
     foreach (var warning in report.Warnings)
@@ -492,7 +508,7 @@ static async Task RunAssetOperationSheetImportAsync(IServiceProvider services, s
         $"完成：來源 {report.SourceRowCount} 列；新增 {report.AddedCount}、"
         + $"更新 {report.UpdatedCount}、不變 {report.UnchangedCount}；"
         + $"Supabase 既有 {report.ExistingCount} 列。"
-        + (write ? " 已在 transaction 內提交。" : " 尚未寫入；確認結果後加 --write 才會提交。"));
+        + " 尚未寫入；正式同步請使用 asset-operation-sync Edge Function。");
 }
 
 /// <summary>
@@ -1812,6 +1828,65 @@ static async Task RunMarketTurnoverAsync(IServiceProvider services, string[] arg
     // 提交與 Supabase 同步——2026-09-15 起這裡的例外讓美股快取落後 7 天、日韓落後
     // 4 天，卻沒有任何一項失敗跟這些既有功能本身有關。缺資料的市場已經在上面
     // 印出警告，指令本身不再視為失敗。
+}
+
+/// <summary>
+/// 回補成交排行歷史（見 <see cref="MarketTurnoverBackfiller"/>）。預設不覆蓋既有檔案，
+/// 也不會動已經由即時收集寫入的真值快照；--since 沒給時預設抓最近 200 個日曆天，
+/// 涵蓋台股日期選擇器 120 個交易日的窗口還留餘裕。
+/// </summary>
+static async Task RunMarketTurnoverBackfillAsync(IServiceProvider services, string[] args)
+{
+    var markets = ParseMarketOverviewMarkets(args) ?? ["us", "jp", "kr"];
+    var overwrite = args.Contains("--overwrite", StringComparer.OrdinalIgnoreCase);
+    var sinceArgument = args.SkipWhile(argument => !string.Equals(argument, "--since", StringComparison.OrdinalIgnoreCase))
+        .Skip(1)
+        .FirstOrDefault();
+    var earliestDate = sinceArgument is not null && DateOnly.TryParse(sinceArgument, out var parsed)
+        ? parsed
+        : DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-200));
+
+    using var scope = services.CreateScope();
+    var backfiller = scope.ServiceProvider.GetRequiredService<MarketTurnoverBackfiller>();
+    var progress = new Progress<string>(Console.WriteLine);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    Console.WriteLine($"成交排行回補：{string.Join(", ", markets)}；起始日 {earliestDate:yyyy-MM-dd}；overwrite={overwrite}");
+    Console.WriteLine();
+
+    foreach (var market in markets)
+    {
+        try
+        {
+            var report = await backfiller.BackfillAsync(market, earliestDate, overwrite, progress, cts.Token);
+            Console.WriteLine();
+            Console.WriteLine(
+                $"{report.Market}: 候選池 {report.CandidateCount} 檔，成功取得日線 {report.SeriesFetchedCount} 檔，"
+                + $"失敗 {report.FailedSymbols.Count} 檔。寫入 {report.WrittenDates.Count} 天、"
+                + $"略過既有 {report.SkippedExistingDates.Count} 天、不足 20 檔略過 {report.InsufficientDates.Count} 天。");
+            if (report.WrittenDates.Count > 0)
+            {
+                Console.WriteLine($"  寫入範圍：{report.WrittenDates[0]:yyyy-MM-dd} ~ {report.WrittenDates[^1]:yyyy-MM-dd}");
+            }
+            if (report.FailedSymbols.Count > 0)
+            {
+                Console.WriteLine($"  失敗代號（前 20）：{string.Join(", ", report.FailedSymbols.Take(20))}");
+            }
+            Console.WriteLine();
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine();
+            Console.WriteLine("已中斷。已寫入的資料都保留在快取。");
+            return;
+        }
+    }
 }
 
 /// <summary>
