@@ -1822,7 +1822,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - 待週一 2026-09-21 日韓開盤後，用線上 `market-overview.json`／盤中 CDN `latest.json` 實際確認排行
   不再空白、盤中／盤後切換正確反映對應資料來源。
 
-### 2026-09-20 更新：成交排行歷史回補、120 交易日選擇器與排行 K 線 export（已完成，待下次排程發布）
+### 2026-09-20 更新：成交排行歷史回補、120 交易日選擇器與排行 K 線 export（已完成並發布）
 
 - 新增 `backfill-turnover` CLI，用即時排行同一組候選池逐檔抓 2 年日線本地重算前 20 名；美股 3,163
   檔候選池全數成功，寫入 178 個交易日（2026-01-02～2026-09-17）；日股 2,178 檔全數成功，寫入 175
@@ -1838,7 +1838,10 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   120 個可選基準日、600 個檔案，美股／日股／韓股 `market-overview.json` 的 `turnoverLeaders`／
   `dates`／`asOf` 全數有值。程式碼與上述回補資料已分別推送 `main`／`data`；完整細節見
   [版本紀錄.md](版本紀錄.md) 2026-09-20 那節。
-- 尚待下一次排程或手動觸發 `daily-snapshot.yml` 等 workflow 才會把這輪回補與修復實際發布到正式網站。
+- 已手動觸發 `daily-snapshot.yml`（`publish-only=true`，run 35460191931）完成發布；正式站
+  `https://frank-invest.github.io/data/market-overview.json` 線上驗證美股／日股／韓股
+  `turnoverLeaders` 皆為 20（過程中一度看到日股／韓股顯示 0，重新請求後即恢復 20，屬 GitHub
+  Pages CDN 快取延遲，非資料或程式問題），K 線與各基準日快照檔亦皆可正常存取。
 
 ### 尚未討論
 
