@@ -1862,7 +1862,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：程式、測試與 migration 已完成；正式套用卡在過期的 Supabase Management API token 與尚未提供的 Google service account secrets。**
+**狀態：程式、測試、migration 與 Edge Function 已部署；正式驗收卡在尚未提供的 Google service account／Vault secrets。**
 
 ### 已討論
 
@@ -1877,8 +1877,10 @@ Google API 使用 developer metadata 鎖定 Buy、Stock、D 欄與 48 個族群�
 
 ### 尚未討論
 
-尚待正式環境執行：套用 058～060、設定 `GOOGLE_SHEETS_CLIENT_EMAIL`、
-`GOOGLE_SHEETS_PRIVATE_KEY`、`ASSET_OPERATION_SPREADSHEET_ID`、`ASSET_OPERATION_SHEET_ID=58931507`、
-`ASSET_OPERATION_WRITE_ENABLED=true`、`ASSET_OPERATION_CRON_SECRET`，把 Google Sheet 分享給 service account，
-先呼叫 `bootstrap-metadata` 再做 import／export smoke test。若正式網站要發布，必須在上述 migration 與 Edge
-Function 部署完成後再觸發 `daily-snapshot.yml publish-only=true`；不能先發布會查詢新表的前端。
+正式環境已透過 Supabase 受控工具套用 `058`～`060`，並部署 `asset-operation-sync` Edge Function v1（ACTIVE）。
+目前尚待設定 `GOOGLE_SHEETS_CLIENT_EMAIL`、`GOOGLE_SHEETS_PRIVATE_KEY`、
+`ASSET_OPERATION_SPREADSHEET_ID`、`ASSET_OPERATION_SHEET_ID=58931507`、
+`ASSET_OPERATION_WRITE_ENABLED=true`、`ASSET_OPERATION_CRON_SECRET`，並把 Google Sheet 分享給 service account；
+`060` 已因 Vault 尚無 `asset_operation_cron_secret` 而安全略過建立 cron job。設定完成後先呼叫
+`bootstrap-metadata`，再做 import／網站新增刪除／export smoke test。正式網站仍須等 smoke test 通過後才可觸發
+`daily-snapshot.yml publish-only=true`；本輪尚未發布，避免前端在沒有 Google 資料時誤宣稱同步完成。
