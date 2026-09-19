@@ -1882,5 +1882,6 @@ Google API 使用 developer metadata 鎖定 Buy、Stock、D 欄與 48 個族群�
 `ASSET_OPERATION_SPREADSHEET_ID`、`ASSET_OPERATION_SHEET_ID=58931507`、
 `ASSET_OPERATION_WRITE_ENABLED=true`、`ASSET_OPERATION_CRON_SECRET`，並把 Google Sheet 分享給 service account；
 `060` 已因 Vault 尚無 `asset_operation_cron_secret` 而安全略過建立 cron job。設定完成後先呼叫
-`bootstrap-metadata`，再做 import／網站新增刪除／export smoke test。正式網站仍須等 smoke test 通過後才可觸發
-`daily-snapshot.yml publish-only=true`；本輪尚未發布，避免前端在沒有 Google 資料時誤宣稱同步完成。
+`bootstrap-metadata`，再做 import／網站新增刪除／export smoke test。網站程式版本已於 2026-09-19 以
+`daily-snapshot.yml publish-only=true` 發布；公開 `site.js` 已驗證包含匯入／匯出按鈕與 Edge Function action 接線，
+但在 secrets 完成前按鈕會回報憑證未設定，不能視為 Google 端到端驗收完成。
