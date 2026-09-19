@@ -599,7 +599,7 @@ public sealed class StaticSiteExporter(
             .SelectMany(snapshot => snapshot.Rows)
             .GroupBy(row => row.Symbol, StringComparer.OrdinalIgnoreCase)
             .Select(group => (Symbol: group.Key, Name: group.First().Name))
-            .Where(item => !File.Exists(Path.Combine(directory, item.Symbol + ".json")))
+            .Where(item => NeedsTurnoverLeaderKLineRewrite(Path.Combine(directory, item.Symbol + ".json"), item.Symbol))
             .OrderBy(item => item.Symbol, StringComparer.Ordinal)
             .ToArray();
 
@@ -639,7 +639,7 @@ public sealed class StaticSiteExporter(
                 var marketCode = MarketOverviewTickerMarket(symbol);
                 var export = new KLineExport(
                     marketCode,
-                    "raw-turnover-leader-daily",
+                    marketCode == "US" ? "raw-us-daily" : "raw-market-overview-daily",
                     endDate.ToString("yyyy-MM-dd"),
                     0,
                     [.. points.Select(point => new KLineBarExport(
@@ -694,10 +694,43 @@ public sealed class StaticSiteExporter(
         }
     }
 
+    /// <summary>
+    /// 2026-09-20 發現舊版把排行標的的 K 線寫成前端不認識的 <c>raw-turnover-leader-daily</c>，
+    /// 且 <c>.KQ</c>（韓國 KOSDAQ）被誤判成美股；兩者都需要覆寫既有檔案，不能只靠
+    /// <see cref="File.Exists"/> 判斷「已經寫過就跳過」。
+    /// </summary>
+    private static bool NeedsTurnoverLeaderKLineRewrite(string path, string symbol)
+    {
+        if (!File.Exists(path))
+        {
+            return true;
+        }
+
+        var expectedMarket = MarketOverviewTickerMarket(symbol);
+        var expectedAdjustment = expectedMarket == "US" ? "raw-us-daily" : "raw-market-overview-daily";
+
+        try
+        {
+            using var stream = File.OpenRead(path);
+            using var document = JsonDocument.Parse(stream);
+            var root = document.RootElement;
+            var market = root.TryGetProperty("market", out var marketElement) ? marketElement.GetString() : null;
+            var adjustmentMethod = root.TryGetProperty("adjustmentMethod", out var adjustmentElement)
+                ? adjustmentElement.GetString()
+                : null;
+
+            return market != expectedMarket || adjustmentMethod != expectedAdjustment;
+        }
+        catch (JsonException)
+        {
+            return true;
+        }
+    }
+
     private static string MarketOverviewTickerMarket(string ticker)
         => ticker.EndsWith(".T", StringComparison.Ordinal)
             ? "JP"
-            : ticker.EndsWith(".KS", StringComparison.Ordinal)
+            : ticker.EndsWith(".KS", StringComparison.Ordinal) || ticker.EndsWith(".KQ", StringComparison.Ordinal)
                 ? "KR"
                 : ticker.EndsWith("-USD", StringComparison.Ordinal)
                     ? "CRYPTO"

@@ -1842,6 +1842,13 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   `https://frank-invest.github.io/data/market-overview.json` 線上驗證美股／日股／韓股
   `turnoverLeaders` 皆為 20（過程中一度看到日股／韓股顯示 0，重新請求後即恢復 20，屬 GitHub
   Pages CDN 快取延遲，非資料或程式問題），K 線與各基準日快照檔亦皆可正常存取。
+- **後續修正（同日）**：上述「K 線檔案皆可正常存取」只驗證了 HTTP 200，沒發現點開排行標的 K 線實際
+  會顯示「讀不到已驗證的還原權息日 K」——`WriteTurnoverLeaderKLineExportsAsync` 把 `adjustmentMethod`
+  寫成前端白名單不認得的 `"raw-turnover-leader-daily"`（日股 20/20、韓股 16/20 中招），且 `.KQ`
+  （KOSDAQ）被誤判成美股（7 檔）。已修正為沿用既有的 `raw-us-daily`／`raw-market-overview-daily`、
+  補上 `.KQ → KR`，並把「跳過已存在檔案」的判斷改成「檔案內容 market／adjustmentMethod 跟預期不符也
+  要重寫」避免舊錯誤檔案卡住不會被覆蓋。`dotnet test` 529/529、本機 export 抽查與全量掃描確認 0 檔
+  殘留錯誤格式，完整細節見 [版本紀錄.md](版本紀錄.md) 2026-09-20「修復排行標的 K 線…」那節。
 
 ### 尚未討論
 
