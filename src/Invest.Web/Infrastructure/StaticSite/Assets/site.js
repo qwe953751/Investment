@@ -6635,7 +6635,7 @@ function renderPodcastNotesPreview() {
 // 所以這裡只存使用者自己填、或從截圖辨識出來的數字，不存券商帳號、密碼，也不存原始截圖。
 //
 // 帳戶的成本、市值與未實現損益一律由持倉加總而來，資料庫沒有另一份帳戶層的加總欄位：
-// 只有現金與累計已實現是帳戶自己的欄位，因為那兩個在券商的未實現損益畫面上看不到。
+// 只有現金是帳戶自己的可編輯欄位；總獲利由資產總值與入金成本計算，避免手填數字漂移。
 const ASSET_OWNERS_TABLE = 'asset_owners';
 const ASSET_ACCOUNTS_TABLE = 'asset_accounts';
 const ASSET_HOLDINGS_TABLE = 'asset_holdings';
@@ -9599,15 +9599,17 @@ function makeAssetDashboard(owner, views, summary) {
     return content;
 }
 
-function makeAssetAccountSettings(view) {
+function makeAssetAccountSettings(view, readOnly = false) {
     const panel = document.createElement('section');
     panel.className = 'asset-editor-panel';
     const heading = document.createElement('h3');
     heading.textContent = '帳戶資料';
     const note = document.createElement('p');
     note.className = 'asset-local-only-note';
-    note.textContent = '現金與累計已實現要自己填；入金成本由下方出入金明細自動計算，'
-        + '不會把帳戶現金餘額重複算進去。';
+    note.textContent = readOnly
+        ? '本機預覽只供確認版面；帳戶資料不會寫入資料庫。總獲利由資產總值減入金成本自動計算。'
+        : '現金餘額可手動填寫；總獲利由資產總值減入金成本自動計算，'
+            + '不會把帳戶現金餘額重複算進去。';
     const form = document.createElement('form');
     form.className = 'asset-editor-form';
     const nameInput = assetField(form, 'text', '帳戶名稱', view.name, { required: true });
@@ -9624,46 +9626,61 @@ function makeAssetAccountSettings(view) {
     }
 
     marketSelect.value = view.market || '台股';
+    marketSelect.disabled = readOnly;
     marketLabel.append(marketSelect);
     form.append(marketLabel);
     const brokerInput = assetField(form, 'text', '券商（可留空）', view.broker);
     const accountCurrency = view.market === '美股' ? 'USD' : 'TWD';
     const cashInput = assetAmountField(form, `現金餘額（${accountCurrency}）`, view.cash);
-    const realizedInput = assetAmountField(
+
+    if (readOnly) {
+        for (const input of [nameInput, brokerInput, cashInput]) {
+            input.readOnly = true;
+            input.className = 'asset-readonly-field';
+        }
+    }
+
+    const totalProfit = assetTotalProfitFor(view);
+    const totalProfitInput = assetField(
         form,
-        `累計已實現損益（${accountCurrency}）`,
-        view.realized);
+        'text',
+        `總獲利（${accountCurrency}）`,
+        totalProfit.native === null ? '' : assetSignedCurrency(totalProfit.native, accountCurrency));
+    totalProfitInput.readOnly = true;
+    totalProfitInput.className = 'asset-readonly-field';
+    totalProfitInput.title = '資產總值減入金成本；由資產資料自動計算。';
     const fundingInput = assetField(
         form,
         'text',
-        `入金成本（出入金淨額，${accountCurrency}，唯讀）`,
+        `入金成本（出入金淨額，${accountCurrency}）`,
         view.fundingCost === null ? '' : assetCurrency(view.fundingCost, accountCurrency));
     fundingInput.readOnly = true;
     fundingInput.className = 'asset-readonly-field';
     fundingInput.title = '入金合計減出金合計；請在下方出入金紀錄新增資料。';
-    const actions = assetActions(form, '儲存帳戶資料', returnToAssetDashboard);
-    actions.prepend(assetButton('刪除帳戶', 'asset-secondary-button', () => void removeAssetAccount(view)));
+    if (!readOnly) {
+        const actions = assetActions(form, '儲存帳戶資料', returnToAssetDashboard);
+        actions.prepend(assetButton('刪除帳戶', 'asset-secondary-button', () => void removeAssetAccount(view)));
 
-    form.addEventListener('submit', async event => {
-        event.preventDefault();
-        const name = nameInput.value.trim();
+        form.addEventListener('submit', async event => {
+            event.preventDefault();
+            const name = nameInput.value.trim();
 
-        if (name === '') {
-            nameInput.focus();
-            return;
-        }
+            if (name === '') {
+                nameInput.focus();
+                return;
+            }
 
-        await runAssetAction(
-            '儲存中…',
-            () => assetUpdate(ASSET_ACCOUNTS_TABLE, view.id, {
-                name,
-                market: marketSelect.value,
-                broker: brokerInput.value.trim(),
-                cash: assetNumber(cashInput.value) ?? 0,
-                realized: assetNumber(realizedInput.value) ?? 0
-            }),
-            '已儲存帳戶資料。');
-    });
+            await runAssetAction(
+                '儲存中…',
+                () => assetUpdate(ASSET_ACCOUNTS_TABLE, view.id, {
+                    name,
+                    market: marketSelect.value,
+                    broker: brokerInput.value.trim(),
+                    cash: assetNumber(cashInput.value) ?? 0
+                }),
+                '已儲存帳戶資料。');
+        });
+    }
 
     panel.append(heading, note, form);
     return panel;
@@ -16282,6 +16299,7 @@ function makeAssetAccountDetails(owner, view) {
     const annualPreviewRows = assetAnnualPreviewRowsFor(view);
 
     const currency = view.market === '美股' ? 'USD' : 'TWD';
+    const totalProfit = assetTotalProfitFor(view);
     const totalDetail = view.market === '美股'
         ? `持倉 ${assetCurrency(view.marketValue, 'USD')} ＋ 現金 ${assetCurrency(view.cash, 'USD')}`
             + (assetLatestUsdTwdRate === null
@@ -16296,21 +16314,21 @@ function makeAssetAccountDetails(owner, view) {
             assetUnrealizedDualCurrency(view.twdUnrealized, view.twdCost, view.unrealized, view.market),
             assetUnrealizedDelta(view.twdUnrealized, view.twdCost),
             `${assetSignClass(view.unrealized)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`),
+        assetMetric('持倉成本', assetMarketCurrencyValue(view.twdCost, view.cost, view.market),
+            document.createTextNode(`共 ${view.holdings.length} 筆持倉`),
+            view.market === '美股' ? 'asset-dual-currency' : ''),
         assetMetric('入金成本', assetMarketCurrencyValue(view.twdFundingCost, view.fundingCost, view.market),
             document.createTextNode(view.fundingCost === null
                 ? '出入金明細尚未啟用'
                 : `共 ${view.cashFlows.length} 筆出入金`),
-            `${assetSignClass(view.fundingCost)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`),
-        assetMetric('投入成本', assetMarketCurrencyValue(view.twdCost, view.cost, view.market),
-            document.createTextNode(`共 ${view.holdings.length} 筆持倉`),
-            view.market === '美股' ? 'asset-dual-currency' : ''));
+            `${assetSignClass(view.fundingCost)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`));
 
     if (annualPreviewRows !== null) {
         metrics.append(makeAssetAnnualPreviewMetric(annualPreviewRows));
     } else {
-        metrics.append(assetMetric('累計已實現', assetMarketCurrencyValue(view.twdRealized, view.realized, view.market, true),
-            assetDelta(view.realized, '', currency),
-            `${assetSignClass(view.realized)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`));
+        metrics.append(assetMetric('總獲利', assetMarketCurrencyValue(totalProfit.twd, totalProfit.native, view.market, true),
+            assetDelta(totalProfit.native, '', currency),
+            `${assetSignClass(totalProfit.native)} ${view.market === '美股' ? 'asset-dual-currency' : ''}`));
     }
 
     const notice = makeAssetNotice();
@@ -16345,7 +16363,7 @@ function makeAssetAccountDetails(owner, view) {
     if (!ASSET_ANNUALIZED_LOCAL_PREVIEW) {
         content.append(makeAssetAccountSettings(view), makeAssetCashFlowSection(view), lower);
     } else {
-        content.append(makeAssetHoldings(view));
+        content.append(makeAssetAccountSettings(view, true), makeAssetHoldings(view));
     }
 
     return content;

@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Invest.Web.Tests;
 
+[Collection("Supabase storage environment")]
 public sealed class IntradaySnapshotPublisherTests
 {
     [Fact]

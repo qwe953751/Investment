@@ -160,6 +160,7 @@ function assetKLineFlow() {
         assetLatestUsQuotes: new Map(),
         expandedTicker: '2308',
         klineUseLatestDate: true,
+        klineOverrideEndDate: null,
         klineData: new Map([
             ['2308', {
                 bars: [
@@ -189,6 +190,7 @@ function klineDateFlow() {
     const context = {
         expandedTicker: '2308',
         klineUseLatestDate: false,
+        klineOverrideEndDate: null,
         klineData: new Map([
             ['2308', { bars: [{ date: '2026-09-07', close: 1850 }] }]
         ]),

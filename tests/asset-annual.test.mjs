@@ -352,6 +352,37 @@ test('Dashboard 帳戶表以資產總值減入金成本顯示總獲利', () => {
     assert.doesNotMatch(table, /累計已實現/);
 });
 
+test('帳戶明細卡片依指定順序顯示持倉成本、入金成本與年化報酬', () => {
+    const details = functionSource('makeAssetAccountDetails');
+    const labels = [
+        "assetMetric('資產總值'",
+        "assetMetric('未實現損益'",
+        "assetMetric('持倉成本'",
+        "assetMetric('入金成本'",
+        "makeAssetAnnualPreviewMetric(annualPreviewRows)"
+    ].map(label => details.indexOf(label));
+
+    assert.ok(labels.every(index => index >= 0));
+    assert.ok(labels.every((index, position) => position === 0 || index > labels[position - 1]));
+    assert.doesNotMatch(details, /投入成本/);
+});
+
+test('帳戶資料的總獲利沿用外層公式且不可編輯', () => {
+    const settings = functionSource('makeAssetAccountSettings');
+    const details = functionSource('makeAssetAccountDetails');
+
+    assert.match(settings, /function makeAssetAccountSettings\(view, readOnly = false\)/);
+    assert.match(settings, /const totalProfit = assetTotalProfitFor\(view\)/);
+    assert.match(settings, /`總獲利（\$\{accountCurrency\}）`/);
+    assert.match(settings, /`入金成本（出入金淨額，\$\{accountCurrency\}）`/);
+    assert.doesNotMatch(settings, /唯讀/);
+    assert.match(settings, /totalProfit\.native === null \? '' : assetSignedCurrency\(totalProfit\.native, accountCurrency\)/);
+    assert.match(settings, /totalProfitInput\.readOnly = true/);
+    assert.doesNotMatch(settings, /realizedInput/);
+    assert.doesNotMatch(settings, /realized: assetNumber/);
+    assert.match(details, /makeAssetAccountSettings\(view, true\)/);
+});
+
 test('Dashboard 年度資料由各帳戶逐年彙總，且不提供年度 CRUD', () => {
     const context = {
         TAIPEI_DATE: { format: () => '2026-09-10' },

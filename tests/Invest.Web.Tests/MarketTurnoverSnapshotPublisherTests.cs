@@ -12,6 +12,7 @@ namespace Invest.Web.Tests;
 /// EnsureBucketAsync，Supabase 對第二次建立同一個 bucket id 有時回 HTTP 400
 /// （不是穩定的 409 Conflict），若沒有特別處理會讓第二個市場整輪發布失敗。
 /// </summary>
+[Collection("Supabase storage environment")]
 public sealed class MarketTurnoverSnapshotPublisherTests
 {
     [Fact]
