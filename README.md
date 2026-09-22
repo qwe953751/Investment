@@ -108,7 +108,8 @@ Google Sheet 是操作表的主檔，Supabase 是網站讀取、版本與草稿�
 只有一個終態回寫點，409 會安全丟棄結果，任一槽異常退出則讓整個 Worker fail-fast；OCR 目標測試
 29/29 通過。這次只改 Worker，未發布網站；2026-09-22 已在本機以 `e6c08fd1` 重建 Windows
 自包含 EXE，並由既有隱藏 launcher 重啟，log 已確認「Realtime 喚醒；斷線每 5 秒重連；並行上限 3」。
-目前沒有 `Invest D+ OCR Worker` 排程，故尚未有排程 recovery；家裡 Mac 與 7 張手機截圖的端到端三槽驗收仍待完成。
+Windows 已註冊 `Invest D+ OCR Worker` 排程並以隱藏 launcher 執行，狀態為 `Running`，每 2 分鐘補啟動且
+`MultipleInstances=IgnoreNew`；家裡 Mac 與 7 張手機截圖的端到端三槽驗收仍待完成。
 未抽樣的 Max 完成後立即刪除；抽樣工作會保留到背景 Low 完成／失敗，異常時最長 60 分鐘清理。
 AI 不可用時圖片不離開瀏覽器，直接由 Tesseract 備援；
 若工作建立後才耗盡額度，也會回傳 `fallback_required` 再用原頁記憶體中的圖片執行備援。

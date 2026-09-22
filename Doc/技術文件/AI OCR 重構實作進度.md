@@ -22,8 +22,8 @@
 
 驗證：.NET 10.0.302 Release OCR 目標 `29/29`；本機目前工作樹完整 `Invest.Web.Tests` `547/547`。
 這次沒有修改 migration、Edge Function 或網站；2026-09-22 已重建 `e6c08fd1` 的 Windows 自包含 EXE，
-因本機沒有 `Invest D+ OCR Worker` 排程，改由既有隱藏 launcher 重啟，log 已確認「Realtime 喚醒；
-斷線每 5 秒重連；並行上限 3」。家裡 Mac 與 7 張手機截圖三槽端到端測試仍待完成。
+並註冊 `Invest D+ OCR Worker` 排程（Running、每 2 分鐘 recovery、`MultipleInstances=IgnoreNew`），
+啟動 log 已確認「Realtime 喚醒；斷線每 5 秒重連；並行上限 3」。家裡 Mac 與 7 張手機截圖三槽端到端測試仍待完成。
 
 ## ✅ 已完成（本機 489 個 .NET 測試＋94 個 Node 測試全綠，程式已 commit）
 
@@ -43,7 +43,7 @@
 |---|---|---|
 | 1. DB migration | 套用 `db/054_ocr_worker_availability.sql` 到正式 Supabase | 低；純新增欄位／函式，不動既有資料 |
 | 2. Edge Function 部署 | 部署新版 `ocr-jobs`（目前正式環境是含 bug 的 v15） | 低；純程式部署 |
-| 3. Worker EXE 重新 build | 公司 Windows：`Stop-ScheduledTask` → `publish-ocr-worker-windows.ps1` → `Start-ScheduledTask`；家裡 Mac：重新 build → `install-ocr-worker-launchagent-macos.sh` | **中；會短暫中斷正式運行中的 OCR 服務，且 Mac 不在本次工作機器上** |
+| 3. Worker EXE 重新 build | **公司 Windows 已完成**：停止舊 PID `45628`、重建 `e6c08fd1`、註冊並啟動 `Invest D+ OCR Worker`（Running、每 2 分鐘 recovery）；家裡 Mac：重新 build → `install-ocr-worker-launchagent-macos.sh` | **中；Mac 不在本次工作機器上，仍待使用者到場執行** |
 | 4. 相位測試 | 間隔 20 秒連續觸發 5 次上傳，5 次都要有 `?action=submit` | 驗證用，不影響服務 |
 
 步驟 1、2 不需要重 build Worker，做完就能修好本次的根因 bug（readiness 15 秒門檻）。
@@ -54,8 +54,8 @@
 ## 文件更新狀態
 
 - ✅ `Doc/版本紀錄.md` — 完整記錄
-- ✅ `Doc/完成進度.md` — 現況摘要已更新，含測試數字與「尚待部署」但書
-- ✅ `TODO.md` — `#todo-15` 已補上根因與尚待完成清單，狀態改回 🔴
+- ✅ `Doc/完成進度.md` — 現況摘要已更新，含測試數字與 Mac／端到端驗收但書
+- ✅ `TODO.md` — `#todo-15` 已補上根因、Windows 排程狀態與尚待驗收清單
 - ✅ `README.md` — AI OCR 判定邏輯段落補上根因修復但書
 - ⏳ 待步驟 1-4 完成後，需再補一次「發布驗證」commit（比照 `c47ebdf6`／`8e62f7de` 的模式），
   記錄實際套用的 migration 結果、Edge Function 版本號、正式環境相位測試結果

@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29。Windows EXE 已以 `e6c08fd1` 重建並由隱藏 launcher 重啟，log 確認三槽與 Realtime 喚醒；本機沒有 `Invest D+ OCR Worker` 排程 recovery，**家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。詳見 [版本紀錄.md](版本紀錄.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29。Windows EXE 已以 `e6c08fd1` 重建，`Invest D+ OCR Worker` 排程已註冊並 Running（每 2 分鐘 recovery、三槽與 Realtime 喚醒均已核對）；**家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。詳見 [版本紀錄.md](版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），並修掉成交排行 publisher 的 bucket 重複建立。2026-09-22 已修復市場總覽 publisher 的 HTTP 400 Duplicate 跨程序問題；本輪再補上 JP／KR／US 休市日閘門、Yahoo 來源日期驗證、錯誤快照隔離與前端同日一致性防線；JP 因 9/22～9/23 休市待下一交易日觀察 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [Google Sheet 操作(台)雙向同步與完整 48 欄支援](#todo-18) | 🟡 程式與 migration 完成，待正式 Supabase／Edge secrets 部署驗收 |
@@ -1338,8 +1338,8 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 `.NET 10.0.302` Release OCR 目標測試 29/29 通過；本機目前工作樹完整 `Invest.Web.Tests` 為 547/547。
 本次只改 Worker、不需要發布網站；已停止精確舊程序 PID `45628`，以 `e6c08fd1` 重建預設 Windows
 自包含 EXE，再由既有隱藏 launcher 重啟，PID `17220` 的啟動 log 已確認「Realtime 喚醒；斷線每 5 秒
-重連；並行上限 3」。本機沒有 `Invest D+ OCR Worker` 排程，因此沒有 recovery task；家裡 Mac 與手機
-7 張圖端到端驗收仍待完成。
+重連；並行上限 3」。`Invest D+ OCR Worker` 排程已註冊並 Running，每 2 分鐘補啟動且
+`MultipleInstances=IgnoreNew`；家裡 Mac 與手機 7 張圖端到端驗收仍待完成。
 
 ### 🔴 2026-09-13：readiness 時間門檻根因（幾乎每次都走 Tesseract），修復已寫好但尚未部署
 
