@@ -27,7 +27,7 @@
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](版本紀錄.md) |
-| 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），並修掉成交排行 publisher 的 bucket 重複建立。2026-09-22 已修復市場總覽 publisher 的 HTTP 400 Duplicate 跨程序問題；run `35683895260` 已驗證 KR `latest.json` 更新到 2026-09-22 11:45，JP 因 9/22～9/23 休市待下一交易日觀察 |
+| 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），並修掉成交排行 publisher 的 bucket 重複建立。2026-09-22 已修復市場總覽 publisher 的 HTTP 400 Duplicate 跨程序問題；run `35683895260` 已驗證 KR `latest.json` 更新到 2026-09-22 11:45，publish-only run `35684665793` 已成功發布網站；JP 因 9/22～9/23 休市待下一交易日觀察 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [Google Sheet 操作(台)雙向同步與完整 48 欄支援](#todo-18) | 🟡 程式與 migration 完成，待正式 Supabase／Edge secrets 部署驗收 |
 
@@ -1828,6 +1828,9 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   實際驗證 KR `latest.json` HTTP 200、`tradeDate=2026-09-22`、`capturedAt=2026-09-22T03:45:00Z`、`rowCount=15`，
   並驗證不可變快照檔 HTTP 200；JP `latest.json` HTTP 200 但仍為 2026-09-14，符合 9/22～9/23 日本休市。
   run 在 KR 成功驗證後取消剩餘 `--loop`，避免把假日造成的不完整誤判成程式故障；JP 待下一開盤日觀察。
+- 修正後的 `main` 已透過 [`daily-snapshot.yml` publish-only run `35684665793`](https://github.com/qwe953751/Investment/actions/runs/35684665793)
+  完成正式網站發布；公開 manifest `version=1790049157`、`latestTradingDate=2026/09/21`、`generatedAt=2026-09-22 11:52`，
+  `data/market-overview.json` 的 US／JP／KR／CRYPTO 日期與公開 `site.js` 功能字串均已驗證。不要把 JP 假日的舊盤中快照當成故障。
 
 ### 2026-09-20 更新：成交排行歷史回補、120 交易日選擇器與排行 K 線 export（已完成並發布）
 
