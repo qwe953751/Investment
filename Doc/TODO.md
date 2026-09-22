@@ -27,7 +27,7 @@
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](版本紀錄.md) |
-| 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向，後續持續驗收交易日快照。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），GitHub Actions 實跑並修掉 jp/kr 同輪 bucket 重複建立的發布 bug 後，Storage 發布與正式網站 manifest／site.js 均已線上驗收通過 |
+| 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），並修掉成交排行 publisher 的 bucket 重複建立。2026-09-22 已修復市場總覽 publisher 的 HTTP 400 Duplicate 跨程序問題；待 push 後驗證 KR 盤中快照，JP 因休市待下一交易日觀察 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [Google Sheet 操作(台)雙向同步與完整 48 欄支援](#todo-18) | 🟡 程式與 migration 完成，待正式 Supabase／Edge secrets 部署驗收 |
 
@@ -1821,6 +1821,9 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   （較前一輪新增 9 項）。
 - 待週一 2026-09-21 日韓開盤後，用線上 `market-overview.json`／盤中 CDN `latest.json` 實際確認排行
   不再空白、盤中／盤後切換正確反映對應資料來源。
+- 2026-09-22 追查日韓盤中總覽停在 9/14 的根因：`MarketOverviewIntradaySnapshotPublisher` 只接受外層 HTTP 409，
+  未接受 Supabase 外層 HTTP 400、body 為 `BucketAlreadyExists` 的既有 bucket 回應；已補上精確 Duplicate 判定與三項回歸測試。
+  程式與測試完成，正式 CDN 驗證待 push 後執行；不要把日本休市日的舊快照誤當成故障。
 
 ### 2026-09-20 更新：成交排行歷史回補、120 交易日選擇器與排行 K 線 export（已完成並發布）
 

@@ -175,7 +175,17 @@ public sealed class MarketOverviewIntradaySnapshotPublisher(
         using var response = await httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.Conflict)
         {
-            await EnsureSuccessAsync(response, "建立日韓盤中 CDN bucket", cancellationToken);
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+            var bucketAlreadyExists = response.StatusCode == HttpStatusCode.BadRequest
+                && (detail.Contains("BucketAlreadyExists", StringComparison.OrdinalIgnoreCase)
+                    || (detail.Contains("Duplicate", StringComparison.OrdinalIgnoreCase)
+                        && detail.Contains("already exists", StringComparison.OrdinalIgnoreCase)));
+            if (!bucketAlreadyExists)
+            {
+                throw new InvalidOperationException(
+                    $"建立日韓盤中 CDN bucket失敗（HTTP {(int)response.StatusCode}）："
+                    + detail[..Math.Min(detail.Length, 300)]);
+            }
         }
 
         bucketChecked = true;
