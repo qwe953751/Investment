@@ -81,6 +81,23 @@ function excelFunctions() {
     return context;
 }
 
+function excelSortController() {
+    const context = {
+        ASSET_EXCEL_PREVIEW_COLUMNS: columns,
+        assetExcelSortKey: null,
+        assetExcelSortDescending: false,
+        assetExcelResortRows() {},
+        renderAssetExcelView() {},
+        el() { return {}; }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetExcelColumnSortable'),
+        functionSource('assetExcelSortByColumn')
+    ].join('\n\n'), context);
+    return context;
+}
+
 test('營收創高只由創高月數判斷，13 個月為勾選，其餘為 X', () => {
     const context = excelFunctions();
 
@@ -123,6 +140,18 @@ test('排序只移動完整資料列，並讓缺值排在最後', () => {
         JSON.parse(JSON.stringify(context.assetExcelSortedRows(rows, 'buy', true)
             .map(row => row.stock))),
         ['1303 南亞', '1560 中砂', '']);
+});
+
+test('操作表欄位第一次排序先降冪，第二次再升冪', () => {
+    const context = excelSortController();
+
+    context.assetExcelSortByColumn('buy');
+    assert.equal(context.assetExcelSortDescending, true);
+    assert.match(context.assetExcelNotice, /降冪/);
+
+    context.assetExcelSortByColumn('buy');
+    assert.equal(context.assetExcelSortDescending, false);
+    assert.match(context.assetExcelNotice, /升冪/);
 });
 
 test('摘要不把尚未填寫的新增空白列算成標的', () => {

@@ -10151,7 +10151,7 @@ function assetExcelSortByColumn(sortKey) {
         assetExcelSortDescending = !assetExcelSortDescending;
     } else {
         assetExcelSortKey = sortKey;
-        assetExcelSortDescending = false;
+        assetExcelSortDescending = true;
     }
 
     assetExcelResortRows();
@@ -10172,10 +10172,10 @@ function assetExcelSortButton(column) {
     button.textContent = active
         ? assetExcelSortDescending ? '▼' : '▲'
         : '⇅';
-    button.title = `點擊依${label}排序；再次點擊切換升冪／降冪。`;
+    button.title = `點擊依${label}排序（先降冪，再點升冪）。`;
     button.setAttribute(
         'aria-label',
-        `依${label}排序${active ? `（目前${assetExcelSortDescending ? '降冪' : '升冪'}）` : ''}`);
+        `依${label}排序${active ? `（目前${assetExcelSortDescending ? '降冪' : '升冪'}）` : '（首次降冪）'}`);
     button.setAttribute('aria-pressed', String(active));
     button.addEventListener('dragstart', event => event.stopPropagation());
     button.addEventListener('click', event => {
@@ -10484,7 +10484,7 @@ function makeAssetExcelTable() {
         cell.draggable = true;
         cell.dataset.column = column.key;
         cell.title = assetExcelColumnSortable(column)
-            ? '拖曳欄名以移動欄位；點擊排序圖示切換升冪／降冪。'
+            ? '拖曳欄名以移動欄位；點擊排序圖示先降冪、再次點擊升冪。'
             : '拖曳欄名以移動欄位';
 
         const label = document.createElement('span');

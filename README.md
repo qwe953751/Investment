@@ -89,6 +89,7 @@ Google Sheet 是操作表的主檔，Supabase 是網站讀取、版本與草稿�
 而是由既有 D 欄公式自動填入 Google Sheet：網站匯出永遠不寫 D 欄，避免取代公式、格式與驗證；Stock 更新／新增列時沿用第 4 列版型讓公式重算，
 並用 `revenue_latest.high_months` 計算應有結果（大於等於 13 為 `TRUE`，其餘為 `X`）做回讀驗證。公式結果不符時匯出停止，不以硬寫值掩蓋問題。
 族群欄以 Google Sheet 第 3 列的 developer metadata 對應，避免重複名稱（目前有兩個「導線架」）造成錯欄。
+操作表欄位排序第一次點擊先採降冪，再點同一欄切換為升冪；缺值仍固定排在最後。
 `db/058_asset_operation_full_sheet_sync.sql` 建立快照、48 欄定義、同步狀態與受控 RPC；`db/059_asset_operation_sync_write_hardening.sql`
 收回 authenticated 直接寫入，正式變更只能經 Edge Function；`db/060_asset_operation_sync_cron.sql` 預設台北 18:30 自動匯入（需先設定 Vault secret）。
 `supabase/functions/asset-operation-sync/index.js` 保存 Google 憑證在 Edge secrets，瀏覽器只帶登入 JWT，不把 service role 或私鑰送到前端。
