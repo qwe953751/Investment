@@ -10666,19 +10666,25 @@ function makeAssetExcelView() {
     topbar.className = 'asset-excel-topbar';
     const topActions = document.createElement('div');
     topActions.className = 'asset-excel-top-actions';
-    topActions.append(
-        assetExcelButton('從 Google Sheet 匯入', 'asset-excel-secondary-button', () => {
-            void assetExcelImportLatest();
-        }),
-        assetExcelButton('匯出到 Google Sheet', 'asset-excel-primary-button', () => {
-            void assetExcelExportLatest();
-        }));
-    topActions.lastChild.disabled = assetExcelSyncing || assetExcelEditing || assetExcelSyncState?.status !== 'dirty';
-    topActions.firstChild.disabled = assetExcelSyncing || assetExcelEditing;
-    topActions.append(
-        assetExcelButton('返回持倉', 'asset-excel-secondary-button', () => {
-            window.location.assign(assetExcelPreviewBackUrl());
-        }));
+
+    const syncActions = document.createElement('div');
+    syncActions.className = 'asset-excel-action-group asset-excel-sync-actions';
+    syncActions.setAttribute('role', 'group');
+    syncActions.setAttribute('aria-label', 'Google Sheet 同步');
+    const importButton = assetExcelButton('從 Google Sheet 匯入', 'asset-excel-secondary-button', () => {
+        void assetExcelImportLatest();
+    });
+    const exportButton = assetExcelButton('匯出到 Google Sheet', 'asset-excel-primary-button', () => {
+        void assetExcelExportLatest();
+    });
+    exportButton.disabled = assetExcelSyncing || assetExcelEditing || assetExcelSyncState?.status !== 'dirty';
+    importButton.disabled = assetExcelSyncing || assetExcelEditing;
+    syncActions.append(importButton, exportButton);
+
+    const navigationActions = document.createElement('div');
+    navigationActions.className = 'asset-excel-action-group asset-excel-navigation-actions';
+    navigationActions.setAttribute('role', 'group');
+    navigationActions.setAttribute('aria-label', '持倉操作');
 
     const editActions = document.createElement('div');
     editActions.className = 'asset-excel-edit-actions';
@@ -10709,15 +10715,21 @@ function makeAssetExcelView() {
             renderAssetExcelView(el('asset-excel-page'));
         }));
     }
-    topActions.append(editActions);
-    topbar.append(topActions);
+    const backButton = assetExcelButton('返回持倉', 'asset-excel-secondary-button', () => {
+        window.location.assign(assetExcelPreviewBackUrl());
+    });
+    navigationActions.append(editActions, backButton);
+    topActions.append(syncActions, navigationActions);
 
     if (assetExcelNotice) {
         const notice = document.createElement('p');
         notice.className = 'asset-excel-preview-note';
+        notice.setAttribute('role', 'status');
+        notice.setAttribute('aria-live', 'polite');
         notice.textContent = assetExcelNotice;
-        shell.append(notice);
+        topbar.append(notice);
     }
+    topbar.append(topActions);
 
     const grid = document.createElement('div');
     grid.className = 'asset-excel-grid';

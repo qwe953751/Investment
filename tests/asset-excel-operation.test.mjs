@@ -221,6 +221,20 @@ test('Excel 入口在同一分頁切換，返回時回到原台股操作持倉',
     assert.match(siteScript, /if \(state\.view === 'assets' && ASSET_EXCEL_ACCOUNT_QUERY\) \{\s*assetSelectedAccountId = ASSET_EXCEL_ACCOUNT_QUERY;\s*assetDashboardScreen = 'account';\s*\}/);
 });
 
+test('操作表工具列把同步與持倉操作分組，訊息和按鈕維持同一列', () => {
+    const view = functionSource('makeAssetExcelView');
+    const styles = fs.readFileSync(
+        path.join(repositoryRoot, 'src', 'Invest.Web', 'Infrastructure', 'StaticSite', 'Assets', 'site.css'),
+        'utf8');
+
+    assert.match(view, /asset-excel-action-group asset-excel-sync-actions/);
+    assert.match(view, /asset-excel-action-group asset-excel-navigation-actions/);
+    assert.match(view, /navigationActions\.append\(editActions, backButton\)/);
+    assert.match(view, /topbar\.append\(notice\)/);
+    assert.match(styles, /\.asset-excel-shell[\s\S]*grid-template-rows: auto minmax\(0, 1fr\)/);
+    assert.match(styles, /\.asset-excel-button[\s\S]*background: #f3f6fa/);
+});
+
 test('公開資料讀取永遠使用 anon，只有 Excel 操作表走 allowlist 的 authenticated helper', () => {
     const publicReader = functionSource('fetchAllRows');
     const authenticatedReader = functionSource('fetchAuthenticatedAllRows');
