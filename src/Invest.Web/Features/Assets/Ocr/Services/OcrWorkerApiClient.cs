@@ -143,7 +143,12 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         return body?.Job;
     }
 
-    public async Task CompleteAsync(
+    /// <summary>
+    /// 回傳 true 代表終態已寫入；false 代表租約已失效（例如使用者取消或工作已被
+    /// 其他 Worker 接手）。只有非 409 的 HTTP／網路錯誤才拋例外，讓呼叫端能把明確
+    /// 的租約競態當成正常工作結果處理，而不會殺死常駐槽。
+    /// </summary>
+    public async Task<bool> CompleteAsync(
         OcrClaimedJob job,
         string status,
         OcrRecognitionDraft? result,
@@ -163,7 +168,13 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
             errorCode,
             evaluation = evaluationMetadata
         }, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            return false;
+        }
+
         await EnsureSuccessAsync(response, "complete");
+        return true;
     }
 
     /// <summary>

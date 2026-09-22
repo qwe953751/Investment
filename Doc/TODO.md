@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-14 第六個問題已全部部署：`db/055` 已套用正式 Supabase、`ocr-jobs` Edge Function 已重新部署、前端已發布（Worker 槽全滿不再誤 fallback、deadline 從 leased 起算、排隊位置顯示）。第五個問題：`db/054`＋Worker 公司 Windows 已部署；**家裡 Mac Worker EXE 仍待重建**；相位測試（5 次上傳間隔 20 秒全觸發 `?action=submit`）待實地驗收。詳見 [版本紀錄.md](版本紀錄.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29、工作樹完整 .NET 測試 541/541。程式已準備提交，**Windows Worker EXE 仍須在有正式排程的機器重建／重啟，家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。詳見 [版本紀錄.md](版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），並修掉成交排行 publisher 的 bucket 重複建立。2026-09-22 已修復市場總覽 publisher 的 HTTP 400 Duplicate 跨程序問題；run `35683895260` 已驗證 KR `latest.json` 更新到 2026-09-22 11:45，publish-only run `35684665793` 已成功發布網站；JP 因 9/22～9/23 休市待下一交易日觀察 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [Google Sheet 操作(台)雙向同步與完整 48 欄支援](#todo-18) | 🟡 程式與 migration 完成，待正式 Supabase／Edge secrets 部署驗收 |
@@ -1316,6 +1316,26 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 ## 🔴 15. D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收
 
 [↑ 回到 TODO 列表](#快速跳轉)
+
+### ✅ 2026-09-22：完成回寫 `409 lease_lost` 會殺死並行槽，程式修復完成；Worker 尚待重建
+
+本次手機 7 張截圖的現象不是「前端只開一條辨識線」，而是 Worker 在處理完成回寫時遇到
+`ocr_worker_complete_409: {"error":"lease_lost"}` 後，`ProcessJobAsync` 的例外路徑又對同一張圖
+重試一次 `complete`，第二次同樣 409 讓該常駐槽 fault。原本 `Task.WhenAll` 只會等整批槽結束，
+不會把單一槽死亡立刻視為 Worker 故障，於是 3→2→1 槽靜默退化；剩下的槽忙於慢圖時，新圖只會
+長時間停在 queued，看起來像逐張辨識。
+
+已完成的修法：
+
+- `OcrWorkerApiClient.CompleteAsync()` 對明確 HTTP 409 回傳 `false`，非 409 仍拋例外。
+- `ProcessJobAsync()` 先建立唯一終態，再只呼叫一次 `complete`；租約失效視為正常競態並丟棄結果，
+  不再殺死常駐槽；真正的 5xx／網路錯誤仍讓 Worker fail-fast，交給排程重啟。
+- `RunAsync()` 改為監看任一槽退出；槽異常或意外正常結束都立即讓 Worker 失敗，不再靜默降低並行度。
+- 新增 409／200／500 API 回歸測試、槽退出測試，以及「只有一個終態回寫點」接線測試。
+
+`.NET 10.0.302` Release OCR 目標測試 29/29 通過；目前工作樹完整 `Invest.Web.Tests` 為 541/541。
+本次只需重新 build／重啟常駐 Worker，不需要發布網站；目前這台工作機器找不到
+`Invest D+ OCR Worker` 排程，因此正式 Windows 重建與手機端到端驗收仍待在實際部署機器執行。
 
 ### 🔴 2026-09-13：readiness 時間門檻根因（幾乎每次都走 Tesseract），修復已寫好但尚未部署
 

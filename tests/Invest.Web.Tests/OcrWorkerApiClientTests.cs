@@ -93,6 +93,81 @@ public sealed class OcrWorkerApiClientTests
         Assert.Equal(1, handler.RefreshAuthCount);
     }
 
+    [Fact]
+    public async Task 完成時租約失效回傳false且只送出一次()
+    {
+        var handler = new CompletionHandler(HttpStatusCode.Conflict);
+        var client = new OcrWorkerApiClient(new HttpClient(handler), BuildClientOptions());
+
+        var completed = await client.CompleteAsync(
+            BuildJob(),
+            "succeeded",
+            null,
+            null,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.False(completed);
+        Assert.Equal(1, handler.CompletionRequestCount);
+    }
+
+    [Fact]
+    public async Task 完成成功時回傳true()
+    {
+        var handler = new CompletionHandler(HttpStatusCode.OK);
+        var client = new OcrWorkerApiClient(new HttpClient(handler), BuildClientOptions());
+
+        var completed = await client.CompleteAsync(
+            BuildJob(),
+            "succeeded",
+            null,
+            null,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.True(completed);
+        Assert.Equal(1, handler.CompletionRequestCount);
+    }
+
+    [Fact]
+    public async Task 完成非409錯誤仍然拋出()
+    {
+        var handler = new CompletionHandler(HttpStatusCode.InternalServerError);
+        var client = new OcrWorkerApiClient(new HttpClient(handler), BuildClientOptions());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.CompleteAsync(
+            BuildJob(),
+            "succeeded",
+            null,
+            null,
+            null,
+            null,
+            CancellationToken.None));
+    }
+
+    private static OcrWorkerOptions BuildClientOptions()
+        => new(
+            "https://example.test",
+            "anon-key",
+            "worker@example.test",
+            "password",
+            "worker-name",
+            TimeSpan.FromSeconds(2),
+            0,
+            3);
+
+    private static OcrClaimedJob BuildJob()
+        => new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "tw",
+            "image/png",
+            "screenshot.png",
+            Guid.NewGuid(),
+            "https://example.test/image.png");
+
     private static OcrWorkerOptions BuildOptions()
     {
         Environment.SetEnvironmentVariable("OCR_SUPABASE_URL", "https://example.test");
@@ -163,6 +238,52 @@ public sealed class OcrWorkerApiClientTests
                 }
 
                 return Task.FromResult(JsonResponse(new { job = (object?)null }));
+            }
+
+            throw new InvalidOperationException($"未預期的請求：{request.RequestUri}");
+        }
+
+        private static HttpResponseMessage JsonResponse(object body)
+            => new(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(body),
+                    Encoding.UTF8,
+                    "application/json")
+            };
+    }
+
+    private sealed class CompletionHandler(HttpStatusCode completionStatus) : HttpMessageHandler
+    {
+        public int CompletionRequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/auth/v1/token", StringComparison.Ordinal))
+            {
+                return Task.FromResult(JsonResponse(new
+                {
+                    access_token = "access-token",
+                    refresh_token = "refresh-token",
+                    expires_in = 3600
+                }));
+            }
+
+            if (path.EndsWith("/functions/v1/ocr-jobs", StringComparison.Ordinal))
+            {
+                CompletionRequestCount += 1;
+                return Task.FromResult(new HttpResponseMessage(completionStatus)
+                {
+                    Content = new StringContent(
+                        completionStatus == HttpStatusCode.OK
+                            ? "{}"
+                            : "{\"error\":\"lease_lost\"}",
+                        Encoding.UTF8,
+                        "application/json")
+                });
             }
 
             throw new InvalidOperationException($"未預期的請求：{request.RequestUri}");

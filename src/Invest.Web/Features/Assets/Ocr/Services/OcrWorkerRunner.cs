@@ -113,7 +113,7 @@ public sealed class OcrWorkerRunner(
 
         try
         {
-            await Task.WhenAll(slots);
+            await WaitForSlotExitAsync(slots, workerCancellation.Token);
         }
         catch (OperationCanceledException) when (workerCancellation.IsCancellationRequested)
         {
@@ -124,6 +124,19 @@ public sealed class OcrWorkerRunner(
             wakeSignals.Writer.TryComplete();
             try { await realtimeTask; } catch (OperationCanceledException) { }
             try { await heartbeatTask; } catch (OperationCanceledException) { }
+        }
+    }
+
+    internal static async Task WaitForSlotExitAsync(
+        IReadOnlyList<Task> slots,
+        CancellationToken cancellationToken)
+    {
+        var stoppedSlot = await Task.WhenAny(slots).WaitAsync(cancellationToken);
+        await stoppedSlot;
+
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("OCR Worker 常駐槽非預期停止。");
         }
     }
 
@@ -262,128 +275,153 @@ public sealed class OcrWorkerRunner(
         var totalStopwatch = Stopwatch.StartNew();
         try
         {
-            var extension = SupportedExtensions.FirstOrDefault(value =>
-                    job.OriginalFileName.EndsWith(value, StringComparison.OrdinalIgnoreCase))
-                ?? job.ContentType switch
-                {
-                    "image/png" => ".png",
-                    "image/webp" => ".webp",
-                    _ => ".jpg"
-                };
-            var imagePath = Path.Combine(directory.FullName, $"input{extension}");
-            var schemaPath = Path.Combine(directory.FullName, "recognition-schema.json");
-            // 2026-09-13：使用者要求「強制停止就要保證這輪不浪費額度」。這兩個進度回報點
-            // 剛好卡在「下載」與「呼叫 AI」這兩件真正花錢／花頻寬的操作之前；伺服器明確
-            // 回 409（false，見 OcrWorkerApiClient.UpdateProgressAsync）代表這件工作已經
-            // 被取消或租約易主，此時不再往下做，直接放棄——不會呼叫 CompleteAsync，因為
-            // 已經不持有租約，寫入本來就會被伺服器拒絕，沒有必要嘗試。只有明確的 409 才會
-            // 觸發放棄；null（回報本身失敗，例如網路問題）視為無法確認，維持原本繼續執行，
-            // 避免暫時性錯誤誤殺正常工作。
-            //
-            // 誠實限制：這只能攔截「還沒開始下載／還沒呼叫 AI」這兩個時間點之前的取消；
-            // 如果使用者是在 AI 辨識已經開始跑之後才取消，這裡攔不到，CLI 呼叫仍會跑完
-            // 才發現租約已失效——真正中途中止需要把 CancellationToken 貫穿進
-            // OcrExecutionCoordinator／CLI 執行本身，這次沒有做。
-            if (await UpdateProgressSafeAsync(api, job, "downloading", 15, null, cancellationToken) == false)
-            {
-                Console.WriteLine($"OCR 工作 {job.Id} 已被取消或租約易主，放棄下載，不浪費頻寬。");
-                return;
-            }
-            var downloadStopwatch = Stopwatch.StartNew();
-            await api.DownloadAsync(job.DownloadUrl, imagePath, cancellationToken);
-            downloadStopwatch.Stop();
-            await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
-
-            var request = CreateRequest(imagePath, schemaPath, directory.FullName, job.Market, options.MaxReasoningEffort);
-            var readiness = new OcrWorkerReadiness(
-                DateTimeOffset.UtcNow,
-                agentStates
-                    .Where(pair => pair.Value.Authenticated && pair.Value.QuotaAvailable)
-                    .Select(pair => pair.Key.Equals("claude", StringComparison.OrdinalIgnoreCase)
-                        ? OcrAgentKind.Claude
-                        : OcrAgentKind.Codex)
-                    .Distinct()
-                    .ToArray());
-            var coordinator = new OcrExecutionCoordinator(
-                fallbackPolicy,
-                new AiOcrOrchestrator(router, new InMemoryOcrPassCheckpointStore()));
-            if (await UpdateProgressSafeAsync(api, job, "ai_recognition", 25, null, cancellationToken) == false)
-            {
-                Console.WriteLine($"OCR 工作 {job.Id} 已被取消或租約易主，放棄呼叫 AI，不浪費額度。");
-                return;
-            }
-            var recognitionStopwatch = Stopwatch.StartNew();
-            var execution = await coordinator.RecognizeAsync(
-                readiness,
-                request,
-                cancellationToken);
-            recognitionStopwatch.Stop();
-            Console.WriteLine(
-                $"OCR 工作 {job.Id} 分段耗時：下載={downloadStopwatch.Elapsed.TotalSeconds:0.0}s "
-                + $"辨識={recognitionStopwatch.Elapsed.TotalSeconds:0.0}s");
-
-            var usage = execution.AiResult?.Execution.Result.Usage;
-
-            if (execution.UsesTesseract)
-            {
-                var fallbackCode = ToFallbackCode(execution.FallbackReason);
-                await UpdateProgressSafeAsync(api, job, "fallback", 90, usage, cancellationToken);
-                var relayed = await api.RelayOrFallbackAsync(job, fallbackCode, null, cancellationToken);
-                if (relayed)
-                {
-                    Console.WriteLine($"OCR 工作 {job.Id} 這台機器兩個 Agent 都不可用，已交給另一個平台的 Worker 接力：{fallbackCode}");
-                }
-                else
-                {
-                    Console.WriteLine($"OCR 工作 {job.Id} 改由瀏覽器 Tesseract：{fallbackCode}");
-                }
-                return;
-            }
-
+            JobCompletion? completion = null;
+            OcrExecutionResult? execution = null;
             try
             {
-                await UpdateProgressSafeAsync(api, job, "validating", 90, usage, cancellationToken);
-                var draft = validator.Validate(execution.AiResult!);
-                await UpdateProgressSafeAsync(api, job, "completed", 100, usage, cancellationToken);
-                var executionResult = execution.AiResult!.Execution;
-                var evaluation = options.ShouldCaptureEvaluation(job.Id)
-                    ? OcrEvaluationMetadata.From("max", executionResult)
-                    : null;
-                await api.CompleteAsync(
-                    job,
-                    "succeeded",
-                    draft,
-                    null,
-                    null,
-                    evaluation,
+                var extension = SupportedExtensions.FirstOrDefault(value =>
+                        job.OriginalFileName.EndsWith(value, StringComparison.OrdinalIgnoreCase))
+                    ?? job.ContentType switch
+                    {
+                        "image/png" => ".png",
+                        "image/webp" => ".webp",
+                        _ => ".jpg"
+                    };
+                var imagePath = Path.Combine(directory.FullName, $"input{extension}");
+                var schemaPath = Path.Combine(directory.FullName, "recognition-schema.json");
+                // 2026-09-13：使用者要求「強制停止就要保證這輪不浪費額度」。這兩個進度回報點
+                // 剛好卡在「下載」與「呼叫 AI」這兩件真正花錢／花頻寬的操作之前；伺服器明確
+                // 回 409（false，見 OcrWorkerApiClient.UpdateProgressAsync）代表這件工作已經
+                // 被取消或租約易主，此時不再往下做，直接放棄——不會呼叫 CompleteAsync，因為
+                // 已經不持有租約，寫入本來就會被伺服器拒絕，沒有必要嘗試。只有明確的 409 才會
+                // 觸發放棄；null（回報本身失敗，例如網路問題）視為無法確認，維持原本繼續執行，
+                // 避免暫時性錯誤誤殺正常工作。
+                //
+                // 誠實限制：這只能攔截「還沒開始下載／還沒呼叫 AI」這兩個時間點之前的取消；
+                // 如果使用者是在 AI 辨識已經開始跑之後才取消，這裡攔不到，CLI 呼叫仍會跑完
+                // 才發現租約已失效——真正中途中止需要把 CancellationToken 貫穿進
+                // OcrExecutionCoordinator／CLI 執行本身，這次沒有做。
+                if (await UpdateProgressSafeAsync(api, job, "downloading", 15, null, cancellationToken) == false)
+                {
+                    Console.WriteLine($"OCR 工作 {job.Id} 已被取消或租約易主，放棄下載，不浪費頻寬。");
+                    return;
+                }
+                var downloadStopwatch = Stopwatch.StartNew();
+                await api.DownloadAsync(job.DownloadUrl, imagePath, cancellationToken);
+                downloadStopwatch.Stop();
+                await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
+
+                var request = CreateRequest(imagePath, schemaPath, directory.FullName, job.Market, options.MaxReasoningEffort);
+                var readiness = new OcrWorkerReadiness(
+                    DateTimeOffset.UtcNow,
+                    agentStates
+                        .Where(pair => pair.Value.Authenticated && pair.Value.QuotaAvailable)
+                        .Select(pair => pair.Key.Equals("claude", StringComparison.OrdinalIgnoreCase)
+                            ? OcrAgentKind.Claude
+                            : OcrAgentKind.Codex)
+                        .Distinct()
+                        .ToArray());
+                var coordinator = new OcrExecutionCoordinator(
+                    fallbackPolicy,
+                    new AiOcrOrchestrator(router, new InMemoryOcrPassCheckpointStore()));
+                if (await UpdateProgressSafeAsync(api, job, "ai_recognition", 25, null, cancellationToken) == false)
+                {
+                    Console.WriteLine($"OCR 工作 {job.Id} 已被取消或租約易主，放棄呼叫 AI，不浪費額度。");
+                    return;
+                }
+                var recognitionStopwatch = Stopwatch.StartNew();
+                execution = await coordinator.RecognizeAsync(
+                    readiness,
+                    request,
                     cancellationToken);
-                Console.WriteLine($"OCR 工作 {job.Id} 完成：{draft.Rows.Count} 列");
-                WriteUsageSummary(job, execution);
+                recognitionStopwatch.Stop();
+                Console.WriteLine(
+                    $"OCR 工作 {job.Id} 分段耗時：下載={downloadStopwatch.Elapsed.TotalSeconds:0.0}s "
+                    + $"辨識={recognitionStopwatch.Elapsed.TotalSeconds:0.0}s");
+
+                var usage = execution.AiResult?.Execution.Result.Usage;
+
+                if (execution.UsesTesseract)
+                {
+                    var fallbackCode = ToFallbackCode(execution.FallbackReason);
+                    await UpdateProgressSafeAsync(api, job, "fallback", 90, usage, cancellationToken);
+                    var relayed = await api.RelayOrFallbackAsync(job, fallbackCode, null, cancellationToken);
+                    if (relayed)
+                    {
+                        Console.WriteLine($"OCR 工作 {job.Id} 這台機器兩個 Agent 都不可用，已交給另一個平台的 Worker 接力：{fallbackCode}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"OCR 工作 {job.Id} 改由瀏覽器 Tesseract：{fallbackCode}");
+                    }
+                    return;
+                }
+
+                try
+                {
+                    await UpdateProgressSafeAsync(api, job, "validating", 90, usage, cancellationToken);
+                    var draft = validator.Validate(execution.AiResult!);
+                    await UpdateProgressSafeAsync(api, job, "completed", 100, usage, cancellationToken);
+                    var executionResult = execution.AiResult!.Execution;
+                    var evaluation = options.ShouldCaptureEvaluation(job.Id)
+                        ? OcrEvaluationMetadata.From("max", executionResult)
+                        : null;
+                    completion = new JobCompletion("succeeded", draft, null, null, evaluation);
+                }
+                catch (OcrRecognitionValidationException exception)
+                {
+                    await UpdateProgressSafeAsync(api, job, "failed", 100, usage, cancellationToken);
+                    completion = new JobCompletion(
+                        "fallback_required",
+                        null,
+                        "ai_invalid_output",
+                        exception.ErrorCode,
+                        null);
+                }
             }
-            catch (OcrRecognitionValidationException exception)
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
-                await UpdateProgressSafeAsync(api, job, "failed", 100, usage, cancellationToken);
-                await api.CompleteAsync(
-                    job,
+                await UpdateProgressSafeAsync(api, job, "failed", 100, null, cancellationToken);
+                completion = new JobCompletion(
                     "fallback_required",
                     null,
-                    "ai_invalid_output",
-                    exception.ErrorCode,
-                    null,
-                    cancellationToken);
+                    "ai_execution_failed",
+                    SafeCode(exception),
+                    null);
+            }
+
+            if (completion is null)
+            {
+                return;
+            }
+
+            var committed = await api.CompleteAsync(
+                job,
+                completion.Status,
+                completion.Result,
+                completion.FallbackReason,
+                completion.ErrorCode,
+                completion.Evaluation,
+                cancellationToken);
+            if (!committed)
+            {
+                Console.WriteLine($"OCR 工作 {job.Id} 完成時租約已失效，辨識結果已丟棄。");
+                return;
+            }
+
+            if (completion.Status == "succeeded")
+            {
+                Console.WriteLine($"OCR 工作 {job.Id} 完成：{completion.Result!.Rows.Count} 列");
+                if (execution is not null)
+                {
+                    WriteUsageSummary(job, execution);
+                }
             }
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
-            await UpdateProgressSafeAsync(api, job, "failed", 100, null, cancellationToken);
-            await api.CompleteAsync(
-                job,
-                "fallback_required",
-                null,
-                "ai_execution_failed",
-                SafeCode(exception),
-                null,
-                cancellationToken);
+            Console.Error.WriteLine($"OCR 工作 {job.Id} 完成回寫失敗：{Safe(exception.Message)}");
+            throw;
         }
         finally
         {
@@ -392,6 +430,13 @@ public sealed class OcrWorkerRunner(
             directory.Delete(recursive: true);
         }
     }
+
+    private sealed record JobCompletion(
+        string Status,
+        OcrRecognitionDraft? Result,
+        string? FallbackReason,
+        string? ErrorCode,
+        OcrEvaluationMetadata? Evaluation);
 
     private async Task ProcessEvaluationAsync(
         OcrWorkerApiClient api,

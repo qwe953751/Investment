@@ -1,10 +1,28 @@
 # AI OCR 重構實作進度
 
-## 狀態：治本一＋治本二程式碼已完成並合併；尚待部署
+## 狀態：治本一＋治本二程式碼已完成並合併；另已修復完成回寫 409 導致槽死亡；Worker 尚待重建
 
 完整根因、實作細節、與另一個 session 併行的合併衝突處理、測試結果，全部寫進了
 [版本紀錄.md](../版本紀錄.md) 最新一節（`## [2026-09-13][Company||Windows||Claude]`），
 這份文件不再重複，只留最終檢查清單供下一步接手。
+
+## 2026-09-22：OCR Worker 完成回寫租約競態與並行槽存活修復
+
+先前的 3 槽架構雖然已經是常駐槽，但 `complete` 回寫遇到 HTTP 409 `lease_lost` 時，
+例外會從 `ProcessJobAsync` 冒出；外層又對同一件工作重送一次 `complete`，第二次仍是 409，
+該槽因此停止。`Task.WhenAll` 只等待整批槽，沒有把單槽退出立即提升成 Worker 故障，造成並行度
+逐步退化，與手機畫面「只有一個一個辨識」一致。
+
+本次已完成：
+
+- `CompleteAsync()` 對 409 回傳 `false`；非 409 維持拋例外。
+- `ProcessJobAsync()` 先建立單一終態，`complete` 僅呼叫一次；租約失效時丟棄結果並保留槽。
+- `RunAsync()` 監看任一槽退出並 fail-fast，交由 Windows 排程 recovery 重啟整個 Worker。
+- 新增 409／成功／500 API 測試、槽退出測試與唯一終態回寫接線測試。
+
+驗證：.NET 10.0.302 Release OCR 目標 `29/29`；目前工作樹完整 `Invest.Web.Tests` `541/541`。
+這次沒有修改 migration、Edge Function 或網站；Worker EXE 仍須在實際部署機器重建並以啟動訊息驗證，
+家裡 Mac 與 7 張手機截圖三槽端到端測試仍待完成。
 
 ## ✅ 已完成（本機 489 個 .NET 測試＋94 個 Node 測試全綠，程式已 commit）
 

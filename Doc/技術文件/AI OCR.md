@@ -2,6 +2,11 @@
 
 > 日期：2026-09-13
 >
+> 最新狀態（2026-09-22）：第五個獨立問題已修正（見 0.6 節）。完成回寫遇到 `409 lease_lost`
+> 時，舊版會重送 `complete` 讓常駐槽死亡，並行度靜默由 3 降到 2、1；現在每件工作只回寫一次，
+> 409 安全丟棄結果，任一槽退出則 Worker fail-fast。OCR 目標測試 29/29 通過；Worker EXE 尚待
+> 實際部署機器重建，網站本次不發布。
+>
 > 狀態：**第四個獨立問題已修正（見 0.5 節）：另一個 session 上線的「強制取消辨識」
 > 功能與重整後恢復流程搶同一個全域 `AbortController`／草稿狀態，取消後畫面會彈回
 > 「掃描中」、下一批幾秒內再上傳可能被殘留批次誤 abort（readiness 成功、之後零個
@@ -688,6 +693,38 @@ lease）→ Worker 不知情繼續用舊 lease_token 回報 ai_recognition（回
 登入帳密與實機操作，只驗證到程式邏輯層級；下次使用者實際照這個流程操作時，
 應該會是第一次真正的端到端驗證。「AI 辨識已經開始跑之後才取消」的中途真正中止
 （S5 的誠實限制段落）也還沒做。
+
+### 0.6 2026-09-22 完成回寫 `409 lease_lost` 造成並行槽逐一死亡
+
+#### 使用者回報與證據
+
+手機一次上傳 7 張截圖時，畫面同時出現已完成、25% 辨識中與多張 queued，看起來像沒有三條
+同步辨識。Worker log 的關鍵錯誤是 `ocr_worker_complete_409: {"error":"lease_lost"}`。
+這不是 AI 模型把工作排成序列，而是完成回寫的租約競態被錯誤當成常駐槽例外。
+
+#### 根因
+
+`ProcessJobAsync` 原本在成功、驗證失敗與一般例外各自呼叫 `CompleteAsync`。第一次 `complete`
+回 409 後，例外路徑又對同一張圖送第二次 `complete`；第二次仍回 409，例外離開 `RunSlotAsync`。
+`RunAsync` 只等待 `Task.WhenAll(slots)`，因此單一槽死亡不會立即讓 Worker 失敗，三個槽會靜默
+退化成兩個、再退化成一個。剩下的槽只要被慢圖占用，新工作就會長時間留在 queued。
+
+#### 修正與不變的失敗策略
+
+- `OcrWorkerApiClient.CompleteAsync()` 回傳 `Task<bool>`；HTTP 409 回 `false`，非 409 與網路錯誤
+  維持拋例外。
+- `ProcessJobAsync()` 先把成功／驗證失敗／執行失敗整理成 `JobCompletion`，終態只送一次。
+  409 只記錄租約已失效並丟棄結果，不影響槽繼續 claim 下一張；真正的 5xx／網路故障仍讓槽
+  冒泡，避免把服務性故障吞掉。
+- `RunAsync()` 改為等待任一槽退出；異常或意外正常結束都 fail-fast，交由既有 Windows
+  Task Scheduler recovery 重啟整個 Worker，恢復完整三槽，而不是繼續以殘缺並行度服務。
+
+#### 驗證與部署界線
+
+新增 API 409／200／500 回歸測試、槽退出測試與唯一終態回寫接線測試；.NET 10.0.302 Release
+OCR 目標 29/29 通過，工作樹完整 `Invest.Web.Tests` 541/541 通過。這次沒有修改 Supabase
+migration、Edge Function 或靜態網站；必須在實際 Windows／Mac 部署機器重新 build 常駐 EXE，
+並以「Realtime 喚醒；斷線每 5 秒重連」啟動訊息驗證，最後再用 7 張手機截圖確認三槽同時工作。
 
 ### 1. 最終實作方式
 

@@ -145,6 +145,23 @@ public sealed class OcrCliWiringTests
         Assert.Contains("if (await UpdateProgressSafeAsync(api, job, \"ai_recognition\", 25, null, cancellationToken) == false)", worker, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 工作完成只會有一個終態回寫呼叫點()
+    {
+        var root = FindRepositoryRoot();
+        var worker = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Invest.Web",
+            "Features",
+            "Assets",
+            "Ocr",
+            "Services",
+            "OcrWorkerRunner.cs"));
+
+        Assert.Equal(1, worker.Split("await api.CompleteAsync(", StringSplitOptions.None).Length - 1);
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
