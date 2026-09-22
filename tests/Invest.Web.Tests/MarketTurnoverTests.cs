@@ -37,6 +37,16 @@ public sealed class MarketTurnoverTests
     }
 
     [Fact]
+    public void 國定假日不允許發布排行()
+    {
+        var exception = Assert.Throws<MarketTurnoverDataIncompleteException>(() =>
+            MarketTurnoverQualityGate.EnsureComplete(
+                CreateSnapshot(20) with { TradingDate = new DateOnly(2026, 9, 22) }));
+
+        Assert.Contains("交易所休市日", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CDN清理只辨識版本化排行檔不碰latest()
     {
         var expired = MarketTurnoverSnapshotPublisher.SelectExpiredSnapshotFiles(

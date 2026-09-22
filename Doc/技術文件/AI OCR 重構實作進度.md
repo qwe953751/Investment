@@ -1,6 +1,6 @@
 # AI OCR 重構實作進度
 
-## 狀態：治本一＋治本二程式碼已完成並合併；另已修復完成回寫 409 導致槽死亡；Worker 尚待重建
+## 狀態：治本一＋治本二程式碼已完成並合併；完成回寫 409 導致槽死亡已修復並重建 Windows Worker
 
 完整根因、實作細節、與另一個 session 併行的合併衝突處理、測試結果，全部寫進了
 [版本紀錄.md](../版本紀錄.md) 最新一節（`## [2026-09-13][Company||Windows||Claude]`），
@@ -20,9 +20,10 @@
 - `RunAsync()` 監看任一槽退出並 fail-fast，交由 Windows 排程 recovery 重啟整個 Worker。
 - 新增 409／成功／500 API 測試、槽退出測試與唯一終態回寫接線測試。
 
-驗證：.NET 10.0.302 Release OCR 目標 `29/29`；目前工作樹完整 `Invest.Web.Tests` `541/541`。
-這次沒有修改 migration、Edge Function 或網站；Worker EXE 仍須在實際部署機器重建並以啟動訊息驗證，
-家裡 Mac 與 7 張手機截圖三槽端到端測試仍待完成。
+驗證：.NET 10.0.302 Release OCR 目標 `29/29`；本機目前工作樹完整 `Invest.Web.Tests` `547/547`。
+這次沒有修改 migration、Edge Function 或網站；2026-09-22 已重建 `e6c08fd1` 的 Windows 自包含 EXE，
+因本機沒有 `Invest D+ OCR Worker` 排程，改由既有隱藏 launcher 重啟，log 已確認「Realtime 喚醒；
+斷線每 5 秒重連；並行上限 3」。家裡 Mac 與 7 張手機截圖三槽端到端測試仍待完成。
 
 ## ✅ 已完成（本機 489 個 .NET 測試＋94 個 Node 測試全綠，程式已 commit）
 

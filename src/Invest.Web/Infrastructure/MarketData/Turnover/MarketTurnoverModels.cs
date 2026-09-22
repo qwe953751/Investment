@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using System.Text.Json;
+using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Infrastructure.MarketData.Turnover;
 
@@ -69,6 +70,13 @@ public static class MarketTurnoverQualityGate
         {
             throw new MarketTurnoverDataIncompleteException(
                 $"{snapshot.Market} 成交排行 schema 不支援：{snapshot.SchemaVersion}。\n");
+        }
+
+        if (!MarketHolidayCalendar.IsTradingDay(snapshot.Market, snapshot.TradingDate))
+        {
+            throw new MarketTurnoverDataIncompleteException(
+                $"{snapshot.Market} 成交排行日期 {snapshot.TradingDate:yyyy-MM-dd} 是"
+                + $"{MarketHolidayCalendar.ClosedReason(snapshot.Market, snapshot.TradingDate)}；不發布舊資料貼標快照。");
         }
 
         if (snapshot.Rows.Count < RequiredRowCount)

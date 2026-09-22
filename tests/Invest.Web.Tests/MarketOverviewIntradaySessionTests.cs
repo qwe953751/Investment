@@ -30,4 +30,13 @@ public sealed class MarketOverviewIntradaySessionTests
         Assert.Equal(TimeSpan.FromMinutes(5), CollectionSchedule.AsiaOverviewIntradayInterval);
         Assert.Equal(new TimeOnly(14, 35), CollectionSchedule.AsiaOverviewIntradayEnd);
     }
+
+    [Fact]
+    public void 日本國定假日不視為開盤()
+    {
+        // 2026-09-22 03:00 UTC = 東京 12:00；JPX 於 9/22 為國定假日休市。
+        var holiday = new DateTimeOffset(2026, 9, 22, 3, 0, 0, TimeSpan.Zero);
+
+        Assert.False(MarketOverviewTradingSessions.Japan.IsOpenAt(holiday));
+    }
 }

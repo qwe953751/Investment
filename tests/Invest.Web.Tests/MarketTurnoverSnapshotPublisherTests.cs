@@ -95,8 +95,8 @@ public sealed class MarketTurnoverSnapshotPublisherTests
         => new()
         {
             Market = market,
-            TradingDate = new DateOnly(2026, 9, 19),
-            CapturedAt = new DateTimeOffset(2026, 9, 19, 5, 5, 0, TimeSpan.Zero),
+            TradingDate = new DateOnly(2026, 9, 18),
+            CapturedAt = new DateTimeOffset(2026, 9, 18, 5, 5, 0, TimeSpan.Zero),
             IsFinal = false,
             Rows = Enumerable.Range(1, 20)
                 .Select(rank => new MarketTurnoverRow

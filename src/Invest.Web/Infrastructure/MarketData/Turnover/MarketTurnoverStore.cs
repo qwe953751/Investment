@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Infrastructure.MarketData.Turnover;
 
@@ -41,8 +42,9 @@ public sealed class MarketTurnoverStore(IHostEnvironment environment, ILogger<Ma
         try
         {
             await using var stream = File.OpenRead(path);
-            return await JsonSerializer.DeserializeAsync<MarketTurnoverSnapshot>(
+            var snapshot = await JsonSerializer.DeserializeAsync<MarketTurnoverSnapshot>(
                 stream, MarketTurnoverJson.Options, cancellationToken);
+            return snapshot is not null && IsTradingDate(snapshot) ? snapshot : null;
         }
         catch (JsonException exception)
         {
@@ -67,7 +69,7 @@ public sealed class MarketTurnoverStore(IHostEnvironment environment, ILogger<Ma
                 await using var stream = File.OpenRead(path);
                 var snapshot = await JsonSerializer.DeserializeAsync<MarketTurnoverSnapshot>(
                     stream, MarketTurnoverJson.Options, cancellationToken);
-                if (snapshot is not null)
+                if (snapshot is not null && IsTradingDate(snapshot))
                 {
                     snapshots.Add(snapshot);
                 }
@@ -82,6 +84,29 @@ public sealed class MarketTurnoverStore(IHostEnvironment environment, ILogger<Ma
             .OrderBy(snapshot => snapshot.TradingDate)
             .ThenBy(snapshot => snapshot.Market, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private bool IsTradingDate(MarketTurnoverSnapshot snapshot)
+    {
+        try
+        {
+            if (MarketHolidayCalendar.IsTradingDay(snapshot.Market, snapshot.TradingDate))
+            {
+                return true;
+            }
+
+            logger.LogWarning(
+                "成交排行快取 {Market}/{Date} 是{Reason}，不納入歷史資料。",
+                snapshot.Market,
+                snapshot.TradingDate,
+                MarketHolidayCalendar.ClosedReason(snapshot.Market, snapshot.TradingDate));
+            return false;
+        }
+        catch (ArgumentException exception)
+        {
+            logger.LogError(exception, "成交排行快取 {Market}/{Date} 使用不支援的市場，已略過。", snapshot.Market, snapshot.TradingDate);
+            return false;
+        }
     }
 
     private string GetPath(string market, DateOnly tradingDate)

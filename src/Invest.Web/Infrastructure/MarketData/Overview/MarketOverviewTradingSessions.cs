@@ -1,3 +1,5 @@
+using Invest.Web.Infrastructure.MarketData;
+
 namespace Invest.Web.Infrastructure.MarketData.Overview;
 
 /// <summary>
@@ -42,10 +44,13 @@ public sealed record MarketOverviewTradingSession(
     public DateOnly TradingDateAt(DateTimeOffset instant)
         => DateOnly.FromDateTime(ToLocal(instant).DateTime);
 
+    public bool IsTradingDay(DateOnly date)
+        => MarketHolidayCalendar.IsTradingDay(MarketKey, date);
+
     public bool IsOpenAt(DateTimeOffset instant)
     {
         var local = ToLocal(instant);
-        if (local.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+        if (!IsTradingDay(DateOnly.FromDateTime(local.DateTime)))
         {
             return false;
         }

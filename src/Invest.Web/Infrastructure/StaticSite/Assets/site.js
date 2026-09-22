@@ -27394,6 +27394,25 @@ async function ensureMarketOverviewData() {
     }
 }
 
+// 盤中前端也保留一份與後端相同的「已公告年度」休市日防線。真正的收集閘門在
+// MarketHolidayCalendar；這裡的責任是即使 CDN 已經有錯誤日期的 pointer，也不在休市日
+// 發出請求或把它畫成盤中。每年更新後端行事曆時一起更新這份清單。
+const MSP_MARKET_HOLIDAYS = {
+    jp: new Set([
+        '2026-01-01', '2026-01-02', '2026-01-03', '2026-01-12', '2026-02-11',
+        '2026-02-23', '2026-03-20', '2026-04-29', '2026-05-03', '2026-05-04',
+        '2026-05-05', '2026-05-06', '2026-07-20', '2026-08-11', '2026-09-21',
+        '2026-09-22', '2026-09-23', '2026-10-12', '2026-11-03', '2026-11-23',
+        '2026-12-31'
+    ]),
+    kr: new Set([
+        '2026-01-01', '2026-02-16', '2026-02-17', '2026-02-18', '2026-03-02',
+        '2026-05-01', '2026-05-05', '2026-05-25', '2026-06-03', '2026-07-17',
+        '2026-08-17', '2026-09-24', '2026-09-25', '2026-10-05', '2026-10-09',
+        '2026-12-25', '2026-12-31'
+    ])
+};
+
 // 日韓交易時段依各交易所當地時間判斷；日本午休期間絕不把上一根 5 分鐘列寫成「即時」。
 function mspIsIntradaySession(market, now = new Date()) {
     const settings = market === 'jp'
@@ -27413,7 +27432,7 @@ function mspIsIntradaySession(market, now = new Date()) {
         hourCycle: 'h23'
     }).formatToParts(now);
     const value = type => parts.find(part => part.type === type)?.value ?? '';
-    if (['Sat', 'Sun'].includes(value('weekday'))) {
+    if (!mspIsTradingDay(market, now)) {
         return false;
     }
 
@@ -27437,6 +27456,21 @@ function mspExchangeDate(market, now = new Date()) {
     return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
+function mspIsTradingDay(market, now = new Date()) {
+    const holidaySet = MSP_MARKET_HOLIDAYS[market];
+    if (holidaySet === undefined) {
+        return false;
+    }
+
+    const zone = market === 'jp' ? 'Asia/Tokyo' : 'Asia/Seoul';
+    const weekday = new Intl.DateTimeFormat('en-US', {
+        timeZone: zone,
+        weekday: 'short'
+    }).format(now);
+    const date = mspExchangeDate(market, now);
+    return !['Sat', 'Sun'].includes(weekday) && !holidaySet.has(date);
+}
+
 // proto.session 是使用者手動選的盤中／盤後（見 mspBuildSessionSwitch）；沒選過時是
 // 'auto'，沿用原本「依交易時段自動判斷」的行為，不影響既有使用者。
 function mspEffectiveSession(market, proto) {
@@ -27450,7 +27484,10 @@ function mspEffectiveSession(market, proto) {
 }
 
 async function ensureMarketOverviewIntradayGroup(market, { force = false } = {}) {
-    if (marketOverviewIntradayCdn === null || !['jp', 'kr'].includes(market) || (!force && !mspIsIntradaySession(market))) {
+    if (marketOverviewIntradayCdn === null
+        || !['jp', 'kr'].includes(market)
+        || !mspIsTradingDay(market)
+        || (!force && !mspIsIntradaySession(market))) {
         return null;
     }
 
@@ -27519,7 +27556,9 @@ const marketTurnoverIntradayCache = new Map();
 const marketTurnoverIntradayPromises = new Map();
 
 async function ensureMarketTurnoverIntraday(market) {
-    if (marketTurnoverCdn === null || !MSP_TURNOVER_LEADER_MARKETS.has(market)) {
+    if (marketTurnoverCdn === null
+        || !MSP_TURNOVER_LEADER_MARKETS.has(market)
+        || !mspIsTradingDay(market)) {
         return null;
     }
 
@@ -28605,7 +28644,14 @@ function mspResolveTurnoverGroup(group, market, proto) {
     }
 
     const cached = marketTurnoverIntradayCache.get(market);
-    if (cached === undefined || Date.now() - cached.loadedAt >= MARKET_OVERVIEW_INTRADAY_CACHE_MS) {
+    const expectedDate = group?.intraday === true
+        ? group.asOf
+        : dailyGroup?.turnoverLeadersAsOf ?? dailyGroup?.asOf ?? group.asOf;
+    const cachedIsFresh = cached !== undefined
+        && Date.now() - cached.loadedAt < MARKET_OVERVIEW_INTRADAY_CACHE_MS;
+    const cachedDateMatches = expectedDate === undefined || cached?.tradingDate === expectedDate;
+    const usableCached = cachedIsFresh && cachedDateMatches;
+    if (!usableCached) {
         void ensureMarketTurnoverIntraday(market).then(entry => {
             if (entry !== null && marketSwitchRender !== null) {
                 marketSwitchRender();
@@ -28613,7 +28659,7 @@ function mspResolveTurnoverGroup(group, market, proto) {
         });
     }
 
-    return cached === undefined
+    return !usableCached
         ? fallback
         : { ...group, turnoverLeaders: cached.rows, asOf: cached.tradingDate, intraday: true };
 }

@@ -41,10 +41,26 @@ public sealed class MarketTurnoverCollectorTests
         Assert.Equal(["kr"], report.SkippedMarkets);
     }
 
-    private static MarketTurnoverCollector CreateCollector()
+    [Fact]
+    public async Task 日本國定假日略過且不呼叫來源()
+    {
+        var calls = 0;
+        var collector = CreateCollector(() => calls++);
+        // 2026-09-22 03:00 UTC = 東京 12:00；JPX 於 9/22 為國定假日休市。
+        var holidayUtc = new DateTimeOffset(2026, 9, 22, 3, 0, 0, TimeSpan.Zero);
+
+        var report = await collector.CollectAsync(["jp"], isFinal: true, now: holidayUtc);
+
+        Assert.Empty(report.Snapshots);
+        Assert.Equal(["jp"], report.SkippedMarkets);
+        Assert.Equal(0, calls);
+        Assert.Contains(report.Warnings, warning => warning.Contains("國定假日", StringComparison.Ordinal));
+    }
+
+    private static MarketTurnoverCollector CreateCollector(Action? onRequest = null)
     {
         var yahooClient = new YahooScreenerMarketTurnoverClient(
-            new ThrowingHttpClientFactory(),
+            new ThrowingHttpClientFactory(onRequest),
             Options.Create(new YahooScreenerMarketDataOptions()),
             NullLogger<YahooScreenerMarketTurnoverClient>.Instance);
         var store = new MarketTurnoverStore(
@@ -58,15 +74,19 @@ public sealed class MarketTurnoverCollectorTests
         return new MarketTurnoverCollector(yahooClient, store, publisher, NullLogger<MarketTurnoverCollector>.Instance);
     }
 
-    private sealed class ThrowingHttpClientFactory : IHttpClientFactory
+    private sealed class ThrowingHttpClientFactory(Action? onRequest = null) : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name) => new(new ThrowingHandler());
+        public HttpClient CreateClient(string name) => new(new ThrowingHandler(onRequest));
     }
 
-    private sealed class ThrowingHandler : HttpMessageHandler
+    private sealed class ThrowingHandler(Action? onRequest = null) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => throw new InvalidOperationException("週末略過時不應該發出任何 HTTP 請求。");
+        {
+            onRequest?.Invoke();
+            return Task.FromException<HttpResponseMessage>(
+                new InvalidOperationException("非交易日略過時不應該發出任何 HTTP 請求。"));
+        }
     }
 
     private sealed class FakeHostEnvironment : IHostEnvironment

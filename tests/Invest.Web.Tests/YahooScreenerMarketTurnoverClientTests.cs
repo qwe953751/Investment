@@ -22,7 +22,8 @@ public sealed class YahooScreenerMarketTurnoverClientTests
                     "regularMarketPrice": 2500.5,
                     "regularMarketVolume": 12345678,
                     "currency": "JPY",
-                    "regularMarketChangePercent": 1.23
+                    "regularMarketChangePercent": 1.23,
+                    "regularMarketTime": 1789711200
                   },
                   {
                     "symbol": "005930.KS",
@@ -58,6 +59,7 @@ public sealed class YahooScreenerMarketTurnoverClientTests
         Assert.Equal("JPY", toyota.Currency);
         // 已經是百分比，不能再乘 100。
         Assert.Equal(1.23m, toyota.ChangePercent);
+        Assert.Equal(new DateOnly(2026, 9, 18), toyota.SourceTradeDate);
 
         var samsung = rows[1];
         Assert.Equal("005930.KS", samsung.Symbol);
@@ -68,6 +70,47 @@ public sealed class YahooScreenerMarketTurnoverClientTests
         // 沒有 shortName 也沒有 longName 時退回代號本身。
         Assert.Equal("XYZ", fallback.Name);
         Assert.Null(fallback.ChangePercent);
+    }
+
+    [Fact]
+    public void 來源全部是上一交易日時拒絕貼上今天日期()
+    {
+        var staleQuotes = Enumerable.Range(1, 20)
+            .Select(index => new ScreenerQuote(
+                $"7203.T{index}",
+                "Toyota",
+                2500m,
+                1000m,
+                "JPY",
+                null,
+                new DateOnly(2026, 9, 18)))
+            .ToArray();
+
+        var exception = Assert.Throws<MarketTurnoverDataIncompleteException>(() =>
+            YahooScreenerMarketTurnoverClient.EnsureSourceDateMatches(
+                "jp",
+                new DateOnly(2026, 9, 22),
+                staleQuotes));
+
+        Assert.Contains("拒絕發布舊排行", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 候選池混入不同來源日期時也拒絕發布()
+    {
+        var mixedQuotes = new[]
+        {
+            new ScreenerQuote("7203.T", "Toyota", 2500m, 1000m, "JPY", null, new DateOnly(2026, 9, 22)),
+            new ScreenerQuote("6758.T", "Sony", 12000m, 500m, "JPY", null, new DateOnly(2026, 9, 18))
+        };
+
+        var exception = Assert.Throws<MarketTurnoverDataIncompleteException>(() =>
+            YahooScreenerMarketTurnoverClient.EnsureSourceDateMatches(
+                "jp",
+                new DateOnly(2026, 9, 22),
+                mixedQuotes));
+
+        Assert.Contains("拒絕發布舊排行", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

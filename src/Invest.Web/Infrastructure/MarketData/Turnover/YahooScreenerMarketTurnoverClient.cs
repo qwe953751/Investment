@@ -52,6 +52,12 @@ public sealed class YahooScreenerMarketTurnoverClient(
                 $"Yahoo screener {normalizedMarket} {tradingDate:yyyy-MM-dd} 沒有回傳任何個股；不發布空排行。");
         }
 
+        // Yahoo 在休市日可能仍回傳上一個交易日的 regularMarket* 數值。只看 HTTP
+        // 成功或列數足夠不代表日期正確；若來源有提供時間且所有列都落在別的日期，
+        // 直接拒絕，避免把舊排行貼上今天的日期。舊版回應沒有時間欄位時保留相容性，
+        // 由 MarketHolidayCalendar 的交易日閘門承擔第一層防線。
+        EnsureSourceDateMatches(normalizedMarket, tradingDate, byVolume.Concat(byPrice));
+
         var ranked = RankPool(normalizedMarket, byVolume, byPrice);
 
         logger.LogInformation(
@@ -359,8 +365,11 @@ public sealed class YahooScreenerMarketTurnoverClient(
             var name = TextOrNull(item, "shortName") ?? TextOrNull(item, "longName") ?? symbol;
             var currency = TextOrNull(item, "currency") ?? DefaultCurrency(market);
             var changePercent = NumberOrNull(item, "regularMarketChangePercent");
+            var sourceTradeDate = UnixSecondsOrNull(item, "regularMarketTime") is { } unixSeconds
+                ? (DateOnly?)ToMarketDate(market, unixSeconds)
+                : null;
 
-            rows.Add(new ScreenerQuote(symbol, name, price.Value, volume.Value, currency, changePercent));
+            rows.Add(new ScreenerQuote(symbol, name, price.Value, volume.Value, currency, changePercent, sourceTradeDate));
         }
 
         return rows;
@@ -392,6 +401,46 @@ public sealed class YahooScreenerMarketTurnoverClient(
         }
         return value.TryGetDecimal(out var number) ? number : null;
     }
+
+    internal static void EnsureSourceDateMatches(
+        string market,
+        DateOnly tradingDate,
+        IEnumerable<ScreenerQuote> quotes)
+    {
+        var sourceDates = quotes
+            .Select(quote => quote.SourceTradeDate)
+            .OfType<DateOnly>()
+            .Distinct()
+            .ToArray();
+        if (sourceDates.Any(sourceDate => sourceDate != tradingDate))
+        {
+            throw new MarketTurnoverDataIncompleteException(
+                $"Yahoo screener {market} 來源日期為 {string.Join(", ", sourceDates.Select(date => date.ToString("yyyy-MM-dd")))}，" +
+                $"不是要求的交易日 {tradingDate:yyyy-MM-dd}；拒絕發布舊排行。");
+        }
+    }
+
+    private static long? UnixSecondsOrNull(JsonElement item, string property)
+    {
+        if (!item.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.Number)
+        {
+            return null;
+        }
+
+        return value.TryGetInt64(out var number) ? number : null;
+    }
+
+    private static DateOnly ToMarketDate(string market, long unixSeconds)
+    {
+        var timeZone = market switch
+        {
+            "us" => TimeZoneInfo.FindSystemTimeZoneById("America/New_York"),
+            "jp" => TimeZoneInfo.FindSystemTimeZoneById("Asia/Tokyo"),
+            "kr" => TimeZoneInfo.FindSystemTimeZoneById("Asia/Seoul"),
+            _ => throw new ArgumentException($"不支援的成交排行市場 {market}。", nameof(market))
+        };
+        return DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeSeconds(unixSeconds), timeZone).DateTime);
+    }
 }
 
 /// <summary>Yahoo screener 一列解析後的原始個股資料，尚未排名、尚未套用市場成交金額 schema。</summary>
@@ -401,4 +450,5 @@ public sealed record ScreenerQuote(
     decimal Price,
     decimal Volume,
     string Currency,
-    decimal? ChangePercent);
+    decimal? ChangePercent,
+    DateOnly? SourceTradeDate = null);

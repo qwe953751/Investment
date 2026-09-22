@@ -1,3 +1,4 @@
+using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.UsStocks;
 
 namespace Invest.Web.Infrastructure.MarketData.Turnover;
@@ -77,7 +78,7 @@ public sealed class MarketTurnoverBackfiller(
 
         var tradingDates = seriesBySymbol.Values
             .SelectMany(series => series.Keys)
-            .Where(date => date >= earliestDate)
+            .Where(date => date >= earliestDate && MarketHolidayCalendar.IsTradingDay(normalizedMarket, date))
             .Distinct()
             .OrderBy(date => date)
             .ToArray();

@@ -1,3 +1,5 @@
+using Invest.Web.Infrastructure.MarketData;
+
 namespace Invest.Web.Infrastructure.MarketData.Turnover;
 
 /// <summary>集中抓取入口：每個市場每輪各一個來源呼叫，通過品質門檻後才原子保存／發布。</summary>
@@ -24,13 +26,14 @@ public sealed class MarketTurnoverCollector(
                 var collectedAt = now ?? DateTimeOffset.UtcNow;
                 var tradingDate = ToMarketDate(market, collectedAt);
                 // 2026-09-19 事故：手動在週六觸發收集，把週五收盤資料標成週六日期寫進
-                // data 分支與 Storage。這裡只擋掉最確定的一種非交易日（週末）；國定假日
-                // 沒有可用的日曆來源，仍會照抓，跟 us/jp/kr 原本的行為一致。
-                if (tradingDate.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+                // data 分支與 Storage。週末與交易所休市日都必須在來源呼叫前擋下，否則
+                // Yahoo 會回傳上一個交易日的數值，卻被這裡貼上今天的日期。
+                if (!MarketHolidayCalendar.IsTradingDay(market, tradingDate))
                 {
+                    var reason = MarketHolidayCalendar.ClosedReason(market, tradingDate);
                     skipped.Add(market);
-                    warnings.Add($"{market}: {tradingDate:yyyy-MM-dd} 是週末非交易日，略過收集。");
-                    logger.LogInformation("成交排行 {Market} 略過：{Date} 是週末非交易日。", market, tradingDate);
+                    warnings.Add($"{market}: {tradingDate:yyyy-MM-dd} 是{reason}，略過收集。");
+                    logger.LogInformation("成交排行 {Market} 略過：{Date} 是{Reason}。", market, tradingDate, reason);
                     continue;
                 }
                 var rows = await yahooScreenerClient.GetAsync(market, tradingDate, cancellationToken);
