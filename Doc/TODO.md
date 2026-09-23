@@ -1,4 +1,4 @@
-# 待辦事項（18 件）
+# 待辦事項（17 件）
 
 這份檔案是討論的存放處，不是進度表。每次要談某件事之前先讀這裡，
 就不用把前幾次的結論重講一遍。
@@ -29,7 +29,6 @@
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29。Windows EXE 已以 `e6c08fd1` 重建，`Invest D+ OCR Worker` 排程已註冊並 Running（每 2 分鐘 recovery、三槽與 Realtime 喚醒均已核對）；**家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。詳見 [版本紀錄.md](版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 2026-09-23 日韓盤中快照保留、日期選擇器隱藏與排行節流已由 commit `e0bf561b` 發布；.NET 549/549、Node 146/146 通過。線上 KR 已更新至 9/23 14:05；JP 仍指向 9/14。9/15 起舊 workflow 因 KIS 金鑰缺失失敗，9/19 改 Yahoo、9/22 修 Storage bucket 判定；JP 9/21～23 休市，待 9/24 開市驗收新快照。其餘市場切換產品議題仍見下方 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
-| 18 | [Google Sheet 操作(台)雙向同步與完整 48 欄支援](#todo-18) | 🟡 網站已發布（manifest `1790135918`）、Edge v16 ACTIVE；Google Sheet 讀取失敗，待核對文件 ID／分享權限 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1924,40 +1923,3 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - recovery `34843425153` 發現 CTE 未帶入指數 OHLC 欄位（Postgres `42703`），`34843743795` 發現
   Storage 缺少 `topic-latest.json` 時會以 HTTP 400／`NoSuchKey` 回應；兩項均已修正並有回歸測試，
   `34844210705` 已驗證修正後可補出第一份 topic 快取。
-
-<a id="todo-18"></a>
-## 🟡 18. Google Sheet 操作(台)雙向同步與完整 48 欄支援
-
-[↑ 回到 TODO 列表](#快速跳轉)
-
-**狀態：網站權威來源與操作表版面已發布，Edge v16 ACTIVE；正式 D 欄刷新仍因 Google Sheet 無法讀取而未驗收。**
-
-### 已討論
-
-Google Sheet 保存人工維護的 Buy／Stock／族群；網站 `revenue_latest` 是「營收創高」唯一權威，Sheet D 欄只是投影：
-只採用台北前一個月資料，`high_months >= 13` 寫成勾選，無當期資料或未達門檻寫成 `X`。D 不進匯入資料、hash 或網站狀態，
-避免匯入舊公式／舊月份覆蓋網站。匯出時以同一份網站營收快照與 B:C、E:AZ 一併更新 D 並讀回驗證；匯入會嘗試修復 D，
-即使投影失敗仍可匯入其他欄位並明確提示。網站依網站資料即時計算營收創高顯示。
-
-同步仍以 Supabase 保存快照／版本層：`db/058_asset_operation_full_sheet_sync.sql`
-建立 48 欄 metadata 定義、快照、同步狀態與版本檢查 RPC；`db/059_asset_operation_sync_write_hardening.sql`
-收回 authenticated 直接寫入；`db/060_asset_operation_sync_cron.sql` 預設台北 18:30 自動匯入。
-`supabase/functions/asset-operation-sync/index.js` 實作 import／save-draft／export／status／欄位順序保存與營收投影：
-Google API 使用 developer metadata 鎖定 Buy、Stock、D 欄與 48 個族群；匯出先清掉
-多出的舊列，再讀回驗證列數、勾選值與 D 欄網站投影。網站新增／刪除會在同一份 snapshot 中取代整批標的，
-因此匯出後兩邊數量一致；Google hash 改變則回報 409，不覆蓋人工修改。D 欄公式依
-網站當期 `revenue_latest.high_months >= 13` 應為 `TRUE`、否則 `X`；讀回不符就停止匯出。舊版 CLI `--write` 已停用，只能 dry-run。
-
-### 尚未討論
-
-正式 Supabase 已套用 `058`～`060`，`asset-operation-sync` 目前 v16 ACTIVE；台北前一個月 `revenue_latest` 有 1,979 列，
-其中 330 列 `high_months >= 13`。受控刷新 request `5330` 在讀取 Google Sheet 時回 HTTP 500（內層 Sheets HTTP 400 並回傳
-「目前無法開啟檔案」HTML）；錯誤發生於 `readSheet`，尚未送出 `batchUpdate`，所以本次沒有更動任何 Sheet 格子。
-目前證據指向 `ASSET_OPERATION_SPREADSHEET_ID` 指錯檔案，或 service account 對正確檔案沒有存取權；需核對實際文件 ID、
-分享給 service account 的 Editor 權限，以及分頁 `操作(台)`／sheetId `58931507` 後重試。Google HTML 錯誤頁已改為可操作提示，
-修正 commit `7692cd2a` 已推送，正式 Edge Function v16 ACTIVE。GitHub Actions variable
-`ASSET_OPERATION_REVENUE_SYNC_ENABLED` 與 secret `ASSET_OPERATION_CRON_SECRET` 目前都不存在，因此月營收 workflow 保持預設停用；
-要啟用時需先修復 Google 讀取並通過 D 欄寫入／讀回，再設定與 Edge／Vault 相同的 cron secret。網站發布 run
-`35816351295`（head SHA `8aee7b85`）已成功完成測試、export 與網站發布；正式 `gh-pages` manifest 為 `1790135918`
-（最新交易日 `2026/09/22`，產生時間 `2026-09-23 11:58`）。
-端到端仍待 Google 編輯權限／D 欄保護狀態與 import／新增刪除／export smoke test。

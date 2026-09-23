@@ -82,13 +82,10 @@ K 線、族群可跳到同一個節點、營收可開同一個 20 個月彈窗�
 再依子帳戶順序合併，不做跨帳戶全域排序。
 
 最高權限登入者在 `資產 → Frank → 台股操作` 的持倉標題旁按下 `Excel`，會在同一分頁切換到與附件相同的操作表；按「返回持倉」會回到原本的台股操作持倉明細。
-Google Sheet 保存人工維護的 Buy／Stock／48 個族群；Supabase 保存網站讀取的快照、版本與草稿。第一次使用先按「從 Google Sheet 匯入」；
+Google Sheet 是人工維護的主檔，保存 Buy／Stock／48 個族群與既有公式；Supabase 保存網站讀取的快照、版本與草稿。第一次使用先按「從 Google Sheet 匯入」；
 之後可在網站新增／刪除標的，按「套用變更」只保存網站草稿，按「匯出到 Google Sheet」才會在 hash 未衝突時以單一批次更新受控區域。
-網站刪除 2 列後匯出，Google Sheet 也會清掉多出的 2 列。匯出後重新讀取並驗證資料列、48 個族群勾選與網站營收投影。
-表格欄位可拖曳換位；Buy／Stock／48 個族群勾選可編輯、刪除或新增。提示訊息與匯入／匯出按鈕同列，匯入／匯出及編輯／返回持倉分組，返回持倉靠右；四個按鈕使用一致樣式。欄位首次排序為降冪，再按同欄切換升冪。`營收創高` 永遠以網站目前採用的營收月份為準：
-網站只讀台北時間上個月的 `revenue_latest`，創高月數大於等於 13 顯示勾選，其餘顯示 `X`；Google Sheet D 欄只是這個結果的投影，不會匯入成網站資料，也不再以 Sheet 公式為權威。
-匯入會在可寫入時順手校正 D 欄，匯出則在同一個 Google batchUpdate 同步 D 欄並用同一份營收快照讀回驗證；同步失敗時匯入提示會明確顯示，網站仍採自己的營收資料。
-月營收更新後的自動投影預設關閉，只有設定 GitHub Actions variable `ASSET_OPERATION_REVENUE_SYNC_ENABLED=true`，並提供與 Supabase Edge／Vault 相同的 `ASSET_OPERATION_CRON_SECRET` 才會執行。
+網站刪除 2 列後匯出，Google Sheet 也會清掉多出的 2 列。匯出後重新讀取並驗證資料列與 48 個族群勾選。
+表格欄位可拖曳換位；Buy／Stock／48 個族群勾選可編輯、刪除或新增。提示訊息與匯入／匯出按鈕同列，匯入／匯出及編輯／返回持倉分組，返回持倉靠右；四個按鈕使用一致樣式。欄位首次排序為降冪，再按同欄切換升冪。`營收創高` 是 Google Sheet D 欄既有公式的自動結果：匯入不把 D 納入快照或 hash，匯出永遠只寫 B:C、E:AZ；新增列以第 4 列版型複製公式，既有列不覆寫 D，因此保留公式、格式與 checkbox 驗證。網站顯示的營收創高仍以自身 `revenue_latest` 資料計算，不會反向改寫 Google 的 D 欄。
 族群欄以 Google Sheet 第 3 列的 developer metadata 對應，避免重複名稱（目前有兩個「導線架」）造成錯欄。
 操作表欄位排序第一次點擊先採降冪，再點同一欄切換為升冪；缺值仍固定排在最後。
 `db/058_asset_operation_full_sheet_sync.sql` 建立快照、48 欄定義、同步狀態與受控 RPC；`db/059_asset_operation_sync_write_hardening.sql`
