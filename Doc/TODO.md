@@ -1948,7 +1948,7 @@ Google API 使用 developer metadata 鎖定 Buy、Stock、D 欄與 48 個族群�
 
 ### 尚未討論
 
-正式 Supabase 已套用 `058`～`060`，`asset-operation-sync` 目前 v15 ACTIVE；台北前一個月 `revenue_latest` 有 1,979 列，
+正式 Supabase 已套用 `058`～`060`，`asset-operation-sync` 目前 v16 ACTIVE；台北前一個月 `revenue_latest` 有 1,979 列，
 其中 330 列 `high_months >= 13`。受控刷新 request `5330` 在讀取 Google Sheet 時回 HTTP 500（內層 Sheets HTTP 400 並回傳
 「目前無法開啟檔案」HTML）；錯誤發生於 `readSheet`，尚未送出 `batchUpdate`，所以本次沒有更動任何 Sheet 格子。
 目前證據指向 `ASSET_OPERATION_SPREADSHEET_ID` 指錯檔案，或 service account 對正確檔案沒有存取權；需核對實際文件 ID、
