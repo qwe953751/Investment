@@ -571,7 +571,7 @@ async function saveColumnOrderAction(accountId, body) {
     }
     const groups = await supabaseRequest(
         `/rest/v1/asset_operation_group_columns?select=id&account_id=eq.${encodeURIComponent(accountId)}&active=eq.true`);
-    const allowed = new Set(['weight', 'buy', 'stock', 'revenueHigh', 'actions']);
+    const allowed = new Set(['weight', 'buy', 'stock', 'revenueHigh']);
     for (const group of groups) allowed.add(`group:${group.id}`);
     const columnOrder = [...new Set(body.columnOrder.filter(key => allowed.has(key)))];
     if (columnOrder.length === 0) throw new Error('欄位順序不可為空。');

@@ -64,8 +64,7 @@ const columns = [
     { key: 'buy', label: 'Buy\n(份數)', kind: 'buy' },
     { key: 'stock', label: 'Stock', kind: 'stock' },
     { key: 'revenueHigh', label: '營收\n創高', kind: 'checkbox' },
-    { key: 'pcb', label: 'PCB', kind: 'checkbox' },
-    { key: 'actions', label: '操作', kind: 'actions' }
+    { key: 'pcb', label: 'PCB', kind: 'checkbox' }
 ];
 
 function excelFunctions() {
@@ -197,6 +196,7 @@ test('正式 metadata 有 48 個族群時不會把舊 14 欄重複畫出來', ()
     };
     vm.createContext(context);
     vm.runInContext(functionSource('assetExcelInstallGroupColumns'), context);
+    vm.runInContext(functionSource('assetExcelColumnKeysFrom'), context);
     vm.runInContext(`assetExcelInstallGroupColumns(${JSON.stringify(
         Array.from({ length: 48 }, (_, index) => ({ id: `group-${index}`, label: `G${index}`, display_order: index }))
     )});`, context);
@@ -205,6 +205,67 @@ test('正式 metadata 有 48 個族群時不會把舊 14 欄重複畫出來', ()
     assert.equal(context.ASSET_EXCEL_PREVIEW_COLUMNS.filter(column => column.kind === 'checkbox').length, 49);
     assert.equal(context.ASSET_EXCEL_PREVIEW_COLUMNS.some(column => column.key === 'pcb'), false);
     assert.equal(context.ASSET_EXCEL_PREVIEW_COLUMNS.filter(column => column.key.startsWith('group:')).length, 48);
+
+    const staleStoredOrder = [
+        'weight', 'buy', 'stock', 'revenueHigh', 'actions',
+        ...context.assetExcelGroupColumns.map(group => `group:${group.id}`)
+    ];
+    const normalizedOrder = Array.from(context.assetExcelColumnKeysFrom(staleStoredOrder));
+    assert.equal(normalizedOrder.length, 52);
+    assert.equal(normalizedOrder.includes('actions'), false);
+});
+
+test('不建立額外操作欄，編輯時在 Stock 儲存格刪除標的', () => {
+    class FakeElement {
+        constructor(tagName) {
+            this.tagName = tagName;
+            this.children = [];
+            this.attributes = {};
+            this.dataset = {};
+            this.listeners = {};
+            this.classList = { add() {} };
+        }
+
+        append(...elements) { this.children.push(...elements); }
+        setAttribute(name, value) { this.attributes[name] = value; }
+        addEventListener(name, handler) { this.listeners[name] = handler; }
+    }
+
+    const row = { stock: '1303 南亞' };
+    const remainingRow = { stock: '2330 台積電' };
+    const context = {
+        document: { createElement: tagName => new FakeElement(tagName) },
+        assetExcelRows: [row, remainingRow],
+        assetExcelPreviewRows: () => context.assetExcelRows,
+        assetExcelButton(label, className, onClick) {
+            const button = new FakeElement('button');
+            button.textContent = label;
+            button.className = className;
+            button.listeners.click = onClick;
+            return button;
+        },
+        makeKLineButton() { return new FakeElement('button'); },
+        renderAssetExcelView() {},
+        el() { return {}; }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetExcelStockParts'),
+        functionSource('makeAssetExcelDataCell')
+    ].join('\n\n'), context);
+
+    const readOnlyCell = context.makeAssetExcelDataCell(row, columns[2], false);
+    const editingCell = context.makeAssetExcelDataCell(row, columns[2], true);
+    const readOnlyContent = readOnlyCell.children[0];
+    const editingContent = editingCell.children[0];
+
+    assert.equal(readOnlyContent.children.length, 1);
+    assert.equal(editingContent.children.length, 2);
+    assert.equal(editingContent.children[1].textContent, '刪除');
+    assert.equal(columns.some(column => column.key === 'actions'), false);
+
+    editingContent.children[1].listeners.click();
+    assert.deepEqual(Array.from(context.assetExcelRows), [remainingRow]);
 });
 
 test('Excel 入口在同一分頁切換，返回時回到原台股操作持倉', () => {
@@ -383,6 +444,27 @@ test('Edge Function 具備 import／草稿／export、Google hash 衝突與 18:3
     assert.match(cronMigration, /30 10 \* \* \*/);
     assert.match(cronMigration, /asset_operation_cron_secret/);
     assert.match(cronMigration, /net\.http_post/);
+});
+
+test('Edge Function 儲存欄位順序時會忽略舊 actions 鍵', async () => {
+    const writes = [];
+    const context = {
+        targetAccount: async () => {},
+        supabaseRequest: async (_url, options) => {
+            if (!options) return [{ id: 'group-a' }];
+            const body = JSON.parse(options.body);
+            writes.push(body);
+            return [body];
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(edgeFunctionSource('saveColumnOrderAction'), context);
+
+    await context.saveColumnOrderAction('account-1', {
+        columnOrder: ['weight', 'actions', 'stock', 'group:group-a']
+    });
+
+    assert.deepEqual(Array.from(writes[0].column_order), ['weight', 'stock', 'group:group-a']);
 });
 
 test('Google 錯誤保留結構化 detail，HTML 錯誤仍提供可操作提示', () => {

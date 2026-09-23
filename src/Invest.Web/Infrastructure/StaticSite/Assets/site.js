@@ -162,8 +162,7 @@ const ASSET_EXCEL_PREVIEW_COLUMNS = [
     { key: 'pmic', label: 'PMIC', kind: 'checkbox' },
     { key: 'testing', label: '封測/\n探針', kind: 'checkbox' },
     { key: 'leadframe', label: '導線架', kind: 'checkbox' },
-    { key: 'bbu', label: 'BBU', kind: 'checkbox' },
-    { key: 'actions', label: '操作', kind: 'actions' }
+    { key: 'bbu', label: 'BBU', kind: 'checkbox' }
 ];
 
 // 本機預覽只保留 Google Sheet 的持倉／族群樣本，不把「營收創高」的舊布林值
@@ -9798,7 +9797,8 @@ function assetExcelTargetAccount() {
 function assetExcelColumnKeysFrom(keys) {
     const validKeys = new Set(ASSET_EXCEL_PREVIEW_COLUMNS.map(column => column.key));
     const storedKeys = Array.isArray(keys)
-        ? keys.filter(key => typeof key === 'string' && validKeys.has(key))
+        // 舊版曾把僅供刪除列的 UI 欄位存入排序設定；即使資料庫尚未清理也不可復活。
+        ? keys.filter(key => typeof key === 'string' && key !== 'actions' && validKeys.has(key))
         : [];
     const missingKeys = ASSET_EXCEL_PREVIEW_COLUMNS
         .map(column => column.key)
@@ -10341,22 +10341,6 @@ function makeAssetExcelDataCell(row, column, editing) {
         return cell;
     }
 
-    if (column.kind === 'actions') {
-        if (!editing) {
-            cell.textContent = '—';
-            return cell;
-        }
-
-        const deleteButton = assetExcelButton('刪除', 'asset-excel-row-delete-button', () => {
-            assetExcelRows = assetExcelPreviewRows().filter(item => item !== row);
-            assetExcelNotice = '已刪除這一列；按「套用變更」才會保存本機預覽。';
-            renderAssetExcelView(el('asset-excel-page'));
-        });
-        deleteButton.setAttribute('aria-label', `刪除 ${row.stock || '空白'} 這一列`);
-        cell.append(deleteButton);
-        return cell;
-    }
-
     if (column.kind === 'checkbox') {
         if (row[column.key] === 'X' && !editing) {
             cell.textContent = 'X';
@@ -10393,7 +10377,7 @@ function makeAssetExcelDataCell(row, column, editing) {
         const content = document.createElement('div');
         content.className = 'asset-excel-stock-cell-content';
 
-        if (parts.ticker !== '') {
+        if (parts.ticker !== '' && !editing) {
             const kline = makeKLineButton(
                 parts.ticker,
                 String(row.stock ?? ''),
@@ -10416,6 +10400,14 @@ function makeAssetExcelDataCell(row, column, editing) {
                 row.stock = input.value;
             });
             content.append(input);
+
+            const deleteButton = assetExcelButton('刪除', 'asset-excel-row-delete-button', () => {
+                assetExcelRows = assetExcelPreviewRows().filter(item => item !== row);
+                assetExcelNotice = '已刪除這一列；按「套用變更」才會保存。';
+                renderAssetExcelView(el('asset-excel-page'));
+            });
+            deleteButton.setAttribute('aria-label', `刪除 ${row.stock || '空白'} 這一列`);
+            content.append(deleteButton);
         }
 
         cell.append(content);
