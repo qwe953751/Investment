@@ -26,29 +26,40 @@ const cronMigration = fs.readFileSync(
 const syncFunction = fs.readFileSync(
     path.join(repositoryRoot, 'supabase', 'functions', 'asset-operation-sync', 'index.js'),
     'utf8');
+const revenueWorkflow = fs.readFileSync(
+    path.join(repositoryRoot, '.github', 'workflows', 'revenue.yml'),
+    'utf8');
 
-function functionSource(name) {
-    const asyncStart = siteScript.indexOf(`async function ${name}(`);
-    const plainStart = siteScript.indexOf(`function ${name}(`);
+function extractFunctionSource(source, name) {
+    const asyncStart = source.indexOf(`async function ${name}(`);
+    const plainStart = source.indexOf(`function ${name}(`);
     const start = asyncStart >= 0 ? asyncStart : plainStart;
     assert.ok(start >= 0, `找不到 ${name}。`);
 
-    const openingBrace = siteScript.indexOf('{', start);
+    const openingBrace = source.indexOf('{', start);
     let depth = 0;
 
-    for (let index = openingBrace; index < siteScript.length; index += 1) {
-        if (siteScript[index] === '{') {
+    for (let index = openingBrace; index < source.length; index += 1) {
+        if (source[index] === '{') {
             depth += 1;
-        } else if (siteScript[index] === '}') {
+        } else if (source[index] === '}') {
             depth -= 1;
 
             if (depth === 0) {
-                return siteScript.slice(start, index + 1);
+                return source.slice(start, index + 1);
             }
         }
     }
 
     throw new Error(`${name} 缺少結尾大括號。`);
+}
+
+function functionSource(name) {
+    return extractFunctionSource(siteScript, name);
+}
+
+function edgeFunctionSource(name) {
+    return extractFunctionSource(syncFunction, name);
 }
 
 const columns = [
@@ -101,10 +112,51 @@ function excelSortController() {
 test('營收創高只由創高月數判斷，13 個月為勾選，其餘為 X', () => {
     const context = excelFunctions();
 
-    assert.equal(context.assetExcelRevenueHighValue({ revenueHighMonths: 13 }), true);
-    assert.equal(context.assetExcelRevenueHighValue({ revenueHighMonths: 12 }), 'X');
-    assert.equal(context.assetExcelRevenueHighValue({ revenueHighMonths: null }), 'X');
+    assert.equal(context.assetExcelRevenueHighValue({ stock: '1303 南亞', revenueHighMonths: 0 }), true);
+    assert.equal(context.assetExcelRevenueHighValue({ stock: '2330 台積電', revenueHighMonths: 13 }), 'X');
     assert.equal(context.assetExcelRevenueHighValue({ stock: '1303 南亞' }), true);
+});
+
+test('網站與 Edge 使用台北前一個月資料；舊月份不能覆蓋網站營收創高', () => {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Taipei',
+        year: 'numeric',
+        month: '2-digit'
+    });
+    const website = { TAIPEI_DATE: formatter };
+    vm.createContext(website);
+    vm.runInContext(functionSource('eligibleMonthKey'), website);
+
+    const edge = {};
+    vm.createContext(edge);
+    vm.runInContext([
+        edgeFunctionSource('eligibleRevenueMonthKey'),
+        edgeFunctionSource('expectedRevenueHigh'),
+        edgeFunctionSource('revenueHighUpdateRequest')
+    ].join('\n\n'), edge);
+
+    const taipeiNewYear = new Date('2027-01-01T00:30:00Z');
+    assert.equal(website.eligibleMonthKey(taipeiNewYear), '2026-12');
+    assert.equal(edge.eligibleRevenueMonthKey(taipeiNewYear), '2026-12');
+
+    const revenue = [
+        { ticker: '1303', month: '2026-12-01', high_months: 13 },
+        { ticker: '2330', month: '2026-11-01', high_months: 24 }
+    ];
+    assert.equal(edge.expectedRevenueHigh(revenue, '1303', '2026-12'), true);
+    assert.equal(edge.expectedRevenueHigh(revenue, '2330', '2026-12'), 'X');
+
+    const request = edge.revenueHighUpdateRequest(
+        58931507, 3, 6, 3, [3, 5],
+        [{ stock_code: '2330' }, { stock_code: '1303' }],
+        revenue,
+        '2026-12');
+    assert.equal(request.updateCells.range.startColumnIndex, 3);
+    assert.deepEqual(JSON.parse(JSON.stringify(request.updateCells.rows)), [
+        { values: [{ userEnteredValue: { stringValue: 'X' } }] },
+        { values: [{}] },
+        { values: [{ userEnteredValue: { boolValue: true } }] }
+    ]);
 });
 
 test('營收創高不會進入正式操作列寫回欄位', () => {
@@ -367,9 +419,19 @@ test('Edge Function 具備 import／草稿／export、Google hash 衝突與 18:3
     assert.match(syncFunction, /action === 'export'/);
     assert.match(syncFunction, /status = 409/);
     assert.match(syncFunction, /verifyRevenueHigh/);
+    assert.match(syncFunction, /action === 'refresh-revenue-high'/);
+    assert.match(syncFunction, /month=eq\.\$\{month\}-01/);
+    assert.match(syncFunction, /const revenueHighRequest = revenueHighUpdateRequest/);
     assert.match(syncFunction, /copyPaste/);
     assert.match(syncFunction, /save-column-order/);
     assert.match(cronMigration, /30 10 \* \* \*/);
     assert.match(cronMigration, /asset_operation_cron_secret/);
     assert.match(cronMigration, /net\.http_post/);
+});
+
+test('月營收自動投影預設關閉，需明確啟用且由 cron secret 驗證', () => {
+    assert.match(revenueWorkflow, /ASSET_OPERATION_REVENUE_SYNC_ENABLED/);
+    assert.match(revenueWorkflow, /ASSET_OPERATION_CRON_SECRET/);
+    assert.match(revenueWorkflow, /refresh-revenue-high/);
+    assert.match(revenueWorkflow, /--fail-with-body/);
 });

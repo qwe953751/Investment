@@ -1928,26 +1928,28 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：程式、測試、migration 與 Edge Function 已部署；正式驗收卡在尚未提供的 Google service account／Vault secrets。**
+**狀態：網站權威來源與 D 欄投影程式、回歸測試及月營收 workflow 已實作；待本輪部署／正式 Sheet 驗證與 GitHub 自動排程設定核實。**
 
 ### 已討論
 
-本輪改為以 Google Sheet 為主檔、Supabase 為鏡像／版本層：`db/058_asset_operation_full_sheet_sync.sql`
+Google Sheet 保存人工維護的 Buy／Stock／族群；網站 `revenue_latest` 是「營收創高」唯一權威，Sheet D 欄只是投影：
+只採用台北前一個月資料，`high_months >= 13` 寫成勾選，無當期資料或未達門檻寫成 `X`。D 不進匯入資料、hash 或網站狀態，
+避免匯入舊公式／舊月份覆蓋網站。匯出時以同一份網站營收快照與 B:C、E:AZ 一併更新 D 並讀回驗證；匯入會嘗試修復 D，
+即使投影失敗仍可匯入其他欄位並明確提示。網站依網站資料即時計算營收創高顯示。
+
+同步仍以 Supabase 保存快照／版本層：`db/058_asset_operation_full_sheet_sync.sql`
 建立 48 欄 metadata 定義、快照、同步狀態與版本檢查 RPC；`db/059_asset_operation_sync_write_hardening.sql`
 收回 authenticated 直接寫入；`db/060_asset_operation_sync_cron.sql` 預設台北 18:30 自動匯入。
-`supabase/functions/asset-operation-sync/index.js` 實作 import／save-draft／export／status／欄位順序保存：
-Google API 使用 developer metadata 鎖定 Buy、Stock、D 欄與 48 個族群，匯出時整批更新 B:C、E:AZ（刻意跳過 D），先清掉
-多出的舊列，再讀回驗證列數、勾選值與 D 欄公式結果。網站新增／刪除會在同一份 snapshot 中取代整批標的，
+`supabase/functions/asset-operation-sync/index.js` 實作 import／save-draft／export／status／欄位順序保存與營收投影：
+Google API 使用 developer metadata 鎖定 Buy、Stock、D 欄與 48 個族群；匯出先清掉
+多出的舊列，再讀回驗證列數、勾選值與 D 欄網站投影。網站新增／刪除會在同一份 snapshot 中取代整批標的，
 因此匯出後兩邊數量一致；Google hash 改變則回報 409，不覆蓋人工修改。D 欄公式依
-`revenue_latest.high_months >= 13` 應為 `TRUE`、否則 `X`，公式結果不符就停止匯出。舊版 CLI `--write` 已停用，只能 dry-run。
+網站當期 `revenue_latest.high_months >= 13` 應為 `TRUE`、否則 `X`；讀回不符就停止匯出。舊版 CLI `--write` 已停用，只能 dry-run。
 
 ### 尚未討論
 
-正式環境已透過 Supabase 受控工具套用 `058`～`060`，並部署 `asset-operation-sync` Edge Function v1（ACTIVE）。
-目前尚待設定 `GOOGLE_SHEETS_CLIENT_EMAIL`、`GOOGLE_SHEETS_PRIVATE_KEY`、
-`ASSET_OPERATION_SPREADSHEET_ID`、`ASSET_OPERATION_SHEET_ID=58931507`、
-`ASSET_OPERATION_WRITE_ENABLED=true`、`ASSET_OPERATION_CRON_SECRET`，並把 Google Sheet 分享給 service account；
-`060` 已因 Vault 尚無 `asset_operation_cron_secret` 而安全略過建立 cron job。設定完成後先呼叫
-`bootstrap-metadata`，再做 import／網站新增刪除／export smoke test。網站程式版本已於 2026-09-19 以
-`daily-snapshot.yml publish-only=true` 發布；公開 `site.js` 已驗證包含匯入／匯出按鈕與 Edge Function action 接線，
-但在 secrets 完成前按鈕會回報憑證未設定，不能視為 Google 端到端驗收完成。
+正式 Supabase 已套用 `058`～`060`，本輪開始時 `asset-operation-sync` v14 為 ACTIVE；Vault 中存在 cron secret（只確認存在，未讀取其值）。
+目前台北前一個月在 `revenue_latest` 有 1,979 列，其中 330 列 `high_months >= 13`。本輪程式部署後仍須用受控 `refresh-revenue-high`
+實際確認 Google Sheet D 欄寫入與讀回驗證，並完成網站發布及公開 manifest／`site.js` 核對。月營收 workflow 的投影預設停用；
+正式啟用前須核實 GitHub Actions variable `ASSET_OPERATION_REVENUE_SYNC_ENABLED=true` 及 secret
+`ASSET_OPERATION_CRON_SECRET`（需與 Edge／Vault 同值）。端到端尚待 Google 編輯權限／D 欄保護狀態與 import／新增刪除／export smoke test。

@@ -1449,8 +1449,8 @@ let revenueLoadFailed = false;
 //
 // 公告期內只有幾十檔有數字、其餘顯示 —，那是**正常的進度**，不是規則太嚴：
 // 該補的是抓取（見 Program.cs 的「上個月一律再走一次觀測站」），不是放寬這裡。
-function eligibleMonthKey() {
-    const [year, month] = TAIPEI_DATE.format(new Date()).split('-').map(Number);
+function eligibleMonthKey(now = new Date()) {
+    const [year, month] = TAIPEI_DATE.format(now).split('-').map(Number);
 
     return month === 1
         ? `${year - 1}-12`
@@ -9977,13 +9977,6 @@ function assetExcelStockParts(stock) {
 }
 
 function assetExcelRevenueHighMonths(row) {
-    const previewValue = row?.revenueHighMonths;
-
-    if (previewValue !== undefined && previewValue !== null && String(previewValue).trim() !== '') {
-        const months = Number(previewValue);
-        return Number.isFinite(months) ? months : null;
-    }
-
     const ticker = assetExcelStockParts(row?.stock).ticker;
     const linkedRevenue = ticker === '' ? null : revenueOf(ticker);
     const months = Number(linkedRevenue?.highMonths);
@@ -10622,9 +10615,14 @@ async function assetExcelImportLatest() {
     assetExcelNotice = '正在從 Google Sheet 匯入…';
     renderAssetExcelView(el('asset-excel-page'));
     try {
-        await assetExcelSyncAction('import');
+        const result = await assetExcelSyncAction('import');
         await loadAssetExcelData(assetExcelAccountId);
-        assetExcelNotice = '已匯入 Google Sheet，網站資料已更新。';
+        const projection = result.revenueHighProjection;
+        assetExcelNotice = projection?.status === 'failed'
+            ? `已匯入 Google Sheet，網站資料已更新；營收創高同步失敗：${projection.message}`
+            : projection?.status === 'disabled'
+                ? '已匯入 Google Sheet，網站資料已更新；營收創高仍以網站為準。'
+                : '已匯入 Google Sheet，網站資料已更新；營收創高以網站為準。';
     } catch (error) {
         assetExcelNotice = `匯入失敗：${error.message}`;
     } finally {
@@ -10647,7 +10645,7 @@ async function assetExcelExportLatest() {
     try {
         await assetExcelSyncAction('export');
         await loadAssetExcelData(assetExcelAccountId);
-        assetExcelNotice = '匯出成功；Google Sheet 與網站資料列已一致。';
+        assetExcelNotice = '匯出成功；Google Sheet 資料列與網站營收創高已同步。';
     } catch (error) {
         assetExcelNotice = error.status === 409
             ? 'Google Sheet 已有較新修改，匯出被停止；請先匯入最新資料。'

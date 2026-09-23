@@ -63,3 +63,25 @@ jobs:
           else
               dotnet run -c Release --project src/Invest.Web -- revenue
           fi
+
+      - name: 更新 Google Sheet 營收創高投影
+        env:
+          ASSET_OPERATION_REVENUE_SYNC_ENABLED: ${{ vars.ASSET_OPERATION_REVENUE_SYNC_ENABLED }}
+          ASSET_OPERATION_CRON_SECRET: ${{ secrets.ASSET_OPERATION_CRON_SECRET }}
+        run: |
+          if [ "$ASSET_OPERATION_REVENUE_SYNC_ENABLED" != "true" ]; then
+              echo "::notice::Google Sheet 營收創高投影尚未啟用。"
+              exit 0
+          fi
+          if [ -z "$ASSET_OPERATION_CRON_SECRET" ]; then
+              echo "::error::已啟用營收投影，但缺少 ASSET_OPERATION_CRON_SECRET。"
+              exit 1
+          fi
+          curl --fail-with-body --silent --show-error \
+              --retry 3 --retry-all-errors --retry-delay 2 \
+              --connect-timeout 10 --max-time 60 \
+              --request POST \
+              --header 'Content-Type: application/json' \
+              --header "x-asset-operation-cron-secret: $ASSET_OPERATION_CRON_SECRET" \
+              --data '{"action":"refresh-revenue-high"}' \
+              'https://dehzxlxyfvtnylwgbmqy.supabase.co/functions/v1/asset-operation-sync'

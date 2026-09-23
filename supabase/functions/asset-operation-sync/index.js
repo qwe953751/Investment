@@ -261,6 +261,19 @@ function cell(rows, rowIndex, columnIndex) {
     return rows[rowIndex]?.[columnIndex] ?? '';
 }
 
+function eligibleRevenueMonthKey(now = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Taipei',
+        year: 'numeric',
+        month: '2-digit'
+    }).formatToParts(now);
+    const year = Number(parts.find(part => part.type === 'year')?.value);
+    const month = Number(parts.find(part => part.type === 'month')?.value);
+    return month === 1
+        ? `${year - 1}-12`
+        : `${year}-${String(month - 1).padStart(2, '0')}`;
+}
+
 function rowHasControlledData(rows, rowIndex, columns) {
     const identityValues = [
         cell(rows, rowIndex, columns.fields.buy),
@@ -314,6 +327,7 @@ async function readSheet(allowEmpty = false) {
     }));
 
     const imported = [];
+    const dataRowIndexes = [];
     const seen = new Set();
     for (let rowIndex = 3; rowIndex < rows.length; rowIndex += 1) {
         if (!rowHasControlledData(rows, rowIndex, columns)) continue;
@@ -336,6 +350,7 @@ async function readSheet(allowEmpty = false) {
             group_flags: flags,
             sort_order: imported.length
         });
+        dataRowIndexes.push(rowIndex);
     }
     if (imported.length === 0 && !allowEmpty) throw new Error('Google Sheet 沒有可匯入的 Stock。');
 
@@ -343,6 +358,7 @@ async function readSheet(allowEmpty = false) {
     if (!sheetProperties) throw new Error(`找不到 sheetId ${SHEET_ID}。`);
     return {
         rows: imported,
+        dataRowIndexes,
         groups: groupPayload,
         columns,
         rawRows: rows,
@@ -390,33 +406,84 @@ async function bootstrapMetadata() {
     return { created: requests.length };
 }
 
-async function revenueRows() {
-    return await supabaseRequest('/rest/v1/revenue_latest?select=ticker,high_months&limit=5000');
+async function revenueRows(month = eligibleRevenueMonthKey()) {
+    const rows = await supabaseRequest(
+        `/rest/v1/revenue_latest?select=ticker,month,high_months&month=eq.${month}-01&limit=5000`);
+    return rows.filter(row => String(row.month ?? '').slice(0, 7) === month);
 }
 
-function expectedRevenueHigh(revenue, ticker) {
-    const row = revenue.find(item => String(item.ticker).toUpperCase() === String(ticker).toUpperCase());
+function expectedRevenueHigh(revenue, ticker, month) {
+    const row = revenue.find(item => String(item.ticker).toUpperCase() === String(ticker).toUpperCase()
+        && String(item.month ?? '').slice(0, 7) === month);
     return Number(row?.high_months) >= 13 ? true : 'X';
 }
 
-async function verifyRevenueHigh(sheet, rows) {
-    const revenue = await revenueRows();
-    let dataIndex = 0;
-    for (let rowIndex = FIRST_DATA_ROW - 1; rowIndex < sheet.rawRows.length; rowIndex += 1) {
-        if (!rowHasControlledData(sheet.rawRows, rowIndex, sheet.columns)) continue;
+function revenueHighUpdateRequest(sheetId, startRowIndex, endRowIndex, columnIndex, dataRowIndexes, rows, revenue, month) {
+    if (endRowIndex <= startRowIndex) return null;
+
+    const rowsBySheetIndex = new Map(dataRowIndexes.map((rowIndex, index) => [rowIndex, rows[index]]));
+    return {
+        updateCells: {
+            range: {
+                sheetId,
+                startRowIndex,
+                endRowIndex,
+                startColumnIndex: columnIndex,
+                endColumnIndex: columnIndex + 1
+            },
+            rows: Array.from({ length: endRowIndex - startRowIndex }, (_, offset) => {
+                const row = rowsBySheetIndex.get(startRowIndex + offset);
+                if (!row) return { values: [{}] };
+
+                const value = expectedRevenueHigh(revenue, row.stock_code, month);
+                return { values: [{
+                    userEnteredValue: value === true ? { boolValue: true } : { stringValue: 'X' }
+                }] };
+            }),
+            fields: 'userEnteredValue'
+        }
+    };
+}
+
+async function verifyRevenueHigh(sheet, rows, revenue, month) {
+    if (sheet.dataRowIndexes.length !== rows.length) {
+        throw new Error(`營收創高驗證列數不一致：預期 ${rows.length}，實際 ${sheet.dataRowIndexes.length}。`);
+    }
+
+    for (let dataIndex = 0; dataIndex < rows.length; dataIndex += 1) {
+        const rowIndex = sheet.dataRowIndexes[dataIndex];
         const actual = String(cell(sheet.rawRows, rowIndex, sheet.columns.fields.revenue_high) ?? '').trim();
-        const expected = String(expectedRevenueHigh(revenue, rows[dataIndex]?.stock_code));
+        const expected = String(expectedRevenueHigh(revenue, rows[dataIndex].stock_code, month));
         if (actual.toUpperCase() !== expected.toUpperCase()) {
             throw new Error(`第 ${rowIndex + 1} 列營收創高驗證失敗：預期 ${expected}，實際 ${actual || '空白'}。`);
         }
-        dataIndex += 1;
-    }
-    if (dataIndex !== rows.length) {
-        throw new Error(`營收創高驗證列數不一致：預期 ${rows.length}，實際 ${dataIndex}。`);
     }
 }
 
-async function writeGoogle(sheet, rows) {
+async function projectRevenueHigh(sheet, revenue, month) {
+    if (!WRITE_ENABLED) throw new Error('Google Sheet 寫入功能尚未啟用。');
+    const request = revenueHighUpdateRequest(
+        SHEET_ID,
+        FIRST_DATA_ROW - 1,
+        sheet.rawRows.length,
+        sheet.columns.fields.revenue_high,
+        sheet.dataRowIndexes,
+        sheet.rows,
+        revenue,
+        month);
+    if (request) {
+        await googleRequest(`/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}:batchUpdate`, {
+            method: 'POST',
+            body: JSON.stringify({ requests: [request], includeSpreadsheetInResponse: false })
+        });
+    }
+
+    const verified = await readSheet(true);
+    await verifyRevenueHigh(verified, verified.rows, revenue, month);
+    return { eligibleMonth: month, rowCount: verified.rows.length };
+}
+
+async function writeGoogle(sheet, rows, revenue, month) {
     if (!WRITE_ENABLED) throw new Error('Google Sheet 寫入功能尚未啟用。');
     const startColumn = 1; // B
     const endColumn = LAST_CONTROLLED_COLUMN; // AZ exclusive index 52
@@ -467,14 +534,23 @@ async function writeGoogle(sheet, rows) {
             rows: identityValues,
             fields: 'userEnteredValue'
         }});
-        // D 欄是既有公式／格式的受保護欄位，不能以 userEnteredValue 覆蓋；Stock 更新後
-        // 由試算表公式自動重算，新增列則由上面的 PASTE_NORMAL 複製第 4 列公式。
         requests.push({ updateCells: {
             start: { sheetId: SHEET_ID, rowIndex: FIRST_DATA_ROW - 1, columnIndex: 4 },
             rows: groupValues,
             fields: 'userEnteredValue'
         }});
     }
+
+    const revenueHighRequest = revenueHighUpdateRequest(
+        SHEET_ID,
+        FIRST_DATA_ROW - 1,
+        Math.max(targetLastRow, existingLastRow),
+        sheet.columns.fields.revenue_high,
+        rows.map((_, index) => FIRST_DATA_ROW - 1 + index),
+        rows,
+        revenue,
+        month);
+    if (revenueHighRequest) requests.push(revenueHighRequest);
 
     if (existingLastRow > targetLastRow) {
         const emptyRows = existingLastRow - targetLastRow;
@@ -531,8 +607,22 @@ async function importAction(accountId) {
     const hash = await contentHash(sheet.rows);
     const state = await syncState(accountId);
     if (state.status === 'dirty') throw new Error('網站有尚未匯出的草稿，請先匯出或明確捨棄草稿。');
+    let revenueHighProjection = { status: 'disabled', eligibleMonth: eligibleRevenueMonthKey() };
+    if (WRITE_ENABLED) {
+        try {
+            const month = eligibleRevenueMonthKey();
+            const projection = await projectRevenueHigh(sheet, await revenueRows(month), month);
+            revenueHighProjection = { status: 'updated', ...projection };
+        } catch (error) {
+            revenueHighProjection = {
+                status: 'failed',
+                eligibleMonth: eligibleRevenueMonthKey(),
+                message: error?.message ?? 'Google Sheet 營收創高欄同步失敗。'
+            };
+        }
+    }
     const result = await callReplace(accountId, crypto.randomUUID(), Number(state.version ?? 0), sheet.rows, sheet.groups, hash, hash, 'active', 'google_import');
-    return { ...result, rowCount: sheet.rows.length, hash };
+    return { ...result, rowCount: sheet.rows.length, hash, revenueHighProjection };
 }
 
 async function draftAction(accountId, body, user) {
@@ -586,15 +676,25 @@ async function exportAction(accountId) {
     }
     const rows = snapshot.payload;
     if (!Array.isArray(rows)) throw new Error('草稿內容格式不合法。');
-    await writeGoogle(sheet, rows);
+    const month = eligibleRevenueMonthKey();
+    const revenue = await revenueRows(month);
+    await writeGoogle(sheet, rows, revenue, month);
     const verified = await readSheet(true);
     const verifiedHash = await contentHash(verified.rows);
     if (verifiedHash !== snapshot.content_hash || verified.rows.length !== rows.length) {
         throw new Error('Google Sheet 寫入後驗證失敗，已標記需要人工對帳。');
     }
-    await verifyRevenueHigh(verified, rows);
+    await verifyRevenueHigh(verified, rows, revenue, month);
     const groups = verified.groups;
-    return await callReplace(accountId, snapshot.id, Number(state.version ?? 0), rows, groups, verifiedHash, verifiedHash, 'active', 'google_export');
+    const result = await callReplace(accountId, snapshot.id, Number(state.version ?? 0), rows, groups, verifiedHash, verifiedHash, 'active', 'google_export');
+    return { ...result, revenueHighProjection: { status: 'updated', eligibleMonth: month, rowCount: rows.length } };
+}
+
+async function refreshRevenueHighAction() {
+    const month = eligibleRevenueMonthKey();
+    const sheet = await readSheet(true);
+    const revenue = await revenueRows(month);
+    return await projectRevenueHigh(sheet, revenue, month);
 }
 
 async function statusAction(accountId) {
@@ -611,6 +711,7 @@ Deno.serve(async request => {
         const action = body.action ?? new URL(request.url).searchParams.get('action') ?? 'status';
         const accountId = body.accountId ?? new URL(request.url).searchParams.get('accountId');
         if (action === 'bootstrap-metadata') return json({ ok: true, ...(await bootstrapMetadata()) });
+        if (action === 'refresh-revenue-high') return json({ ok: true, action, ...(await refreshRevenueHighAction()) });
         if (!accountId) return fail('缺少 accountId。', 400, 'missing_account');
         if (action === 'import') return json({ ok: true, action, ...(await importAction(accountId)) });
         if (action === 'save-draft') return json({ ok: true, action, ...(await draftAction(accountId, body, user)) });
