@@ -435,3 +435,17 @@ test('月營收自動投影預設關閉，需明確啟用且由 cron secret 驗�
     assert.match(revenueWorkflow, /refresh-revenue-high/);
     assert.match(revenueWorkflow, /--fail-with-body/);
 });
+
+test('Google HTML 錯誤會改成可操作提示，其他錯誤內容也有長度上限', () => {
+    const context = {};
+    vm.createContext(context);
+    vm.runInContext(edgeFunctionSource('googleErrorDetail'), context);
+
+    assert.equal(
+        context.googleErrorDetail('<!DOCTYPE html><html><body>file unavailable</body></html>', { raw: 'html' }),
+        'Google 回傳 HTML 錯誤頁；請核對試算表 ID 與 service account 的存取權限。');
+    assert.equal(
+        context.googleErrorDetail('', { error: { message: 'Requested entity was not found.' } }),
+        'Requested entity was not found.');
+    assert.equal(context.googleErrorDetail('x'.repeat(1000), { raw: 'text' }).length, 500);
+});

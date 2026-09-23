@@ -29,7 +29,7 @@
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29。Windows EXE 已以 `e6c08fd1` 重建，`Invest D+ OCR Worker` 排程已註冊並 Running（每 2 分鐘 recovery、三槽與 Realtime 喚醒均已核對）；**家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。詳見 [版本紀錄.md](版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 日韓日線與 `jp`／`kr` JSON 契約已修正並完成網站發布驗證；盤中首輪 Storage 已寫入且 manifest 已指向。2026-09-18 修掉排行未接線連帶擋住美股快取／日韓總覽的 P0。2026-09-19 成交金額前 20 全面換成 Yahoo screener（免金鑰），並修掉成交排行 publisher 的 bucket 重複建立。2026-09-22 已修復市場總覽 publisher 的 HTTP 400 Duplicate 跨程序問題；本輪再補上 JP／KR／US 休市日閘門、Yahoo 來源日期驗證、錯誤快照隔離與前端同日一致性防線；JP 因 9/22～9/23 休市待下一交易日觀察 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
-| 18 | [Google Sheet 操作(台)雙向同步與完整 48 欄支援](#todo-18) | 🟡 程式與 migration 完成，待正式 Supabase／Edge secrets 部署驗收 |
+| 18 | [Google Sheet 操作(台)雙向同步與完整 48 欄支援](#todo-18) | 🟡 網站已發布（manifest `1790135918`）；Google Sheet 讀取失敗，待核對文件 ID／分享權限；Edge 錯誤提示修正待部署 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1928,7 +1928,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：網站權威來源與 D 欄投影程式、回歸測試及月營收 workflow 已實作；待本輪部署／正式 Sheet 驗證與 GitHub 自動排程設定核實。**
+**狀態：網站權威來源與操作表版面已發布；正式 D 欄刷新仍因 Google Sheet 無法讀取而未驗收，Edge 錯誤提示修正待部署。**
 
 ### 已討論
 
@@ -1948,8 +1948,14 @@ Google API 使用 developer metadata 鎖定 Buy、Stock、D 欄與 48 個族群�
 
 ### 尚未討論
 
-正式 Supabase 已套用 `058`～`060`，本輪開始時 `asset-operation-sync` v14 為 ACTIVE；Vault 中存在 cron secret（只確認存在，未讀取其值）。
-目前台北前一個月在 `revenue_latest` 有 1,979 列，其中 330 列 `high_months >= 13`。本輪程式部署後仍須用受控 `refresh-revenue-high`
-實際確認 Google Sheet D 欄寫入與讀回驗證，並完成網站發布及公開 manifest／`site.js` 核對。月營收 workflow 的投影預設停用；
-正式啟用前須核實 GitHub Actions variable `ASSET_OPERATION_REVENUE_SYNC_ENABLED=true` 及 secret
-`ASSET_OPERATION_CRON_SECRET`（需與 Edge／Vault 同值）。端到端尚待 Google 編輯權限／D 欄保護狀態與 import／新增刪除／export smoke test。
+正式 Supabase 已套用 `058`～`060`，`asset-operation-sync` 目前 v15 ACTIVE；台北前一個月 `revenue_latest` 有 1,979 列，
+其中 330 列 `high_months >= 13`。受控刷新 request `5330` 在讀取 Google Sheet 時回 HTTP 500（內層 Sheets HTTP 400 並回傳
+「目前無法開啟檔案」HTML）；錯誤發生於 `readSheet`，尚未送出 `batchUpdate`，所以本次沒有更動任何 Sheet 格子。
+目前證據指向 `ASSET_OPERATION_SPREADSHEET_ID` 指錯檔案，或 service account 對正確檔案沒有存取權；需核對實際文件 ID、
+分享給 service account 的 Editor 權限，以及分頁 `操作(台)`／sheetId `58931507` 後重試。Edge Function 已補上將 Google HTML 錯誤頁
+轉成可操作提示的程式與回歸測試，需隨本次程式推送後部署新版。GitHub Actions variable
+`ASSET_OPERATION_REVENUE_SYNC_ENABLED` 與 secret `ASSET_OPERATION_CRON_SECRET` 目前都不存在，因此月營收 workflow 保持預設停用；
+要啟用時需先修復 Google 讀取並通過 D 欄寫入／讀回，再設定與 Edge／Vault 相同的 cron secret。網站發布 run
+`35816351295`（head SHA `8aee7b85`）已成功完成測試、export 與網站發布；正式 `gh-pages` manifest 為 `1790135918`
+（最新交易日 `2026/09/22`，產生時間 `2026-09-23 11:58`）。
+端到端仍待 Google 編輯權限／D 欄保護狀態與 import／新增刪除／export smoke test。

@@ -137,9 +137,18 @@ async function googleRequest(path, options = {}) {
     let payload = null;
     try { payload = text ? JSON.parse(text) : null; } catch { payload = { raw: text }; }
     if (!response.ok) {
-        throw new Error(`Google Sheets HTTP ${response.status}: ${payload?.error?.message ?? text}`);
+        throw new Error(`Google Sheets HTTP ${response.status}: ${googleErrorDetail(text, payload)}`);
     }
     return payload;
+}
+
+function googleErrorDetail(text, payload) {
+    const apiMessage = payload?.error?.message;
+    if (apiMessage) return apiMessage;
+    if (/<(?:!doctype\s+html|html\b)/i.test(text)) {
+        return 'Google 回傳 HTML 錯誤頁；請核對試算表 ID 與 service account 的存取權限。';
+    }
+    return String(text ?? '').slice(0, 500) || '未提供錯誤內容。';
 }
 
 async function supabaseRequest(path, options = {}) {
