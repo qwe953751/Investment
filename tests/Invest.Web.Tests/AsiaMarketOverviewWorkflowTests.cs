@@ -3,19 +3,32 @@ namespace Invest.Web.Tests;
 public sealed class AsiaMarketOverviewWorkflowTests
 {
     [Fact]
-    public void 日韓日線流程只寫data快取不發布網站()
+    public void 日韓日線流程只寫data快取自己不執行匯出或發布()
     {
         var workflow = ReadWorkflow("asia-market-overview-daily.yml");
 
         Assert.Contains("-- backfill-overview --markets jp,kr", workflow, StringComparison.Ordinal);
         Assert.Contains("git add -A imports-overview", workflow, StringComparison.Ordinal);
-        Assert.DoesNotContain("daily-snapshot.yml", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("publish-gh-pages.sh", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("-- export", workflow, StringComparison.Ordinal);
         Assert.Contains("market-turnover --markets jp,kr", workflow, StringComparison.Ordinal);
         // 成交金額前 20 改用 Yahoo screener（未公開端點），不再需要 KIS 金鑰。
         Assert.DoesNotContain("KIS_APP_KEY", workflow, StringComparison.Ordinal);
         Assert.Contains("imports-turnover", workflow, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 日韓日線流程有新commit時觸發daily_snapshot純發布()
+    {
+        var workflow = ReadWorkflow("asia-market-overview-daily.yml");
+
+        Assert.Contains("actions: write", workflow, StringComparison.Ordinal);
+        Assert.Contains("id: save", workflow, StringComparison.Ordinal);
+        Assert.Contains("committed=true", workflow, StringComparison.Ordinal);
+        Assert.Contains("committed=false", workflow, StringComparison.Ordinal);
+        Assert.Contains("if: steps.save.outputs.committed == 'true'", workflow, StringComparison.Ordinal);
+        Assert.Contains("actions/workflows/daily-snapshot.yml/dispatches", workflow, StringComparison.Ordinal);
+        Assert.Contains("inputs[publish-only]=true", workflow, StringComparison.Ordinal);
     }
 
     [Fact]

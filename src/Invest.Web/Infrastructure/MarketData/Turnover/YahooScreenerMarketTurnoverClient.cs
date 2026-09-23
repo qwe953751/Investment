@@ -52,19 +52,70 @@ public sealed class YahooScreenerMarketTurnoverClient(
                 $"Yahoo screener {normalizedMarket} {tradingDate:yyyy-MM-dd} 沒有回傳任何個股；不發布空排行。");
         }
 
-        // Yahoo 在休市日可能仍回傳上一個交易日的 regularMarket* 數值。只看 HTTP
-        // 成功或列數足夠不代表日期正確；若來源有提供時間且所有列都落在別的日期，
-        // 直接拒絕，避免把舊排行貼上今天的日期。舊版回應沒有時間欄位時保留相容性，
-        // 由 MarketHolidayCalendar 的交易日閘門承擔第一層防線。
-        EnsureSourceDateMatches(normalizedMarket, tradingDate, byVolume.Concat(byPrice));
+        // Yahoo screener 候選池常混進當天沒成交的冷門股，時間戳停在上一個交易日；用「全有全無」
+        // 比對來源日期會被這些個股拖累整批拒收（2026-09-22 起韓股每輪皆如此）。改成先篩掉時間戳
+        // 不是目標交易日的個股，再用「新鮮比例是否夠高」判斷這一輪到底有沒有抓到正確的一天——
+        // 真正抓錯天（休市日、盤前搶跑）時新鮮比例會趨近 0，能跟「只是有幾檔冷門股沒成交」區分開。
+        // 舊版回應沒有時間欄位時（SourceTradeDate 為 null）一律放行，由 MarketHolidayCalendar
+        // 的交易日閘門承擔第一層防線。
+        var freshByVolume = FilterToTradingDate(byVolume, tradingDate);
+        var freshByPrice = FilterToTradingDate(byPrice, tradingDate);
+        EnsureFreshCoverage(normalizedMarket, tradingDate, byVolume, byPrice, freshByVolume, freshByPrice);
 
-        var ranked = RankPool(normalizedMarket, byVolume, byPrice);
+        var ranked = RankPool(normalizedMarket, freshByVolume, freshByPrice, byVolume, byPrice);
 
         logger.LogInformation(
-            "Yahoo screener {Market} 涵蓋證明成立，候選池共 {PoolSize} 檔，已產出前 {Count} 名。",
-            normalizedMarket, byVolume.Count + byPrice.Count, ranked.Count);
+            "Yahoo screener {Market} 涵蓋證明成立，候選池共 {PoolSize} 檔（當日 {FreshSize} 檔），已產出前 {Count} 名。",
+            normalizedMarket, byVolume.Count + byPrice.Count, freshByVolume.Count + freshByPrice.Count, ranked.Count);
 
         return ranked;
+    }
+
+    /// <summary>只保留時間戳確實是目標交易日的個股；時間戳缺失（舊版回應）一律放行。</summary>
+    internal static IReadOnlyList<ScreenerQuote> FilterToTradingDate(
+        IReadOnlyList<ScreenerQuote> quotes, DateOnly tradingDate)
+        => quotes.Where(quote => quote.SourceTradeDate is null || quote.SourceTradeDate == tradingDate).ToArray();
+
+    /// <summary>候選池中「時間戳確實是目標交易日」的比例門檻。低於這個值代表整批抓到了別的一天。</summary>
+    internal const decimal MinimumFreshRatio = 0.5m;
+
+    /// <summary>
+    /// 確認這一輪候選池真的是目標交易日的資料，而不是休市日或盤前搶跑抓到的上一個交易日。
+    /// 不能只看「篩掉舊資料後夠不夠排前 20」——候選池整批都是舊資料時，篩完會直接不足 20 檔，
+    /// 但那個失敗訊息看不出「今天根本沒開盤」這個根因，所以額外用新鮮比例門檻擋一次。
+    /// </summary>
+    internal static void EnsureFreshCoverage(
+        string market,
+        DateOnly tradingDate,
+        IReadOnlyList<ScreenerQuote> byVolume,
+        IReadOnlyList<ScreenerQuote> byPrice,
+        IReadOnlyList<ScreenerQuote> freshByVolume,
+        IReadOnlyList<ScreenerQuote> freshByPrice)
+    {
+        var total = byVolume.Count + byPrice.Count;
+        var fresh = freshByVolume.Count + freshByPrice.Count;
+        var freshRatio = total == 0 ? 0m : (decimal)fresh / total;
+
+        if (freshByVolume.Count < MarketTurnoverQualityGate.RequiredRowCount
+            || freshByPrice.Count < MarketTurnoverQualityGate.RequiredRowCount
+            || freshRatio < MinimumFreshRatio)
+        {
+            var staleBreakdown = byVolume.Concat(byPrice)
+                .Select(quote => quote.SourceTradeDate)
+                .OfType<DateOnly>()
+                .Where(date => date != tradingDate)
+                .GroupBy(date => date)
+                .OrderByDescending(group => group.Count())
+                .Select(group => $"{group.Key:yyyy-MM-dd} ×{group.Count()}")
+                .ToArray();
+
+            throw new MarketTurnoverDataIncompleteException(
+                $"Yahoo screener {market} {tradingDate:yyyy-MM-dd} 候選池 {total} 檔中只有 {fresh} 檔是當日資料" +
+                $"（比例 {freshRatio:P0}，門檻 {MinimumFreshRatio:P0}；量軸 {freshByVolume.Count} 檔、價軸 {freshByPrice.Count} 檔，" +
+                $"各需 {MarketTurnoverQualityGate.RequiredRowCount} 檔）；" +
+                (staleBreakdown.Length > 0 ? $"落後日期分布：{string.Join('、', staleBreakdown)}；" : string.Empty) +
+                "不發布排行。");
+        }
     }
 
     /// <summary>
@@ -72,17 +123,28 @@ public sealed class YahooScreenerMarketTurnoverClient(
     /// 候選池外是否可能存在能擠進前 20 的個股。抽成 internal static 是為了能直接灌固定的
     /// candidate pool 資料做單元測試，不需要真的打 HTTP。
     /// </summary>
+    /// <param name="rankByVolume">篩掉非目標交易日後的量軸候選池，用來排名。</param>
+    /// <param name="rankByPrice">篩掉非目標交易日後的價軸候選池，用來排名。</param>
+    /// <param name="boundByVolume">
+    /// 未篩選的原始量軸候選池，只用來算涵蓋證明下界。涵蓋證明的命題是「Yahoo screener 頁面
+    /// 沒有回傳的個股，成交量必然 &lt;= 這個候選池的最小量」，這個上界是相對於「Yahoo 實際回傳了
+    /// 什麼」成立的；篩選只是我們自己選擇不採用某些列排名，並不會讓 Yahoo 沒回傳的個股變多或變少。
+    /// 用篩選後的最小值會把 bound 錯誤地抬高，產生假失敗——不要把這個參數換成篩選後的池。
+    /// </param>
+    /// <param name="boundByPrice">未篩選的原始價軸候選池，只用來算涵蓋證明下界，理由同上。</param>
     internal static IReadOnlyList<MarketTurnoverRow> RankPool(
         string market,
-        IReadOnlyList<ScreenerQuote> byVolume,
-        IReadOnlyList<ScreenerQuote> byPrice)
+        IReadOnlyList<ScreenerQuote> rankByVolume,
+        IReadOnlyList<ScreenerQuote> rankByPrice,
+        IReadOnlyList<ScreenerQuote> boundByVolume,
+        IReadOnlyList<ScreenerQuote> boundByPrice)
     {
         var pool = new Dictionary<string, ScreenerQuote>(StringComparer.OrdinalIgnoreCase);
-        foreach (var quote in byVolume)
+        foreach (var quote in rankByVolume)
         {
             pool[quote.Symbol] = quote;
         }
-        foreach (var quote in byPrice)
+        foreach (var quote in rankByPrice)
         {
             pool[quote.Symbol] = quote;
         }
@@ -101,8 +163,9 @@ public sealed class YahooScreenerMarketTurnoverClient(
 
         // 涵蓋證明：候選池外任何個股，成交量必然 <= 成交量軸候選池的最小值（否則它會被抓進量軸池），
         // 股價必然 <= 股價軸候選池的最小值（否則它會被抓進價軸池）；兩者相乘就是它成交金額的上限。
-        var minVolumeInPool = byVolume.Min(quote => quote.Volume);
-        var minPriceInPool = byPrice.Min(quote => quote.Price);
+        // 這裡刻意用未篩選的 boundByVolume／boundByPrice，理由見參數說明。
+        var minVolumeInPool = boundByVolume.Min(quote => quote.Volume);
+        var minPriceInPool = boundByPrice.Min(quote => quote.Price);
         var bound = minVolumeInPool * minPriceInPool;
         var cutoff = ranked[^1].Turnover;
         if (bound >= cutoff)
@@ -400,24 +463,6 @@ public sealed class YahooScreenerMarketTurnoverClient(
             return null;
         }
         return value.TryGetDecimal(out var number) ? number : null;
-    }
-
-    internal static void EnsureSourceDateMatches(
-        string market,
-        DateOnly tradingDate,
-        IEnumerable<ScreenerQuote> quotes)
-    {
-        var sourceDates = quotes
-            .Select(quote => quote.SourceTradeDate)
-            .OfType<DateOnly>()
-            .Distinct()
-            .ToArray();
-        if (sourceDates.Any(sourceDate => sourceDate != tradingDate))
-        {
-            throw new MarketTurnoverDataIncompleteException(
-                $"Yahoo screener {market} 來源日期為 {string.Join(", ", sourceDates.Select(date => date.ToString("yyyy-MM-dd")))}，" +
-                $"不是要求的交易日 {tradingDate:yyyy-MM-dd}；拒絕發布舊排行。");
-        }
     }
 
     private static long? UnixSecondsOrNull(JsonElement item, string property)

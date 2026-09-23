@@ -258,6 +258,69 @@ test('較新的舊日成交排行可用，但保留其真實交易日與延遲�
     assert.equal(group.turnoverDelayed, true);
 });
 
+function sourceBetween(startMarker, endMarker) {
+    const start = siteScript.indexOf(startMarker);
+    assert.ok(start >= 0, `找不到 ${startMarker}。`);
+    const end = siteScript.indexOf(endMarker, start);
+    assert.ok(end > start, `找不到 ${endMarker}。`);
+    return siteScript.slice(start, end);
+}
+
+function computeDelayNote(group) {
+    const body = sourceBetween('const turnoverLagNote =', 'detail.textContent =');
+    const fn = new Function('group', `${body}\nreturn delayNote;`);
+    return fn(group);
+}
+
+test('排行日期落後總覽指數時附加落差說明（工項 D-2）', () => {
+    assert.equal(
+        computeDelayNote({ intraday: false, asOf: '2026-09-23', turnoverLeadersAsOf: '2026-09-21' }),
+        ' · 排行資料日落後指數（指數截至 2026/09/23）');
+    assert.equal(
+        computeDelayNote({ intraday: false, asOf: '2026-09-23', turnoverLeadersAsOf: '2026-09-23' }),
+        '');
+    assert.equal(
+        computeDelayNote({ intraday: true, asOf: '2026-09-23', turnoverLeadersAsOf: '2026-09-21' }),
+        ' · 盤中快照約延遲 20 分鐘');
+});
+
+function computeClosedDaysNote(group, proto = {}) {
+    const documents = [];
+    const context = {
+        document: {
+            createElement: () => {
+                const element = { className: '', textContent: '', children: [] };
+                documents.push(element);
+                return element;
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(`
+        function dashboardHarness(group, proto) {
+            const dashboard = { appended: [] };
+            ${sourceBetween(
+                '// 讓使用者分辨「卡在這天是因為休市」還是「資料壞了」',
+                'dashboard.append(mspSection')}
+            return dashboard;
+        }
+    `.replace('dashboard.append(closedNote);', 'dashboard.appended.push(closedNote.textContent);'), context);
+    return Array.from(context.dashboardHarness(group, proto).appended, String);
+}
+
+test('AsOf 之後有休市日時顯示休市說明，僅在瀏覽最新一天出現（工項 D-1）', () => {
+    const group = {
+        closedDaysAfterAsOf: [
+            { date: '2026-09-19', reason: '週末非交易日' },
+            { date: '2026-09-23', reason: '交易所休市日（國定假日／市場假日）' }
+        ]
+    };
+
+    assert.deepEqual(computeClosedDaysNote(group, {}), ['2026/09/19–2026/09/23 休市，資料維持在上方交易日。']);
+    assert.deepEqual(computeClosedDaysNote(group, { date: '2026-09-15' }), []);
+    assert.deepEqual(computeClosedDaysNote({ closedDaysAfterAsOf: [] }, {}), []);
+});
+
 test('日韓盤中隱藏交易日選擇器，盤後保留選擇器', () => {
     const context = {};
     vm.createContext(context);

@@ -19,9 +19,46 @@ public static class MarketOverviewProjection
             ? history.Where(snapshot => snapshot.TradingDate <= cutoff).ToArray()
             : [];
 
-        return new MarketOverviewProjectionResult(
-            ToGroupAt(cappedHistory, definition, asOf.AsOfDate, requireCurrentValues: false),
-            asOf.AheadSymbols);
+        // 官方行情以台北時間為準，「今天」也要用台北時間換算，不能信任執行環境的 TZ 設定
+        // （runner 忘了設 TZ 而落在 UTC 時，台北的早上會被當成前一天，休市日清單會算錯）。
+        var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+        var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei).Date);
+
+        var group = ToGroupAt(cappedHistory, definition, asOf.AsOfDate, requireCurrentValues: false);
+        if (asOf.AsOfDate is { } asOfDate)
+        {
+            group = group with
+            {
+                ClosedDaysAfterAsOf = ComputeClosedDaysAfterAsOf(definition.Key, asOfDate, today)
+            };
+        }
+
+        return new MarketOverviewProjectionResult(group, asOf.AheadSymbols);
+    }
+
+    /// <summary>
+    /// 有登記交易日曆的市場鍵值。<see cref="MarketHolidayCalendar"/> 只認得這幾個，
+    /// 其餘（例如 crypto，24 小時交易、沒有休市日概念）呼叫會直接拋例外，必須先擋掉。
+    /// </summary>
+    private static readonly HashSet<string> CalendarMarkets = new(StringComparer.Ordinal) { "jp", "kr", "us" };
+
+    private static IReadOnlyList<MarketClosedDay> ComputeClosedDaysAfterAsOf(string marketKey, DateOnly asOfDate, DateOnly today)
+    {
+        if (!CalendarMarkets.Contains(marketKey))
+        {
+            return [];
+        }
+
+        var days = new List<MarketClosedDay>();
+        for (var date = asOfDate.AddDays(1); date <= today; date = date.AddDays(1))
+        {
+            if (!MarketHolidayCalendar.IsTradingDay(marketKey, date))
+            {
+                days.Add(new MarketClosedDay(date.ToString("yyyy-MM-dd"), MarketHolidayCalendar.ClosedReason(marketKey, date)));
+            }
+        }
+
+        return days;
     }
 
     /// <summary>
@@ -123,7 +160,16 @@ public sealed record MarketOverviewGroup(
     /// 更新的一天，兩者不保證相等。前端要用這個日期標示排行，不能誤植成 <see cref="AsOf"/>。
     /// </summary>
     public string? TurnoverLeadersAsOf { get; init; }
+
+    /// <summary>
+    /// <see cref="AsOf"/> 之後到「今天」為止的非交易日清單，讓前端能分辨「卡在這天是因為休市」
+    /// 還是「資料真的壞了」。只有登記了交易日曆的市場（jp／kr／us）會填值，其餘（例如
+    /// crypto，24 小時交易）固定是空陣列。
+    /// </summary>
+    public IReadOnlyList<MarketClosedDay> ClosedDaysAfterAsOf { get; init; } = [];
 }
+
+public sealed record MarketClosedDay(string Date, string Reason);
 
 public sealed record MarketOverviewTurnoverLeader(
     int Rank,

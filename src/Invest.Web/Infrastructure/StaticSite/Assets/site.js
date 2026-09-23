@@ -28223,9 +28223,18 @@ function mspBuildTurnoverLeaders(group, market) {
     detail.className = 'msp-turnover-leaders-detail';
     // 成交金額是股價 × 成交量換算的估計值，不是交易所公告的實際成交金額；
     // 盤中快照另有約 20 分鐘資料延遲；缺新快照時明示目前採用的盤後排行。
+    // 排行來源（Yahoo screener）跟指數總覽是兩條獨立收集流程，到齊時間不保證同一天；
+    // turnoverLeadersAsOf 落後 asOf 時要明講「排行還停在哪一天」，不能讓使用者誤以為
+    // 排行跟畫面上的指數同一天。
+    const turnoverLagNote = group.intraday !== true
+        && group.turnoverLeadersAsOf
+        && group.asOf
+        && group.turnoverLeadersAsOf !== group.asOf
+        ? ` · 排行資料日落後指數（指數截至 ${group.asOf.replaceAll('-', '/')}）`
+        : '';
     const delayNote = group.intraday === true
         ? (group.turnoverDelayed === true ? ' · 顯示最近可用盤中排行，資料日可能落後' : ' · 盤中快照約延遲 20 分鐘')
-        : (group.turnoverFallback === true ? ' · 無新盤中排行，以下為盤後資料' : '');
+        : (group.turnoverFallback === true ? ' · 無新盤中排行，以下為盤後資料' : turnoverLagNote);
     detail.textContent =
         `依${marketLabel}成交金額排序 · 顯示原幣${config?.unitLabel ?? ''} · 成交金額為估計值（股價×成交量）${delayNote}`;
     copy.append(eyebrow, title, detail);
@@ -28738,6 +28747,18 @@ function mspBuildDashboard(group, market, proto, paint) {
         if (stepper !== null) {
             dashboard.append(stepper);
         }
+    }
+
+    // 讓使用者分辨「卡在這天是因為休市」還是「資料壞了」；只在瀏覽最新一天時顯示，
+    // 回顧歷史日期時不該冒出「休市」字樣讓人誤以為那天也休市。
+    if (Array.isArray(group.closedDaysAfterAsOf) && group.closedDaysAfterAsOf.length > 0 && proto.date == null) {
+        const closedNote = document.createElement('p');
+        closedNote.className = 'msp-card-detail msp-closed-days-note';
+        const first = group.closedDaysAfterAsOf[0].date.replaceAll('-', '/');
+        const last = group.closedDaysAfterAsOf.at(-1).date.replaceAll('-', '/');
+        const range = first === last ? first : `${first}–${last}`;
+        closedNote.textContent = `${range} 休市，資料維持在上方交易日。`;
+        dashboard.append(closedNote);
     }
 
     dashboard.append(mspSection('指數', mspBuildIndices(group, market, proto)));

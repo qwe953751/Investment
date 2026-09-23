@@ -376,6 +376,32 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: scripts/backup-supabase.sh data/snapshots
 
+      # 日韓總覽有獨立的盤後回補流程（asia-market-overview-daily.yml），跟這裡的
+      # 台股回補時間不同步；只是提醒，不擋這次發布——今天沒有日韓新資料時，
+      # 網站會沿用前一個交易日的快取，不是空白，沒有急迫性。今天若剛好是日韓
+      # 的國定假日，這個警告也是預期內的，不代表回補流程壞掉。
+      - name: 檢查日韓總覽是否已回補今日資料
+        if: ${{ !cancelled() }}
+        run: |
+          today=$(date +%Y-%m-%d)
+          file="data/imports-overview/$today.json"
+
+          if [ ! -f "$file" ]; then
+              echo "::warning::$today 還沒有日韓市場總覽快取（$file 不存在），網站會沿用前一個交易日的日韓資料；若今天是日韓假日則屬預期。"
+              exit 0
+          fi
+
+          jp_count=$(jq '[.quotes[] | select(.symbol=="^N225" or .symbol=="^TOPX" or .symbol=="^JPXNK400")] | length' "$file")
+          kr_count=$(jq '[.quotes[] | select(.symbol=="^KS11" or .symbol=="^KQ11" or .symbol=="^KRX100")] | length' "$file")
+
+          if [ "$jp_count" -lt 1 ]; then
+              echo "::warning::$today 的市場總覽快取沒有日股資料，網站會沿用前一個交易日的日股資料；若今天是日股假日則屬預期。"
+          fi
+
+          if [ "$kr_count" -lt 1 ]; then
+              echo "::warning::$today 的市場總覽快取沒有韓股資料，網站會沿用前一個交易日的韓股資料；若今天是韓股假日則屬預期。"
+          fi
+
       # export 大部分吃 data/imports 的行情快取，唯一要連資料庫的是重大訊息
       # （material_events）——催化事件頁與族群新聞熱度都讀它。沒帶這個 secret 時
       # 程式不會炸，只會記一行「讀取重大訊息失敗」然後把那兩塊發成空的，

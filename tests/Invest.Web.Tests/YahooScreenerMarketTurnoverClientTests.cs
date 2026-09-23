@@ -72,45 +72,136 @@ public sealed class YahooScreenerMarketTurnoverClientTests
         Assert.Null(fallback.ChangePercent);
     }
 
-    [Fact]
-    public void 來源全部是上一交易日時拒絕貼上今天日期()
-    {
-        var staleQuotes = Enumerable.Range(1, 20)
+    private static ScreenerQuote[] BuildQuotes(string prefix, int count, DateOnly? sourceTradeDate)
+        => Enumerable.Range(1, count)
             .Select(index => new ScreenerQuote(
-                $"7203.T{index}",
-                "Toyota",
-                2500m,
-                1000m,
-                "JPY",
-                null,
-                new DateOnly(2026, 9, 18)))
+                $"{prefix}{index:000}", $"{prefix} {index}", 2500m, 1000m, "JPY", null, sourceTradeDate))
             .ToArray();
 
-        var exception = Assert.Throws<MarketTurnoverDataIncompleteException>(() =>
-            YahooScreenerMarketTurnoverClient.EnsureSourceDateMatches(
-                "jp",
-                new DateOnly(2026, 9, 22),
-                staleQuotes));
+    [Fact]
+    public void FilterToTradingDate保留時間戳缺失的個股()
+    {
+        var today = new DateOnly(2026, 9, 23);
+        var quotes = new[]
+        {
+            new ScreenerQuote("A", "A", 10m, 10m, "JPY", null, today),
+            new ScreenerQuote("B", "B", 10m, 10m, "JPY", null, today.AddDays(-1)),
+            new ScreenerQuote("C", "C", 10m, 10m, "JPY", null, null)
+        };
 
-        Assert.Contains("拒絕發布舊排行", exception.Message, StringComparison.Ordinal);
+        var filtered = YahooScreenerMarketTurnoverClient.FilterToTradingDate(quotes, today);
+
+        Assert.Equal(["A", "C"], filtered.Select(quote => quote.Symbol));
     }
 
     [Fact]
-    public void 候選池混入不同來源日期時也拒絕發布()
+    public void 候選池全部是當日資料時通過新鮮度檢查()
     {
-        var mixedQuotes = new[]
-        {
-            new ScreenerQuote("7203.T", "Toyota", 2500m, 1000m, "JPY", null, new DateOnly(2026, 9, 22)),
-            new ScreenerQuote("6758.T", "Sony", 12000m, 500m, "JPY", null, new DateOnly(2026, 9, 18))
-        };
+        var today = new DateOnly(2026, 9, 23);
+        var byVolume = BuildQuotes("VOL", 20, today);
+        var byPrice = BuildQuotes("PRC", 20, today);
+        var freshByVolume = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byVolume, today);
+        var freshByPrice = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byPrice, today);
+
+        YahooScreenerMarketTurnoverClient.EnsureFreshCoverage(
+            "jp", today, byVolume, byPrice, freshByVolume, freshByPrice);
+    }
+
+    [Fact]
+    public void 候選池七成當日三成落後多天時仍通過重現韓股0923事故()
+    {
+        // 重現 2026-09-22 起 kr 每輪失敗的實況：候選池混進當天沒成交的冷門股，
+        // 時間戳停在數天前；只要新鮮比例夠高、雙軸過濾後仍各自 >= 20 檔，就該放行。
+        var today = new DateOnly(2026, 9, 23);
+        var byVolume = BuildQuotes("VOL", 21, today)
+            .Concat(BuildQuotes("VOLSTALE", 9, today.AddDays(-5)))
+            .ToArray();
+        var byPrice = BuildQuotes("PRC", 21, today)
+            .Concat(BuildQuotes("PRCSTALE", 9, today.AddDays(-1)))
+            .ToArray();
+        var freshByVolume = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byVolume, today);
+        var freshByPrice = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byPrice, today);
+
+        YahooScreenerMarketTurnoverClient.EnsureFreshCoverage(
+            "kr", today, byVolume, byPrice, freshByVolume, freshByPrice);
+
+        Assert.Equal(21, freshByVolume.Count);
+        Assert.Equal(21, freshByPrice.Count);
+    }
+
+    [Fact]
+    public void 候選池全部落後時拒絕發布()
+    {
+        var today = new DateOnly(2026, 9, 23);
+        var byVolume = BuildQuotes("VOL", 20, today.AddDays(-1));
+        var byPrice = BuildQuotes("PRC", 20, today.AddDays(-1));
+        var freshByVolume = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byVolume, today);
+        var freshByPrice = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byPrice, today);
 
         var exception = Assert.Throws<MarketTurnoverDataIncompleteException>(() =>
-            YahooScreenerMarketTurnoverClient.EnsureSourceDateMatches(
-                "jp",
-                new DateOnly(2026, 9, 22),
-                mixedQuotes));
+            YahooScreenerMarketTurnoverClient.EnsureFreshCoverage(
+                "jp", today, byVolume, byPrice, freshByVolume, freshByPrice));
 
-        Assert.Contains("拒絕發布舊排行", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("不發布排行", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 新鮮比例低於五成門檻時拒絕發布即使單軸列數足夠()
+    {
+        var today = new DateOnly(2026, 9, 23);
+        // 量軸單獨看列數達標（20 檔當日 + 41 檔落後），但聯集後新鮮比例被拖到五成以下；
+        // 用這個案例確認擋下來的是比例門檻，不是列數門檻。
+        var byVolume = BuildQuotes("VOL", 20, today)
+            .Concat(BuildQuotes("VOLSTALE", 41, today.AddDays(-1)))
+            .ToArray();
+        var byPrice = BuildQuotes("PRC", 20, today);
+        var freshByVolume = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byVolume, today);
+        var freshByPrice = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byPrice, today);
+
+        Assert.Equal(20, freshByVolume.Count);
+        Assert.Equal(20, freshByPrice.Count);
+
+        var exception = Assert.Throws<MarketTurnoverDataIncompleteException>(() =>
+            YahooScreenerMarketTurnoverClient.EnsureFreshCoverage(
+                "jp", today, byVolume, byPrice, freshByVolume, freshByPrice));
+
+        Assert.Contains("不發布排行", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 過濾後單一軸不足二十檔時拒絕發布即使整體新鮮比例高()
+    {
+        var today = new DateOnly(2026, 9, 23);
+        var byVolume = BuildQuotes("VOL", 15, today)
+            .Concat(BuildQuotes("VOLSTALE", 1, today.AddDays(-1)))
+            .ToArray();
+        var byPrice = BuildQuotes("PRC", 25, today);
+        var freshByVolume = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byVolume, today);
+        var freshByPrice = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byPrice, today);
+
+        Assert.Equal(15, freshByVolume.Count);
+
+        var exception = Assert.Throws<MarketTurnoverDataIncompleteException>(() =>
+            YahooScreenerMarketTurnoverClient.EnsureFreshCoverage(
+                "jp", today, byVolume, byPrice, freshByVolume, freshByPrice));
+
+        Assert.Contains("不發布排行", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 時間戳全部缺失的舊版回應視為當日資料()
+    {
+        var today = new DateOnly(2026, 9, 23);
+        var byVolume = BuildQuotes("VOL", 20, sourceTradeDate: null);
+        var byPrice = BuildQuotes("PRC", 20, sourceTradeDate: null);
+        var freshByVolume = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byVolume, today);
+        var freshByPrice = YahooScreenerMarketTurnoverClient.FilterToTradingDate(byPrice, today);
+
+        Assert.Equal(20, freshByVolume.Count);
+        Assert.Equal(20, freshByPrice.Count);
+
+        YahooScreenerMarketTurnoverClient.EnsureFreshCoverage(
+            "jp", today, byVolume, byPrice, freshByVolume, freshByPrice);
     }
 
     [Fact]
@@ -187,7 +278,7 @@ public sealed class YahooScreenerMarketTurnoverClientTests
             .Append(new ScreenerQuote("PRC04", "Price Deep", Price: 1m, Volume: 1m, "USD", null))
             .ToArray();
 
-        var ranked = YahooScreenerMarketTurnoverClient.RankPool("us", byVolume, byPrice);
+        var ranked = YahooScreenerMarketTurnoverClient.RankPool("us", byVolume, byPrice, byVolume, byPrice);
 
         Assert.Equal(20, ranked.Count);
         Assert.All(ranked, row => Assert.Equal("yahoo-screener", row.Source));
@@ -206,7 +297,7 @@ public sealed class YahooScreenerMarketTurnoverClientTests
             .ToArray();
 
         var exception = Assert.Throws<MarketTurnoverDataIncompleteException>(
-            () => YahooScreenerMarketTurnoverClient.RankPool("us", byVolume, byPrice));
+            () => YahooScreenerMarketTurnoverClient.RankPool("us", byVolume, byPrice, byVolume, byPrice));
 
         Assert.Contains("候選池不足以證明涵蓋全市場前 20", exception.Message, StringComparison.Ordinal);
     }
@@ -229,12 +320,43 @@ public sealed class YahooScreenerMarketTurnoverClientTests
             .Append(new ScreenerQuote("PRC04", "Price Deep", Price: 1m, Volume: 1m, "USD", null))
             .ToArray();
 
-        var ranked = YahooScreenerMarketTurnoverClient.RankPool("us", byVolume, byPrice);
+        var ranked = YahooScreenerMarketTurnoverClient.RankPool("us", byVolume, byPrice, byVolume, byPrice);
 
         Assert.Equal(20, ranked.Count);
         var targetRow = Assert.Single(ranked, row => row.Symbol == "TARGET");
         // 成交金額 5,000,000 * 10 = 50,000,000，遠高於量軸候選池任何一檔，應該排第一。
         Assert.Equal(1, targetRow.Rank);
         Assert.Equal(50_000_000m, targetRow.Turnover);
+    }
+
+    [Fact]
+    public void 涵蓋證明必須用未篩選池計算下界不能用篩選後的排名池()
+    {
+        // VOL20／PRC04 是時間戳落後、被過濾掉排名資格的「深頁」個股，但它們仍是 Yahoo
+        // 實際回傳過的資料，涵蓋證明的下界必須把它們算進去，否則會產生假失敗（見
+        // RankPool 的 boundByVolume／boundByPrice 參數說明）。
+        var rankByVolume = Enumerable.Range(1, 19)
+            .Select(i => new ScreenerQuote($"VOL{i:00}", $"Vol {i}", Price: 10m, Volume: 1_000_000m, "USD", null))
+            .ToArray();
+        var deepVolume = new ScreenerQuote("VOL20", "Vol Deep", Price: 10m, Volume: 1m, "USD", null);
+        var boundByVolume = rankByVolume.Append(deepVolume).ToArray();
+
+        var rankByPrice = Enumerable.Range(1, 3)
+            .Select(i => new ScreenerQuote($"PRC{i:00}", $"Price {i}", Price: 1_000m, Volume: 1m, "USD", null))
+            .ToArray();
+        var deepPrice = new ScreenerQuote("PRC04", "Price Deep", Price: 1m, Volume: 1m, "USD", null);
+        var boundByPrice = rankByPrice.Append(deepPrice).ToArray();
+
+        // 正確用法：bound 傳未篩選池（含深頁個股），涵蓋證明成立。
+        var ranked = YahooScreenerMarketTurnoverClient.RankPool(
+            "us", rankByVolume, rankByPrice, boundByVolume, boundByPrice);
+        Assert.Equal(20, ranked.Count);
+
+        // 錯誤用法：如果誤把已篩選的排名池當成 bound 池（漏掉深頁個股），
+        // minVolumeInPool／minPriceInPool 會被錯誤抬高，導致涵蓋證明假失敗。
+        var exception = Assert.Throws<MarketTurnoverDataIncompleteException>(() =>
+            YahooScreenerMarketTurnoverClient.RankPool(
+                "us", rankByVolume, rankByPrice, rankByVolume, rankByPrice));
+        Assert.Contains("候選池不足以證明涵蓋全市場前 20", exception.Message, StringComparison.Ordinal);
     }
 }

@@ -1,13 +1,15 @@
-# 日／韓收盤日線。這條流程只更新 data/imports-overview，不同步 Supabase Database、
-# 不執行 export、也不觸發 GitHub Pages 發佈；backfill-overview 的品質門檻若未通過，
-# 指令會以非零狀態結束，下面的 data commit 不會執行，因此不會留下半套快取。
+# 日／韓收盤日線。這條流程更新 data/imports-overview 後，會另外 dispatch
+# daily-snapshot.yml（publish-only=true）把新快取發布到公開網站；不同步 Supabase
+# Database；backfill-overview 的品質門檻若未通過，指令會以非零狀態結束，下面的
+# data commit 不會執行，因此不會留下半套快取，也不會觸發發布。
 
 name: 日韓市場總覽盤後快取
 
 on:
   schedule:
-    # UTC 07:45 = 台北 15:45，進場後等待到 17:30，給各來源日 K 足夠落地時間。
-    - cron: '45 7 * * 1-5'
+    # UTC 06:00 = 台北 14:00 排隊；GitHub schedule 實際常延遲數小時（見 TODO #13），
+    # 提早排隊只是多買緩衝，內部仍會等到 17:30 才真正開始抓，不會提前抓到未公布的行情。
+    - cron: '0 6 * * 1-5'
   workflow_dispatch:
     inputs:
       skip-wait:
@@ -17,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: asia-market-overview-daily
@@ -62,6 +65,7 @@ jobs:
         run: dotnet run -c Release --project src/Invest.Web -- market-turnover --markets jp,kr
 
       - name: 保存日韓市場總覽快取
+        id: save
         working-directory: data
         run: |
           git add -A imports-overview
@@ -80,6 +84,7 @@ jobs:
 
           if git diff --cached --quiet; then
               echo "沒有新的日韓市場總覽日線。"
+              echo "committed=false" >> "$GITHUB_OUTPUT"
               exit 0
           fi
 
@@ -91,6 +96,7 @@ jobs:
           # 各自寫的是不同市場的檔案，rebase 之後重推即可。
           for attempt in 1 2 3 4 5; do
               if git push -q origin data; then
+                  echo "committed=true" >> "$GITHUB_OUTPUT"
                   break
               fi
 
@@ -102,3 +108,15 @@ jobs:
               echo "data 分支已被其他流程更新，rebase 後重試（第 $attempt 次）。"
               git pull -q --rebase origin data
           done
+
+      # daily-snapshot.yml 本來只等台股自己的排程或手動觸發才 export；日韓這條commit
+      # 完成後在這裡直接 dispatch publish-only，不用再靠兩條流程的執行順序碰運氣決定
+      # 日韓資料何時上站。只在真的有新 commit 時觸發，避免每個交易日重複發布。
+      - name: 觸發網站重新發布
+        if: steps.save.outputs.committed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/dispatches" \
+              -f ref="$GITHUB_REF_NAME" \
+              -f 'inputs[publish-only]=true'

@@ -1,4 +1,4 @@
-# 待辦事項（17 件）
+# 待辦事項（18 件）
 
 這份檔案是討論的存放處，不是進度表。每次要談某件事之前先讀這裡，
 就不用把前幾次的結論重講一遍。
@@ -29,6 +29,7 @@
 | 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29。Windows EXE 已以 `e6c08fd1` 重建，`Invest D+ OCR Worker` 排程已註冊並 Running（每 2 分鐘 recovery、三槽與 Realtime 喚醒均已核對）；**家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。詳見 [版本紀錄.md](版本紀錄.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 2026-09-23 日韓盤中快照保留、日期選擇器隱藏與排行節流已由 commit `e0bf561b` 發布；.NET 549/549、Node 146/146 通過。線上 KR 已更新至 9/23 14:05；JP 仍指向 9/14。9/15 起舊 workflow 因 KIS 金鑰缺失失敗，9/19 改 Yahoo、9/22 修 Storage bucket 判定；JP 9/21～23 休市，待 9/24 開市驗收新快照。其餘市場切換產品議題仍見下方 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
+| 18 | [日韓成交排行來源日期檢查過嚴，09/22 起韓股每輪都失敗](#todo-18) | 🟡 工項 A～E 已實作完成，.NET 556/556、Node 148/148 通過；待 09-28（日韓同為交易日）驗收 |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -1923,3 +1924,62 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - recovery `34843425153` 發現 CTE 未帶入指數 OHLC 欄位（Postgres `42703`），`34843743795` 發現
   Storage 缺少 `topic-latest.json` 時會以 HTTP 400／`NoSuchKey` 回應；兩項均已修正並有回歸測試，
   `34844210705` 已驗證修正後可補出第一份 topic 快取。
+
+<a id="todo-18"></a>
+## 🟡 18. 日韓成交排行來源日期檢查過嚴，09/22 起韓股每輪都失敗
+
+[↑ 回到 TODO 列表](#快速跳轉)
+
+**狀態：工項 A～E 已全部實作完成，.NET 556/556、Node 148/148 通過。
+待日韓下一個同為交易日（2026-09-28）驗收線上結果後結案。**
+完整實作規格見 [Doc/技術文件/日韓成交排行與發布時序修復規格.md](技術文件/日韓成交排行與發布時序修復規格.md)。
+
+### 已討論
+
+2026-09-24 使用者回報三件事，查證後只有一件是程式缺陷：
+
+1. **日股停在 09/18** —— 正確行為。JPX 09/19～09/23 連休（週末＋敬老の日＋国民の休日＋秋分の日），
+   `MarketHolidayCalendar` 已正確登錄。缺的是畫面沒說明原因。
+2. **韓股在台股盤中沒更新** —— 三個原因疊加，都不是資料問題：盤中前端 `e0bf561b` 是 09/23 13:36
+   才發布（台股已近收盤）；盤後管線設計上就是晚上才 export 上站；GitHub 排程延遲 2～7 小時。
+3. **韓股成交榜「截至 09/21」** —— 真缺陷。`EnsureSourceDateMatches`
+   （`YahooScreenerMarketTurnoverClient.cs:405-420`，由 `6764492d` 於 09-22 16:01 加入）
+   要求候選池裡每一檔的 `regularMarketTime` 都等於目標交易日，只要有一檔冷門股時間戳落後，
+   整批 400+ 檔就被丟掉。09/22、09/23 盤後與盤中每一輪都拋同一個例外。
+
+日股不是沒問題，是被連休遮住了 —— 兩市場共用同一支 client，日股 09/24 起才第一次真正跑到這道檢查。
+
+**時效**：韓股下一個交易日是 09/28（09/24～25 中秋、09/26～27 週末）。屆時
+`MarketTurnoverProjection.ToleranceDays = 5` 的容忍窗變成 09/23～09/28，09/21 落在窗外，
+**韓股成交排行會整個變空白**。
+
+### 已排除，不要重做
+
+- 寫入端休市日閘門（`MarketTurnoverCollector.cs:31-38`）已存在。
+- 讀取端非交易日過濾（`MarketTurnoverStore.cs:72, 89-110`）已存在，`StaticSiteExporter.cs:324` 走的就是它。
+- data 分支上 `jp/2026-09-19.json`、`jp/2026-09-21.json`、`kr/2026-09-19.json` 三個
+  09-22 閘門上線前寫入的髒檔，使用者已於 2026-09-24 同意刪除，見 `data` 分支
+  commit `06ac61e4e`。
+
+### 已實作（2026-09-24，claude-sonnet-5 接手）
+
+- **工項 A**：`YahooScreenerMarketTurnoverClient.cs` 的 `EnsureSourceDateMatches`（全有全無檢查）
+  改成 `FilterToTradingDate` + `EnsureFreshCoverage`（過濾落後個股後，兩軸各需 ≥20 檔且整體新鮮比例
+  ≥50% 才放行）；涵蓋證明下界改用未過濾的原始池計算，避免假失敗。測試補了 7 個案例，
+  其中一個直接重現 09/23 韓股實際情境（70% 新鮮／30% 落後）。
+- **工項 B**：`asia-market-overview-daily.yml` 保存快取成功且有新 commit 時，自動 dispatch
+  `daily-snapshot.yml`（`publish-only=true`），不用再靠兩條流程的執行順序碰運氣。
+- **工項 C**：兩條 workflow 的 cron 提早排隊（daily 14:00、intraday 06:30 台北時間），
+  實際抓取時間不變；`daily-snapshot.yml` 的「輸出靜態網站」前新增日韓資料到位檢查，
+  沒有就發 `::warning::`，不擋台股發布。
+- **工項 D**：`MarketOverviewGroup` 新增 `ClosedDaysAfterAsOf`（`AsOf` 之後到今天的非交易日清單），
+  面板日期列在瀏覽最新一天時顯示「休市」提示（**第一版不帶假日名稱**，見下方待決定）；
+  成交排行區塊在 `turnoverLeadersAsOf !== asOf` 時附加「排行資料日落後指數」說明。
+  `tests/market-overview-date-consistency.test.mjs` 補了對應測試。
+- **工項 E**：已刪除三個髒檔（見上）。
+
+### 待決定
+
+- 工項 D 的休市說明目前只顯示「休市」，沒有假日名稱（採規格文件允許的省事版本）。
+  要顯示名稱得把 `MarketHolidayCalendar.ClosedDates` 從 `HashSet<DateOnly>` 改成
+  `Dictionary<DateOnly, string>`，`MarketHolidayCalendarTests.cs` 要同步更新，是後續加強項，非本輪必做。
