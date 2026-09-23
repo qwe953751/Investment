@@ -27484,8 +27484,7 @@ function mspEffectiveSession(market, proto) {
 async function ensureMarketOverviewIntradayGroup(market, { force = false } = {}) {
     if (marketOverviewIntradayCdn === null
         || !['jp', 'kr'].includes(market)
-        || !mspIsTradingDay(market)
-        || (!force && !mspIsIntradaySession(market))) {
+        || (!force && (!mspIsTradingDay(market) || !mspIsIntradaySession(market)))) {
         return null;
     }
 
@@ -27503,7 +27502,11 @@ async function ensureMarketOverviewIntradayGroup(market, { force = false } = {})
             }
 
             const pointer = await latestResponse.json();
-            if (pointer.schemaVersion !== 1 || pointer.market !== market || typeof pointer.file !== 'string') {
+            const snapshotFile = new RegExp(`^${market}/market-overview-intraday-\\d{8}-\\d{4}\\.json$`);
+            if (pointer.schemaVersion !== 1
+                || pointer.market !== market
+                || !snapshotFile.test(pointer.file ?? '')
+                || !/^\d{4}-\d{2}-\d{2}$/.test(pointer.tradeDate ?? '')) {
                 throw new Error('latest 格式不符');
             }
 
@@ -27514,19 +27517,33 @@ async function ensureMarketOverviewIntradayGroup(market, { force = false } = {})
 
             const snapshot = await snapshotResponse.json();
             const age = Date.now() - Date.parse(snapshot.capturedAt);
+            const capturedAt = Date.parse(snapshot.capturedAt);
+            const pointerCapturedAt = Date.parse(pointer.capturedAt);
+            const currentDate = mspExchangeDate(market);
             if (snapshot.schemaVersion !== 1
                 || snapshot.market !== market
-                || snapshot.tradeDate !== mspExchangeDate(market)
-                || !snapshot.group
+                || !/^\d{4}-\d{2}-\d{2}$/.test(snapshot.tradeDate ?? '')
+                || pointer.tradeDate !== snapshot.tradeDate
+                || !Number.isFinite(capturedAt)
+                || capturedAt !== pointerCapturedAt
+                || pointer.rowCount !== snapshot.rowCount
+                || snapshot.tradeDate > currentDate
+                || (!force && snapshot.tradeDate !== currentDate)
+                || snapshot.group?.asOf !== snapshot.tradeDate
+                || !Array.isArray(snapshot.group?.indices)
+                || snapshot.group.indices.length < 3
+                || !Array.isArray(snapshot.group?.sectors)
+                || snapshot.group.sectors.length < 9
                 || !Number.isFinite(age)
-                || age > MARKET_OVERVIEW_INTRADAY_STALE_MS) {
-                throw new Error('快照過期或交易日不符');
+                || age < 0) {
+                throw new Error('快照欄位或指標一致性不符');
             }
 
             const group = {
                 ...snapshot.group,
                 intraday: true,
                 capturedAt: snapshot.capturedAt,
+                intradayStale: age > MARKET_OVERVIEW_INTRADAY_STALE_MS,
                 warnings: Array.isArray(snapshot.warnings) ? snapshot.warnings : []
             };
 
@@ -27538,10 +27555,9 @@ async function ensureMarketOverviewIntradayGroup(market, { force = false } = {})
     try {
         return await marketOverviewIntradayPromises.get(market);
     } catch (error) {
-        // 即時來源失敗時維持最後可用的盤後總覽，不能退回直連資料庫或保留過期盤中值。
-        console.warn('日韓市場總覽盤中快照讀取失敗，改顯示盤後資料', market, error);
-        marketOverviewIntradayGroups.delete(market);
-        return null;
+        // Storage 暫時失敗時繼續顯示最後一筆已驗證快照；沒有舊快取才由呼叫端退回盤後。
+        console.warn('日韓市場總覽盤中快照讀取失敗，保留最後有效資料', market, error);
+        return marketOverviewIntradayGroups.get(market)?.group ?? null;
     } finally {
         marketOverviewIntradayPromises.delete(market);
     }
@@ -27553,10 +27569,10 @@ async function ensureMarketOverviewIntradayGroup(market, { force = false } = {})
 const marketTurnoverIntradayCache = new Map();
 const marketTurnoverIntradayPromises = new Map();
 
-async function ensureMarketTurnoverIntraday(market) {
+async function ensureMarketTurnoverIntraday(market, { force = false } = {}) {
     if (marketTurnoverCdn === null
         || !MSP_TURNOVER_LEADER_MARKETS.has(market)
-        || !mspIsTradingDay(market)) {
+        || (!force && !mspIsTradingDay(market))) {
         return null;
     }
 
@@ -27574,6 +27590,14 @@ async function ensureMarketTurnoverIntraday(market) {
             }
 
             const pointer = await latestResponse.json();
+            const snapshotFile = new RegExp(`^${market}/market-turnover-\\d{8}-\\d{4}\\.json$`);
+            if (pointer.schemaVersion !== 1
+                || pointer.market !== market
+                || !snapshotFile.test(pointer.file ?? '')
+                || !/^\d{4}-\d{2}-\d{2}$/.test(pointer.tradingDate ?? '')) {
+                throw new Error('排行 latest 格式不符');
+            }
+
             const snapshotResponse = await fetch(`${baseUrl}/${pointer.file}`, { cache: 'no-store' });
             if (!snapshotResponse.ok) {
                 throw new Error(`排行 snapshot HTTP ${snapshotResponse.status}`);
@@ -27581,13 +27605,22 @@ async function ensureMarketTurnoverIntraday(market) {
 
             const snapshot = await snapshotResponse.json();
             const age = Date.now() - Date.parse(snapshot.capturedAt);
+            const capturedAt = Date.parse(snapshot.capturedAt);
+            const pointerCapturedAt = Date.parse(pointer.capturedAt);
+            const currentDate = mspExchangeDate(market);
             if (snapshot.schemaVersion !== 1
                 || snapshot.market !== market
-                || snapshot.tradingDate !== mspExchangeDate(market)
+                || !/^\d{4}-\d{2}-\d{2}$/.test(snapshot.tradingDate ?? '')
+                || pointer.tradingDate !== snapshot.tradingDate
+                || !Number.isFinite(capturedAt)
+                || capturedAt !== pointerCapturedAt
+                || snapshot.tradingDate > currentDate
+                || (!force && snapshot.tradingDate !== currentDate)
                 || !Array.isArray(snapshot.rows)
+                || snapshot.rows.length < 20
                 || !Number.isFinite(age)
-                || age > MARKET_OVERVIEW_INTRADAY_STALE_MS) {
-                throw new Error('成交排行過期或交易日不符');
+                || age < 0) {
+                throw new Error('成交排行欄位或指標一致性不符');
             }
 
             const entry = {
@@ -27601,6 +27634,8 @@ async function ensureMarketTurnoverIntraday(market) {
                     yearChange: null
                 })),
                 tradingDate: snapshot.tradingDate,
+                capturedAt: snapshot.capturedAt,
+                intradayStale: age > MARKET_OVERVIEW_INTRADAY_STALE_MS,
                 loadedAt: Date.now()
             };
             marketTurnoverIntradayCache.set(market, entry);
@@ -27611,9 +27646,14 @@ async function ensureMarketTurnoverIntraday(market) {
     try {
         return await marketTurnoverIntradayPromises.get(market);
     } catch (error) {
-        // 排行是獨立流；失敗時交給呼叫端 fallback 回盤後排行，不能拖累總覽指數／產業。
-        console.warn('日韓成交排行盤中快照讀取失敗', market, error);
-        return marketTurnoverIntradayCache.get(market) ?? null;
+        // 排行是獨立流；失敗時保留最後一份 CDN 快取，不能拖累總覽指數／產業。
+        console.warn('日韓成交排行盤中快照讀取失敗，保留最後有效資料', market, error);
+        const lastGood = marketTurnoverIntradayCache.get(market);
+        if (lastGood !== undefined) {
+            // loadedAt 是 CDN 重讀節流；來源時間另由 capturedAt 判斷，因此失敗可安全冷卻 60 秒。
+            lastGood.loadedAt = Date.now();
+        }
+        return lastGood ?? null;
     } finally {
         marketTurnoverIntradayPromises.delete(market);
     }
@@ -27624,7 +27664,8 @@ function refreshMarketOverviewIntradayIfDue() {
     if (proto === null
         || proto.date !== null
         || !['jp', 'kr'].includes(proto.market)
-        || mspEffectiveSession(proto.market, proto) !== 'intraday') {
+        || mspEffectiveSession(proto.market, proto) !== 'intraday'
+        || !mspIsIntradaySession(proto.market)) {
         return;
     }
 
@@ -28189,15 +28230,18 @@ function mspBuildTurnoverLeaders(group, market) {
     const detail = document.createElement('p');
     detail.className = 'msp-turnover-leaders-detail';
     // 成交金額是股價 × 成交量換算的估計值，不是交易所公告的實際成交金額；
-    // 盤中快照另有約 20 分鐘資料延遲，兩者都要讓使用者看得到，不能只在文件裡寫。
-    const delayNote = group.intraday === true ? ' · 盤中快照約延遲 20 分鐘' : '';
+    // 盤中快照另有約 20 分鐘資料延遲；缺新快照時明示目前採用的盤後排行。
+    const delayNote = group.intraday === true
+        ? (group.turnoverDelayed === true ? ' · 顯示最近可用盤中排行，資料日可能落後' : ' · 盤中快照約延遲 20 分鐘')
+        : (group.turnoverFallback === true ? ' · 無新盤中排行，以下為盤後資料' : '');
     detail.textContent =
         `依${marketLabel}成交金額排序 · 顯示原幣${config?.unitLabel ?? ''} · 成交金額為估計值（股價×成交量）${delayNote}`;
     copy.append(eyebrow, title, detail);
 
     const asOf = document.createElement('span');
     asOf.className = 'msp-turnover-leaders-asof';
-    asOf.textContent = group.asOf ? `截至 ${group.asOf.replaceAll('-', '/')}` : '資料日 —';
+    const turnoverDate = group.turnoverLeadersAsOf ?? group.asOf;
+    asOf.textContent = turnoverDate ? `截至 ${turnoverDate.replaceAll('-', '/')}` : '資料日 —';
     heading.append(copy, asOf);
     section.append(heading);
 
@@ -28583,8 +28627,15 @@ function mspBuildDateStepper(group, market, proto, paint) {
     return wrap;
 }
 
-// 日／韓總覽與排行都各自有「盤中 CDN 抓不到就退回盤後」的 fallback；使用者手動選了
-// 盤中卻實際顯示盤後內容時，畫面要說清楚，不能讓人誤以為盤後資料就是最新盤中報價。
+function mspShouldShowDateStepper(market, group, proto) {
+    return market === 'us'
+        || (['jp', 'kr'].includes(market)
+            && Array.isArray(group?.dates)
+            && mspEffectiveSession(market, proto) === 'daily');
+}
+
+// 日／韓總覽與排行各自保留最後有效盤中快取；使用者手動選了盤中卻沒有任何快照時，
+// 畫面要說清楚目前回退的是盤後資料。
 function mspBuildSessionSwitch(market, proto, paint) {
     if (!['jp', 'kr'].includes(market)) {
         return null;
@@ -28612,6 +28663,9 @@ function mspBuildSessionSwitch(market, proto, paint) {
         button.addEventListener('click', () => {
             if (proto.session !== option.key) {
                 proto.session = option.key;
+                if (option.key === 'intraday') {
+                    proto.date = null;
+                }
                 paint();
             }
         });
@@ -28622,8 +28676,7 @@ function mspBuildSessionSwitch(market, proto, paint) {
 }
 
 // 排行 CDN（盤中）跟 market-overview.json 裡的排行（盤後，見 MarketTurnoverProjection）
-// 是兩條獨立來源；這裡依目前 session 決定顯示哪一組，盤中抓不到／過期就退回盤後那組，
-// 不會因為總覽本身的盤中快照失敗而連帶消失（B 項解耦）。
+// 是兩條獨立來源；排行過期時仍顯示日期相容的最後一份快取，並明示延遲狀態。
 function mspResolveTurnoverGroup(group, market, proto) {
     if (group.preview === true || !MSP_TURNOVER_LEADER_MARKETS.has(market)) {
         return group;
@@ -28634,6 +28687,8 @@ function mspResolveTurnoverGroup(group, market, proto) {
         ...group,
         turnoverLeaders: dailyGroup?.turnoverLeaders ?? [],
         asOf: dailyGroup?.turnoverLeadersAsOf ?? dailyGroup?.asOf ?? group.asOf,
+        turnoverLeadersAsOf: dailyGroup?.turnoverLeadersAsOf ?? dailyGroup?.asOf ?? group.asOf,
+        turnoverFallback: false,
         intraday: false
     };
 
@@ -28642,24 +28697,33 @@ function mspResolveTurnoverGroup(group, market, proto) {
     }
 
     const cached = marketTurnoverIntradayCache.get(market);
-    const expectedDate = group?.intraday === true
-        ? group.asOf
-        : dailyGroup?.turnoverLeadersAsOf ?? dailyGroup?.asOf ?? group.asOf;
-    const cachedIsFresh = cached !== undefined
-        && Date.now() - cached.loadedAt < MARKET_OVERVIEW_INTRADAY_CACHE_MS;
-    const cachedDateMatches = expectedDate === undefined || cached?.tradingDate === expectedDate;
-    const usableCached = cachedIsFresh && cachedDateMatches;
-    if (!usableCached) {
-        void ensureMarketTurnoverIntraday(market).then(entry => {
+    const overviewDate = group?.asOf ?? dailyGroup?.asOf ?? null;
+    const dailyDate = dailyGroup?.turnoverLeadersAsOf ?? dailyGroup?.asOf ?? null;
+    const cachedCapturedAt = Date.parse(cached?.capturedAt ?? '');
+    const cachedIntradayStale = !Number.isFinite(cachedCapturedAt)
+        || Date.now() - cachedCapturedAt > MARKET_OVERVIEW_INTRADAY_STALE_MS;
+    const cachedDateCompatible = cached !== undefined
+        && (overviewDate === null || cached.tradingDate <= overviewDate)
+        && (cached.tradingDate === overviewDate || dailyDate === null || cached.tradingDate > dailyDate);
+    if (cached === undefined || Date.now() - cached.loadedAt >= MARKET_OVERVIEW_INTRADAY_CACHE_MS) {
+        void ensureMarketTurnoverIntraday(market, { force: proto.session === 'intraday' }).then(entry => {
             if (entry !== null && marketSwitchRender !== null) {
                 marketSwitchRender();
             }
         });
     }
 
-    return !usableCached
-        ? fallback
-        : { ...group, turnoverLeaders: cached.rows, asOf: cached.tradingDate, intraday: true };
+    return !cachedDateCompatible
+        ? { ...fallback, turnoverFallback: true }
+        : {
+            ...group,
+            turnoverLeaders: cached.rows,
+            asOf: cached.tradingDate,
+            turnoverLeadersAsOf: cached.tradingDate,
+            turnoverDelayed: cachedIntradayStale || cached.tradingDate !== overviewDate,
+            turnoverFallback: false,
+            intraday: true
+        };
 }
 
 function mspBuildDashboard(group, market, proto, paint) {
@@ -28677,7 +28741,7 @@ function mspBuildDashboard(group, market, proto, paint) {
         }
     }
 
-    if (market === 'us' || Array.isArray(group?.dates)) {
+    if (mspShouldShowDateStepper(market, group, proto)) {
         const stepper = mspBuildDateStepper(group, market, proto, paint);
         if (stepper !== null) {
             dashboard.append(stepper);
@@ -28690,11 +28754,25 @@ function mspBuildDashboard(group, market, proto, paint) {
     }
     if (group.intraday === true) {
         const status = document.createElement('p');
-        status.className = 'msp-card-detail';
+        const isOpen = mspIsIntradaySession(market);
         const captured = group.capturedAt ? new Date(group.capturedAt) : null;
-        status.textContent = `盤中暫估｜5 分鐘快照｜截至 ${captured && !Number.isNaN(captured.valueOf())
-            ? captured.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })
-            : '—'}`;
+        const capturedIsValid = captured !== null && !Number.isNaN(captured.valueOf());
+        const isStale = !capturedIsValid || Date.now() - captured.valueOf() > MARKET_OVERVIEW_INTRADAY_STALE_MS;
+        const zone = market === 'jp' ? 'Asia/Tokyo' : 'Asia/Seoul';
+        const dateLabel = group.asOf?.replaceAll('-', '/') ?? '—';
+        const timeLabel = capturedIsValid
+            ? captured.toLocaleTimeString('zh-TW', { timeZone: zone, hour: '2-digit', minute: '2-digit', hour12: false })
+            : '—';
+        if (isOpen && isStale) {
+            status.className = 'msp-card-detail msp-intraday-stale';
+            status.textContent = `⚠ 盤中快照超過 20 分鐘未更新｜交易日 ${dateLabel}｜最後資料 ${timeLabel}`;
+        } else if (isOpen) {
+            status.className = 'msp-card-detail';
+            status.textContent = `盤中暫估｜交易日 ${dateLabel}｜截至 ${timeLabel}`;
+        } else {
+            status.className = 'msp-card-detail';
+            status.textContent = `最後有效盤中快取｜交易日 ${dateLabel}｜截至 ${timeLabel}｜非即時報價`;
+        }
         dashboard.append(status);
     }
     for (const warning of (group.warnings ?? [])) {
@@ -29120,6 +29198,7 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
 .msp-date-step:disabled { opacity: 0.4; cursor: default; }
 .msp-date-label { min-width: 84px; text-align: center; font-variant-numeric: tabular-nums; }
 .msp-card-detail { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+.msp-intraday-stale { color: var(--warning-text, #b45309); }
 .msp-section-title { margin: 0 0 10px; font-size: 15px; }
 .msp-turnover-leaders {
     padding: 14px;

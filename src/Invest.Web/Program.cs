@@ -1900,6 +1900,7 @@ static async Task RunMarketOverviewIntradayAsync(IServiceProvider services, stri
     var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
     var publishedRounds = 0;
     var failedRounds = 0;
+    DateTimeOffset? nextTurnoverAttemptAt = null;
 
     using var scope = services.CreateScope();
     var collector = scope.ServiceProvider.GetRequiredService<MarketOverviewIntradayCollector>();
@@ -1916,7 +1917,7 @@ static async Task RunMarketOverviewIntradayAsync(IServiceProvider services, stri
         Console.WriteLine(
             $"日韓盤中市場總覽：{string.Join(", ", markets)}；"
             + (loop
-                ? $"每 {CollectionSchedule.AsiaOverviewIntradayInterval.TotalMinutes:0} 分鐘一輪，至 {CollectionSchedule.AsiaOverviewIntradayEnd:HH\\:mm}。"
+                ? $"總覽每 {CollectionSchedule.AsiaOverviewIntradayInterval.TotalMinutes:0} 分鐘一輪、成交排行每 {CollectionSchedule.AsiaTurnoverIntradayInterval.TotalMinutes:0} 分鐘嘗試一次，至 {CollectionSchedule.AsiaOverviewIntradayEnd:HH\\:mm}。"
                 : "抓一輪後結束。"));
 
         while (true)
@@ -1924,14 +1925,20 @@ static async Task RunMarketOverviewIntradayAsync(IServiceProvider services, stri
             var report = await collector.CollectOnceAsync(markets, new Progress<string>(Console.WriteLine), cts.Token);
             publishedRounds += report.PublishedMarkets.Count;
 
-            var turnoverReport = await turnoverCollector.CollectAsync(
-                markets, isFinal: false, cancellationToken: cts.Token);
-            if (turnoverReport.SkippedMarkets.Count > 0)
+            var turnoverAttemptAt = DateTimeOffset.UtcNow;
+            if (CollectionSchedule.IsAsiaTurnoverAttemptDue(turnoverAttemptAt, nextTurnoverAttemptAt))
             {
-                // 排行來源尚未接線，不能讓它拖累已經在跑的總覽盤中輪次（同一個 P0 原則）。
-                foreach (var warning in turnoverReport.Warnings)
+                // 先消耗時槽再呼叫來源；Yahoo 429 或其他失敗也要等 20 分鐘，避免重試風暴。
+                nextTurnoverAttemptAt = CollectionSchedule.NextAsiaTurnoverAttempt(turnoverAttemptAt);
+                var turnoverReport = await turnoverCollector.CollectAsync(
+                    markets, isFinal: false, cancellationToken: cts.Token);
+                if (turnoverReport.SkippedMarkets.Count > 0)
                 {
-                    Console.WriteLine($"成交排行本輪未發布：{warning}");
+                    // 排行是可降級的獨立流；失敗只顯示警告，不計入總覽失敗輪次。
+                    foreach (var warning in turnoverReport.Warnings)
+                    {
+                        Console.WriteLine($"成交排行本輪未發布：{warning}");
+                    }
                 }
             }
 

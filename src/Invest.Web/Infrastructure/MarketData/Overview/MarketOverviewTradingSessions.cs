@@ -55,7 +55,8 @@ public sealed record MarketOverviewTradingSession(
             return false;
         }
 
-        var time = TimeOnly.FromDateTime(local.DateTime);
+        // 交易所時段以分鐘定義；秒／毫秒精度會讓 15:30:00.066 被誤判為收盤後。
+        var time = new TimeOnly(local.Hour, local.Minute);
         return Segments.Any(segment => time >= segment.Start && time <= segment.End);
     }
 }

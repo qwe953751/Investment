@@ -40,6 +40,15 @@ public static class CollectionSchedule
     /// </summary>
     public static readonly TimeSpan AsiaOverviewIntradayInterval = TimeSpan.FromMinutes(5);
 
+    /// <summary>日韓成交排行最多每 20 分鐘嘗試一次；失敗也會消耗本次時槽。</summary>
+    public static readonly TimeSpan AsiaTurnoverIntradayInterval = TimeSpan.FromMinutes(20);
+
+    public static bool IsAsiaTurnoverAttemptDue(DateTimeOffset now, DateTimeOffset? nextAttemptAt)
+        => nextAttemptAt is null || now >= nextAttemptAt.Value;
+
+    public static DateTimeOffset NextAsiaTurnoverAttempt(DateTimeOffset attemptedAt)
+        => attemptedAt + AsiaTurnoverIntradayInterval;
+
     /// <summary>
     /// 判定休市、提早收工的時刻。
     ///

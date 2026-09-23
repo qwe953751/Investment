@@ -87,4 +87,16 @@ public class CollectionScheduleTests
 
         Assert.True(rounds >= 10, $"開盤到判休市之間只有 {rounds} 輪，證據不夠。");
     }
+
+    [Fact]
+    public void 日韓成交排行首次立即嘗試之後每二十分鐘最多一次()
+    {
+        var firstAttempt = At(9, 0);
+        var nextAttempt = CollectionSchedule.NextAsiaTurnoverAttempt(firstAttempt);
+
+        Assert.Equal(TimeSpan.FromMinutes(20), CollectionSchedule.AsiaTurnoverIntradayInterval);
+        Assert.True(CollectionSchedule.IsAsiaTurnoverAttemptDue(firstAttempt, null));
+        Assert.False(CollectionSchedule.IsAsiaTurnoverAttemptDue(firstAttempt.AddMinutes(19), nextAttempt));
+        Assert.True(CollectionSchedule.IsAsiaTurnoverAttemptDue(nextAttempt, nextAttempt));
+    }
 }

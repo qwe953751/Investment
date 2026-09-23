@@ -34,7 +34,7 @@ public sealed class AsiaMarketOverviewWorkflowTests
     }
 
     [Fact]
-    public void 市場總覽前端有獨立盤中CDN並在午休或過期時退回盤後()
+    public void 日韓盤中前端保留最後有效快照並在手動盤中隱藏日期選擇器()
     {
         var script = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(), "src", "Invest.Web", "Infrastructure", "StaticSite", "Assets", "site.js"));
@@ -42,8 +42,20 @@ public sealed class AsiaMarketOverviewWorkflowTests
         Assert.Contains("marketOverviewIntradayCdn", script, StringComparison.Ordinal);
         Assert.Contains("function mspIsIntradaySession", script, StringComparison.Ordinal);
         Assert.Contains("Asia/Tokyo", script, StringComparison.Ordinal);
-        Assert.Contains("快照過期或交易日不符", script, StringComparison.Ordinal);
-        Assert.Contains("改顯示盤後資料", script, StringComparison.Ordinal);
+        Assert.Contains("intradayStale: age > MARKET_OVERVIEW_INTRADAY_STALE_MS", script, StringComparison.Ordinal);
+        Assert.Contains("保留最後有效資料", script, StringComparison.Ordinal);
+        Assert.Contains("function mspShouldShowDateStepper", script, StringComparison.Ordinal);
+        Assert.Contains("proto.date = null", script, StringComparison.Ordinal);
+        Assert.Contains("超過 20 分鐘未更新", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 日韓盤中workflow標明總覽五分鐘排行二十分鐘節奏()
+    {
+        var workflow = ReadWorkflow("asia-market-overview-intraday.yml");
+
+        Assert.Contains("總覽每 5 分鐘一輪", workflow, StringComparison.Ordinal);
+        Assert.Contains("成交排行每 20 分鐘最多嘗試一次", workflow, StringComparison.Ordinal);
     }
 
     private static string ReadWorkflow(string name)

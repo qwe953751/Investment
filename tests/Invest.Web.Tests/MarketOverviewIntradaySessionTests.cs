@@ -17,14 +17,20 @@ public sealed class MarketOverviewIntradaySessionTests
     }
 
     [Fact]
-    public void 台北十四點半仍允許日韓最後一根收集但十四點三十五後結束()
+    public void 收盤分鐘內仍允許日韓最後一輪但下一分鐘後結束()
     {
         // 台北 14:30 = 東京／首爾 15:30。
         var close = new DateTimeOffset(2026, 9, 14, 6, 30, 0, TimeSpan.Zero).AddDays(1);
-        var afterClose = close.AddMinutes(5);
+        var closeAfterFractionalSecond = close.AddMilliseconds(66);
+        var closeLastSecond = close.AddSeconds(59).AddMilliseconds(999);
+        var afterClose = close.AddMinutes(1);
 
         Assert.True(MarketOverviewTradingSessions.Japan.IsOpenAt(close));
         Assert.True(MarketOverviewTradingSessions.Korea.IsOpenAt(close));
+        Assert.True(MarketOverviewTradingSessions.Japan.IsOpenAt(closeAfterFractionalSecond));
+        Assert.True(MarketOverviewTradingSessions.Korea.IsOpenAt(closeAfterFractionalSecond));
+        Assert.True(MarketOverviewTradingSessions.Japan.IsOpenAt(closeLastSecond));
+        Assert.True(MarketOverviewTradingSessions.Korea.IsOpenAt(closeLastSecond));
         Assert.False(MarketOverviewTradingSessions.Japan.IsOpenAt(afterClose));
         Assert.False(MarketOverviewTradingSessions.Korea.IsOpenAt(afterClose));
         Assert.Equal(TimeSpan.FromMinutes(5), CollectionSchedule.AsiaOverviewIntradayInterval);

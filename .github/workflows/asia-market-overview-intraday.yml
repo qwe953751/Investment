@@ -1,4 +1,4 @@
-# 日／韓市場總覽盤中：只收固定的指數、風險指數與產業代表，5 分鐘一輪。
+# 日／韓市場總覽盤中：總覽每 5 分鐘一輪，成交排行每 20 分鐘最多嘗試一次。
 # 不寫入台股 intraday_* 資料表、不重新發佈 GitHub Pages；完整快照只送到獨立的
 # Supabase Storage bucket，再由未來的靜態網站 manifest 讀取公開 latest 指標。
 # Yahoo Finance chart API 沒有公開 SLA，429 或核心缺值會讓本輪保留前一份 latest 並使 run 失敗。
@@ -91,7 +91,7 @@ jobs:
               sleep "$(( start - now ))"
           fi
 
-      # 成交金額前 20 改用 Yahoo screener（未公開端點、不需要金鑰），跟總覽指數同一輪收集。
+      # 成交金額前 20 使用 Yahoo screener（未公開端點）；程式內每 20 分鐘嘗試一次，失敗也節流。
       - name: 收集日韓精簡盤中快照
         env:
           # 僅能上傳 public 的 market-overview-intraday-snapshots／market-turnover-snapshots bucket；
