@@ -226,7 +226,7 @@ Dashboard 與帳戶明細的折線圖共用版本 A：滑鼠移動／點擊或�
 桌面工具列固定在右上角；手機版將完整工具／權限區塊放在市場頁籤之前；市場共用內容外框與手機響應規則，導覽與標題卡之間不繪製整條橫線。
 最高權限市場頁籤順序為台股／日股／韓股／美股／加密；日股／韓股只對最高權限顯示。
 四市場已共用 C# 熱絡計算引擎與市場設定。日股／韓股兩年盤後日線只寫 `data` 分支快取；五分鐘盤中總覽與獨立成交排行只寫 Supabase Storage CDN，不寫 Postgres。使用者可手動切換日韓「盤中／盤後」：切到盤中時隱藏交易日選擇器並清除已選歷史日期；開市自動顯示當日有效盤中資料，超過 20 分鐘會保留最後資料並警告。盤後手動選盤中時也保留最後有效快照，標明實際交易日／時間及「非即時」，不會把前一交易日冒充今天；無有效快取時回退盤後資料。排行來源獨立於總覽，收集端最多每 20 分鐘嘗試一次，避免五分鐘總覽輪詢把 Yahoo Screener 打到限流。
-日本使用 TOPIX-17 ETF 代理產業，韓國明確標示為 11 檔產業代表；TOPIX／JPX-Nikkei 400／KRX 100 與韓國風險值的代理語意均寫在市場名稱與 warning，20% 風險權重不因缺來源而消失。下載器會在核心資料不全時失敗且不提交部分快取；日韓日線已完成兩年回補並發布至正式網站。市場總覽 JSON 的正式 wire key 固定為 `jp`／`kr`（前端對舊 `japan`／`korea` 快照只保留一次相容讀取）；盤中 Storage 首輪已寫入 `jp`／`kr` 快照並由最新 manifest `1789354845` 指向，後續依交易日持續更新。
+日本使用 TOPIX-17 ETF 代理產業，韓國明確標示為 11 檔產業代表；TOPIX／JPX-Nikkei 400／KRX 100 與韓國風險值的代理語意均寫在市場名稱與 warning，20% 風險權重不因缺來源而消失。下載器會在核心資料不全時失敗且不提交部分快取；日韓日線已完成兩年回補並發布至正式網站。市場總覽 JSON 的正式 wire key 固定為 `jp`／`kr`（前端對舊 `japan`／`korea` 快照只保留一次相容讀取）；盤中快照使用獨立 Storage CDN，部署版本與目前資料日期見下方「最新已發布版本」，不以網站程式發布時間代表市場快照已更新。
 美股／日股／韓股的「成交金額前 20」已改由免金鑰的 `YahooScreenerMarketTurnoverClient` 統一收集：以成交量軸與股價軸候選池計算 `股價 × 成交量` 估計值，只有候選池外成交金額上限低於第 20 名時才發布，並保留至少 20 列、名次連續、代號不重複與金額有效的品質門檻。盤後排行寫入 `data/imports-turnover` 並在 export 時併入 `market-overview.json`；日韓盤中排行只送版本化 Supabase Storage CDN，瀏覽器不直連來源、不查 PostgreSQL。`MarketTurnoverCdn:Public` 已開啟，三市場 workflow、Storage、manifest 與正式網站均已在 2026-09-19 線上驗證；Yahoo 是未公開端點且沒有再散布授權或 SLA，風險、替代來源與 TradingView 備案見[非台股市場成交金額前20實作規格](Doc/技術文件/非台股市場成交金額前20實作規格.md)。
 資產／筆記在既有三種市場間維持聯動；本輪契約修正 commit `9bd988bb` 已包含在 [`daily-snapshot.yml` publish-only run 34801030426](https://github.com/qwe953751/Investment/actions/runs/34801030426) 的正式發布，公開 manifest 為 `1789354845`；完整驗證記於 [版本紀錄](Doc/版本紀錄.md)。
 筆記 #56／#54／#50 已完成手機小控件最上層、裝置清單重複狀態清理，以及其他市場彈出式 K 線標題的 MoneyDJ 連結；
@@ -236,6 +236,10 @@ Dashboard 與帳戶明細的折線圖共用版本 A：滑鼠移動／點擊或�
 [`daily-snapshot.yml` publish-only run 34128141460](https://github.com/qwe953751/Investment/actions/runs/34128141460) 發布。
 
 ## 最新已發布版本
+
+日韓盤中快照保留、盤中隱藏交易日選擇器與成交排行節流已由 `main` commit `e0bf561baf9d995e3af1e9939cba3eedf461f5ee` 推送，並由 [`daily-snapshot.yml` publish-only run 35823304303](https://github.com/qwe953751/Investment/actions/runs/35823304303) 成功發布；run `headSha` 與 commit 一致。正式 `gh-pages` ref 為 `95bb9434c6fe37a9697fd13bdc3457ed202717bf`，公開 manifest HTTP 200、version `1790142064`、最新盤後交易日 `2026/09/22`、產生時間 `2026-09-23 13:41`；公開 `site.js` 已驗證含日期選擇器隱藏與過期快照警示邏輯。publish-only 依設計略過行情回補、Supabase 同步、備份與心跳。
+
+截至 2026-09-23 14:05，Storage 的 KR 快照為 `tradeDate=2026-09-23`、3 指數／11 產業、15 列；JP 指標仍指向 `tradeDate=2026-09-14`（同為 3 指數／11 產業、15 列）。9/15 起的盤中 workflow 曾因未設定 KIS 金鑰而失敗；9/19 成交排行已改用免金鑰 Yahoo Screener，9/22 再修好既有 Storage bucket 回 HTTP 400 的重複建立判定。日本 9/21～9/23 為連續休市日，這些修正後尚無日本開盤日可驗證新快照；因此 UI 修復已發布，但 JP 最新快照更新仍待 9/24 開市實測。詳見[版本紀錄.md](Doc/版本紀錄.md)最新一節與[內閣府國民祝日表](https://www8.cao.go.jp/chosei/shukujitsu/gaiyou.html)。
 
 本輪筆記 #58／#59 的族群 Supabase 來源修正與 timeout 重試修正已由 `main` commit `2dc6871c` 推送，並由
 [`daily-snapshot.yml` publish-only run 34738818264](https://github.com/qwe953751/Investment/actions/runs/34738818264)
