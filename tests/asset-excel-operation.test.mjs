@@ -440,10 +440,227 @@ test('Edge Function 具備 import／草稿／export、Google hash 衝突與 18:3
     assert.doesNotMatch(writer, /columnIndex: 3/);
     assert.doesNotMatch(writer, /startColumnIndex: 3/);
     assert.match(syncFunction, /copyPaste/);
+    assert.match(syncFunction, /deleteDimension/);
+    assert.match(syncFunction, /repair-stale-tail/);
+    assert.match(syncFunction, /compacted-snapshot:/);
     assert.match(syncFunction, /save-column-order/);
     assert.match(cronMigration, /30 10 \* \* \*/);
     assert.match(cronMigration, /asset_operation_cron_secret/);
     assert.match(cronMigration, /net\.http_post/);
+});
+
+function googleWriterContext() {
+    const requests = [];
+    const context = {
+        FIRST_DATA_ROW: 4,
+        LAST_CONTROLLED_COLUMN: 52,
+        WRITE_ENABLED: true,
+        SHEET_ID: 58931507,
+        SPREADSHEET_ID: 'spreadsheet-test',
+        SHEET_NAME: '操作(台)',
+        METADATA_PREFIX: 'invest.asset-operation',
+        COMPACTION_MARKER_PREFIX: 'compacted-snapshot:',
+        URLSearchParams,
+        requests,
+        safetyResponse: { sheets: [{ properties: { sheetId: 58931507 }, merges: [] }] },
+        googleRequest: async (_path, options) => {
+            if (options?.body) requests.push(...JSON.parse(options.body).requests);
+            return context.safetyResponse;
+        },
+        cell(rows, rowIndex, columnIndex) {
+            return rows[rowIndex]?.[columnIndex] ?? '';
+        },
+        rowHasControlledData(rows, rowIndex, columns) {
+            const hasIdentity = [columns.fields.buy, columns.fields.stock]
+                .some(index => String(rows[rowIndex]?.[index] ?? '').trim() !== '');
+            return hasIdentity || columns.groups.some(group => rows[rowIndex]?.[group.index] === true);
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        edgeFunctionSource('columnLabel'),
+        edgeFunctionSource('assertRowsSafeToDelete'),
+        edgeFunctionSource('compactionMarkers'),
+        edgeFunctionSource('writeGoogle')
+    ].join('\n\n'), context);
+    return context;
+}
+
+test('Google 匯出以整列刪除多出的標的列，且不更新 D 或表頭統計列', async () => {
+    const context = googleWriterContext();
+    const sheet = {
+        rowCount: 1000,
+        sheetProperties: { gridProperties: { columnCount: 52 } },
+        developerMetadata: [],
+        columns: { fields: { buy: 1, stock: 2 }, groups: [{ index: 4 }] },
+        groups: [{ id: 'group-1', sheet_column_index: 5 }],
+        rawRows: [
+            [], [], [],
+            ['', 1, '2330 台積電', '', true],
+            ['', 1, '2454 聯發科', '', false],
+            ['', 1, '3105 穩懋', '', true]
+        ]
+    };
+    const result = await context.writeGoogle(sheet, [
+        { buy: 1, stock: '2330 台積電', group_flags: { 'group-1': true } }
+    ], { markerSnapshotId: 'snapshot-new' });
+
+    const deleteRequest = context.requests.find(request => request.deleteDimension)?.deleteDimension;
+    assert.deepEqual(JSON.parse(JSON.stringify(deleteRequest.range)), {
+        sheetId: 58931507,
+        dimension: 'ROWS',
+        startIndex: 4,
+        endIndex: 6
+    });
+    assert.equal(result.deletedRows, 2);
+    assert.equal(result.firstDeletedRow, 5);
+    assert.equal(result.lastDeletedRow, 6);
+    assert.ok(context.requests.some(request => request.createDeveloperMetadata));
+    assert.ok(context.requests.every(request => {
+        const startColumn = request.updateCells?.start?.columnIndex;
+        const rangeStartColumn = request.updateCells?.range?.startColumnIndex;
+        return startColumn !== 3 && rangeStartColumn !== 3;
+    }));
+    assert.ok(context.requests.every(request => !request.updateCells
+        || request.updateCells.fields === 'userEnteredValue'));
+});
+
+test('網站清空所有標的時保留第 4 列模板並實體刪除後續標的列', async () => {
+    const context = googleWriterContext();
+    const sheet = {
+        rowCount: 1000,
+        sheetProperties: { gridProperties: { columnCount: 52 } },
+        developerMetadata: [],
+        columns: { fields: { buy: 1, stock: 2 }, groups: [{ index: 4 }] },
+        groups: [{ id: 'group-1', sheet_column_index: 5 }],
+        rawRows: [[], [], [], ['', 1, '2330 台積電', '', true], ['', 2, '2454 聯發科', '', false]]
+    };
+    const result = await context.writeGoogle(sheet, [], { markerSnapshotId: 'empty-snapshot' });
+
+    const deleteRange = context.requests.find(request => request.deleteDimension).deleteDimension.range;
+    assert.deepEqual(JSON.parse(JSON.stringify(deleteRange)), {
+        sheetId: 58931507,
+        dimension: 'ROWS',
+        startIndex: 4,
+        endIndex: 5
+    });
+    const clears = context.requests.filter(request => request.updateCells);
+    assert.equal(clears.length, 2);
+    assert.ok(clears.every(request => request.updateCells.range.startRowIndex === 3
+        && request.updateCells.range.endRowIndex === 4));
+    assert.equal(result.deletedRows, 1);
+});
+
+test('整列刪除若會移動 AZ 以外的資料或驗證就停止', async () => {
+    const context = googleWriterContext();
+    context.safetyResponse = { sheets: [{
+        properties: { sheetId: 58931507 },
+        merges: [],
+        data: [{ rowData: [{ values: [{ dataValidation: { condition: { type: 'BOOLEAN' } } }] }] }]
+    }] };
+    const sheet = {
+        rowCount: 1000,
+        sheetProperties: { gridProperties: { columnCount: 53 } },
+        developerMetadata: [],
+        columns: { fields: { buy: 1, stock: 2 }, groups: [{ index: 4 }] },
+        groups: [{ id: 'group-1', sheet_column_index: 5 }],
+        rawRows: [[], [], [], ['', 1, '2330 台積電', '', true], ['', 2, '2454 聯發科', '', false]]
+    };
+
+    await assert.rejects(context.writeGoogle(sheet, [
+        { buy: 1, stock: '2330 台積電', group_flags: { 'group-1': true } }
+    ]), /受控範圍外/);
+    assert.equal(context.requests.length, 0);
+});
+
+test('舊版匯出殘列只依據最近匯入／匯出快照差額修復一次', async () => {
+    const active = {
+        id: 'active-export', source: 'google_export', status: 'active', row_count: 46,
+        payload: Array.from({ length: 46 }, (_, sort_order) => ({ sort_order })),
+        content_hash: 'same-hash', created_at: '2026-09-29T13:36:36.211328+00:00'
+    };
+    const previous = {
+        id: 'previous-import', source: 'google_import', row_count: 47,
+        created_at: '2026-09-29T13:36:09.940870+00:00'
+    };
+    const beforeSheet = {
+        rows: active.payload,
+        rowCount: 1000,
+        frozenRowCount: 3,
+        developerMetadata: [],
+        rawRows: [],
+        columns: {},
+        groups: []
+    };
+    const afterSheet = {
+        ...beforeSheet,
+        rowCount: 999,
+        developerMetadata: [{ developerMetadata: {
+            metadataId: 999,
+            metadataValue: 'compacted-snapshot:active-export',
+            location: { sheetId: 58931507 }
+        }}]
+    };
+    const formulaRows = Array.from({ length: 49 }, () => Array(52).fill(''));
+    formulaRows[0][1] = '=SUM(B4:B121)';
+    formulaRows[1][1] = '=COUNTA(C4:C118)';
+    formulaRows[2][1] = 'Buy';
+    formulaRows[3][3] = '=IF(B4>0,TRUE,FALSE)';
+    let readCount = 0;
+    let writeOptions = null;
+    let writeCount = 0;
+    let formulaReadCount = 0;
+    const context = {
+        FIRST_DATA_ROW: 4,
+        LAST_CONTROLLED_COLUMN: 52,
+        SHEET_ID: 58931507,
+        COMPACTION_MARKER_PREFIX: 'compacted-snapshot:',
+        cell(rows, rowIndex, columnIndex) { return rows[rowIndex]?.[columnIndex] ?? ''; },
+        targetAccount: async () => {},
+        syncState: async () => ({
+            status: 'clean', active_snapshot_id: active.id, base_google_hash: 'same-hash'
+        }),
+        supabaseRequest: async url => {
+            if (url.includes('status=eq.pending')) return [];
+            if (url.includes(`id=eq.${active.id}`)) return [active];
+            if (url.includes(`id=neq.${active.id}`)) return [previous];
+            throw new Error(`未預期查詢：${url}`);
+        },
+        readSheet: async () => structuredClone(readCount++ === 0 ? beforeSheet : afterSheet),
+        contentHash: async () => 'same-hash',
+        sheetFormulaValues: async () => {
+            formulaReadCount += 1;
+            return formulaRows;
+        },
+        writeGoogle: async (_sheet, _rows, options) => {
+            writeCount += 1;
+            writeOptions = options;
+            return { deletedRows: 1, firstDeletedRow: 50, lastDeletedRow: 50 };
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        edgeFunctionSource('compactionMarkers'),
+        edgeFunctionSource('hasCompactionMarker'),
+        edgeFunctionSource('columnLabel'),
+        edgeFunctionSource('assertProtectedSheetStructure'),
+        edgeFunctionSource('repairStaleTrailingRowsAction')
+    ].join('\n\n'), context);
+
+    const result = await context.repairStaleTrailingRowsAction('account-1');
+    assert.equal(result.repaired, true);
+    assert.equal(result.deletedRows, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(writeOptions)), {
+        legacyTrailingRows: 1,
+        markerSnapshotId: 'active-export'
+    });
+    assert.equal(formulaReadCount, 2);
+
+    const repeated = await context.repairStaleTrailingRowsAction('account-1');
+    assert.equal(repeated.alreadyRepaired, true);
+    assert.equal(repeated.deletedRows, 0);
+    assert.equal(writeCount, 1);
+    assert.equal(formulaReadCount, 2);
 });
 
 test('Edge Function 儲存欄位順序時會忽略舊 actions 鍵', async () => {
