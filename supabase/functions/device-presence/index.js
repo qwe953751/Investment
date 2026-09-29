@@ -9,6 +9,11 @@ const allowedOrigins = new Set([
     'https://app.admin.frank-investment.com',
     'https://view.frank-investment.com'
 ]);
+const DEVICE_ACCESS_LEVELS = new Set(['admin', 'monitor', 'holdings', 'viewer']);
+
+function isValidDeviceAccessLevel(value) {
+    return DEVICE_ACCESS_LEVELS.has(value);
+}
 
 function isAllowedOrigin(origin) {
     if (!origin) {
@@ -103,7 +108,7 @@ async function databaseRequest(path, init = {}) {
 async function register(request) {
     const accessLevel = request.headers.get('x-site-access');
 
-    if (accessLevel !== 'admin' && accessLevel !== 'viewer') {
+    if (!isValidDeviceAccessLevel(accessLevel)) {
         return json(request, { error: 'invalid access level' }, 400);
     }
 

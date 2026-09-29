@@ -1053,6 +1053,12 @@ const DEVICE_PRESENCE_STORAGE_KEY = 'invest-device-presence-id';
 const DEVICE_PRESENCE_HEARTBEAT_MS = 5 * 60_000;
 const DEVICE_PRESENCE_REFRESH_MS = 60_000;
 const DEVICE_PRESENCE_ACTIVE_WINDOW_MS = 10 * 60_000;
+const DEVICE_PRESENCE_MODE_LABELS = Object.freeze({
+    admin: '最高權限',
+    monitor: '監控者',
+    holdings: '持倉者',
+    viewer: '訪客'
+});
 
 let devicePresenceDevices = [];
 let devicePresenceLoadedAt = 0;
@@ -1061,6 +1067,10 @@ let devicePresenceLoaded = false;
 let devicePresenceError = '';
 let devicePresenceHeartbeatTimer = null;
 let devicePresenceWired = false;
+
+function devicePresenceModeText(mode) {
+    return DEVICE_PRESENCE_MODE_LABELS[mode] ?? '未知模式';
+}
 
 function getDevicePresenceId() {
     try {
@@ -1252,7 +1262,7 @@ function renderDevicePresencePanel() {
 
             appendDevicePresenceCell(row, '裝置', device.device_name, true);
             appendDevicePresenceCell(row, 'IP', device.ip_address || '未取得');
-            appendDevicePresenceCell(row, '權限', device.access_level === 'admin' ? '最高權限' : '檢視權限');
+            appendDevicePresenceCell(row, '模式', devicePresenceModeText(device.access_level));
 
             const lastSeen = document.createElement('div');
             lastSeen.className = 'device-presence-cell';
@@ -2627,6 +2637,7 @@ function afterAccessChange() {
     marketSwitchRender?.();
     renderAccessBadge();
     wireDevicePresence();
+    void registerDevicePresence();
     void refreshAlerts();
     void load().catch(reportLoadFailure);
 }
