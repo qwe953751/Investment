@@ -71,7 +71,23 @@ function excelFunctions() {
     const context = {
         ASSET_EXCEL_PREVIEW_COLUMNS: columns,
         assetExcelAccountId: 'account-1',
-        revenueOf: ticker => ticker === '1303' ? { highMonths: 13 } : null
+        document: {
+            createElement(tagName) {
+                return {
+                    tagName,
+                    dataset: {},
+                    children: [],
+                    classList: { add() {} },
+                    append(...children) { this.children.push(...children); },
+                    setAttribute(name, value) { this[name] = value; }
+                };
+            }
+        },
+        revenueOf: ticker => ticker === '1303'
+            ? { highMonths: 13 }
+            : ticker === '2330'
+                ? { highMonths: 0 }
+                : null
     };
     vm.createContext(context);
     vm.runInContext([
@@ -79,6 +95,7 @@ function excelFunctions() {
         functionSource('assetExcelRevenueHighMonths'),
         functionSource('assetExcelRevenueHighValue'),
         functionSource('assetExcelCellChecked'),
+        functionSource('makeAssetExcelDataCell'),
         functionSource('assetExcelOperationBody'),
         functionSource('assetExcelSummary'),
         functionSource('assetExcelColumnSortable'),
@@ -105,12 +122,20 @@ function excelSortController() {
     return context;
 }
 
-test('營收創高只由創高月數判斷，13 個月為勾選，其餘為 X', () => {
+test('營收創高用勾選、X、-區分創高、未創高與未公告', () => {
     const context = excelFunctions();
 
     assert.equal(context.assetExcelRevenueHighValue({ stock: '1303 南亞', revenueHighMonths: 0 }), true);
     assert.equal(context.assetExcelRevenueHighValue({ stock: '2330 台積電', revenueHighMonths: 13 }), 'X');
-    assert.equal(context.assetExcelRevenueHighValue({ stock: '1303 南亞' }), true);
+    assert.equal(context.assetExcelRevenueHighValue({ stock: '9999 未公告' }), '-');
+
+    const highCell = context.makeAssetExcelDataCell({ stock: '1303 南亞' }, columns[3], false);
+    const noHighCell = context.makeAssetExcelDataCell({ stock: '2330 台積電' }, columns[3], false);
+    const noReportCell = context.makeAssetExcelDataCell({ stock: '9999 未公告' }, columns[3], false);
+    assert.equal(highCell.children[0].type, 'checkbox');
+    assert.equal(highCell.children[0].checked, true);
+    assert.equal(noHighCell.textContent, 'X');
+    assert.equal(noReportCell.textContent, '-');
 });
 
 test('營收創高不會進入正式操作列寫回欄位', () => {

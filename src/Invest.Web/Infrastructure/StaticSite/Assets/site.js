@@ -9995,7 +9995,8 @@ function assetExcelRevenueHighMonths(row) {
 }
 
 function assetExcelRevenueHighValue(row) {
-    return assetExcelRevenueHighMonths(row) >= 13 ? true : 'X';
+    const months = assetExcelRevenueHighMonths(row);
+    return months === null ? '-' : months >= 13 ? true : 'X';
 }
 
 function assetExcelColumnList() {
@@ -10338,8 +10339,8 @@ function makeAssetExcelDataCell(row, column, editing) {
         cell.dataset.revenueHighMonths = months === null ? '' : String(months);
         cell.title = `創高月數：${months === null ? '—' : months}`;
 
-        if (value === 'X') {
-            cell.textContent = 'X';
+        if (value === 'X' || value === '-') {
+            cell.textContent = value;
             return cell;
         }
 
