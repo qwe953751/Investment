@@ -262,12 +262,13 @@ test('年度卡的每月 MOM 由日快照取每月最後一筆，並由 1 月向
     assert.equal(result.months[3].mom, null);
 });
 
-test('每月 MOM 圖表不再顯示年度前綴或黃色標記對應的說明文字', () => {
+test('每月 MOM 圖表標示百分比，且不顯示年度前綴或狀態文字', () => {
     const chart = functionSource('makeAssetAnnualPreviewMonthChart');
 
-    assert.match(chart, /title\.textContent = '每月 MOM'/);
+    assert.match(chart, /title\.textContent = '每月 MOM（%）'/);
     assert.doesNotMatch(chart, /\$\{year \?\? ''\} 每月 MOM/);
     assert.doesNotMatch(chart, /紅：正報酬|綠：負報酬|資料至/);
+    assert.doesNotMatch(chart, /系統自動帶入|不可編輯/);
 });
 
 test('新增年度的入金成本為出入金紀錄衍生欄位，不接受手動輸入', () => {

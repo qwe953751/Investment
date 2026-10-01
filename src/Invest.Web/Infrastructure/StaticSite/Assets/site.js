@@ -7180,11 +7180,15 @@ function loadAssetAnnualPreviewData() {
         ['2472', '立隆電', 90, 20_684, 19_260, -.7],
         ['9999', '其餘持股（預覽）', 1, 1_508_887, 1_768_217, 0]
     ];
-    const snapshotValues = [2_394_771, 2_285_000, 2_285_000, 2_330_000, 2_330_000,
-        2_325_000, 2_202_625, 2_276_000, 2_292_089];
+    // 本機預覽用跨月正負變化展示 MOM 柱與標籤；這些示意值不會寫入資料庫。
+    const snapshotValues = [1_800_000, 1_860_000, 1_820_000, 1_960_000, 1_940_000,
+        2_080_000, 2_025_000, 2_160_000, 2_215_000, 2_394_771, 2_285_000, 2_285_000,
+        2_330_000, 2_330_000, 2_325_000, 2_202_625, 2_276_000, 2_100_000];
     const snapshotDates = [
-        '2026-09-02', '2026-09-03', '2026-09-04', '2026-09-05', '2026-09-06',
-        '2026-09-07', '2026-09-08', '2026-09-09', '2026-09-10'
+        '2025-12-31', '2026-01-30', '2026-02-27', '2026-03-31', '2026-04-30',
+        '2026-05-29', '2026-06-30', '2026-07-31', '2026-08-31', '2026-09-02',
+        '2026-09-03', '2026-09-04', '2026-09-05', '2026-09-06', '2026-09-07',
+        '2026-09-08', '2026-09-09', '2026-09-10'
     ];
 
     assetOwners = [{ id: ownerId, name: 'Frank', sortOrder: 0, updatedAt: now }];
@@ -8611,16 +8615,13 @@ function makeAssetAnnualPreviewMonthChart(view, row) {
     const data = assetAnnualPreviewMonthRowsFor(view, year);
     const chart = document.createElement('section');
     chart.className = 'asset-annual-preview-months';
-    chart.setAttribute('aria-label', `${year ?? ''} 年每月 MOM`);
+    chart.setAttribute('aria-label', `${year ?? ''} 年每月 MOM 百分比`);
 
     const heading = document.createElement('div');
     heading.className = 'asset-annual-preview-month-heading';
     const title = document.createElement('strong');
-    title.textContent = '每月 MOM';
-    const status = document.createElement('span');
-    status.className = 'asset-annual-preview-month-status';
-    status.textContent = data.available ? '系統自動帶入 · 不可編輯' : '尚無月度快照';
-    heading.append(title, status);
+    title.textContent = '每月 MOM（%）';
+    heading.append(title);
     chart.append(heading);
 
     if (!data.available) {
@@ -8634,7 +8635,7 @@ function makeAssetAnnualPreviewMonthChart(view, row) {
     const plot = document.createElement('div');
     plot.className = 'asset-annual-preview-month-plot';
     plot.setAttribute('role', 'img');
-    plot.setAttribute('aria-label', `${year ?? ''} 年每月 MOM 圖表`);
+    plot.setAttribute('aria-label', `${year ?? ''} 年每月 MOM 百分比圖表`);
     plot.style.setProperty('--asset-annual-month-count', String(data.months.length));
     const axis = document.createElement('span');
     axis.className = 'asset-annual-preview-month-axis';
@@ -8655,7 +8656,7 @@ function makeAssetAnnualPreviewMonthChart(view, row) {
         item.className = `asset-annual-preview-month-item ${tone}`;
         item.title = month.date === ''
             ? `${month.label} · 尚無可計算資料`
-            : `${month.date.replaceAll('-', '/')} · ${assetAnnualPreviewPercentText(mom)}`;
+            : `${month.date.replaceAll('-', '/')} · MOM ${assetAnnualPreviewPercentText(mom)}`;
         const stage = document.createElement('div');
         stage.className = 'asset-annual-preview-month-stage';
         const value = document.createElement('span');
@@ -8665,7 +8666,7 @@ function makeAssetAnnualPreviewMonthChart(view, row) {
         bar.className = 'asset-annual-preview-month-bar';
 
         if (mom !== null) {
-            const height = Math.max(7, Math.round(Math.abs(mom) / maxMagnitude * 42));
+            const height = Math.max(7, Math.round(Math.abs(mom) / maxMagnitude * 33));
             stage.style.setProperty('--asset-annual-month-bar-size', `${height}%`);
             bar.style.setProperty('--asset-annual-month-bar-size', `${height}%`);
         }

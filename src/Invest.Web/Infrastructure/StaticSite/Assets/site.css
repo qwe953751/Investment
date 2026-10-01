@@ -2474,12 +2474,6 @@ body {
     font-size: 14px;
 }
 
-.asset-annual-preview-month-status {
-    color: var(--text-muted);
-    font-size: 12px;
-    white-space: nowrap;
-}
-
 .asset-annual-preview-month-empty {
     margin: 12px 0 0;
     color: var(--text-muted);
@@ -2489,7 +2483,7 @@ body {
 .asset-annual-preview-month-plot {
     position: relative;
     min-width: 0;
-    margin-top: 9px;
+    margin-top: 14px;
     overflow-x: auto;
     padding: 0 2px 2px;
 }
@@ -2497,15 +2491,15 @@ body {
 .asset-annual-preview-month-items {
     position: relative;
     display: grid;
-    grid-template-columns: repeat(var(--asset-annual-month-count), minmax(34px, 1fr));
+    grid-template-columns: repeat(var(--asset-annual-month-count), minmax(54px, 1fr));
     min-width: 420px;
-    height: 154px;
+    height: 172px;
 }
 
 .asset-annual-preview-month-axis {
     position: absolute;
     z-index: 1;
-    top: 70px;
+    top: 72px;
     right: 2px;
     left: 2px;
     border-top: 1px dashed var(--text-muted);
@@ -2522,7 +2516,7 @@ body {
 
 .asset-annual-preview-month-stage {
     position: relative;
-    height: 126px;
+    height: 144px;
 }
 
 .asset-annual-preview-month-value {
@@ -2530,21 +2524,22 @@ body {
     z-index: 2;
     right: 2px;
     left: 2px;
-    overflow: hidden;
+    overflow: visible;
     font-size: 11px;
     font-variant-numeric: tabular-nums;
-    line-height: 1;
-    text-overflow: ellipsis;
+    font-weight: 600;
+    letter-spacing: -0.15px;
+    line-height: 1.2;
     white-space: nowrap;
 }
 
 .asset-annual-preview-month-bar {
     position: absolute;
     z-index: 2;
-    right: 22%;
-    left: 22%;
+    right: 28%;
+    left: 28%;
     min-height: 0;
-    border-radius: 5px;
+    border-radius: 4px;
 }
 
 .asset-annual-preview-month-item.positive {
@@ -2552,7 +2547,7 @@ body {
 }
 
 .asset-annual-preview-month-item.positive .asset-annual-preview-month-value {
-    bottom: calc(50% + var(--asset-annual-month-bar-size, 0%) + 5px);
+    top: 3px;
 }
 
 .asset-annual-preview-month-item.positive .asset-annual-preview-month-bar {
@@ -2566,7 +2561,7 @@ body {
 }
 
 .asset-annual-preview-month-item.negative .asset-annual-preview-month-value {
-    top: calc(50% + var(--asset-annual-month-bar-size, 0%) + 5px);
+    top: 3px;
 }
 
 .asset-annual-preview-month-item.negative .asset-annual-preview-month-bar {
@@ -2580,7 +2575,7 @@ body {
 }
 
 .asset-annual-preview-month-item.unchanged .asset-annual-preview-month-value {
-    top: calc(50% - 5px);
+    top: 3px;
 }
 
 .asset-annual-preview-month-item.unchanged .asset-annual-preview-month-bar {
@@ -2590,7 +2585,7 @@ body {
 }
 
 .asset-annual-preview-month-item.empty .asset-annual-preview-month-value {
-    top: calc(50% - 5px);
+    top: 3px;
 }
 
 .asset-annual-preview-month-label {
@@ -5093,8 +5088,12 @@ td.stock-name.stock-name-change-down {
     }
 
     .asset-annual-preview-month-items {
-        grid-template-columns: repeat(var(--asset-annual-month-count), minmax(28px, 1fr));
+        grid-template-columns: repeat(var(--asset-annual-month-count), minmax(46px, 1fr));
         min-width: 360px;
+    }
+
+    .asset-annual-preview-month-value {
+        font-size: 10px;
     }
 
     .asset-annual-preview-values {
