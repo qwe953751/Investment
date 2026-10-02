@@ -10459,3 +10459,66 @@ body.asset-excel-view-active .ranking-page {
         overflow: visible;
     }
 }
+
+html {
+    scroll-behavior: smooth;
+}
+
+.back-to-top-button {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 30;
+    display: inline-flex;
+    min-width: 76px;
+    min-height: 46px;
+    padding: 0 15px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    background: var(--accent);
+    box-shadow: 0 3px 12px rgb(16 24 40 / 22%);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: transform .15s ease, box-shadow .15s ease;
+}
+
+.back-to-top-button svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+}
+
+.back-to-top-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 16px rgb(16 24 40 / 28%);
+}
+
+.back-to-top-button:focus-visible {
+    outline: 3px solid var(--accent-border);
+    outline-offset: 3px;
+}
+
+@media (max-width: 720px) {
+    .back-to-top-button {
+        display: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+
+    .back-to-top-button {
+        transition: none;
+    }
+}
