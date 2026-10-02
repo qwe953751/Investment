@@ -50,7 +50,7 @@ function deduplicateDeviceSessions() {
     return context.deduplicateDeviceSessions;
 }
 
-test('同 IP、同權限但名稱皆為未知裝置時不視為重複', () => {
+test('未知裝置在同名稱、IP、權限下只顯示最新一筆且不刪除資料', () => {
     const dedupe = deduplicateDeviceSessions();
     const now = Date.now();
     const devices = [
@@ -75,10 +75,11 @@ test('同 IP、同權限但名稱皆為未知裝置時不視為重複', () => {
     const { duplicateIds, uniqueDevices } = dedupe(devices, now);
 
     assert.deepEqual(JSON.parse(JSON.stringify(duplicateIds)), []);
-    assert.equal(uniqueDevices.length, 2);
+    assert.equal(uniqueDevices.length, 1);
+    assert.equal(uniqueDevices[0].device_id, 'device-newer-000000000001');
 });
 
-test('比對鍵含 user_agent，不同瀏覽器的裝置不會互相覆蓋', () => {
+test('User-Agent 不同仍依名稱、IP、權限只顯示最新一筆', () => {
     const dedupe = deduplicateDeviceSessions();
     const now = Date.now();
     const devices = [
@@ -103,10 +104,11 @@ test('比對鍵含 user_agent，不同瀏覽器的裝置不會互相覆蓋', () 
     const { duplicateIds, uniqueDevices } = dedupe(devices, now);
 
     assert.deepEqual(JSON.parse(JSON.stringify(duplicateIds)), []);
-    assert.equal(uniqueDevices.length, 2);
+    assert.equal(uniqueDevices.length, 1);
+    assert.equal(uniqueDevices[0].device_id, 'device-chrome-00000000001');
 });
 
-test('同鍵重複列若在 24 小時內仍保留，避免誤刪使用中的裝置', () => {
+test('同組 24 小時內仍只顯示最新一筆，且不刪除資料', () => {
     const dedupe = deduplicateDeviceSessions();
     const now = Date.now();
     const devices = [
@@ -131,10 +133,11 @@ test('同鍵重複列若在 24 小時內仍保留，避免誤刪使用中的裝�
     const { duplicateIds, uniqueDevices } = dedupe(devices, now);
 
     assert.deepEqual(JSON.parse(JSON.stringify(duplicateIds)), []);
-    assert.equal(uniqueDevices.length, 2);
+    assert.equal(uniqueDevices.length, 1);
+    assert.equal(uniqueDevices[0].device_id, 'device-newest-0000000001');
 });
 
-test('同鍵重複列超過 24 小時才會被清除，且保留最新一筆', () => {
+test('同組超過 24 小時仍只顯示最新一筆，並沿用舊列清理規則', () => {
     const dedupe = deduplicateDeviceSessions();
     const now = Date.now();
     const devices = [
@@ -161,4 +164,33 @@ test('同鍵重複列超過 24 小時才會被清除，且保留最新一筆', (
     assert.deepEqual(JSON.parse(JSON.stringify(duplicateIds)), ['device-stale-00000000004']);
     assert.equal(uniqueDevices.length, 1);
     assert.equal(uniqueDevices[0].device_id, 'device-newest-0000000003');
+});
+
+test('同裝置與 IP 的不同權限分開顯示', () => {
+    const dedupe = deduplicateDeviceSessions();
+    const now = Date.now();
+    const devices = [
+        {
+            device_id: 'device-admin-0000000000001',
+            device_name: '我的筆電',
+            ip_address: '5.6.7.8',
+            access_level: 'admin',
+            user_agent: 'Chrome',
+            last_seen_at: new Date(now).toISOString()
+        },
+        {
+            device_id: 'device-viewer-0000000000001',
+            device_name: '我的筆電',
+            ip_address: '5.6.7.8',
+            access_level: 'viewer',
+            user_agent: 'Chrome',
+            last_seen_at: new Date(now - 60_000).toISOString()
+        }
+    ];
+
+    const { duplicateIds, uniqueDevices } = dedupe(devices, now);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(duplicateIds)), []);
+    assert.equal(uniqueDevices.length, 2);
+    assert.deepEqual(JSON.parse(JSON.stringify(uniqueDevices.map(device => device.access_level))), ['admin', 'viewer']);
 });

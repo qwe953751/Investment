@@ -153,29 +153,36 @@ async function register(request) {
     return json(request, { ok: true });
 }
 
-// 兩台不同裝置若都還沒被使用者命名，會共用預設名稱「未知裝置」；此時名稱不足以
-// 辨識裝置身分，跳過去重，避免把不同裝置誤判為重複而刪掉。
+// 顯示時以使用者確認的「裝置名稱＋IP＋權限」分組；資料清理仍保留較保守的舊規則。
 const UNKNOWN_DEVICE_NAME = '未知裝置';
 
 // 只清掉夠舊的重複列，確保仍在使用中的裝置（即使比對鍵曾經撞在一起）不會被誤刪。
 const DEVICE_DEDUPE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 
 function deduplicateDeviceSessions(devices, now = Date.now()) {
-    const seen = new Map();
+    const displaySeen = new Set();
+    const cleanupSeen = new Set();
     const duplicateIds = [];
     const uniqueDevices = [];
 
     for (const device of devices) {
-        if (device.device_name === UNKNOWN_DEVICE_NAME) {
+        const displayKey = [device.device_name, device.ip_address, device.access_level].join('\u0000');
+
+        if (!displaySeen.has(displayKey)) {
+            displaySeen.add(displayKey);
             uniqueDevices.push(device);
+        }
+
+        // GET 列表仍只清理「已命名、名稱/IP/權限/User-Agent 相同且超過 24 小時」的舊列。
+        // 顯示去重不代表可以刪除資料；未知名稱也只在畫面分組，不會因此觸發刪除。
+        if (device.device_name === UNKNOWN_DEVICE_NAME) {
             continue;
         }
 
-        const key = [device.device_name, device.ip_address, device.access_level, device.user_agent].join('\u0000');
+        const cleanupKey = [device.device_name, device.ip_address, device.access_level, device.user_agent].join('\u0000');
 
-        if (!seen.has(key)) {
-            seen.set(key, device);
-            uniqueDevices.push(device);
+        if (!cleanupSeen.has(cleanupKey)) {
+            cleanupSeen.add(cleanupKey);
             continue;
         }
 
@@ -183,8 +190,6 @@ function deduplicateDeviceSessions(devices, now = Date.now()) {
 
         if (Number.isFinite(age) && age > DEVICE_DEDUPE_MIN_AGE_MS) {
             duplicateIds.push(device.device_id);
-        } else {
-            uniqueDevices.push(device);
         }
     }
 
