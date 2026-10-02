@@ -75,6 +75,11 @@
         // 檢視權限只讓表格／列表表頭顯示說明；資料列、按鈕與篩選控制項
         // 即使留著 data-hint，也不在訪客連結顯示，避免把操作提示當成公開文件。
         if (viewerAccess) {
+            const publicHint = event.target.closest('[data-hint-public][data-hint]');
+            if (publicHint) {
+                return publicHint;
+            }
+
             const header = event.target.closest('th');
             return header?.matches(SELECTOR) ? header : null;
         }

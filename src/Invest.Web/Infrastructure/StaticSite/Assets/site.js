@@ -20192,16 +20192,14 @@ function renderMarketHeatAnalysis(heat, index, marketTurnovers) {
     heading.className = 'market-heat-analysis-heading';
     const title = document.createElement('strong');
     title.textContent = '熱絡與大盤走勢疊圖';
+    title.dataset.hint = '所有序列共用固定 0～100% 左軸：指數依三個月 K 線縱軸高低點換算；熱絡分數以 10 分為 100%；量能與成交額依各自區間高低換算。';
+    title.dataset.hintPublic = 'true';
     const description = document.createElement('span');
     description.textContent = points.length > 1
-        ? '拆成兩張三線疊圖，顯示近 3 個月交易日，分開觀察熱絡／指數與量能／成交額。'
-        : '目前快照只有少量歷史熱絡資料；正式匯出後會顯示近 3 個月交易日。';
+        ? '顯示近 3 個月交易日；整體、加權、上櫃三組序列以同色系對照。'
+        : '目前快照只有少量歷史熱絡資料；正式匯出後會顯示近 3 個月交易日，並以同色系配對左右圖。';
     heading.append(title, description);
-
-    const note = document.createElement('small');
-    note.className = 'market-heat-analysis-note';
-    note.textContent = '左軸固定 0～100%：指數依三個月 K 線縱軸高低點換算；熱絡分數以 10 分為 100%；量能與成交額各自依三個月最低／最高值換算。';
-    header.append(heading, note);
+    header.append(heading);
 
     const charts = document.createElement('div');
     charts.className = 'market-heat-analysis-grid';

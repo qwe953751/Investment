@@ -1599,7 +1599,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains(".market-heat-chart-line--twse-price", styles, StringComparison.Ordinal);
         Assert.Contains(".market-heat-chart-line--twse-turnover", styles, StringComparison.Ordinal);
         Assert.Contains(".market-heat-chart-line--tpex-turnover", styles, StringComparison.Ordinal);
-        Assert.Contains("background: #d97706;", styles, StringComparison.Ordinal);
+        Assert.Contains("background: #b45309;", styles, StringComparison.Ordinal);
         Assert.Contains("stroke-width: 1.5;", styles, StringComparison.Ordinal);
     }
 

@@ -3507,10 +3507,10 @@ body {
 
 .market-heat-analysis {
     grid-column: 1 / -1;
-    padding: 12px;
-    border-top: 1px solid #dce3ed;
-    border-radius: 8px;
-    background: #f8fafd;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
 }
 
 .market-heat-analysis-header,
@@ -3523,42 +3523,47 @@ body {
 }
 
 .market-heat-analysis-header {
-    justify-content: space-between;
-    margin-bottom: 10px;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 14px;
 }
 
 .market-heat-analysis-heading {
     min-width: 0;
-    flex-wrap: wrap;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
 }
 
 .market-heat-analysis-heading strong {
-    color: var(--text-secondary);
-    font-size: 14px;
+    color: var(--text);
+    font-size: 15px;
+}
+
+.market-heat-analysis-heading strong[data-hint] {
+    cursor: help;
+    text-decoration: underline dotted #aab4c3;
+    text-underline-offset: 4px;
 }
 
 .market-heat-analysis-heading span,
-.market-heat-analysis-note,
 .market-heat-chart-card-header span {
     color: var(--text-muted);
     font-size: 12px;
 }
 
-.market-heat-analysis-note {
-    white-space: nowrap;
-}
-
 .market-heat-analysis-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    gap: 14px;
 }
 
 .market-heat-chart-card {
     min-width: 0;
-    padding: 10px 10px 6px;
+    padding: 12px 12px 8px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     background: var(--surface);
 }
 
@@ -3571,27 +3576,32 @@ body {
 
 .market-heat-chart-card-header strong {
     color: var(--text-secondary);
-    font-size: 13px;
+    font-size: 14px;
 }
 
 .market-heat-chart-card-header span {
     overflow: hidden;
     text-overflow: ellipsis;
+    line-height: 1.45;
     white-space: normal;
 }
 
 .market-heat-chart-legend {
-    margin-top: 5px;
+    margin-top: 8px;
     color: var(--text-muted);
     font-size: 11px;
     flex-wrap: wrap;
-    row-gap: 4px;
+    gap: 6px;
 }
 
 .market-heat-chart-legend span {
     display: inline-flex;
     align-items: center;
     gap: 4px;
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface-alt);
 }
 
 .market-heat-chart-legend-dot {
@@ -3605,55 +3615,55 @@ body {
 .market-heat-chart-legend-dot--heat,
 .market-heat-chart-line--heat,
 .market-heat-chart-point.market-heat-chart-line--heat {
-    color: #d97706;
-    stroke: #d97706;
-    fill: #d97706;
-    background: #d97706;
+    color: #b45309;
+    stroke: #b45309;
+    fill: #b45309;
+    background: #b45309;
 }
 
 .market-heat-chart-legend-dot--volume,
 .market-heat-chart-line--volume,
 .market-heat-chart-point.market-heat-chart-line--volume {
-    color: #64748b;
-    stroke: #64748b;
-    fill: #64748b;
-    background: #64748b;
+    color: #ea580c;
+    stroke: #ea580c;
+    fill: #ea580c;
+    background: #ea580c;
 }
 
 .market-heat-chart-legend-dot--twse-price,
 .market-heat-chart-line--twse-price,
 .market-heat-chart-point.market-heat-chart-line--twse-price {
-    color: #2563eb;
-    stroke: #2563eb;
-    fill: #2563eb;
-    background: #2563eb;
+    color: #1d4ed8;
+    stroke: #1d4ed8;
+    fill: #1d4ed8;
+    background: #1d4ed8;
 }
 
 .market-heat-chart-legend-dot--twse-turnover,
 .market-heat-chart-line--twse-turnover,
 .market-heat-chart-point.market-heat-chart-line--twse-turnover {
-    color: #0f766e;
-    stroke: #0f766e;
-    fill: #0f766e;
-    background: #0f766e;
+    color: #3b82f6;
+    stroke: #3b82f6;
+    fill: #3b82f6;
+    background: #3b82f6;
 }
 
 .market-heat-chart-legend-dot--tpex-price,
 .market-heat-chart-line--tpex-price,
 .market-heat-chart-point.market-heat-chart-line--tpex-price {
-    color: #7c3aed;
-    stroke: #7c3aed;
-    fill: #7c3aed;
-    background: #7c3aed;
+    color: #6d28d9;
+    stroke: #6d28d9;
+    fill: #6d28d9;
+    background: #6d28d9;
 }
 
 .market-heat-chart-legend-dot--tpex-turnover,
 .market-heat-chart-line--tpex-turnover,
 .market-heat-chart-point.market-heat-chart-line--tpex-turnover {
-    color: #db2777;
-    stroke: #db2777;
-    fill: #db2777;
-    background: #db2777;
+    color: #8b5cf6;
+    stroke: #8b5cf6;
+    fill: #8b5cf6;
+    background: #8b5cf6;
 }
 
 .market-heat-chart-svg {
@@ -3667,6 +3677,10 @@ body {
 .market-heat-chart-grid-line {
     stroke: #e8edf4;
     stroke-width: 1;
+}
+
+:root[data-theme="dark"] .market-heat-chart-grid-line {
+    stroke: #303844;
 }
 
 .market-heat-chart-axis-label,
@@ -5152,7 +5166,6 @@ td.stock-name.stock-name-change-down {
         gap: 3px;
     }
 
-    .market-heat-analysis-note,
     .market-heat-chart-card-header span {
         white-space: normal;
     }
