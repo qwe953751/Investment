@@ -823,7 +823,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("marketTurnover", marketHeat, StringComparison.Ordinal);
         Assert.Contains("marketTurnoverChangeRate", marketHeat, StringComparison.Ordinal);
         Assert.Contains("全市場預估成交額", marketHeat, StringComparison.Ordinal);
-        Assert.Contains("全市場成交額是上市與上櫃一般交易的正式合計；下方比較正式成交額相較前一交易日的增減率與增減金額。", marketHeat, StringComparison.Ordinal);
+        Assert.Contains("全市場成交額是上市、上櫃與興櫃普通股一般交易的正式合計；下方比較正式成交額相較前一交易日的增減率與增減金額。", marketHeat, StringComparison.Ordinal);
         Assert.Contains("今日預估收盤成交額", marketHeat, StringComparison.Ordinal);
     }
 

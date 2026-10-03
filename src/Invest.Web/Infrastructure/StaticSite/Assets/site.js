@@ -280,7 +280,7 @@ const VIEWER_TABLE_HEADER_HINTS = {
     rank: '顯示目前排序後的名次。',
     change: '顯示相較前期的名次變化。',
     rankChange: '顯示族群相較前期的名次變化。',
-    ticker: '顯示股票代號與上市／上櫃標記。',
+    ticker: '顯示股票代號與上市／上櫃／興櫃標記。',
     name: '顯示股票名稱；名稱底色代表日漲跌，點擊可開啟 K 線。',
     topic: '顯示股票所屬的族群。',
     topicName: '顯示族群名稱；點擊可展開成員。',
@@ -427,7 +427,7 @@ const VIEWS = [
     { key: 'intraday', text: '盤中', hint: '證交所的即時行情，依收集排程更新；加權、櫃買與已開啟標的的當日 K 棒同步重讀。' },
     { key: 'daily', text: '盤後', hint: '證交所與櫃買中心的收盤行情，事先算好的靜態快照，按檢查更新才會換新。' },
     { key: 'topics', text: '族群', hint: '把個股的市場成交比依供應鏈族群重新加總，看資金正在往哪一段流；另附族群樹、催化事件與人工編輯紀錄。' },
-    { key: 'custom', text: '自訂', hint: '瀏覽指定交易日的全部上市櫃收盤資料，或最新一輪的全市場盤中資料；不建立預設排行。' },
+    { key: 'custom', text: '自訂', hint: '瀏覽指定交易日的全部上市、上櫃、興櫃與 TDR 收盤資料，或最新一輪的全市場盤中資料；不建立預設排行。' },
     { key: 'etf', text: 'ETF', hint: '瀏覽官方 ETF 名冊的最近收盤價與日漲跌；不混入個股成交值排行。' },
     { key: 'assets', text: '資產', hint: '自己維護的帳戶與持倉：使用者、帳戶、現金與持倉存在資料庫，任何裝置打開都看得到；可上傳券商截圖辨識後套用。' },
     { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' }
@@ -1759,10 +1759,10 @@ const COLUMNS = [
     { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
-    { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
+    { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃＋興櫃全體普通股（不含 ETF 與 TDR），不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '本期市場成交比 − 前期市場成交比，單位是百分點。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
-    { key: 'close', title: '收盤價', hint: '期間最後一個交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
+    { key: 'close', title: '收盤價', hint: '期間最後一個交易日的收盤價。興櫃沒有收盤價，顯示的是當日日均價（成交量加權平均價）。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) }
 ];
@@ -1771,7 +1771,7 @@ const SINGLE_DAY_COLUMN_HINTS = {
     value: '選定交易日的單日成交值。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。',
     rate: '（選定日成交值 − 前期平均）÷ 前期平均。前期是選定日前指定長度的交易日平均；前期為 0 時無法計算，顯示 — 並排在最後。',
     volumeRatio: '選定日成交值 ÷ 這檔股票平常一天的成交值（選定日之前 20 個交易日的中位數）。分母固定 20 日，不隨上面選的期間長度改變。',
-    share: '選定交易日個股成交值 ÷ 該日全市場成交值。分母固定是上市＋上櫃全體，不隨市場篩選改變。',
+    share: '選定交易日個股成交值 ÷ 該日全市場成交值。分母固定是上市＋上櫃＋興櫃全體普通股，不隨市場篩選改變。',
     shareChange: '選定日市場成交比 − 選定日前指定長度交易日的平均市場成交比，單位是百分點。'
 };
 
@@ -1818,7 +1818,7 @@ const INTRADAY_COLUMNS = [
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '今日盤中的市場成交比 − 過去觀察期間的市場成交比，單位是百分點。正值代表今天這一檔吸走的資金比過去那段期間更多。過去期間沒有這一檔就顯示 —。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是現價相對昨日收盤價；下層「週」是現價相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
-    { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
+    { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。興櫃沒有成交價序列，顯示的是目前累計的日均價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) },
     // 僅供參考的欄位擺在最後：排行榜一律以實際累計成交值為準，
@@ -1850,7 +1850,7 @@ const ETF_COLUMNS = [
 // 這樣盤後與盤中的排序、搜尋、營收與 K 線互動不會各自長一套。
 const CUSTOM_INTRADAY_COLUMNS = CUSTOM_COLUMNS.map(column => {
     if (column.key === 'close') {
-        return { ...column, title: '現價', hint: '盤中最新一筆成交價；尚未成交時顯示 —。'};
+        return { ...column, title: '現價', hint: '盤中最新一筆成交價；尚未成交時顯示 —。興櫃顯示的是目前累計的日均價。'};
     }
 
     if (column.key === 'price') {
@@ -2977,8 +2977,8 @@ function renderFilters() {
     thresholdLabel.textContent = custom ? '成交值下限' : '成交門檻';
     thresholdLabel.dataset.hint = custom
         ? (customIntraday
-            ? '目前盤中累計成交值的下限。預設不限，所有盤中資料中的上市櫃個股都可透過分頁瀏覽。'
-            : '所選單一交易日的成交值下限。預設不限，所有符合資料定義的上市櫃個股都可透過分頁瀏覽。')
+            ? '目前盤中累計成交值的下限。預設不限，所有盤中資料中的上市、上櫃、興櫃個股與 TDR 都可透過分頁瀏覽。'
+            : '所選單一交易日的成交值下限。預設不限，所有符合資料定義的上市、上櫃、興櫃個股與 TDR 都可透過分頁瀏覽。')
         : '「平均每日成交值」的下限，單位就是表格上那一欄。主要是為了資金加速：冷門股從幾十萬跳到幾百萬就是好幾倍成長，不過濾的話排行榜會被這類標的佔滿。';
 
     renderThresholdInput();
@@ -19985,7 +19985,7 @@ function renderMarketHeat(heat, index) {
             ? '—'
             : `${toFixedText(Number(heat.volumeRatio), 2)} × 20 日均量`,
         heat.volumeScore,
-        '量能分數：當日上市＋上櫃成交值，除以之前最多 20 個交易日的日均成交值；1.00 倍是中性 5 分，每增加 0.10 倍增加 1 分，最後限制在 0～10 分。');
+        '量能分數：當日上市＋上櫃＋興櫃普通股成交值（不含 ETF 與 TDR），除以之前最多 20 個交易日的日均成交值；1.00 倍是中性 5 分，每增加 0.10 倍增加 1 分，最後限制在 0～10 分。');
 
     const indices = document.createElement('div');
     indices.className = 'market-heat-indices';
@@ -20080,8 +20080,8 @@ function renderMarketHeat(heat, index) {
         turnoverDetail,
         toTrendClass(turnoverChangeRate),
         isIntraday
-            ? '全市場預估成交額是同一輪上市與上櫃個股的現價 × 累計成交量加總，再用校準過的日內量能曲線（依過去交易日官方成交額回推的時段分佈，非線性時間比例）換算至全日 13:30 的預估值。量能分數與下方較前一交易日的比較，都使用同一個今日預估收盤成交額；曲線分佈太小或樣本不足時不顯示。'
-            : '全市場成交額是上市與上櫃一般交易的正式合計；下方比較正式成交額相較前一交易日的增減率與增減金額。');
+            ? '全市場預估成交額是同一輪上市、上櫃與興櫃個股的累計成交額加總（興櫃以日均價 × 累計量，不含 ETF 與 TDR），再用校準過的日內量能曲線（依過去交易日官方成交額回推的時段分佈，非線性時間比例）換算至全日 13:30 的預估值。量能分數與下方較前一交易日的比較，都使用同一個今日預估收盤成交額；曲線分佈太小或樣本不足時不顯示。'
+            : '全市場成交額是上市、上櫃與興櫃普通股一般交易的正式合計；下方比較正式成交額相較前一交易日的增減率與增減金額。');
 
     panel.append(overview, indicators, indices, meta);
 
@@ -26933,7 +26933,7 @@ function makeTopicProvisionalBlock() {
 }
 
 // 狀態的輕重。已經不能交易的排前面：那幾檔是真的要去 Sheet 上動手改的，
-// 興櫃只是「本來就不在上市櫃排行裡」，看看就好。
+// 興櫃還在交易，只是當天沒有成交時排行裡沒有那一列，看看就好。
 const TOPIC_STALE_ORDER = ['合併消滅', '下市', '停止買賣', '興櫃'];
 
 function makeTopicStaleBlock() {
@@ -26960,10 +26960,10 @@ function makeTopicStaleBlock() {
     const intro = document.createElement('p');
     intro.className = 'topic-intro';
     intro.textContent = rows.length === 0
-        ? '概念股分頁上的每一檔都還在上市櫃的成交值排行裡，沒有需要處理的。'
+        ? '概念股分頁上的每一檔都還在成交值排行裡，沒有需要處理的。'
         : '這些代號列在概念股分頁上，但它們沒有出現在排行榜的成交值資料裡。'
             + '被併購或下市的那幾檔要回 Google Sheet 移掉，留著只會讓那個族群的成員數虛胖；'
-            + '興櫃那幾檔分類本身沒錯，只是這個站只涵蓋上市櫃，所以它們永遠不會有熱度。';
+            + '興櫃那幾檔分類本身沒錯，它們還在交易，只是這一天沒有成交所以排行裡沒有那一列，有成交時就會有熱度。';
     box.append(intro);
 
     if (rows.length === 0) {
@@ -26982,7 +26982,7 @@ function makeTopicStaleBlock() {
     for (const [text, hint] of [
         ['代號', 'Google Sheet 概念股分頁上寫的代號。'],
         ['名稱', 'Sheet 上的寫法。被併購的公司現名可能已經不一樣了。'],
-        ['狀態', '合併消滅與下市代表這個代號不存在了；停止買賣是還沒走完下市程序；興櫃是還在交易，只是不在上市櫃。'],
+        ['狀態', '合併消滅與下市代表這個代號不存在了；停止買賣是還沒走完下市程序；興櫃是還在交易，只是這一天沒有成交、排行裡沒有這一列。'],
         ['列在哪些族群', '把它移掉會影響到的節點。'],
         ['查到的原因', `查證日 ${topicData.staleCheckedOn ?? ''}。日期與換股比例取自新聞，要寫進表格前建議再對一次公開資訊觀測站。`]
     ]) {
