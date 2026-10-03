@@ -201,6 +201,11 @@ Node 回歸測試已加入「公開 query 不帶 JWT」「Excel allowlist」「4
 
 到期後在 Supabase 後台重新產生一把，換掉 `~/.zshrc` 裡那一行即可。
 
+**2026-10-03 更新：已實際阻擋部署。** Mac 上這把 token 已失效（Management API 與 `supabase` CLI 都回
+Unauthorized）。台股操作表「有草稿時匯入可覆蓋」的 `asset-operation-sync` 修改已推上 `main`，但
+Edge Function 必須重新產生 token（https://supabase.com/dashboard/account/tokens）或改在公司電腦部署後才生效；
+前端另需 publish-only 發布。部署後在網站對卡住的草稿按「從 Google Sheet 匯入」並確認覆蓋。
+
 ---
 
 <a id="todo-5"></a>

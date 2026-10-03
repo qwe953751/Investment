@@ -10609,25 +10609,38 @@ async function assetExcelApplyChanges() {
     }
 }
 
+const ASSET_EXCEL_OVERWRITE_DRAFT_PROMPT =
+    '網站有尚未匯出的草稿。\n\n要用 Google Sheet 原檔覆蓋網站資料嗎？\n'
+    + '確定：以 Google Sheet 為準，網站草稿作廢。\n取消：保留草稿，不匯入。';
+
 async function assetExcelImportLatest() {
     if (assetExcelSyncing || assetExcelEditing) return;
-    if (assetExcelSyncState?.status === 'dirty'
-        && !window.confirm('網站有尚未匯出的草稿。匯入 Google Sheet 會捨棄網站草稿，確定繼續嗎？')) {
-        return;
+    // 本頁已知有草稿就先問；若草稿是別台裝置留下、本頁不知道，後端回 draft_pending 時再問。
+    let overwriteDraft = false;
+    if (assetExcelSyncState?.status === 'dirty') {
+        if (!window.confirm(ASSET_EXCEL_OVERWRITE_DRAFT_PROMPT)) return;
+        overwriteDraft = true;
     }
 
     assetExcelSyncing = true;
     assetExcelNotice = '正在從 Google Sheet 匯入…';
     renderAssetExcelView(el('asset-excel-page'));
     try {
-        const result = await assetExcelSyncAction('import');
+        let result;
+        try {
+            result = await assetExcelSyncAction('import', overwriteDraft ? { overwriteDraft: true } : {});
+        } catch (error) {
+            if (overwriteDraft || error.code !== 'draft_pending') throw error;
+            if (!window.confirm(ASSET_EXCEL_OVERWRITE_DRAFT_PROMPT)) {
+                assetExcelNotice = '已取消匯入，網站草稿保留。';
+                return;
+            }
+            result = await assetExcelSyncAction('import', { overwriteDraft: true });
+        }
         await loadAssetExcelData(assetExcelAccountId);
-        const projection = result.revenueHighProjection;
-        assetExcelNotice = projection?.status === 'failed'
-            ? `已匯入 Google Sheet，網站資料已更新；營收創高同步失敗：${projection.message}`
-            : projection?.status === 'disabled'
-                ? '已匯入 Google Sheet，網站資料已更新；營收創高仍以網站為準。'
-                : '已匯入 Google Sheet，網站資料已更新；營收創高以網站為準。';
+        assetExcelNotice = result.overwrittenDrafts > 0
+            ? '已用 Google Sheet 原檔覆蓋網站資料，網站草稿已作廢。'
+            : '已匯入 Google Sheet，網站資料已更新；營收創高以網站為準。';
     } catch (error) {
         assetExcelNotice = `匯入失敗：${error.message}`;
     } finally {

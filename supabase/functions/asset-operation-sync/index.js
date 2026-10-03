@@ -553,7 +553,7 @@ async function sheetFormulaValues(endRow) {
     return result.valueRanges?.[0]?.values ?? [];
 }
 
-function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormulas, retainedLastRow) {
+function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormulas, retainedLastRow, appendedFromRow = retainedLastRow + 1) {
     const beforeHeader = beforeFormulas[2] ?? [];
     const afterHeader = afterFormulas[2] ?? [];
     if (JSON.stringify(beforeHeader) !== JSON.stringify(afterHeader)) {
@@ -576,6 +576,15 @@ function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormu
 
     for (let rowIndex = FIRST_DATA_ROW - 1; rowIndex < retainedLastRow; rowIndex += 1) {
         for (const columnIndex of [0, 3]) { // A 計算欄與 D 既有公式欄
+            if (rowIndex + 1 >= appendedFromRow) {
+                const template = cell(beforeFormulas, FIRST_DATA_ROW - 1, columnIndex);
+                const current = cell(afterFormulas, rowIndex, columnIndex);
+                if (typeof template === 'string' && template.startsWith('=')
+                    && !(typeof current === 'string' && current.startsWith('='))) {
+                    throw new Error(`Google Sheet 寫入後驗證失敗：新增列第 ${rowIndex + 1} 列 ${columnLabel(columnIndex + 1)} 欄沒有套上第 4 列公式。`);
+                }
+                continue;
+            }
             const previous = cell(beforeFormulas, rowIndex, columnIndex);
             const current = cell(afterFormulas, rowIndex, columnIndex);
             if (typeof previous === 'string' && previous.startsWith('=')) {
@@ -707,6 +716,7 @@ async function writeGoogle(sheet, rows, options) {
         });
     }
     return {
+        appendedFromRow: targetLastRow >= newRowsStart ? newRowsStart : targetLastRow + 1,
         deletedRows: deleteCount,
         firstDeletedRow: deleteRange ? deleteRange.startIndex + 1 : null,
         lastDeletedRow: deleteRange ? deleteRange.endIndex : null
@@ -738,14 +748,31 @@ async function saveColumnOrderAction(accountId, body) {
     return { settings: result[0] ?? null };
 }
 
-async function importAction(accountId) {
+async function importAction(accountId, body = null, user = null) {
     await targetAccount(accountId);
     const sheet = await readSheet();
     const hash = await contentHash(sheet.rows);
     const state = await syncState(accountId);
-    if (state.status === 'dirty') throw new Error('網站有尚未匯出的草稿，請先匯出或明確捨棄草稿。');
+    const overwrite = body?.overwriteDraft === true && user?.cron === false;
+    // Google Sheet 是主檔：只有管理者在網站明確確認，才可作廢草稿並以 Google 為準；排程匯入沒有人可確認，永遠不覆蓋草稿。
+    if (state.status === 'dirty' && !overwrite) {
+        const error = new Error('網站有尚未匯出的草稿；要以 Google Sheet 原檔覆蓋，請在網站按匯入並確認。');
+        error.status = 409;
+        error.code = 'draft_pending';
+        throw error;
+    }
+    const drafts = overwrite
+        ? await supabaseRequest(`/rest/v1/asset_operation_snapshots?select=id&account_id=eq.${encodeURIComponent(accountId)}&status=eq.pending`)
+        : [];
     const result = await callReplace(accountId, crypto.randomUUID(), Number(state.version ?? 0), sheet.rows, sheet.groups, hash, hash, 'active', 'google_import');
-    return { ...result, rowCount: sheet.rows.length, hash };
+    if (drafts.length > 0) {
+        await supabaseRequest(`/rest/v1/asset_operation_snapshots?account_id=eq.${encodeURIComponent(accountId)}&status=eq.pending&id=in.(${drafts.map(item => item.id).join(',')})`, {
+            method: 'PATCH',
+            headers: { Prefer: 'return=minimal' },
+            body: JSON.stringify({ status: 'superseded', completed_at: new Date().toISOString(), error_code: 'overwritten_by_google_import' })
+        });
+    }
+    return { ...result, rowCount: sheet.rows.length, hash, overwrittenDrafts: drafts.length };
 }
 
 async function draftAction(accountId, body, user) {
@@ -806,13 +833,13 @@ async function exportAction(accountId) {
     const formulasAfter = await sheetFormulaValues(retainedLastRow);
     const verifiedHash = await contentHash(verified.rows);
     if (verifiedHash !== snapshot.content_hash || verified.rows.length !== rows.length) {
-        throw new Error('Google Sheet 寫入後驗證失敗，已標記需要人工對帳。');
+        throw new Error('Google Sheet 寫入後驗證失敗：資料與草稿不一致。請在網站按「從 Google Sheet 匯入」並確認覆蓋，以 Google Sheet 為準重新對帳。');
     }
     const expectedRowCount = sheet.rowCount + Math.max(0, (FIRST_DATA_ROW - 1 + rows.length) - sheet.rowCount) - writeResult.deletedRows;
     if (verified.rowCount !== expectedRowCount) {
         throw new Error('Google Sheet 寫入後驗證失敗：整列新增／刪除筆數與預期不符。');
     }
-    assertProtectedSheetStructure(sheet, verified, formulasBefore, formulasAfter, retainedLastRow);
+    assertProtectedSheetStructure(sheet, verified, formulasBefore, formulasAfter, retainedLastRow, writeResult.appendedFromRow);
     if (!hasCompactionMarker(verified, snapshot.id)) {
         throw new Error('Google Sheet 寫入後驗證失敗：缺少列整理版本標記。');
     }
@@ -917,7 +944,7 @@ Deno.serve(async request => {
         if (action === 'bootstrap-metadata') return json({ ok: true, ...(await bootstrapMetadata()) });
         if (action === 'repair-metadata') return json({ ok: true, ...(await repairMetadata()) });
         if (!accountId) return fail('缺少 accountId。', 400, 'missing_account');
-        if (action === 'import') return json({ ok: true, action, ...(await importAction(accountId)) });
+        if (action === 'import') return json({ ok: true, action, ...(await importAction(accountId, body, user)) });
         if (action === 'save-draft') return json({ ok: true, action, ...(await draftAction(accountId, body, user)) });
         if (action === 'save-column-order') return json({ ok: true, action, ...(await saveColumnOrderAction(accountId, body)) });
         if (action === 'export') return json({ ok: true, action, ...(await exportAction(accountId)) });
@@ -929,6 +956,6 @@ Deno.serve(async request => {
         return fail(`不支援的 action：${action}`);
     } catch (error) {
         const status = Number(error?.status) || (String(error?.message ?? '').includes('登入') ? 401 : 500);
-        return fail(error?.message ?? '同步失敗。', status, status === 409 ? 'conflict' : 'sync_failed');
+        return fail(error?.message ?? '同步失敗。', status, error?.code ?? (status === 409 ? 'conflict' : 'sync_failed'));
     }
 });

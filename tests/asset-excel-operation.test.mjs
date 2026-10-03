@@ -748,3 +748,127 @@ test('首次匯入會在 metadata 完全不存在時自動 bootstrap，半成品
     assert.match(syncFunction, /const metadata = await ensureOperationMetadata\(\);/);
     assert.match(syncFunction, /async function bootstrapMetadata\(existingMetadata = null\)/);
 });
+
+function importContext(state, drafts) {
+    const calls = { replace: 0, patched: null };
+    const context = {
+        targetAccount: async () => {},
+        readSheet: async () => ({ rows: [{ buy: 1 }], groups: [] }),
+        contentHash: async () => 'hash',
+        syncState: async () => state,
+        callReplace: async () => { calls.replace += 1; return { version: 9 }; },
+        supabaseRequest: async (url, options = {}) => {
+            if (options.method === 'PATCH') {
+                calls.patched = { url, body: JSON.parse(options.body) };
+                return null;
+            }
+            return drafts;
+        },
+        crypto: { randomUUID: () => 'new-snapshot' },
+        encodeURIComponent
+    };
+    vm.createContext(context);
+    vm.runInContext(edgeFunctionSource('importAction'), context);
+    context.calls = calls;
+    return context;
+}
+
+test('匯入遇到草稿：排程永不覆蓋，管理者確認後以 Google 為準並作廢草稿', async () => {
+    const dirty = { status: 'dirty', version: 3 };
+    const drafts = [{ id: 'draft-1' }];
+
+    const plain = importContext(dirty, drafts);
+    await assert.rejects(plain.importAction('a', {}, { cron: false }),
+        error => error.status === 409 && error.code === 'draft_pending');
+    assert.equal(plain.calls.replace, 0);
+
+    const cron = importContext(dirty, drafts);
+    await assert.rejects(cron.importAction('a', { overwriteDraft: true }, { cron: true }),
+        error => error.code === 'draft_pending');
+    assert.equal(cron.calls.replace, 0);
+
+    const admin = importContext(dirty, drafts);
+    const result = await admin.importAction('a', { overwriteDraft: true }, { cron: false });
+    assert.equal(admin.calls.replace, 1);
+    assert.equal(result.overwrittenDrafts, 1);
+    assert.equal(admin.calls.patched.body.status, 'superseded');
+    assert.match(admin.calls.patched.url, /status=eq\.pending&id=in\.\(draft-1\)/);
+
+    const clean = importContext({ status: 'clean', version: 3 }, drafts);
+    assert.equal((await clean.importAction('a', {}, { cron: true })).overwrittenDrafts, 0);
+    assert.equal(clean.calls.patched, null);
+});
+
+test('新增列的 A／D 欄只驗證套上第 4 列公式，既有保留列仍不得改動', () => {
+    const context = { FIRST_DATA_ROW: 4, LAST_CONTROLLED_COLUMN: 52 };
+    vm.createContext(context);
+    vm.runInContext([
+        'function cell(rows, r, c) { return rows[r]?.[c] ?? \'\'; }',
+        edgeFunctionSource('columnLabel'),
+        edgeFunctionSource('assertProtectedSheetStructure')
+    ].join('\n'), context);
+
+    const sheet = { frozenRowCount: 3 };
+    const make = (rows, dRow5) => {
+        const grid = Array.from({ length: rows }, () => Array(52).fill(''));
+        grid[2][1] = 'Buy';
+        grid[3][0] = '=A'; grid[3][3] = '=IF(B4>0,TRUE,FALSE)';
+        if (rows >= 5) { grid[4][0] = '=A'; grid[4][3] = dRow5; }
+        return grid;
+    };
+    const before = make(5, '');
+    // 第 5 列原本 D 空白：從第 5 列起為新增列，貼上公式後不應被判成「值有變化」
+    context.assertProtectedSheetStructure(sheet, sheet, before, make(5, '=IF(B5>0,TRUE,FALSE)'), 5, 5);
+    // 新增列沒有公式：擋下
+    assert.throws(() => context.assertProtectedSheetStructure(sheet, sheet, before, make(5, ''), 5, 5),
+        /新增列第 5 列 D 欄沒有套上第 4 列公式/);
+    // 未標示新增列時（既有列），D 空白變有值仍要擋
+    assert.throws(() => context.assertProtectedSheetStructure(sheet, sheet, before, make(5, 'x'), 5, 6),
+        /保留列第 5 列 D 欄值有變化/);
+});
+
+test('前端匯入遇到草稿先詢問並帶 overwriteDraft；後端 draft_pending 時才補問', async () => {
+    const run = async ({ state, failFirst, answers }) => {
+        const sent = [];
+        const asked = [];
+        const context = {
+            assetExcelSyncing: false, assetExcelEditing: false, assetExcelNotice: '',
+            assetExcelSyncState: state, assetExcelAccountId: 'a',
+            ASSET_EXCEL_OVERWRITE_DRAFT_PROMPT: '提示',
+            window: { confirm: text => { asked.push(text); return answers.shift(); } },
+            el: () => null, renderAssetExcelView() {}, loadAssetExcelData: async () => {},
+            assetExcelSyncAction: async (action, body) => {
+                sent.push({ action, body });
+                if (failFirst && sent.length === 1) {
+                    throw Object.assign(new Error('有草稿'), { code: 'draft_pending' });
+                }
+                return { overwrittenDrafts: body.overwriteDraft ? 1 : 0 };
+            }
+        };
+        vm.createContext(context);
+        vm.runInContext(functionSource('assetExcelImportLatest'), context);
+        await context.assetExcelImportLatest();
+        return { sent, asked, notice: context.assetExcelNotice };
+    };
+
+    const known = await run({ state: { status: 'dirty' }, answers: [true] });
+    assert.equal(known.asked.length, 1);
+    assert.equal(known.sent[0].body.overwriteDraft, true);
+    assert.match(known.notice, /覆蓋.*草稿已作廢/);
+
+    const declined = await run({ state: { status: 'dirty' }, answers: [false] });
+    assert.equal(declined.sent.length, 0);
+
+    const unknown = await run({ state: { status: 'clean' }, failFirst: true, answers: [true] });
+    assert.equal(unknown.sent.length, 2);
+    assert.equal(unknown.sent[1].body.overwriteDraft, true);
+
+    const unknownDeclined = await run({ state: { status: 'clean' }, failFirst: true, answers: [false] });
+    assert.equal(unknownDeclined.sent.length, 1);
+    assert.match(unknownDeclined.notice, /草稿保留/);
+});
+
+test('匯出的新增列驗證起點由 writeGoogle 回報', () => {
+    assert.match(edgeFunctionSource('writeGoogle'), /appendedFromRow: targetLastRow >= newRowsStart/);
+    assert.match(edgeFunctionSource('exportAction'), /retainedLastRow, writeResult\.appendedFromRow\)/);
+});
