@@ -1,7 +1,9 @@
 using System.Threading.Channels;
+using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.StockTopics.Services;
 using Invest.Web.Infrastructure.Database;
+using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Npgsql;
 
@@ -17,6 +19,7 @@ namespace Invest.Web.Infrastructure.StockTopics;
 /// </summary>
 public sealed class IntradayTopicHeatWorker(
     IntradayQuoteStore quoteStore,
+    DailyQuoteStore dailyQuoteStore,
     GoogleSheetTopicClient topicClient,
     IntradayTopicHeatStore topicHeatStore,
     IntradaySnapshotPublisher snapshotPublisher,
@@ -33,6 +36,8 @@ public sealed class IntradayTopicHeatWorker(
         });
 
     private TopicMapping? mapping;
+    private DateOnly? emergingTickersDate;
+    private IReadOnlySet<string> emergingTickers = new HashSet<string>(StringComparer.Ordinal);
     private Task? loop;
     private NpgsqlConnection? consumerLease;
 
@@ -193,6 +198,40 @@ public sealed class IntradayTopicHeatWorker(
         return true;
     }
 
+    /// <summary>
+    /// 資料庫端的興櫃是 TPEX，讀回來要標回興櫃，族群成員的市場標記才不會顯示成「櫃」
+    /// （見 <see cref="IntradayEmergingMarkets"/>）。清單每個交易日讀一次最近的盤後快取；
+    /// 標記校正是加值，讀不到就沿用資料庫的 TPEX，不能讓族群熱度因此停擺。
+    /// </summary>
+    private async Task<IntradaySnapshot> WithEmergingMarketsAsync(
+        IntradaySnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (emergingTickersDate != snapshot.TradeDate)
+        {
+            try
+            {
+                var latest = await dailyQuoteStore.LoadLatestAsync(cancellationToken);
+
+                emergingTickers = latest is null
+                    ? new HashSet<string>(StringComparer.Ordinal)
+                    : latest.Quotes
+                        .Where(quote => quote.Market == Market.Emerging)
+                        .Select(quote => quote.Ticker)
+                        .ToHashSet(StringComparer.Ordinal);
+                emergingTickersDate = snapshot.TradeDate;
+            }
+            catch (Exception exception)
+                when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(exception, "讀不到興櫃清單，盤中族群成員的興櫃標記先沿用資料庫的上櫃。");
+                return snapshot;
+            }
+        }
+
+        return IntradayEmergingMarkets.Apply(snapshot, emergingTickers);
+    }
+
     private async Task<bool> ProcessAsync(
         StoredIntradaySnapshot pending,
         CancellationToken cancellationToken)
@@ -210,7 +249,9 @@ public sealed class IntradayTopicHeatWorker(
                 return false;
             }
 
-            var heat = IntradayTopicHeatCalculator.Calculate(mapping, pending.Snapshot);
+            var heat = IntradayTopicHeatCalculator.Calculate(
+                mapping,
+                await WithEmergingMarketsAsync(pending.Snapshot, cancellationToken));
 
             // 先發 immutable 物件與小指標；DB 保存若稍後失敗，這個 run 仍沒有 heat 列，
             // 下一次掃描會重試。沒設定 CDN 時 PublishTopicAsync 回 NotConfigured，DB fallback 正常使用。
