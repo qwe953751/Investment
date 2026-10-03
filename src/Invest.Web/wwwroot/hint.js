@@ -10,6 +10,7 @@
 (() => {
     const SELECTOR = '[data-hint]';
     const MARGIN = 8;
+    const savedTitles = new Map();
     const viewerAccess = (() => {
         const query = new URLSearchParams(window.location.search).get('access');
         const path = window.location.pathname.split('/').filter(Boolean).at(-1);
@@ -18,6 +19,78 @@
             || query === 'viewer'
             || path === 'viewer';
     })();
+
+    function isMonitorAccess() {
+        return document.body?.classList.contains('monitor-access') === true;
+    }
+
+    function suppressNativeTitle(element) {
+        if (!(element instanceof Element)) {
+            return;
+        }
+
+        const title = element.getAttribute('title');
+        if (title === null) {
+            return;
+        }
+
+        savedTitles.set(element, title);
+        element.removeAttribute('title');
+    }
+
+    function suppressNativeTitles(node) {
+        if (!(node instanceof Element)) {
+            return;
+        }
+
+        suppressNativeTitle(node);
+        node.querySelectorAll('[title]').forEach(suppressNativeTitle);
+    }
+
+    function disableNativeTitles() {
+        document.querySelectorAll('[title]').forEach(suppressNativeTitle);
+        titleObserver.observe(document.body, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ['title']
+        });
+    }
+
+    function restoreNativeTitles() {
+        titleObserver.disconnect();
+        for (const [element, title] of savedTitles) {
+            if (element.isConnected && !element.hasAttribute('title')) {
+                element.setAttribute('title', title);
+            }
+        }
+
+        savedTitles.clear();
+    }
+
+    // Keep browser-native title tooltips off for content added or updated while monitoring.
+    const titleObserver = new MutationObserver(records => {
+        if (!isMonitorAccess()) {
+            return;
+        }
+
+        for (const record of records) {
+            if (record.type === 'attributes') {
+                suppressNativeTitle(record.target);
+            } else {
+                record.addedNodes.forEach(suppressNativeTitles);
+            }
+        }
+    });
+
+    document.addEventListener('site-access-changed', () => {
+        hide();
+        if (isMonitorAccess()) {
+            disableNativeTitles();
+        } else {
+            restoreNativeTitles();
+        }
+    });
 
     // 有滑鼠的裝置走 hover，沒有的走點擊。兩種同時開的話，
     // 手機上點一下排序標題會同時觸發排序與泡泡，顯得很吵。
@@ -68,6 +141,10 @@
     }
 
     function targetOf(event) {
+        if (isMonitorAccess()) {
+            return null;
+        }
+
         if (!(event.target instanceof Element)) {
             return null;
         }

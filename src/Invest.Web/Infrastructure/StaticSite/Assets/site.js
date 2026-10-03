@@ -270,6 +270,8 @@ function applyEffectiveAccess() {
         : URL_ACCESS;
     ASSET_DASHBOARD_ENABLED = SITE_ACCESS === 'admin';
     ASSET_HOLDINGS_VIEW_ENABLED = SITE_ACCESS === 'holdings';
+    document.body?.classList.toggle('monitor-access', SITE_ACCESS === 'monitor');
+    document.dispatchEvent(new Event('site-access-changed'));
 }
 
 // 檢視權限的泡泡只開放表格／列表表頭，而且只說明「這欄怎麼看」。

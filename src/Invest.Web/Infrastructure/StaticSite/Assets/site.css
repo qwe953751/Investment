@@ -850,6 +850,11 @@ body {
     text-underline-offset: 4px;
 }
 
+.monitor-access .filter-label[data-hint] {
+    cursor: inherit;
+    text-decoration: none;
+}
+
 /* 說明泡泡。座標由 hint.js 算好後寫進 style，這裡只負責長相。
    同一份樣式在 Blazor 端的 wwwroot/app.css 也有一份。 */
 .hint-bubble {

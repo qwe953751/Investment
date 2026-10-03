@@ -1051,6 +1051,13 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("function tableHeaderHint(key, fallback)", script, StringComparison.Ordinal);
         Assert.Contains("cell.dataset.hint = tableHeaderHint(column.key, rankingColumnHint(column))", script, StringComparison.Ordinal);
 
+        Assert.Contains("function isMonitorAccess()", hint, StringComparison.Ordinal);
+        Assert.Contains("if (isMonitorAccess()) {\n            return null;\n        }", hint, StringComparison.Ordinal);
+        Assert.Contains("document.addEventListener('site-access-changed'", hint, StringComparison.Ordinal);
+        Assert.Contains("function restoreNativeTitles()", hint, StringComparison.Ordinal);
+        Assert.Contains("document.body?.classList.toggle('monitor-access', SITE_ACCESS === 'monitor')", script, StringComparison.Ordinal);
+        Assert.Contains(".monitor-access .filter-label[data-hint]", styles, StringComparison.Ordinal);
+
         var topicStart = script.IndexOf("function renderTopicHeat", StringComparison.Ordinal);
         var topicEnd = script.IndexOf("function makeTopicRowButton", topicStart, StringComparison.Ordinal);
         var topicHeat = script[topicStart..topicEnd];
