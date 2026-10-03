@@ -34,6 +34,10 @@ public static class SecurityCatalog
                 {
                     Market.Twse => "TWSE",
                     Market.Tpex => "TPEX",
+                    // securities.market 有 check constraint（db/001、db/025）只允許 TWSE／TPEX／US，
+                    // 放寬需要 DDL。興櫃本來就由櫃買中心經營，資料庫端先以 TPEX 保存；
+                    // 真正的興櫃標記留在靜態快取（imports）、公開盤中快照與匯出檔裡，前端不讀這個欄位。
+                    Market.Emerging => "TPEX",
                     Market.Us => "US",
                     var value => throw new ArgumentOutOfRangeException(nameof(securities), value, "未知市場")
                 }).ToArray());

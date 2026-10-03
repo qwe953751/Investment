@@ -265,9 +265,12 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                 Ticker = ticker,
                 Name = reader.GetString(7),
                 Market = ParseMarket(reader.GetString(8)),
+                // 資料庫沒有種類欄位：0 開頭是 ETF，其餘依名稱把 TDR（-DR）分出來。
+                // 興櫃在這裡會讀回 TPEX（securities.market 有 check constraint，見 SecurityCatalog），
+                // 種類仍是一般股票，族群熱度只需要代號，不受影響。
                 Kind = QuoteFieldParser.IsTaiwanEtfTicker(ticker)
                     ? StockKind.Etf
-                    : StockKind.CommonStock,
+                    : TaiwanSecurityRules.Reclassify(StockKind.CommonStock, ticker, reader.GetString(7)),
                 Price = ReadNullableDecimal(reader, 9),
                 EstimatedTradingValue = reader.GetFieldValue<long>(10),
                 ChangePercent = ReadNullableDecimal(reader, 11),

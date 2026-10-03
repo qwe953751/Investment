@@ -89,7 +89,8 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
 
         var ticker = row[columns.Ticker].GetString()?.Trim();
 
-        var kind = QuoteFieldParser.GetTaiwanStockKind(ticker, etfTickers);
+        var name = row[columns.Name].GetString()?.Trim();
+        var kind = QuoteFieldParser.GetTaiwanStockKind(ticker, name, etfTickers);
 
         if (kind is null)
         {
@@ -100,7 +101,7 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
         {
             Market = Market.Tpex,
             Ticker = ticker!,
-            Name = row[columns.Name].GetString()?.Trim() ?? ticker!,
+            Name = name ?? ticker!,
             Kind = kind.Value,
             ClosePrice = QuoteFieldParser.ParseNullableDecimal(row[columns.Close].GetString()),
             OpenPrice = QuoteFieldParser.ParseNullableDecimal(row[columns.Open].GetString()),

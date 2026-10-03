@@ -104,6 +104,7 @@ public sealed class StaticSiteExporter(
 
         var kLineFileCount = 0;
         var etfFileCount = 0;
+        var tdrFileCount = 0;
         var usKLineFileCount = 0;
         var marketIndexKLineWritten = false;
 
@@ -122,6 +123,12 @@ public sealed class StaticSiteExporter(
 
             etfFileCount = await WriteEtfExportsAsync(
                 Path.Combine(dataDirectory, "etf"),
+                dataSet,
+                selectableDates,
+                cancellationToken);
+
+            tdrFileCount = await WriteTdrExportsAsync(
+                Path.Combine(dataDirectory, "tdr"),
                 dataSet,
                 selectableDates,
                 cancellationToken);
@@ -160,6 +167,7 @@ public sealed class StaticSiteExporter(
         progress?.Report(
             $"已寫出 {kLineFileCount} 檔台股最近三個月還原權息日 K 資料"
             + (etfFileCount > 0 ? $"、{etfFileCount} 個 ETF 交易日資料" : string.Empty)
+            + (tdrFileCount > 0 ? $"、{tdrFileCount} 個 TDR 交易日資料" : string.Empty)
             + (usKLineFileCount > 0 ? $"、{usKLineFileCount} 檔美股原始日 K 資料" : string.Empty)
             + $"、{assetCatalogCount} 檔持倉名冊"
             + (marketIndexKLineWritten ? "，以及指數 K 線資料" : string.Empty));
@@ -258,7 +266,8 @@ public sealed class StaticSiteExporter(
 
         progress?.Report($"處置中的個股：{dispositions.Count} 檔，全額交割：{alteredTrading.Count} 檔");
 
-        var turnoverCalibration = await LoadTurnoverCalibrationAsync(cancellationToken);
+        var turnoverCalibration = await LoadTurnoverCalibrationAsync(
+            OfficialTurnover.ByDate(dataSet), cancellationToken);
 
         await WriteJsonAsync(
             Path.Combine(outputDirectory, "manifest.json"),
@@ -1228,7 +1237,7 @@ public sealed class StaticSiteExporter(
     private static RowExport ToExport(StockRankingRow row) => new(
         row.Ticker,
         row.Name,
-        row.Market == Domain.Stocks.Market.Twse ? "twse" : "tpex",
+        RankingFormatter.ToMarketKey(row.Market),
         Math.Round(row.AverageDailyTradingValue),
         Math.Round(row.PreviousAverageDailyTradingValue),
         Round(row.TradingValueChangeRate),
@@ -1362,7 +1371,7 @@ public sealed class StaticSiteExporter(
     /// 輸出範圍從最舊可選基準日往前三個月開始，切換歷史基準日時仍有完整圖形；
     /// MA 則由計算器使用更早的有效收盤，不要求那些舊資料也具備完整 OHLC。
     /// </summary>
-    private static async Task<int> WriteKLineExportsAsync(
+    internal static async Task<int> WriteKLineExportsAsync(
         string directory,
         MarketDataSet dataSet,
         IReadOnlyList<DateOnly> selectableDates,
@@ -1386,6 +1395,10 @@ public sealed class StaticSiteExporter(
             stock => stock.Ticker,
             stock => stock.Kind,
             StringComparer.Ordinal);
+        var marketsByTicker = dataSet.Stocks.ToDictionary(
+            stock => stock.Ticker,
+            stock => stock.Market,
+            StringComparer.Ordinal);
         var count = 0;
 
         foreach (var trading in dataSet.DailyTrading
@@ -1394,9 +1407,11 @@ public sealed class StaticSiteExporter(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var ticker = trading.Key;
-            var isEtf = kindsByTicker.TryGetValue(ticker, out var kind)
-                && kind == StockKind.Etf;
-            var tickerEvents = !isEtf && eventsByTicker.TryGetValue(ticker, out var foundEvents)
+            kindsByTicker.TryGetValue(ticker, out var kind);
+            marketsByTicker.TryGetValue(ticker, out var market);
+            var adjustmentMethod = KLineAdjustmentMethod(kind, market);
+            var isRaw = adjustmentMethod != ForwardAdjustedKLineMethod;
+            var tickerEvents = !isRaw && eventsByTicker.TryGetValue(ticker, out var foundEvents)
                 ? foundEvents
                 : [];
             var points = DailyKLineCalculator.Calculate(
@@ -1414,7 +1429,7 @@ public sealed class StaticSiteExporter(
 
             var export = new KLineExport(
                 "TW",
-                isEtf ? "raw-tw-etf-daily" : "forward-rights-dividends",
+                adjustmentMethod,
                 adjustmentThroughDate.ToString("yyyy-MM-dd"),
                 tickerEvents.Length,
                 [.. points.Select(point => new KLineBarExport(
@@ -1441,14 +1456,65 @@ public sealed class StaticSiteExporter(
         return count;
     }
 
+    internal const string ForwardAdjustedKLineMethod = "forward-rights-dividends";
+
+    /// <summary>
+    /// 日 K 的價格基準。普通股用還原權息；其餘一律原始價格：
+    /// ETF 與 TDR 沒有普通股的除權息邏輯（TDR 要有適用且驗證過的公司行動資料才能還原），
+    /// 興櫃的「收」是日均價、「開」是前日均價（參考價），不是真的開收盤成交價，
+    /// 前端要據此標示，不能讓使用者以為那是一般的收盤 K 棒。
+    /// </summary>
+    internal static string KLineAdjustmentMethod(StockKind kind, Domain.Stocks.Market market) => kind switch
+    {
+        StockKind.Etf => "raw-tw-etf-daily",
+        StockKind.Tdr => "raw-tw-tdr-daily",
+        _ when market == Domain.Stocks.Market.Emerging => "raw-tw-emerging-daily",
+        _ => ForwardAdjustedKLineMethod
+    };
+
     /// <summary>
     /// ETF 表格的逐交易日快照。ETF 的日／週／年初至今漲跌幅在這裡由同一個
     /// C# 計算器預先產生，前端只依日期載入、篩選與格式化。
+    ///
+    /// 台股頁籤只顯示新台幣商品，所以外幣交易線（00625K、00687C 這類 K／C 結尾，
+    /// 同一檔基金另有新台幣線）不輸出；它們的原始行情仍保存在快取裡。
     /// </summary>
-    private static async Task<int> WriteEtfExportsAsync(
+    internal static Task<int> WriteEtfExportsAsync(
         string directory,
         MarketDataSet dataSet,
         IReadOnlyList<DateOnly> selectableDates,
+        CancellationToken cancellationToken)
+        => WriteTradedSecurityExportsAsync(
+            directory,
+            dataSet,
+            selectableDates,
+            stock => stock.Kind == StockKind.Etf
+                && stock.Market is Domain.Stocks.Market.Twse or Domain.Stocks.Market.Tpex
+                && !TaiwanSecurityRules.IsForeignCurrencyEtfLine(stock.Ticker),
+            cancellationToken);
+
+    /// <summary>
+    /// TDR 的逐交易日快照，格式與 ETF 相同。TDR 不進成交值排行、族群與市場廣度，
+    /// 只在自訂頁的個股清單與搜尋出現，所以這裡只輸出價格與漲跌，沒有營收或族群欄位。
+    /// </summary>
+    internal static Task<int> WriteTdrExportsAsync(
+        string directory,
+        MarketDataSet dataSet,
+        IReadOnlyList<DateOnly> selectableDates,
+        CancellationToken cancellationToken)
+        => WriteTradedSecurityExportsAsync(
+            directory,
+            dataSet,
+            selectableDates,
+            stock => stock.Kind == StockKind.Tdr
+                && stock.Market is Domain.Stocks.Market.Twse or Domain.Stocks.Market.Tpex,
+            cancellationToken);
+
+    private static async Task<int> WriteTradedSecurityExportsAsync(
+        string directory,
+        MarketDataSet dataSet,
+        IReadOnlyList<DateOnly> selectableDates,
+        Func<Stock, bool> include,
         CancellationToken cancellationToken)
     {
         if (selectableDates.Count == 0)
@@ -1467,8 +1533,7 @@ public sealed class StaticSiteExporter(
                     .ToArray(),
                 StringComparer.Ordinal);
         var etfs = dataSet.Stocks
-            .Where(stock => stock.Kind == StockKind.Etf
-                && stock.Market is Market.Twse or Market.Tpex)
+            .Where(include)
             .OrderBy(stock => stock.Market)
             .ThenBy(stock => stock.Ticker, StringComparer.Ordinal)
             .ToArray();
@@ -1497,7 +1562,7 @@ public sealed class StaticSiteExporter(
                     return new EtfRowExport(
                         stock.Ticker,
                         stock.Name,
-                        stock.Market == Market.Twse ? "twse" : "tpex",
+                        RankingFormatter.ToMarketKey(stock.Market),
                         Round(day.ClosePrice),
                         Round(performance.DailyChangeRate),
                         Round(performance.WeeklyChangeRate),
@@ -1547,7 +1612,7 @@ public sealed class StaticSiteExporter(
         var entries = new List<AssetCatalogEntry>();
 
         foreach (var stock in dataSet.Stocks
-            .Where(stock => stock.Market is Market.Twse or Market.Tpex)
+            .Where(stock => stock.Market is Market.Twse or Market.Tpex or Market.Emerging)
             .OrderBy(stock => stock.Market)
             .ThenBy(stock => stock.Ticker, StringComparer.Ordinal))
         {
@@ -1611,13 +1676,26 @@ public sealed class StaticSiteExporter(
         var previousClose = AdjustAssetClose(previous, adjustments, throughDate);
 
         return new AssetCatalogEntry(
-            stock.Market == Market.Twse ? "TWSE" : "TPEX",
+            stock.Market switch
+            {
+                Market.Twse => "TWSE",
+                Market.Tpex => "TPEX",
+                _ => "EMERGING"
+            },
             stock.Ticker,
             stock.Name,
-            stock.Kind == StockKind.Etf ? "etf" : "stock",
+            stock.Kind switch
+            {
+                StockKind.Etf => "etf",
+                StockKind.Tdr => "tdr",
+                _ => "stock"
+            },
             latest?.TradingDate.ToString("yyyy-MM-dd"),
             RoundKLine(latestClose),
-            ToChangePercent(latestClose, previousClose));
+            ToChangePercent(latestClose, previousClose),
+            stock.Kind == StockKind.Etf && TaiwanSecurityRules.IsForeignCurrencyEtfLine(stock.Ticker)
+                ? true
+                : null);
     }
 
     private static decimal? AdjustAssetClose(
@@ -1802,11 +1880,14 @@ public sealed class StaticSiteExporter(
     /// 讀不到（本機沒接 Supabase、樣本天數不足）就退回寫死的實測表，不讓匯出整個中斷——
     /// 跟 <see cref="LoadMaterialEventsAsync"/> 讀重大訊息失敗時降級的道理一樣。
     /// </summary>
-    private async Task<IntradayTurnoverCalibration> LoadTurnoverCalibrationAsync(CancellationToken cancellationToken)
+    private async Task<IntradayTurnoverCalibration> LoadTurnoverCalibrationAsync(
+        IReadOnlyDictionary<DateOnly, decimal> officialTotals,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var samples = await curveStore.LoadCalibrationSamplesAsync(cancellationToken: cancellationToken);
+            var samples = await curveStore.LoadCalibrationSamplesAsync(
+                officialTotals, cancellationToken: cancellationToken);
 
             return IntradayTurnoverCalibration.Build(samples);
         }
@@ -2057,6 +2138,11 @@ public sealed class StaticSiteExporter(
 
     private sealed record AssetCatalogExport(IReadOnlyList<AssetCatalogEntry> Entries);
 
+    /// <param name="ForeignCurrency">
+    /// 只有外幣交易線（00625K、00687C 這類 K／C 結尾的 ETF）才是 true，其餘一律 null 不輸出。
+    /// 台股頁籤只顯示新台幣商品，前端用這個旗標把它們排除在 ETF 名冊之外；
+    /// 資產頁查名稱與報價仍保留它們，持倉不會因此失去報價。
+    /// </param>
     private sealed record AssetCatalogEntry(
         string Market,
         string Ticker,
@@ -2064,7 +2150,8 @@ public sealed class StaticSiteExporter(
         string Kind,
         string? QuoteDate,
         decimal? ClosePrice,
-        decimal? ChangePercent);
+        decimal? ChangePercent,
+        bool? ForeignCurrency = null);
 
     private sealed record AssetQuoteRow(DateOnly TradingDate, DailyQuote Quote);
 

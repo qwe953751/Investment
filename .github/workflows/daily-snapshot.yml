@@ -286,6 +286,26 @@ jobs:
         continue-on-error: true
         run: dotnet run -c Release --project src/Invest.Web -- backfill-etfs "$ETF_BACKFILL_DAYS"
 
+      # 興櫃（2026-10 併進台股頁籤）的日行情來自櫃買「日統計」，要到下午四點半才公布，
+      # 比上市櫃晚一個多小時，所以今天的興櫃通常不是在「回補行情」那一步拿到，而是這一步。
+      # 已經是最新 emergingSchemaVersion 的日期會自己略過，每天跑只會真的下載剛公布的今天；
+      # 第一次上線時它會一口氣補齊整個資料窗（約三百個請求），中途失敗重跑即可接續。
+      #
+      # 今天還沒公布不算失敗（程式自己判斷、不亮紅燈）；更早的日期補不到才會 exit 1。
+      # 跟 backfill-bars 一樣允許失敗，不讓興櫃的小狀況把「排行已發布成功」的一輪標成紅燈。
+      - name: 補抓興櫃行情
+        if: ${{ inputs.publish-only != true }}
+        continue-on-error: true
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-emerging "$TRADING_DAYS"
+
+      # 六碼 TDR（910322 康師傅-DR 這類）舊解析器只認四碼數字，完全沒有被保存。
+      # 新的交易日整份下載時已經會收，這一步只補歷史：已是最新 tdrSchemaVersion 的日期自己略過，
+      # 第一次上線補齊整個資料窗後，之後每天都是空跑一圈；只新增缺的 TDR，既有的列一律不動。
+      - name: 補抓 TDR 歷史
+        if: ${{ inputs.publish-only != true }}
+        continue-on-error: true
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-tdr "$TRADING_DAYS"
+
       - name: 保存行情快取
         if: ${{ inputs.publish-only != true }}
         working-directory: data

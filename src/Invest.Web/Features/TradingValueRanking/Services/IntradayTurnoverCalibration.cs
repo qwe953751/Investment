@@ -11,7 +11,9 @@ namespace Invest.Web.Features.TradingValueRanking.Services;
 /// 這條曲線一次修掉筆記 #42 的兩層系統性誤差，不必分開處理：
 /// 1. 量能是 U 型分布，不是線性時間比例（開盤爆量、中午乾涸）；
 /// 2. 分子分母口徑本來就不同（現價 × 累計量 vs 官方逐筆成交值），就算走到收盤，
-///    比值也只會收斂在官方數字的 8~9 成附近，不是 100%。
+///    比值也只會收斂在官方數字附近（約 0.96），不是 100%。
+///
+/// 分子與分母的標的範圍必須完全相同，都只算普通股（含興櫃），見 <see cref="OfficialTurnover"/>。
 /// 兩者都反映在同一份「自算 ÷ 官方」的實測曲線裡，用官方總額校準一次就一起修正。
 ///
 /// 資料不足（Supabase 連不上、樣本天數不夠）時退回 <see cref="Fallback"/>，
@@ -33,22 +35,27 @@ public sealed class IntradayTurnoverCalibration
     }
 
     /// <summary>
-    /// 寫死的實測退回表：2026 年 8～9 月 16 個交易日的量測結果
-    /// （U 型量能曲線的跑掉比例，乘上收盤時約 0.86 的官方口徑校準值換算得出）。
+    /// 寫死的實測退回表：2026-08-14～10-02 共 33 個交易日的中位數，
+    /// 分母是 <see cref="OfficialTurnover"/>（上市櫃普通股的官方盤後成交額，不含 ETF 與 TDR）。
     /// 只在 Supabase 連不上或樣本天數不足時使用，正式環境一律優先用
     /// <see cref="Build"/> 算出來的即時校準值。
+    ///
+    /// 2026-10 把校準分母從「daily_quotes 全表（含 ETF）」改成只算普通股後，收盤時的比例
+    /// 從約 0.86 升到約 0.96：分母少了 ETF 那 7～9%，同一組盤中累計對上它的比例自然變大。
+    /// 舊表若不跟著換，退回路徑會把預估成交額高估約 11%。
+    /// 興櫃（約占 1%）加入後各桶會再略低一點點，那由即時校準自己吸收，不必改這張表。
     /// </summary>
     public static IntradayTurnoverCalibration Fallback { get; } = new(
     [
         (new TimeOnly(9, 0), 0.0),
-        (new TimeOnly(9, 15), 0.229),
-        (new TimeOnly(9, 30), 0.302),
-        (new TimeOnly(10, 0), 0.414),
-        (new TimeOnly(11, 0), 0.542),
-        (new TimeOnly(12, 0), 0.629),
-        (new TimeOnly(12, 30), 0.672),
-        (new TimeOnly(13, 0), 0.722),
-        (new TimeOnly(13, 30), 0.860)
+        (new TimeOnly(9, 15), 0.225),
+        (new TimeOnly(9, 30), 0.317),
+        (new TimeOnly(10, 0), 0.453),
+        (new TimeOnly(11, 0), 0.620),
+        (new TimeOnly(12, 0), 0.722),
+        (new TimeOnly(12, 30), 0.783),
+        (new TimeOnly(13, 0), 0.838),
+        (new TimeOnly(13, 30), 0.961)
     ]);
 
     /// <summary>

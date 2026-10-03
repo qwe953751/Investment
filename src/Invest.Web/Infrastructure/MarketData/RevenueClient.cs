@@ -36,8 +36,11 @@ public sealed partial class RevenueClient(HttpClient httpClient, ILogger<Revenue
     private const string TwseLatestUrl = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L";
     private const string TpexLatestUrl = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O";
 
+    /// <summary>興櫃公司每月營業收入彙總表。欄位名稱與上市櫃那兩支完全相同，可以共用解析。</summary>
+    private const string TpexEmergingLatestUrl = "https://www.tpex.org.tw/openapi/v1/t187ap05_R";
+
     /// <summary>
-    /// 公開資訊觀測站的逐月營收報表。市場 sii 是上市、otc 是上櫃；
+    /// 公開資訊觀測站的逐月營收報表。市場 sii 是上市、otc 是上櫃、rotc 是興櫃；
     /// 結尾的 0 是國內公司、1 是外國企業（KY 股在這一份），兩份都要拿才算完整。
     /// </summary>
     private const string MonthlyReportUrl = "https://mopsov.twse.com.tw/nas/t21/{0}/t21sc03_{1}_{2}_{3}.html";
@@ -77,6 +80,7 @@ public sealed partial class RevenueClient(HttpClient httpClient, ILogger<Revenue
 
         result.AddRange(await ReadLatestAsync(TwseLatestUrl, cancellationToken));
         result.AddRange(await ReadLatestAsync(TpexLatestUrl, cancellationToken));
+        result.AddRange(await ReadLatestAsync(TpexEmergingLatestUrl, cancellationToken));
 
         var months = result.Select(item => item.Month).Distinct().Order().ToList();
 
@@ -130,14 +134,30 @@ public sealed partial class RevenueClient(HttpClient httpClient, ILogger<Revenue
     /// 某一個月的全部營收。還沒到公告期的月份，觀測站給的是一頁幾百位元組的空表，
     /// 解析後就是零列——回空的，讓呼叫端自己決定要不要繼續往前抓。
     /// </summary>
-    public async Task<IReadOnlyList<MonthlyRevenue>> GetMonthAsync(
+    public Task<IReadOnlyList<MonthlyRevenue>> GetMonthAsync(
         DateOnly month,
         CancellationToken cancellationToken = default)
+        => ReadMonthAsync(["sii", "otc", "rotc"], month, cancellationToken);
+
+    /// <summary>
+    /// 只抓某個月的興櫃營收（兩個檔案）。興櫃是 2026-10 才併進台股頁籤的，
+    /// 資料庫裡既有的月份只有上市櫃，<c>revenue --backfill</c> 遇到「已有資料」的月份會略過，
+    /// 補不進興櫃，所以另外提供只補興櫃的入口。
+    /// </summary>
+    public Task<IReadOnlyList<MonthlyRevenue>> GetEmergingMonthAsync(
+        DateOnly month,
+        CancellationToken cancellationToken = default)
+        => ReadMonthAsync(["rotc"], month, cancellationToken);
+
+    private async Task<IReadOnlyList<MonthlyRevenue>> ReadMonthAsync(
+        string[] markets,
+        DateOnly month,
+        CancellationToken cancellationToken)
     {
         var rocYear = month.Year - 1911;
         var result = new Dictionary<string, MonthlyRevenue>(StringComparer.Ordinal);
 
-        foreach (var market in (string[])["sii", "otc"])
+        foreach (var market in markets)
         {
             foreach (var origin in (int[])[0, 1])
             {

@@ -25,6 +25,9 @@ public enum IntradayPriceSource
     /// <summary>y：昨收。整天都沒成交的個股會落到這裡。</summary>
     PreviousClose,
 
+    /// <summary>興櫃：當日累計日均價（成交量加權平均價），櫃買官網的漲跌也是以它為準。</summary>
+    SessionAverage,
+
     /// <summary>什麼都沒有，這檔的成交金額只能記 0。</summary>
     None
 }
@@ -41,8 +44,8 @@ public sealed record IntradayQuote
     public required string Name { get; init; }
 
     /// <summary>
-    /// 盤中快照裡的標的種類。ETF 與一般股票共用同一輪 MIS，
-    /// 但市場成交額與族群熱度只應計一般股票。
+    /// 盤中快照裡的標的種類。ETF、TDR 與一般股票共用同一輪 MIS，
+    /// 但市場成交額、市場廣度與族群熱度只應計一般股票（上市、上櫃、興櫃）。
     /// </summary>
     public StockKind Kind { get; init; } = StockKind.CommonStock;
 

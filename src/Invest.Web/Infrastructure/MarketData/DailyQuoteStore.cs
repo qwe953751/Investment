@@ -82,6 +82,32 @@ public sealed class DailyQuoteStore
     }
 
     /// <summary>
+    /// 只讀最新一個交易日的快照，給「只需要最近一天的標的清單」的用途
+    ///（例如盤中要問哪些六碼 TDR）。不必為了幾個代號把三百個檔案全部反序列化。
+    /// </summary>
+    public async Task<DailyQuoteSnapshot?> LoadLatestAsync(CancellationToken cancellationToken = default)
+    {
+        if (!System.IO.Directory.Exists(_directory))
+        {
+            return null;
+        }
+
+        // 檔名就是日期（yyyy-MM-dd.json），由新到舊找第一個交易日即可。
+        foreach (var path in System.IO.Directory.EnumerateFiles(_directory, "*.json")
+            .OrderByDescending(path => path, StringComparer.Ordinal))
+        {
+            var snapshot = await ReadAsync(path, cancellationToken);
+
+            if (snapshot is { IsTradingDay: true })
+            {
+                return snapshot;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// 只讀出每個交易日的市場指數，依日期遞增排序。
     ///
     /// 盤中要算「年初至今」只需要指數那兩三個數字，但整份快取是三百多個檔案、
@@ -142,8 +168,11 @@ public sealed class DailyQuoteStore
         try
         {
             await using var stream = File.OpenRead(path);
-            return await JsonSerializer.DeserializeAsync<DailyQuoteSnapshot>(
+            var snapshot = await JsonSerializer.DeserializeAsync<DailyQuoteSnapshot>(
                 stream, SerializerOptions, cancellationToken);
+
+            // 舊快取的四碼 TDR 當時被存成普通股；讀進來就依名稱修正，不改寫磁碟上的歷史。
+            return snapshot?.WithNormalizedKinds();
         }
         catch (JsonException exception)
         {

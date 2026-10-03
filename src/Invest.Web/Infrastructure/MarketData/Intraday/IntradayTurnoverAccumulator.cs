@@ -1,3 +1,5 @@
+using Invest.Web.Domain.Stocks;
+
 namespace Invest.Web.Infrastructure.MarketData.Intraday;
 
 /// <summary>
@@ -50,7 +52,12 @@ public sealed class IntradayTurnoverAccumulator
 
         foreach (var quote in quotes)
         {
-            result.Add(quote with { EstimatedTradingValue = Accumulate(quote) });
+            // 興櫃已經是精確的累計金額（日均價是成交量加權，日均價 × 累計量就是累計成交金額，
+            // 對官方收盤值差 0.0002%）。再用「每輪新增量 × 當時的價」去累加，
+            // 反而會因為日均價本身在移動而引入誤差。
+            result.Add(quote.Market == Domain.Stocks.Market.Emerging
+                ? quote
+                : quote with { EstimatedTradingValue = Accumulate(quote) });
         }
 
         return result;

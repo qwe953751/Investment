@@ -5,7 +5,7 @@ namespace Invest.Web.Infrastructure.MarketData;
 /// <summary>
 /// 單一交易日的全市場行情快照，也是落地成 JSON 檔的格式。
 /// </summary>
-public sealed class DailyQuoteSnapshot
+public sealed record DailyQuoteSnapshot
 {
     private const decimal MinimumDailyBarCoverage = 0.95m;
 
@@ -40,6 +40,23 @@ public sealed class DailyQuoteSnapshot
     public const int CurrentEtfSchemaVersion = 1;
 
     /// <summary>
+    /// 興櫃行情寫入快取的格式版本。興櫃是 2026-10 才併進台股頁籤的新市場，
+    /// 舊快取沒有這批資料；獨立版本讓回補指令能只補興櫃、不動既有上市櫃與 ETF 行情，
+    /// 中斷後重跑同一個指令會從還沒補的日期接續。
+    ///
+    /// 1：櫃買中心「興櫃日統計」的日均價、成交量、成交金額與筆數（只計電腦議價點選成交）。
+    /// </summary>
+    public const int CurrentEmergingSchemaVersion = 1;
+
+    /// <summary>
+    /// TDR 寫入快取的格式版本。2026-10 之前解析器只認四碼數字代號，六碼 TDR（910322 這類）
+    /// 完全沒有被保存；獨立版本讓回補指令只補那些缺的 TDR，不動其他行情。
+    ///
+    /// 1：證交所／櫃買日行情裡名稱以 -DR 結尾的標的，依名稱分類為 <see cref="StockKind.Tdr"/>。
+    /// </summary>
+    public const int CurrentTdrSchemaVersion = 1;
+
+    /// <summary>
     /// 這個檔案是用哪一版定義產生的。舊版會被回補指令視為過期並重新下載，
     /// 避免新舊定義混在同一份排行裡——那種錯誤從畫面上完全看不出來。
     /// 沒有這個欄位的舊檔案反序列化後會是 0，一樣算過期。
@@ -65,6 +82,10 @@ public sealed class DailyQuoteSnapshot
     public int DailyBarSchemaVersion { get; init; }
 
     public int EtfSchemaVersion { get; init; }
+
+    public int EmergingSchemaVersion { get; init; }
+
+    public int TdrSchemaVersion { get; init; }
 
     /// <summary>
     /// 版本號代表補抓流程曾經寫入過，但不能保證那次回應真的包含完整市場。
@@ -115,35 +136,26 @@ public sealed class DailyQuoteSnapshot
                 index.LowPrice,
                 index.Value);
 
+    // 以下所有 With* 都用 `with` 複製：舊的寫法逐欄列出每個欄位，新增版本號時只要有一個方法漏帶，
+    // 補抓指數或日 K 就會把另一個版本號洗回 0，下一輪回補又重做一遍（而且從畫面完全看不出來）。
+
     /// <summary>
     /// 在不重新計算個股成交值的情況下，補上同一交易日的市場指數。
     /// </summary>
-    public DailyQuoteSnapshot WithMarketIndices(IReadOnlyList<MarketIndexQuote> marketIndices) => new()
+    public DailyQuoteSnapshot WithMarketIndices(IReadOnlyList<MarketIndexQuote> marketIndices) => this with
     {
-        SchemaVersion = SchemaVersion,
-        TradingDate = TradingDate,
-        IsTradingDay = IsTradingDay,
         DownloadedAt = DateTimeOffset.Now,
-        Quotes = Quotes,
         MarketIndexSchemaVersion = CurrentMarketIndexSchemaVersion,
-        MarketIndices = marketIndices,
-        DailyBarSchemaVersion = DailyBarSchemaVersion,
-        EtfSchemaVersion = EtfSchemaVersion
+        MarketIndices = marketIndices
     };
 
     /// <summary>
     /// 只補上日 K 的開高低，不改動既有成交值、成交量、成交筆數、收盤價或名稱。
     /// </summary>
-    public DailyQuoteSnapshot WithDailyBars(IReadOnlyList<DailyQuote> dailyQuotes) => new()
+    public DailyQuoteSnapshot WithDailyBars(IReadOnlyList<DailyQuote> dailyQuotes) => this with
     {
-        SchemaVersion = SchemaVersion,
-        TradingDate = TradingDate,
-        IsTradingDay = IsTradingDay,
         DownloadedAt = DateTimeOffset.Now,
-        MarketIndexSchemaVersion = MarketIndexSchemaVersion,
-        MarketIndices = MarketIndices,
         DailyBarSchemaVersion = CurrentDailyBarSchemaVersion,
-        EtfSchemaVersion = EtfSchemaVersion,
         Quotes = MergeDailyBars(Quotes, dailyQuotes)
     };
 
@@ -153,17 +165,10 @@ public sealed class DailyQuoteSnapshot
     /// 不會寫回 data/imports 的磁碟快取——美股快取獨立存在 data/imports-us，
     /// 兩份檔案永遠不互相覆寫。
     /// </summary>
-    public DailyQuoteSnapshot WithAdditionalQuotes(IReadOnlyList<DailyQuote> additionalQuotes) => new()
+    public DailyQuoteSnapshot WithAdditionalQuotes(IReadOnlyList<DailyQuote> additionalQuotes) => this with
     {
-        SchemaVersion = SchemaVersion,
-        TradingDate = TradingDate,
-        IsTradingDay = IsTradingDay,
         DownloadedAt = DateTimeOffset.Now,
-        Quotes = [.. Quotes, .. additionalQuotes],
-        MarketIndexSchemaVersion = MarketIndexSchemaVersion,
-        MarketIndices = MarketIndices,
-        DailyBarSchemaVersion = DailyBarSchemaVersion,
-        EtfSchemaVersion = EtfSchemaVersion
+        Quotes = [.. Quotes, .. additionalQuotes]
     };
 
     /// <summary>
@@ -177,17 +182,97 @@ public sealed class DailyQuoteSnapshot
             throw new ArgumentException("ETF 補抓結果不可混入一般股票。", nameof(etfQuotes));
         }
 
-        return new()
+        return this with
         {
-            SchemaVersion = SchemaVersion,
-            TradingDate = TradingDate,
-            IsTradingDay = IsTradingDay,
             DownloadedAt = DateTimeOffset.Now,
-            MarketIndexSchemaVersion = MarketIndexSchemaVersion,
-            MarketIndices = MarketIndices,
-            DailyBarSchemaVersion = DailyBarSchemaVersion,
             EtfSchemaVersion = CurrentEtfSchemaVersion,
             Quotes = MergeQuotes(Quotes, etfQuotes)
+        };
+    }
+
+    /// <summary>
+    /// 把證交所／櫃買日行情裡的 TDR 補進既有快取。<b>只新增快取裡還沒有的 TDR，已存在的列一律不動</b>：
+    /// 四碼 TDR 當初是當成普通股存的，成交值已經扣過非一般交易，重抓的官方原始值不一樣，
+    /// 蓋掉它們會讓歷史數字與已同步到資料庫的總和對不上。實際需要補的是六碼 TDR——
+    /// 舊解析器只認四碼，六碼完全沒有被保存。
+    /// </summary>
+    public DailyQuoteSnapshot WithTdrQuotes(IReadOnlyList<DailyQuote> tdrQuotes)
+    {
+        if (tdrQuotes.Any(quote => quote.Kind != StockKind.Tdr))
+        {
+            throw new ArgumentException("TDR 補抓結果只能是 TDR。", nameof(tdrQuotes));
+        }
+
+        var existing = Quotes
+            .Select(quote => (quote.Market, quote.Ticker))
+            .ToHashSet();
+
+        return this with
+        {
+            DownloadedAt = DateTimeOffset.Now,
+            TdrSchemaVersion = CurrentTdrSchemaVersion,
+            Quotes =
+            [
+                .. Quotes,
+                .. tdrQuotes
+                    .Where(quote => !existing.Contains((quote.Market, quote.Ticker)))
+                    .OrderBy(quote => quote.Market)
+                    .ThenBy(quote => quote.Ticker, StringComparer.Ordinal)
+            ]
+        };
+    }
+
+    /// <summary>
+    /// 將興櫃日統計寫入同一日快取。上市櫃、ETF 與指數完全不動；興櫃整批以這次下載的結果
+    /// 取代（不是逐檔合併），所以重跑不會重複新增，也不會殘留上一次殘缺下載的列。
+    /// 同一代號當天若已在上市或上櫃行情裡（興櫃轉上市櫃的交接日），以正式市場為準，不重複收。
+    /// </summary>
+    public DailyQuoteSnapshot WithEmergingQuotes(IReadOnlyList<DailyQuote> emergingQuotes)
+    {
+        if (emergingQuotes.Any(quote => quote.Market != Market.Emerging))
+        {
+            throw new ArgumentException("興櫃補抓結果只能是興櫃市場的標的。", nameof(emergingQuotes));
+        }
+
+        var listedTickers = Quotes
+            .Where(quote => quote.Market != Market.Emerging)
+            .Select(quote => quote.Ticker)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return this with
+        {
+            DownloadedAt = DateTimeOffset.Now,
+            EmergingSchemaVersion = CurrentEmergingSchemaVersion,
+            Quotes =
+            [
+                .. Quotes.Where(quote => quote.Market != Market.Emerging),
+                .. emergingQuotes
+                    .Where(emerging => !listedTickers.Contains(emerging.Ticker))
+                    .OrderBy(quote => quote.Ticker, StringComparer.Ordinal)
+            ]
+        };
+    }
+
+    /// <summary>
+    /// 依名稱把舊快取裡「當時被當成普通股」的 TDR 改標成 <see cref="StockKind.Tdr"/>。
+    /// 只在記憶體裡修正種類，不動任何行情數字；沒有需要修正的標的時回傳自己。
+    ///
+    /// 這是讀取時的決定性轉換，不是改寫歷史：2026-10 之前的解析器只認四碼數字，
+    /// 四檔四碼 TDR 因此被存成普通股，而六碼 TDR 完全沒有被保存（要靠回補補齊）。
+    /// </summary>
+    public DailyQuoteSnapshot WithNormalizedKinds()
+    {
+        if (!Quotes.Any(quote => TaiwanSecurityRules.Reclassify(quote.Kind, quote.Ticker, quote.Name) != quote.Kind))
+        {
+            return this;
+        }
+
+        return this with
+        {
+            Quotes = [.. Quotes.Select(quote => quote with
+            {
+                Kind = TaiwanSecurityRules.Reclassify(quote.Kind, quote.Ticker, quote.Name)
+            })]
         };
     }
 
@@ -201,7 +286,9 @@ public sealed class DailyQuoteSnapshot
             StringComparer.Ordinal);
 
         return existing
-            .Select(quote => byTicker.TryGetValue(quote.Ticker, out var daily)
+            .Select(quote => quote.Market == Market.Emerging
+                ? quote
+                : byTicker.TryGetValue(quote.Ticker, out var daily)
                 && HasValidDailyBar(daily)
                 ? quote with
                 {
@@ -275,6 +362,8 @@ public sealed class DailyQuoteSnapshot
         TradingDate = tradingDate,
         IsTradingDay = false,
         DownloadedAt = DateTimeOffset.Now,
-        EtfSchemaVersion = CurrentEtfSchemaVersion
+        EtfSchemaVersion = CurrentEtfSchemaVersion,
+        EmergingSchemaVersion = CurrentEmergingSchemaVersion,
+        TdrSchemaVersion = CurrentTdrSchemaVersion
     };
 }

@@ -161,7 +161,7 @@ public static class TopicHeatCalculator
             members.Add(new TopicHeatMember(
                 ticker,
                 quote.Name,
-                quote.Market == Domain.Stocks.Market.Twse ? "twse" : "tpex",
+                RankingFormatter.ToMarketKey(quote.Market),
                 quote.MarketShare,
                 quote.PriceChangeRate,
                 quote.Rank));

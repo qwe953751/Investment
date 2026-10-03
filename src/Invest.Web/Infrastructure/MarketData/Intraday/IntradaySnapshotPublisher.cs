@@ -677,8 +677,18 @@ public sealed class IntradaySnapshotPublisher(
             .Select(quote => new SnapshotRow(
                 quote.Ticker,
                 quote.Name,
-                quote.Market == Market.Twse ? "TWSE" : "TPEX",
-                quote.Kind == StockKind.Etf ? "etf" : "stock",
+                quote.Market switch
+                {
+                    Market.Twse => "TWSE",
+                    Market.Emerging => "EMERGING",
+                    _ => "TPEX"
+                },
+                quote.Kind switch
+                {
+                    StockKind.Etf => "etf",
+                    StockKind.Tdr => "tdr",
+                    _ => "stock"
+                },
                 quote.Price,
                 quote.EstimatedTradingValue,
                 quote.ChangePercent,

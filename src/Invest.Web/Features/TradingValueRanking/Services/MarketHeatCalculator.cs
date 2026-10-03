@@ -19,14 +19,24 @@ public static class MarketHeatCalculator
     public static MarketHeatMetrics? Calculate(
         MarketDataSet dataSet,
         DateOnly endDate)
+        => Calculate(HeatUniverse(dataSet), dataSet.MarketIndices, endDate);
+
+    /// <summary>
+    /// 市場熱絡的標的範圍：上市、上櫃與興櫃的普通股。廣度（漲跌家數）、量能與盤中預估成交額的
+    /// 校準分母都必須用這一份，三處不能各自過濾——2026-09-15 ETF 進盤中快照時，
+    /// 預估成交額的校準分母忘了跟著只算普通股，盤中量能因此被灌高約 7%，
+    /// 而且沒有任何測試或錯誤訊息察覺（見 <see cref="OfficialTurnover"/>）。
+    ///
+    /// ETF 是投資組合、TDR 不是台灣公司，兩者的成交額換手不等於資金流向個股，
+    /// 也不該和普通股一檔一票地算進漲跌家數。
+    /// </summary>
+    public static DailyStockTrading[] HeatUniverse(MarketDataSet dataSet)
     {
         var stocks = dataSet.Stocks.ToDictionary(stock => stock.Ticker, StringComparer.Ordinal);
-        var commonStockTrading = dataSet.DailyTrading
-            .Where(row => stocks.TryGetValue(row.Ticker, out var stock)
-                && stock.Kind == StockKind.CommonStock)
-            .ToArray();
 
-        return Calculate(commonStockTrading, dataSet.MarketIndices, endDate);
+        return [.. dataSet.DailyTrading
+            .Where(row => stocks.TryGetValue(row.Ticker, out var stock)
+                && stock.Kind == StockKind.CommonStock)];
     }
 
     public static MarketHeatMetrics? Calculate(

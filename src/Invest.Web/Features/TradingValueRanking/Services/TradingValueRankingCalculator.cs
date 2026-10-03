@@ -86,20 +86,29 @@ public sealed class TradingValueRankingCalculator
 
         // 全市場基準中位數：收縮常數 k 用它算（見 AccelerationRules.ShrunkRatio）。
         // VolumeRatio 這個欄位兩種模式都會顯示，所以不論 query.Mode 一律算出來。
-        var marketMedianBaseline = Median(baselines.Values);
-        var previousMarketMedianBaseline = Median(previousBaselines.Values);
+        //
+        // 這幾個「全市場中位數」只看上市＋上櫃，不含興櫃：收縮常數 k 與流動性門檻的係數
+        // 是用上市櫃的歷史資料回測校準的（筆記 #10）。興櫃很薄——2026-10-02 有成交的 349 檔
+        // 成交額中位數 0.012 億，上市櫃是 0.099 億——併進來整體中位數會掉約 30%，
+        // 門檻與 k 跟著一起掉 30%，等於默默改了一組已經校準過的參數。
+        // 興櫃的個股仍用同一個絕對門檻與 k 去比，只是不參與「中位數」的計算。
+        var marketMedianBaseline = Median(CalibrationValues(baselines));
+        var previousMarketMedianBaseline = Median(CalibrationValues(previousBaselines));
 
         // 資金加速專用的當期流動性門檻（筆記 #10，唯一定義處在 AccelerationRules）：
         // 本期成交值低於「全市場本期中位數」的這個比例就直接排除。門檻刻意用「當期」
         // 而不是「過去」——過去的規則會誤殺「平常沒量、今天爆量」的個股，
         // 那恰恰是資金加速要抓的東西。
         var currentLiquidityFloor = query.Mode == RankingMode.CapitalAcceleration
-            ? Median([.. currentStats.Values.Select(stat => stat.AverageDailyTradingValue)])
+            ? Median(CalibrationValues(currentStats.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.AverageDailyTradingValue)))
                 * AccelerationRules.CurrentLiquidityFloorRatio
             : (decimal?)null;
 
-        // 分母一律是上市＋上櫃一般股票，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
-        // ETF 與美股雖保留在資料集供持倉／日 K 使用，也不能污染這個分母。
+        // 分母一律是上市＋上櫃＋興櫃普通股，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
+        // ETF、TDR 與美股雖保留在資料集供持倉／搜尋／日 K 使用，也不能污染這個分母：
+        // ETF 是投資組合、TDR 不是台灣公司，兩者的成交額都不是資金流向個股的證據。
         var marketTotal = currentStats
             .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock, MarketFilter.All))
             .Sum(pair => pair.Value.TotalTradingValue);
@@ -451,12 +460,22 @@ public sealed class TradingValueRankingCalculator
     /// 只調整基準，不動 <c>endClose</c>：基準日之後的事件才會被乘進來，
     /// 基準日本身就是最新那天時倍數是 1，所以畫面上的「現價」永遠是真正成交的價格。
     /// </summary>
+    /// <summary>
+    /// 算「全市場中位數」要納入的數值：只取上市與上櫃的個股，見 <see cref="Calculate"/> 的說明。
+    /// </summary>
+    private decimal[] CalibrationValues(IReadOnlyDictionary<string, decimal> valuesByTicker)
+        => [.. valuesByTicker
+            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock)
+                && stock.Market is Market.Twse or Market.Tpex)
+            .Select(pair => pair.Value)];
+
     private static bool MatchesMarket(Stock stock, MarketFilter filter)
         => stock.Kind == StockKind.CommonStock && filter switch
     {
         MarketFilter.Twse => stock.Market == Market.Twse,
         MarketFilter.Tpex => stock.Market == Market.Tpex,
-        MarketFilter.All => stock.Market is Market.Twse or Market.Tpex,
+        MarketFilter.Emerging => stock.Market == Market.Emerging,
+        MarketFilter.All => stock.Market is Market.Twse or Market.Tpex or Market.Emerging,
         _ => false
     };
 

@@ -170,6 +170,51 @@ public sealed class DailySnapshotWorkflowTests
         Assert.Contains("continue-on-error: true", step[..step.IndexOf("run:", StringComparison.Ordinal)], StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 每次完整流程都補抓興櫃且在保存行情快取之前並允許失敗()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        var step = workflow[workflow.IndexOf("- name: 補抓興櫃行情", StringComparison.Ordinal)..];
+        var header = step[..step.IndexOf("run:", StringComparison.Ordinal)];
+
+        // 興櫃日統計下午四點半才公布，今天的興櫃要靠這一步拿；publish-only 不改 data，不能跑。
+        Assert.Contains("inputs.publish-only != true", header, StringComparison.Ordinal);
+        Assert.Contains("continue-on-error: true", header, StringComparison.Ordinal);
+        Assert.Contains("-- backfill-emerging \"$TRADING_DAYS\"", step, StringComparison.Ordinal);
+
+        // 興櫃是寫進 data/imports 的，必須在「保存行情快取」之前，否則今天的興櫃永遠進不了 data 分支。
+        Assert.True(
+            workflow.IndexOf("- name: 補抓興櫃行情", StringComparison.Ordinal)
+                < workflow.IndexOf("- name: 保存行情快取", StringComparison.Ordinal),
+            "補抓興櫃必須排在保存行情快取之前。");
+
+        // 同步、對帳與匯出都吃 data/imports，補完興櫃之後才跑，才不會用缺興櫃的快照發布。
+        Assert.True(
+            workflow.IndexOf("- name: 補抓興櫃行情", StringComparison.Ordinal)
+                < workflow.IndexOf("- name: 同步到 Supabase", StringComparison.Ordinal),
+            "補抓興櫃必須排在同步到 Supabase 之前。");
+    }
+
+    [Fact]
+    public void 補抓TDR歷史每次完整流程都跑且在保存行情快取之前並允許失敗()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        var step = workflow[workflow.IndexOf("- name: 補抓 TDR 歷史", StringComparison.Ordinal)..];
+        var header = step[..step.IndexOf("run:", StringComparison.Ordinal)];
+
+        Assert.Contains("inputs.publish-only != true", header, StringComparison.Ordinal);
+        Assert.Contains("continue-on-error: true", header, StringComparison.Ordinal);
+        Assert.Contains("-- backfill-tdr \"$TRADING_DAYS\"", step, StringComparison.Ordinal);
+        Assert.True(
+            workflow.IndexOf("- name: 補抓 TDR 歷史", StringComparison.Ordinal)
+                < workflow.IndexOf("- name: 保存行情快取", StringComparison.Ordinal),
+            "補抓 TDR 必須排在保存行情快取之前。");
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)

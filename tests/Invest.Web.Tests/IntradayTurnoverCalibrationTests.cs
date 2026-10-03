@@ -99,9 +99,9 @@ public sealed class IntradayTurnoverCalibrationTests
     [Fact]
     public void fT達門檻時用校準比例換算並四捨五入到整數()
     {
-        // 13:00 的 f(t) 是 0.722（Fallback 表既有的實測值）。
+        // 13:00 的 f(t) 是 0.838（Fallback 表的實測值，分母只算普通股，見 OfficialTurnover）。
         var estimate = IntradayTurnoverProjection.Estimate(
-            72.2m, new TimeOnly(13, 0), IntradayTurnoverCalibration.Fallback);
+            83.8m, new TimeOnly(13, 0), IntradayTurnoverCalibration.Fallback);
 
         Assert.Equal(100m, estimate);
     }

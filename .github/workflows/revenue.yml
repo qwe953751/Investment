@@ -24,6 +24,11 @@ on:
       backfill-months:
         description: 回補幾個月（0 表示只抓最新一期）
         default: '0'
+      # 興櫃是 2026-10 才併進台股頁籤的。資料庫裡既有月份只有上市櫃，backfill-months 會把它們當成
+      # 已定案略過，補不進興櫃；這個選項只補興櫃的歷史（每月兩個檔案），重複執行無害。
+      backfill-emerging-months:
+        description: 只補興櫃歷史營收幾個月（0 表示不補）
+        default: '0'
 
 permissions:
   contents: read
@@ -42,6 +47,7 @@ jobs:
       # 「上個月」必須是台北的上個月：UTC 還停在月底時台北已經跨月了。
       TZ: Asia/Taipei
       BACKFILL_MONTHS: ${{ inputs.backfill-months || '0' }}
+      BACKFILL_EMERGING_MONTHS: ${{ inputs.backfill-emerging-months || '0' }}
 
     steps:
       - name: 取出原始碼
@@ -58,8 +64,13 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
+          extra=()
+          if [ "$BACKFILL_EMERGING_MONTHS" -gt 0 ]; then
+              extra+=(--backfill-emerging "$BACKFILL_EMERGING_MONTHS")
+          fi
+
           if [ "$BACKFILL_MONTHS" -gt 0 ]; then
-              dotnet run -c Release --project src/Invest.Web -- revenue --backfill "$BACKFILL_MONTHS"
+              dotnet run -c Release --project src/Invest.Web -- revenue --backfill "$BACKFILL_MONTHS" "${extra[@]}"
           else
-              dotnet run -c Release --project src/Invest.Web -- revenue
+              dotnet run -c Release --project src/Invest.Web -- revenue "${extra[@]}"
           fi

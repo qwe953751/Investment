@@ -141,7 +141,8 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
 
         var ticker = row[0].GetString()?.Trim();
 
-        var kind = QuoteFieldParser.GetTaiwanStockKind(ticker, etfTickers);
+        var name = row[1].GetString()?.Trim();
+        var kind = QuoteFieldParser.GetTaiwanStockKind(ticker, name, etfTickers);
 
         if (kind is null)
         {
@@ -152,7 +153,7 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
         {
             Market = Market.Twse,
             Ticker = ticker!,
-            Name = row[1].GetString()?.Trim() ?? ticker!,
+            Name = name ?? ticker!,
             Kind = kind.Value,
             TradingVolume = QuoteFieldParser.ParseDecimal(row[2].GetString()),
             TransactionCount = QuoteFieldParser.ParseInt(row[3].GetString()),

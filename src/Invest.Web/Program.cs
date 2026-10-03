@@ -32,6 +32,8 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- backfill [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-bars [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-etfs [交易日數] [起始日期]
+//   dotnet run --project src/Invest.Web -- backfill-emerging [交易日數] [起始日期]
+//   dotnet run --project src/Invest.Web -- backfill-tdr [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- verify-kline-cache [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-us
 //   dotnet run --project src/Invest.Web -- backfill-overview [--markets us,crypto|jp,kr]
@@ -50,7 +52,7 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- verify
 //   dotnet run --project src/Invest.Web -- status  [來源] [輸出檔]
 //   dotnet run --project src/Invest.Web -- curve
-//   dotnet run --project src/Invest.Web -- revenue [--backfill 月數]
+//   dotnet run --project src/Invest.Web -- revenue [--backfill 月數] [--backfill-emerging 月數]
 //   dotnet run --project src/Invest.Web -- alert   <來源> <error|warning> <訊息> [連結]
 //   dotnet run --project src/Invest.Web -- alert-clear <來源>
 //   dotnet run --project src/Invest.Web -- ocr-poc --input <圖片目錄> --truth <標準答案.json> --output <報告目錄>
@@ -59,7 +61,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -79,6 +81,7 @@ builder.Services.Configure<YahooScreenerMarketDataOptions>(
 // 官方網站會擋掉沒有 User-Agent 的請求，這些 client 一定要帶。
 builder.Services.AddHttpClient<TwseDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexDailyQuoteClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<TpexEmergingDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaiwanEtfCatalogClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexMarketIndexClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseNonRegularTradingClient>(ConfigureQuoteClient);
@@ -106,6 +109,7 @@ builder.Services.AddSingleton<TopicSheetCacheStore>();
 
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<EmergingIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<MarketOverviewIntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<MarketTurnoverSnapshotPublisher>();
@@ -193,6 +197,18 @@ if (command is "backfill-bars")
 if (command is "backfill-etfs")
 {
     await RunEtfBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-emerging")
+{
+    await RunEmergingBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-tdr")
+{
+    await RunTdrBackfillAsync(app.Services, args);
     return;
 }
 
@@ -592,6 +608,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var universeClient = scope.ServiceProvider.GetRequiredService<StockUniverseClient>();
     var etfCatalogClient = scope.ServiceProvider.GetRequiredService<TaiwanEtfCatalogClient>();
     var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
+    var emergingClient = scope.ServiceProvider.GetRequiredService<EmergingIntradayClient>();
     var store = scope.ServiceProvider.GetRequiredService<IntradayQuoteStore>();
     var dailyQuoteStore = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
     var marketFlagClient = scope.ServiceProvider.GetRequiredService<MarketFlagClient>();
@@ -628,11 +645,20 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var historicalDataSet = await LoadMarketHeatHistoryAsync(dailyQuoteStore, cts.Token);
 
     // 成交額預估的校準曲線活過整個交易時段就好，不必每一輪重新查一次資料庫。
-    var turnoverCalibration = await LoadTurnoverCalibrationAsync(curveStore, cts.Token);
+    var turnoverCalibration = await LoadTurnoverCalibrationAsync(
+        curveStore, OfficialTurnover.ByDate(historicalDataSet.DailyTrading), cts.Token);
 
     // 個股清單擺在迴圈裡拿。開場拿不到就整場結束的話，交易所那支 API 抖一下就報銷一天。
     IReadOnlyList<(Market Market, string Ticker)>? universe = null;
     IReadOnlyList<(Market Market, string Ticker)>? etfUniverse = null;
+    IReadOnlyList<(Market Market, string Ticker)>? tdrUniverse = null;
+
+    // 興櫃是額外資料源，偶爾一輪讀不到不能讓排行與市場成交額跟著抖一下（興櫃約占 1%）。
+    // 同一個交易日內沿用上一輪的興櫃最多三輪（約 6 分鐘），再讀不到就如實不含興櫃。
+    const int maxEmergingCarryRounds = 3;
+    IReadOnlyList<IntradayQuote> lastEmergingQuotes = [];
+    DateOnly? lastEmergingDate = null;
+    var emergingMissedRounds = 0;
 
     try
     {
@@ -655,10 +681,32 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                     universe = await universeClient.GetTickersAsync(cts.Token);
                     Console.WriteLine($"{localTime:HH:mm:ss} 個股清單共 {universe.Count} 檔。");
 
+                    // 六碼 TDR 不在公司基本資料名單裡，用最近一個交易日行情裡已知的 TDR 另外問
+                    //（四碼 TDR 已在主清單，同一輪就會依名稱解析成 TDR）。
                     try
                     {
+                        var latestDaily = await dailyQuoteStore.LoadLatestAsync(cts.Token);
+                        var mainTickers = universe.Select(item => item.Ticker).ToHashSet(StringComparer.Ordinal);
+                        tdrUniverse = [.. (latestDaily?.Quotes ?? [])
+                            .Where(quote => quote.Kind == StockKind.Tdr
+                                && !mainTickers.Contains(quote.Ticker))
+                            .Select(quote => (quote.Market, quote.Ticker))];
+                        Console.WriteLine($"{localTime:HH:mm:ss} 六碼 TDR 清單共 {tdrUniverse.Count} 檔。");
+                    }
+                    catch (Exception exception)
+                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                    {
+                        tdrUniverse = [];
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} 讀不到既有 TDR 清單，這一場只收主清單內的 TDR：{exception.Message}");
+                    }
+
+                    try
+                    {
+                        // 外幣交易線（K／C 結尾）台股頁籤不顯示，也就不必每輪白問。
                         var etfCatalog = await etfCatalogClient.GetAsync(cts.Token);
                         etfUniverse = [.. etfCatalog.Securities
+                            .Where(security => !TaiwanSecurityRules.IsForeignCurrencyEtfLine(security.Ticker))
                             .Select(security => (security.Market, security.Ticker))];
                         Console.WriteLine($"{localTime:HH:mm:ss} ETF 清單共 {etfUniverse.Count} 檔。");
                     }
@@ -725,6 +773,74 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                         // 丟掉整個市場的盤中輪次。
                         Console.WriteLine(
                             $"{localTime:HH:mm:ss} ETF 盤中報價失敗，本輪保留個股：{exception.Message}");
+                    }
+                }
+
+                if (tdrUniverse is { Count: > 0 })
+                {
+                    try
+                    {
+                        var tdrSnapshot = await quoteClient.GetTdrQuotesAsync(tdrUniverse, cts.Token);
+
+                        if (tdrSnapshot.TradeDate == snapshot.TradeDate)
+                        {
+                            snapshot = snapshot with
+                            {
+                                Quotes = [.. snapshot.Quotes, .. tdrSnapshot.Quotes]
+                            };
+                        }
+                    }
+                    catch (Exception exception)
+                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                    {
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} 六碼 TDR 盤中報價失敗，本輪不含：{exception.Message}");
+                    }
+                }
+
+                // 興櫃走櫃買中心自己的行情來源（MIS 沒有興櫃）。日期必須跟上市櫃同一天，
+                // 否則是開盤前還停在上一個交易日的資料，不能併進今天的快照。
+                try
+                {
+                    var emergingSnapshot = await emergingClient.GetQuotesAsync(cts.Token);
+
+                    if (emergingSnapshot.TradeDate == snapshot.TradeDate)
+                    {
+                        snapshot = snapshot with
+                        {
+                            Quotes = [.. snapshot.Quotes, .. emergingSnapshot.Quotes]
+                        };
+                        lastEmergingQuotes = emergingSnapshot.Quotes;
+                        lastEmergingDate = emergingSnapshot.TradeDate;
+                        emergingMissedRounds = 0;
+                    }
+                    else
+                    {
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} 興櫃來源日期 {emergingSnapshot.TradeDate:yyyy-MM-dd} "
+                            + $"與個股 {snapshot.TradeDate:yyyy-MM-dd} 不同，本輪不併入興櫃。");
+                    }
+                }
+                catch (Exception exception)
+                    when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                {
+                    emergingMissedRounds++;
+
+                    if (lastEmergingDate == snapshot.TradeDate
+                        && lastEmergingQuotes.Count > 0
+                        && emergingMissedRounds <= maxEmergingCarryRounds)
+                    {
+                        snapshot = snapshot with
+                        {
+                            Quotes = [.. snapshot.Quotes, .. lastEmergingQuotes]
+                        };
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} 興櫃盤中報價失敗，沿用上一輪（第 {emergingMissedRounds} 輪）：{exception.Message}");
+                    }
+                    else
+                    {
+                        Console.WriteLine(
+                            $"{localTime:HH:mm:ss} 興櫃盤中報價失敗，本輪只收上市櫃：{exception.Message}");
                     }
                 }
 
@@ -1036,7 +1152,8 @@ static async Task RunIntradayHeatBackfillAsync(IServiceProvider services, string
     var capturedAt = stored?.CapturedAt ?? publicSnapshot?.CapturedAt
         ?? throw new InvalidOperationException("盤中快照缺少收集時間，無法回填預估成交額。");
     var curveStore = services.GetRequiredService<IntradayCurveStore>();
-    var turnoverCalibration = await LoadTurnoverCalibrationAsync(curveStore);
+    var turnoverCalibration = await LoadTurnoverCalibrationAsync(
+        curveStore, OfficialTurnover.ByDate(historicalDataSet.DailyTrading));
     var heat = CalculateIntradayMarketHeat(historicalDataSet, snapshot, capturedAt, turnoverCalibration);
 
     if (heat?.Score is null)
@@ -1103,11 +1220,13 @@ static async Task<MarketDataSet> LoadMarketHeatHistoryAsync(
 /// </summary>
 static async Task<IntradayTurnoverCalibration> LoadTurnoverCalibrationAsync(
     IntradayCurveStore curveStore,
+    IReadOnlyDictionary<DateOnly, decimal> officialTotals,
     CancellationToken cancellationToken = default)
 {
     try
     {
-        var samples = await curveStore.LoadCalibrationSamplesAsync(cancellationToken: cancellationToken);
+        var samples = await curveStore.LoadCalibrationSamplesAsync(
+            officialTotals, cancellationToken: cancellationToken);
         return IntradayTurnoverCalibration.Build(samples);
     }
     catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
@@ -2145,6 +2264,121 @@ static async Task RunDailyBarBackfillAsync(IServiceProvider services, string[] a
 /// 以交易所官方 ETF 名冊補齊既有快取。這個指令會寫入 data/imports，
 /// 應只在 data branch 與明確資料更新授權下執行。
 /// </summary>
+/// <summary>
+/// 把六碼 TDR（舊解析器沒保存）補進既有快取。已補的日期自己略過，重跑同一個指令即可接續。
+/// </summary>
+static async Task RunTdrBackfillAsync(IServiceProvider services, string[] args)
+{
+    var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 300;
+    var startFrom = args.Length > 2 && DateOnly.TryParse(args[2], out var parsedDate)
+        ? parsedDate
+        : DateOnly.FromDateTime(DateTime.Today);
+
+    using var scope = services.CreateScope();
+    var downloader = scope.ServiceProvider.GetRequiredService<MarketDataDownloader>();
+    var store = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
+
+    Console.WriteLine($"開始補抓最近 {targetTradingDays} 個交易日的 TDR 行情，截止 {startFrom:yyyy-MM-dd}。");
+    Console.WriteLine($"快取位置：{store.Directory}");
+    Console.WriteLine("只新增快取裡還沒有的 TDR，既有的列（含四碼 TDR）完全不動。");
+    Console.WriteLine();
+
+    var progress = new Progress<string>(Console.WriteLine);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        var report = await downloader.BackfillTdrAsync(targetTradingDays, startFrom, progress, cts.Token);
+
+        Console.WriteLine();
+        Console.WriteLine($"完成。涵蓋 {report.TradingDayCount} 天"
+            + $"（處理 {report.UpdatedCount} 天、新增 {report.AddedQuoteCount} 列、略過已補 {report.SkippedCount}）。");
+
+        if (report.FailedDates.Count > 0)
+        {
+            Console.WriteLine($"失敗 {report.FailedDates.Count} 天："
+                + string.Join(", ", report.FailedDates.Select(date => date.ToString("yyyy-MM-dd"))));
+            Console.WriteLine("重跑同一個指令即可補上失敗日期。");
+            Environment.ExitCode = 1;
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine();
+        Console.WriteLine("已中斷。完成的 TDR 快取已保留，重跑會從尚未補齊的日期繼續。");
+    }
+}
+
+/// <summary>
+/// 把興櫃日統計補進既有快取。每天的完整流程都會呼叫（已補的日期自己略過，只有剛公布的今天會真的下載），
+/// 也是一次性補三百個交易日歷史的指令。
+/// </summary>
+static async Task RunEmergingBackfillAsync(IServiceProvider services, string[] args)
+{
+    var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 300;
+    var today = DateOnly.FromDateTime(DateTime.Today);
+    var startFrom = args.Length > 2 && DateOnly.TryParse(args[2], out var parsedDate)
+        ? parsedDate
+        : today;
+
+    using var scope = services.CreateScope();
+    var downloader = scope.ServiceProvider.GetRequiredService<MarketDataDownloader>();
+    var store = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
+
+    Console.WriteLine($"開始補抓最近 {targetTradingDays} 個交易日的興櫃行情，截止 {startFrom:yyyy-MM-dd}。");
+    Console.WriteLine($"快取位置：{store.Directory}");
+    Console.WriteLine("只新增興櫃的列，不會改動上市、上櫃、ETF 與指數的既有行情。");
+    Console.WriteLine();
+
+    var progress = new Progress<string>(Console.WriteLine);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        var report = await downloader.BackfillEmergingAsync(
+            targetTradingDays, startFrom, progress, cts.Token);
+
+        Console.WriteLine();
+        Console.WriteLine($"完成。涵蓋 {report.TradingDayCount} 天"
+            + $"（補入興櫃 {report.UpdatedCount}、略過已補快取 {report.SkippedCount}）。");
+
+        // 興櫃日統計要到下午四點半才公布；今天還沒公布是預期內，不算失敗，
+        // 否則每天下午的完整流程都會在這一步亮紅燈。更早的日期補不到才是真的有問題。
+        var pendingToday = report.FailedDates.Where(date => date >= today).ToArray();
+        var failed = report.FailedDates.Where(date => date < today).ToArray();
+
+        if (pendingToday.Length > 0)
+        {
+            Console.WriteLine("今天的興櫃日統計尚未公布（約 16:30 後才有），之後的流程會自動補上。");
+        }
+
+        if (failed.Length > 0)
+        {
+            Console.WriteLine($"失敗 {failed.Length} 天："
+                + string.Join(", ", failed.Select(date => date.ToString("yyyy-MM-dd"))));
+            Console.WriteLine("重跑同一個指令即可補上失敗日期。");
+            Environment.ExitCode = 1;
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine();
+        Console.WriteLine("已中斷。完成的興櫃快取已保留，重跑會從尚未補齊的日期繼續。");
+    }
+}
+
 static async Task RunEtfBackfillAsync(IServiceProvider services, string[] args)
 {
     var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 300;
@@ -2244,6 +2478,14 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
         ? parsed
         : 0;
 
+    // 只補興櫃的歷史營收。既有月份已經有上市櫃資料，--backfill 會把它們當成「已定案」略過，
+    // 補不進興櫃，所以這是獨立的旗標；重複執行只是無害的覆蓋寫入。
+    var emergingBackfillIndex = Array.IndexOf(args, "--backfill-emerging");
+    var emergingBackfillMonths = emergingBackfillIndex >= 0 && args.Length > emergingBackfillIndex + 1
+        && int.TryParse(args[emergingBackfillIndex + 1], out var parsedEmerging)
+        ? parsedEmerging
+        : 0;
+
     using var scope = services.CreateScope();
     var client = scope.ServiceProvider.GetRequiredService<RevenueClient>();
     var store = scope.ServiceProvider.GetRequiredService<RevenueStore>();
@@ -2269,6 +2511,50 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
 
     try
     {
+        if (emergingBackfillMonths > 0)
+        {
+            Console.WriteLine($"只補興櫃的歷史營收：{emergingBackfillMonths} 個月，從 {eligible:yyyy-MM} 往回。");
+            Console.WriteLine("每個月兩個檔案（國內／外國企業），中間有延遲避免被擋。");
+            Console.WriteLine();
+
+            var emergingMonth = eligible;
+            var skippedMonths = new List<string>();
+
+            for (var index = 0; index < emergingBackfillMonths; index++, emergingMonth = emergingMonth.AddMonths(-1))
+            {
+                try
+                {
+                    var rows = await client.GetEmergingMonthAsync(emergingMonth, cts.Token);
+
+                    if (rows.Count == 0)
+                    {
+                        Console.WriteLine($"{emergingMonth:yyyy-MM} 沒有興櫃營收（還沒公告或報表不存在）。");
+                    }
+                    else
+                    {
+                        await store.SaveMonthlyAsync(rows, cts.Token);
+                        Console.WriteLine($"{emergingMonth:yyyy-MM} 興櫃寫入 {rows.Count} 檔。");
+                    }
+                }
+                catch (InvalidDataException exception)
+                {
+                    // 很舊的月份版面可能不同。這是一次性的歷史回補，單一月份解不出來就略過，
+                    // 不讓它中止其餘月份；創高月數只需要夠長的連續歷史，缺幾個很舊的月份不影響近期。
+                    skippedMonths.Add($"{emergingMonth:yyyy-MM}");
+                    Console.WriteLine($"{emergingMonth:yyyy-MM} 解析失敗，略過：{exception.Message}");
+                }
+
+                await Task.Delay(options.RequestDelayMilliseconds, cts.Token);
+            }
+
+            Console.WriteLine();
+
+            if (skippedMonths.Count > 0)
+            {
+                Console.WriteLine($"略過 {skippedMonths.Count} 個月：{string.Join("、", skippedMonths)}");
+            }
+        }
+
         if (backfillMonths > 0)
         {
             var existing = await store.LoadMonthCountsAsync(cts.Token);

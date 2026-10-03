@@ -183,8 +183,9 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
         var styles = ReadAsset("site.css");
 
-        Assert.Contains("const MARKET_MARK = { twse: '市', tpex: '櫃' }", script, StringComparison.Ordinal);
-        Assert.Contains("marketMark: MARKET_MARK[row.market]", script, StringComparison.Ordinal);
+        // 興櫃的標記是「興」；TDR 是種類而不是市場，標記為「DR」（見 tw-securities-search.test.mjs）。
+        Assert.Contains("const MARKET_MARK = { twse: '市', tpex: '櫃', emerging: '興' }", script, StringComparison.Ordinal);
+        Assert.Contains("marketMark: row.kind === 'tdr' ? 'DR' : MARKET_MARK[row.market]", script, StringComparison.Ordinal);
         Assert.Contains("mark.className = 'market-mark'", script, StringComparison.Ordinal);
         Assert.Contains(".market-mark", styles, StringComparison.Ordinal);
         Assert.DoesNotContain("key: 'market', title: '市場'", script, StringComparison.Ordinal);

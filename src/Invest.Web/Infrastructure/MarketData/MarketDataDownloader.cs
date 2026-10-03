@@ -15,6 +15,7 @@ namespace Invest.Web.Infrastructure.MarketData;
 public sealed class MarketDataDownloader(
     TwseDailyQuoteClient twseClient,
     TpexDailyQuoteClient tpexClient,
+    TpexEmergingDailyQuoteClient emergingClient,
     TaiwanEtfCatalogClient etfCatalogClient,
     TpexMarketIndexClient tpexIndexClient,
     TwseNonRegularTradingClient twseNonRegularClient,
@@ -265,6 +266,178 @@ public sealed class MarketDataDownloader(
         return report;
     }
 
+    /// <summary>
+    /// 把證交所／櫃買日行情裡的 TDR 補進既有快取（主要是六碼 TDR，舊解析器沒保存）。
+    /// 已經是目前 <see cref="DailyQuoteSnapshot.CurrentTdrSchemaVersion"/> 的日期自己略過；
+    /// 只新增快取裡還沒有的 TDR，既有列（含已扣非一般交易的四碼 TDR）完全不動。
+    /// </summary>
+    public async Task<TdrBackfillReport> BackfillTdrAsync(
+        int targetTradingDays,
+        DateOnly startFrom,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(targetTradingDays, 1);
+
+        var snapshots = await store.LoadAllAsync(cancellationToken);
+        var targets = snapshots
+            .Where(snapshot => snapshot.TradingDate <= startFrom)
+            .TakeLast(targetTradingDays)
+            .ToArray();
+        var report = new TdrBackfillReport
+        {
+            TradingDayCount = targets.Length
+        };
+        IReadOnlySet<string> noEtf = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var snapshot in targets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (snapshot.TdrSchemaVersion >= DailyQuoteSnapshot.CurrentTdrSchemaVersion)
+            {
+                report.SkippedCount++;
+                continue;
+            }
+
+            progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 補抓 TDR 行情");
+
+            var twse = await WithRetryAsync(
+                () => twseClient.GetDailyQuotesAsync(snapshot.TradingDate, noEtf, cancellationToken),
+                $"TWSE TDR {snapshot.TradingDate:yyyy-MM-dd}",
+                progress,
+                cancellationToken);
+
+            await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+
+            var tpex = await WithRetryAsync(
+                () => tpexClient.GetDailyQuotesAsync(snapshot.TradingDate, noEtf, cancellationToken),
+                $"TPEx TDR {snapshot.TradingDate:yyyy-MM-dd}",
+                progress,
+                cancellationToken);
+
+            await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+
+            // 該日的上市櫃行情回空代表來源這次沒給（原快取是交易日，不可能真的沒有行情）；
+            // 不能把「空」當成「沒有 TDR」寫成已完成。
+            if (twse is not { Count: > 0 } || tpex is not { Count: > 0 })
+            {
+                report.FailedDates.Add(snapshot.TradingDate);
+                progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} TDR 來源回應為空，保留原快取並下次重試");
+                continue;
+            }
+
+            var tdrQuotes = new List<DailyQuote>();
+            tdrQuotes.AddRange(twse.Where(quote => quote.Kind == StockKind.Tdr));
+            tdrQuotes.AddRange(tpex.Where(quote => quote.Kind == StockKind.Tdr));
+
+            var updated = snapshot.WithTdrQuotes(tdrQuotes);
+            await store.SaveAsync(updated, cancellationToken);
+            report.UpdatedCount++;
+            report.AddedQuoteCount += updated.Quotes.Count - snapshot.Quotes.Count;
+            progress?.Report(
+                $"{snapshot.TradingDate:yyyy-MM-dd} TDR 完成（新增 {updated.Quotes.Count - snapshot.Quotes.Count} 檔）");
+        }
+
+        return report;
+    }
+
+    /// <summary>
+    /// 把興櫃日統計補進既有快取。已經是目前 <see cref="DailyQuoteSnapshot.CurrentEmergingSchemaVersion"/>
+    /// 的日期會自己略過，所以每天的完整流程都可以放心呼叫（只有今天剛公布的興櫃會真的下載），
+    /// 一次性補三百個交易日歷史中途失敗時，重跑同一個指令即可接續。
+    ///
+    /// 只動興櫃的列與版本號，上市櫃、ETF、指數與日 K 完全不變；行情只增不減。
+    /// </summary>
+    public async Task<EmergingBackfillReport> BackfillEmergingAsync(
+        int targetTradingDays,
+        DateOnly startFrom,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(targetTradingDays, 1);
+
+        var snapshots = await store.LoadAllAsync(cancellationToken);
+        var targets = snapshots
+            .Where(snapshot => snapshot.TradingDate <= startFrom)
+            .TakeLast(targetTradingDays)
+            .ToArray();
+        var report = new EmergingBackfillReport
+        {
+            TradingDayCount = targets.Length
+        };
+
+        foreach (var snapshot in targets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (snapshot.EmergingSchemaVersion >= DailyQuoteSnapshot.CurrentEmergingSchemaVersion)
+            {
+                report.SkippedCount++;
+                continue;
+            }
+
+            progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 補抓興櫃行情");
+            var quotes = await TryDownloadEmergingAsync(snapshot.TradingDate, progress, cancellationToken);
+
+            if (quotes is null)
+            {
+                report.FailedDates.Add(snapshot.TradingDate);
+                progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 興櫃尚未公布或回應不完整，保留原快取並下次重試");
+                continue;
+            }
+
+            await store.SaveAsync(snapshot.WithEmergingQuotes(quotes), cancellationToken);
+            report.UpdatedCount++;
+            progress?.Report($"{snapshot.TradingDate:yyyy-MM-dd} 興櫃完成（{quotes.Count} 檔）");
+            await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+        }
+
+        return report;
+    }
+
+    /// <summary>
+    /// 下載單日興櫃。回傳 null 代表「這次不能用」：官方尚未公布（空清單）、回應只有少數標的、
+    /// 或重試用盡——呼叫端一律保留原快取、之後重試，不能把殘缺的一天當成完整寫進去。
+    /// </summary>
+    private async Task<IReadOnlyList<DailyQuote>?> TryDownloadEmergingAsync(
+        DateOnly date,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var quotes = await WithRetryAsync(
+                () => emergingClient.GetDailyQuotesAsync(date, cancellationToken),
+                $"興櫃 {date:yyyy-MM-dd}",
+                progress,
+                cancellationToken);
+
+            if (quotes is null || quotes.Count == 0)
+            {
+                return null;
+            }
+
+            // 興櫃長年有三百多檔；少於這個下限幾乎一定是殘缺回應。
+            if (quotes.Count < MinimumEmergingQuoteCount)
+            {
+                logger.LogWarning(
+                    "興櫃 {Date:yyyy-MM-dd} 只有 {Count} 檔，低於 {Minimum} 檔的合理下限，視為殘缺回應。",
+                    date, quotes.Count, MinimumEmergingQuoteCount);
+                return null;
+            }
+
+            return quotes;
+        }
+        catch (Exception exception) when (exception is InvalidDataException or System.Text.Json.JsonException)
+        {
+            logger.LogWarning(exception, "興櫃 {Date:yyyy-MM-dd} 回應格式不符預期，這次略過。", date);
+            return null;
+        }
+    }
+
+    private const int MinimumEmergingQuoteCount = 100;
+
     private async Task<IReadOnlyList<DailyQuote>?> DownloadDailyBarsAsync(
         DateOnly date,
         TaiwanEtfCatalog etfCatalog,
@@ -442,7 +615,7 @@ public sealed class MarketDataDownloader(
             return null;
         }
 
-        return new DailyQuoteSnapshot
+        var snapshot = new DailyQuoteSnapshot
         {
             SchemaVersion = DailyQuoteSnapshot.CurrentSchemaVersion,
             TradingDate = date,
@@ -451,6 +624,7 @@ public sealed class MarketDataDownloader(
             MarketIndexSchemaVersion = DailyQuoteSnapshot.CurrentMarketIndexSchemaVersion,
             DailyBarSchemaVersion = DailyQuoteSnapshot.CurrentDailyBarSchemaVersion,
             EtfSchemaVersion = DailyQuoteSnapshot.CurrentEtfSchemaVersion,
+            TdrSchemaVersion = DailyQuoteSnapshot.CurrentTdrSchemaVersion,
             MarketIndices = [validTwseIndex, validTpexIndex],
             Quotes =
             [
@@ -458,6 +632,12 @@ public sealed class MarketDataDownloader(
                 .. ToRegularTradingOnly(tpex, tpexNonRegular)
             ]
         };
+
+        // 興櫃「日統計」要到下午四點半才會公布，上市櫃一般更早；沒拿到就先存上市櫃，
+        // 不能因此丟掉這一天。快照的 EmergingSchemaVersion 維持 0，之後 backfill-emerging 會補。
+        var emerging = await TryDownloadEmergingAsync(date, progress, cancellationToken);
+
+        return emerging is null ? snapshot : snapshot.WithEmergingQuotes(emerging);
     }
 
     private Task<TaiwanEtfCatalog?> DownloadEtfCatalogAsync(
@@ -575,6 +755,30 @@ public sealed class BackfillReport
 }
 
 public sealed class DailyBarBackfillReport
+{
+    public int TradingDayCount { get; init; }
+
+    public int UpdatedCount { get; set; }
+
+    public int SkippedCount { get; set; }
+
+    public List<DateOnly> FailedDates { get; } = [];
+}
+
+public sealed class TdrBackfillReport
+{
+    public int TradingDayCount { get; init; }
+
+    public int UpdatedCount { get; set; }
+
+    public int SkippedCount { get; set; }
+
+    public int AddedQuoteCount { get; set; }
+
+    public List<DateOnly> FailedDates { get; } = [];
+}
+
+public sealed class EmergingBackfillReport
 {
     public int TradingDayCount { get; init; }
 

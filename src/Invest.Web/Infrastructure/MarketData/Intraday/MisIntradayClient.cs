@@ -62,6 +62,19 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             includeMarketIndices: false,
             cancellationToken: cancellationToken);
 
+    /// <summary>
+    /// 六碼 TDR（910322 這類）不在公司基本資料名單裡，要用日行情已知的 TDR 清單另外問。
+    /// 四碼 TDR 在主清單的同一輪裡就會被解析成 <see cref="StockKind.Tdr"/>，不必重複查。
+    /// </summary>
+    public async Task<IntradaySnapshot> GetTdrQuotesAsync(
+        IReadOnlyList<(Market Market, string Ticker)> universe,
+        CancellationToken cancellationToken = default)
+        => await GetQuotesCoreAsync(
+            universe,
+            StockKind.Tdr,
+            includeMarketIndices: false,
+            cancellationToken: cancellationToken);
+
     private async Task<IntradaySnapshot> GetQuotesCoreAsync(
         IReadOnlyList<(Market Market, string Ticker)> universe,
         StockKind expectedKind,
@@ -114,7 +127,12 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             "盤中{Kind}報價 {Date:yyyy-MM-dd}：查詢 {Requested} 檔、取得 {Received} 檔，"
             + "現價來源 成交價 {LastTrade}／買賣中價 {BidAskMid}／高低中價 {HighLowMid}／開盤 {Open}／昨收 {PreviousClose}，"
             + "有量卻沒價 {PricelessWithVolume} 檔。",
-            expectedKind == StockKind.Etf ? "ETF " : string.Empty,
+            expectedKind switch
+            {
+                StockKind.Etf => "ETF ",
+                StockKind.Tdr => "TDR ",
+                _ => string.Empty
+            },
             tradeDate,
             universe.Count,
             quotes.Count,
@@ -350,11 +368,27 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     {
         var ticker = ReadString(item, "c");
 
-        var isExpectedTicker = expectedKind == StockKind.CommonStock
-            ? QuoteFieldParser.IsCommonStockTicker(ticker)
-            : QuoteFieldParser.IsTaiwanEtfTicker(ticker);
+        var isExpectedTicker = expectedKind switch
+        {
+            StockKind.CommonStock => QuoteFieldParser.IsCommonStockTicker(ticker),
+            StockKind.Tdr => TaiwanSecurityRules.IsTdrTickerShape(ticker),
+            _ => QuoteFieldParser.IsTaiwanEtfTicker(ticker)
+        };
 
         if (!isExpectedTicker)
+        {
+            return null;
+        }
+
+        var name = ReadString(item, "n")?.Trim() ?? ticker!;
+
+        // 四碼 TDR（9103 這類）跟普通股走同一份清單與同一個形狀檢查，只能靠名稱（-DR）分出來。
+        var kind = expectedKind == StockKind.CommonStock && TaiwanSecurityRules.IsTdrName(name)
+            ? StockKind.Tdr
+            : expectedKind;
+
+        // 六碼 TDR 的查詢結果必須真的是 TDR；名稱不是 -DR 的代號不收，避免誤收同代號的其他商品。
+        if (expectedKind == StockKind.Tdr && !TaiwanSecurityRules.IsTdrName(name))
         {
             return null;
         }
@@ -371,8 +405,8 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         {
             Market = ReadString(item, "ex") == "otc" ? Market.Tpex : Market.Twse,
             Ticker = ticker!,
-            Name = ReadString(item, "n")?.Trim() ?? ticker!,
-            Kind = expectedKind,
+            Name = name,
+            Kind = kind,
             Price = price,
             PriceSource = priceSource,
             OpenPrice = open,

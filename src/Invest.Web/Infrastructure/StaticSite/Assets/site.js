@@ -405,7 +405,8 @@ const MODES = [
 const MARKETS = [
     { key: 'all', text: '全部' },
     { key: 'twse', text: '上市' },
-    { key: 'tpex', text: '上櫃' }
+    { key: 'tpex', text: '上櫃' },
+    { key: 'emerging', text: '興櫃' }
 ];
 
 const ETF_MARKETS = [
@@ -567,7 +568,15 @@ function turnoverFraction(capturedAtIso) {
 // 這樣按鈕上的金額可以直接跟表格那一欄對照。
 
 // 市場不另佔一欄，改以短標記跟在股票代號旁。
-const MARKET_MARK = { twse: '市', tpex: '櫃' };
+const MARKET_MARK = { twse: '市', tpex: '櫃', emerging: '興' };
+
+// 代號右側小標記的說明。TDR 的標記是「DR」而不是市場：它不是台灣公司，種類比掛牌市場更重要。
+const MARKET_MARK_HINT = {
+    '市': '上市（證交所）',
+    '櫃': '上櫃（櫃買中心）',
+    '興': '興櫃（櫃買中心）。興櫃沒有開盤價與收盤價，價格以當日日均價（成交量加權平均價）為準，漲跌是日均價對前日均價。',
+    'DR': 'TDR（臺灣存託憑證）：外國公司委託存託機構在台發行，不是台灣普通股也不是基金；不進成交值排行、族群與市場廣度，只供瀏覽與搜尋。'
+};
 
 const missing = value => value === null || value === undefined;
 
@@ -1667,7 +1676,7 @@ function toPriceChangeCell(daily, weekly, year) {
 const toTickerCell = row => ({
     text: row.ticker,
     cls: 'ticker',
-    marketMark: MARKET_MARK[row.market],
+    marketMark: row.kind === 'tdr' ? 'DR' : MARKET_MARK[row.market],
     tickerBadges: toBadges(row.ticker)
 });
 
@@ -1745,7 +1754,7 @@ const VOLUME_RATIO_HINT = '本期平均每日成交值 ÷ 這檔股票平常一�
 const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看量比。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
-    { key: 'ticker', title: '代號', hint: '只收一般股票：代號四位數字且不以 0 開頭。右側「市／櫃」標記代表上市或上櫃；再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'ticker', title: '代號', hint: '只收一般股票（上市、上櫃與興櫃普通股，不含 ETF 與 TDR）。右側「市／櫃／興」標記代表上市、上櫃或興櫃；再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
@@ -1802,7 +1811,7 @@ function rankingColumnHint(column) {
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '過去觀察期間的排名 − 今日盤中排名，▲ 代表今天的名次比平常前面。名次是相對的，所以今天只走了半天也能直接比。過去期間沒有這一檔就顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
-    { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單；右側「市／櫃」標記代表上市或上櫃，再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單（上市、上櫃與興櫃普通股）；右側「市／櫃／興」標記代表上市、上櫃或興櫃，再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '成交值（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
@@ -1818,9 +1827,9 @@ const INTRADAY_COLUMNS = [
 ];
 
 const CUSTOM_COLUMNS = [
-    { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列；右側「市／櫃」標記代表上市或上櫃，再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列；右側「市／櫃／興」標記代表上市、上櫃或興櫃，「DR」代表 TDR（臺灣存託憑證），再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
-    { key: 'close', title: '收盤價', hint: '所選交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
+    { key: 'close', title: '收盤價', hint: '所選交易日的收盤價。興櫃沒有收盤價，顯示的是當日日均價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) },
@@ -3190,18 +3199,15 @@ function renderCustomControls() {
     form.className = 'custom-search-form';
     form.addEventListener('submit', event => {
         event.preventDefault();
-        update({
-            customSearch: search.value.trim(),
-            customSearchDraft: search.value,
-            customPage: 1
-        });
+        void searchTwSecurities(search.value, 'custom');
     });
 
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'custom-search-input';
-    search.placeholder = '股號／名稱';
-    search.setAttribute('aria-label', '搜尋股號或名稱');
+    search.placeholder = '代號／名稱（含 ETF，自動切換）';
+    search.dataset.hint = '搜尋全部台股標的：上市、上櫃、興櫃、TDR 與 ETF。這一頁沒有符合、另一頁有時，會自動切到有結果的那一頁。';
+    search.setAttribute('aria-label', '搜尋台股標的代號或名稱');
     search.setAttribute('aria-controls', 'table-body');
     search.value = state.customSearchDraft;
     search.addEventListener('input', () => {
@@ -3216,6 +3222,99 @@ function renderCustomControls() {
     submit.setAttribute('aria-label', '確認搜尋');
     form.append(search, submit);
     searchHost.append(form);
+}
+
+// ───────────────────────── 自訂頁搜尋：跨「個股／ETF」子頁籤 ─────────────────────────
+//
+// 搜尋範圍是台股全部標的（上市、上櫃、興櫃、TDR、ETF），不是只搜目前這一頁。
+// 這一頁沒有符合、另一頁有，就自動切過去——在個股頁搜 0050 會直接跳到 ETF 頁。
+//
+// 判斷用資產名冊（asset-catalog.json，C# 匯出的全部台股標的）而不是去載入另一頁的整份資料：
+// 名冊本來就是 ETF 子頁籤家數與盤中名單的來源，瀏覽器已經快取，查一次就知道往哪一頁。
+// 非台股市場的標的不在這裡：各市場只搜自己市場的標的。
+let twDirectoryRows = null;
+let twDirectoryLoading = null;
+
+async function loadTwDirectory() {
+    if (twDirectoryRows !== null) {
+        return twDirectoryRows;
+    }
+
+    if (twDirectoryLoading === null) {
+        twDirectoryLoading = (async () => {
+            const catalog = await fetchJsonWithRetry(`data/asset-catalog.json?v=${version}`);
+
+            twDirectoryRows = (Array.isArray(catalog?.entries) ? catalog.entries : [])
+                .map(entry => ({
+                    ticker: String(entry?.ticker ?? '').trim().toUpperCase(),
+                    name: String(entry?.name ?? '').trim(),
+                    market: String(entry?.market ?? '').trim().toLocaleLowerCase(),
+                    kind: String(entry?.kind ?? '').trim().toLocaleLowerCase(),
+                    foreignCurrency: entry?.foreignCurrency === true
+                }))
+                .filter(row => row.ticker !== '' && ['twse', 'tpex', 'emerging'].includes(row.market));
+
+            return twDirectoryRows;
+        })().finally(() => {
+            twDirectoryLoading = null;
+        });
+    }
+
+    return twDirectoryLoading;
+}
+
+// 判斷搜尋字該去哪一頁。回傳要切換到的子頁籤（'custom' 或 'etf'），不需要切換時回傳 null。
+// 規則：目前這一頁有符合的就留在原地；沒有，而另一頁有，才切過去。
+function twSearchTargetView(directory, term, originView) {
+    const query = term.trim().toLocaleLowerCase();
+
+    if (query === '') {
+        return null;
+    }
+
+    const hits = directory.filter(row =>
+        !row.foreignCurrency
+        && (row.ticker.toLocaleLowerCase().includes(query) || row.name.toLocaleLowerCase().includes(query)));
+    const inStocks = hits.some(row => row.kind !== 'etf');
+    const inEtfs = hits.some(row => row.kind === 'etf');
+
+    if (originView === 'custom' && !inStocks && inEtfs) {
+        return 'etf';
+    }
+
+    if (originView === 'etf' && !inEtfs && inStocks) {
+        return 'custom';
+    }
+
+    return null;
+}
+
+async function searchTwSecurities(term, originView) {
+    const query = term.trim();
+    // 兩個子頁籤共用同一個搜尋字，切過去之後才會看到同一批結果，清除時也一起清。
+    const changes = {
+        customSearch: query,
+        customSearchDraft: term,
+        etfSearch: query,
+        etfSearchDraft: term,
+        customPage: 1,
+        etfPage: 1
+    };
+
+    if (query !== '') {
+        try {
+            const target = twSearchTargetView(await loadTwDirectory(), query, originView);
+
+            if (target !== null) {
+                changes.view = target;
+            }
+        } catch (error) {
+            // 名冊讀不到就只搜尋目前這一頁，不能讓搜尋整個失效。
+            console.warn('搜尋名冊讀取失敗，只搜尋目前這一頁：', error);
+        }
+    }
+
+    update(changes);
 }
 
 function renderEtfControls() {
@@ -3250,18 +3349,15 @@ function renderEtfControls() {
     form.className = 'custom-search-form';
     form.addEventListener('submit', event => {
         event.preventDefault();
-        update({
-            etfSearch: search.value.trim(),
-            etfSearchDraft: search.value,
-            etfPage: 1
-        });
+        void searchTwSecurities(search.value, 'etf');
     });
 
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'custom-search-input';
-    search.placeholder = 'ETF 代號／名稱';
-    search.setAttribute('aria-label', '搜尋 ETF 代號或名稱');
+    search.placeholder = '代號／名稱（含個股，自動切換）';
+    search.dataset.hint = '搜尋全部台股標的：ETF、上市、上櫃、興櫃與 TDR。這一頁沒有符合、另一頁有時，會自動切到有結果的那一頁。';
+    search.setAttribute('aria-label', '搜尋台股標的代號或名稱');
     search.setAttribute('aria-controls', 'table-body');
     search.value = state.etfSearchDraft;
     search.addEventListener('input', () => {
@@ -3273,7 +3369,7 @@ function renderEtfControls() {
     submit.type = 'submit';
     submit.className = 'custom-search-submit';
     submit.textContent = '確認';
-    submit.setAttribute('aria-label', '確認 ETF 搜尋');
+    submit.setAttribute('aria-label', '確認搜尋');
     form.append(search, submit);
     searchHost.append(form);
 }
@@ -13930,7 +14026,7 @@ function assetTickerMatchesMarket(ticker, market) {
     const quoteMarket = String(assetTickerQuotes.get(ticker)?.market ?? '').trim();
     if (quoteMarket !== '') {
         return market === '台股'
-            ? ['TWSE', 'TPEX', 'TW', '台股'].includes(quoteMarket)
+            ? ['TWSE', 'TPEX', 'EMERGING', 'TW', '台股'].includes(quoteMarket)
             : market === '美股'
                 ? ['US', 'NASDAQ', 'NYSE', '美股'].includes(quoteMarket)
                 : true;
@@ -16482,7 +16578,9 @@ function assetHoldingsViewerMarketCode(holding, latestRow) {
         ? 'twse'
         : catalogMarket === 'TPEX'
             ? 'tpex'
-            : latestRow?.market ?? '';
+            : catalogMarket === 'EMERGING'
+                ? 'emerging'
+                : latestRow?.market ?? '';
 }
 
 // 資產行情的 change_percent 是百分點（例如 1.67），盤中欄位則統一使用比率（0.0167）。
@@ -16504,6 +16602,8 @@ function assetHoldingsViewerRow(holding, rank, latestRow = null) {
         ticker,
         name: holding.name || latestRow?.name || quote?.name || ticker,
         market: assetHoldingsViewerMarketCode(holding, latestRow),
+        // TDR 的代號標記是「DR」（見 toTickerCell）；名冊的 kind 是 tdr 才帶，其餘沿用排行列自己的。
+        kind: quote?.kind === 'tdr' ? 'tdr' : latestRow?.kind,
         rank,
         priceChange: holdingPriceChange === null
             ? latestRow?.priceChange ?? null
@@ -17093,6 +17193,11 @@ function shrunkVolumeRatio(current, baseline, marketMedianBaseline) {
 // 全市場當期成交值的中位數 × CurrentLiquidityFloorRatio。跟 C# 的
 // currentLiquidityFloor 同一套規則：篩的是「當期」有沒有量，不是「過去」平常有沒有量，
 // 這樣平常沒量、今天爆量的股票才不會被誤殺。
+// 校準用的「全市場中位數」只看上市＋上櫃，不含興櫃：這組係數是用上市櫃歷史回測校準的（筆記 #10），
+// 興櫃很薄（成交額中位數約為上市櫃的 1/8），併進來中位數會掉約 30%，門檻與收縮常數跟著漂移。
+// 跟 C# 的 TradingValueRankingCalculator.CalibrationValues 同一個規則。
+const isCalibrationMarketRow = row => row.market !== 'emerging';
+
 function currentLiquidityFloor(values) {
     if (!accelerationCoefficients) {
         return null;
@@ -17112,7 +17217,7 @@ function rankRows(data) {
     // 量比稍微放大就是好幾十倍，會把排行榜洗成一片沒人在意的殭屍股。用全市場
     // （不受下面的市場、門檻篩選影響）算中位數，跟 C# 的 currentLiquidityFloor 一致。
     const accelerationFloor = acceleration
-        ? currentLiquidityFloor(data.rows.map(row => row.value))
+        ? currentLiquidityFloor(data.rows.filter(isCalibrationMarketRow).map(row => row.value))
         : null;
 
     const candidates = data.rows.filter(row =>
@@ -17230,8 +17335,9 @@ function jumpToCustomSearchResult() {
 
     customSearchJumpPending = false;
     const first = document.querySelector('#table-body tr[data-ticker]');
+    const activeSearch = state.view === 'etf' ? state.etfSearch : state.customSearch;
 
-    if (!first || state.view !== 'custom' || state.customSearch.trim().length === 0) {
+    if (!first || !['custom', 'etf'].includes(state.view) || activeSearch.trim().length === 0) {
         return;
     }
 
@@ -17326,6 +17432,8 @@ async function loadKLineData(ticker) {
 
             const validAdjustment = payload?.adjustmentMethod === 'forward-rights-dividends'
                 || payload?.adjustmentMethod === 'raw-tw-etf-daily'
+                || payload?.adjustmentMethod === 'raw-tw-tdr-daily'
+                || payload?.adjustmentMethod === 'raw-tw-emerging-daily'
                 || (payload?.market === 'US' && payload?.adjustmentMethod === 'raw-us-daily')
                 || (['JP', 'KR', 'CRYPTO'].includes(payload?.market)
                     && payload?.adjustmentMethod === 'raw-market-overview-daily');
@@ -18633,6 +18741,8 @@ function renderKLinePopover(ticker, name, anchor) {
     const payload = klineData.get(ticker);
     const isUs = expandedKLineMarket === '美股' || payload?.market === 'US';
     const isEtf = expandedKLineIsEtf || payload?.adjustmentMethod === 'raw-tw-etf-daily';
+    const isTdr = payload?.adjustmentMethod === 'raw-tw-tdr-daily';
+    const isEmerging = payload?.adjustmentMethod === 'raw-tw-emerging-daily';
     const holdingCost = klineHoldingCost(ticker, expandedKLineMarket);
 
     // id 留在外層的 <strong> 上：index.html 的 aria-labelledby 指著它。
@@ -18653,7 +18763,11 @@ function renderKLinePopover(ticker, name, anchor) {
     const requestedStartDate = endDate ? klineStartDate(endDate) : '';
     const bars = klineData.has(ticker) ? selectedKLineBars(ticker) : [];
     const actualStartDate = bars[0]?.date ?? requestedStartDate;
-    const periodLabel = isEtf ? 'ETF 日 K' : isUs ? '美股日 K' : '還原權息日 K';
+    const periodLabel = isEtf ? 'ETF 日 K'
+        : isTdr ? 'TDR 日 K'
+        : isEmerging ? '興櫃日 K（日均價）'
+        : isUs ? '美股日 K'
+        : '還原權息日 K';
     period.textContent = endDate
         ? `${periodLabel}・${actualStartDate.replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
         : periodLabel;
@@ -18671,7 +18785,7 @@ function renderKLinePopover(ticker, name, anchor) {
     nameByTicker.set(ticker, name);
     card.append(header);
 
-    if (!isUs && !isEtf) {
+    if (!isUs && !isEtf && !isTdr) {
         const topicRow = document.createElement('div');
         topicRow.className = 'daily-kline-topic-row';
         const topicLabel = document.createElement('span');
@@ -18686,6 +18800,8 @@ function renderKLinePopover(ticker, name, anchor) {
         message.className = 'daily-kline-empty';
         message.textContent = isEtf
             ? '尚無可用的 ETF 日 K 資料，請重新產生靜態網站。'
+            : isTdr
+            ? '尚無可用的 TDR 日 K 資料，請重新產生靜態網站。'
             : isUs
             ? '尚無可用的日 K 資料，請稍後再試或重新產生靜態網站。'
             : '讀不到已驗證的還原權息日 K，請重新產生靜態網站。';
@@ -18702,6 +18818,14 @@ function renderKLinePopover(ticker, name, anchor) {
             message.textContent = '這個期間沒有完整的日 K 資料。';
             card.append(message);
         } else {
+            if (isEmerging) {
+                const note = document.createElement('p');
+                note.className = 'daily-kline-coverage';
+                note.textContent = '興櫃沒有開盤價與收盤價：K 棒的「收」是當日日均價（成交量加權平均價），'
+                    + '「開」是前日均價（官方參考價），所以棒身方向等於官方公布的漲跌；影線是當日實際成交的最高與最低價。';
+                card.append(note);
+            }
+
             if (hasIncompleteKLineHistory(requestedStartDate, actualStartDate)) {
                 const coverage = document.createElement('p');
                 coverage.className = 'daily-kline-coverage';
@@ -19320,9 +19444,7 @@ function appendRankingCell(tr, row, column, options = {}) {
             const mark = document.createElement('span');
             mark.className = 'market-mark';
             mark.textContent = marketMark;
-            mark.dataset.hint = marketMark === '市'
-                ? '上市（證交所）'
-                : '上櫃（櫃買中心）';
+            mark.dataset.hint = MARKET_MARK_HINT[marketMark] ?? '';
             td.append(mark);
         }
 
@@ -19405,9 +19527,7 @@ function appendRankingCell(tr, row, column, options = {}) {
             const mark = document.createElement('span');
             mark.className = 'market-mark';
             mark.textContent = marketMark;
-            mark.dataset.hint = marketMark === '市'
-                ? '上市（證交所）'
-                : '上櫃（櫃買中心）';
+            mark.dataset.hint = MARKET_MARK_HINT[marketMark] ?? '';
             td.append(mark);
         }
     }
@@ -19505,6 +19625,13 @@ function renderTable() {
     jumpToCustomSearchResult();
 }
 
+function customMarketCountItem(counts) {
+    return [
+        '上市／上櫃／興櫃／TDR',
+        counts ? `${counts.twse}／${counts.tpex}／${counts.emerging}／${counts.tdr}` : '—'
+    ];
+}
+
 function renderSummary() {
     // 掛在這裡而不是各個 load*()：摘要重畫的時機就是資料換過的時機，
     // 兩者綁在一起才不會有「資料換了、警告還留在上一輪」的空窗。
@@ -19553,12 +19680,14 @@ function renderSummary() {
                 ['資料日', current.tradeDate.replaceAll('-', '/')],
                 ['資料時間', current.capturedAt + intradayAgeText()],
                 ['全市場資料', `${current.totalStockCount} 檔`],
+                customMarketCountItem(current.marketCounts),
                 ['成交值下限', threshold === 0 ? '不限' : `${toBillionText(threshold)} 億元`],
                 ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
             ]
             : [
                 ['交易日', state.date.replaceAll('-', '/')],
                 ['全市場資料', `${current.totalStockCount} 檔`],
+                customMarketCountItem(current.marketCounts),
                 ['成交值下限', threshold === 0 ? '不限' : `${toBillionText(threshold)} 億元`],
                 ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
             ];
@@ -20953,6 +21082,28 @@ function isEtfIntradayRawRow(row) {
     return kind === 'etf' || /^0[A-Z0-9]{3,5}$/.test(ticker);
 }
 
+// TDR（臺灣存託憑證）。新版快照有 kind；舊版沒有這欄時，TDR 的證券簡稱一律以 -DR 結尾，
+// 用名稱回退辨識，才不會讓四碼 TDR 被當成普通股算進排行與市場成交比的分母。
+function isTdrIntradayRawRow(row) {
+    const kind = String(row?.kind ?? '').trim().toLocaleLowerCase();
+
+    return kind === 'tdr' || (kind === '' && /-DR$/i.test(String(row?.name ?? '').trim()));
+}
+
+// 排行與市場成交比的範圍：上市、上櫃與興櫃的普通股，不含 ETF 與 TDR。
+const isRankedIntradayRawRow = row => !isEtfIntradayRawRow(row) && !isTdrIntradayRawRow(row);
+
+// 興櫃在資料庫端以 TPEX 保存（securities.market 有 check constraint），只有 CDN 快照帶得出
+// 「emerging」。CDN 暫時失敗退回資料庫直連時，興櫃會被讀成上櫃；排行對照檔的 market 欄位
+// 來自盤後匯出，是權威，用它把興櫃改回來，標記才不會在盤中與盤後之間跳來跳去。
+function applyKnownEmergingMarkets(rows, referenceByTicker) {
+    for (const row of rows) {
+        if (row.market === 'tpex' && referenceByTicker.get(row.ticker)?.market === 'emerging') {
+            row.market = 'emerging';
+        }
+    }
+}
+
 function mapIntradayRows(raw, summary, includeEstimate = false) {
     const fraction = turnoverFraction(summary.captured_at);
     const estimable = fraction !== null && fraction >= INTRADAY_TURNOVER_MIN_FRACTION;
@@ -20963,7 +21114,11 @@ function mapIntradayRows(raw, summary, includeEstimate = false) {
         kind: String(row.kind ?? '').trim().toLocaleLowerCase(),
         market: String(row.market ?? '').toLocaleLowerCase(),
         value: Number(row.turnover),
-        estimate: includeEstimate && estimable ? Number(row.turnover) / fraction : null,
+        // 預估成交值用的是上市櫃的日內量能曲線；興櫃交易到 15:00、量能分布不同，
+        // 套同一條曲線只會給出誤導的數字，所以興櫃不顯示預估。
+        estimate: includeEstimate && estimable && String(row.market ?? '').toLocaleLowerCase() !== 'emerging'
+            ? Number(row.turnover) / fraction
+            : null,
         priceChange: missing(row.change_percent) ? null : Number(row.change_percent) / 100,
         close: missing(row.price) ? null : Number(row.price),
         liveKLine: {
@@ -21016,7 +21171,7 @@ async function loadIntraday(silent = false, force = false) {
     // 顯示用的函式吃的是比率，這裡除掉一次，兩種檢視才會是同一套格式。
     const progress = sessionProgress(summary.captured_at);
     const rows = mapIntradayRows(
-        raw.filter(row => !isEtfIntradayRawRow(row)),
+        raw.filter(isRankedIntradayRawRow),
         summary,
         true);
 
@@ -21038,6 +21193,7 @@ async function loadIntraday(silent = false, force = false) {
         ? await fetchPeriod(`${state.period}-${referenceDate}`)
         : null;
     const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
+    applyKnownEmergingMarkets(rows, referenceByTicker);
     const sameWeekAsReference = referenceDate !== undefined
         && weekStartKey(summary.trade_date) === weekStartKey(referenceDate);
 
@@ -21063,6 +21219,7 @@ async function loadIntraday(silent = false, force = false) {
     // 同一個尺度換成 share 而已；marketMedianShare 是對照期全市場的成交比中位數，
     // 對應 C# 的 marketMedianBaseline（唯一定義處是 AccelerationRules.ShrunkRatio）。
     const marketMedianShare = median([...referenceByTicker.values()]
+        .filter(isCalibrationMarketRow)
         .map(pastRow => pastRow.share)
         .filter(value => !missing(value))
         .sort((a, b) => a - b));
@@ -21075,7 +21232,7 @@ async function loadIntraday(silent = false, force = false) {
     // 資金加速專用的當期流動性門檻：盤中原本沒套用任何成交門檻，鳥量股的成交比
     // 稍微放大就是好幾十倍，靠雜訊就能衝進榜單——跟盤後同一套 currentLiquidityFloor 規則。
     const accelerationFloor = state.mode === 'accel'
-        ? currentLiquidityFloor(rows.map(row => row.value))
+        ? currentLiquidityFloor(rows.filter(isCalibrationMarketRow).map(row => row.value))
         : null;
 
     const candidates = rows.filter(row =>
@@ -21469,6 +21626,17 @@ async function loadCustomIntraday(silent = false, force = false) {
         ? await fetchPeriod(`1-${referenceDate}`)
         : null;
     const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
+
+    // TDR 不在排行檔裡，週漲跌的基準價要讀它自己的逐日檔。
+    if (referenceDate !== undefined && liveRows.some(row => row.kind === 'tdr')) {
+        for (const row of (await fetchTdrDaily(referenceDate)).rows) {
+            if (!referenceByTicker.has(row.ticker)) {
+                referenceByTicker.set(row.ticker, row);
+            }
+        }
+    }
+
+    applyKnownEmergingMarkets(liveRows, referenceByTicker);
     const sameWeekAsReference = referenceDate !== undefined
         && weekStartKey(summary.trade_date) === weekStartKey(referenceDate);
 
@@ -21500,6 +21668,7 @@ async function loadCustomIntraday(silent = false, force = false) {
         marketTotal,
         rows,
         totalStockCount: liveRows.length,
+        marketCounts: customMarketCounts(liveRows),
         rankedStockCount: rows.length,
         rankByTicker: new Map()
     };
@@ -21548,25 +21717,31 @@ async function loadCustom(silent = false, force = false) {
     // 重新畫交易限制與搜尋控制，保留使用者目前的狀態。
     renderCustomControls();
 
-    nameByTicker = new Map(data.rows.map(row => [row.ticker, row.name]));
-
     if (!data.hasSufficientData) {
+        nameByTicker = new Map(data.rows.map(row => [row.ticker, row.name]));
         showNotice(data.message ?? '資料不足。', true);
         return;
     }
 
-    const rows = data.rows.filter(row =>
+    // 個股清單 = 排行檔的普通股（上市、上櫃、興櫃）＋ TDR。TDR 不進排行，所以另外讀它的逐日檔。
+    const tdr = await fetchTdrDaily(state.date);
+    const allRows = [...data.rows, ...tdr.rows.map(toCustomTdrRow)];
+
+    nameByTicker = new Map(allRows.map(row => [row.ticker, row.name]));
+
+    const rows = allRows.filter(row =>
         row.value >= state.customThreshold
         && customStatusMatches(row.ticker)
         && customSearchMatches(row));
     current = {
         ...data,
         rows,
-        totalStockCount: data.rows.length,
+        totalStockCount: allRows.length,
+        marketCounts: customMarketCounts(allRows),
         rankedStockCount: rows.length,
         rankByTicker: new Map()
     };
-    assetTypeCounts.stock = data.rows.length;
+    assetTypeCounts.stock = allRows.length;
 
     const pageCount = Math.max(1, Math.ceil(rows.length / CUSTOM_PAGE_SIZE));
     state.customPage = Math.min(state.customPage, pageCount);
@@ -21588,7 +21763,10 @@ function normalizeEtfCatalogRows(entries) {
             const market = String(entry?.market ?? '').trim().toLocaleLowerCase();
             const changePercent = assetNumber(entry?.changePercent);
 
-            if (kind !== 'etf' || ticker === '' || name === '' || !['twse', 'tpex'].includes(market)) {
+            // 外幣交易線（00625K、00687C 這類）台股頁籤不顯示；名冊裡仍保留給資產頁查名稱用。
+            if (kind !== 'etf' || ticker === '' || name === ''
+                || !['twse', 'tpex'].includes(market)
+                || entry?.foreignCurrency === true) {
                 return null;
             }
 
@@ -21698,6 +21876,86 @@ async function fetchEtfDaily(date, force = false) {
     }
 
     return etfDailyLoading.get(key);
+}
+
+// ───────────────────────── TDR（臺灣存託憑證） ─────────────────────────
+//
+// TDR 不進成交值排行檔（data/{N}-{date}.json），自訂頁的個股清單另外讀 data/tdr/{date}.json 補進來。
+// 舊版發布沒有這個檔（404）時當作這一天沒有 TDR，不讓整個個股清單讀不出來；
+// 其他錯誤同樣先不含 TDR，但不快取，下一次重新讀取。
+const tdrDailyCache = new Map();
+const tdrDailyLoading = new Map();
+
+async function fetchTdrDaily(date) {
+    const key = String(date ?? '').trim();
+
+    if (key === '') {
+        return { tradeDate: '', rows: [] };
+    }
+
+    if (tdrDailyCache.has(key)) {
+        return tdrDailyCache.get(key);
+    }
+
+    if (!tdrDailyLoading.has(key)) {
+        const loading = (async () => {
+            try {
+                const payload = await fetchJsonWithRetry(
+                    `data/tdr/${key}.json?v=${version}`,
+                    {},
+                    { timeoutMs: 30_000, retryDelays: [1_000] });
+                const result = {
+                    tradeDate: String(payload?.tradeDate ?? key),
+                    rows: normalizeEtfDailyRows(payload?.rows, key)
+                        .map(row => ({ ...row, kind: 'tdr' }))
+                };
+                tdrDailyCache.set(key, result);
+                return result;
+            } catch (error) {
+                if (error?.status === 404) {
+                    const empty = { tradeDate: key, rows: [] };
+                    tdrDailyCache.set(key, empty);
+                    return empty;
+                }
+
+                console.warn('TDR 盤後資料讀取失敗，個股清單先不含 TDR：', error);
+                return { tradeDate: key, rows: [] };
+            }
+        })().finally(() => {
+            tdrDailyLoading.delete(key);
+        });
+
+        tdrDailyLoading.set(key, loading);
+    }
+
+    return tdrDailyLoading.get(key);
+}
+
+// TDR 的快照列轉成自訂頁個股表格用的列：欄位跟排行檔的列同名，營收與族群欄位自然是空的。
+const toCustomTdrRow = row => ({
+    ticker: row.ticker,
+    name: row.name,
+    market: row.market,
+    kind: 'tdr',
+    value: row.tradingValue ?? 0,
+    close: row.close,
+    priceChange: row.priceChange,
+    weeklyPriceChange: row.weeklyPriceChange
+});
+
+// 摘要列用的分類家數：上市／上櫃／興櫃／TDR。
+function customMarketCounts(rows) {
+    const counts = { twse: 0, tpex: 0, emerging: 0, tdr: 0 };
+
+    for (const row of rows) {
+        if (row.kind === 'tdr') {
+            counts.tdr++;
+        } else if (counts[row.market] !== undefined) {
+            counts[row.market]++;
+        }
+    }
+
+    return counts;
 }
 
 function localEtfRows(session, tradeDate) {

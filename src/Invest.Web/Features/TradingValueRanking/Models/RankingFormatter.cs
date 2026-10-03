@@ -113,6 +113,7 @@ public static class RankingFormatter
     {
         Market.Twse => "上市",
         Market.Tpex => "上櫃",
+        Market.Emerging => "興櫃",
         _ => "—"
     };
 
@@ -120,7 +121,21 @@ public static class RankingFormatter
     {
         Market.Twse => "市",
         Market.Tpex => "櫃",
+        Market.Emerging => "興",
         _ => "—"
+    };
+
+    /// <summary>
+    /// 靜態匯出（排行列、族群成員、ETF／TDR 列）與前端共用的市場代號。
+    /// 這是唯一的對照處，匯出器不得各自寫 <c>? "twse" : "tpex"</c>——
+    /// 那種寫法會把興櫃默默標成上櫃。
+    /// </summary>
+    public static string ToMarketKey(Market market) => market switch
+    {
+        Market.Twse => "twse",
+        Market.Tpex => "tpex",
+        Market.Emerging => "emerging",
+        _ => throw new ArgumentOutOfRangeException(nameof(market), market, "台股匯出只接受上市、上櫃與興櫃。")
     };
 
     /// <summary>

@@ -86,19 +86,29 @@ internal static class QuoteFieldParser
     }
 
     /// <summary>
-    /// 只讓官方 ETF 名冊明確列出的代號成為 ETF；日行情裡其餘非一般股票一律略過。
+    /// 日行情的分類：四碼普通股形狀的代號是普通股，除非名稱是 TDR（-DR）；
+    /// 只讓官方 ETF 名冊明確列出的代號成為 ETF；六碼且名稱是 TDR 的才是 2009 年後掛牌的 TDR。
+    /// 其餘非一般股票（權證、ETN、受益證券、特別股）一律略過。
     /// </summary>
-    public static StockKind? GetTaiwanStockKind(string? ticker, IReadOnlySet<string>? etfTickers)
+    public static StockKind? GetTaiwanStockKind(
+        string? ticker,
+        string? name,
+        IReadOnlySet<string>? etfTickers)
     {
         var normalized = ticker?.Trim().ToUpperInvariant();
 
         if (IsCommonStockTicker(normalized))
         {
-            return StockKind.CommonStock;
+            return TaiwanSecurityRules.IsTdrName(name) ? StockKind.Tdr : StockKind.CommonStock;
         }
 
-        return normalized is not null && etfTickers?.Contains(normalized) == true
-            ? StockKind.Etf
+        if (normalized is not null && etfTickers?.Contains(normalized) == true)
+        {
+            return StockKind.Etf;
+        }
+
+        return TaiwanSecurityRules.IsTdrName(name) && TaiwanSecurityRules.IsTdrTickerShape(normalized)
+            ? StockKind.Tdr
             : null;
     }
 }
