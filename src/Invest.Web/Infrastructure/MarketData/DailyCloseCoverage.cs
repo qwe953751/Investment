@@ -15,12 +15,18 @@ public static class DailyCloseCoverage
     }
 
     public static bool IsValid(DateOnly date, DailyQuoteSnapshot? snapshot)
-        => snapshot is { IsTradingDay: true, SchemaVersion: >= DailyQuoteSnapshot.CurrentSchemaVersion }
+        => snapshot is
+            {
+                IsTradingDay: true,
+                SchemaVersion: >= DailyQuoteSnapshot.CurrentSchemaVersion,
+                Quotes: { } quotes,
+                MarketIndices: { } indices
+            }
             && snapshot.TradingDate == date
-            && snapshot.Quotes.Any(quote => quote.Market == Market.Twse && quote.Kind == StockKind.CommonStock)
-            && snapshot.Quotes.Any(quote => quote.Market == Market.Tpex && quote.Kind == StockKind.CommonStock)
-            && snapshot.MarketIndices.Any(index => index.Market == Market.Twse && index.Value > 0)
-            && snapshot.MarketIndices.Any(index => index.Market == Market.Tpex && index.Value > 0);
+            && quotes.Any(quote => quote.Market == Market.Twse && quote.Kind == StockKind.CommonStock)
+            && quotes.Any(quote => quote.Market == Market.Tpex && quote.Kind == StockKind.CommonStock)
+            && indices.Any(index => index.Market == Market.Twse && index.Value > 0)
+            && indices.Any(index => index.Market == Market.Tpex && index.Value > 0);
 
     public static IReadOnlyList<DateOnly> FindGaps(
         IEnumerable<DateOnly> expectedDates,

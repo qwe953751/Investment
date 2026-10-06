@@ -31,6 +31,7 @@ public sealed class DailyCloseCoverageTests
         {
             Quotes = [Quote(Market.Twse)]
         }));
+        Assert.False(DailyCloseCoverage.IsValid(date, ValidSnapshot(date) with { Quotes = null! }));
     }
 
     [Fact]
