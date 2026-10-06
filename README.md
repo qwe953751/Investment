@@ -244,6 +244,8 @@ Dashboard 與帳戶明細的折線圖共用版本 A：滑鼠移動／點擊或�
 
 ## 最新已發布版本
 
+非台股指數卡已補齊當日與今年的絕對漲跌值：美股／日股／韓股以指數點數顯示，加密貨幣以 USD 顯示，格式為「漲跌幅％（增減數值）」。`main` commit `651c837ac34cfc7331631df359b27e098dde54c5` 已由 [`daily-snapshot.yml` publish-only run 37416805657](https://github.com/qwe953751/Investment/actions/runs/37416805657) 成功發布至正式站；run `headSha` 相符，靜態匯出、分類驗證與正式站部署步驟成功。此環境無法連上公開站及 GitHub API，故未核對公開 manifest 版本與線上 `site.js`。
+
 筆記 #73 裝置模式顯示修正由 `main` commit `051e54ccb4da05dab3965381a77588a1ed233cba` 實作，並由 [`daily-snapshot.yml` publish-only run 36588762798](https://github.com/qwe953751/Investment/actions/runs/36588762798) 成功發布，run `headSha` 與該 commit 一致。正式 `gh-pages` ref 為 `fe95a4e693d799a9fe913103a12cea4e930c397a`；公開 manifest HTTP 200、version `1790695201`、最新交易日 `2026/09/29`、產生時間 `2026-09-29 23:20`。公開 `site.js` HTTP 200，已核對四種模式標籤、「模式」欄名與權限切換後立即登記接線；正式 Supabase migration `061_device_presence_access_modes.sql` 已套用，`device-presence` v13 ACTIVE。`.NET 10.0.302` 測試 556/556、Node 24.19.0 全套 157/157（裝置模式目標測試 3/3）通過。純發布依設計略過行情回補、Supabase 行情同步、備份與心跳；筆記 #73 已標記「已完成」。
 
 日韓盤中快照保留、盤中隱藏交易日選擇器與成交排行節流已由 `main` commit `e0bf561baf9d995e3af1e9939cba3eedf461f5ee` 推送，並由 [`daily-snapshot.yml` publish-only run 35823304303](https://github.com/qwe953751/Investment/actions/runs/35823304303) 成功發布；run `headSha` 與 commit 一致。正式 `gh-pages` ref 為 `95bb9434c6fe37a9697fd13bdc3457ed202717bf`，公開 manifest HTTP 200、version `1790142064`、最新盤後交易日 `2026/09/22`、產生時間 `2026-09-23 13:41`；公開 `site.js` 已驗證含日期選擇器隱藏與過期快照警示邏輯。publish-only 依設計略過行情回補、Supabase 同步、備份與心跳。
