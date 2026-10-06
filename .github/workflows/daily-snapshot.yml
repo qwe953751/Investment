@@ -276,6 +276,8 @@ jobs:
       # 每 10 分鐘重跑一次直到今天的行情檔案落地，最晚撐到 21:00。
       - name: 回補行情
         if: ${{ inputs.publish-only != true && (steps.market_day.outputs.status != 'closed' || needs.preflight.outputs.has_gaps == 'true') }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           today=$(date +%Y-%m-%d)
           deadline=$(date -d '21:00' +%s)

@@ -35,6 +35,11 @@ public sealed class DailySnapshotWorkflowTests
         Assert.Contains("close-coverage date \"$today\"", workflow, StringComparison.Ordinal);
         Assert.Contains("close-coverage manifest publish/site/manifest.json", workflow, StringComparison.Ordinal);
         Assert.Contains("台股盤後資料缺口", workflow, StringComparison.Ordinal);
+
+        var backfillStart = workflow.IndexOf("- name: 回補行情", StringComparison.Ordinal);
+        var backfillRun = workflow.IndexOf("run: |", backfillStart, StringComparison.Ordinal);
+        Assert.Contains("SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}",
+            workflow[backfillStart..backfillRun], StringComparison.Ordinal);
     }
 
     [Fact]
