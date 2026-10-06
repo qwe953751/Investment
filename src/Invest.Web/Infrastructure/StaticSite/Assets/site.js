@@ -21445,10 +21445,22 @@ function readIntradayMarketHeat(row) {
 
 async function loadMarketHeatHistory(currentDate) {
     const previousDates = dates.filter(date => date < currentDate).slice(-5);
-    const previous = await Promise.all(previousDates.map(date => fetchPeriod(`1-${date}`)));
+    const historyByDate = new Map(
+        (Array.isArray(marketHeatHistory) ? marketHeatHistory : [])
+            .filter(day => day?.tradingDate && day.score !== undefined && day.score !== null)
+            .map(day => [day.tradingDate, day]));
+    const previous = await Promise.all(previousDates.map(async date => {
+        const day = historyByDate.get(date);
+
+        if (day) {
+            return { tradingDate: date, score: day.score };
+        }
+
+        // 舊版或缺漏的 manifest 才讀完整單日檔；新版本不必為五個分數下載五份全市場資料。
+        return (await fetchPeriod(`1-${date}`))?.marketHeat;
+    }));
 
     return previous
-        .map(data => data?.marketHeat)
         .filter(heat => heat?.score !== undefined && heat?.score !== null)
         .map(heat => ({
             tradingDate: heat.tradingDate,
