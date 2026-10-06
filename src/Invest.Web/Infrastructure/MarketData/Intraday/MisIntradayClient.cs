@@ -35,6 +35,19 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     private const string RejectedMessage = "參數不足";
 
     /// <summary>
+    /// 個股那一路最多容許多少比例的代號因為整批失敗而缺席。超過代表 MIS 本身不健康（或被擋），
+    /// 沿用上一輪補洞只會掩蓋它，整輪照舊作廢。十四批裡的三批約 21%。
+    /// </summary>
+    private const double MaxMissingShareForStocks = 0.25;
+
+    /// <summary>
+    /// 一批重試之間的間隔單位，第 n 次失敗後等 n 倍。10/05 實測空白回應（只有空白行、
+    /// 沒有 JSON）是 MIS 一陣子內部失敗，舊版只隔 0.5 與 1 秒，三次幾乎同時失敗；
+    /// 改成 2 秒與 4 秒。測試可以設成零。
+    /// </summary>
+    internal TimeSpan RetryDelayUnit { get; init; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// 單次請求的上限。共用的 HttpClient 設 60 秒是為了盤後那些大報表，
     /// 對這裡太長了：單批一次卡住就會讓整輪無法完成。實測一批 150 檔約 0.3～2 秒，
     /// 15 秒已經是八倍餘裕，超過就當它不會回來了，重試比等它划算。
@@ -66,6 +79,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             universe,
             StockKind.CommonStock,
             includeMarketIndices: true,
+            maxMissingShare: MaxMissingShareForStocks,
             cancellationToken: cancellationToken);
 
     public async Task<IntradaySnapshot> GetEtfQuotesAsync(
@@ -75,6 +89,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             universe,
             StockKind.Etf,
             includeMarketIndices: false,
+            maxMissingShare: 1d,
             cancellationToken: cancellationToken);
 
     /// <summary>
@@ -88,17 +103,20 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             universe,
             StockKind.Tdr,
             includeMarketIndices: false,
+            maxMissingShare: 1d,
             cancellationToken: cancellationToken);
 
     private async Task<IntradaySnapshot> GetQuotesCoreAsync(
         IReadOnlyList<(Market Market, string Ticker)> universe,
         StockKind expectedKind,
         bool includeMarketIndices,
+        double maxMissingShare,
         CancellationToken cancellationToken)
     {
         var quotes = new List<IntradayQuote>(universe.Count);
         var tradeDate = default(DateOnly?);
         var marketIndices = new Dictionary<Market, MarketIndexQuote>();
+        var missing = new List<(Market Market, string Ticker)>();
 
         var batchNumber = 0;
 
@@ -106,11 +124,34 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var (batchQuotes, batchDate, batchIndices) = await ReadBatchAsync(
-                batch,
-                includeMarketIndices: includeMarketIndices && batchNumber == 0,
-                expectedKind: expectedKind,
-                cancellationToken: cancellationToken);
+            (IReadOnlyList<IntradayQuote> Quotes, DateOnly? TradeDate, IReadOnlyList<MarketIndexQuote> MarketIndices) result;
+
+            try
+            {
+                result = await ReadBatchAsync(
+                    batch,
+                    includeMarketIndices: includeMarketIndices && batchNumber == 0,
+                    expectedKind: expectedKind,
+                    cancellationToken: cancellationToken);
+            }
+            catch (Exception exception) when (IsTransient(exception, cancellationToken))
+            {
+                // 這一批重試用盡仍失敗。以前直接讓整輪失敗，十四批裡任何一批就足以丟掉全市場 2,400 檔；
+                // 現在記下缺哪些代號，由呼叫端決定沿用上一輪剛收到的報價補洞，還是放棄本輪。
+                // 失敗的批次不會影響其他批次，指數若在失敗的第一批裡就只是這一輪沒有指數。
+                logger.LogWarning(
+                    exception,
+                    "盤中{Kind}這批 {Count} 檔重試用盡仍失敗，記為缺席，交給呼叫端沿用上一輪或放棄本輪。",
+                    KindLabel(expectedKind),
+                    batch.Length);
+
+                missing.AddRange(batch);
+                batchNumber++;
+                await Task.Delay(BatchDelayMilliseconds, cancellationToken);
+                continue;
+            }
+
+            var (batchQuotes, batchDate, batchIndices) = result;
 
             batchNumber++;
 
@@ -134,6 +175,14 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             throw new InvalidOperationException("盤中 API 沒有回傳任何可用的報價，無法判斷交易日。");
         }
 
+        // 缺席太多代表 MIS 本身不健康或被擋，補洞只會掩蓋它，整輪照舊作廢。
+        if (universe.Count > 0 && missing.Count > universe.Count * maxMissingShare)
+        {
+            throw new InvalidOperationException(
+                $"盤中{KindLabel(expectedKind)}有 {missing.Count}/{universe.Count} 檔整批讀取失敗，"
+                + $"超過 {maxMissingShare:P0} 的容忍上限；整輪不寫入。");
+        }
+
         // 現價的來源分布是這支收集器最重要的健康指標：
         // 只要「有量卻沒價」不是 0，全市場成交金額就會少算而且每輪跳動。
         var pricelessWithVolume = quotes.Count(quote => quote.Price is null && quote.TradingVolume > 0);
@@ -141,13 +190,8 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         logger.LogInformation(
             "盤中{Kind}報價 {Date:yyyy-MM-dd}：查詢 {Requested} 檔、取得 {Received} 檔，"
             + "現價來源 成交價 {LastTrade}／買賣中價 {BidAskMid}／高低中價 {HighLowMid}／開盤 {Open}／昨收 {PreviousClose}，"
-            + "有量卻沒價 {PricelessWithVolume} 檔。",
-            expectedKind switch
-            {
-                StockKind.Etf => "ETF ",
-                StockKind.Tdr => "TDR ",
-                _ => string.Empty
-            },
+            + "有量卻沒價 {PricelessWithVolume} 檔，整批失敗缺席 {Missing} 檔。",
+            KindLabel(expectedKind),
             tradeDate,
             universe.Count,
             quotes.Count,
@@ -156,7 +200,8 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             quotes.Count(quote => quote.PriceSource is IntradayPriceSource.HighLowMid),
             quotes.Count(quote => quote.PriceSource is IntradayPriceSource.Open),
             quotes.Count(quote => quote.PriceSource is IntradayPriceSource.PreviousClose),
-            pricelessWithVolume);
+            pricelessWithVolume,
+            missing.Count);
 
         if (pricelessWithVolume > 0)
         {
@@ -169,9 +214,18 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         {
             TradeDate = tradeDate.Value,
             Quotes = quotes,
-            MarketIndices = [.. marketIndices.Values.OrderBy(index => index.Market)]
+            MarketIndices = [.. marketIndices.Values.OrderBy(index => index.Market)],
+            MissingTickers = missing
         };
     }
+
+    /// <summary>日誌用的種類標籤：ETF／TDR 加後置空格，個股不加（維持原本的訊息格式）。</summary>
+    private static string KindLabel(StockKind kind) => kind switch
+    {
+        StockKind.Etf => "ETF ",
+        StockKind.Tdr => "TDR ",
+        _ => string.Empty
+    };
 
     /// <summary>
     /// 只問一檔（台積電），確認 MIS 現在給的交易日期。
@@ -277,7 +331,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
                     attempt,
                     exception.Message);
 
-                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), cancellationToken);
+                await Task.Delay(RetryDelayUnit * attempt, cancellationToken);
             }
         }
     }
@@ -629,6 +683,13 @@ public sealed record IntradaySnapshot
     public required IReadOnlyList<IntradayQuote> Quotes { get; init; }
 
     public IReadOnlyList<MarketIndexQuote> MarketIndices { get; init; } = [];
+
+    /// <summary>
+    /// 這一輪「整批重試用盡仍讀不到」的代號。跟 MIS 本來就沒有回傳的停牌個股不同：
+    /// 那些只是這一輪沒有報價，而這裡是查詢失敗，由呼叫端決定沿用上一輪剛收到的報價補洞
+    /// （<see cref="IntradayCarryForward"/>）還是放棄本輪。
+    /// </summary>
+    public IReadOnlyList<(Market Market, string Ticker)> MissingTickers { get; init; } = [];
 
     /// <summary>
     /// 與這一輪個股與指數同時算出的市場熱絡程度；舊版收集器未提供時可為 null。

@@ -233,3 +233,180 @@ public class MisIntradayBatchingTests
         };
     }
 }
+
+/// <summary>
+/// 2026-10-05 實測：單批在三次重試後仍失敗的機率約 2%，十四批一輪就有約四分之一的機率整輪作廢。
+/// 失敗的批次現在記為缺席、其他批次照常收，由呼叫端沿用上一輪報價補洞；
+/// 缺席太多（MIS 本身不健康）仍然讓整輪失敗。
+/// </summary>
+public class MisIntradayFailureToleranceTests
+{
+    /// <summary>MIS 內部失敗時回的是 200 加一串空白行，沒有任何 JSON。</summary>
+    private static readonly string BlankBody = string.Concat(Enumerable.Repeat("\r\n", 20));
+
+    [Fact]
+    public async Task 單批重試用盡仍失敗時記為缺席而不是讓整輪失敗()
+    {
+        var universe = StockUniverse(600);
+        var batches = MisIntradayClient.BuildBatches(universe, includeMarketIndices: true);
+        var failing = batches[2].Select(item => item.Ticker).ToHashSet();
+        var handler = new ScriptedHandler(exCh => exCh.Split('|').Any(c => failing.Any(t => c.Contains(t)))
+            ? Reply.Blank
+            : Reply.Ok);
+        var client = NewClient(handler);
+
+        var snapshot = await client.GetQuotesAsync(universe);
+
+        Assert.Equal(batches[2].Length, snapshot.MissingTickers.Count);
+        Assert.Equal(failing, snapshot.MissingTickers.Select(item => item.Ticker).ToHashSet());
+        Assert.Equal(universe.Length - batches[2].Length, snapshot.Quotes.Count);
+        // 失敗的批次試了三次，其他批次各一次。
+        Assert.Equal(3, handler.CallsFor(exCh => failing.Any(t => exCh.Contains(t))));
+    }
+
+    [Fact]
+    public async Task 失敗的批次在重試成功後不會被記為缺席()
+    {
+        var universe = StockUniverse(600);
+        var first = true;
+        var handler = new ScriptedHandler(_ =>
+        {
+            // 整輪只有第一個請求回空白，重試就好了。
+            if (first)
+            {
+                first = false;
+                return Reply.Blank;
+            }
+
+            return Reply.Ok;
+        });
+
+        var snapshot = await NewClient(handler).GetQuotesAsync(universe);
+
+        Assert.Empty(snapshot.MissingTickers);
+        Assert.Equal(universe.Length, snapshot.Quotes.Count);
+    }
+
+    [Fact]
+    public async Task 缺席超過兩成五代表MIS不健康整輪照舊失敗()
+    {
+        var universe = StockUniverse(600);
+
+        // 一半的請求都失敗。
+        var calls = 0;
+        var handler = new ScriptedHandler(_ => ++calls % 2 == 0 ? Reply.Blank : Reply.Ok);
+        // 每一批都會重試，所以改成「某幾批永遠失敗」：這裡讓第 2、4 批永遠失敗（5 批裡 2 批）。
+        var batches = MisIntradayClient.BuildBatches(universe, includeMarketIndices: true);
+        var failing = batches[1].Concat(batches[3]).Select(item => item.Ticker).ToHashSet();
+        handler = new ScriptedHandler(exCh => failing.Any(t => exCh.Contains(t)) ? Reply.Blank : Reply.Ok);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => NewClient(handler).GetQuotesAsync(universe));
+
+        Assert.Contains("整批讀取失敗", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ETF有一批失敗時照樣回傳其他批並列出缺席的代號()
+    {
+        var etfs = Enumerable.Range(0, 300).Select(i => (Market.Twse, $"00{100 + i}A")).ToArray();
+        var batches = MisIntradayClient.BuildBatches(etfs, includeMarketIndices: false);
+        var failing = batches[0].Select(item => item.Ticker).ToHashSet();
+        var handler = new ScriptedHandler(exCh => failing.Any(t => exCh.Contains(t)) ? Reply.Blank : Reply.Ok);
+
+        var snapshot = await NewClient(handler).GetEtfQuotesAsync(etfs);
+
+        Assert.Equal(batches[0].Length, snapshot.MissingTickers.Count);
+        Assert.Equal(etfs.Length - batches[0].Length, snapshot.Quotes.Count);
+    }
+
+    [Fact]
+    public async Task 所有批次都失敗時沒有任何報價可用要丟例外()
+    {
+        var etfs = Enumerable.Range(0, 300).Select(i => (Market.Twse, $"00{100 + i}A")).ToArray();
+        var handler = new ScriptedHandler(_ => Reply.Blank);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => NewClient(handler).GetEtfQuotesAsync(etfs));
+    }
+
+    [Fact]
+    public async Task 第一批失敗時這一輪沒有指數()
+    {
+        var universe = StockUniverse(600);
+        var batches = MisIntradayClient.BuildBatches(universe, includeMarketIndices: true);
+        var failing = batches[0].Select(item => item.Ticker).ToHashSet();
+        var handler = new ScriptedHandler(exCh => failing.Any(t => exCh.Contains(t)) ? Reply.Blank : Reply.Ok);
+
+        var snapshot = await NewClient(handler).GetQuotesAsync(universe);
+
+        Assert.Empty(snapshot.MarketIndices);
+        Assert.Equal(batches[0].Length, snapshot.MissingTickers.Count);
+    }
+
+    private static MisIntradayClient NewClient(HttpMessageHandler handler) => new(
+        new HttpClient(handler),
+        NullLogger<MisIntradayClient>.Instance)
+    {
+        RetryDelayUnit = TimeSpan.Zero
+    };
+
+    private static (Market Market, string Ticker)[] StockUniverse(int count)
+        => [.. Enumerable.Range(0, count)
+            .Select(i => (i % 3 == 0 ? Market.Tpex : Market.Twse, (1101 + i).ToString()))];
+
+    private enum Reply
+    {
+        Ok,
+        Blank
+    }
+
+    /// <summary>依 ex_ch 內容決定這個請求回正常報價還是一串空白行，並記錄每個請求。</summary>
+    private sealed class ScriptedHandler(Func<string, Reply> decide) : HttpMessageHandler
+    {
+        private readonly List<string> requests = [];
+
+        public int CallsFor(Func<string, bool> predicate) => requests.Count(predicate);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var exCh = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["ex_ch"] ?? string.Empty;
+            requests.Add(exCh);
+
+            if (decide(exCh) == Reply.Blank)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(BlankBody, Encoding.UTF8, "application/json")
+                });
+            }
+
+            var items = exCh.Split('|', StringSplitOptions.RemoveEmptyEntries).Select(channel =>
+            {
+                var exchange = channel[..3];
+                var code = channel[4..^3];
+
+                return code is "t00" or "o00"
+                    ? new Dictionary<string, string>
+                    {
+                        ["c"] = code, ["ex"] = exchange, ["d"] = "20261006",
+                        ["z"] = "100.00", ["y"] = "99.00"
+                    }
+                    : new Dictionary<string, string>
+                    {
+                        ["c"] = code, ["n"] = $"名稱{code}", ["ex"] = exchange, ["d"] = "20261006",
+                        ["z"] = "10.00", ["y"] = "9.80", ["v"] = "100"
+                    };
+            }).ToArray();
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new { msgArray = items, rtmessage = "OK", rtcode = "0000" }),
+                    Encoding.UTF8,
+                    "application/json")
+            });
+        }
+    }
+}

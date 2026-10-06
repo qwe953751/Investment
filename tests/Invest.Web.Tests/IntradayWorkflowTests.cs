@@ -220,6 +220,90 @@ public sealed class IntradayWorkflowTests
         Assert.Contains("- name: 回補行情", daily, StringComparison.Ordinal);
     }
 
+    private static string ReadIntradayProgramSection()
+    {
+        var program = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "src", "Invest.Web", "Program.cs"));
+        var start = program.IndexOf("static async Task RunIntradayAsync", StringComparison.Ordinal);
+        var end = program.IndexOf("static async Task RunIntradayHeatBackfillAsync", start, StringComparison.Ordinal);
+
+        return program[start..end];
+    }
+
+    /// <summary>
+    /// 2026-10-05：十四批請求裡任何一批在重試三次後仍失敗，整輪 2,400 檔就全部丟掉，
+    /// 125 輪裡丟了 30 輪、最長畫面停 12 分鐘。個股那一路改成沿用上一輪剛收到的報價補洞，
+    /// 補不齊（required: true）才照舊作廢。
+    /// </summary>
+    [Fact]
+    public void 單批失敗沿用上一輪報價補洞而不是整輪丟掉()
+    {
+        var intraday = ReadIntradayProgramSection();
+
+        Assert.Contains("carryForward.Complete(", intraday, StringComparison.Ordinal);
+        Assert.Contains("required: true", intraday, StringComparison.Ordinal);
+        Assert.Contains("carryForward.CompleteIndices(", intraday, StringComparison.Ordinal);
+        // ETF、TDR 是額外資料源，補不齊只是少那幾檔。
+        Assert.Contains("required: false", intraday, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 舊寫法在 ETF 名冊讀失敗時直接設成空清單，之後整棒（最長五個多小時）都不再嘗試，
+    /// ETF 盤中整場沒有資料，日誌只有一行。
+    /// </summary>
+    [Fact]
+    public void ETF名冊讀失敗會定期重試而不是整棒都沒有ETF()
+    {
+        var intraday = ReadIntradayProgramSection();
+
+        Assert.Contains("TryLoadEtfUniverseAsync", intraday, StringComparison.Ordinal);
+        Assert.Contains("etfRosterRetryAt", intraday, StringComparison.Ordinal);
+        Assert.DoesNotContain("etfUniverse = [];", intraday, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// ETF 依長度切批後要多三次請求，接在個股後面會讓整輪多十幾秒、擠壓兩分鐘輪距，
+    /// 所以兩路同時發出；個股那一路失敗時沒人等 ETF，不能留下未觀察的例外。
+    /// </summary>
+    [Fact]
+    public void ETF與個股同時發出請求而且個股失敗時不留下未觀察的例外()
+    {
+        var intraday = ReadIntradayProgramSection();
+
+        var etfTask = intraday.IndexOf("var etfTask", StringComparison.Ordinal);
+        var stocks = intraday.IndexOf("await quoteClient.GetQuotesAsync(universe", StringComparison.Ordinal);
+
+        Assert.True(etfTask >= 0 && stocks >= 0 && etfTask < stocks, "ETF 的請求必須在等個股結果之前發出。");
+        Assert.Contains("ObserveAsync(etfTask)", intraday, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 2026-09-15 起 ETF 盤中只收到 58/355 檔卻沒有人發現——這種半殘狀態畫面照樣顯示得出來。
+    /// 超過兩成輪次缺漏就讓整場紅掉，鈴鐺才會亮。
+    /// </summary>
+    [Fact]
+    public void ETF缺漏超過兩成輪次時整場收工紅燈讓鈴鐺亮()
+    {
+        var intraday = ReadIntradayProgramSection();
+
+        Assert.Contains("etfDegradedRounds * 5 > writtenRounds", intraday, StringComparison.Ordinal);
+        Assert.Contains("ETF 盤中報價在", intraday, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 2026-10-05 有 27 次整輪的第一個請求卡滿 15 秒逾時、重送就好，像是重用了被默默丟掉的舊連線。
+    /// 兩輪之間連線約閒置 100 秒，所以閒置超過 20 秒就不再重用。
+    /// </summary>
+    [Fact]
+    public void MIS連線閒置超過二十秒不再重用()
+    {
+        var program = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "src", "Invest.Web", "Program.cs"));
+        var registration = Slice(program, "AddHttpClient<MisIntradayClient>", "AddHttpClient<EmergingIntradayClient>");
+
+        Assert.Contains("SocketsHttpHandler", registration, StringComparison.Ordinal);
+        Assert.Contains(
+            "PooledConnectionIdleTimeout = TimeSpan.FromSeconds(20)", registration, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void 盤中收集的市場熱絡歷史不依賴除權息來源()
     {

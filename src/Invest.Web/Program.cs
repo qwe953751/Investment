@@ -108,7 +108,15 @@ builder.Services.AddSingleton<TopicEditStore>();
 builder.Services.AddSingleton<TopicSheetCacheStore>();
 
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
-builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient)
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        // 兩輪之間（約 100 秒）對 MIS 的連線會閒置。2026-10-05 有 27 次是整輪的第一個請求卡滿
+        // 15 秒逾時、重送一次就好——很像重用了被對面或中間設備默默丟掉的舊連線。
+        // 閒置超過 20 秒就不再重用，每輪第一個請求改用新連線（多一次 TLS 握手，不到一秒）。
+        PooledConnectionIdleTimeout = TimeSpan.FromSeconds(20),
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    });
 builder.Services.AddHttpClient<EmergingIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<MarketOverviewIntradaySnapshotPublisher>();
@@ -528,10 +536,26 @@ static async Task RunAssetOperationSheetImportAsync(IServiceProvider services, s
 }
 
 /// <summary>
+/// 等一個背景工作結束並吞掉它的例外。個股那一路失敗、沒人會等同時發出的 ETF 工作時用，
+/// 避免沒人觀察的例外在之後被終結器抓出來。
+/// </summary>
+static async Task ObserveAsync(Task task)
+{
+    try
+    {
+        await task;
+    }
+    catch
+    {
+        // 這個工作的結果已經不需要了，失敗原因在 MisIntradayClient 自己的日誌裡。
+    }
+}
+
+/// <summary>
 /// 只探測一次全市場 MIS，不寫入資料庫或公開快照。
 ///
 /// 這是 workflow 開始正式收集前的健康檢查；不能用單一熱門股代表整個
-/// 150 檔一批的請求路徑，因此沿用正式收集器的完整清單與批次邏輯。
+/// 一批約 150 檔的請求路徑，因此沿用正式收集器的完整清單與批次邏輯。
 /// </summary>
 static async Task RunIntradayProbeAsync(IServiceProvider services)
 {
@@ -556,6 +580,7 @@ static async Task RunIntradayProbeAsync(IServiceProvider services)
     Console.WriteLine(
         $"MIS 全市場探測成功：交易日 {snapshot.TradeDate:yyyy-MM-dd}、"
         + $"清單 {universe.Count} 檔、報價 {snapshot.Quotes.Count} 檔、"
+        + $"整批失敗缺席 {snapshot.MissingTickers.Count} 檔、"
         + $"指數 {snapshot.MarketIndices.Count} 個；{dateNote}");
 }
 
@@ -637,6 +662,14 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     // 否則每一輪都變回「現價 × 全日累計量」。
     var turnoverAccumulator = new IntradayTurnoverAccumulator();
 
+    // 單批讀取失敗時沿用上一輪剛收到的報價，不為了一批的抖動丟掉整輪（見 IntradayCarryForward）。
+    var carryForward = new IntradayCarryForward();
+
+    // ETF 官方名冊的 ETF 裡，有一小撮 MIS 本來就查不到（10/05 夜間實測約 9 檔上櫃債券 ETF），
+    // 所以覆蓋率門檻不是 100%。低於門檻的輪次會在日誌裡標出來，超過兩成輪次缺漏時整場收工會紅燈。
+    const double minEtfCoverage = 0.85;
+    var etfDegradedRounds = 0;
+
     // 年初基準只需指數欄位，所以走只讀指數的入口，不要為了兩三個數字
     // 把三百多天的全市場個股報價全部反序列化。
     var dailyIndexHistory = await dailyQuoteStore.LoadMarketIndicesAsync(cts.Token);
@@ -659,6 +692,38 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     IReadOnlyList<IntradayQuote> lastEmergingQuotes = [];
     DateOnly? lastEmergingDate = null;
     var emergingMissedRounds = 0;
+
+    // ETF 名冊讀失敗（官方網站偶爾擋 runner）時，以前直接設成空清單、整棒（最長五個多小時）
+    // 都不再嘗試，ETF 盤中整場沒有資料。改成每 10 分鐘再試一次，成功後下一輪就開始收。
+    var etfRosterRetryInterval = TimeSpan.FromMinutes(10);
+    var etfRosterRetryAt = DateTimeOffset.MinValue;
+
+    async Task<IReadOnlyList<(Market Market, string Ticker)>?> TryLoadEtfUniverseAsync(
+        DateTimeOffset now,
+        DateTimeOffset localNow)
+    {
+        try
+        {
+            // 外幣交易線（K／C 結尾）台股頁籤不顯示，也就不必每輪白問。
+            var etfCatalog = await etfCatalogClient.GetAsync(cts.Token);
+            IReadOnlyList<(Market Market, string Ticker)> roster = [.. etfCatalog.Securities
+                .Where(security => !TaiwanSecurityRules.IsForeignCurrencyEtfLine(security.Ticker))
+                .Select(security => (security.Market, security.Ticker))];
+
+            Console.WriteLine($"{localNow:HH:mm:ss} ETF 清單共 {roster.Count} 檔。");
+            return roster;
+        }
+        catch (Exception exception)
+            when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+        {
+            // 官方 ETF 名冊暫時不可用不能阻塞個股盤中收集；期間只收個股，稍後再試。
+            etfRosterRetryAt = now + etfRosterRetryInterval;
+            Console.WriteLine(
+                $"{localNow:HH:mm:ss} ETF 名冊更新失敗，{etfRosterRetryInterval.TotalMinutes:0} 分鐘後再試，"
+                + $"期間只收集個股：{exception.Message}");
+            return null;
+        }
+    }
 
     try
     {
@@ -701,24 +766,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                             $"{localTime:HH:mm:ss} 讀不到既有 TDR 清單，這一場只收主清單內的 TDR：{exception.Message}");
                     }
 
-                    try
-                    {
-                        // 外幣交易線（K／C 結尾）台股頁籤不顯示，也就不必每輪白問。
-                        var etfCatalog = await etfCatalogClient.GetAsync(cts.Token);
-                        etfUniverse = [.. etfCatalog.Securities
-                            .Where(security => !TaiwanSecurityRules.IsForeignCurrencyEtfLine(security.Ticker))
-                            .Select(security => (security.Market, security.Ticker))];
-                        Console.WriteLine($"{localTime:HH:mm:ss} ETF 清單共 {etfUniverse.Count} 檔。");
-                    }
-                    catch (Exception exception)
-                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
-                    {
-                        // 官方 ETF 名冊暫時不可用不能阻塞個股盤中收集；這一場 ETF 盤中
-                        // 會沒有新增快照，下一場重新建立程序時再嘗試取得名冊。
-                        etfUniverse = [];
-                        Console.WriteLine(
-                            $"{localTime:HH:mm:ss} ETF 名冊更新失敗，這一場只收集個股：{exception.Message}");
-                    }
+                    etfUniverse = await TryLoadEtfUniverseAsync(capturedAt, localTime);
 
                     // 處置與全額交割不會在交易時段中途變動，開場抓一次寫進 market_flags 就夠。
                     // 盤中頁面直接讀那張表，不再沿用 manifest.json 裡「上次盤後 export」時的舊快照
@@ -743,24 +791,82 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                     }
                 }
 
-                var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
-                ValidateIntradaySnapshot(universe, snapshot);
+                // 名冊上一次讀失敗就在這裡定期重試，不要整棒都沒有 ETF。
+                if (etfUniverse is null && capturedAt >= etfRosterRetryAt)
+                {
+                    etfUniverse = await TryLoadEtfUniverseAsync(capturedAt, localTime);
+                }
 
-                if (etfUniverse is { Count: > 0 })
+                // ETF 與個股同時問（各自批次內仍依序）。ETF 依長度切批之後要多三次請求，
+                // 接在個股後面會讓整輪再多十幾秒，擠壓兩分鐘的輪距。
+                var etfTask = etfUniverse is { Count: > 0 }
+                    ? quoteClient.GetEtfQuotesAsync(etfUniverse, cts.Token)
+                    : null;
+                IntradaySnapshot snapshot;
+
+                try
+                {
+                    snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
+
+                    // 整批失敗的代號沿用上一輪剛收到的報價；補不齊就丟例外，這一輪照舊作廢。
+                    snapshot = snapshot with
+                    {
+                        Quotes = carryForward.Complete(
+                            snapshot.TradeDate,
+                            capturedAt,
+                            snapshot.Quotes,
+                            snapshot.MissingTickers,
+                            required: true),
+                        MarketIndices = carryForward.CompleteIndices(
+                            snapshot.TradeDate, capturedAt, snapshot.MarketIndices)
+                    };
+                    ValidateIntradaySnapshot(universe, snapshot);
+                }
+                catch
+                {
+                    // 個股這輪失敗了，沒人會等 ETF 的結果；先把例外吃掉，免得變成沒人觀察的 Task 例外。
+                    if (etfTask is not null)
+                    {
+                        _ = ObserveAsync(etfTask);
+                    }
+
+                    throw;
+                }
+
+                // 這一輪 ETF 是否不完整：名冊讀不到、查詢失敗、日期不符或覆蓋率偏低都算。
+                var etfDegraded = etfTask is null;
+
+                if (etfTask is not null)
                 {
                     try
                     {
-                        var etfSnapshot = await quoteClient.GetEtfQuotesAsync(etfUniverse, cts.Token);
+                        var etfSnapshot = await etfTask;
 
                         if (etfSnapshot.TradeDate == snapshot.TradeDate)
                         {
+                            var etfQuotes = carryForward.Complete(
+                                etfSnapshot.TradeDate,
+                                capturedAt,
+                                etfSnapshot.Quotes,
+                                etfSnapshot.MissingTickers,
+                                required: false);
+
                             snapshot = snapshot with
                             {
-                                Quotes = [.. snapshot.Quotes, .. etfSnapshot.Quotes]
+                                Quotes = [.. snapshot.Quotes, .. etfQuotes]
                             };
+
+                            if (etfQuotes.Count < etfUniverse!.Count * minEtfCoverage)
+                            {
+                                etfDegraded = true;
+                                Console.WriteLine(
+                                    $"{localTime:HH:mm:ss} ETF 盤中報價只有 {etfQuotes.Count}/{etfUniverse.Count} 檔，"
+                                    + $"低於 {minEtfCoverage:P0}。");
+                            }
                         }
                         else
                         {
+                            etfDegraded = true;
                             Console.WriteLine(
                                 $"{localTime:HH:mm:ss} ETF API 日期 {etfSnapshot.TradeDate:yyyy-MM-dd} "
                                 + $"與個股 {snapshot.TradeDate:yyyy-MM-dd} 不同，本輪不併入 ETF。");
@@ -771,6 +877,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                     {
                         // ETF 是額外資料源；個股快照已通過健康檢查時，不能因 ETF 端點抖動
                         // 丟掉整個市場的盤中輪次。
+                        etfDegraded = true;
                         Console.WriteLine(
                             $"{localTime:HH:mm:ss} ETF 盤中報價失敗，本輪保留個股：{exception.Message}");
                     }
@@ -786,7 +893,16 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                         {
                             snapshot = snapshot with
                             {
-                                Quotes = [.. snapshot.Quotes, .. tdrSnapshot.Quotes]
+                                Quotes =
+                                [
+                                    .. snapshot.Quotes,
+                                    .. carryForward.Complete(
+                                        tdrSnapshot.TradeDate,
+                                        capturedAt,
+                                        tdrSnapshot.Quotes,
+                                        tdrSnapshot.MissingTickers,
+                                        required: false)
+                                ]
                             };
                         }
                     }
@@ -917,6 +1033,11 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
                         writtenRounds++;
 
+                        if (etfDegraded)
+                        {
+                            etfDegradedRounds++;
+                        }
+
                         Console.WriteLine(
                             $"{localTime:HH:mm:ss} 交易日 {snapshot.TradeDate:yyyy-MM-dd}："
                             + $"寫入 {result.QuoteCount} 檔，估算總成交值 {result.Total / 100_000_000m:N0} 億。");
@@ -1003,7 +1124,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     Console.WriteLine(
         $"收工：寫入 {writtenRounds} 輪、日期對不上 {staleRounds} 輪、"
         + $"失敗 {failedRounds} 輪、金額倒退丟掉 {rejectedRounds} 輪、"
-        + $"CDN 發佈失敗 {cdnPublishFailures} 輪。");
+        + $"CDN 發佈失敗 {cdnPublishFailures} 輪、ETF 缺漏 {etfDegradedRounds} 輪。");
 
     if (!loop && cdnPublishFailures > 0)
     {
@@ -1033,6 +1154,16 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
             throw new InvalidOperationException(
                 $"有 {rejectedRounds} 輪的全市場累計成交金額比上一輪還少而被丟掉。"
                 + "累計金額不可能倒退，代表這些輪的報價有問題，要去看收集器的日誌。");
+        }
+
+        // ETF 是額外資料源，偶爾一輪缺漏不算故障；但超過兩成輪次缺漏，代表 ETF 頁的盤中資料
+        // 整體不可信。2026-09-15 起 ETF 盤中只收到 58/355 檔卻沒有人發現，就是因為這種半殘狀態
+        // 畫面照樣顯示得出來。所以讓這一場紅掉，鈴鐺才會亮。
+        if (etfDegradedRounds * 5 > writtenRounds)
+        {
+            throw new InvalidOperationException(
+                $"ETF 盤中報價在 {etfDegradedRounds}/{writtenRounds} 輪缺漏（名冊讀不到、查詢失敗，"
+                + $"或覆蓋率低於 {minEtfCoverage:P0}）。ETF 頁的盤中資料不完整，要去看收集器的日誌。");
         }
 
         return;

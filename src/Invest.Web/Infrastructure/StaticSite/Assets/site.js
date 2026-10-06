@@ -1843,7 +1843,7 @@ const ETF_COLUMNS = [
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔 ETF 最近三個月的日 K。名稱底色表示日漲跌。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true, klineOptions: { market: '台股', etf: true } }) },
     { key: 'close', title: '收盤價', hint: 'ETF 名冊中最近一個有效交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'price', title: '漲跌幅', hint: '分層顯示日／週／年漲跌幅；排序以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange) },
-    { key: 'tradingValue', title: '成交值（億）', hint: '所選交易日或盤中最新一輪的 ETF 成交值。', value: row => row.tradingValue, cell: row => ({ text: toBillionText(row.tradingValue), cls: 'numeric' }) }
+    { key: 'tradingValue', title: '成交值（億）', hint: '所選交易日或盤中最新一輪的 ETF 成交值；盤中還沒有報價的標的顯示 —。', value: row => row.tradingValue, cell: row => ({ text: missing(row.tradingValue) ? '—' : toBillionText(row.tradingValue), cls: 'numeric' }) }
 ];
 
 // 自訂頁的盤中欄位沿用同一組個股欄位，只改成即時資料的語意。
@@ -19632,6 +19632,16 @@ function customMarketCountItem(counts) {
     ];
 }
 
+// 盤中報價筆數低於名冊的 85% 就明講「偏低」，不要讓使用者把缺資料看成「沒有變動」。
+// 名冊裡總有少數標的 MIS 本來就查不到（2026-10-05 夜間實測 9 檔上櫃債券 ETF），所以門檻不是 100%。
+function etfLiveCoverageText(liveCount, totalCount) {
+    const live = Number(liveCount ?? 0);
+    const total = Number(totalCount ?? 0);
+    const text = `${live}／${total} 檔`;
+
+    return total > 0 && live < total * 0.85 ? `${text}（偏低）` : text;
+}
+
 function renderSummary() {
     // 掛在這裡而不是各個 load*()：摘要重畫的時機就是資料換過的時機，
     // 兩者綁在一起才不會有「資料換了、警告還留在上一輪」的空窗。
@@ -19644,7 +19654,7 @@ function renderSummary() {
                 ['交易日', current.tradeDate ? current.tradeDate.replaceAll('-', '/') : '—'],
                 ['資料時間', ETF_LOCAL_PREVIEW ? '本機示意' : current.capturedAt + intradayAgeText()],
                 ['ETF 名冊', `${current.totalEtfCount} 檔`],
-                ['盤中報價', `${current.liveEtfCount ?? 0}／${current.totalEtfCount} 檔`],
+                ['盤中報價', etfLiveCoverageText(current.liveEtfCount, current.totalEtfCount)],
                 ['上市／上櫃', `${current.listedCount}／${current.otcCount}`],
                 ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
             ]
@@ -22096,6 +22106,39 @@ async function loadEtfDaily(force = false) {
     renderEtfRows(data.rows, 'daily', data.tradeDate || state.date);
 }
 
+// ETF 盤中表格的列：名冊每一檔都出現，有盤中報價的填現價、當日漲跌與成交值，沒有的一律是 —。
+// 沒有現價就算不出週、年漲跌，也不能拿上一個收盤日的週漲跌充數：那是舊數字，
+// 畫面上看起來會像「有資料只是沒動」。2026-10-05 ETF 盤中只收到 58／355 檔、其餘卻顯示
+// 成交值 0.00 與舊的週漲跌，就是因為這樣一直沒有人發現。
+function buildEtfIntradayRows(catalog, liveRows, dailyRows, tradeDate) {
+    const liveByKey = new Map(liveRows.map(row => [`${row.market}:${row.ticker}`, row]));
+    const dailyByTicker = new Map((dailyRows ?? []).map(row => [row.ticker, row]));
+
+    return catalog.map(row => {
+        const live = liveByKey.get(`${row.market}:${row.ticker}`);
+        const historical = dailyByTicker.get(row.ticker);
+        const close = live?.close ?? null;
+        const weeklyBaseline = historical?.weeklyBaselineClose;
+        const yearToDateBaseline = historical?.yearToDateBaselineClose;
+
+        return {
+            ...row,
+            session: 'intraday',
+            close,
+            priceChange: live?.priceChange ?? null,
+            weeklyPriceChange: close !== null && weeklyBaseline > 0
+                ? (close - weeklyBaseline) / weeklyBaseline
+                : null,
+            yearToDatePriceChange: close !== null && yearToDateBaseline > 0
+                ? (close - yearToDateBaseline) / yearToDateBaseline
+                : null,
+            tradingValue: live?.value ?? null,
+            quoteDate: tradeDate,
+            liveKLine: live?.liveKLine ?? null
+        };
+    });
+}
+
 async function loadEtfIntraday(silent = false, force = false) {
     if (ETF_LOCAL_PREVIEW) {
         const capturedAtIso = `${ETF_LOCAL_PREVIEW_TRADE_DATE}T10:16:00+08:00`;
@@ -22142,32 +22185,8 @@ async function loadEtfIntraday(silent = false, force = false) {
     const liveRows = mapIntradayRows(
         raw.filter(isEtfIntradayRawRow),
         summary);
-    const liveByKey = new Map(liveRows.map(row => [`${row.market}:${row.ticker}`, row]));
     const daily = await loadPublishedEtfDailyForIntraday(summary.trade_date);
-    const dailyByTicker = new Map((daily?.rows ?? []).map(row => [row.ticker, row]));
-    const rows = catalog.map(row => {
-        const live = liveByKey.get(`${row.market}:${row.ticker}`);
-        const historical = dailyByTicker.get(row.ticker);
-        const close = live?.close ?? null;
-        const weeklyBaseline = historical?.weeklyBaselineClose;
-        const yearToDateBaseline = historical?.yearToDateBaselineClose;
-
-        return {
-            ...row,
-            session: 'intraday',
-            close,
-            priceChange: live?.priceChange ?? null,
-            weeklyPriceChange: close !== null && weeklyBaseline > 0
-                ? (close - weeklyBaseline) / weeklyBaseline
-                : historical?.weeklyPriceChange ?? null,
-            yearToDatePriceChange: close !== null && yearToDateBaseline > 0
-                ? (close - yearToDateBaseline) / yearToDateBaseline
-                : historical?.yearToDatePriceChange ?? null,
-            tradingValue: live?.value ?? null,
-            quoteDate: summary.trade_date,
-            liveKLine: live?.liveKLine ?? null
-        };
-    });
+    const rows = buildEtfIntradayRows(catalog, liveRows, daily?.rows, summary.trade_date);
 
     lastIntradayLoadedAt = Date.now();
     renderEtfRows(rows, 'intraday', summary.trade_date, summary.captured_at, liveRows.length);
