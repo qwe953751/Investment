@@ -140,10 +140,10 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
                 // 現在記下缺哪些代號，由呼叫端決定沿用上一輪剛收到的報價補洞，還是放棄本輪。
                 // 失敗的批次不會影響其他批次，指數若在失敗的第一批裡就只是這一輪沒有指數。
                 logger.LogWarning(
-                    exception,
-                    "盤中{Kind}這批 {Count} 檔重試用盡仍失敗，記為缺席，交給呼叫端沿用上一輪或放棄本輪。",
+                    "盤中{Kind}這批 {Count} 檔重試用盡仍失敗，記為缺席，交給呼叫端沿用上一輪或放棄本輪：{Message}",
                     KindLabel(expectedKind),
-                    batch.Length);
+                    batch.Length,
+                    exception.Message);
 
                 missing.AddRange(batch);
                 batchNumber++;

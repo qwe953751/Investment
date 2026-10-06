@@ -410,3 +410,30 @@ public class MisIntradayFailureToleranceTests
         }
     }
 }
+
+public class StockUniverseExclusionTests
+{
+    [Fact]
+    public void 剔除指定代號而且順序不變()
+    {
+        (Market Market, string Ticker)[] universe =
+        [
+            (Market.Twse, "1101"), (Market.Tpex, "1260"), (Market.Tpex, "3105"), (Market.Tpex, "6770")
+        ];
+
+        var result = StockUniverseClient.ExcludeTickers(
+            universe, new HashSet<string>(["1260", "6770"], StringComparer.Ordinal));
+
+        Assert.Equal([(Market.Twse, "1101"), (Market.Tpex, "3105")], result);
+    }
+
+    [Fact]
+    public void 沒有要剔除的代號時原樣回傳()
+    {
+        (Market Market, string Ticker)[] universe = [(Market.Twse, "1101")];
+
+        var result = StockUniverseClient.ExcludeTickers(universe, new HashSet<string>(StringComparer.Ordinal));
+
+        Assert.Same(universe, result);
+    }
+}

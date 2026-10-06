@@ -22110,15 +22110,25 @@ async function loadEtfDaily(force = false) {
 // 沒有現價就算不出週、年漲跌，也不能拿上一個收盤日的週漲跌充數：那是舊數字，
 // 畫面上看起來會像「有資料只是沒動」。2026-10-05 ETF 盤中只收到 58／355 檔、其餘卻顯示
 // 成交值 0.00 與舊的週漲跌，就是因為這樣一直沒有人發現。
-function buildEtfIntradayRows(catalog, liveRows, dailyRows, tradeDate) {
+//
+// 週漲跌的基準：盤後檔的 weeklyBaselineClose 是「那一天所在那一週」開始前最後一個收盤。
+// 盤中的今天若已經是新的一週（週一，或連假後第一天，最近的盤後檔是上週五），
+// 本週基準就是那個盤後檔當天的收盤，而不是它的週基準——個股盤中頁一直是這樣處理的
+// （loadCustomIntraday 的 sameWeekAsReference），ETF 盤中頁原本漏了，週一的週漲跌會多算上一週。
+function buildEtfIntradayRows(catalog, liveRows, daily, tradeDate) {
     const liveByKey = new Map(liveRows.map(row => [`${row.market}:${row.ticker}`, row]));
-    const dailyByTicker = new Map((dailyRows ?? []).map(row => [row.ticker, row]));
+    const dailyByTicker = new Map((daily?.rows ?? []).map(row => [row.ticker, row]));
+    const sameWeekAsReference = Boolean(daily?.tradeDate)
+        && Boolean(tradeDate)
+        && weekStartKey(daily.tradeDate) === weekStartKey(tradeDate);
 
     return catalog.map(row => {
         const live = liveByKey.get(`${row.market}:${row.ticker}`);
         const historical = dailyByTicker.get(row.ticker);
         const close = live?.close ?? null;
-        const weeklyBaseline = historical?.weeklyBaselineClose;
+        const weeklyBaseline = sameWeekAsReference
+            ? historical?.weeklyBaselineClose
+            : historical?.close;
         const yearToDateBaseline = historical?.yearToDateBaselineClose;
 
         return {
@@ -22186,7 +22196,7 @@ async function loadEtfIntraday(silent = false, force = false) {
         raw.filter(isEtfIntradayRawRow),
         summary);
     const daily = await loadPublishedEtfDailyForIntraday(summary.trade_date);
-    const rows = buildEtfIntradayRows(catalog, liveRows, daily?.rows, summary.trade_date);
+    const rows = buildEtfIntradayRows(catalog, liveRows, daily, summary.trade_date);
 
     lastIntradayLoadedAt = Date.now();
     renderEtfRows(rows, 'intraday', summary.trade_date, summary.captured_at, liveRows.length);

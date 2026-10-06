@@ -17,7 +17,17 @@ public sealed class StockUniverseClient(HttpClient httpClient, ILogger<StockUniv
     private const string TpexUrl = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O";
     private const int MaxAttempts = 3;
 
+    public Task<IReadOnlyList<(Market Market, string Ticker)>> GetTickersAsync(
+        CancellationToken cancellationToken = default)
+        => GetTickersAsync(new HashSet<string>(StringComparer.Ordinal), cancellationToken);
+
+    /// <param name="excludedTickers">
+    /// 已知不在 MIS 的代號（興櫃）。交易所公開清單本來就不含興櫃；但資料庫備援清單會含——
+    /// 興櫃在 <c>securities.market</c> 只能存成 TPEX（check constraint 不允許 EMERGING）。
+    /// 備援時要在這裡剔除，否則 MIS 對它們只回空殼，白占三批請求，還把健康門檻墊高。
+    /// </param>
     public async Task<IReadOnlyList<(Market Market, string Ticker)>> GetTickersAsync(
+        IReadOnlySet<string> excludedTickers,
         CancellationToken cancellationToken = default)
     {
         try
@@ -41,34 +51,47 @@ public sealed class StockUniverseClient(HttpClient httpClient, ILogger<StockUniv
         }
         catch (HttpRequestException exception)
         {
-            return await LoadFallbackAsync(exception, cancellationToken);
+            return await LoadFallbackAsync(exception, excludedTickers, cancellationToken);
         }
         catch (JsonException exception)
         {
-            return await LoadFallbackAsync(exception, cancellationToken);
+            return await LoadFallbackAsync(exception, excludedTickers, cancellationToken);
         }
         catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
-            return await LoadFallbackAsync(exception, cancellationToken);
+            return await LoadFallbackAsync(exception, excludedTickers, cancellationToken);
         }
     }
 
     private async Task<IReadOnlyList<(Market Market, string Ticker)>> LoadFallbackAsync(
         Exception exception,
+        IReadOnlySet<string> excludedTickers,
         CancellationToken cancellationToken)
     {
         logger.LogWarning(exception, "交易所個股清單取得失敗，改用資料庫中的個股清單。");
 
-        var fallback = await SecurityCatalog.LoadForIntradayAsync(cancellationToken);
+        var stored = await SecurityCatalog.LoadForIntradayAsync(cancellationToken);
+        var fallback = ExcludeTickers(stored, excludedTickers);
 
         if (fallback.Count == 0)
         {
             throw new InvalidOperationException("資料庫沒有可用的個股清單，盤中收集無法開始。", exception);
         }
 
-        logger.LogInformation("資料庫備援個股清單：共 {Count} 檔。", fallback.Count);
+        logger.LogInformation(
+            "資料庫備援個股清單：共 {Count} 檔（剔除已知不在 MIS 的興櫃 {Excluded} 檔）。",
+            fallback.Count,
+            stored.Count - fallback.Count);
         return fallback;
     }
+
+    /// <summary>從清單剔除指定代號，順序不變。</summary>
+    internal static IReadOnlyList<(Market Market, string Ticker)> ExcludeTickers(
+        IReadOnlyList<(Market Market, string Ticker)> universe,
+        IReadOnlySet<string> excludedTickers)
+        => excludedTickers.Count == 0
+            ? universe
+            : [.. universe.Where(item => !excludedTickers.Contains(item.Ticker))];
 
     private async Task<IReadOnlyList<string>> ReadTickersAsync(
         string url,

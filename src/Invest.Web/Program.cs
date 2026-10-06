@@ -109,15 +109,10 @@ builder.Services.AddSingleton<TopicEditStore>();
 builder.Services.AddSingleton<TopicSheetCacheStore>();
 
 builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
-builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient)
-    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-    {
-        // 兩輪之間（約 100 秒）對 MIS 的連線會閒置。2026-10-05 有 27 次是整輪的第一個請求卡滿
-        // 15 秒逾時、重送一次就好——很像重用了被對面或中間設備默默丟掉的舊連線。
-        // 閒置超過 20 秒就不再重用，每輪第一個請求改用新連線（多一次 TLS 握手，不到一秒）。
-        PooledConnectionIdleTimeout = TimeSpan.FromSeconds(20),
-        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
-    });
+// MIS 連線沿用預設的連線池。2026-10-06 實測：曾試過把閒置 20 秒的連線丟掉、每輪重新連線，
+// 結果每輪第一批請求有八成卡滿 15 秒逾時（舊連線池約兩到三成），整輪中位數從 88 秒拉長到 123 秒，已還原。
+// 重用中的連線反而比每輪重新建立可靠。
+builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<EmergingIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<MarketOverviewIntradaySnapshotPublisher>();
@@ -543,22 +538,6 @@ static async Task RunAssetOperationSheetImportAsync(IServiceProvider services, s
 }
 
 /// <summary>
-/// 等一個背景工作結束並吞掉它的例外。個股那一路失敗、沒人會等同時發出的 ETF 工作時用，
-/// 避免沒人觀察的例外在之後被終結器抓出來。
-/// </summary>
-static async Task ObserveAsync(Task task)
-{
-    try
-    {
-        await task;
-    }
-    catch
-    {
-        // 這個工作的結果已經不需要了，失敗原因在 MisIntradayClient 自己的日誌裡。
-    }
-}
-
-/// <summary>
 /// 只探測一次全市場 MIS，不寫入資料庫或公開快照。
 ///
 /// 這是 workflow 開始正式收集前的健康檢查；不能用單一熱門股代表整個
@@ -571,7 +550,25 @@ static async Task RunIntradayProbeAsync(IServiceProvider services)
 
     var universeClient = scope.ServiceProvider.GetRequiredService<StockUniverseClient>();
     var quoteClient = scope.ServiceProvider.GetRequiredService<MisIntradayClient>();
-    var universe = await universeClient.GetTickersAsync(cts.Token);
+    var dailyQuoteStore = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
+
+    // 跟正式收集器一樣：公開清單失敗退回資料庫備援時，要剔除存成 TPEX 的興櫃，否則探測的
+    // 覆蓋率分母含 MIS 根本沒有的代號。讀不到最近行情就不剔除，探測不能因此失敗。
+    var knownEmerging = new HashSet<string>(StringComparer.Ordinal);
+
+    try
+    {
+        knownEmerging = (await dailyQuoteStore.LoadLatestAsync(cts.Token))?.Quotes
+            .Where(quote => quote.Market == Market.Emerging)
+            .Select(quote => quote.Ticker)
+            .ToHashSet(StringComparer.Ordinal) ?? knownEmerging;
+    }
+    catch (Exception exception) when (exception is not OperationCanceledException)
+    {
+        Console.WriteLine($"讀不到最近的盤後行情，探測不剔除興櫃：{exception.Message}");
+    }
+
+    var universe = await universeClient.GetTickersAsync(knownEmerging, cts.Token);
     var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
 
     ValidateIntradaySnapshot(universe, snapshot);
@@ -732,6 +729,19 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
         }
     }
 
+    // 有補洞才印，平常的輪次不多一行。悄悄少了的代號若沒補（一次少太多），這裡會看得出來。
+    static void ReportCarry(DateTimeOffset localNow, string label, IntradayCarryForward.CarryReport report)
+    {
+        if (report.Missing == 0 && report.Vanished == 0)
+        {
+            return;
+        }
+
+        Console.WriteLine(
+            $"{localNow:HH:mm:ss} {label}報價補洞：整批失敗缺席 {report.Missing} 檔（沿用上一輪 {report.CarriedMissing} 檔）、"
+            + $"回應正常卻悄悄少了 {report.Vanished} 檔（沿用上一輪 {report.CarriedVanished} 檔）。");
+    }
+
     try
     {
         Console.WriteLine($"來源標記：{source}");
@@ -750,28 +760,42 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
             {
                 if (universe is null)
                 {
-                    universe = await universeClient.GetTickersAsync(cts.Token);
-                    Console.WriteLine($"{localTime:HH:mm:ss} 個股清單共 {universe.Count} 檔。");
+                    // 最近一個交易日的行情：已知的興櫃代號與六碼 TDR 名單都從這裡來。
+                    // 讀不到時兩者都退回「不知道」，不能因此讓整場收集開不了工。
+                    DailyQuoteSnapshot? latestDaily = null;
 
-                    // 六碼 TDR 不在公司基本資料名單裡，用最近一個交易日行情裡已知的 TDR 另外問
-                    //（四碼 TDR 已在主清單，同一輪就會依名稱解析成 TDR）。
                     try
                     {
-                        var latestDaily = await dailyQuoteStore.LoadLatestAsync(cts.Token);
-                        var mainTickers = universe.Select(item => item.Ticker).ToHashSet(StringComparer.Ordinal);
-                        tdrUniverse = [.. (latestDaily?.Quotes ?? [])
-                            .Where(quote => quote.Kind == StockKind.Tdr
-                                && !mainTickers.Contains(quote.Ticker))
-                            .Select(quote => (quote.Market, quote.Ticker))];
-                        Console.WriteLine($"{localTime:HH:mm:ss} 六碼 TDR 清單共 {tdrUniverse.Count} 檔。");
+                        latestDaily = await dailyQuoteStore.LoadLatestAsync(cts.Token);
                     }
                     catch (Exception exception)
                         when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
                     {
-                        tdrUniverse = [];
                         Console.WriteLine(
-                            $"{localTime:HH:mm:ss} 讀不到既有 TDR 清單，這一場只收主清單內的 TDR：{exception.Message}");
+                            $"{localTime:HH:mm:ss} 讀不到最近的盤後行情，不剔除興櫃、這一場只收主清單內的 TDR：{exception.Message}");
                     }
+
+                    // 興櫃在資料庫裡存成 TPEX（securities.market 的 check constraint 不允許 EMERGING）：
+                    // 交易所公開清單不含興櫃，但資料庫備援清單會含，而 MIS 沒有興櫃、查了只回空殼。
+                    // 2026-10-06 公開清單暫時失敗、改用備援的 2,373 檔，其中 392 檔是興櫃：
+                    // 白占三批請求，還把 80% 的健康門檻從 1,585 檔墊高到 1,899 檔，MIS 只答得出 1,976 檔，
+                    // 每輪都在門檻邊緣，有五輪因此被判定殘缺而丟掉。
+                    var knownEmerging = (latestDaily?.Quotes ?? [])
+                        .Where(quote => quote.Market == Market.Emerging)
+                        .Select(quote => quote.Ticker)
+                        .ToHashSet(StringComparer.Ordinal);
+
+                    universe = await universeClient.GetTickersAsync(knownEmerging, cts.Token);
+                    Console.WriteLine($"{localTime:HH:mm:ss} 個股清單共 {universe.Count} 檔。");
+
+                    // 六碼 TDR 不在公司基本資料名單裡，用最近一個交易日行情裡已知的 TDR 另外問
+                    //（四碼 TDR 已在主清單，同一輪就會依名稱解析成 TDR）。
+                    var mainTickers = universe.Select(item => item.Ticker).ToHashSet(StringComparer.Ordinal);
+                    tdrUniverse = [.. (latestDaily?.Quotes ?? [])
+                        .Where(quote => quote.Kind == StockKind.Tdr
+                            && !mainTickers.Contains(quote.Ticker))
+                        .Select(quote => (quote.Market, quote.Ticker))];
+                    Console.WriteLine($"{localTime:HH:mm:ss} 六碼 TDR 清單共 {tdrUniverse.Count} 檔。");
 
                     etfUniverse = await TryLoadEtfUniverseAsync(capturedAt, localTime);
 
@@ -804,66 +828,51 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                     etfUniverse = await TryLoadEtfUniverseAsync(capturedAt, localTime);
                 }
 
-                // ETF 與個股同時問（各自批次內仍依序）。ETF 依長度切批之後要多三次請求，
-                // 接在個股後面會讓整輪再多十幾秒，擠壓兩分鐘的輪距。
-                var etfTask = etfUniverse is { Count: > 0 }
-                    ? quoteClient.GetEtfQuotesAsync(etfUniverse, cts.Token)
-                    : null;
-                IntradaySnapshot snapshot;
+                var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
 
-                try
+                // 整批失敗、或回應正常卻悄悄少了幾檔的代號，沿用上一輪剛收到的報價；
+                // 整批失敗補不齊就丟例外，這一輪照舊作廢（見 IntradayCarryForward）。
+                snapshot = snapshot with
                 {
-                    snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
-
-                    // 整批失敗的代號沿用上一輪剛收到的報價；補不齊就丟例外，這一輪照舊作廢。
-                    snapshot = snapshot with
-                    {
-                        Quotes = carryForward.Complete(
-                            snapshot.TradeDate,
-                            capturedAt,
-                            snapshot.Quotes,
-                            snapshot.MissingTickers,
-                            required: true),
-                        MarketIndices = carryForward.CompleteIndices(
-                            snapshot.TradeDate, capturedAt, snapshot.MarketIndices)
-                    };
-                    ValidateIntradaySnapshot(universe, snapshot);
-                }
-                catch
-                {
-                    // 個股這輪失敗了，沒人會等 ETF 的結果；先把例外吃掉，免得變成沒人觀察的 Task 例外。
-                    if (etfTask is not null)
-                    {
-                        _ = ObserveAsync(etfTask);
-                    }
-
-                    throw;
-                }
+                    Quotes = carryForward.Complete(
+                        "stock",
+                        snapshot.TradeDate,
+                        capturedAt,
+                        snapshot.Quotes,
+                        snapshot.MissingTickers,
+                        required: true),
+                    MarketIndices = carryForward.CompleteIndices(
+                        snapshot.TradeDate, capturedAt, snapshot.MarketIndices)
+                };
+                ReportCarry(localTime, "個股", carryForward.LastReport);
+                ValidateIntradaySnapshot(universe, snapshot);
 
                 // 這一輪 ETF 是否不完整：名冊讀不到、查詢失敗、日期不符或覆蓋率偏低都算。
-                var etfDegraded = etfTask is null;
+                var etfDegraded = etfUniverse is not { Count: > 0 };
 
-                if (etfTask is not null)
+                if (etfUniverse is { Count: > 0 })
                 {
                     try
                     {
-                        var etfSnapshot = await etfTask;
+                        var etfSnapshot = await quoteClient.GetEtfQuotesAsync(etfUniverse, cts.Token);
 
                         if (etfSnapshot.TradeDate == snapshot.TradeDate)
                         {
                             var etfQuotes = carryForward.Complete(
+                                "etf",
                                 etfSnapshot.TradeDate,
                                 capturedAt,
                                 etfSnapshot.Quotes,
                                 etfSnapshot.MissingTickers,
                                 required: false);
+                            ReportCarry(localTime, "ETF", carryForward.LastReport);
 
                             snapshot = snapshot with
                             {
                                 Quotes = [.. snapshot.Quotes, .. etfQuotes]
                             };
 
-                            if (etfQuotes.Count < etfUniverse!.Count * minEtfCoverage)
+                            if (etfQuotes.Count < etfUniverse.Count * minEtfCoverage)
                             {
                                 etfDegraded = true;
                                 Console.WriteLine(
@@ -898,18 +907,18 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
                         if (tdrSnapshot.TradeDate == snapshot.TradeDate)
                         {
+                            var tdrQuotes = carryForward.Complete(
+                                "tdr",
+                                tdrSnapshot.TradeDate,
+                                capturedAt,
+                                tdrSnapshot.Quotes,
+                                tdrSnapshot.MissingTickers,
+                                required: false);
+                            ReportCarry(localTime, "TDR", carryForward.LastReport);
+
                             snapshot = snapshot with
                             {
-                                Quotes =
-                                [
-                                    .. snapshot.Quotes,
-                                    .. carryForward.Complete(
-                                        tdrSnapshot.TradeDate,
-                                        capturedAt,
-                                        tdrSnapshot.Quotes,
-                                        tdrSnapshot.MissingTickers,
-                                        required: false)
-                                ]
+                                Quotes = [.. snapshot.Quotes, .. tdrQuotes]
                             };
                         }
                     }

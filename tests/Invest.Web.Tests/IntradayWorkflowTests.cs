@@ -261,22 +261,6 @@ public sealed class IntradayWorkflowTests
     }
 
     /// <summary>
-    /// ETF 依長度切批後要多三次請求，接在個股後面會讓整輪多十幾秒、擠壓兩分鐘輪距，
-    /// 所以兩路同時發出；個股那一路失敗時沒人等 ETF，不能留下未觀察的例外。
-    /// </summary>
-    [Fact]
-    public void ETF與個股同時發出請求而且個股失敗時不留下未觀察的例外()
-    {
-        var intraday = ReadIntradayProgramSection();
-
-        var etfTask = intraday.IndexOf("var etfTask", StringComparison.Ordinal);
-        var stocks = intraday.IndexOf("await quoteClient.GetQuotesAsync(universe", StringComparison.Ordinal);
-
-        Assert.True(etfTask >= 0 && stocks >= 0 && etfTask < stocks, "ETF 的請求必須在等個股結果之前發出。");
-        Assert.Contains("ObserveAsync(etfTask)", intraday, StringComparison.Ordinal);
-    }
-
-    /// <summary>
     /// 2026-09-15 起 ETF 盤中只收到 58/355 檔卻沒有人發現——這種半殘狀態畫面照樣顯示得出來。
     /// 超過兩成輪次缺漏就讓整場紅掉，鈴鐺才會亮。
     /// </summary>
@@ -290,18 +274,38 @@ public sealed class IntradayWorkflowTests
     }
 
     /// <summary>
-    /// 2026-10-05 有 27 次整輪的第一個請求卡滿 15 秒逾時、重送就好，像是重用了被默默丟掉的舊連線。
-    /// 兩輪之間連線約閒置 100 秒，所以閒置超過 20 秒就不再重用。
+    /// 2026-10-06 曾試過「MIS 連線閒置 20 秒就丟掉」（想對付每輪第一個請求卡 15 秒逾時），
+    /// 結果每輪第一批請求有八成逾時（原本的連線池約兩到三成），整輪中位數從 88 秒拉長到 123 秒，
+    /// 四成多的輪次超過兩分鐘輪距，已還原。重用中的連線比每輪重新建立可靠，不要再改回去。
     /// </summary>
     [Fact]
-    public void MIS連線閒置超過二十秒不再重用()
+    public void MIS連線池維持預設不要每輪重新建立連線()
     {
         var program = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "src", "Invest.Web", "Program.cs"));
         var registration = Slice(program, "AddHttpClient<MisIntradayClient>", "AddHttpClient<EmergingIntradayClient>");
 
-        Assert.Contains("SocketsHttpHandler", registration, StringComparison.Ordinal);
-        Assert.Contains(
-            "PooledConnectionIdleTimeout = TimeSpan.FromSeconds(20)", registration, StringComparison.Ordinal);
+        Assert.DoesNotContain("PooledConnectionIdleTimeout", registration, StringComparison.Ordinal);
+        Assert.DoesNotContain("SocketsHttpHandler", registration, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 2026-10-06 公開清單暫時失敗、改用資料庫備援的 2,373 檔，其中 392 檔是存成 TPEX 的興櫃，
+    /// MIS 沒有興櫃、查了只回空殼：白占三批請求，還把 80% 的健康門檻墊高到 1,899 檔，
+    /// MIS 只答得出 1,976 檔，有五輪因此被判定殘缺而丟掉。正式收集與探測都要剔除已知的興櫃。
+    /// </summary>
+    [Fact]
+    public void 備援個股清單要剔除已知的興櫃代號()
+    {
+        var program = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "src", "Invest.Web", "Program.cs"));
+        var intraday = ReadIntradayProgramSection();
+        var probe = Slice(program, "static async Task RunIntradayProbeAsync", "static void ValidateIntradaySnapshot");
+
+        foreach (var section in new[] { intraday, probe })
+        {
+            Assert.Contains("Market.Emerging", section, StringComparison.Ordinal);
+            Assert.Contains("GetTickersAsync(knownEmerging", section, StringComparison.Ordinal);
+            Assert.DoesNotContain("GetTickersAsync(cts.Token)", section, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
