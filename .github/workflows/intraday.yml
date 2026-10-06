@@ -228,9 +228,18 @@ jobs:
               done
 
               echo "台北 $(date '+%F %T')：過了 18:00 但今天還沒有成功的每日快照，叫它起來。"
+
+              # 一定要明確帶 publish-only=false。daily-snapshot.yml 從 2026-09-14 起把手動觸發的
+              # publish-only 預設改成 true（只重發網站、不回補行情），而 API 的 workflow_dispatch
+              # 沒帶 inputs 時就是套預設值——鬧鐘叫起來的因此只是一次「純發布」，
+              # 回補行情那一步被跳過。2026-10-05 就是這樣：GitHub 的 cron 晚了九個小時才送到、
+              # 被判定「晚到隔日」而略過，鬧鐘 18:00 叫起來的那次又只發布不回補，
+              # 整天的盤後資料（10/05）沒有人收，網站停在 10/02。
               if gh api --method POST \
                   "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/dispatches" \
-                  -f ref=main; then
+                  -f ref=main \
+                  -f "inputs[publish-only]=false" \
+                  -f "inputs[trading-days]=300"; then
                   snapshot_kicked=1
               else
                   echo "::warning::叫每日快照失敗，下一輪再試。"

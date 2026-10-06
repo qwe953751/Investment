@@ -169,6 +169,29 @@ public sealed class IntradayWorkflowTests
     }
 
     /// <summary>
+    /// 2026-10-05：鬧鐘叫每日快照時沒帶 inputs，套用 publish-only 的預設值 true，
+    /// 叫起來的只是一次純發布，「回補行情」被跳過；同一天 GitHub 的 cron 晚了九小時才送到、
+    /// 被判定晚到隔日而略過，整天的盤後資料因此沒人收。鬧鐘必須明確要求完整流程。
+    /// </summary>
+    [Fact]
+    public void 鬧鐘叫每日快照必須明確要求完整流程而不是套預設的純發布()
+    {
+        var workflow = ReadIntradayWorkflow();
+        var alarm = Slice(workflow, "maybe_kick_snapshot() {", "if in_session; then");
+        var dispatch = Slice(alarm, "daily-snapshot.yml/dispatches", "then");
+
+        Assert.Contains("-f \"inputs[publish-only]=false\"", dispatch, StringComparison.Ordinal);
+        Assert.Contains("-f \"inputs[trading-days]=300\"", dispatch, StringComparison.Ordinal);
+
+        // 預設值若又被改回 false，這裡仍然明確帶 false；反過來，只要預設是 true，
+        // 沒帶 inputs 的呼叫就會變成純發布。兩邊要一起看。
+        var daily = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+        var inputs = Slice(daily, "publish-only:", "etf-backfill-days:");
+        Assert.Contains("default: true", inputs, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 2026-08-31：當天 GitHub 的 cron 一發都沒送到，全靠這個鬧鐘補位，結果它在
     /// 18:00:30 回報「今天已經有成功的每日快照，不重複叫」，整天的盤後資料沒人收。
     /// 原因是白天有人用 publish-only 重發過網站——publish-only 會跳過「回補行情」，

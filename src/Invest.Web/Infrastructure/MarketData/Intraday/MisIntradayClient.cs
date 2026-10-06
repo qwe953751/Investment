@@ -20,6 +20,21 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
     private const int BatchDelayMilliseconds = 300;
 
     /// <summary>
+    /// 單次請求 <c>ex_ch</c> 參數的長度上限。MIS 對查詢字串有硬上限：
+    /// 實測 1998 字元可以、2003 字元起一律回 rtmessage「參數不足」（msgArray 整個消失）。
+    ///
+    /// 一批能放幾檔取決於代號長度：四碼個股 150 檔約 1800 字元沒事，
+    /// 但 ETF 多是五、六碼，150 檔約 2100 字元，整批被拒。
+    /// 2026-09-15 ETF 盤中上線以來，355 檔 ETF 裡只有最後一批的 58 檔上櫃債券 ETF 讀得到，
+    /// 0050、0056、00878 這些上市 ETF 的盤中報價從來沒有收進來過，而警告只有一行，沒人發現。
+    /// 所以改成依字串長度切批（上限抓 1800 留約 10% 餘裕），檔數上限 <see cref="BatchSize"/> 仍然保留。
+    /// </summary>
+    internal const int MaxChannelLength = 1800;
+
+    private const string IndexChannels = "tse_t00.tw|otc_o00.tw";
+    private const string RejectedMessage = "參數不足";
+
+    /// <summary>
     /// 單次請求的上限。共用的 HttpClient 設 60 秒是為了盤後那些大報表，
     /// 對這裡太長了：單批一次卡住就會讓整輪無法完成。實測一批 150 檔約 0.3～2 秒，
     /// 15 秒已經是八倍餘裕，超過就當它不會回來了，重試比等它划算。
@@ -87,7 +102,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
         var batchNumber = 0;
 
-        foreach (var batch in universe.Chunk(BatchSize))
+        foreach (var batch in BuildBatches(universe, includeMarketIndices))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -205,6 +220,44 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
         StockKind expectedKind,
         CancellationToken cancellationToken)
     {
+        try
+        {
+            return await ReadBatchWithRetryAsync(batch, includeMarketIndices, expectedKind, cancellationToken);
+        }
+        catch (BatchRejectedException) when (batch.Length > 1)
+        {
+            // MIS 回「參數不足」代表這一批的查詢字串超過它的上限。照長度切批之後本來不該發生，
+            // 但上限是實測出來的、不是文件承諾的；萬一它又變小，這裡拆半重送，
+            // 而不是像以前那樣整批默默略過——那正是 ETF 盤中只剩 58 檔的原因。
+            logger.LogWarning(
+                "盤中 API 拒絕這批 {Count} 檔（{Message}，多半是查詢字串過長），拆成兩半重送。",
+                batch.Length,
+                RejectedMessage);
+
+            var half = batch.Length / 2;
+            var first = await ReadBatchAsync(batch[..half], includeMarketIndices, expectedKind, cancellationToken);
+            var second = await ReadBatchAsync(batch[half..], false, expectedKind, cancellationToken);
+
+            var tradeDate = first.TradeDate is { } a && second.TradeDate is { } b
+                ? (a > b ? a : b)
+                : first.TradeDate ?? second.TradeDate;
+
+            return (
+                [.. first.Quotes, .. second.Quotes],
+                tradeDate,
+                [.. first.MarketIndices, .. second.MarketIndices]);
+        }
+    }
+
+    private async Task<(
+        IReadOnlyList<IntradayQuote> Quotes,
+        DateOnly? TradeDate,
+        IReadOnlyList<MarketIndexQuote> MarketIndices)> ReadBatchWithRetryAsync(
+        (Market Market, string Ticker)[] batch,
+        bool includeMarketIndices,
+        StockKind expectedKind,
+        CancellationToken cancellationToken)
+    {
         for (var attempt = 1; ; attempt++)
         {
             // 每一次嘗試自己有上限，卡住的那一次不會把整輪的預算吃光。
@@ -252,7 +305,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
         if (includeMarketIndices)
         {
-            channels.Append("tse_t00.tw|otc_o00.tw");
+            channels.Append(IndexChannels);
         }
 
         foreach (var (market, ticker) in batch)
@@ -262,7 +315,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
                 channels.Append('|');
             }
 
-            channels.Append(market == Market.Twse ? "tse_" : "otc_").Append(ticker).Append(".tw");
+            channels.Append(ChannelOf(market, ticker));
         }
 
         var url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
@@ -285,6 +338,13 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             var message = document.RootElement.TryGetProperty("rtmessage", out var rtmessage)
                 ? rtmessage.GetString()
                 : "沒有 msgArray";
+
+            // 「參數不足」是查詢字串過長被拒，不是這批沒有資料：交給呼叫端拆批重送，不能略過。
+            // 單一代號還被拒就沒得拆了，才當成這檔查不到。
+            if (batch.Length > 1 && string.Equals(message, RejectedMessage, StringComparison.Ordinal))
+            {
+                throw new BatchRejectedException(message);
+            }
 
             logger.LogWarning("盤中 API 回應異常（{Message}），這批 {Count} 檔略過。", message, batch.Length);
             return ([], null, []);
@@ -313,6 +373,50 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
 
         return (quotes, tradeDate, marketIndices);
     }
+
+    private static string ChannelOf(Market market, string ticker)
+        => (market == Market.Twse ? "tse_" : "otc_") + ticker + ".tw";
+
+    /// <summary>
+    /// 依 <c>ex_ch</c> 字串長度把清單切成請求批次，每批長度不超過 <see cref="MaxChannelLength"/>、
+    /// 檔數不超過 <see cref="BatchSize"/>。第一批要先放進指數頻道的長度。
+    /// 保持原本的順序，每一檔剛好出現在一個批次裡。
+    /// </summary>
+    internal static List<(Market Market, string Ticker)[]> BuildBatches(
+        IReadOnlyList<(Market Market, string Ticker)> universe,
+        bool includeMarketIndices)
+    {
+        var batches = new List<(Market Market, string Ticker)[]>();
+        var current = new List<(Market Market, string Ticker)>();
+        var length = includeMarketIndices ? IndexChannels.Length : 0;
+
+        foreach (var (market, ticker) in universe)
+        {
+            var channelLength = ChannelOf(market, ticker).Length;
+            var added = channelLength + (length > 0 ? 1 : 0);
+
+            if (current.Count > 0 && (current.Count >= BatchSize || length + added > MaxChannelLength))
+            {
+                batches.Add([.. current]);
+                current.Clear();
+                length = 0;
+                added = channelLength;
+            }
+
+            current.Add((market, ticker));
+            length += added;
+        }
+
+        if (current.Count > 0)
+        {
+            batches.Add([.. current]);
+        }
+
+        return batches;
+    }
+
+    /// <summary>MIS 回 rtmessage「參數不足」：查詢字串超過上限，這一批要拆小再送。</summary>
+    private sealed class BatchRejectedException(string? message) : Exception(message);
 
     /// <summary>
     /// MIS 的 t00／o00 是兩個大盤指數頻道，不是個股，不能交給個股解析器。
