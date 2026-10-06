@@ -461,9 +461,11 @@ test('Edge Function 具備 import／草稿／export、Google hash 衝突與 18:3
     assert.match(syncFunction, /status = 409/);
     assert.doesNotMatch(syncFunction, /action === 'refresh-revenue-high'/);
     assert.doesNotMatch(syncFunction, /revenueHighUpdateRequest/);
+    // D 欄（營收創高）只有匯出明確帶 revenueValues 時才寫，且一律只寫 userEnteredValue。
     const writer = edgeFunctionSource('writeGoogle');
-    assert.doesNotMatch(writer, /columnIndex: 3/);
-    assert.doesNotMatch(writer, /startColumnIndex: 3/);
+    assert.match(writer, /options\.revenueValues/);
+    assert.doesNotMatch(writer, /columnIndex: 3,\s*\}/);
+    assert.match(edgeFunctionSource('revenueHighRequests'), /fields: 'userEnteredValue'/);
     assert.match(syncFunction, /copyPaste/);
     assert.match(syncFunction, /deleteDimension/);
     assert.match(syncFunction, /repair-stale-tail/);
@@ -506,6 +508,8 @@ function googleWriterContext() {
         edgeFunctionSource('columnLabel'),
         edgeFunctionSource('assertRowsSafeToDelete'),
         edgeFunctionSource('compactionMarkers'),
+        edgeFunctionSource('revenueHighCellValue'),
+        edgeFunctionSource('revenueHighRequests'),
         edgeFunctionSource('writeGoogle')
     ].join('\n\n'), context);
     return context;
@@ -799,7 +803,7 @@ test('匯入遇到草稿：排程永不覆蓋，管理者確認後以 Google 為
     assert.equal(clean.calls.patched, null);
 });
 
-test('新增列的 A／D 欄只驗證套上第 4 列公式，既有保留列仍不得改動', () => {
+test('新增列的 A 欄只驗證套上第 4 列公式，既有保留列仍不得改動；D 欄改由網站規則驗證', () => {
     const context = { FIRST_DATA_ROW: 4, LAST_CONTROLLED_COLUMN: 52 };
     vm.createContext(context);
     vm.runInContext([
@@ -809,22 +813,24 @@ test('新增列的 A／D 欄只驗證套上第 4 列公式，既有保留列仍�
     ].join('\n'), context);
 
     const sheet = { frozenRowCount: 3 };
-    const make = (rows, dRow5) => {
+    const make = (rows, aRow5, dRow5 = '') => {
         const grid = Array.from({ length: rows }, () => Array(52).fill(''));
         grid[2][1] = 'Buy';
-        grid[3][0] = '=A'; grid[3][3] = '=IF(B4>0,TRUE,FALSE)';
-        if (rows >= 5) { grid[4][0] = '=A'; grid[4][3] = dRow5; }
+        grid[3][0] = '=A'; grid[3][3] = true;
+        if (rows >= 5) { grid[4][0] = aRow5; grid[4][3] = dRow5; }
         return grid;
     };
     const before = make(5, '');
-    // 第 5 列原本 D 空白：從第 5 列起為新增列，貼上公式後不應被判成「值有變化」
-    context.assertProtectedSheetStructure(sheet, sheet, before, make(5, '=IF(B5>0,TRUE,FALSE)'), 5, 5);
+    // 第 5 列原本 A 空白：從第 5 列起為新增列，貼上公式後不應被判成「值有變化」
+    context.assertProtectedSheetStructure(sheet, sheet, before, make(5, '=A'), 5, 5);
     // 新增列沒有公式：擋下
     assert.throws(() => context.assertProtectedSheetStructure(sheet, sheet, before, make(5, ''), 5, 5),
-        /新增列第 5 列 D 欄沒有套上第 4 列公式/);
-    // 未標示新增列時（既有列），D 空白變有值仍要擋
+        /新增列第 5 列 A 欄沒有套上第 4 列公式/);
+    // 既有列（未標示新增）A 空白變有值仍要擋
     assert.throws(() => context.assertProtectedSheetStructure(sheet, sheet, before, make(5, 'x'), 5, 6),
-        /保留列第 5 列 D 欄值有變化/);
+        /保留列第 5 列 A 欄值有變化/);
+    // D 欄現在是網站寫入的值，結構驗證不再要求 D 維持公式或不變
+    context.assertProtectedSheetStructure(sheet, sheet, before, make(5, '', 'X'), 5, 6);
 });
 
 test('前端匯入遇到草稿先詢問並帶 overwriteDraft；後端 draft_pending 時才補問', async () => {
@@ -871,4 +877,201 @@ test('前端匯入遇到草稿先詢問並帶 overwriteDraft；後端 draft_pend
 test('匯出的新增列驗證起點由 writeGoogle 回報', () => {
     assert.match(edgeFunctionSource('writeGoogle'), /appendedFromRow: targetLastRow >= newRowsStart/);
     assert.match(edgeFunctionSource('exportAction'), /retainedLastRow, writeResult\.appendedFromRow\)/);
+});
+
+
+function revenueRuleContext() {
+    const context = {
+        revenueMap: new Map(),
+        revenueOf(ticker) { return this.revenueMap.get(ticker) ?? null; },
+        TAIPEI_DATE: new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit'
+        }),
+        Intl
+    };
+    context.revenueOf = ticker => context.revenueMap.get(ticker) ?? null;
+    vm.createContext(context);
+    vm.runInContext([
+        functionSource('assetExcelStockParts'),
+        functionSource('assetExcelRevenueHighMonths'),
+        functionSource('assetExcelRevenueHighValue'),
+        functionSource('eligibleMonthKey'),
+        edgeFunctionSource('eligibleRevenueMonthKey'),
+        edgeFunctionSource('revenueHighValue')
+    ].join('\n\n'), context);
+    return context;
+}
+
+test('後端寫入 D 欄的營收創高規則與網站逐案一致（V／X／-，含 high_months 為 null）', () => {
+    const context = revenueRuleContext();
+    const cases = [
+        ['missing', undefined],
+        ['null', null],
+        ['zero', 0],
+        ['twelve', 12],
+        ['thirteen', 13],
+        ['fourteen', 14]
+    ];
+    for (const [name, highMonths] of cases) {
+        context.revenueMap.clear();
+        if (name !== 'missing') context.revenueMap.set('1303', { highMonths });
+        const website = context.assetExcelRevenueHighValue({ stock: '1303 南亞' });
+        const backend = context.revenueHighValue(name === 'missing' ? undefined : { high_months: highMonths });
+        assert.equal(backend, website, `case ${name}`);
+    }
+    // 三態對應：創高＝true（勾選）、未創高＝'X'、尚未公布＝'-'
+    context.revenueMap.set('1303', { highMonths: 13 });
+    assert.equal(context.revenueHighValue({ high_months: 13 }), true);
+    assert.equal(context.revenueHighValue({ high_months: 5 }), 'X');
+    assert.equal(context.revenueHighValue(undefined), '-');
+});
+
+test('後端與網站同樣以台北時間的「上個月」判斷，含跨年與 UTC 月底', () => {
+    const context = revenueRuleContext();
+    for (const iso of ['2026-10-06T13:00:00Z', '2026-01-15T00:00:00Z', '2026-09-30T17:00:00Z',
+        '2026-09-30T15:59:59Z', '2026-12-31T16:00:00Z']) {
+        const now = new Date(iso);
+        assert.equal(context.eligibleRevenueMonthKey(now), context.eligibleMonthKey(now), iso);
+    }
+    assert.equal(context.eligibleRevenueMonthKey(new Date('2026-01-15T00:00:00Z')), '2025-12');
+    assert.equal(context.eligibleRevenueMonthKey(new Date('2026-09-30T17:00:00Z')), '2026-09');
+});
+
+test('匯出草稿時同批把營收創高寫進 D 欄；連續列合併、只寫值', async () => {
+    const context = googleWriterContext();
+    const sheet = {
+        rowCount: 1000,
+        sheetProperties: { gridProperties: { columnCount: 52 } },
+        developerMetadata: [],
+        columns: { fields: { buy: 1, stock: 2 }, groups: [{ index: 4 }] },
+        groups: [{ id: 'group-1', sheet_column_index: 5 }],
+        rawRows: [[], [], [], ['', 1, '2330 台積電', true, true], ['', 1, '2454 聯發科', true, false]]
+    };
+    await context.writeGoogle(sheet, [
+        { buy: 1, stock: '2330 台積電', group_flags: {} },
+        { buy: 1, stock: '2454 聯發科', group_flags: {} },
+        { buy: 2, stock: '3105 穩懋', group_flags: {} }
+    ], { markerSnapshotId: 's1', revenueValues: [true, 'X', '-'] });
+
+    const dWrites = context.requests.filter(request => request.updateCells?.range?.startColumnIndex === 3);
+    assert.equal(dWrites.length, 1);
+    const write = JSON.parse(JSON.stringify(dWrites[0].updateCells));
+    assert.deepEqual(write.range, {
+        sheetId: 58931507, startRowIndex: 3, endRowIndex: 6, startColumnIndex: 3, endColumnIndex: 4
+    });
+    assert.deepEqual(write.rows.map(row => row.values[0].userEnteredValue),
+        [{ boolValue: true }, { stringValue: 'X' }, { stringValue: '-' }]);
+    assert.equal(write.fields, 'userEnteredValue');
+    // 只動 D 的「值」：D 寫入一律在 copyPaste 版型之後，才會覆蓋貼上的公式
+    const pasteIndex = context.requests.findIndex(request => request.copyPaste);
+    assert.ok(pasteIndex < context.requests.indexOf(dWrites[0]));
+});
+
+test('網站清空所有標的時，D 欄的第 4 列模板值一併清除', async () => {
+    const context = googleWriterContext();
+    const sheet = {
+        rowCount: 1000,
+        sheetProperties: { gridProperties: { columnCount: 52 } },
+        developerMetadata: [],
+        columns: { fields: { buy: 1, stock: 2 }, groups: [{ index: 4 }] },
+        groups: [{ id: 'group-1', sheet_column_index: 5 }],
+        rawRows: [[], [], [], ['', 1, '2330 台積電', true, true]]
+    };
+    await context.writeGoogle(sheet, [], { markerSnapshotId: 'empty', revenueValues: [] });
+    const clearD = context.requests.find(request => request.updateCells?.range?.startColumnIndex === 3);
+    assert.equal(clearD.updateCells.range.startRowIndex, 3);
+    assert.equal(clearD.updateCells.range.endRowIndex, 4);
+});
+
+function revenueRefreshContext({ hashAfter = 'same', rawD = [] } = {}) {
+    const calls = { batch: [] };
+    const sheet = {
+        rows: [{ stock_code: '1101' }, { stock_code: '1102' }, { stock_code: '1103' }],
+        dataRowIndexes: [3, 4, 6],
+        columns: { fields: { revenue_high: 3 } }
+    };
+    const verified = { ...sheet, rows: [...sheet.rows], rawRows: [] };
+    rawD.forEach((value, index) => { verified.rawRows[sheet.dataRowIndexes[index]] = ['', '', '', value]; });
+    let reads = 0;
+    const context = {
+        WRITE_ENABLED: true, SHEET_ID: 58931507, SPREADSHEET_ID: 'sheet', encodeURIComponent,
+        readSheet: async () => (reads++ === 0 ? sheet : verified),
+        revenueHighValues: async () => ({ month: '2026-09', values: [true, 'X', '-'] }),
+        contentHash: async rows => (rows === sheet ? 'same' : hashAfter),
+        googleRequest: async (_path, options) => { calls.batch.push(JSON.parse(options.body).requests); return {}; },
+        cell: (rows, r, c) => rows[r]?.[c] ?? ''
+    };
+    context.contentHash = async rows => (rows === sheet.rows ? 'same' : hashAfter);
+    vm.createContext(context);
+    vm.runInContext([
+        edgeFunctionSource('revenueHighCellValue'),
+        edgeFunctionSource('revenueHighRequests'),
+        edgeFunctionSource('verifyRevenueHigh'),
+        edgeFunctionSource('revenueHighSummary'),
+        edgeFunctionSource('refreshRevenueHighAction')
+    ].join('\n\n'), context);
+    context.calls = calls;
+    return context;
+}
+
+test('沒有草稿時匯出只更新 D 欄：不連續列拆成多段、其餘欄位不寫，並回報 V／X／- 統計', async () => {
+    const context = revenueRefreshContext({ rawD: [true, 'X', '-'] });
+    const result = await context.refreshRevenueHighAction();
+    const requests = JSON.parse(JSON.stringify(context.calls.batch[0]));
+    assert.equal(requests.length, 2); // 第 4～5 列一段、第 7 列一段（中間第 6 列不是標的，不動）
+    assert.ok(requests.every(request => request.updateCells.range.startColumnIndex === 3
+        && request.updateCells.range.endColumnIndex === 4
+        && request.updateCells.fields === 'userEnteredValue'));
+    assert.deepEqual(requests.map(request => [request.updateCells.range.startRowIndex, request.updateCells.range.endRowIndex]),
+        [[3, 5], [6, 7]]);
+    assert.deepEqual(JSON.parse(JSON.stringify(result.revenueHigh)),
+        { month: '2026-09', high: 1, notHigh: 1, notPublished: 1, mismatches: 0 });
+    assert.equal(result.revenueOnly, true);
+});
+
+test('營收創高回讀不一致只回報不丟錯；寫入期間標的被改動才停止', async () => {
+    const mismatch = revenueRefreshContext({ rawD: [true, true, '-'] });
+    assert.equal((await mismatch.refreshRevenueHighAction()).revenueHigh.mismatches, 1);
+
+    const changed = revenueRefreshContext({ hashAfter: 'different', rawD: [true, 'X', '-'] });
+    await assert.rejects(changed.refreshRevenueHighAction(), /標的被修改/);
+});
+
+test('匯出沒有草稿時改走營收創高更新，有草稿仍走完整匯出', () => {
+    const exporter = edgeFunctionSource('exportAction');
+    assert.match(exporter, /pending\.length === 0\) return await refreshRevenueHighAction\(\)/);
+    assert.match(exporter, /revenueValues: revenue\.values/);
+    assert.match(exporter, /revenueHigh: revenueHighSummary\(/);
+});
+
+test('前端匯出按鈕不再要求草稿，沒有草稿時顯示 V／X／- 統計', async () => {
+    assert.match(siteScript, /exportButton\.disabled = assetExcelSyncing \|\| assetExcelEditing;/);
+    assert.doesNotMatch(siteScript, /目前沒有尚未匯出的網站草稿/);
+
+    const run = async response => {
+        const sent = [];
+        const context = {
+            assetExcelSyncing: false, assetExcelEditing: false, assetExcelNotice: '',
+            assetExcelSyncState: { status: 'clean' }, assetExcelAccountId: 'a',
+            el: () => null, renderAssetExcelView() {}, loadAssetExcelData: async () => {},
+            assetExcelSyncAction: async action => { sent.push(action); return response; }
+        };
+        vm.createContext(context);
+        vm.runInContext([
+            functionSource('assetExcelRevenueHighNotice'),
+            functionSource('assetExcelExportLatest')
+        ].join('\n'), context);
+        await context.assetExcelExportLatest();
+        return { sent, notice: context.assetExcelNotice };
+    };
+
+    const clean = await run({ revenueOnly: true, revenueHigh: { month: '2026-09', high: 7, notHigh: 3, notPublished: 33, mismatches: 0 } });
+    assert.deepEqual(clean.sent, ['export']);
+    assert.match(clean.notice, /V 7／X 3／- 33/);
+
+    const warn = await run({ revenueOnly: true, revenueHigh: { month: '2026-09', high: 1, notHigh: 0, notPublished: 0, mismatches: 2 } });
+    assert.match(warn.notice, /2 列回讀與網站不一致/);
+
+    const draft = await run({ revenueHigh: { month: '2026-09', high: 1, notHigh: 0, notPublished: 0, mismatches: 0 } });
+    assert.match(draft.notice, /^匯出成功/);
 });

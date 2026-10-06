@@ -10747,21 +10747,29 @@ async function assetExcelImportLatest() {
     }
 }
 
+function assetExcelRevenueHighNotice(summary) {
+    if (!summary) return '';
+    const mismatch = summary.mismatches > 0
+        ? `；有 ${summary.mismatches} 列回讀與網站不一致，請再匯出一次`
+        : '';
+    return `營收創高（${summary.month}）已依網站寫入 D 欄：V ${summary.high}／X ${summary.notHigh}／- ${summary.notPublished}${mismatch}`;
+}
+
 async function assetExcelExportLatest() {
     if (assetExcelSyncing || assetExcelEditing) return;
-    if (assetExcelSyncState?.status !== 'dirty') {
-        assetExcelNotice = '目前沒有尚未匯出的網站草稿。';
-        renderAssetExcelView(el('asset-excel-page'));
-        return;
-    }
+    // 有草稿：草稿與營收創高一起寫入；沒有草稿：只把網站的營收創高（V／X／-）寫進 Google D 欄。
+    const hasDraft = assetExcelSyncState?.status === 'dirty';
 
     assetExcelSyncing = true;
-    assetExcelNotice = '正在匯出並驗證 Google Sheet…';
+    assetExcelNotice = hasDraft ? '正在匯出並驗證 Google Sheet…' : '正在把網站營收創高寫入 Google Sheet…';
     renderAssetExcelView(el('asset-excel-page'));
     try {
-        await assetExcelSyncAction('export');
+        const result = await assetExcelSyncAction('export');
         await loadAssetExcelData(assetExcelAccountId);
-        assetExcelNotice = '匯出成功；Google Sheet 資料列與網站營收創高已同步。';
+        const revenueText = assetExcelRevenueHighNotice(result.revenueHigh);
+        assetExcelNotice = result.revenueOnly
+            ? `${revenueText || '營收創高已寫入 Google Sheet D 欄'}。`
+            : `匯出成功；Google Sheet 資料列已同步。${revenueText ? `${revenueText}。` : ''}`;
     } catch (error) {
         assetExcelNotice = error.status === 409
             ? 'Google Sheet 已有較新修改，匯出被停止；請先匯入最新資料。'
@@ -10791,7 +10799,7 @@ function makeAssetExcelView() {
     const exportButton = assetExcelButton('匯出到 Google Sheet', 'asset-excel-primary-button', () => {
         void assetExcelExportLatest();
     });
-    exportButton.disabled = assetExcelSyncing || assetExcelEditing || assetExcelSyncState?.status !== 'dirty';
+    exportButton.disabled = assetExcelSyncing || assetExcelEditing;
     importButton.disabled = assetExcelSyncing || assetExcelEditing;
     syncActions.append(importButton, exportButton);
 

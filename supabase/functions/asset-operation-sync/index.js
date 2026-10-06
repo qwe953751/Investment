@@ -325,6 +325,102 @@ function cell(rows, rowIndex, columnIndex) {
     return rows[rowIndex]?.[columnIndex] ?? '';
 }
 
+// 與 site.js 的 eligibleMonthKey 相同：一律是台北的「上個月」，不退回上上個月。
+function eligibleRevenueMonthKey(now = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Taipei',
+        year: 'numeric',
+        month: '2-digit'
+    }).formatToParts(now);
+    const year = Number(parts.find(part => part.type === 'year')?.value);
+    const month = Number(parts.find(part => part.type === 'month')?.value);
+    return month === 1
+        ? `${year - 1}-12`
+        : `${year}-${String(month - 1).padStart(2, '0')}`;
+}
+
+// 與 site.js 的 assetExcelRevenueHighValue 逐字對齊：沒有該月資料 → '-'；
+// Number(null) 為 0，所以已公布但 high_months 為 null 與網站一樣是 'X'。
+function revenueHighValue(revenueRow) {
+    const months = Number(revenueRow?.high_months);
+    return !Number.isFinite(months) ? '-' : months >= 13 ? true : 'X';
+}
+
+async function revenueHighValues(stockCodes, month = eligibleRevenueMonthKey()) {
+    const tickers = [...new Set(stockCodes.map(code => String(code ?? '').trim()).filter(Boolean))];
+    const byTicker = new Map();
+    for (let index = 0; index < tickers.length; index += 100) {
+        const chunk = tickers.slice(index, index + 100);
+        const rows = await supabaseRequest(
+            `/rest/v1/revenue_latest?select=ticker,month,high_months&month=eq.${month}-01&ticker=in.(${chunk.map(encodeURIComponent).join(',')})`);
+        for (const row of rows) {
+            if (String(row.month ?? '').slice(0, 7) === month) byTicker.set(String(row.ticker), row);
+        }
+    }
+    return {
+        month,
+        values: stockCodes.map(code => revenueHighValue(byTicker.get(String(code ?? '').trim())))
+    };
+}
+
+function revenueHighCellValue(value) {
+    return value === true ? { boolValue: true } : { stringValue: value };
+}
+
+// 連續列合併成一個 updateCells；只寫 D 欄的 userEnteredValue，不碰格式與驗證。
+function revenueHighRequests(columnIndex, entries) {
+    const requests = [];
+    let run = null;
+    for (const entry of [...entries].sort((left, right) => left.rowIndex - right.rowIndex)) {
+        if (run && entry.rowIndex === run.endRowIndex) {
+            run.endRowIndex += 1;
+            run.rows.push({ values: [{ userEnteredValue: revenueHighCellValue(entry.value) }] });
+        } else {
+            run = {
+                startRowIndex: entry.rowIndex,
+                endRowIndex: entry.rowIndex + 1,
+                rows: [{ values: [{ userEnteredValue: revenueHighCellValue(entry.value) }] }]
+            };
+            requests.push(run);
+        }
+    }
+    return requests.map(item => ({ updateCells: {
+        range: {
+            sheetId: SHEET_ID,
+            startRowIndex: item.startRowIndex,
+            endRowIndex: item.endRowIndex,
+            startColumnIndex: columnIndex,
+            endColumnIndex: columnIndex + 1
+        },
+        rows: item.rows,
+        fields: 'userEnteredValue'
+    }}));
+}
+
+// 回讀 D 欄與預期逐列比對。D 不在資料 hash 內，不一致只回報、不讓匯出失敗或卡住草稿。
+function verifyRevenueHigh(sheet, expectedValues) {
+    const dataRowIndexes = sheet.dataRowIndexes ?? [];
+    let mismatches = 0;
+    expectedValues.forEach((expected, index) => {
+        const actual = cell(sheet.rawRows, dataRowIndexes[index], sheet.columns.fields.revenue_high);
+        const same = expected === true
+            ? actual === true || String(actual).toUpperCase() === 'TRUE'
+            : String(actual).trim().toUpperCase() === expected;
+        if (!same) mismatches += 1;
+    });
+    return mismatches;
+}
+
+function revenueHighSummary(month, values, mismatches) {
+    return {
+        month,
+        high: values.filter(value => value === true).length,
+        notHigh: values.filter(value => value === 'X').length,
+        notPublished: values.filter(value => value === '-').length,
+        mismatches
+    };
+}
+
 function rowHasControlledData(rows, rowIndex, columns) {
     const identityValues = [
         cell(rows, rowIndex, columns.fields.buy),
@@ -378,6 +474,7 @@ async function readSheet(allowEmpty = false) {
     }));
 
     const imported = [];
+    const dataRowIndexes = [];
     const seen = new Set();
     for (let rowIndex = 3; rowIndex < rows.length; rowIndex += 1) {
         if (!rowHasControlledData(rows, rowIndex, columns)) continue;
@@ -400,6 +497,7 @@ async function readSheet(allowEmpty = false) {
             group_flags: flags,
             sort_order: imported.length
         });
+        dataRowIndexes.push(rowIndex);
     }
     if (imported.length === 0 && !allowEmpty) throw new Error('Google Sheet 沒有可匯入的 Stock。');
 
@@ -408,6 +506,7 @@ async function readSheet(allowEmpty = false) {
     const gridProperties = sheetProperties.gridProperties ?? {};
     return {
         rows: imported,
+        dataRowIndexes,
         groups: groupPayload,
         columns,
         rawRows: rows,
@@ -575,7 +674,7 @@ function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormu
     }
 
     for (let rowIndex = FIRST_DATA_ROW - 1; rowIndex < retainedLastRow; rowIndex += 1) {
-        for (const columnIndex of [0, 3]) { // A 計算欄與 D 既有公式欄
+        for (const columnIndex of [0]) { // A 計算欄；D 營收創高由 verifyRevenueHigh 以網站規則驗證
             if (rowIndex + 1 >= appendedFromRow) {
                 const template = cell(beforeFormulas, FIRST_DATA_ROW - 1, columnIndex);
                 const current = cell(afterFormulas, rowIndex, columnIndex);
@@ -669,6 +768,20 @@ async function writeGoogle(sheet, rows, options) {
             rows: [{ values: Array.from({ length: endColumn - 4 }, () => ({ userEnteredValue: {} })) }],
             fields: 'userEnteredValue'
         }});
+    }
+
+    if (options.revenueValues) {
+        if (rows.length > 0) {
+            requests.push(...revenueHighRequests(3, options.revenueValues.map((value, index) => ({
+                rowIndex: FIRST_DATA_ROW - 1 + index, value
+            }))));
+        } else if (existingLastRow >= FIRST_DATA_ROW) {
+            requests.push({ updateCells: {
+                range: { sheetId: SHEET_ID, startRowIndex: FIRST_DATA_ROW - 1, endRowIndex: FIRST_DATA_ROW, startColumnIndex: 3, endColumnIndex: 4 },
+                rows: [{ values: [{ userEnteredValue: {} }] }],
+                fields: 'userEnteredValue'
+            }});
+        }
     }
 
     const existingDataRowsToDelete = Math.max(0, existingLastRow - retainedLastRow);
@@ -815,7 +928,9 @@ async function exportAction(accountId) {
     const state = await syncState(accountId);
     const pending = await supabaseRequest(
         `/rest/v1/asset_operation_snapshots?select=id,payload,content_hash,base_google_hash,created_at&account_id=eq.${encodeURIComponent(accountId)}&status=eq.pending&order=created_at.desc&limit=1`);
-    if (pending.length !== 1) throw new Error('找不到尚未匯出的網站草稿。');
+    // 沒有草稿時，匯出只把網站的營收創高（V／X／-）寫進 D 欄；Buy／Stock／族群與 Google 的其餘內容完全不動。
+    if (pending.length === 0) return await refreshRevenueHighAction();
+    if (pending.length !== 1) throw new Error('找不到唯一的網站草稿，請重新載入後再試。');
     const snapshot = pending[0];
     const sheet = await readSheet();
     const currentHash = await contentHash(sheet.rows);
@@ -827,8 +942,10 @@ async function exportAction(accountId) {
     const rows = snapshot.payload;
     if (!Array.isArray(rows)) throw new Error('草稿內容格式不合法。');
     const retainedLastRow = Math.max(FIRST_DATA_ROW, FIRST_DATA_ROW - 1 + rows.length);
+    // 先取營收再寫：取不到就在任何 Google 寫入之前失敗。
+    const revenue = await revenueHighValues(rows.map(row => row.stock_code));
     const formulasBefore = await sheetFormulaValues(retainedLastRow);
-    const writeResult = await writeGoogle(sheet, rows, { markerSnapshotId: snapshot.id });
+    const writeResult = await writeGoogle(sheet, rows, { markerSnapshotId: snapshot.id, revenueValues: revenue.values });
     const verified = await readSheet(true);
     const formulasAfter = await sheetFormulaValues(retainedLastRow);
     const verifiedHash = await contentHash(verified.rows);
@@ -847,9 +964,34 @@ async function exportAction(accountId) {
     const result = await callReplace(accountId, snapshot.id, Number(state.version ?? 0), rows, groups, verifiedHash, verifiedHash, 'active', 'google_export');
     return {
         ...result,
+        revenueHigh: revenueHighSummary(revenue.month, revenue.values, verifyRevenueHigh(verified, revenue.values)),
         deletedRows: writeResult.deletedRows,
         deletedRowRange: writeResult.firstDeletedRow === null
             ? null : { first: writeResult.firstDeletedRow, last: writeResult.lastDeletedRow }
+    };
+}
+
+async function refreshRevenueHighAction() {
+    if (!WRITE_ENABLED) throw new Error('Google Sheet 寫入功能尚未啟用。');
+    const sheet = await readSheet(true);
+    if (sheet.rows.length === 0) throw new Error('Google Sheet 沒有標的，無需更新營收創高。');
+    const revenue = await revenueHighValues(sheet.rows.map(row => row.stock_code));
+    const requests = revenueHighRequests(sheet.columns.fields.revenue_high, sheet.rows.map((_, index) => ({
+        rowIndex: sheet.dataRowIndexes[index], value: revenue.values[index]
+    })));
+    await googleRequest(`/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}:batchUpdate`, {
+        method: 'POST',
+        body: JSON.stringify({ requests, includeSpreadsheetInResponse: false })
+    });
+    const verified = await readSheet(true);
+    if (verified.rows.length !== sheet.rows.length
+        || await contentHash(verified.rows) !== await contentHash(sheet.rows)) {
+        throw new Error('營收創高寫入期間 Google Sheet 的標的被修改，請重新匯入後再試。');
+    }
+    return {
+        revenueOnly: true,
+        rowCount: verified.rows.length,
+        revenueHigh: revenueHighSummary(revenue.month, revenue.values, verifyRevenueHigh(verified, revenue.values))
     };
 }
 
