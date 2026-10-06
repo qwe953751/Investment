@@ -3,7 +3,7 @@ namespace Invest.Web.Tests;
 public sealed class DailySnapshotWorkflowTests
 {
     [Fact]
-    public void 每日快照有收盤後備援並會略過晚到的舊排程()
+    public void 每日快照有收盤後備援且跨日缺口仍會修復()
     {
         var workflow = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
@@ -14,12 +14,27 @@ public sealed class DailySnapshotWorkflowTests
         Assert.Contains("actions: read", workflow, StringComparison.Ordinal);
         Assert.Contains("preflight:", workflow, StringComparison.Ordinal);
         Assert.Contains("[ \"$wait\" -gt 10800 ]", workflow, StringComparison.Ordinal);
+        Assert.True(workflow.IndexOf("close-coverage check", StringComparison.Ordinal)
+            < workflow.IndexOf("[ \"$wait\" -gt 10800 ]", StringComparison.Ordinal));
+        Assert.Contains("repair_only=true", workflow, StringComparison.Ordinal);
         Assert.Contains("should_run=false", workflow, StringComparison.Ordinal);
         Assert.Contains("needs: preflight", workflow, StringComparison.Ordinal);
         Assert.Contains(
             "if: ${{ needs.preflight.outputs.should_run == 'true' }}",
             workflow,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 完整流程以盤中日期對帳而不是只有今日檔案結束回補()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        Assert.Contains("close-coverage repair", workflow, StringComparison.Ordinal);
+        Assert.Contains("close-coverage date \"$today\"", workflow, StringComparison.Ordinal);
+        Assert.Contains("close-coverage manifest publish/site/manifest.json", workflow, StringComparison.Ordinal);
+        Assert.Contains("台股盤後資料缺口", workflow, StringComparison.Ordinal);
     }
 
     [Fact]

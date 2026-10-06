@@ -58,11 +58,30 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.window.outputs.should_run }}
+      repair_only: ${{ steps.window.outputs.repair_only }}
+      has_gaps: ${{ steps.window.outputs.has_gaps }}
     env:
       TZ: Asia/Taipei
       GH_TOKEN: ${{ github.token }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
 
     steps:
+      - name: 取出原始碼
+        if: ${{ github.event_name == 'schedule' }}
+        uses: actions/checkout@v4
+
+      - name: 取出行情快取
+        if: ${{ github.event_name == 'schedule' }}
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+
+      - if: ${{ github.event_name == 'schedule' }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
       - id: window
         name: 判斷排程是否仍可執行
         shell: bash
@@ -77,6 +96,32 @@ jobs:
           now=$(date +%s)
           target=$(date -d '18:00' +%s)
           wait=$(( target - now ))
+
+          # 盤中已有紀錄的日期，18:00 後必須有完整盤後快取。
+          # 先查實際資料，再決定是否略過晚到排程或同日第二場排程。
+          set +e
+          dotnet run -c Release --project src/Invest.Web -- close-coverage check
+          coverage=$?
+          set -e
+          if [ "$coverage" -eq 2 ]; then
+              echo "has_gaps=true" >> "$GITHUB_OUTPUT"
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              if [ "$wait" -gt 0 ]; then
+                  echo "repair_only=true" >> "$GITHUB_OUTPUT"
+                  echo "盤後缺口仍在；先修復已到期日期，不等待今天 18:00。"
+              else
+                  echo "repair_only=false" >> "$GITHUB_OUTPUT"
+                  echo "盤後缺口仍在；執行完整快照。"
+              fi
+              exit 0
+          fi
+          if [ "$coverage" -ne 0 ]; then
+              echo "盤後對帳無法完成，不能略過這場排程。" >&2
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              if [ "$wait" -gt 0 ]; then echo "repair_only=true" >> "$GITHUB_OUTPUT"; fi
+              exit 0
+          fi
+          echo "has_gaps=false" >> "$GITHUB_OUTPUT"
 
           # 正常排程最多只需等三小時；若已晚到隔日，讓收盤後備援接手。
           if [ "$wait" -gt 10800 ]; then
@@ -124,6 +169,8 @@ jobs:
       TZ: Asia/Taipei
       TRADING_DAYS: ${{ inputs.trading-days || '300' }}
       ETF_BACKFILL_DAYS: ${{ inputs.etf-backfill-days || '0' }}
+      REPAIR_ONLY: ${{ needs.preflight.outputs.repair_only }}
+      HAS_GAPS: ${{ needs.preflight.outputs.has_gaps }}
 
     steps:
       - name: 取出原始碼
@@ -163,7 +210,7 @@ jobs:
       # 18:00 這個時間定義在 CollectionSchedule.DailyRefresh（前端也讀同一份），
       # YAML 讀不到 C#，改那邊要順手改這裡。
       - name: 等到 18:00
-        if: ${{ github.event_name == 'schedule' }}
+        if: ${{ github.event_name == 'schedule' && needs.preflight.outputs.repair_only != 'true' }}
         run: |
           wait=$(( $(date -d '18:00' +%s) - $(date +%s) ))
 
@@ -228,31 +275,52 @@ jobs:
       # 抓到有為止：官方偶爾晚公布或擋一下，一次失敗不算數，
       # 每 10 分鐘重跑一次直到今天的行情檔案落地，最晚撐到 21:00。
       - name: 回補行情
-        if: ${{ inputs.publish-only != true && steps.market_day.outputs.status != 'closed' }}
+        if: ${{ inputs.publish-only != true && (steps.market_day.outputs.status != 'closed' || needs.preflight.outputs.has_gaps == 'true') }}
         run: |
           today=$(date +%Y-%m-%d)
           deadline=$(date -d '21:00' +%s)
           attempt=0
 
+          if [ "$REPAIR_ONLY" = 'true' ]; then
+              dotnet run -c Release --project src/Invest.Web -- close-coverage repair
+              exit $?
+          fi
+
           while true; do
               attempt=$(( attempt + 1 ))
 
               echo "::group::第 $attempt 次回補（$(date +%H:%M:%S)）"
-              dotnet run -c Release --project src/Invest.Web -- backfill "$TRADING_DAYS" || true
+              if [ '${{ steps.market_day.outputs.status }}' != 'closed' ]; then
+                  dotnet run -c Release --project src/Invest.Web -- backfill "$TRADING_DAYS" || true
+              fi
+              set +e
+              dotnet run -c Release --project src/Invest.Web -- close-coverage repair
+              coverage=$?
+              if [ '${{ steps.market_day.outputs.status }}' != 'closed' ]; then
+                  dotnet run -c Release --project src/Invest.Web -- close-coverage date "$today"
+                  current_day=$?
+              else
+                  current_day=0
+              fi
+              set -e
               echo "::endgroup::"
 
-              if [ -f "data/imports/$today.json" ]; then
-                  echo "$today 的行情已經寫進快取，第 $attempt 次成功。"
+              if [ "$coverage" -eq 0 ] && [ "$current_day" -eq 0 ]; then
+                  echo "已到期的盤中日期與今日盤後行情完整，第 $attempt 次成功。"
                   exit 0
               fi
 
-              if [ "$(date +%s)" -ge "$deadline" ]; then
-                  echo "撐到 21:00 還是沒有 $today 的行情，試了 $attempt 次。" >&2
-                  echo "今天若是國定假日，這個紅燈是預期內的；否則就是官方沒公布或被擋。" >&2
+              if [ "$coverage" -eq 1 ] || [ "$current_day" -eq 1 ]; then
+                  echo "盤後資料對帳無法執行，停止重試並保留錯誤狀態。" >&2
                   exit 1
               fi
 
-              echo "還沒有 $today 的行情，10 分鐘後再試。"
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "撐到 21:00 還有正式盤後行情缺口，試了 $attempt 次。" >&2
+                  exit 1
+              fi
+
+              echo "正式盤後行情仍有缺口，10 分鐘後再試。"
               sleep 600
           done
 
@@ -307,7 +375,8 @@ jobs:
         run: dotnet run -c Release --project src/Invest.Web -- backfill-tdr "$TRADING_DAYS"
 
       - name: 保存行情快取
-        if: ${{ inputs.publish-only != true }}
+        id: save_quotes
+        if: ${{ !cancelled() && inputs.publish-only != true }}
         working-directory: data
         run: |
           git add -A imports market-calendar.json
@@ -329,6 +398,12 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -qm "行情快取 $(date +%Y-%m-%d)"
           git push -q
+
+      - name: 盤後資料對帳
+        if: ${{ !cancelled() && inputs.publish-only != true && steps.save_quotes.outcome == 'success' }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- close-coverage check
 
       # 以下每一步都用 !cancelled()，讓它們彼此不互相拖累。
       # 串成一條的話，回補失敗就等於同步、備份、發佈全部沒跑，
@@ -427,6 +502,7 @@ jobs:
       # 程式不會炸，只會記一行「讀取重大訊息失敗」然後把那兩塊發成空的，
       # 網站看起來一切正常但催化事件是空白頁，所以這行漏掉不會有人發現。
       - name: 輸出靜態網站
+        id: export_site
         if: ${{ !cancelled() }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -434,9 +510,17 @@ jobs:
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
         run: dotnet run -c Release --project src/Invest.Web -- export "$GITHUB_WORKSPACE/publish/site"
 
+      - name: 驗證網站盤後日期
+        id: verify_manifest
+        if: ${{ !cancelled() && inputs.publish-only != true }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: dotnet run -c Release --project src/Invest.Web -- close-coverage manifest publish/site/manifest.json
+
       # 族群是 Supabase 的權威來源。匯出程式對附加資料採容錯，不能讓資料庫讀取錯誤
       # 被吞掉後仍把空的 topics.json 發到正式網站；這裡把關鍵輸出變成發布前硬門檻。
       - name: 驗證族群分類輸出
+        id: verify_topics
         if: ${{ !cancelled() }}
         run: |
           if ! jq -e '(.mappings | length) > 0 and (.periods | length) > 0 and all(.periods[]; (.rows | length) > 0)' publish/site/data/topics.json >/dev/null; then
@@ -449,7 +533,7 @@ jobs:
       # publish-gh-pages.sh 只會發一頁空白頁，訪客看不到任何排行資料。這個 repo
       # 的 gh-pages 分支還留著（沒關 Pages），但打開網址什麼都看不到。
       - name: 發佈到 GitHub Pages（舊網址，僅留空白頁）
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.export_site.outcome == 'success' && steps.verify_topics.outcome == 'success' && (inputs.publish-only == true || (steps.save_quotes.outcome == 'success' && steps.verify_manifest.outcome == 'success')) }}
         env:
           GH_PAGES_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
@@ -465,7 +549,7 @@ jobs:
       # 最高權限一律要登入才能拿到（筆記 #37 收尾：不再有 admin888/、viewer/
       # 這兩個獨立網址）。
       - name: 發佈到 frank-invest.github.io（單一網址，訪客為預設）
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.export_site.outcome == 'success' && steps.verify_topics.outcome == 'success' && (inputs.publish-only == true || (steps.save_quotes.outcome == 'success' && steps.verify_manifest.outcome == 'success')) }}
         env:
           GH_PAGES_REMOTE: https://x-access-token:${{ secrets.FRANK_INVEST_PAT }}@github.com/frank-invest/frank-invest.github.io.git
           GH_PAGES_PUBLISH_ROOT: '1'
@@ -516,6 +600,29 @@ jobs:
           else
               dotnet run -c Release --project src/Invest.Web -- alert "每日排行快照" error \
                   "這一輪有步驟失敗，網站上的排行可能還停在前一個交易日。" "$RUN_URL"
+
+      - name: 更新盤後資料缺口警報
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+          dotnet run -c Release --project src/Invest.Web -- close-coverage check
+          coverage=$?
+          if [ "$coverage" -eq 0 ] && [ -f publish/site/manifest.json ]; then
+              dotnet run -c Release --project src/Invest.Web -- close-coverage manifest publish/site/manifest.json
+              coverage=$?
+          fi
+          set -e
+
+          if [ "$coverage" -eq 0 ]; then
+              dotnet run -c Release --project src/Invest.Web -- alert-clear "台股盤後資料缺口"
+          else
+              dotnet run -c Release --project src/Invest.Web -- alert "台股盤後資料缺口" error \
+                  "盤中有交易紀錄的日期缺少完整盤後行情或網站快照；請檢查盤後對帳與 data 分支。" "$RUN_URL"
+              exit 1
+          fi
           fi
 
       - name: 失敗時留下線索

@@ -207,7 +207,7 @@ public sealed class IntradayWorkflowTests
         // 逐一翻開當天的 run，看步驟層級的結果。
         Assert.Contains("actions/runs/$run_id/jobs?per_page=100", alarm, StringComparison.Ordinal);
         Assert.Contains(
-            "select(.name == \"回補行情\" and .conclusion == \"success\")",
+            "select(.name == \"盤後資料對帳\" and .conclusion == \"success\")",
             alarm,
             StringComparison.Ordinal);
 

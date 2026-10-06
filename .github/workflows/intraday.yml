@@ -210,7 +210,7 @@ jobs:
               # 舊寫法只看 conclusion，於是 18:00:30 判定「今天已經有成功的每日快照」而
               # 不叫，整天的盤後資料就沒人收——data 分支停在 08-28，網站也停在 08-28。
               #
-              # 所以改成逐一翻開當天的 run，確認裡面「回補行情」這一步真的成功過。
+              # 所以改成逐一翻開當天的 run，確認「盤後資料對帳」真的成功過。
               # 步驟名稱是跟 daily-snapshot.yml 對齊的約定，改那邊要順手改這裡
               # （已用單元測試釘住）。
               for run_id in $(gh api \
@@ -219,9 +219,9 @@ jobs:
                          | select(.updated_at > \"$since\")
                          | .id] | .[]" 2>/dev/null); do
                   if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
-                      --jq '.jobs[].steps[]? | select(.name == "回補行情" and .conclusion == "success") | .name' \
+                      --jq '.jobs[].steps[]? | select(.name == "盤後資料對帳" and .conclusion == "success") | .name' \
                       2>/dev/null | grep -q .; then
-                      echo "今天的 run $run_id 已經回補過行情，不重複叫。"
+                      echo "今天的 run $run_id 已通過盤後資料對帳，不重複叫。"
                       snapshot_kicked=1
                       return 0
                   fi

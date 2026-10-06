@@ -27,6 +27,48 @@ public sealed class MarketDataDownloader(
 {
     private readonly MarketDataOptions _options = options.Value;
 
+    /// <summary>只補已由盤中資料證實開盤、但盤後快取仍缺失的指定日期。</summary>
+    public async Task<IReadOnlyList<DateOnly>> BackfillKnownTradingDatesAsync(
+        IReadOnlyList<DateOnly> dates,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (dates.Count == 0)
+        {
+            return [];
+        }
+
+        var catalog = await DownloadEtfCatalogAsync(progress, cancellationToken);
+        if (catalog is null)
+        {
+            progress?.Report("ETF 官方名冊無法讀取，盤後缺口維持待補。");
+            return dates;
+        }
+
+        var failed = new List<DateOnly>();
+        foreach (var date in dates.Distinct().Order())
+        {
+            var cached = await store.LoadAsync(date, cancellationToken);
+            if (DailyCloseCoverage.IsValid(date, cached))
+            {
+                continue;
+            }
+
+            var snapshot = await DownloadDayAsync(date, catalog, progress, cancellationToken, knownTradingDay: true);
+            if (!DailyCloseCoverage.IsValid(date, snapshot))
+            {
+                failed.Add(date);
+                progress?.Report($"{date:yyyy-MM-dd} 官方盤後行情未完整，保持待補。");
+                continue;
+            }
+
+            await store.SaveAsync(snapshot!, cancellationToken);
+            progress?.Report($"{date:yyyy-MM-dd} 已補齊並保存 {snapshot!.Quotes.Count} 檔盤後行情。");
+        }
+
+        return failed;
+    }
+
     /// <summary>
     /// 從 <paramref name="startFrom"/> 往回回補，直到累積到指定的交易日數量。
     /// </summary>
@@ -518,7 +560,8 @@ public sealed class MarketDataDownloader(
         DateOnly date,
         TaiwanEtfCatalog etfCatalog,
         IProgress<string>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool knownTradingDay = false)
     {
         var twseData = await WithRetryAsync(
             () => twseClient.GetDailyDataAsync(
@@ -554,6 +597,12 @@ public sealed class MarketDataDownloader(
         // 只有單邊沒資料代表那一邊出了問題，不應該把當天記成休市。
         if (twse.Count == 0 && tpex.Count == 0)
         {
+            if (knownTradingDay)
+            {
+                progress?.Report($"{date:yyyy-MM-dd} 盤中已證實開盤，官方目前回空；不能記成休市。");
+                return null;
+            }
+
             // 但今天的收盤行情要下午才會公布，公布前抓也是空的，跟休市長得一模一樣。
             // 非交易日一旦寫進快取就不會再重試，所以只有官方休市日曆明講今天不開市才敢下判斷；
             // 日曆沒說或根本讀不到，就維持不記錄，讓外面繼續重試。
@@ -565,6 +614,12 @@ public sealed class MarketDataDownloader(
             }
 
             return DailyQuoteSnapshot.NonTradingDay(date);
+        }
+
+        if (twse.Count == 0 || tpex.Count == 0)
+        {
+            progress?.Report($"{date:yyyy-MM-dd} 上市或上櫃行情為空，不保存單邊快照。");
+            return null;
         }
 
         var twseNonRegular = await WithRetryAsync(

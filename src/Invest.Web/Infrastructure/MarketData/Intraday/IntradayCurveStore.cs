@@ -15,6 +15,32 @@ public sealed class IntradayCurveStore
     /// <summary>累積到這麼多個交易日就值得拿來校正預估值，status 會提醒一次。</summary>
     public const int DaysForCalibration = 10;
 
+    /// <summary>有效盤中報價留下的交易日期；供盤後快取逐日對帳。</summary>
+    public async Task<IReadOnlyList<DateOnly>> LoadTradingDatesAsync(
+        DateOnly dueThrough,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            """
+            select distinct trade_date
+            from intraday_curve
+            where trade_date <= @dueThrough and quote_count > 0
+            order by trade_date
+            """,
+            connection);
+        command.Parameters.AddWithValue("dueThrough", dueThrough);
+
+        var dates = new List<DateOnly>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            dates.Add(reader.GetFieldValue<DateOnly>(0));
+        }
+
+        return dates;
+    }
+
     /// <summary>分母用當天最後一輪的累計值，不用盤後正式成交值。</summary>
     /// <remarks>
     /// 分子是我們自己推算的成交額（現價 × 累計量），分母也用同一套推算值，

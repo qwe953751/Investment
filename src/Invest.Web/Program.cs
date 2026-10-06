@@ -44,6 +44,7 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- intraday [--loop|--probe]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-heat [--via-management-api]
 //   dotnet run --project src/Invest.Web -- backfill-intraday-topic
+//   dotnet run --project src/Invest.Web -- close-coverage check|repair|date yyyy-MM-dd|manifest <manifest.json>
 //   dotnet run --project src/Invest.Web -- market-day
 //   dotnet run --project src/Invest.Web -- export-market-calendar <輸出檔路徑>
 //   dotnet run --project src/Invest.Web -- import-asset-operation-sheet
@@ -61,7 +62,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -193,6 +194,12 @@ var app = builder.Build();
 if (command is "backfill")
 {
     await RunBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "close-coverage")
+{
+    Environment.ExitCode = await RunCloseCoverageAsync(app.Services, args);
     return;
 }
 
@@ -1943,6 +1950,82 @@ static async Task RunBackfillAsync(IServiceProvider services, string[] args)
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。已下載的日期都保留在快取，重跑會從斷點繼續。");
+    }
+}
+
+static async Task<int> RunCloseCoverageAsync(IServiceProvider services, string[] args)
+{
+    var mode = args.Length > 1 ? args[1] : "check";
+    using var scope = services.CreateScope();
+    var store = scope.ServiceProvider.GetRequiredService<DailyQuoteStore>();
+
+    if (mode == "date")
+    {
+        if (args.Length != 3 || !DateOnly.TryParse(args[2], out var date))
+        {
+            Console.Error.WriteLine("用法：close-coverage date yyyy-MM-dd");
+            return 1;
+        }
+
+        var valid = DailyCloseCoverage.IsValid(date, await store.LoadAsync(date));
+        Console.WriteLine($"{date:yyyy-MM-dd} 盤後快取：{(valid ? "完整" : "缺失或不完整")}");
+        return valid ? 0 : 2;
+    }
+
+    if (mode is not ("check" or "repair" or "manifest") || (mode == "manifest" && args.Length != 3))
+    {
+        Console.Error.WriteLine("用法：close-coverage check|repair|date yyyy-MM-dd|manifest <manifest.json>");
+        return 1;
+    }
+
+    try
+    {
+        var dueThrough = DailyCloseCoverage.DueThrough(DateTimeOffset.UtcNow);
+        var dates = await scope.ServiceProvider.GetRequiredService<IntradayCurveStore>()
+            .LoadTradingDatesAsync(dueThrough);
+        var gaps = await DailyCloseCoverage.FindGapsAsync(dates, store);
+
+        if (mode == "repair" && gaps.Count > 0)
+        {
+            var progress = new Progress<string>(Console.WriteLine);
+            await scope.ServiceProvider.GetRequiredService<MarketDataDownloader>()
+                .BackfillKnownTradingDatesAsync(gaps, progress);
+            gaps = await DailyCloseCoverage.FindGapsAsync(dates, store);
+        }
+
+        if (mode == "manifest")
+        {
+            using var document = JsonDocument.Parse(await File.ReadAllTextAsync(args[2]));
+            var publishedDates = document.RootElement.GetProperty("dates").EnumerateArray()
+                .Select(item => item.GetString()?.Replace('/', '-'))
+                .Where(value => DateOnly.TryParse(value, out _))
+                .Select(value => DateOnly.Parse(value!))
+                .ToHashSet();
+            if (publishedDates.Count == 0)
+            {
+                Console.Error.WriteLine("manifest 沒有有效交易日期。");
+                return 2;
+            }
+
+            var firstPublished = publishedDates.Min();
+            gaps = [.. gaps.Concat(dates.Where(date => date >= firstPublished && !publishedDates.Contains(date)))
+                .Distinct().Order()];
+        }
+
+        if (gaps.Count == 0)
+        {
+            Console.WriteLine($"盤後對帳完成：{dates.Count} 個已到期盤中交易日皆有正式資料。");
+            return 0;
+        }
+
+        Console.Error.WriteLine("盤中已開盤、盤後仍缺失或不完整："
+            + string.Join(", ", gaps.Select(date => date.ToString("yyyy-MM-dd"))));
+        return 2;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"盤後對帳無法完成（{exception.GetType().Name}）；檢查資料庫連線與快取來源。");
+        return 1;
     }
 }
 
