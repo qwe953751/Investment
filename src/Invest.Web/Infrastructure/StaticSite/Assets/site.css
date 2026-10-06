@@ -3599,7 +3599,7 @@ body {
     gap: 6px;
 }
 
-.market-heat-chart-legend span {
+.market-heat-chart-legend-toggle {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -3607,6 +3607,22 @@ body {
     border: 1px solid var(--border);
     border-radius: 999px;
     background: var(--surface-alt);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.market-heat-chart-legend-toggle:hover {
+    border-color: var(--text-muted);
+}
+
+.market-heat-chart-legend-toggle:focus-visible {
+    outline: 2px solid var(--text-secondary);
+    outline-offset: 2px;
+}
+
+.market-heat-chart-legend-toggle.is-hidden {
+    opacity: 0.45;
 }
 
 .market-heat-chart-legend-dot {

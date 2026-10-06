@@ -2224,6 +2224,7 @@ let marketIndexYearStarts = new Map();
 let version = '';
 let latestTradingDate = '';
 let marketHeatAnalysisOpen = false;
+const hiddenMarketHeatChartLines = new Set();
 
 // 這份快照是什麼時候輸出的（毫秒）。人工編輯頁靠它把編輯切成「已套用」與「待套用」：
 // 比這個時間早的編輯，眼前這份分類就是套過它之後的結果。
@@ -20373,8 +20374,7 @@ function renderMarketHeatAnalysis(heat, index, marketTurnovers) {
             {
                 domain: [0, 100],
                 axisFormat: value => `${Math.round(value)}%`,
-                lines: priceLines,
-                legend: priceLines.map(line => [line.dotClass, line.label])
+                lines: priceLines
             }),
         renderMarketHeatChartCard(
             '市場量能 × 成交額',
@@ -20383,8 +20383,7 @@ function renderMarketHeatAnalysis(heat, index, marketTurnovers) {
             {
                 domain: [0, 100],
                 axisFormat: value => `${Math.round(value)}%`,
-                lines: turnoverLines,
-                legend: turnoverLines.map(line => [line.dotClass, line.label])
+                lines: turnoverLines
             })
     );
 
@@ -20406,16 +20405,43 @@ function renderMarketHeatChartCard(titleText, subtitleText, points, options) {
 
     const legend = document.createElement('div');
     legend.className = 'market-heat-chart-legend';
-    for (const [dotClass, labelText] of options.legend ?? []) {
-        const item = document.createElement('span');
+    for (const line of options.lines ?? []) {
+        const isVisible = !hiddenMarketHeatChartLines.has(line.lineClass);
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'market-heat-chart-legend-toggle';
+        toggle.setAttribute('aria-pressed', String(isVisible));
+        toggle.dataset.lineClass = line.lineClass;
+        toggle.classList.toggle('is-hidden', !isVisible);
+
         const dot = document.createElement('i');
-        dot.className = `market-heat-chart-legend-dot ${dotClass}`;
-        item.append(dot, labelText);
-        legend.append(item);
+        dot.className = `market-heat-chart-legend-dot ${line.dotClass}`;
+        toggle.append(dot, line.label);
+        toggle.addEventListener('click', () => {
+            if (hiddenMarketHeatChartLines.has(line.lineClass)) {
+                hiddenMarketHeatChartLines.delete(line.lineClass);
+            } else {
+                hiddenMarketHeatChartLines.add(line.lineClass);
+            }
+
+            refreshMarketHeatChartCard(card, points, options);
+        });
+        legend.append(toggle);
     }
 
     card.append(header, legend, renderMarketHeatChartSvg(points, options));
     return card;
+}
+
+function refreshMarketHeatChartCard(card, points, options) {
+    for (const toggle of card.querySelectorAll('.market-heat-chart-legend-toggle')) {
+        const isVisible = !hiddenMarketHeatChartLines.has(toggle.dataset.lineClass);
+        toggle.setAttribute('aria-pressed', String(isVisible));
+        toggle.classList.toggle('is-hidden', !isVisible);
+    }
+
+    const currentSvg = card.querySelector('.market-heat-chart-svg');
+    currentSvg?.replaceWith(renderMarketHeatChartSvg(points, options));
 }
 
 function renderMarketHeatChartSvg(points, options) {
@@ -20425,7 +20451,8 @@ function renderMarketHeatChartSvg(points, options) {
     const right = 508;
     const top = 14;
     const bottom = 142;
-    const lines = options.lines ?? [{ value: options.value, lineClass: options.lineClass }];
+    const allLines = options.lines ?? [{ value: options.value, lineClass: options.lineClass }];
+    const lines = allLines.filter(line => !hiddenMarketHeatChartLines.has(line.lineClass));
     const values = lines
         .flatMap(line => points.map(point => marketHeatChartNumber(line.value(point))))
         .filter(value => value !== null);
@@ -20444,7 +20471,9 @@ function renderMarketHeatChartSvg(points, options) {
             y: 86,
             class: 'market-heat-chart-empty',
             'text-anchor': 'middle'
-        }, '尚無可繪製資料'));
+        }, allLines.length > 0 && lines.length === 0
+            ? '已隱藏所有序列，請點選上方項目'
+            : '尚無可繪製資料'));
         return svg;
     }
 
