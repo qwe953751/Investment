@@ -517,7 +517,7 @@ jobs:
         if: ${{ !cancelled() && inputs.publish-only != true }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: dotnet run -c Release --project src/Invest.Web -- close-coverage manifest publish/site/manifest.json
+        run: dotnet run -c Release --project src/Invest.Web -- close-coverage manifest "$GITHUB_WORKSPACE/publish/site/manifest.json"
 
       # 族群是 Supabase 的權威來源。匯出程式對附加資料採容錯，不能讓資料庫讀取錯誤
       # 被吞掉後仍把空的 topics.json 發到正式網站；這裡把關鍵輸出變成發布前硬門檻。
@@ -602,6 +602,7 @@ jobs:
           else
               dotnet run -c Release --project src/Invest.Web -- alert "每日排行快照" error \
                   "這一輪有步驟失敗，網站上的排行可能還停在前一個交易日。" "$RUN_URL"
+          fi
 
       - name: 更新盤後資料缺口警報
         if: always()
@@ -613,7 +614,7 @@ jobs:
           dotnet run -c Release --project src/Invest.Web -- close-coverage check
           coverage=$?
           if [ "$coverage" -eq 0 ] && [ -f publish/site/manifest.json ]; then
-              dotnet run -c Release --project src/Invest.Web -- close-coverage manifest publish/site/manifest.json
+              dotnet run -c Release --project src/Invest.Web -- close-coverage manifest "$GITHUB_WORKSPACE/publish/site/manifest.json"
               coverage=$?
           fi
           set -e
@@ -624,7 +625,6 @@ jobs:
               dotnet run -c Release --project src/Invest.Web -- alert "台股盤後資料缺口" error \
                   "盤中有交易紀錄的日期缺少完整盤後行情或網站快照；請檢查盤後對帳與 data 分支。" "$RUN_URL"
               exit 1
-          fi
           fi
 
       - name: 失敗時留下線索

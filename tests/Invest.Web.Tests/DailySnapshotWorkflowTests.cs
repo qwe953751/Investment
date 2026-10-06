@@ -33,8 +33,11 @@ public sealed class DailySnapshotWorkflowTests
 
         Assert.Contains("close-coverage repair", workflow, StringComparison.Ordinal);
         Assert.Contains("close-coverage date \"$today\"", workflow, StringComparison.Ordinal);
-        Assert.Contains("close-coverage manifest publish/site/manifest.json", workflow, StringComparison.Ordinal);
+        Assert.Contains("close-coverage manifest \"$GITHUB_WORKSPACE/publish/site/manifest.json\"",
+            workflow, StringComparison.Ordinal);
         Assert.Contains("台股盤後資料缺口", workflow, StringComparison.Ordinal);
+        Assert.Contains("\"$RUN_URL\"\n          fi\n\n      - name: 更新盤後資料缺口警報",
+            workflow.Replace("\r\n", "\n"), StringComparison.Ordinal);
 
         var backfillStart = workflow.IndexOf("- name: 回補行情", StringComparison.Ordinal);
         var backfillRun = workflow.IndexOf("run: |", backfillStart, StringComparison.Ordinal);
