@@ -28418,6 +28418,22 @@ function mspFormatIndexValue(market, value) {
         : number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function mspFormatIndexChangeAmount(market, amount) {
+    if (missing(amount)) {
+        return '—';
+    }
+
+    return market === 'crypto'
+        ? new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            signDisplay: 'always',
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        }).format(Number(amount))
+        : toSignedIndexPointText(amount);
+}
+
 // 指數用小方塊樣式，比原本的大卡片版緊湊，一行就能放下三檔指數。
 function mspBuildIndices(group, market, proto) {
     const section = document.createElement('div');
@@ -28475,10 +28491,22 @@ function mspBuildIndices(group, market, proto) {
         changes.className = 'msp-index-tile-changes';
         const daily = document.createElement('span');
         daily.className = `msp-index-tile-daily ${toTrendClass(index.daily ?? 0)}`;
-        daily.textContent = missing(index.daily) ? '日 —' : `日 ${toSignedPercentText(index.daily / 100, 2)}`;
+        const dailyChangeAmount = calculateIndexPointChange(index.value, index.daily);
+        const dailyChangeSuffix = missing(dailyChangeAmount)
+            ? ''
+            : `（${mspFormatIndexChangeAmount(market, dailyChangeAmount)}）`;
+        daily.textContent = missing(index.daily)
+            ? '日 —'
+            : `日 ${toSignedPercentText(index.daily / 100, 2)}${dailyChangeSuffix}`;
         const ytd = document.createElement('span');
         ytd.className = `msp-index-tile-ytd ${toTrendClass(index.ytd ?? 0)}`;
-        ytd.textContent = missing(index.ytd) ? '今年 —' : `今年 ${toSignedPercentText(index.ytd / 100, 2)}`;
+        const ytdChangeAmount = calculateIndexPointChange(index.value, index.ytd);
+        const ytdChangeSuffix = missing(ytdChangeAmount)
+            ? ''
+            : `（${mspFormatIndexChangeAmount(market, ytdChangeAmount)}）`;
+        ytd.textContent = missing(index.ytd)
+            ? '今年 —'
+            : `今年 ${toSignedPercentText(index.ytd / 100, 2)}${ytdChangeSuffix}`;
         const heat = document.createElement('span');
         const [, heatClass] = heatLevel(index.heatScore);
         heat.className = `msp-index-tile-heat ${heatClass}`;
