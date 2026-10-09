@@ -1,0 +1,110 @@
+# 補抓官方參考價（data/imports-ref），還原權息的依據。
+#
+# 每天的完整快照（daily-snapshot.yml）已經會順手補上「今天」的參考價；這條流程是給
+# 「一次補一整段歷史」用的：第一次上線時要補整個資料窗（約 360 個交易日，每天三個請求
+# 加上每月兩個事件表請求，節流之後要一個多小時），之後只有在官方回應殘缺、或想重驗某一段時才需要手動跑。
+#
+# 只動 data 分支的 imports-ref/，不碰行情快取、資料庫與網站。已經涵蓋的日期自己略過，
+# 所以中途失敗（官方限流、runner 被砍）直接重跑同一個流程就會從沒補完的日期接續。
+#
+# 和每日完整快照共用同一個併發鎖：兩邊都會寫 data 分支，不能同時跑。
+
+name: 補抓官方參考價
+
+on:
+  workflow_dispatch:
+    inputs:
+      trading-days:
+        description: 往回補幾個交易日（行情快取裡有幾個交易日就補幾個；不足的日期自己略過）
+        default: '400'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-snapshot
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # 單一 job 硬上限 6 小時；回補本身最多撐 5 小時 20 分，剩下留給保存與收尾。
+    timeout-minutes: 350
+
+    env:
+      TZ: Asia/Taipei
+      TRADING_DAYS: ${{ inputs.trading-days || '400' }}
+
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+
+      - name: 取出行情快取
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+          # 等一下要從這裡 push，淺層 clone 有機會被拒絕。
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # 失敗日期留到下次重跑，不讓這一步的 exit 1 擋掉後面的保存：
+      # 已經抓到的日期必須推回去，否則白白浪費這幾個小時。
+      # timeout 比 job 上限短，讓程式被砍之後保存步驟還有時間跑。
+      - name: 補抓官方參考價
+        id: backfill
+        continue-on-error: true
+        run: timeout --signal=INT 19200 dotnet run -c Release --project src/Invest.Web -- backfill-reference "$TRADING_DAYS"
+
+      - name: 保存參考價快取
+        if: ${{ !cancelled() }}
+        working-directory: data
+        run: |
+          mkdir -p imports-ref
+          git add -A imports-ref
+
+          # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
+          # 也不要把「刪掉歷史」這件事推上去。
+          if git diff --cached --name-only --diff-filter=D | grep -q .; then
+              echo "偵測到參考價檔案被刪除，中止：" >&2
+              git diff --cached --name-only --diff-filter=D >&2
+              exit 1
+          fi
+
+          if git diff --cached --quiet; then
+              echo "沒有新的參考價，快取不變。"
+              exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -qm "官方參考價快取 $(date +%Y-%m-%d)"
+
+          # 美股、日韓總覽的流程也會推 data 分支；剛好撞上時重新接在最新的後面再推。
+          for attempt in 1 2 3 4 5; do
+              if git push -q; then
+                  echo "已推上 data 分支（第 $attempt 次）。"
+                  exit 0
+              fi
+
+              echo "push 被拒絕，重新接上遠端後再試（第 $attempt 次）。" >&2
+              git pull --rebase -q
+          done
+
+          echo "推送 data 分支連續失敗。" >&2
+          exit 1
+
+      # 回補有失敗日期或提早停止時讓整個流程轉紅，看得出來還要再跑；
+      # 但這個判斷放在保存之後，才不會因為紅燈而白白丟掉已經抓到的部分。
+      - name: 回報回補結果
+        if: ${{ !cancelled() }}
+        run: |
+          if [ '${{ steps.backfill.outcome }}' != 'success' ]; then
+              echo "回補沒有全部完成（有失敗日期、被官方限流或逾時）。已抓到的部分已保存；稍後重跑同一個流程即可接續。" >&2
+              exit 1
+          fi
+
+          echo "回補全部完成。"

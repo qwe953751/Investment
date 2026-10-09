@@ -1,4 +1,5 @@
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
 
 namespace Invest.Web.Features.TradingValueRanking.Models;
@@ -23,6 +24,12 @@ public sealed class MarketDataSet
     /// 兩邊共用同一份，除權息當天表格與圖才不會各說各話。
     /// </summary>
     public IReadOnlyList<StockPriceAdjustment> PriceAdjustments { get; init; } = [];
+
+    /// <summary>
+    /// 還原權息表的完整內容：除了 <see cref="PriceAdjustments"/> 的事件，還有掛牌參考價與統計。
+    /// 沒有官方參考價資料（本機沒有 data/imports-ref）時是空表，行為退回只有事件表的還原。
+    /// </summary>
+    public PriceAdjustmentTable AdjustmentTable { get; init; } = PriceAdjustmentTable.Empty;
 
     public static MarketDataSet Empty { get; } = new()
     {

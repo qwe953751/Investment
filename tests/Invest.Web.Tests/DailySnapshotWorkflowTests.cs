@@ -238,6 +238,66 @@ public sealed class DailySnapshotWorkflowTests
             "補抓 TDR 必須排在保存行情快取之前。");
     }
 
+    [Fact]
+    public void 官方參考價每日只補最近幾天且在保存行情快取之前並允許失敗()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        var step = workflow[workflow.IndexOf("- name: 補抓官方參考價", StringComparison.Ordinal)..];
+        var header = step[..step.IndexOf("run:", StringComparison.Ordinal)];
+
+        // 參考價是寫進 data 分支的，publish-only 不改 data，不能跑。
+        Assert.Contains("inputs.publish-only != true", header, StringComparison.Ordinal);
+        Assert.Contains("continue-on-error: true", header, StringComparison.Ordinal);
+
+        // 每天只顧最近幾個交易日：整段歷史由 backfill-reference.yml 一次補，
+        // 免得歷史還沒補完時把每天的完整流程拖成好幾個小時。
+        Assert.Contains("-- backfill-reference 10", step, StringComparison.Ordinal);
+        Assert.DoesNotContain("backfill-reference \"$TRADING_DAYS\"", workflow, StringComparison.Ordinal);
+
+        Assert.True(
+            workflow.IndexOf("- name: 補抓官方參考價", StringComparison.Ordinal)
+                < workflow.IndexOf("- name: 保存行情快取", StringComparison.Ordinal),
+            "補抓官方參考價必須排在保存行情快取之前。");
+
+        // imports-ref 目錄第一次補抓成功之前不存在，git add 會以 pathspec 錯誤中止整步。
+        var save = workflow[workflow.IndexOf("- name: 保存行情快取", StringComparison.Ordinal)..];
+        Assert.True(
+            save.IndexOf("mkdir -p imports-ref", StringComparison.Ordinal)
+                < save.IndexOf("git add -A imports imports-ref market-calendar.json", StringComparison.Ordinal),
+            "要先確保 imports-ref 目錄存在，再 git add。");
+    }
+
+    [Fact]
+    public void 一次補整段歷史的參考價流程和每日快照共用併發鎖且推送前先保存已抓到的部分()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "backfill-reference.yml"));
+
+        // 兩邊都寫 data 分支，不能同時跑。
+        Assert.Contains("group: daily-snapshot", workflow, StringComparison.Ordinal);
+        Assert.Contains("cancel-in-progress: false", workflow, StringComparison.Ordinal);
+
+        // 回補失敗不能擋掉保存：已經抓到的日期必須推回去。
+        var backfill = workflow[workflow.IndexOf("- name: 補抓官方參考價", StringComparison.Ordinal)..];
+        Assert.Contains("continue-on-error: true", backfill[..backfill.IndexOf("run:", StringComparison.Ordinal)], StringComparison.Ordinal);
+        Assert.Contains("-- backfill-reference \"$TRADING_DAYS\"", workflow, StringComparison.Ordinal);
+        Assert.True(
+            workflow.IndexOf("- name: 補抓官方參考價", StringComparison.Ordinal)
+                < workflow.IndexOf("- name: 保存參考價快取", StringComparison.Ordinal));
+        Assert.True(
+            workflow.IndexOf("- name: 保存參考價快取", StringComparison.Ordinal)
+                < workflow.IndexOf("- name: 回報回補結果", StringComparison.Ordinal),
+            "要先保存再回報，紅燈不能讓已抓到的部分白費。");
+
+        // 只動 imports-ref，且只增不減。
+        Assert.Contains("git add -A imports-ref", workflow, StringComparison.Ordinal);
+        Assert.Contains("--diff-filter=D", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("git push -f", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("--force", workflow, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)

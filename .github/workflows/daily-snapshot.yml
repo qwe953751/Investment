@@ -376,12 +376,27 @@ jobs:
         continue-on-error: true
         run: dotnet run -c Release --project src/Invest.Web -- backfill-tdr "$TRADING_DAYS"
 
+      # 官方參考價（還原權息的依據）另存在 data/imports-ref，和行情快取一一對應日期。
+      # 每天只會真的下載剛公布的今天（每天三個請求加當月事件表兩個）；已經涵蓋的日期自己略過。
+      # 一次補整段歷史請用 backfill-reference.yml（節流後要一個多小時），這裡只顧最近 10 個交易日，
+      # 免得歷史還沒補完時把每天的完整流程拖成好幾個小時。
+      #
+      # 跟 backfill-bars 一樣允許失敗：官方偶爾漏掉某一天是常態，不該讓它把「排行已發布成功」
+      # 的一輪標成紅燈；下一輪會自動重試同一批日期。
+      - name: 補抓官方參考價
+        if: ${{ inputs.publish-only != true }}
+        continue-on-error: true
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-reference 10
+
       - name: 保存行情快取
         id: save_quotes
         if: ${{ !cancelled() && inputs.publish-only != true }}
         working-directory: data
         run: |
-          git add -A imports market-calendar.json
+          # imports-ref 要等第一次補抓成功才會生出來。目錄還不存在時 git add 會以
+          # pathspec 錯誤整步中止，連帶擋掉上面已經抓好的行情。
+          mkdir -p imports-ref
+          git add -A imports imports-ref market-calendar.json
 
           # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
           # 也不要把「刪掉歷史」這件事推上去。

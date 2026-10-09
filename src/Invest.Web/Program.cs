@@ -15,6 +15,7 @@ using Invest.Web.Infrastructure.MarketData.CorporateActions;
 using Invest.Web.Infrastructure.MarketData.ForeignExchange;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Overview;
+using Invest.Web.Infrastructure.MarketData.Reference;
 using Invest.Web.Infrastructure.MarketData.Turnover;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
@@ -62,7 +63,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
+    command is "backfill" or "backfill-bars" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -138,6 +139,8 @@ builder.Services.AddHttpClient<AlphaVantageDailyQuoteClient>(
     client => client.Timeout = TimeSpan.FromSeconds(30));
 
 builder.Services.AddSingleton<DailyQuoteStore>();
+builder.Services.AddSingleton<DailyReferenceStore>();
+builder.Services.AddSingleton<ReferenceActionStore>();
 builder.Services.AddSingleton<UsDailyQuoteStore>();
 builder.Services.AddSingleton<MarketOverviewStore>();
 builder.Services.AddSingleton<MarketTurnoverStore>();
@@ -154,6 +157,7 @@ builder.Services.AddSingleton<SiteAlertStore>();
 builder.Services.AddSingleton<SchemaMigrations>();
 builder.Services.AddSingleton<ExchangeRateStore>();
 builder.Services.AddTransient<MarketDataDownloader>();
+builder.Services.AddTransient<ReferenceDownloader>();
 builder.Services.AddTransient<UsMarketDataDownloader>();
 builder.Services.AddTransient<MarketOverviewDownloader>();
 builder.Services.AddTransient<IMarketOverviewIntradayQuoteClient>(services =>
@@ -219,6 +223,12 @@ if (command is "backfill-emerging")
 if (command is "backfill-tdr")
 {
     await RunTdrBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-reference")
+{
+    await RunReferenceBackfillAsync(app.Services, args);
     return;
 }
 
@@ -2599,6 +2609,66 @@ static async Task RunEmergingBackfillAsync(IServiceProvider services, string[] a
     {
         Console.WriteLine();
         Console.WriteLine("已中斷。完成的興櫃快取已保留，重跑會從尚未補齊的日期繼續。");
+    }
+}
+
+static async Task RunReferenceBackfillAsync(IServiceProvider services, string[] args)
+{
+    var targetTradingDays = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 300;
+    var startFrom = args.Length > 2 && DateOnly.TryParse(args[2], out var parsedDate)
+        ? parsedDate
+        : DateOnly.FromDateTime(DateTime.Today);
+
+    using var scope = services.CreateScope();
+    var downloader = scope.ServiceProvider.GetRequiredService<ReferenceDownloader>();
+    var store = scope.ServiceProvider.GetRequiredService<DailyReferenceStore>();
+
+    Console.WriteLine($"開始補抓最近 {targetTradingDays} 個交易日的官方參考價，截止 {startFrom:yyyy-MM-dd}。");
+    Console.WriteLine($"快取位置：{store.Directory}");
+    Console.WriteLine("只新增官方參考價快取（還原權息的依據），不會改動既有行情快取。");
+    Console.WriteLine();
+
+    var progress = new Progress<string>(Console.WriteLine);
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cts.Cancel();
+    };
+
+    try
+    {
+        var report = await downloader.BackfillAsync(targetTradingDays, startFrom, progress, cts.Token);
+
+        Console.WriteLine();
+        Console.WriteLine($"完成。涵蓋 {report.TradingDayCount} 天"
+            + $"（新增 {report.UpdatedCount}、略過已補快取 {report.SkippedCount}）。");
+
+        if (report.FailedDates.Count > 0)
+        {
+            Console.WriteLine($"失敗 {report.FailedDates.Count} 天："
+                + string.Join(", ", report.FailedDates.Select(date => date.ToString("yyyy-MM-dd"))));
+            Console.WriteLine("重跑同一個指令即可補上失敗日期。");
+            Environment.ExitCode = 1;
+        }
+
+        if (!report.ActionsUpdated && !report.Aborted)
+        {
+            Console.WriteLine("官方除權息事件簿有月份沒查到，重跑同一個指令即可補上。");
+            Environment.ExitCode = 1;
+        }
+
+        if (report.Aborted)
+        {
+            Console.WriteLine("因連續失敗而提早停止，請稍後（等官方解除限流）再重跑。");
+            Environment.ExitCode = 1;
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine();
+        Console.WriteLine("已中斷。完成的參考價快取已保留，重跑會從尚未補齊的日期繼續。");
     }
 }
 

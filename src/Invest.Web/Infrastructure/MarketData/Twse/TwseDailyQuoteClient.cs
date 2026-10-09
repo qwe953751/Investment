@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Infrastructure.MarketData.Reference;
 
 namespace Invest.Web.Infrastructure.MarketData.Twse;
 
@@ -89,6 +90,122 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
 
         return new(quotes, ParseMarketIndex(indexTable));
     }
+
+    /// <summary>
+    /// 讀取指定日期每一檔上市證券的官方開盤競價基準（參考價），是還原權息的依據。
+    ///
+    /// 來源是證交所「股價升降幅度」(TWT84U)：開盤前就公布、一次涵蓋全部證券（不論當天有沒有成交），
+    /// 而且除權息、減資、分割、停牌恢復當天的基準都已經換算好。收盤行情表的「漲跌」欄在這些日子
+    /// 只標 X、不給數字，所以不能拿它當參考價的來源。
+    /// </summary>
+    /// <param name="include">只保留行情快取裡有的代號（認購權證等不在範圍內的商品不收）。</param>
+    public async Task<IReadOnlyList<ReferenceRow>> GetReferenceRowsAsync(
+        DateOnly tradingDate,
+        Func<string, bool> include,
+        CancellationToken cancellationToken = default)
+    {
+        // ALLBUT0999 排除權證，約 1,400 列、130 KB；ALL 含權證有三萬六千列、近 4 MB，沒有必要。
+        var url = "https://www.twse.com.tw/exchangeReport/TWT84U"
+            + $"?response=json&date={tradingDate:yyyyMMdd}&selectType=ALLBUT0999";
+
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+        return ParseReferenceRows(document.RootElement, tradingDate, include);
+    }
+
+    /// <summary>
+    /// 解析 TWT84U。欄位有兩個同名的「開盤競價基準」，所以不能依名稱找，只能依位置——
+    /// 官方的分組是 [證券代號、名稱] [本日：漲停價、開盤競價基準、跌停價]
+    /// [前日：開盤競價基準、收盤價、買進揭示價、賣出揭示價] [最近成交日、可否零股交易]。
+    /// 位置對不上就丟例外，不在錯位的欄位上猜。
+    ///
+    /// 前日的收盤價、揭示買賣價在前一日沒有成交（或沒有委託）時是「--」或 0.00，一律當作沒有。
+    /// </summary>
+    internal static IReadOnlyList<ReferenceRow> ParseReferenceRows(
+        JsonElement root,
+        DateOnly expectedDate,
+        Func<string, bool> include)
+    {
+        if (!root.TryGetProperty("stat", out var status)
+            || !string.Equals(status.GetString(), "OK", StringComparison.OrdinalIgnoreCase))
+        {
+            // 非交易日：「很抱歉，沒有符合條件的資料!」。
+            return [];
+        }
+
+        // 回應的日期必須是要求的那一天；官方偶爾會把查不到的日期導回最近一天。
+        var echoed = root.TryGetProperty("date", out var dateValue) ? dateValue.GetString() : null;
+
+        if (!string.Equals(echoed, $"{expectedDate:yyyyMMdd}", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"證交所股價升降幅度回應日期 {echoed ?? "—"}，與要求的 {expectedDate:yyyyMMdd} 不符。");
+        }
+
+        if (!root.TryGetProperty("fields", out var fieldArray)
+            || fieldArray.ValueKind != JsonValueKind.Array
+            || !root.TryGetProperty("data", out var rows)
+            || rows.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("證交所股價升降幅度回應缺少 fields 或 data。");
+        }
+
+        string?[] expectedFields =
+        [
+            "證券代號", "證券名稱", "漲停價", "開盤競價基準", "跌停價",
+            "開盤競價基準", "收盤價", "買進揭示價", "賣出揭示價", "最近成交日"
+        ];
+        var fields = fieldArray.EnumerateArray().Select(field => field.GetString()).ToArray();
+
+        if (fields.Length < expectedFields.Length
+            || !expectedFields.Select((name, index) => fields[index] == name).All(match => match))
+        {
+            throw new InvalidDataException("證交所股價升降幅度的欄位順序和預期不同，停止解析避免參考價錯位。");
+        }
+
+        const int TickerColumn = 0;
+        const int ReferenceColumn = 3;
+        const int PreviousReferenceColumn = 5;
+        const int PreviousCloseColumn = 6;
+        const int PreviousBidColumn = 7;
+        const int PreviousAskColumn = 8;
+        var result = new List<ReferenceRow>();
+
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (row.ValueKind != JsonValueKind.Array || row.GetArrayLength() <= PreviousAskColumn)
+            {
+                continue;
+            }
+
+            var ticker = QuoteFieldParser.ReadCell(row, TickerColumn)?.Trim();
+
+            if (string.IsNullOrEmpty(ticker) || !include(ticker))
+            {
+                continue;
+            }
+
+            result.Add(new ReferenceRow
+            {
+                Market = Market.Twse,
+                Ticker = ticker,
+                Reference = Positive(QuoteFieldParser.ReadCell(row, ReferenceColumn)),
+                PreviousReference = Positive(QuoteFieldParser.ReadCell(row, PreviousReferenceColumn)),
+                PreviousClose = Positive(QuoteFieldParser.ReadCell(row, PreviousCloseColumn)),
+                PreviousBid = Positive(QuoteFieldParser.ReadCell(row, PreviousBidColumn)),
+                PreviousAsk = Positive(QuoteFieldParser.ReadCell(row, PreviousAskColumn))
+            });
+        }
+
+        return result;
+    }
+
+    private static decimal? Positive(string? raw)
+        => QuoteFieldParser.ParseNullableDecimal(raw) is > 0m and var value ? value : null;
 
     public async Task<MarketIndexQuote?> GetMarketIndexAsync(
         DateOnly tradingDate,

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Infrastructure.MarketData.Reference;
 
 namespace Invest.Web.Infrastructure.MarketData.Tpex;
 
@@ -57,6 +58,97 @@ public sealed class TpexEmergingDailyQuoteClient(
 
         logger.LogInformation("興櫃 {Date:yyyy-MM-dd}：{Count} 檔。", tradingDate, quotes.Count);
         return quotes;
+    }
+
+    /// <summary>
+    /// 取得指定日期每一檔興櫃的官方參考價（前日均價）。和 <see cref="GetDailyQuotesAsync"/> 讀同一份回應。
+    /// </summary>
+    /// <param name="include">只保留行情快取裡有的代號。</param>
+    public async Task<IReadOnlyList<ReferenceRow>> GetReferenceRowsAsync(
+        DateOnly tradingDate,
+        Func<string, bool> include,
+        CancellationToken cancellationToken = default)
+    {
+        using var body = new FormUrlEncodedContent(
+        [
+            new("date", tradingDate.ToString("yyyy/MM/dd")),
+            new("response", "json")
+        ]);
+        using var request = new HttpRequestMessage(HttpMethod.Post, Url) { Content = body };
+
+        request.Headers.Referrer = new Uri(RefererUrl);
+
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+        return ParseReferenceRows(document.RootElement, include);
+    }
+
+    /// <summary>
+    /// 興櫃的參考價就是官方的「前日均價」，原值保留，<b>不</b>像 <see cref="EmergingDailyBar"/>
+    /// 為了畫 K 棒而夾進當日高低之間。一般交易日它等於前一個有成交日的日均價
+    ///（2026-07-01～07-03、07-20～07-28 共八個交易日逐檔核對，0 筆不符）。
+    /// </summary>
+    internal static IReadOnlyList<ReferenceRow> ParseReferenceRows(JsonElement root, Func<string, bool> include)
+    {
+        if (!root.TryGetProperty("stat", out var status)
+            || !string.Equals(status.GetString(), "ok", StringComparison.OrdinalIgnoreCase)
+            || !root.TryGetProperty("tables", out var tables)
+            || tables.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("櫃買中心興櫃日統計回應格式不符預期。");
+        }
+
+        var table = tables.EnumerateArray().FirstOrDefault();
+
+        if (table.ValueKind != JsonValueKind.Object
+            || !table.TryGetProperty("fields", out var fields)
+            || !table.TryGetProperty("data", out var rows)
+            || rows.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("櫃買中心興櫃日統計缺少欄位或資料列。");
+        }
+
+        if (rows.GetArrayLength() == 0)
+        {
+            return [];
+        }
+
+        var columns = Columns.From(fields)
+            ?? throw new InvalidDataException("櫃買中心興櫃日統計缺少必要欄位，停止解析避免數字錯位。");
+        var result = new List<ReferenceRow>();
+
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (row.ValueKind != JsonValueKind.Array || row.GetArrayLength() <= columns.MaxIndex)
+            {
+                continue;
+            }
+
+            var ticker = QuoteFieldParser.ReadCell(row, columns.Ticker)?.Trim();
+
+            if (!QuoteFieldParser.IsCommonStockTicker(ticker) || !include(ticker!))
+            {
+                continue;
+            }
+
+            var average = QuoteFieldParser.ParseNullableDecimal(QuoteFieldParser.ReadCell(row, columns.Average));
+            var previousAverage = QuoteFieldParser.ParseNullableDecimal(
+                QuoteFieldParser.ReadCell(row, columns.PreviousAverage));
+
+            result.Add(new ReferenceRow
+            {
+                Market = Market.Emerging,
+                Ticker = ticker!,
+                Close = average is > 0m ? average : null,
+                Reference = previousAverage is > 0m ? previousAverage : null
+            });
+        }
+
+        return [.. result.OrderBy(item => item.Ticker, StringComparer.Ordinal)];
     }
 
     /// <summary>
