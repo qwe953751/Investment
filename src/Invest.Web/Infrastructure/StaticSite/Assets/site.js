@@ -22377,6 +22377,9 @@ let topicMemberSortKey = 'marketShare';
 let topicMemberSortDescending = true;
 // 熱度排行直接在目前表格內展開成員，不切換到族群列表分頁。
 let topicHeatExpandedId = null;
+let topicBubbleResizeObserver = null;
+let topicBubbleSortKey = 'composite';
+let topicBubbleSortDescending = true;
 let topicTreeSearch = '';
 let topicTreeFilter = 'all';
 
@@ -22925,6 +22928,8 @@ function renderTopicTabs() {
 }
 
 function renderTopicPanel() {
+    topicBubbleResizeObserver?.disconnect();
+    topicBubbleResizeObserver = null;
     const panel = el('topic-panel');
     panel.replaceChildren();
 
@@ -24190,7 +24195,7 @@ const TOPIC_HEAT_PRESENTATIONS = [
     {
         key: 'bubble',
         text: '泡泡圖',
-        hint: '用資金熱度、價格反應與族群廣度快速看目前最熱的族群；點擊泡泡可展開成員。'
+        hint: '用成交活動熱度、價格反應與族群廣度看目前最熱的族群；點擊泡泡或排行標記，再點同一族群還原。'
     }
 ];
 
@@ -24296,13 +24301,6 @@ function renderTopicHeat(panel) {
     if (state.topicHeatPresentation === 'bubble') {
         panel.append(makeTopicHeatBubble(rows, period));
 
-        const expandedRow = rows.find(row => row.topicId === topicHeatExpandedId);
-
-        if (expandedRow) {
-            panel.append(makeTopicMemberBlock(expandedRow));
-        }
-
-        panel.append(makeTopicHeatFooter(period));
         return;
     }
 
@@ -24459,195 +24457,159 @@ function topicBubbleHint(row) {
     return `${name}；廣度調整價格反應 ${topicBubbleRateText(row.breadthAdjustedPriceReactionRate)}，`
         + `成交值加權漲跌 ${topicBubbleRateText(row.weightedPriceChangeRate)}，`
         + `族群廣度 ${topicScoreText(row.breadthScore)}，`
-        + `資金熱度 ${topicScoreText(row.fundScore)}。點擊查看成員。`;
+        + `資金熱度 ${topicScoreText(row.fundScore)}。點擊標記並查看成員，再點同一族群還原並收合。`;
 }
 
+function topicBubbleElement(tag, cls='', text='') {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text) node.textContent = text;
+    return node;
+}
 function makeTopicHeatBubble(rows, period) {
-    const section = document.createElement('section');
-    section.className = 'topic-heat-bubble-card';
-
-    const heading = document.createElement('div');
-    heading.className = 'topic-heat-bubble-heading';
-
-    const title = document.createElement('h3');
-    title.textContent = '熱門族群泡泡圖';
-
-    const subtitle = document.createElement('p');
-    subtitle.textContent = `目前範圍：${period.period ?? '—'}。點擊泡泡可在圖下方展開成員。`;
-    heading.append(title, subtitle);
-
-    const legend = document.createElement('div');
-    legend.className = 'topic-heat-bubble-legend';
-
-    for (const item of [
-        ['broad', '族群廣度 ≥ 60 分'],
-        ['narrow', '族群廣度 ≤ 40 分'],
-        ['neutral', '中性／資料不足']
-    ]) {
-        const legendItem = document.createElement('span');
-        legendItem.className = 'topic-heat-bubble-legend-item';
-        const swatch = document.createElement('span');
-        swatch.className = `topic-heat-bubble-swatch topic-heat-bubble-${item[0]}`;
-        swatch.setAttribute('aria-hidden', 'true');
-        legendItem.append(swatch, item[1]);
-        legend.append(legendItem);
+    let selectedId = null;
+    const card = topicBubbleElement('section', 'topic-heat-bubble-card topic-bubble-layout');
+    const visible = [...rows].filter(r=>topicBubbleScore(r.fundScore)!==null && topicBubbleRate(r.breadthAdjustedPriceReactionRate)!==null)
+        .sort((a,b)=>(b.compositeScore??-1)-(a.compositeScore??-1)||topicName(a.topicId).localeCompare(topicName(b.topicId),'zh-Hant'))
+        .slice(0,TOPIC_HEAT_BUBBLE_COUNT);
+    if (!visible.length) {card.append(makeTopicNotice('此期間沒有可繪製資料。',false)); return card;}
+    if (!visible.some(r=>r.topicId===selectedId)) selectedId=null;
+    const chart=topicBubbleElement('div','topic-heat-bubble-chart');
+    const ranking=topicBubbleElement('div','topic-bubble-ranking');
+    const rankingScroll=topicBubbleElement('div','topic-bubble-ranking-scroll');
+    rankingScroll.setAttribute('aria-label', '族群排行，可上下捲動');
+    const memberHost=topicBubbleElement('section','topic-bubble-members');
+    memberHost.setAttribute('aria-label','選取族群的成員列表');
+    const topTitle=topicBubbleElement('h3','',`市場熱度前 ${visible.length}`);
+    const compositeButton=topicBubbleElement('button','topic-bubble-order-button');
+    compositeButton.type='button';
+    ranking.append(topTitle,compositeButton);
+    const table=topicBubbleElement('table','topic-bubble-ranking-table');
+    const head=topicBubbleElement('thead'),tr=topicBubbleElement('tr');
+    const first=topicBubbleElement('th','','#');tr.append(first);
+    const headerButtons=new Map();
+    for (const [key,label] of [['name','族群'],['fund','活動熱度'],['price','價格反應']]) {
+        const th=topicBubbleElement('th');const button=topicBubbleElement('button','topic-bubble-sort-button',label);button.type='button';
+        button.addEventListener('click',()=>sortBy(key));th.append(button);tr.append(th);headerButtons.set(key,{th,button,label});
     }
-
-    const note = document.createElement('p');
-    note.className = 'topic-heat-bubble-note';
-    note.textContent = '橫軸資金熱度；縱軸為廣度調整後價格反應（價格反應 80%、族群廣度最多修正 20%）。泡泡越大代表族群目前成交值越高。';
-
-    const chartRows = [...rows]
-        .filter(row => topicBubbleScore(row.fundScore) !== null
-            && topicBubbleRate(row.breadthAdjustedPriceReactionRate) !== null)
-        .sort((left, right) => (topicBubbleScore(right.compositeScore) ?? -1) - (topicBubbleScore(left.compositeScore) ?? -1)
-            || topicName(left.topicId).localeCompare(topicName(right.topicId), 'zh-Hant'));
-    const visibleRows = chartRows.slice(0, TOPIC_HEAT_BUBBLE_COUNT);
-
-    if (visibleRows.length === 0) {
-        section.append(heading, note, makeTopicNotice(
-            '目前資料尚未包含廣度調整後價格反應，請先更新網站快照或切回列表查看。', false));
-        return section;
+    head.append(tr);table.append(head);const body=topicBubbleElement('tbody');table.append(body);rankingScroll.append(table);ranking.append(rankingScroll);
+    card.append(chart,ranking,memberHost);
+    let svg=null,lastWidth=0;
+    const marks=new Map();
+    let listButtons=new Map();
+    function sortBy(key) {
+        if (topicBubbleSortKey===key) topicBubbleSortDescending=!topicBubbleSortDescending;
+        else {topicBubbleSortKey=key;topicBubbleSortDescending=key!=='name';}
+        renderRanking();
     }
-
-    const compact = window.matchMedia('(max-width: 720px)').matches;
-    const width = compact ? 390 : 720;
-    const height = 430;
-    const left = compact ? 54 : 70;
-    const right = compact ? 336 : 672;
-    const top = 52;
-    const bottom = 334;
-    const plotWidth = right - left;
-    const plotHeight = bottom - top;
-    const reactionMax = Math.max(...visibleRows.map(row =>
-        Math.abs(topicBubbleRate(row.breadthAdjustedPriceReactionRate))), 0);
-    const yLimit = Math.max(0.02, Math.ceil(reactionMax * 100 / 2) * 0.02);
-    const zeroY = top + plotHeight / 2;
-    const halfPlotHeight = plotHeight / 2;
-    const x = value => left + topicBubbleScore(value) / 100 * plotWidth;
-    const y = value => zeroY - topicBubbleRate(value) / yLimit * halfPlotHeight;
-    const svg = svgElement('svg', {
-        class: 'topic-heat-bubble-svg',
-        viewBox: `0 0 ${width} ${height}`,
-        role: 'img',
-        'aria-label': '熱門族群泡泡圖：橫軸資金熱度、縱軸廣度調整後價格反應、泡泡大小為目前成交值'
-    });
-
-    for (const ratio of [1, 0.5, 0, -0.5, -1]) {
-        const yPosition = zeroY - ratio * halfPlotHeight;
-        svg.append(
-            svgElement('line', {
-                class: 'topic-heat-bubble-grid',
-                x1: left,
-                x2: right,
-                y1: yPosition,
-                y2: yPosition
-            }),
-            svgElement('text', {
-                class: 'topic-heat-bubble-axis',
-                x: left - 8,
-                y: yPosition + 4,
-                'text-anchor': 'end'
-            }, topicBubbleRateText(ratio * yLimit)));
-    }
-
-    for (const ratio of [0, 0.5, 1]) {
-        const xPosition = left + ratio * plotWidth;
-        svg.append(
-            svgElement('line', {
-                class: 'topic-heat-bubble-grid',
-                x1: xPosition,
-                x2: xPosition,
-                y1: top,
-                y2: bottom
-            }),
-            svgElement('text', {
-                class: 'topic-heat-bubble-axis',
-                x: xPosition,
-                y: bottom + 18,
-                'text-anchor': 'middle'
-            }, String(Math.round(ratio * 100))));
-    }
-
-    svg.append(
-        svgElement('text', {
-            class: 'topic-heat-bubble-axis-title',
-            x: (left + right) / 2,
-            y: height - 18,
-            'text-anchor': 'middle'
-        }, compact ? '資金熱度　低 → 高' : '資金熱度　低 ←　　　　　　　　　→ 高'),
-        svgElement('text', {
-            class: 'topic-heat-bubble-axis-title',
-            x: 16,
-            y: zeroY,
-            transform: `rotate(-90 16 ${zeroY})`,
-            'text-anchor': 'middle'
-        }, compact ? '價格反應　負 ← 正' : '價格反應（廣度調整）　負 ←　　　　　　　　　→ 正'));
-
-    const maxFundRaw = Math.max(...visibleRows.map(row => Math.max(0, Number(row.fundRawShare) || 0)), 0);
-    for (const row of visibleRows) {
-        const fundRaw = Math.max(0, Number(row.fundRawShare) || 0);
-        const radius = 13 + Math.sqrt(maxFundRaw > 0 ? fundRaw / maxFundRaw : 0) * 27;
-        const centerX = x(row.fundScore);
-        const centerY = y(row.breadthAdjustedPriceReactionRate);
-        const hint = topicBubbleHint(row);
-        const bubble = svgElement('g', {
-            class: `topic-heat-bubble topic-heat-bubble-${topicBubbleBreadthClass(row)}`,
-            role: 'button',
-            tabindex: 0,
-            'aria-label': hint,
-            'data-topic-id': row.topicId
+    compositeButton.addEventListener('click',()=>sortBy('composite'));
+    function sortValue(row) {return topicBubbleSortKey==='price'?row.breadthAdjustedPriceReactionRate:topicBubbleSortKey==='fund'?row.fundScore:row.compositeScore;}
+    function renderRanking() {
+        compositeButton.textContent='市場熱度'+(topicBubbleSortKey==='composite'?(topicBubbleSortDescending?' ▼':' ▲'):'');
+        compositeButton.setAttribute('aria-pressed',String(topicBubbleSortKey==='composite'));
+        for (const [key,{th,button,label}] of headerButtons) {
+            button.textContent=label+(topicBubbleSortKey===key?(topicBubbleSortDescending?' ▼':' ▲'):'');
+            th.setAttribute('aria-sort',topicBubbleSortKey===key?(topicBubbleSortDescending?'descending':'ascending'):'none');
+        }
+        const ordered=[...visible].sort((a,b)=> {
+            let difference=topicBubbleSortKey==='name'?topicName(a.topicId).localeCompare(topicName(b.topicId),'zh-Hant'):Number(sortValue(a))-Number(sortValue(b));
+            if (difference===0) return topicName(a.topicId).localeCompare(topicName(b.topicId),'zh-Hant');
+            return topicBubbleSortDescending?-difference:difference;
         });
-
-        bubble.append(
-            svgElement('title', {}, hint),
-            svgElement('circle', {
-                class: 'topic-heat-bubble-circle',
-                cx: centerX,
-                cy: centerY,
-                r: radius
-            }),
-            svgElement('text', {
-                class: 'topic-heat-bubble-label',
-                x: centerX,
-                y: centerY - 2,
-                'text-anchor': 'middle'
-            }, topicBubbleLabel(row)),
-            svgElement('text', {
-                class: 'topic-heat-bubble-score',
-                x: centerX,
-                y: centerY + 14,
-                'text-anchor': 'middle'
-            }, topicBubbleRateText(row.breadthAdjustedPriceReactionRate)));
-
-        const activate = () => toggleTopicHeatMembers(row.topicId);
-        bubble.addEventListener('click', activate);
-        bubble.addEventListener('keydown', event => {
-            if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                activate();
-            }
+        body.replaceChildren();listButtons=new Map();
+        ordered.forEach((row,index)=> {
+            const item=topicBubbleElement('tr');item.dataset.topicId=row.topicId;item.classList.toggle('is-selected',row.topicId===selectedId);
+            const rank=topicBubbleElement('td','topic-bubble-index',String(index+1));
+            const name=topicBubbleElement('td');const button=topicBubbleElement('button','topic-bubble-topic-button',topicName(row.topicId));button.type='button';
+            button.setAttribute('aria-pressed',String(row.topicId===selectedId));button.setAttribute('aria-expanded',String(row.topicId===selectedId));
+            button.addEventListener('click',()=>select(row));name.append(button);
+            const fund=topicBubbleElement('td','topic-bubble-number',topicScoreText(row.fundScore));
+            const rate=Number(row.breadthAdjustedPriceReactionRate);
+            const value=topicBubbleElement('td','topic-bubble-number '+(rate>0?'topic-heat-bubble-rate-up':rate<0?'topic-heat-bubble-rate-down':''),topicBubbleRateText(rate));
+            item.append(rank,name,fund,value);body.append(item);listButtons.set(row.topicId,{item,button});
         });
-        svg.append(bubble);
+        revealSelectedTopic();
     }
-
-    const countNote = document.createElement('p');
-    countNote.className = 'topic-heat-bubble-count';
-    const omitted = chartRows.length - visibleRows.length;
-    const unavailable = rows.length - chartRows.length;
-    countNote.textContent = omitted > 0
-        ? `顯示市場熱度前 ${visibleRows.length} 個族群；其餘 ${omitted} 個仍保留在列表。`
-        : `共顯示 ${visibleRows.length} 個族群。`;
-
-    if (unavailable > 0) {
-        countNote.textContent += `另有 ${unavailable} 個族群資料不足，未繪製。`;
+    function revealSelectedTopic() {
+        const item = listButtons.get(selectedId)?.item;
+        if (!item || !rankingScroll.isConnected || rankingScroll.clientHeight === 0) {
+            return;
+        }
+        const viewport = rankingScroll.getBoundingClientRect();
+        const row = item.getBoundingClientRect();
+        const headerHeight = head.getBoundingClientRect().height;
+        const visibleTop = viewport.top + headerHeight + 4;
+        const visibleBottom = viewport.bottom - 4;
+        if (row.top >= visibleTop && row.bottom <= visibleBottom) {
+            return;
+        }
+        // 只捲排行容器，避開固定表頭；不捲整頁、不移動使用者的焦點。
+        const availableHeight = rankingScroll.clientHeight - headerHeight;
+        const target = rankingScroll.scrollTop + row.top - viewport.top - headerHeight
+            - Math.max(0, (availableHeight - row.height) / 2);
+        rankingScroll.scrollTo({ top: Math.max(0, target), behavior: 'instant' });
     }
-
-    const chart = document.createElement('div');
-    chart.className = 'topic-heat-bubble-chart';
-    chart.append(svg);
-    section.append(heading, legend, note, chart, countNote);
-    return section;
+    function applySelection() {
+        const focused=document.activeElement;
+        for (const [id,mark] of marks) {
+            mark.classList.toggle('is-selected',id===selectedId);
+            mark.classList.toggle('is-dimmed',selectedId!==null&&id!==selectedId);
+            mark.setAttribute('aria-pressed',String(id===selectedId));
+        }
+        for(const [id,{item,button}] of listButtons){item.classList.toggle('is-selected',id===selectedId);button.setAttribute('aria-pressed',String(id===selectedId));button.setAttribute('aria-expanded',String(id===selectedId));}
+        if (selectedId!==null&&marks.has(selectedId))svg.append(marks.get(selectedId));
+        else for(const mark of marks.values())svg.append(mark);
+        if(focused?.classList.contains('topic-heat-bubble')&&focused.isConnected)focused.focus({preventScroll:true});
+    }
+    function renderMembers() {
+        memberHost.replaceChildren();memberHost.hidden=selectedId===null;
+        if(memberHost.hidden)return;
+        const row=visible.find(r=>r.topicId===selectedId);
+        const heading=topicBubbleElement('div','topic-bubble-member-heading');
+        heading.append(topicBubbleElement('h3','',topicName(row.topicId)+' · 族群成員'));
+        const close=topicBubbleElement('button','topic-bubble-close','收合');close.type='button';close.addEventListener('click',()=>select(row));heading.append(close);memberHost.append(heading);
+        const content=topicBubbleElement('div','topic-bubble-member-content');memberHost.append(content);
+        content.append(makeTopicMemberSection(row,renderMembers,renderMembers));
+    }
+    function select(row) {
+        closeKLine(false);
+        closeRevenueDetails(false);
+        const newlySelected=row.topicId!==selectedId;
+        selectedId=newlySelected?row.topicId:null;
+        if(newlySelected){topicMemberFilter='all';topicMemberSortKey='marketShare';topicMemberSortDescending=true;}
+        applySelection();renderMembers();revealSelectedTopic();
+    }
+    function draw() {
+        const width=Math.round(chart.clientWidth);if(width<=0||width===lastWidth)return;lastWidth=width;
+        const compact=width<600,height=compact?460:680,maxRadius=compact?40:64;
+        card.style.setProperty('--topic-bubble-height', `${height}px`);
+        const L=compact?55:70,R=width-maxRadius-16,T=maxRadius+44,B=height-maxRadius-45;
+        const maxScore=Math.max(...visible.map(r=>Number(r.fundScore)),0);
+        const xMax=Math.min(100,Math.max(10,Math.ceil((maxScore+2)/10)*10));
+        const rateMax=Math.max(...visible.map(r=>Math.abs(Number(r.breadthAdjustedPriceReactionRate))),0);
+        const yMax=Math.max(.03,Math.ceil(rateMax/.01)*.01);
+        const x=row=>L+Number(row.fundScore)/xMax*(R-L);
+        const focusedId=document.activeElement?.closest('.topic-heat-bubble')?.dataset.topicId;
+        const y=rate=>T+(yMax-rate)/(2*yMax)*(B-T);
+        svg=svgElement('svg',{class:'topic-heat-bubble-svg',width,height,viewBox:`0 0 ${width} ${height}`,role:'group','aria-label':'自適應線性軸泡泡圖：成交活動熱度為原分數，價格反應 80%、族群廣度最多修正 20%'});
+        for(const ratio of [1,.5,0,-.5,-1]){const yy=y(ratio*yMax);svg.append(svgElement('line',{class:ratio===0?'topic-heat-bubble-zero':'topic-heat-bubble-grid',x1:L,x2:R,y1:yy,y2:yy}),svgElement('text',{class:'topic-heat-bubble-axis',x:L-8,y:yy+4,'text-anchor':'end'},topicBubbleRateText(ratio*yMax)));}
+        const ticks=compact?[0,xMax/2,xMax]:[0,xMax/4,xMax/2,xMax*.75,xMax];
+        ticks.forEach(value=>{const xx=L+value/xMax*(R-L);svg.append(svgElement('line',{class:'topic-heat-bubble-grid',x1:xx,x2:xx,y1:T,y2:B}),svgElement('text',{class:'topic-heat-bubble-axis',x:xx,y:B+24,'text-anchor':'middle'},Number(value.toFixed(1)).toString()));});
+        svg.append(svgElement('text',{class:'topic-heat-bubble-axis-title',x:L,y:27},'價格反應（廣度調整）'),svgElement('text',{class:'topic-heat-bubble-axis-title',x:(L+R)/2,y:height-12,'text-anchor':'middle'},'成交活動熱度（原分數） →'));
+        const maxShare=Math.max(...visible.map(r=>Math.max(0,Number(r.fundRawShare)||0)),0);
+        const ordered=[...visible].sort((a,b)=>Number(b.fundRawShare)-Number(a.fundRawShare));marks.clear();
+        for(const row of ordered){const xx=x(row),yy=y(Number(row.breadthAdjustedPriceReactionRate)),radius=Math.sqrt(maxShare>0?Math.max(0,Number(row.fundRawShare)||0)/maxShare:0)*maxRadius;
+            const mark=svgElement('g',{class:`topic-heat-bubble topic-heat-bubble-${topicBubbleBreadthClass(row)}`,role:'button',tabindex:0,'aria-pressed':'false','data-topic-id':row.topicId,'aria-label':topicName(row.topicId)+'，活動熱度 '+topicScoreText(row.fundScore)+'，點擊查看成員'});
+            mark.append(svgElement('title',{},topicName(row.topicId)+' · 活動熱度 '+topicScoreText(row.fundScore)+' · '+topicBubbleRateText(row.breadthAdjustedPriceReactionRate)),svgElement('circle',{class:'topic-heat-bubble-hit',cx:xx,cy:yy,r:Math.max(22,radius)}),svgElement('circle',{class:'topic-heat-bubble-circle',cx:xx,cy:yy,r:radius}));
+            const detail=svgElement('g',{class:'topic-bubble-content'});detail.append(svgElement('text',{class:'topic-heat-bubble-label',x:xx,y:yy-3,'text-anchor':'middle'},topicBubbleLabel(row)),svgElement('text',{class:'topic-heat-bubble-score',x:xx,y:yy+16,'text-anchor':'middle'},topicBubbleRateText(row.breadthAdjustedPriceReactionRate)));mark.append(detail);
+            mark.addEventListener('click',()=>select(row));mark.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();select(row);}});svg.append(mark);marks.set(row.topicId,mark);
+        }
+        chart.replaceChildren(svg);applySelection();revealSelectedTopic();
+        if(focusedId && marks.has(focusedId)) marks.get(focusedId).focus({preventScroll:true});
+    }
+    renderRanking();renderMembers();
+    if(typeof ResizeObserver!=='undefined'){topicBubbleResizeObserver=new ResizeObserver(draw);topicBubbleResizeObserver.observe(chart);}
+    requestAnimationFrame(()=>{if(card.isConnected)draw();});return card;
 }
 
 function toggleTopicHeatMembers(topicId) {
