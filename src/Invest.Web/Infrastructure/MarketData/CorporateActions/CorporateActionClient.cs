@@ -138,10 +138,15 @@ public sealed class CorporateActionClient(
     /// 完全沒有成交（桂田文創 4806 於 2025-10-03 減資恢復買賣，當天無成交也就沒有當天的參考價，要到下一個交易日
     /// 才有成交），以及減資剛好和除權息同一天，規則偵測會被事件表搶先。公告表的數字就是交易所的答案，直接當事件用。
     ///
+    /// 上市的公告表是「盡力而為」：證交所每日參考價（TWT84U）連恢復買賣當天沒有成交的標的也有當天的基準，
+    /// 規則不會漏掉上市；而這幾支證交所網頁端點從 GitHub 的雲端 IP 會回網頁而不是 JSON（2026-10-10 實測），
+    /// 讀不到就記在 <see cref="ResumptionFetch.BestEffortFailures"/>，不讓整個月份判定失敗。
+    /// 上櫃的四張沒有這個問題，而且是必要的（上櫃正是規則看不到的那一類），任何一張讀不到都算失敗。
+    ///
     /// 兩個市場各自循序請求（每次請求之間等 <paramref name="pause"/>，證交所會封鎖密集請求），兩個市場同時進行。
     /// 尚未公布參考價的預告列（價格是「-」）略過；日期早於、晚於查詢區間的列代表回應不是我們要的區間，直接失敗。
     /// </summary>
-    public async Task<IReadOnlyList<ReferenceAction>> GetResumptionsAsync(
+    public async Task<ResumptionFetch> GetResumptionsAsync(
         DateOnly startDate,
         DateOnly endDate,
         TimeSpan pause,
@@ -154,50 +159,67 @@ public sealed class CorporateActionClient(
 
         var twseTask = ReadSequentiallyAsync(
             [
-                token => ReadTwseResumptionAsync(
+                (TwseReductionSource, token => ReadTwseResumptionAsync(
                     "reducation/TWTAUU", TwseReductionSource, "減資", null, "股票代號",
-                    startDate, endDate, token),
-                token => ReadTwseResumptionAsync(
+                    startDate, endDate, token)),
+                (TwseParValueSource, token => ReadTwseResumptionAsync(
                     "change/TWTB8U", TwseParValueSource, "面額變更", null, "股票代號",
-                    startDate, endDate, token),
-                token => ReadTwseResumptionAsync(
+                    startDate, endDate, token)),
+                (TwseEtfSplitSource, token => ReadTwseResumptionAsync(
                     "split/TWTCAU", TwseEtfSplitSource, "分割", "分割(反分割)", "ETF代號",
-                    startDate, endDate, token)
+                    startDate, endDate, token))
             ],
             pause,
             cancellationToken);
         var tpexTask = ReadSequentiallyAsync(
             [
-                token => ReadTpexResumptionAsync(
-                    "revivt", TpexReductionSource, "減資", "股票代號", startDate, endDate, token),
-                token => ReadTpexResumptionAsync(
-                    "pvChgRslt", TpexParValueSource, "面額變更", "證券代號", startDate, endDate, token),
-                token => ReadTpexResumptionAsync(
-                    "etfSplitRslt", TpexEtfSplitSource, "分割", "證券代號", startDate, endDate, token),
-                token => ReadTpexResumptionAsync(
-                    "etfRvsRslt", TpexEtfReverseSplitSource, "反分割", "證券代號", startDate, endDate, token)
+                (TpexReductionSource, token => ReadTpexResumptionAsync(
+                    "revivt", TpexReductionSource, "減資", "股票代號", startDate, endDate, token)),
+                (TpexParValueSource, token => ReadTpexResumptionAsync(
+                    "pvChgRslt", TpexParValueSource, "面額變更", "證券代號", startDate, endDate, token)),
+                (TpexEtfSplitSource, token => ReadTpexResumptionAsync(
+                    "etfSplitRslt", TpexEtfSplitSource, "分割", "證券代號", startDate, endDate, token)),
+                (TpexEtfReverseSplitSource, token => ReadTpexResumptionAsync(
+                    "etfRvsRslt", TpexEtfReverseSplitSource, "反分割", "證券代號", startDate, endDate, token))
             ],
             pause,
             cancellationToken);
         await Task.WhenAll(twseTask, tpexTask);
 
-        var result = new List<ReferenceAction>();
-        result.AddRange(await twseTask);
-        result.AddRange(await tpexTask);
-        result.Sort((left, right) =>
+        var twse = await twseTask;
+        var tpex = await tpexTask;
+        var actions = new List<ReferenceAction>([.. twse.Actions, .. tpex.Actions]);
+        actions.Sort((left, right) =>
         {
             var date = left.Date.CompareTo(right.Date);
             return date != 0 ? date : string.CompareOrdinal(left.Ticker, right.Ticker);
         });
-        return result;
+
+        return new ResumptionFetch(actions, tpex.Failures, twse.Failures);
     }
 
-    private async Task<IReadOnlyList<ReferenceAction>> ReadSequentiallyAsync(
-        IReadOnlyList<Func<CancellationToken, Task<IReadOnlyList<ReferenceAction>>>> reads,
+    /// <summary>一個月的恢復買賣公告查詢結果：讀到的事件，加上哪些表讀不到。</summary>
+    /// <param name="Actions">讀得到的表上的事件（讀不到的表不影響其他表）。</param>
+    /// <param name="RequiredFailures">必要的表（上櫃）讀不到的清單；不是空的就代表這個月還不能算查完。</param>
+    /// <param name="BestEffortFailures">盡力而為的表（上市）讀不到的清單；只記警告，不擋月份。</param>
+    public sealed record ResumptionFetch(
+        IReadOnlyList<ReferenceAction> Actions,
+        IReadOnlyList<string> RequiredFailures,
+        IReadOnlyList<string> BestEffortFailures);
+
+    private sealed record SequenceResult(IReadOnlyList<ReferenceAction> Actions, IReadOnlyList<string> Failures);
+
+    /// <summary>
+    /// 一張一張循序讀，某一張讀不到不影響其他張：記下失敗的來源，繼續讀下一張。
+    /// 只有取消才會往外丟。
+    /// </summary>
+    private async Task<SequenceResult> ReadSequentiallyAsync(
+        IReadOnlyList<(string Source, Func<CancellationToken, Task<IReadOnlyList<ReferenceAction>>> Read)> reads,
         TimeSpan pause,
         CancellationToken cancellationToken)
     {
-        var result = new List<ReferenceAction>();
+        var actions = new List<ReferenceAction>();
+        var failures = new List<string>();
 
         for (var index = 0; index < reads.Count; index++)
         {
@@ -206,10 +228,22 @@ public sealed class CorporateActionClient(
                 await Task.Delay(pause, cancellationToken);
             }
 
-            result.AddRange(await reads[index](cancellationToken));
+            try
+            {
+                actions.AddRange(await reads[index].Read(cancellationToken));
+            }
+            catch (Exception exception)
+                when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                failures.Add(reads[index].Source);
+                logger.LogWarning(
+                    "{Source} 讀取失敗：{Message}",
+                    reads[index].Source,
+                    exception.Message);
+            }
         }
 
-        return result;
+        return new SequenceResult(actions, failures);
     }
 
     private Task<IReadOnlyList<ReferenceAction>> ReadTwseResumptionAsync(
@@ -232,7 +266,7 @@ public sealed class CorporateActionClient(
                     "https://www.twse.com.tw/zh/announcement/ex-right/twt49u.html");
                 using var response = await httpClient.SendAsync(request, token);
                 response.EnsureSuccessStatusCode();
-                RequireJson(response, source);
+                await RequireJsonWithSnippetAsync(response, source, token);
                 await using var stream = await response.Content.ReadAsStreamAsync(token);
                 using var document = await JsonDocument.ParseAsync(stream, cancellationToken: token);
                 var root = document.RootElement;
@@ -274,7 +308,7 @@ public sealed class CorporateActionClient(
                 using var response = await httpClient.PostAsync(
                     $"https://www.tpex.org.tw/www/zh-tw/bulletin/{action}", content, token);
                 response.EnsureSuccessStatusCode();
-                RequireJson(response, source);
+                await RequireJsonWithSnippetAsync(response, source, token);
                 await using var stream = await response.Content.ReadAsStreamAsync(token);
                 using var document = await JsonDocument.ParseAsync(stream, cancellationToken: token);
                 var root = document.RootElement;
@@ -732,6 +766,33 @@ public sealed class CorporateActionClient(
         {
             throw new InvalidDataException($"{source} 查詢失敗：{status ?? "缺少 stat"}");
         }
+    }
+
+    /// <summary>
+    /// 和 <see cref="RequireJson"/> 一樣，但回網頁時把網頁開頭的文字放進例外訊息：
+    /// 「回應不是 JSON」光看類型分不出是被擋、限流還是維護頁，下次只能猜。
+    /// </summary>
+    private static async Task RequireJsonWithSnippetAsync(
+        HttpResponseMessage response,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        var mediaType = response.Content.Headers.ContentType?.MediaType;
+
+        if (string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var text = System.Text.RegularExpressions.Regex.Replace(
+            System.Text.RegularExpressions.Regex.Replace(
+                body, @"<script[\s\S]*?</script>|<style[\s\S]*?</style>|<[^>]+>", " "),
+            @"\s+", " ").Trim();
+        var snippet = text.Length > 160 ? text[..160] + "…" : text;
+
+        throw new InvalidDataException(
+            $"{source} 回應不是 JSON（Content-Type: {mediaType ?? "—"}，開頭：{(snippet.Length == 0 ? "（空白）" : snippet)}）。");
     }
 
     private static void RequireJson(HttpResponseMessage response, string source)

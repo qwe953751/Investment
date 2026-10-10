@@ -210,13 +210,31 @@ public sealed class ReferenceDownloader(
                 }
                 else
                 {
-                    fetched.AddRange(resumptions);
-                    coveredResumptions.Add((month, monthThrough));
+                    // 讀得到的表照樣併進事件簿（只增不減，重複的不會重複加）。
+                    fetched.AddRange(resumptions.Actions);
+
+                    if (resumptions.BestEffortFailures.Count > 0)
+                    {
+                        // 上市的公告表從雲端 IP 讀不到時只提醒：上市的每日官方參考價涵蓋同一批事件。
+                        progress?.Report(
+                            $"恢復買賣參考價公告 {month:yyyy-MM}：上市的 {string.Join("、", resumptions.BestEffortFailures)} 讀不到（上市由每日官方參考價涵蓋，不影響）");
+                    }
+
+                    if (resumptions.RequiredFailures.Count > 0)
+                    {
+                        allSucceeded = false;
+                        progress?.Report(
+                            $"恢復買賣參考價公告 {month:yyyy-MM}：{string.Join("、", resumptions.RequiredFailures)} 讀不到，下次重試");
+                    }
+                    else
+                    {
+                        coveredResumptions.Add((month, monthThrough));
+                    }
                 }
             }
         }
 
-        if (covered.Count > 0 || coveredResumptions.Count > 0)
+        if (covered.Count > 0 || coveredResumptions.Count > 0 || fetched.Count > 0)
         {
             await actionStore.SaveAsync(
                 ReferenceActionStore.Merge(book, fetched, covered, DateTimeOffset.Now, coveredResumptions),
