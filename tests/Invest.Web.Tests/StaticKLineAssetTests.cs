@@ -157,7 +157,7 @@ public sealed class StaticKLineAssetTests
 
         Assert.Contains("toPriceChangeCell", script, StringComparison.Ordinal);
         Assert.Contains("label: '日'", script, StringComparison.Ordinal);
-        Assert.Contains("label: '週'", script, StringComparison.Ordinal);
+        Assert.Contains("flags.weeklyFromListing ? '掛' : '週'", script, StringComparison.Ordinal);
         Assert.Contains("value: row => row.priceChange", script, StringComparison.Ordinal);
         Assert.Contains("row.weeklyPriceChange", script, StringComparison.Ordinal);
     }
@@ -1263,8 +1263,13 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("stockNameChangeClass(holding.priceChange)", script, StringComparison.Ordinal);
         Assert.Contains("const quoteSession = quote?.session ?? '盤後';", script, StringComparison.Ordinal);
         Assert.Contains("session: '盤中'", script, StringComparison.Ordinal);
-        Assert.Contains("?select=symbol,name,price,change_percent,trade_date", script, StringComparison.Ordinal);
-        Assert.Contains("String(row.trade_date ?? '') === today", script, StringComparison.Ordinal);
+
+        // 資產頁的台股報價和自訂頁同一份資料：盤中是 CDN 快照、盤後是 quotes-latest.json，
+        // 不再自己查資料庫、也不再用「純數字代號」的篩選（00631L 這類會被濾掉）。
+        Assert.Contains("function chooseAssetTwQuote", script, StringComparison.Ordinal);
+        Assert.Contains("data/quotes-latest.json", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("fetchAssetIntradayQuotes", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("/^\\d{4,6}$/.test(ticker)))];", script, StringComparison.Ordinal);
         Assert.Contains("function assetPersistHoldingSortOrders", script, StringComparison.Ordinal);
         Assert.Contains("const ASSET_EDITABLE_HOLDING_FIELDS = ['ticker', 'quantity', 'cost'];", script, StringComparison.Ordinal);
         Assert.Contains("市值 = 庫存數量 × 最新盤中價／收盤價", script, StringComparison.Ordinal);
@@ -2010,12 +2015,12 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("bars?.at(-1)?.date", script, StringComparison.Ordinal);
         Assert.Contains("payload?.market === 'US'", script, StringComparison.Ordinal);
         Assert.Contains("payload?.adjustmentMethod === 'raw-us-daily'", script, StringComparison.Ordinal);
-        Assert.Contains("payload?.adjustmentMethod === 'raw-tw-etf-daily'", script, StringComparison.Ordinal);
+        Assert.Contains("payload?.adjustmentMethod === 'forward-official-reference-tw-etf-daily'", script, StringComparison.Ordinal);
         Assert.Contains("美股日 K", script, StringComparison.Ordinal);
         Assert.Contains("await usDailyQuotes.LoadAllAsync(cancellationToken)", exporter, StringComparison.Ordinal);
         Assert.Contains("quote.Market == Market.Us", exporter, StringComparison.Ordinal);
         Assert.Contains("\"raw-us-daily\"", exporter, StringComparison.Ordinal);
-        Assert.Contains("\"raw-tw-etf-daily\"", exporter, StringComparison.Ordinal);
+        Assert.Contains("\"forward-official-reference-tw-etf-daily\"", exporter, StringComparison.Ordinal);
         Assert.Contains("asset-catalog.json", exporter, StringComparison.Ordinal);
     }
 

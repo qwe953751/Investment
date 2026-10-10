@@ -446,18 +446,35 @@ public sealed class PriceAdjustmentBuilderTests
     {
         var action = new ReferenceAction
         {
-            Date = D4, Market = Market.Tpex, Ticker = "6129", Kind = "權",
-            PreviousClose = 14.40m, ReferencePrice = 14.11m, Source = "TPEx exDailyQ"
+            Date = D4, Market = Market.Twse, Ticker = "6129", Kind = "權",
+            PreviousClose = 14.40m, ReferencePrice = 14.11m, Source = "TWSE TWT49U"
         };
 
         var table = PriceAdjustmentBuilder.Build(
-            [Snapshot(D3, Quote(Market.Tpex, "6129", 14.40m)), Snapshot(D4, Quote(Market.Tpex, "6129", 14.30m))],
+            [Snapshot(D3, Quote(Market.Twse, "6129", 14.40m)), Snapshot(D4, Quote(Market.Twse, "6129", 14.30m))],
             [],
             [action]);
 
         Assert.Equal(14.11m / 14.40m, Assert.Single(table.Adjustments).Factor);
         Assert.Equal(2, table.Report.UncoveredQuoteDays);
+
+        // 上市的基準價完全來自當天的參考價資料，沒有就不知道（使用端退回前收盤乘事件倍數）。
         Assert.Null(table.BaseFor("6129", D4));
+    }
+
+    [Fact]
+    public void 上櫃沒有當天的表格也算得出事件_次日參考價在前一天的那一列()
+    {
+        // 盤中收集器就是這個情況：今天的上櫃收盤表要 15:00 才有，但前一天那列的次日參考價已經是今天的基準。
+        var table = PriceAdjustmentBuilder.Build(
+            [Snapshot(D3, Quote(Market.Tpex, "00950B", 14.26m, StockKind.Etf)),
+             Snapshot(D4, Quote(Market.Tpex, "00950B", null, StockKind.Etf))],
+            [References(D3, tpex: true, rows: Tpex("00950B", 14.26m, 14.39m, 14.20m, bid: 14.25m, ask: 14.26m))],
+            []);
+
+        var action = Assert.Single(table.Adjustments);
+        Assert.Equal(14.20m / 14.26m, action.Factor);
+        Assert.Equal(14.20m, table.BaseFor("00950B", D4));
     }
 
     [Fact]

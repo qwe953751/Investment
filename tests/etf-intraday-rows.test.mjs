@@ -10,6 +10,9 @@ import vm from 'node:vm';
 // 其餘 297 檔不是顯示 —，而是成交值 0.00、週漲跌還是上一個收盤日的舊數字，看起來像「有資料只是沒動」，
 // 所以一直沒有人發現。這裡釘住：沒有盤中報價的標的一律是 —，不拿舊數字充數；
 // 盤中報價筆數偏低時摘要要明講。
+//
+// 日、週、今年以來的漲跌由收集器用和盤後同一套規則算好放進快照（還原權息、掛牌以來），
+// 前端只把名冊和即時列對起來：不再拿前一天的盤後檔當基準自己算（那樣在除息、分割當天會算錯）。
 
 const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const siteScript = fs.readFileSync(
@@ -63,88 +66,72 @@ function functionSource(name) {
 const sandbox = {};
 vm.createContext(sandbox);
 vm.runInContext(
-    [constSource('toKey'), constSource('toDate'), constSource('weekStartKey'),
-        functionSource('buildEtfIntradayRows'), functionSource('etfLiveCoverageText')].join('\n')
+    [constSource('percentToRate'), functionSource('buildEtfIntradayRows'), functionSource('etfLiveCoverageText')].join('\n')
     + '\nthis.buildEtfIntradayRows = buildEtfIntradayRows; this.etfLiveCoverageText = etfLiveCoverageText;',
     sandbox);
 
 const { buildEtfIntradayRows, etfLiveCoverageText } = sandbox;
 
 const catalog = [
-    { ticker: '0050', name: '元大台灣50', market: 'twse', close: 115.95, priceChange: 0.01, quoteDate: '2026-10-02' },
-    { ticker: '00679B', name: '元大美債20年', market: 'tpex', close: 30.1, priceChange: 0, quoteDate: '2026-10-02' }
+    { ticker: '0050', name: '元大台灣50', market: 'twse' },
+    { ticker: '00679B', name: '元大美債20年', market: 'tpex' }
 ];
 
-// 最近的盤後檔：2026-10-02（週五）。weeklyBaselineClose 是它那一週（9/28 起）開始前的收盤，close 是它當天的收盤。
-const daily = {
-    tradeDate: '2026-10-02',
-    rows: [
-        { ticker: '0050', close: 115, weeklyBaselineClose: 110, yearToDateBaselineClose: 90, weeklyPriceChange: 0.05, yearToDatePriceChange: 0.2 },
-        { ticker: '00679B', close: 30.2, weeklyBaselineClose: 30, yearToDateBaselineClose: 31, weeklyPriceChange: 0.003, yearToDatePriceChange: -0.03 }
-    ]
-};
+test('有盤中報價的 ETF 直接採用快照算好的日、週與年漲跌', () => {
+    const live = [{
+        market: 'twse', ticker: '0050', close: 121, priceChange: 0.02,
+        weeklyPriceChange: 0.031, yearToDatePriceChange: 0.4,
+        weeklyFromListing: false, yearToDateFromListing: false,
+        value: 5_000_000_000, liveKLine: null
+    }];
 
-test('有盤中報價的 ETF 用現價與基準價重算日、週與年漲跌', () => {
-    const live = [{ market: 'twse', ticker: '0050', close: 121, priceChange: 0.02, value: 5_000_000_000, liveKLine: null }];
-
-    // 盤中是同一週的週三（最近的盤後檔是同週週二）：週基準沿用盤後檔的 weeklyBaselineClose。
-    const sameWeekDaily = { tradeDate: '2026-10-06', rows: daily.rows };
-    const rows = buildEtfIntradayRows(catalog, live, sameWeekDaily, '2026-10-07');
+    const rows = buildEtfIntradayRows(catalog, live, '2026-10-07');
     const row = rows.find(item => item.ticker === '0050');
 
     assert.equal(row.close, 121);
     assert.equal(row.priceChange, 0.02);
+    assert.equal(row.weeklyPriceChange, 0.031);
+    assert.equal(row.yearToDatePriceChange, 0.4);
     assert.equal(row.tradingValue, 5_000_000_000);
-    assert.equal(row.weeklyPriceChange, (121 - 110) / 110);
-    assert.equal(row.yearToDatePriceChange, (121 - 90) / 90);
     assert.equal(row.quoteDate, '2026-10-07');
     assert.equal(row.session, 'intraday');
 });
 
-// 2026-10-06（週二）驗證時抓到：最近的盤後檔是上週五，ETF 盤中頁卻拿它的週基準（上上週五的收盤）
-// 當本週基準，00400A 的週漲跌顯示 +6.0%，正確是 +5.2%。個股盤中頁一直有處理這個邊界。
-test('新的一週第一次盤中：週基準是上週五的收盤，不是上週五那一週的基準', () => {
-    const live = [{ market: 'twse', ticker: '0050', close: 121, priceChange: 0.02, value: 5 }];
+// 00400A 2026-10-08 除息：舊算法拿原始價當週基準顯示 +2.34%，還原後是 +3.10%。
+// 這個數字現在由收集器算，前端不能再自己除一次。
+test('週與年漲跌不是前端用現價推導的：快照給什麼就顯示什麼', () => {
+    const live = [{ market: 'twse', ticker: '0050', close: 16.15, priceChange: -0.0122, weeklyPriceChange: 0.031, yearToDatePriceChange: null, value: 5 }];
 
-    // 盤後檔是 10/02（週五），今天是 10/05（週一）。
-    const rows = buildEtfIntradayRows(catalog, live, daily, '2026-10-05');
-    const row = rows.find(item => item.ticker === '0050');
+    const row = buildEtfIntradayRows(catalog, live, '2026-10-08').find(item => item.ticker === '0050');
 
-    assert.equal(row.weeklyPriceChange, (121 - 115) / 115);
-    // 年基準不受週邊界影響。
-    assert.equal(row.yearToDatePriceChange, (121 - 90) / 90);
+    assert.equal(row.weeklyPriceChange, 0.031);
+    assert.equal(row.yearToDatePriceChange, null);
 });
 
-test('盤後檔與今天同一週才用盤後檔的週基準，跨週改用盤後檔當天的收盤', () => {
-    const live = [{ market: 'twse', ticker: '0050', close: 121, priceChange: 0.02, value: 5 }];
+test('今年才掛牌的 ETF 保留「掛牌以來」旗標讓畫面標示', () => {
+    const live = [{ market: 'tpex', ticker: '00679B', close: 11.13, priceChange: 0, weeklyPriceChange: 0.01, yearToDatePriceChange: 0.1778, yearToDateFromListing: true, weeklyFromListing: false, value: 5 }];
 
-    // 盤後檔 10/05（週一），今天 10/09（週五）：同一週。
-    const sameWeek = buildEtfIntradayRows(catalog, live, { tradeDate: '2026-10-05', rows: daily.rows }, '2026-10-09')
-        .find(item => item.ticker === '0050');
-    assert.equal(sameWeek.weeklyPriceChange, (121 - 110) / 110);
+    const row = buildEtfIntradayRows(catalog, live, '2026-10-08').find(item => item.ticker === '00679B');
 
-    // 盤後檔 10/09（週五），今天 10/12（下週一）：不同週，改用盤後檔當天的收盤。
-    const nextWeek = buildEtfIntradayRows(catalog, live, { tradeDate: '2026-10-09', rows: daily.rows }, '2026-10-12')
-        .find(item => item.ticker === '0050');
-    assert.equal(nextWeek.weeklyPriceChange, (121 - 115) / 115);
+    assert.equal(row.yearToDateFromListing, true);
+    assert.equal(row.weeklyFromListing, false);
 });
 
 test('沒有盤中報價的 ETF 一律是空值，不拿上一個收盤日的週漲跌充數', () => {
     const live = [{ market: 'twse', ticker: '0050', close: 121, priceChange: 0.02, value: 5_000_000_000 }];
 
-    const rows = buildEtfIntradayRows(catalog, live, daily, '2026-10-05');
+    const rows = buildEtfIntradayRows(catalog, live, '2026-10-05');
     const row = rows.find(item => item.ticker === '00679B');
 
     assert.equal(row.close, null);
     assert.equal(row.priceChange, null);
     assert.equal(row.tradingValue, null);
-    // 以前這兩個會是 daily 檔裡上一個收盤日的 0.003 與 -0.03。
     assert.equal(row.weeklyPriceChange, null);
     assert.equal(row.yearToDatePriceChange, null);
 });
 
 test('名冊每一檔都會出現，即使一檔盤中報價都沒有', () => {
-    const rows = buildEtfIntradayRows(catalog, [], daily, '2026-10-05');
+    const rows = buildEtfIntradayRows(catalog, [], '2026-10-05');
 
     assert.equal(rows.length, catalog.length);
     assert.ok(rows.every(row => row.close === null && row.tradingValue === null));
@@ -153,16 +140,15 @@ test('名冊每一檔都會出現，即使一檔盤中報價都沒有', () => {
 test('盤中報價以市場加代號對應，不會把同代號的另一個市場配錯', () => {
     const live = [{ market: 'tpex', ticker: '0050', close: 1, priceChange: 0, value: 1 }];
 
-    const rows = buildEtfIntradayRows(catalog, live, daily, '2026-10-05');
+    const rows = buildEtfIntradayRows(catalog, live, '2026-10-05');
 
     assert.equal(rows.find(item => item.ticker === '0050').close, null);
 });
 
-test('沒有盤後檔也能組出列，只是週與年漲跌是空值', () => {
+test('資料庫備援路徑沒有週與年欄位時，這兩欄是空值而不是錯的數字', () => {
     const live = [{ market: 'twse', ticker: '0050', close: 121, priceChange: 0.02, value: 5 }];
 
-    const rows = buildEtfIntradayRows(catalog, live, undefined, '2026-10-05');
-    const row = rows.find(item => item.ticker === '0050');
+    const row = buildEtfIntradayRows(catalog, live, '2026-10-05').find(item => item.ticker === '0050');
 
     assert.equal(row.close, 121);
     assert.equal(row.weeklyPriceChange, null);

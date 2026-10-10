@@ -50,6 +50,17 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
         DateTimeOffset capturedAt,
         string source,
         CancellationToken cancellationToken = default)
+        => await SaveAsync(snapshot, capturedAt, source, recordCurve: true, cancellationToken);
+
+    /// <param name="recordCurve">
+    /// 是否把這一輪的全市場成交額寫進校準用的量能曲線。興櫃尾段（13:35 之後）不寫。
+    /// </param>
+    public async Task<IntradaySaveResult> SaveAsync(
+        IntradaySnapshot snapshot,
+        DateTimeOffset capturedAt,
+        string source,
+        bool recordCurve,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
 
@@ -107,13 +118,16 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             cancellationToken);
         var written = await InsertQuotesAsync(connection, runId, snapshot.Quotes, securityIds, cancellationToken);
 
-        await InsertCurveAsync(
-            connection,
-            snapshot.TradeDate,
-            capturedAt,
-            total,
-            commonQuotes.Length,
-            cancellationToken);
+        if (recordCurve)
+        {
+            await InsertCurveAsync(
+                connection,
+                snapshot.TradeDate,
+                capturedAt,
+                total,
+                commonQuotes.Length,
+                cancellationToken);
+        }
 
         await transaction.CommitAsync(cancellationToken);
 

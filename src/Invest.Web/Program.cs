@@ -636,11 +636,14 @@ static void ValidateIntradaySnapshot(
 /// </summary>
 static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 {
-    var loop = args.Contains("--loop", StringComparer.OrdinalIgnoreCase);
+    // --tail：興櫃尾段。13:35 上市櫃收盤之後到 15:05 興櫃收盤之前，只更新興櫃（見 CollectionSchedule.EmergingIntradayEnd）。
+    var tail = args.Contains("--tail", StringComparer.OrdinalIgnoreCase);
+    var loop = tail || args.Contains("--loop", StringComparer.OrdinalIgnoreCase);
     var source = Environment.GetEnvironmentVariable("INTRADAY_SOURCE") ?? Environment.MachineName;
 
     var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
-    var sessionEnd = CollectionSchedule.IntradayEnd;
+    var sessionEnd = tail ? CollectionSchedule.EmergingIntradayEnd : CollectionSchedule.IntradayEnd;
+    IntradaySnapshot? frozenSnapshot = null;
     var interval = CollectionSchedule.IntradayInterval;
 
     using var scope = services.CreateScope();
@@ -655,6 +658,10 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var snapshotPublisher = scope.ServiceProvider.GetRequiredService<IntradaySnapshotPublisher>();
     var topicWorker = scope.ServiceProvider.GetRequiredService<IntradayTopicHeatWorker>();
     var curveStore = scope.ServiceProvider.GetRequiredService<IntradayCurveStore>();
+    var twseQuoteClient = scope.ServiceProvider.GetRequiredService<TwseDailyQuoteClient>();
+    var corporateActionClient = scope.ServiceProvider.GetRequiredService<CorporateActionClient>();
+    var referenceStore = scope.ServiceProvider.GetRequiredService<DailyReferenceStore>();
+    var actionStore = scope.ServiceProvider.GetRequiredService<ReferenceActionStore>();
 
     using var cts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, eventArgs) =>
@@ -689,7 +696,43 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var dailyIndexHistory = await dailyQuoteStore.LoadMarketIndicesAsync(cts.Token);
     // 市場熱絡只用前收、成交值與指數，與權息還原無關。不能經由排行榜資料集載入，
     // 否則 TPEx 除權息來源暫時失敗會讓一整場即時報價根本無法開始收集。
-    var historicalDataSet = await LoadMarketHeatHistoryAsync(dailyQuoteStore, cts.Token);
+    var historySnapshots = await dailyQuoteStore.LoadAllAsync(cts.Token);
+    var historicalDataSet = ToMarketHeatHistory(historySnapshots, null);
+
+    // 盤中的基準價、週與今年以來漲跌、今天的還原倍數：和盤後同一套規則（見 IntradayAdjustment）。
+    // 這是加值資訊，任何一步失敗都不能讓報價收集開不了工——退回 MIS 的昨收、沒有週／年漲跌。
+    IntradayAdjustment? adjustment = null;
+    var heatHistoryAdjusted = false;
+    var adjustmentRetryAt = DateTimeOffset.MinValue;
+
+    try
+    {
+        var references = await referenceStore.LoadAllAsync(cts.Token);
+        var book = await actionStore.LoadAsync(cts.Token);
+        var actions = book.Actions;
+
+        // 事件簿是每天盤後更新的；今天的除權息公告在昨晚就公布了，但這個月之後才新增的事件要現場補。
+        try
+        {
+            var taipeiToday = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei).DateTime);
+            var monthStart = new DateOnly(taipeiToday.Year, taipeiToday.Month, 1);
+            var fresh = await corporateActionClient.GetAllKindsAsync(
+                monthStart, monthStart.AddMonths(1).AddDays(-1), cts.Token);
+            actions = ReferenceActionStore.Merge(book, fresh, [], DateTimeOffset.UtcNow).Actions;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+        {
+            Console.WriteLine($"本月除權息事件現場補查失敗，用 data 分支的事件簿：{exception.Message}");
+        }
+
+        adjustment = new IntradayAdjustment(historySnapshots, references, actions);
+        Console.WriteLine(
+            $"還原權息資料：歷史 {historySnapshots.Count} 個交易日、官方參考價 {references.Count} 天、除權息事件 {actions.Count} 筆。");
+    }
+    catch (Exception exception) when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+    {
+        Console.WriteLine($"還原權息資料載入失敗，這一場盤中只用 MIS 的昨收（沒有週與今年以來漲跌）：{exception.Message}");
+    }
 
     // 成交額預估的校準曲線活過整個交易時段就好，不必每一輪重新查一次資料庫。
     var turnoverCalibration = await LoadTurnoverCalibrationAsync(
@@ -768,175 +811,199 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
 
             try
             {
-                if (universe is null)
+                IntradaySnapshot snapshot;
+                var etfDegraded = false;
+
+                if (tail)
                 {
-                    // 最近一個交易日的行情：已知的興櫃代號與六碼 TDR 名單都從這裡來。
-                    // 讀不到時兩者都退回「不知道」，不能因此讓整場收集開不了工。
-                    DailyQuoteSnapshot? latestDaily = null;
+                    // 尾段（13:35～15:05）：只有興櫃還在交易。上市櫃、ETF、TDR 凍結成 CDN 上最後一輪的樣子——
+                    // 收盤後再問 MIS 只會得到掛單中價，不是成交價。凍結的報價連同已算好的基準價與
+                    // 週、年漲跌一起沿用，不重算；每一輪只更新下面的興櫃。
+                    frozenSnapshot ??= await snapshotPublisher.TryLoadLatestSnapshotAsync(today, cts.Token);
 
-                    try
+                    if (frozenSnapshot is null)
                     {
-                        latestDaily = await dailyQuoteStore.LoadLatestAsync(cts.Token);
-                    }
-                    catch (Exception exception)
-                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
-                    {
+                        // 今天沒有開盤（颱風假之類），或收集器今天一輪都沒寫成：沒有可以凍結的上市櫃資料，
+                        // 尾段什麼都不用做，正常收工，不能因此讓整棒轉紅。
                         Console.WriteLine(
-                            $"{localTime:HH:mm:ss} 讀不到最近的盤後行情，不剔除興櫃、這一場只收主清單內的 TDR：{exception.Message}");
+                            $"{localTime:HH:mm:ss} CDN 上沒有 {today:yyyy-MM-dd} 的盤中快照，尾段沒有可以凍結的上市櫃資料，結束。");
+                        break;
                     }
 
-                    // 興櫃在資料庫裡存成 TPEX（securities.market 的 check constraint 不允許 EMERGING）：
-                    // 交易所公開清單不含興櫃，但資料庫備援清單會含，而 MIS 沒有興櫃、查了只回空殼。
-                    // 2026-10-06 公開清單暫時失敗、改用備援的 2,373 檔，其中 392 檔是興櫃：
-                    // 白占三批請求，還把 80% 的健康門檻從 1,585 檔墊高到 1,899 檔，MIS 只答得出 1,976 檔，
-                    // 每輪都在門檻邊緣，有五輪因此被判定殘缺而丟掉。
-                    var knownEmerging = (latestDaily?.Quotes ?? [])
-                        .Where(quote => quote.Market == Market.Emerging)
-                        .Select(quote => quote.Ticker)
-                        .ToHashSet(StringComparer.Ordinal);
-
-                    universe = await universeClient.GetTickersAsync(knownEmerging, cts.Token);
-                    Console.WriteLine($"{localTime:HH:mm:ss} 個股清單共 {universe.Count} 檔。");
-
-                    // 六碼 TDR 不在公司基本資料名單裡，用最近一個交易日行情裡已知的 TDR 另外問
-                    //（四碼 TDR 已在主清單，同一輪就會依名稱解析成 TDR）。
-                    var mainTickers = universe.Select(item => item.Ticker).ToHashSet(StringComparer.Ordinal);
-                    tdrUniverse = [.. (latestDaily?.Quotes ?? [])
-                        .Where(quote => quote.Kind == StockKind.Tdr
-                            && !mainTickers.Contains(quote.Ticker))
-                        .Select(quote => (quote.Market, quote.Ticker))];
-                    Console.WriteLine($"{localTime:HH:mm:ss} 六碼 TDR 清單共 {tdrUniverse.Count} 檔。");
-
-                    etfUniverse = await TryLoadEtfUniverseAsync(capturedAt, localTime);
-
-                    // 處置與全額交割不會在交易時段中途變動，開場抓一次寫進 market_flags 就夠。
-                    // 盤中頁面直接讀那張表，不再沿用 manifest.json 裡「上次盤後 export」時的舊快照
-                    // ——那份最晚在前一天 18:00 產生，跨過午夜到今天盤中之間解禁的個股會顯示錯誤。
-                    try
-                    {
-                        var dispositions = await marketFlagClient.GetCurrentAsync(today, cts.Token);
-                        var alteredTrading = await marketFlagClient.GetAlteredTradingAsync(cts.Token);
-
-                        await marketFlagStore.SaveAsync(dispositions, alteredTrading, cts.Token);
-
-                        Console.WriteLine(
-                            $"{localTime:HH:mm:ss} 更新交易限制名單：處置 {dispositions.Count} 檔、"
-                            + $"全額交割 {alteredTrading.Count} 檔。");
-                    }
-                    catch (Exception exception)
-                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
-                    {
-                        // 抓不到就沿用資料庫裡上一場留下的名單，不能因此讓整場報價收集跟著中止。
-                        Console.WriteLine(
-                            $"{localTime:HH:mm:ss} 交易限制名單更新失敗，沿用舊名單：{exception.Message}");
-                    }
+                    snapshot = frozenSnapshot;
                 }
-
-                // 名冊上一次讀失敗就在這裡定期重試，不要整棒都沒有 ETF。
-                if (etfUniverse is null && capturedAt >= etfRosterRetryAt)
+                else
                 {
-                    etfUniverse = await TryLoadEtfUniverseAsync(capturedAt, localTime);
-                }
-
-                var snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
-
-                // 整批失敗、或回應正常卻悄悄少了幾檔的代號，沿用上一輪剛收到的報價；
-                // 整批失敗補不齊就丟例外，這一輪照舊作廢（見 IntradayCarryForward）。
-                snapshot = snapshot with
-                {
-                    Quotes = carryForward.Complete(
-                        "stock",
-                        snapshot.TradeDate,
-                        capturedAt,
-                        snapshot.Quotes,
-                        snapshot.MissingTickers,
-                        required: true),
-                    MarketIndices = carryForward.CompleteIndices(
-                        snapshot.TradeDate, capturedAt, snapshot.MarketIndices)
-                };
-                ReportCarry(localTime, "個股", carryForward.LastReport);
-                ValidateIntradaySnapshot(universe, snapshot);
-
-                // 這一輪 ETF 是否不完整：名冊讀不到、查詢失敗、日期不符或覆蓋率偏低都算。
-                var etfDegraded = etfUniverse is not { Count: > 0 };
-
-                if (etfUniverse is { Count: > 0 })
-                {
-                    try
+                    if (universe is null)
                     {
-                        var etfSnapshot = await quoteClient.GetEtfQuotesAsync(etfUniverse, cts.Token);
+                        // 最近一個交易日的行情：已知的興櫃代號與六碼 TDR 名單都從這裡來。
+                        // 讀不到時兩者都退回「不知道」，不能因此讓整場收集開不了工。
+                        DailyQuoteSnapshot? latestDaily = null;
 
-                        if (etfSnapshot.TradeDate == snapshot.TradeDate)
+                        try
                         {
-                            var etfQuotes = carryForward.Complete(
-                                "etf",
-                                etfSnapshot.TradeDate,
-                                capturedAt,
-                                etfSnapshot.Quotes,
-                                etfSnapshot.MissingTickers,
-                                required: false);
-                            ReportCarry(localTime, "ETF", carryForward.LastReport);
+                            latestDaily = await dailyQuoteStore.LoadLatestAsync(cts.Token);
+                        }
+                        catch (Exception exception)
+                            when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                        {
+                            Console.WriteLine(
+                                $"{localTime:HH:mm:ss} 讀不到最近的盤後行情，不剔除興櫃、這一場只收主清單內的 TDR：{exception.Message}");
+                        }
 
-                            snapshot = snapshot with
+                        // 興櫃在資料庫裡存成 TPEX（securities.market 的 check constraint 不允許 EMERGING）：
+                        // 交易所公開清單不含興櫃，但資料庫備援清單會含，而 MIS 沒有興櫃、查了只回空殼。
+                        // 2026-10-06 公開清單暫時失敗、改用備援的 2,373 檔，其中 392 檔是興櫃：
+                        // 白占三批請求，還把 80% 的健康門檻從 1,585 檔墊高到 1,899 檔，MIS 只答得出 1,976 檔，
+                        // 每輪都在門檻邊緣，有五輪因此被判定殘缺而丟掉。
+                        var knownEmerging = (latestDaily?.Quotes ?? [])
+                            .Where(quote => quote.Market == Market.Emerging)
+                            .Select(quote => quote.Ticker)
+                            .ToHashSet(StringComparer.Ordinal);
+
+                        universe = await universeClient.GetTickersAsync(knownEmerging, cts.Token);
+                        Console.WriteLine($"{localTime:HH:mm:ss} 個股清單共 {universe.Count} 檔。");
+
+                        // 六碼 TDR 不在公司基本資料名單裡，用最近一個交易日行情裡已知的 TDR 另外問
+                        //（四碼 TDR 已在主清單，同一輪就會依名稱解析成 TDR）。
+                        var mainTickers = universe.Select(item => item.Ticker).ToHashSet(StringComparer.Ordinal);
+                        tdrUniverse = [.. (latestDaily?.Quotes ?? [])
+                            .Where(quote => quote.Kind == StockKind.Tdr
+                                && !mainTickers.Contains(quote.Ticker))
+                            .Select(quote => (quote.Market, quote.Ticker))];
+                        Console.WriteLine($"{localTime:HH:mm:ss} 六碼 TDR 清單共 {tdrUniverse.Count} 檔。");
+
+                        etfUniverse = await TryLoadEtfUniverseAsync(capturedAt, localTime);
+
+                        // 處置與全額交割不會在交易時段中途變動，開場抓一次寫進 market_flags 就夠。
+                        // 盤中頁面直接讀那張表，不再沿用 manifest.json 裡「上次盤後 export」時的舊快照
+                        // ——那份最晚在前一天 18:00 產生，跨過午夜到今天盤中之間解禁的個股會顯示錯誤。
+                        try
+                        {
+                            var dispositions = await marketFlagClient.GetCurrentAsync(today, cts.Token);
+                            var alteredTrading = await marketFlagClient.GetAlteredTradingAsync(cts.Token);
+
+                            await marketFlagStore.SaveAsync(dispositions, alteredTrading, cts.Token);
+
+                            Console.WriteLine(
+                                $"{localTime:HH:mm:ss} 更新交易限制名單：處置 {dispositions.Count} 檔、"
+                                + $"全額交割 {alteredTrading.Count} 檔。");
+                        }
+                        catch (Exception exception)
+                            when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                        {
+                            // 抓不到就沿用資料庫裡上一場留下的名單，不能因此讓整場報價收集跟著中止。
+                            Console.WriteLine(
+                                $"{localTime:HH:mm:ss} 交易限制名單更新失敗，沿用舊名單：{exception.Message}");
+                        }
+                    }
+
+                    // 名冊上一次讀失敗就在這裡定期重試，不要整棒都沒有 ETF。
+                    if (etfUniverse is null && capturedAt >= etfRosterRetryAt)
+                    {
+                        etfUniverse = await TryLoadEtfUniverseAsync(capturedAt, localTime);
+                    }
+
+                    snapshot = await quoteClient.GetQuotesAsync(universe, cts.Token);
+
+                    // 整批失敗、或回應正常卻悄悄少了幾檔的代號，沿用上一輪剛收到的報價；
+                    // 整批失敗補不齊就丟例外，這一輪照舊作廢（見 IntradayCarryForward）。
+                    snapshot = snapshot with
+                    {
+                        Quotes = carryForward.Complete(
+                            "stock",
+                            snapshot.TradeDate,
+                            capturedAt,
+                            snapshot.Quotes,
+                            snapshot.MissingTickers,
+                            required: true),
+                        MarketIndices = carryForward.CompleteIndices(
+                            snapshot.TradeDate, capturedAt, snapshot.MarketIndices)
+                    };
+                    ReportCarry(localTime, "個股", carryForward.LastReport);
+                    ValidateIntradaySnapshot(universe, snapshot);
+
+                    // 這一輪 ETF 是否不完整：名冊讀不到、查詢失敗、日期不符或覆蓋率偏低都算。
+                    etfDegraded = etfUniverse is not { Count: > 0 };
+
+                    if (etfUniverse is { Count: > 0 })
+                    {
+                        try
+                        {
+                            var etfSnapshot = await quoteClient.GetEtfQuotesAsync(etfUniverse, cts.Token);
+
+                            if (etfSnapshot.TradeDate == snapshot.TradeDate)
                             {
-                                Quotes = [.. snapshot.Quotes, .. etfQuotes]
-                            };
+                                var etfQuotes = carryForward.Complete(
+                                    "etf",
+                                    etfSnapshot.TradeDate,
+                                    capturedAt,
+                                    etfSnapshot.Quotes,
+                                    etfSnapshot.MissingTickers,
+                                    required: false);
+                                ReportCarry(localTime, "ETF", carryForward.LastReport);
 
-                            if (etfQuotes.Count < etfUniverse.Count * minEtfCoverage)
+                                snapshot = snapshot with
+                                {
+                                    Quotes = [.. snapshot.Quotes, .. etfQuotes]
+                                };
+
+                                if (etfQuotes.Count < etfUniverse.Count * minEtfCoverage)
+                                {
+                                    etfDegraded = true;
+                                    Console.WriteLine(
+                                        $"{localTime:HH:mm:ss} ETF 盤中報價只有 {etfQuotes.Count}/{etfUniverse.Count} 檔，"
+                                        + $"低於 {minEtfCoverage:P0}。");
+                                }
+                            }
+                            else
                             {
                                 etfDegraded = true;
                                 Console.WriteLine(
-                                    $"{localTime:HH:mm:ss} ETF 盤中報價只有 {etfQuotes.Count}/{etfUniverse.Count} 檔，"
-                                    + $"低於 {minEtfCoverage:P0}。");
+                                    $"{localTime:HH:mm:ss} ETF API 日期 {etfSnapshot.TradeDate:yyyy-MM-dd} "
+                                    + $"與個股 {snapshot.TradeDate:yyyy-MM-dd} 不同，本輪不併入 ETF。");
                             }
                         }
-                        else
+                        catch (Exception exception)
+                            when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
                         {
+                            // ETF 是額外資料源；個股快照已通過健康檢查時，不能因 ETF 端點抖動
+                            // 丟掉整個市場的盤中輪次。
                             etfDegraded = true;
                             Console.WriteLine(
-                                $"{localTime:HH:mm:ss} ETF API 日期 {etfSnapshot.TradeDate:yyyy-MM-dd} "
-                                + $"與個股 {snapshot.TradeDate:yyyy-MM-dd} 不同，本輪不併入 ETF。");
+                                $"{localTime:HH:mm:ss} ETF 盤中報價失敗，本輪保留個股：{exception.Message}");
                         }
                     }
-                    catch (Exception exception)
-                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
-                    {
-                        // ETF 是額外資料源；個股快照已通過健康檢查時，不能因 ETF 端點抖動
-                        // 丟掉整個市場的盤中輪次。
-                        etfDegraded = true;
-                        Console.WriteLine(
-                            $"{localTime:HH:mm:ss} ETF 盤中報價失敗，本輪保留個股：{exception.Message}");
-                    }
-                }
 
-                if (tdrUniverse is { Count: > 0 })
-                {
-                    try
+                    if (tdrUniverse is { Count: > 0 })
                     {
-                        var tdrSnapshot = await quoteClient.GetTdrQuotesAsync(tdrUniverse, cts.Token);
-
-                        if (tdrSnapshot.TradeDate == snapshot.TradeDate)
+                        try
                         {
-                            var tdrQuotes = carryForward.Complete(
-                                "tdr",
-                                tdrSnapshot.TradeDate,
-                                capturedAt,
-                                tdrSnapshot.Quotes,
-                                tdrSnapshot.MissingTickers,
-                                required: false);
-                            ReportCarry(localTime, "TDR", carryForward.LastReport);
+                            var tdrSnapshot = await quoteClient.GetTdrQuotesAsync(tdrUniverse, cts.Token);
 
-                            snapshot = snapshot with
+                            if (tdrSnapshot.TradeDate == snapshot.TradeDate)
                             {
-                                Quotes = [.. snapshot.Quotes, .. tdrQuotes]
-                            };
+                                var tdrQuotes = carryForward.Complete(
+                                    "tdr",
+                                    tdrSnapshot.TradeDate,
+                                    capturedAt,
+                                    tdrSnapshot.Quotes,
+                                    tdrSnapshot.MissingTickers,
+                                    required: false);
+                                ReportCarry(localTime, "TDR", carryForward.LastReport);
+
+                                snapshot = snapshot with
+                                {
+                                    Quotes = [.. snapshot.Quotes, .. tdrQuotes]
+                                };
+                            }
                         }
-                    }
-                    catch (Exception exception)
-                        when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
-                    {
-                        Console.WriteLine(
-                            $"{localTime:HH:mm:ss} 六碼 TDR 盤中報價失敗，本輪不含：{exception.Message}");
+                        catch (Exception exception)
+                            when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                        {
+                            Console.WriteLine(
+                                $"{localTime:HH:mm:ss} 六碼 TDR 盤中報價失敗，本輪不含：{exception.Message}");
+                        }
                     }
                 }
 
@@ -1000,10 +1067,14 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                 {
                     // 成交金額改成逐輪累加，一定要在算市場熱絡程度與寫入之前做：
                     // 熱絡程度的分母就是這裡的成交金額合計。
-                    snapshot = snapshot with
+                    // 尾段不再累加：凍結的上市櫃成交金額已經是最後一輪的結果，興櫃本來就是精確的累計金額。
+                    if (!tail)
                     {
-                        Quotes = turnoverAccumulator.Apply(snapshot.TradeDate, snapshot.Quotes)
-                    };
+                        snapshot = snapshot with
+                        {
+                            Quotes = turnoverAccumulator.Apply(snapshot.TradeDate, snapshot.Quotes)
+                        };
+                    }
 
                     snapshot = snapshot with
                     {
@@ -1020,13 +1091,83 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                             .ToArray()
                     };
 
+                    if (adjustment is not null)
+                    {
+                        // 還原權息是加值資訊：這一段無論哪裡出錯，都只能停用它、退回 MIS 的昨收，
+                        // 絕不能變成「這一輪失敗」——連續三輪失敗會讓整棒收集中止，整場盤中就沒有資料。
+                        try
+                        {
+                            // 還沒準備好（第一輪、上市的官方參考價之前沒讀到、興櫃剛出現）才現場準備。
+                            // 準備一次要把歷史跑一遍（數秒），所以讀不到上市參考價時每十分鐘才再試一次。
+                            var hasEmerging = snapshot.Quotes.Any(quote => quote.Market == Market.Emerging);
+
+                            if (adjustment.NeedsPrepare(snapshot.TradeDate, hasEmerging, capturedAt >= adjustmentRetryAt))
+                            {
+                                IReadOnlyList<ReferenceRow>? twseReferenceRows = null;
+
+                                try
+                                {
+                                    var rows = await twseQuoteClient.GetReferenceRowsAsync(
+                                        snapshot.TradeDate, _ => true, cts.Token);
+
+                                    // 空清單代表官方還沒公布（或今天其實休市）；當成沒讀到，稍後再試。
+                                    twseReferenceRows = rows.Count > 0 ? rows : null;
+                                }
+                                catch (Exception exception)
+                                    when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                                {
+                                    Console.WriteLine(
+                                        $"{localTime:HH:mm:ss} 上市官方參考價讀取失敗，上市標的先用 MIS 的昨收：{exception.Message}");
+                                }
+
+                                adjustment.Prepare(snapshot.TradeDate, twseReferenceRows, snapshot.Quotes);
+                                adjustmentRetryAt = capturedAt + TimeSpan.FromMinutes(10);
+
+                                var report = adjustment.Report;
+                                Console.WriteLine(
+                                    $"{localTime:HH:mm:ss} 還原權息已準備：上市參考價{(twseReferenceRows is null ? "缺" : $" {twseReferenceRows.Count} 檔")}，"
+                                    + $"事件表 {report.TableEvents} 筆、參考價事件 {report.ReferenceEvents} 筆（含歷史）。");
+
+                                if (!heatHistoryAdjusted)
+                                {
+                                    // 市場熱絡的歷史點（廣度）也要用同一套基準價，盤中與盤後匯出的歷史才一致。
+                                    historicalDataSet = ToMarketHeatHistory(historySnapshots, adjustment.Table);
+                                    heatHistoryAdjusted = true;
+                                }
+                            }
+
+                            snapshot = tail
+                                ? snapshot with
+                                {
+                                    // 尾段只補興櫃：凍結的上市櫃報價已經帶著當時算好的基準價與週、年漲跌，不重算。
+                                    Quotes =
+                                    [
+                                        .. snapshot.Quotes.Where(quote => quote.Market != Market.Emerging),
+                                        .. adjustment.Apply(
+                                            snapshot.TradeDate,
+                                            [.. snapshot.Quotes.Where(quote => quote.Market == Market.Emerging)])
+                                    ]
+                                }
+                                : snapshot with { Quotes = adjustment.Apply(snapshot.TradeDate, snapshot.Quotes) };
+                        }
+                        catch (Exception exception)
+                            when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                        {
+                            Console.WriteLine(
+                                $"{localTime:HH:mm:ss} 還原權息計算失敗，這一場停用、只用 MIS 的昨收（沒有週與今年以來漲跌）：{exception}");
+                            adjustment = null;
+                        }
+                    }
+
                     snapshot = snapshot with
                     {
                         MarketHeat = CalculateIntradayMarketHeat(
                             historicalDataSet, snapshot, capturedAt, turnoverCalibration)
                     };
 
-                    var result = await store.SaveAsync(snapshot, capturedAt, source, cts.Token);
+                    // 尾段不寫全市場成交額曲線：那條曲線是用來校準「某個時刻通常已跑掉幾成」的，
+                    // 收盤後的點會把 13:35 之後的比例灌成一堆 1.0。
+                    var result = await store.SaveAsync(snapshot, capturedAt, source, recordCurve: !tail, cts.Token);
 
                     if (result.Written)
                     {
@@ -1340,26 +1481,33 @@ static async Task RunIntradayHeatBackfillAsync(IServiceProvider services, string
 static async Task<MarketDataSet> LoadMarketHeatHistoryAsync(
     DailyQuoteStore store,
     CancellationToken cancellationToken = default)
-{
-    var snapshots = await store.LoadAllAsync(cancellationToken);
+    => ToMarketHeatHistory(await store.LoadAllAsync(cancellationToken), null);
 
-    return new MarketDataSet
+/// <summary>
+/// 市場熱絡用的歷史：普通股的逐日行情與指數。給了還原權息表就把每天的基準價一併帶上，
+/// 歷史各天的漲跌家數才和盤後匯出算出來的一樣。
+/// </summary>
+static MarketDataSet ToMarketHeatHistory(
+    IReadOnlyList<DailyQuoteSnapshot> snapshots,
+    PriceAdjustmentTable? adjustmentTable)
+    => new()
     {
         Stocks = [],
         DailyTrading = snapshots
             .SelectMany(snapshot => snapshot.Quotes
                 .Where(quote => quote.Kind == StockKind.CommonStock)
                 .Select(quote => new DailyStockTrading
-            {
-                TradingDate = snapshot.TradingDate,
-                Ticker = quote.Ticker,
-                OpenPrice = quote.OpenPrice,
-                HighPrice = quote.HighPrice,
-                LowPrice = quote.LowPrice,
-                ClosePrice = quote.ClosePrice,
-                TradingValue = quote.TradingValue,
-                TradingVolume = quote.TradingVolume
-            }))
+                {
+                    TradingDate = snapshot.TradingDate,
+                    Ticker = quote.Ticker,
+                    OpenPrice = quote.OpenPrice,
+                    HighPrice = quote.HighPrice,
+                    LowPrice = quote.LowPrice,
+                    ClosePrice = quote.ClosePrice,
+                    ReferencePrice = adjustmentTable?.BaseFor(quote.Ticker, snapshot.TradingDate),
+                    TradingValue = quote.TradingValue,
+                    TradingVolume = quote.TradingVolume
+                }))
             .ToArray(),
         MarketIndices = snapshots
             .Select(snapshot => new DailyMarketIndex
@@ -1369,7 +1517,6 @@ static async Task<MarketDataSet> LoadMarketHeatHistoryAsync(
             })
             .ToArray()
     };
-}
 
 /// <summary>
 /// 載入成交額預估用的校準曲線。Supabase 連不上或樣本天數不足時退回寫死的
@@ -1417,6 +1564,7 @@ static MarketHeatMetrics? CalculateIntradayMarketHeat(
             HighPrice = quote.HighPrice,
             LowPrice = quote.LowPrice,
             ClosePrice = quote.Price,
+            ReferencePrice = quote.ReferencePrice,
             TradingValue = quote.EstimatedTradingValue,
             TradingVolume = quote.TradingVolume
         });

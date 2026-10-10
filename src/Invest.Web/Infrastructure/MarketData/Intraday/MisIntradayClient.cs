@@ -572,6 +572,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             LowPrice = low,
             TradingVolume = volume,
             EstimatedTradingValue = price is { } value ? decimal.Round(value * volume, 0) : 0m,
+            ReferencePrice = previousClose is > 0m ? previousClose : null,
             ChangePercent = price is { } current && previousClose is { } baseline && baseline > 0
                 ? decimal.Round((current - baseline) / baseline * 100m, 2)
                 : null
@@ -695,4 +696,12 @@ public sealed record IntradaySnapshot
     /// 與這一輪個股與指數同時算出的市場熱絡程度；舊版收集器未提供時可為 null。
     /// </summary>
     public MarketHeatMetrics? MarketHeat { get; init; }
+
+    /// <summary>
+    /// 上市櫃、ETF、TDR 的報價是在什麼時間收到的。興櫃交易到 15:00，13:35 之後的尾段輪次
+    /// 只更新興櫃，其餘凍結成最後一輪的樣子——此時快照的收集時間是尾段那一輪，
+    /// 這個欄位保留凍結資料真正的時間，畫面才不會把 13:30 的上市價標成 14:20。
+    /// 一般輪次為 null（等於收集時間）。
+    /// </summary>
+    public DateTimeOffset? ListedCapturedAt { get; init; }
 }

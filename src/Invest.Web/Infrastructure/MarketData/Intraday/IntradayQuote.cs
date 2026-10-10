@@ -91,7 +91,35 @@ public sealed record IntradayQuote
     public required decimal EstimatedTradingValue { get; init; }
 
     /// <summary>
-    /// 相對於昨收的漲跌幅（百分比）。缺少現價或昨收時為 null。
+    /// 相對於當天基準價（<see cref="ReferencePrice"/>）的漲跌幅（百分比）。缺少現價或基準價時為 null。
     /// </summary>
     public decimal? ChangePercent { get; init; }
+
+    /// <summary>
+    /// 當天的基準價，漲跌就是對它計算。
+    ///
+    /// 解析 MIS 時先放交易所公布的昨收（y，興櫃是前日均價），那是除息當天交易所已換算的參考價，
+    /// 但「權」類事件不換算、興櫃完全不換算。收集器隨後（<c>IntradayAdjustment</c>）
+    /// 會改放和盤後<b>同一套規則</b>算出的基準價（官方參考價 + 官方除權息事件表），
+    /// 盤中最後一輪與當天盤後對同一個價格才會給出同一個漲跌。
+    /// </summary>
+    public decimal? ReferencePrice { get; init; }
+
+    /// <summary>本週漲跌幅（百分比）；基準是上週最後一個收盤，已換算期間內的權益事件。</summary>
+    public decimal? WeeklyChangePercent { get; init; }
+
+    /// <summary>今年以來漲跌幅（百分比）；基準是去年最後一個收盤，已換算期間內的權益事件。</summary>
+    public decimal? YearToDateChangePercent { get; init; }
+
+    /// <summary>今年以來的起算點是掛牌參考價（今年才掛牌，沒有去年收盤），畫面要標示「掛牌以來」。</summary>
+    public bool YearToDateFromListing { get; init; }
+
+    /// <summary>本週的起算點是掛牌參考價（本週才掛牌）。</summary>
+    public bool WeeklyFromListing { get; init; }
+
+    /// <summary>
+    /// 今天的還原倍數（今天除權息、減資、分割時才有值）。盤中日 K 把今天的真實價格接在歷史後面，
+    /// 歷史 K 棒是換算到「昨天為止」的基準，要乘上這個倍數才接得起來。
+    /// </summary>
+    public decimal? AdjustmentFactor { get; init; }
 }

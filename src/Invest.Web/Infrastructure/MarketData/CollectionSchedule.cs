@@ -20,6 +20,13 @@ public static class CollectionSchedule
     public static readonly TimeOnly IntradayEnd = new(13, 35);
 
     /// <summary>
+    /// 興櫃最後一輪的截止時間。興櫃交易到 15:00（比上市櫃晚一個半小時收盤），
+    /// 13:35 到這個時間之間只有興櫃還在動，由尾段收集（<c>intraday --tail</c>）接手：
+    /// 上市櫃、ETF、TDR 凍結成最後一輪的樣子，只更新興櫃。多留五分鐘等最後一筆進來。
+    /// </summary>
+    public static readonly TimeOnly EmergingIntradayEnd = new(15, 5);
+
+    /// <summary>
     /// 盤中每一輪的間隔。
     ///
     /// 下限由一輪要跑多久決定：全市場約 2000 檔、MIS 一次最多 150 檔，

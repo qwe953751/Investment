@@ -141,17 +141,35 @@ public static class MarketHeatCalculator
 
         foreach (var row in currentRows)
         {
-            if (row.ClosePrice is not > 0m
-                || !previousCloseByTicker.TryGetValue(row.Ticker, out var previousClose))
+            if (row.ClosePrice is not > 0m)
             {
                 continue;
             }
 
-            if (row.ClosePrice > previousClose)
+            // 漲跌家數比的是當天的基準價（官方參考價換算過權益事件），不是前一天的原始收盤：
+            // 除息、除權當天原始收盤會讓實際上漲的股票被算成下跌（2026-03-26 上櫃 20 檔除息股，
+            // 11 檔因此誤判）。盤中收集器用同一套規則算出基準價，所以盤中盤後同一天同一檔結論一致。
+            // 該天沒有官方參考價資料時退回前一天的收盤。
+            decimal reference;
+
+            if (row.ReferencePrice is > 0m)
+            {
+                reference = row.ReferencePrice.Value;
+            }
+            else if (previousCloseByTicker.TryGetValue(row.Ticker, out var previousClose))
+            {
+                reference = previousClose;
+            }
+            else
+            {
+                continue;
+            }
+
+            if (row.ClosePrice > reference)
             {
                 up++;
             }
-            else if (row.ClosePrice < previousClose)
+            else if (row.ClosePrice < reference)
             {
                 down++;
             }

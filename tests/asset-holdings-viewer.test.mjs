@@ -56,7 +56,7 @@ function holdingsViewerRow() {
     const context = {};
     vm.createContext(context);
     vm.runInContext([
-        "const assetTickerQuotes = new Map([['2308', { market: 'TWSE', name: '台燿' }]]);",
+        "const assetTickerQuotes = new Map([['2308', { market: 'TWSE', name: '台燿', weeklyPriceChange: 5.88 }], ['2330', { market: 'TWSE', name: '台積電' }]]);",
         functionSource('assetNumber'),
         functionSource('assetHoldingTicker'),
         functionSource('assetHoldingsViewerMarketCode'),
@@ -107,7 +107,7 @@ test('持倉檢視者依各子帳戶代號排序後再合併 Frank 的所有持�
     assert.deepEqual(rowsFor(views, '其他').map(row => row.ticker), ['BTC']);
 });
 
-test('持倉行情轉成盤中欄位的比率並保留週基準與市場標記', () => {
+test('持倉行情轉成盤中欄位的比率，週漲跌取自和市值同一份報價並保留市場標記', () => {
     const rowFor = holdingsViewerRow();
     const row = rowFor(
         { ticker: '2308', name: '台燿', price: 180, priceChange: -2.7 },
@@ -126,7 +126,20 @@ test('持倉行情轉成盤中欄位的比率並保留週基準與市場標記',
     assert.equal(row.market, 'twse');
     assert.ok(Math.abs(row.priceChange - -0.027) < 0.000000001);
     assert.equal(row.close, 180);
-    assert.equal(row.weeklyPriceChange, 10 / 170);
+
+    // 週漲跌是報價自己帶的（已還原權息，百分點 → 比率），不再用排行檔的週基準去除現價：
+    // 盤中的現價配上「前一個交易日」那一週的基準，跨週或除權息日都會算錯。
+    assert.ok(Math.abs(row.weeklyPriceChange - 0.0588) < 1e-12);
+});
+
+test('報價沒有週漲跌時才退回排行檔那一列自己的週漲跌', () => {
+    const rowFor = holdingsViewerRow();
+    const row = rowFor(
+        { ticker: '2330', name: '台積電', price: 2550, priceChange: -1.35 },
+        1,
+        { ticker: '2330', name: '台積電', market: 'twse', close: 2585, weeklyPriceChange: 0.01 });
+
+    assert.equal(row.weeklyPriceChange, 0.01);
 });
 
 test('持倉週漲跌使用 manifest 日期對應的排行檔案 key', async () => {

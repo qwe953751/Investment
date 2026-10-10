@@ -214,6 +214,121 @@ public sealed class IntradaySnapshotPublisher(
     }
 
     /// <summary>
+    /// 讀回 CDN 上最新的一輪快照，把上市櫃、ETF、TDR 的部分重建成報價（興櫃不含）。
+    /// 尾段收集（13:35～15:05，只有興櫃還在交易）用它取得凍結的最後一輪，
+    /// 讀到的資料保留所有已算好的欄位（基準價、週與今年以來漲跌、還原倍數），不重算。
+    ///
+    /// 日期和預期的交易日不同（今天沒有開盤、或收集器今天一輪都沒寫成）就回傳 null，
+    /// 呼叫端不要用別天的資料湊尾段。
+    /// </summary>
+    public async Task<IntradaySnapshot?> TryLoadLatestSnapshotAsync(
+        DateOnly expectedTradeDate,
+        CancellationToken cancellationToken = default)
+    {
+        var baseUrl = GetPublicBaseUrl(configuration);
+
+        if (baseUrl is null)
+        {
+            return null;
+        }
+
+        using var latestResponse = await httpClient.GetAsync($"{baseUrl}/latest.json", cancellationToken);
+
+        if (!latestResponse.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var pointer = await latestResponse.Content.ReadFromJsonAsync<LatestDocument>(JsonOptions, cancellationToken);
+
+        if (pointer is null
+            || pointer.SchemaVersion != SchemaVersion
+            || !SnapshotFileName.IsMatch(pointer.File)
+            || pointer.TradeDate != expectedTradeDate.ToString("yyyy-MM-dd"))
+        {
+            return null;
+        }
+
+        using var snapshotResponse = await httpClient.GetAsync($"{baseUrl}/{pointer.File}", cancellationToken);
+        snapshotResponse.EnsureSuccessStatusCode();
+
+        var document = await snapshotResponse.Content.ReadFromJsonAsync<SnapshotDocument>(JsonOptions, cancellationToken);
+
+        return document is null ? null : FromDocument(document, expectedTradeDate);
+    }
+
+    /// <summary>把快照文件還原成報價；興櫃一律不收，由尾段收集器每輪重新讀。</summary>
+    internal static IntradaySnapshot FromDocument(SnapshotDocument document, DateOnly tradeDate)
+    {
+        var quotes = document.Rows
+            .Where(row => !string.Equals(row.Market, "EMERGING", StringComparison.OrdinalIgnoreCase))
+            .Select(row => new IntradayQuote
+            {
+                Market = string.Equals(row.Market, "TWSE", StringComparison.OrdinalIgnoreCase)
+                    ? Market.Twse
+                    : Market.Tpex,
+                Ticker = row.Symbol,
+                Name = row.Name,
+                Kind = row.Kind switch
+                {
+                    "etf" => StockKind.Etf,
+                    "tdr" => StockKind.Tdr,
+                    _ => StockKind.CommonStock
+                },
+                Price = row.Price,
+                OpenPrice = row.OpenPrice,
+                HighPrice = row.HighPrice,
+                LowPrice = row.LowPrice,
+                PriceSource = IntradayPriceSource.LastTrade,
+                EstimatedTradingValue = row.Turnover,
+
+                // 快照沒有保存累計量；成交金額除以現價是同一個關係式的反推（見前端 intradayTradingVolume）。
+                TradingVolume = row.Price is > 0m ? decimal.Round(row.Turnover / row.Price.Value, 0) : 0m,
+                ChangePercent = row.ChangePercent,
+                ReferencePrice = row.ReferencePrice,
+                WeeklyChangePercent = row.WeeklyChangePercent,
+                YearToDateChangePercent = row.YearToDateChangePercent,
+                WeeklyFromListing = row.WeeklyFromListing == true,
+                YearToDateFromListing = row.YearToDateFromListing == true,
+                AdjustmentFactor = row.AdjustmentFactor
+            })
+            .ToArray();
+
+        decimal? Number(string key)
+            => document.Summary.TryGetValue(key, out var value) && value is JsonElement { ValueKind: JsonValueKind.Number } number
+                ? number.GetDecimal()
+                : null;
+
+        DateTimeOffset? Time(string key)
+            => document.Summary.TryGetValue(key, out var value)
+                && value is JsonElement { ValueKind: JsonValueKind.String } text
+                && DateTimeOffset.TryParse(text.GetString(), out var parsed)
+                    ? parsed
+                    : null;
+
+        MarketIndexQuote? Index(Market market, string prefix) => Number($"{prefix}_index") is { } indexValue
+            ? new MarketIndexQuote
+            {
+                Market = market,
+                Value = indexValue,
+                OpenPrice = Number($"{prefix}_index_open"),
+                HighPrice = Number($"{prefix}_index_high"),
+                LowPrice = Number($"{prefix}_index_low"),
+                ChangePercent = Number($"{prefix}_change_percent"),
+                YearToDateChangePercent = Number($"{prefix}_year_to_date_change_percent")
+            }
+            : null;
+
+        return new IntradaySnapshot
+        {
+            TradeDate = tradeDate,
+            Quotes = quotes,
+            MarketIndices = [.. new[] { Index(Market.Twse, "twse"), Index(Market.Tpex, "tpex") }.OfType<MarketIndexQuote>()],
+            ListedCapturedAt = Time("listed_captured_at") ?? document.CapturedAt
+        };
+    }
+
+    /// <summary>
     /// 發布某一輪已算好的族群熱度。失敗時不會覆寫上一份 topic-latest.json，
     /// 族群頁會繼續顯示上一份完整資料並等待追上。
     /// </summary>
@@ -641,6 +756,7 @@ public sealed class IntradaySnapshotPublisher(
         {
             ["trade_date"] = snapshot.TradeDate.ToString("yyyy-MM-dd"),
             ["captured_at"] = capturedAt,
+            ["listed_captured_at"] = snapshot.ListedCapturedAt,
             ["twse_index"] = twse?.Value,
             ["twse_change_percent"] = twse?.ChangePercent,
             ["twse_year_to_date_change_percent"] = twse?.YearToDateChangePercent,
@@ -694,7 +810,13 @@ public sealed class IntradaySnapshotPublisher(
                 quote.ChangePercent,
                 quote.OpenPrice,
                 quote.HighPrice,
-                quote.LowPrice))
+                quote.LowPrice,
+                quote.ReferencePrice,
+                quote.WeeklyChangePercent,
+                quote.YearToDateChangePercent,
+                quote.WeeklyFromListing ? true : null,
+                quote.YearToDateFromListing ? true : null,
+                quote.AdjustmentFactor))
             .ToArray();
 
         SnapshotTopicHeat? exportedTopicHeat = null;
@@ -724,7 +846,7 @@ public sealed class IntradaySnapshotPublisher(
 
     private sealed record PublisherSettings(string SupabaseUrl, string Bucket, string Secret, int RetainedSnapshotCount);
 
-    private sealed record SnapshotDocument(
+    internal sealed record SnapshotDocument(
         int SchemaVersion,
         long RunId,
         string TradeDate,
@@ -745,7 +867,7 @@ public sealed class IntradaySnapshotPublisher(
         string? Message,
         JsonElement Rows);
 
-    private sealed record SnapshotRow(
+    internal sealed record SnapshotRow(
         [property: JsonPropertyName("symbol")] string Symbol,
         [property: JsonPropertyName("name")] string Name,
         [property: JsonPropertyName("market")] string Market,
@@ -755,9 +877,16 @@ public sealed class IntradaySnapshotPublisher(
         [property: JsonPropertyName("change_percent")] decimal? ChangePercent,
         [property: JsonPropertyName("open_price")] decimal? OpenPrice,
         [property: JsonPropertyName("high_price")] decimal? HighPrice,
-        [property: JsonPropertyName("low_price")] decimal? LowPrice);
+        [property: JsonPropertyName("low_price")] decimal? LowPrice,
+        // 以下欄位由收集器用和盤後同一套規則算好；瀏覽器不再自己推導基準價與週、年漲跌。
+        [property: JsonPropertyName("reference_price")] decimal? ReferencePrice = null,
+        [property: JsonPropertyName("weekly_change_percent")] decimal? WeeklyChangePercent = null,
+        [property: JsonPropertyName("year_to_date_change_percent")] decimal? YearToDateChangePercent = null,
+        [property: JsonPropertyName("weekly_from_listing")] bool? WeeklyFromListing = null,
+        [property: JsonPropertyName("year_to_date_from_listing")] bool? YearToDateFromListing = null,
+        [property: JsonPropertyName("adjustment_factor")] decimal? AdjustmentFactor = null);
 
-    private sealed record SnapshotTopicHeat(
+    internal sealed record SnapshotTopicHeat(
         [property: JsonPropertyName("trade_date")] string TradeDate,
         [property: JsonPropertyName("captured_at")] DateTimeOffset CapturedAt,
         [property: JsonPropertyName("mapping_version")] int MappingVersion,

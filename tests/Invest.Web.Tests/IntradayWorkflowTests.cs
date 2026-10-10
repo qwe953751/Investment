@@ -318,8 +318,11 @@ public sealed class IntradayWorkflowTests
         var end = program.IndexOf("static async Task RunIntradayHeatBackfillAsync", start, StringComparison.Ordinal);
         var intraday = program[start..end];
 
-        Assert.Contains("LoadMarketHeatHistoryAsync(dailyQuoteStore, cts.Token)", intraday, StringComparison.Ordinal);
+        Assert.Contains("ToMarketHeatHistory(historySnapshots, null)", intraday, StringComparison.Ordinal);
         Assert.DoesNotContain("rankingService.GetDataSetAsync", intraday, StringComparison.Ordinal);
+
+        // 還原權息（基準價、週與今年以來漲跌）是加值資訊：載入失敗只能降級，不能讓整場收集開不了工。
+        Assert.Contains("還原權息資料載入失敗，這一場盤中只用 MIS 的昨收", intraday, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -447,6 +450,52 @@ public sealed class IntradayWorkflowTests
         var end = text.IndexOf(to, start, StringComparison.Ordinal);
         Assert.True(end >= 0, $"找不到 {to}");
         return text[start..end];
+    }
+
+    /// <summary>
+    /// 興櫃交易到 15:00，但一棒撐不過 08:40～15:05，所以 13:35 之後由接手的下一棒做尾段。
+    /// 尾段不能再問 MIS（收盤後只剩掛單中價）、也不能跑 MIS 探測；它的收工時間要和 CollectionSchedule 同一個值。
+    /// </summary>
+    [Fact]
+    public void 興櫃尾段由接手的下一棒收集_不探測MIS_收工時間和排程定義一致()
+    {
+        var workflow = ReadIntradayWorkflow();
+
+        Assert.Contains("SESSION_TAIL_CLOSE: '1505'", workflow, StringComparison.Ordinal);
+        Assert.Equal(new TimeOnly(15, 5), Invest.Web.Infrastructure.MarketData.CollectionSchedule.EmergingIntradayEnd);
+        Assert.Contains("in_tail()", workflow, StringComparison.Ordinal);
+        Assert.Contains("echo \"mode=tail\" >> \"$GITHUB_OUTPUT\"", workflow, StringComparison.Ordinal);
+
+        var probe = Slice(workflow, "- name: 探一下 MIS 全市場批次", "- name: 收集盤中報價");
+        Assert.Contains("steps.wait.outputs.mode != 'tail'", probe, StringComparison.Ordinal);
+
+        var regular = Slice(workflow, "- name: 收集盤中報價", "- name: 收集興櫃尾段");
+        Assert.Contains("steps.wait.outputs.mode != 'tail'", regular, StringComparison.Ordinal);
+        Assert.Contains("intraday --loop", regular, StringComparison.Ordinal);
+
+        var tail = workflow[workflow.IndexOf("- name: 收集興櫃尾段", StringComparison.Ordinal)..];
+        Assert.Contains("steps.wait.outputs.mode == 'tail'", tail[..tail.IndexOf("run:", StringComparison.Ordinal)], StringComparison.Ordinal);
+        Assert.Contains("intraday --tail", tail, StringComparison.Ordinal);
+
+        // 尾段判斷必須排在「算下一次開盤」之前，否則 13:36 接手的一棒會當成已收盤而睡到明天。
+        Assert.True(
+            workflow.IndexOf("if in_tail; then", StringComparison.Ordinal)
+                < workflow.IndexOf("target=$(next_open)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 尾段收集不累加成交金額_不寫量能曲線_今天沒有快照時正常結束()
+    {
+        var program = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "src", "Invest.Web", "Program.cs"));
+        var start = program.IndexOf("static async Task RunIntradayAsync", StringComparison.Ordinal);
+        var end = program.IndexOf("static async Task RunIntradayHeatBackfillAsync", start, StringComparison.Ordinal);
+        var intraday = program[start..end];
+
+        Assert.Contains("args.Contains(\"--tail\"", intraday, StringComparison.Ordinal);
+        Assert.Contains("CollectionSchedule.EmergingIntradayEnd", intraday, StringComparison.Ordinal);
+        Assert.Contains("recordCurve: !tail", intraday, StringComparison.Ordinal);
+        Assert.Contains("if (!tail)", intraday, StringComparison.Ordinal);
+        Assert.Contains("TryLoadLatestSnapshotAsync", intraday, StringComparison.Ordinal);
     }
 
     private static string ReadIntradayWorkflow() => File.ReadAllText(Path.Combine(

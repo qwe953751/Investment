@@ -33,6 +33,8 @@ public sealed class TradingValueRankingCalculator
     private DateOnly[] _allDates = [];
     private Dictionary<string, DailyStockTrading[]> _byTicker = [];
     private Dictionary<string, IReadOnlyList<StockPriceAdjustment>> _adjustmentsByTicker = [];
+    private IReadOnlyDictionary<string, ListingReference> _listingsByTicker
+        = new Dictionary<string, ListingReference>();
     private Dictionary<string, Stock> _stocksByTicker = [];
 
     public TradingValueRankingResult Calculate(MarketDataSet dataSet, RankingQuery query)
@@ -175,7 +177,8 @@ public sealed class TradingValueRankingCalculator
                 var price = PricePerformanceCalculator.Calculate(
                     _byTicker[candidate.Stock.Ticker],
                     _adjustmentsByTicker.GetValueOrDefault(candidate.Stock.Ticker, []),
-                    current[^1]);
+                    current[^1],
+                    _listingsByTicker.GetValueOrDefault(candidate.Stock.Ticker));
 
                 // 候選有上千檔，前期名次超過 MaxPreviousRankForDisplay 只是雜訊帶裡的隨機數，
                 // 顯示出來的「±1900」只會誤導人，不如顯示「新」。只有資金加速模式會踩到這個問題——
@@ -286,6 +289,8 @@ public sealed class TradingValueRankingCalculator
                     group => group.Key,
                     IReadOnlyList<StockPriceAdjustment> (group) =>
                         [.. group.OrderBy(item => item.EffectiveDate)]);
+
+            _listingsByTicker = dataSet.AdjustmentTable.Listings;
 
             _heatCache.Clear();
             _indexedDataSet = dataSet;
@@ -499,6 +504,7 @@ public sealed class TradingValueRankingCalculator
             DateOnly? baselineDate = null;
             decimal? endClose = null;
             DateOnly? endCloseDate = null;
+            decimal? endReference = null;
 
             foreach (var row in rows)
             {
@@ -532,6 +538,7 @@ public sealed class TradingValueRankingCalculator
                 {
                     endClose = close;
                     endCloseDate = row.TradingDate;
+                    endReference = row.ReferencePrice;
                 }
             }
 
@@ -546,11 +553,16 @@ public sealed class TradingValueRankingCalculator
                 // 分母用區間實際的交易日數，而不是使用者選的 N，遇到資料缺漏時才不會失真。
                 AverageDailyTradingValue = total / window.Length,
                 ActiveDayCount = activeDays,
-                BaselineClose = PricePerformanceCalculator.Rebase(
-                    baselineClose,
-                    baselineDate,
-                    endCloseDate,
-                    adjustmentsByTicker.GetValueOrDefault(ticker, [])),
+                // 單日的漲跌就是對當天基準價（日漲跌的唯一定義，見 PricePerformanceCalculator），
+                // 這樣族群熱度、排行的漲跌與日漲跌欄在同一天是同一個數字。多日區間照舊：
+                // 期初前最後一個收盤，乘上區間內的權益事件。
+                BaselineClose = window.Length == 1 && endReference is > 0m
+                    ? endReference
+                    : PricePerformanceCalculator.Rebase(
+                        baselineClose,
+                        baselineDate,
+                        endCloseDate,
+                        adjustmentsByTicker.GetValueOrDefault(ticker, [])),
                 EndClose = endClose
             };
         }

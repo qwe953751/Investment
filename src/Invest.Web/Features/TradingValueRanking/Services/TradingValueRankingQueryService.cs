@@ -2,6 +2,7 @@ using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.CorporateActions;
+using Invest.Web.Infrastructure.MarketData.Reference;
 
 namespace Invest.Web.Features.TradingValueRanking.Services;
 
@@ -15,6 +16,8 @@ public sealed class TradingValueRankingQueryService(
     DailyQuoteStore store,
     TradingValueRankingCalculator calculator,
     CorporateActionClient corporateActions,
+    DailyReferenceStore referenceStore,
+    ReferenceActionStore actionStore,
     ILogger<TradingValueRankingQueryService> logger)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -80,21 +83,95 @@ public sealed class TradingValueRankingQueryService(
             return MarketDataSet.Empty;
         }
 
-        // 權息事件跟行情一起載入、一起快取，讓排行表的漲跌與日 K 用的是同一份。
-        // 抓不到就整份失敗，不退回「沒還原」：除權息當天原始價會憑空掉一段，
+        // 還原權息的依據：官方參考價（每天每檔一個）＋官方除權息事件簿，全部讀 data 分支的快取，
+        // 匯出因此是決定性的，不再每次現場去問交易所。事件簿沒涵蓋到的月份才現場補查；
+        // 查不到就整份失敗，不退回「沒還原」：除權息當天原始價會憑空掉一段，
         // 表格上那根跌幅看起來像真的，事後根本查不出來。
-        var adjustments = await corporateActions.GetAsync(
+        var references = await referenceStore.LoadAllAsync(cancellationToken);
+        var actions = await ResolveActionsAsync(
             snapshots[0].TradingDate,
             snapshots[^1].TradingDate,
             cancellationToken);
+        var adjustmentTable = PriceAdjustmentBuilder.Build(snapshots, references, actions);
 
-        var dataSet = ToDataSet(snapshots, adjustments);
+        LogAdjustmentReport(adjustmentTable.Report, references.Count, snapshots.Count);
+
+        var dataSet = ToDataSet(snapshots, adjustmentTable);
 
         logger.LogInformation(
-            "已載入 {DayCount} 個交易日、{StockCount} 檔個股的行情，權息事件 {AdjustmentCount} 筆。",
-            snapshots.Count, dataSet.Stocks.Count, adjustments.Count);
+            "已載入 {DayCount} 個交易日、{StockCount} 檔個股的行情，還原權息事件 {AdjustmentCount} 筆。",
+            snapshots.Count, dataSet.Stocks.Count, adjustmentTable.Adjustments.Count);
 
         return dataSet;
+    }
+
+    /// <summary>
+    /// 官方除權息事件簿涵蓋整段行情期間就直接用；有月份沒涵蓋到（本機沒有 data/imports-ref、
+    /// 或每日流程漏補）才現場向交易所查那一段，結果併進事件簿的內容但不寫回磁碟。
+    /// </summary>
+    private async Task<IReadOnlyList<ReferenceAction>> ResolveActionsAsync(
+        DateOnly first,
+        DateOnly last,
+        CancellationToken cancellationToken)
+    {
+        var book = await actionStore.LoadAsync(cancellationToken);
+        DateOnly? earliestMissing = null;
+
+        for (var month = new DateOnly(first.Year, first.Month, 1);
+             month <= new DateOnly(last.Year, last.Month, 1);
+             month = month.AddMonths(1))
+        {
+            if (!book.Covers(month, last))
+            {
+                earliestMissing = month;
+                break;
+            }
+        }
+
+        if (earliestMissing is null)
+        {
+            return book.Actions;
+        }
+
+        logger.LogWarning(
+            "官方除權息事件簿沒有涵蓋 {Start:yyyy-MM} 到 {End:yyyy-MM}，現場向交易所查詢（之後的每日流程會補進事件簿）。",
+            earliestMissing, last);
+
+        var fetched = await corporateActions.GetAllKindsAsync(earliestMissing.Value, last, cancellationToken);
+        return ReferenceActionStore.Merge(book, fetched, [], DateTimeOffset.Now).Actions;
+    }
+
+    private void LogAdjustmentReport(PriceAdjustmentReport report, int referenceDayCount, int tradingDayCount)
+    {
+        logger.LogInformation(
+            "還原權息：官方事件表事件 {Table} 筆、官方參考價偵測到的事件 {Reference} 筆（減資、面額變更、分割、恢復買賣……）、"
+            + "新掛牌 {Listings} 檔、轉板 {Transfers} 次；參考價涵蓋 {ReferenceDays}/{TradingDays} 個交易日。",
+            report.TableEvents,
+            report.ReferenceEvents,
+            report.Listings,
+            report.MarketTransfers,
+            referenceDayCount,
+            tradingDayCount);
+
+        foreach (var sample in report.ReferenceEventSamples)
+        {
+            logger.LogInformation("  參考價事件 {Sample}", sample);
+        }
+
+        if (report.UnresolvedTableEvents > 0)
+        {
+            logger.LogWarning(
+                "有 {Count} 筆官方除權息事件算不出還原倍數（缺前日均價或股利資料），這些事件沒有套用。",
+                report.UnresolvedTableEvents);
+        }
+
+        if (report.UncoveredQuoteDays > 0)
+        {
+            logger.LogWarning(
+                "有 {Count} 個「標的 × 交易日」沒有官方參考價資料，只能套用除權息事件表，"
+                + "偵測不到減資、面額變更與分割；請執行 backfill-reference 補齊。",
+                report.UncoveredQuoteDays);
+        }
     }
 
     /// <summary>
@@ -103,7 +180,7 @@ public sealed class TradingValueRankingQueryService(
     /// </summary>
     private static MarketDataSet ToDataSet(
         IReadOnlyList<DailyQuoteSnapshot> snapshots,
-        IReadOnlyList<StockPriceAdjustment> adjustments)
+        PriceAdjustmentTable adjustmentTable)
     {
         var stocks = new Dictionary<string, Stock>();
         var trading = new List<DailyStockTrading>();
@@ -136,6 +213,7 @@ public sealed class TradingValueRankingQueryService(
                     HighPrice = quote.HighPrice,
                     LowPrice = quote.LowPrice,
                     ClosePrice = quote.ClosePrice,
+                    ReferencePrice = adjustmentTable.BaseFor(quote.Ticker, snapshot.TradingDate),
                     TradingValue = quote.TradingValue,
                     TradingVolume = quote.TradingVolume
                 });
@@ -147,7 +225,8 @@ public sealed class TradingValueRankingQueryService(
             Stocks = [.. stocks.Values],
             DailyTrading = trading,
             MarketIndices = marketIndices,
-            PriceAdjustments = adjustments
+            PriceAdjustments = adjustmentTable.Adjustments,
+            AdjustmentTable = adjustmentTable
         };
     }
 }

@@ -505,7 +505,9 @@ const TAIPEI_DATE = new Intl.DateTimeFormat('en-CA', {
 function isTaiwanIntradaySession() {
     const now = TAIPEI_CLOCK.format(new Date());
     const start = schedule?.intradayStart ?? '07:00';
-    const end = schedule?.intradayEnd ?? '13:35';
+    // 上市櫃 13:30 收盤，但興櫃交易到 15:00：收集器在 13:35 之後還有一段只更新興櫃的尾段輪次，
+    // 輪詢要跟著撐到那個時間，畫面上的興櫃報價才不會停在 13:35。
+    const end = schedule?.emergingIntradayEnd ?? schedule?.intradayEnd ?? '13:35';
     return now >= start && now <= end;
 }
 
@@ -1645,7 +1647,12 @@ function toRevenueGrowthCell(ticker, fallback = null) {
     };
 }
 
-function toPriceChangeCell(daily, weekly, year) {
+// 週與年的起算點通常是上週、去年最後一個收盤；今年（本週）才掛牌的標的沒有那個收盤，
+// 起算點改用官方掛牌參考價，標籤改成「掛」並註明，避免把掛牌以來的漲幅誤讀成整年或整週。
+const LISTING_BASELINE_HINT = '今年才掛牌，沒有去年底的收盤；從官方掛牌參考價起算（掛牌以來）。';
+const LISTING_WEEK_BASELINE_HINT = '本週才掛牌，沒有上週的收盤；從官方掛牌參考價起算（掛牌以來）。';
+
+function toPriceChangeCell(daily, weekly, year, flags = {}) {
     const lines = [
         {
             label: '日',
@@ -1653,7 +1660,8 @@ function toPriceChangeCell(daily, weekly, year) {
             cls: 'metric-line metric-primary ' + toTrendClass(daily)
         },
         {
-            label: '週',
+            label: flags.weeklyFromListing ? '掛' : '週',
+            hint: flags.weeklyFromListing ? LISTING_WEEK_BASELINE_HINT : undefined,
             text: toSignedPercentText(weekly),
             cls: 'metric-line metric-secondary ' + toTrendClass(weekly)
         }
@@ -1661,7 +1669,8 @@ function toPriceChangeCell(daily, weekly, year) {
 
     if (year !== undefined) {
         lines.push({
-            label: '年',
+            label: flags.yearFromListing ? '掛' : '年',
+            hint: flags.yearFromListing ? LISTING_BASELINE_HINT : undefined,
             text: toSignedPercentText(year),
             cls: 'metric-line metric-tertiary ' + toTrendClass(year)
         });
@@ -1842,7 +1851,7 @@ const ETF_COLUMNS = [
     { key: 'ticker', title: '代號', hint: 'ETF 代號；右側「市／櫃」代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔 ETF 最近三個月的日 K。名稱底色表示日漲跌。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true, klineOptions: { market: '台股', etf: true } }) },
     { key: 'close', title: '收盤價', hint: 'ETF 名冊中最近一個有效交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
-    { key: 'price', title: '漲跌幅', hint: '分層顯示日／週／年漲跌幅；排序以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange) },
+    { key: 'price', title: '漲跌幅', hint: '分層顯示日／週／年漲跌幅，全部已還原權息（除息、分割不會被當成下跌）；今年才掛牌的標籤是「掛」，從官方掛牌參考價起算。排序以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange, { weeklyFromListing: row.weeklyFromListing, yearFromListing: row.yearToDateFromListing }) },
     { key: 'tradingValue', title: '成交值（億）', hint: '所選交易日或盤中最新一輪的 ETF 成交值；盤中還沒有報價的標的顯示 —。', value: row => row.tradingValue, cell: row => ({ text: missing(row.tradingValue) ? '—' : toBillionText(row.tradingValue), cls: 'numeric' }) }
 ];
 
@@ -6789,7 +6798,6 @@ let assetSelectedOwnerId = '';
 let assetLatestUsdTwdRate = null;
 let assetLatestUsQuotes = new Map();
 let assetTickerQuotes = new Map();
-let assetIntradayQuotes = new Map();
 let assetHoldingsMarket = '台股';
 let assetHoldingSortKey = 'ticker';
 let assetHoldingSortDirection = 'asc';
@@ -7326,7 +7334,6 @@ function loadAssetAnnualPreviewData() {
             session: '盤後'
         }
     ]));
-    assetIntradayQuotes = new Map();
     assetLatestUsQuotes = new Map();
     assetLatestUsdTwdRate = null;
     assetCashFlowAvailable = true;
@@ -7391,56 +7398,172 @@ function loadAssetAnnualPreviewData() {
     assetsLoaded = true;
 }
 
-async function fetchAssetIntradayQuotes(accounts, holdings) {
-    if (supabase === null) {
-        return new Map();
+// ───────────────────────── 資產頁的台股報價：和自訂頁同一份資料 ─────────────────────────
+//
+// 資產頁以前自己一套：盤後讀資產名冊（名冊另外算一份收盤與漲跌，ETF 還刻意不還原），
+// 盤中另外打資料庫的 intraday_latest（而且只收純數字代號，00631L 這類帶英文字母的被濾掉）。
+// 兩邊在除權息、分割日的數字對不上，也有些標的整個沒有盤中價。現在資產頁的台股報價一律用
+// 自訂頁籤（個股＋ETF）同一份資料：
+//
+//   盤中  自訂頁盤中用的 CDN 快照（ensureIntradaySnapshot／intradayRaw），上市櫃、興櫃、ETF、TDR 全部都有；
+//   盤後  quotes-latest.json——匯出時和排行、ETF、TDR 每日檔用同一個計算器、同一份還原權息表算出來。
+//
+// 用哪一份由「資料日期」決定，不看時鐘（休市、颱風假、排程延誤都不必另寫例外）：
+//
+//   盤後資料的日期不比盤中快照的日期舊  →  用盤後（官方收盤，最權威）
+//   否則                                 →  用盤中
+//
+// 於是：開盤前與休市日顯示最近一個交易日的盤後；09:00 之後用盤中；收盤後到當天盤後資料上線之前
+// 繼續用當天最後一輪盤中（標示「官方收盤未公布」，不可以直接當收盤價）；盤後上線後自動換成盤後。
+// 08:42 就會寫入的開盤前快照是試撮價（成交值都是 0），不採用：快照的收集時間要過了 09:00 才算盤中。
+
+const ASSET_REGULAR_OPEN_MINUTE = 9 * 60;
+
+let assetDailyQuotes = null;
+let assetDailyQuotesLoading = null;
+let assetIntradayIndex = { runId: null, map: new Map() };
+
+async function ensureAssetDailyQuotes() {
+    if (assetDailyQuotes !== null) {
+        return assetDailyQuotes;
     }
 
-    const accountsById = new Map(accounts.map(account => [account.id, account]));
-    const tickers = [...new Set(holdings
-        .filter(holding => accountsById.get(holding.accountId)?.market === '台股')
-        .map(assetHoldingTicker)
-        .filter(ticker => /^\d{4,6}$/.test(ticker)))];
+    if (assetDailyQuotesLoading === null) {
+        assetDailyQuotesLoading = (async () => {
+            const response = await fetch(`data/quotes-latest.json?v=${version}`, { cache: 'force-cache' });
 
-    if (tickers.length === 0) {
-        return new Map();
+            if (!response.ok) {
+                throw new Error(`最新收盤報價載入失敗（${response.status}）`);
+            }
+
+            const payload = await response.json();
+            assetDailyQuotes = {
+                tradeDate: String(payload?.tradeDate ?? ''),
+                byTicker: new Map((Array.isArray(payload?.rows) ? payload.rows : [])
+                    .map(row => [String(row?.ticker ?? '').trim().toUpperCase(), row]))
+            };
+            return assetDailyQuotes;
+        })().finally(() => {
+            assetDailyQuotesLoading = null;
+        });
     }
 
-    const response = await fetch(
-        `${supabase.url}/rest/v1/intraday_latest`
-            + '?select=symbol,name,price,change_percent,trade_date,open_price,high_price,low_price,turnover'
-            + `&symbol=${encodeURIComponent(`in.(${tickers.join(',')})`)}`,
-        { headers: { apikey: supabase.anonKey }, cache: 'no-store' });
+    return assetDailyQuotesLoading;
+}
 
-    if (!response.ok) {
-        throw new Error(String(response.status));
+// 盤中快照可以當「現在的價格」嗎：收集時間要過了 09:00 開盤（之前的是試撮價）。
+function assetIntradayUsable() {
+    if (intradayRaw === null || intradaySummary === null) {
+        return false;
     }
 
-    const today = TAIPEI_DATE.format(new Date());
+    const clock = TAIPEI_CLOCK.format(new Date(String(intradaySummary.captured_at ?? '')));
+    const minutes = /^\d{2}:\d{2}$/.test(clock) ? parseHourMinute(clock) : Number.NaN;
 
-    // 不看時鐘、任何時候都查：intraday_latest 留到下一個有效交易日成功寫入才刪除，
-    // 收盤後查它依然是今天最後一輪的資料，資產頁要沿用到官方盤後資料上線為止
-    // （見 assetHoldingForAccount／assetIntradayLiveKLine）。這裡的 today 篩選
-    // 才是真正的正確性防線：非交易日或跨過今天之後，都不會誤把舊的一輪當成現在。
-    return new Map((await response.json())
-        .filter(row => String(row.trade_date ?? '') === today)
-        .map(row => {
-            const ticker = String(row.symbol ?? '').trim().toUpperCase();
+    return Number.isFinite(minutes) && minutes >= ASSET_REGULAR_OPEN_MINUTE;
+}
 
-            return [ticker, {
-                name: String(row.name ?? ''),
-                close: assetNumber(row.price),
-                priceChange: assetNumber(row.change_percent),
-                quoteDate: '',
-                session: '盤中',
-                // 資產頁的持倉 K 線彈窗要能接上這一輪的即時棒（見 selectedKLineBars），
-                // 開高低跟成交量算法比照盤中排行頁的 mapIntradayRows，兩邊不能各自漂移。
-                open: missing(row.open_price) ? null : Number(row.open_price),
-                high: missing(row.high_price) ? null : Number(row.high_price),
-                low: missing(row.low_price) ? null : Number(row.low_price),
-                tradingVolume: intradayTradingVolume(row.price, row.turnover)
-            }];
-        }));
+function assetIntradayRowOf(ticker) {
+    if (assetIntradayIndex.runId !== intradaySnapshotRunId || assetIntradayIndex.map.size === 0) {
+        assetIntradayIndex = {
+            runId: intradaySnapshotRunId,
+            map: new Map((intradayRaw ?? []).map(row => [String(row.symbol ?? '').trim().toUpperCase(), row]))
+        };
+    }
+
+    return assetIntradayIndex.map.get(ticker);
+}
+
+// 這一檔現在該用哪一份報價；回傳 null 代表兩份都沒有。
+function chooseAssetTwQuote(ticker) {
+    const daily = assetDailyQuotes?.byTicker.get(ticker);
+    const dailyDate = assetDailyQuotes?.tradeDate ?? '';
+    const row = assetIntradayUsable() ? assetIntradayRowOf(ticker) : undefined;
+    const liveDate = String(intradaySummary?.trade_date ?? '');
+    const liveValid = row !== undefined && !missing(row.price) && Number(row.price) > 0;
+
+    if (daily !== undefined && !missing(daily.close) && (!liveValid || dailyDate >= liveDate)) {
+        return {
+            session: '盤後',
+            quoteDate: dailyDate,
+            quoteTime: '',
+            close: Number(daily.close),
+            priceChange: missing(daily.priceChange) ? null : Number(daily.priceChange) * 100,
+            weeklyPriceChange: missing(daily.weeklyPriceChange) ? null : Number(daily.weeklyPriceChange) * 100,
+            yearToDatePriceChange: missing(daily.yearToDatePriceChange) ? null : Number(daily.yearToDatePriceChange) * 100,
+            weeklyFromListing: daily.weeklyFromListing === true,
+            yearToDateFromListing: daily.yearToDateFromListing === true,
+            live: null,
+            preliminary: false
+        };
+    }
+
+    if (!liveValid) {
+        return null;
+    }
+
+    // 上市櫃收盤後（13:35 起）只剩興櫃還在更新，其餘凍結成最後一輪：顯示的時間要分開看。
+    const isEmerging = String(row.market ?? '').toUpperCase() === 'EMERGING';
+    const capturedIso = String(
+        (!isEmerging && intradaySummary.listed_captured_at) || intradaySummary.captured_at);
+    const quoteTime = TAIPEI_CLOCK.format(new Date(capturedIso));
+    const closeMinutes = parseHourMinute(schedule?.intradayEnd ?? '13:35');
+
+    return {
+        session: '盤中',
+        quoteDate: liveDate,
+        quoteTime,
+        close: Number(row.price),
+        priceChange: missing(row.change_percent) ? null : Number(row.change_percent),
+        weeklyPriceChange: missing(row.weekly_change_percent) ? null : Number(row.weekly_change_percent),
+        yearToDatePriceChange: missing(row.year_to_date_change_percent) ? null : Number(row.year_to_date_change_percent),
+        weeklyFromListing: row.weekly_from_listing === true,
+        yearToDateFromListing: row.year_to_date_from_listing === true,
+        live: intradayLiveKLine(row, intradaySummary),
+
+        // 上市櫃已收盤（最後一輪在 13:35 之前）但官方收盤資料還沒上線：這是最後一輪盤中價，不是官方收盤。
+        preliminary: !isEmerging && parseHourMinute(quoteTime) >= closeMinutes - 10
+    };
+}
+
+// 把選好的報價寫進資產名冊的條目（OCR 辨識、K 線等其他功能也讀同一份 assetTickerQuotes）。
+function applyAssetTwQuotes() {
+    for (const [ticker, entry] of assetTickerQuotes) {
+        const market = String(entry.market ?? '').toUpperCase();
+
+        if (!['TWSE', 'TPEX', 'EMERGING'].includes(market)) {
+            continue;
+        }
+
+        const chosen = chooseAssetTwQuote(ticker);
+
+        if (chosen === null) {
+            continue;
+        }
+
+        entry.close = chosen.close;
+        entry.priceChange = chosen.priceChange;
+        entry.weeklyPriceChange = chosen.weeklyPriceChange;
+        entry.yearToDatePriceChange = chosen.yearToDatePriceChange;
+        entry.weeklyFromListing = chosen.weeklyFromListing;
+        entry.yearToDateFromListing = chosen.yearToDateFromListing;
+        entry.quoteDate = chosen.quoteDate;
+        entry.quoteTime = chosen.quoteTime;
+        entry.session = chosen.session;
+        entry.live = chosen.live;
+        entry.preliminary = chosen.preliminary;
+    }
+}
+
+async function refreshAssetTwQuotes() {
+    const jobs = [ensureAssetDailyQuotes().catch(() => null)];
+
+    if (hasIntradaySnapshotSource()) {
+        jobs.push(ensureIntradaySnapshot(true, false, false).catch(() => false));
+    }
+
+    await Promise.all(jobs);
+    applyAssetTwQuotes();
 }
 
 async function fetchAssetLatestUsdTwdRate() {
@@ -7527,10 +7650,9 @@ async function refreshAssets({ persistSnapshots = true } = {}) {
         }
 
         try {
-            assetIntradayQuotes = await fetchAssetIntradayQuotes(assetAccountRows, assetHoldingRows);
+            await refreshAssetTwQuotes();
         } catch {
-            // 盤中報價是加值資訊；端點暫時不可用時退回最近盤後行情。
-            assetIntradayQuotes = new Map();
+            // 台股報價是加值資訊；暫時讀不到時保留上一輪已套用的價格。
         }
 
         if (persistSnapshots) {
@@ -7667,21 +7789,18 @@ function assetSumComplete(rows, pick) {
 
 function assetHoldingForAccount(account, holding) {
     const ticker = assetHoldingTicker(holding);
-    const catalogQuote = assetTickerQuotes.get(ticker);
-    // 今天的官方盤後資料一上線（asset-catalog.json 隨靜態站重新發佈而更新）就優先採用，
-    // 比盤中最後一輪更權威；上線前（收盤到 18:00 那段空窗）繼續沿用今天的盤中資料，
-    // 不要一過 13:30 就掉回可能還停在前一個交易日的舊快照。
-    const catalogIsToday = catalogQuote?.quoteDate === TAIPEI_DATE.format(new Date());
+    // 台股名冊條目上的報價已由 refreshAssetTwQuotes 依「盤後資料日期不比盤中舊就用盤後，否則用盤中」
+    // 選好並寫入（見 chooseAssetTwQuote），這裡不再自己判斷用哪一份，也不看時鐘。
     const quote = account.market === '美股'
-        ? assetLatestUsQuotes.get(ticker) ?? catalogQuote
-        : account.market === '台股'
-            ? (catalogIsToday ? catalogQuote : assetIntradayQuotes.get(ticker) ?? catalogQuote)
-            : catalogQuote;
+        ? assetLatestUsQuotes.get(ticker) ?? assetTickerQuotes.get(ticker)
+        : assetTickerQuotes.get(ticker);
     const quantity = assetNumber(holding.quantity);
     const close = assetNumber(quote?.close);
     const priceChange = quote?.priceChange ?? null;
     const quoteDate = quote?.tradeDate ?? quote?.quoteDate ?? '';
     const quoteSession = quote?.session ?? '盤後';
+    const quoteTime = account.market === '台股' ? quote?.quoteTime ?? '' : '';
+    const quotePreliminary = account.market === '台股' && quote?.preliminary === true;
 
     if (close === null || quantity === null) {
         return {
@@ -7692,7 +7811,9 @@ function assetHoldingForAccount(account, holding) {
             unrealized: null,
             priceChange,
             quoteDate,
-            quoteSession
+            quoteSession,
+            quoteTime,
+            quotePreliminary
         };
     }
 
@@ -7708,7 +7829,9 @@ function assetHoldingForAccount(account, holding) {
             : Math.round((marketValue - holding.cost) * 100) / 100,
         priceChange,
         quoteDate,
-        quoteSession
+        quoteSession,
+        quoteTime,
+        quotePreliminary
     };
 }
 
@@ -7798,6 +7921,22 @@ function assetSnapshotAmount(value) {
     return amount === null ? null : Math.round(amount * 100) / 100;
 }
 
+// 每日資產快照一天只寫一筆，以前「今天已經有就跳過」，所以第一次打開資產頁那一刻的數字
+// （可能是前一天收盤，也可能是盤中某一刻）就成了當天的正式紀錄。現在盤中寫的是暫定值：
+// 今天的官方盤後資料上線之後（quotes-latest.json 的交易日是今天），第一次打開資產頁的人會用
+// 官方收盤價重寫一次，定稿。判斷是否暫定：這筆快照是在這個網站版本產生之前寫的
+// （version 是匯出當下的 Unix 秒數）。當晚沒有任何裝置打開資產頁就無法定稿，這是已知限制。
+function assetSnapshotIsProvisional(updatedAt) {
+    if (assetDailyQuotes?.tradeDate !== TAIPEI_DATE.format(new Date())) {
+        return false;
+    }
+
+    const publishedAt = Number(version) * 1000;
+    const written = Date.parse(String(updatedAt ?? ''));
+
+    return Number.isFinite(publishedAt) && (!Number.isFinite(written) || written < publishedAt);
+}
+
 async function persistAssetValueSnapshots(force) {
     if (supabase === null || !assetValueSnapshotsAvailable) {
         return;
@@ -7805,7 +7944,7 @@ async function persistAssetValueSnapshots(force) {
 
     const snapshotDate = TAIPEI_DATE.format(new Date());
     const existingKeys = new Set(assetValueSnapshotRows
-        .filter(row => row.snapshotDate === snapshotDate)
+        .filter(row => row.snapshotDate === snapshotDate && !assetSnapshotIsProvisional(row.updatedAt))
         .map(row => row.ownerId));
     const now = new Date().toISOString();
     const rows = [];
@@ -7881,7 +8020,7 @@ async function persistAssetAccountValueSnapshots(force) {
 
     const snapshotDate = TAIPEI_DATE.format(new Date());
     const existingKeys = new Set(assetAccountValueSnapshotRows
-        .filter(row => row.snapshotDate === snapshotDate)
+        .filter(row => row.snapshotDate === snapshotDate && !assetSnapshotIsProvisional(row.updatedAt))
         .map(row => row.accountId));
     const now = new Date().toISOString();
     const rows = [];
@@ -10982,9 +11121,16 @@ function makeAssetHoldings(view) {
         session.textContent = holding.priceChange === null || holding.priceChange === undefined
             ? '行情未提供'
             : holding.quoteSession ?? '盤後';
+
+        // 盤中標示報價時間；上市櫃收盤後到當天官方盤後資料上線之前，顯示的是最後一輪盤中價，
+        // 不是官方收盤價，要明講（資料日期一追上就會自動換成盤後）。
+        const quoteTimeText = holding.quoteSession === '盤中' && holding.quoteTime
+            ? ` ${holding.quoteTime}`
+            : '';
         change.title = holding.quoteDate === '' || holding.quoteDate === undefined
             ? session.textContent
-            : `${session.textContent} ${holding.quoteDate}`;
+            : `${session.textContent} ${holding.quoteDate}${quoteTimeText}`
+                + (holding.quotePreliminary ? '：最後一輪盤中價，官方收盤資料尚未公布' : '');
         change.append(changeValue, session);
 
         const quantity = document.createElement('td');
@@ -12911,6 +13057,10 @@ function assetOcrApplyQuantityComponents(draft, components = draft) {
 
 const ASSET_OCR_TICKER = /(?:\d{4,6}[A-Za-z]?|[A-Z]{2,5}(?:[.-][A-Z]{1,2})?)/;
 
+// 台股代號的形狀：普通股四碼、特別股（2881A、2887Z1）、ETF（0050、00631L、00400A）、六碼 ETF 與 TDR（006208、910322）。
+// 判斷「是不是台股代號」一律用這個，不要再寫 /^\d{4,6}$/——那會把帶英文字母的代號整檔濾掉。
+const TW_TICKER_PATTERN = /^\d{4,6}(?:[A-Z]\d?)?$/;
+
 let assetOcrEngineLoading = null;
 let assetOcrWorker = null;
 let assetOcrWorkerLoading = null;
@@ -14042,7 +14192,7 @@ function assetTickerMatchesMarket(ticker, market) {
     }
 
     return market === '台股'
-        ? /^\d{4,6}$/.test(ticker)
+        ? TW_TICKER_PATTERN.test(ticker)
         : /^[A-Z][A-Z0-9.-]{0,9}$/.test(ticker);
 }
 
@@ -14292,7 +14442,8 @@ function assetOcrRowIdentityInText(text) {
     // 相鄰行只能接受「行首明確代號」；不能再從整行任意找四碼。券商1 的現價 1,135
     // 就在上一筆資料的下一行尾端，舊邏輯把它當 1135 股票代號，造成台虹金額錯綁南電。
     const normalized = String(text ?? '').trim().toUpperCase();
-    const match = /^(\d{4}|0\d{5})(?=$|\s|[\u3400-\u9FFF])/.exec(normalized);
+    // 四碼普通股、六碼 ETF，以及帶英文字尾的 ETF（00631L、00400A）。
+    const match = /^(\d{4}|0\d{5}|0\d{4}[A-Z])(?=$|\s|[\u3400-\u9FFF])/.exec(normalized);
     return match?.[1] ?? '';
 }
 
@@ -16599,11 +16750,12 @@ function assetHoldingsViewerRow(holding, rank, latestRow = null) {
     const quote = assetTickerQuotes.get(ticker);
     const holdingPriceChange = assetNumber(holding.priceChange);
     const close = assetNumber(holding.price) ?? assetNumber(latestRow?.close);
-    const weeklyBaselineClose = assetNumber(latestRow?.weeklyBaselineClose);
-    const weeklyPriceChange = close !== null
-        && weeklyBaselineClose !== null
-        && weeklyBaselineClose > 0
-        ? (close - weeklyBaselineClose) / weeklyBaselineClose
+
+    // 週漲跌和日漲跌、市值同一份報價（chooseAssetTwQuote 選中的盤中或盤後），不再拿最新排行檔的
+    // 週基準自己除：盤中的現價配上「前一個交易日」那一週的基準，跨週或除權息日都會算錯。
+    const weeklyPercent = assetNumber(quote?.weeklyPriceChange);
+    const weeklyPriceChange = weeklyPercent !== null
+        ? weeklyPercent / 100
         : latestRow?.weeklyPriceChange ?? null;
 
     return {
@@ -17439,7 +17591,11 @@ async function loadKLineData(ticker) {
 
             const payload = await response.json();
 
+            // 台股全部向前還原權息（普通股、ETF、TDR、興櫃）；舊版快取的 raw-tw-* 只在換版過渡期還讀得到。
             const validAdjustment = payload?.adjustmentMethod === 'forward-rights-dividends'
+                || payload?.adjustmentMethod === 'forward-official-reference-tw-etf-daily'
+                || payload?.adjustmentMethod === 'forward-official-reference-tw-tdr-daily'
+                || payload?.adjustmentMethod === 'forward-official-reference-tw-emerging-daily'
                 || payload?.adjustmentMethod === 'raw-tw-etf-daily'
                 || payload?.adjustmentMethod === 'raw-tw-tdr-daily'
                 || payload?.adjustmentMethod === 'raw-tw-emerging-daily'
@@ -17990,14 +18146,7 @@ async function loadTopicIntradayKLine(ticker) {
                 return;
             }
 
-            topicIntradayKLines.set(ticker, {
-                date: String(intradaySummary.trade_date),
-                open: values[0],
-                high: values[1],
-                low: values[2],
-                close: values[3],
-                tradingVolume: intradayTradingVolume(row.price, row.turnover)
-            });
+            topicIntradayKLines.set(ticker, intradayLiveKLine(row, intradaySummary));
         })());
     }
 
@@ -18065,31 +18214,35 @@ function hasIncompleteKLineHistory(requestedStartDate, actualStartDate) {
     return toDate(actualStartDate) > toleranceDate;
 }
 
-// 資產頁台股持倉的盤中即時棒，資料來自 fetchAssetIntradayQuotes 存進的
-// assetIntradayQuotes；開高低任一項缺值時回傳的物件會被 selectedKLineBars
-// 後面的 null 檢查擋下，自動退回純歷史棒，不用在這裡重複判斷。
+// 資產頁台股持倉的盤中即時棒。資料就是 chooseAssetTwQuote 選中的那一輪盤中快照
+// （和自訂頁盤中同一份）；選中的是盤後資料時歷史 K 線自己已經有這根收盤棒，不用再疊。
 function assetIntradayLiveKLine(ticker) {
-    // 今天的官方日 K 一旦隨靜態站重新發佈上線，歷史 bars 陣列自己就有這根收盤棒了，
-    // 不用再疊一根即時棒——判斷方式跟 assetHoldingForAccount 同一套（asset-catalog.json
-    // 的 quoteDate 是否已經是今天），兩邊在同一次發佈裡一定同時翻新，不會不同步。
-    if (assetTickerQuotes.get(ticker)?.quoteDate === TAIPEI_DATE.format(new Date())) {
+    const quote = assetTickerQuotes.get(ticker);
+
+    if (quote?.session !== '盤中' || !quote.live) {
         return null;
     }
 
-    const quote = assetIntradayQuotes.get(ticker);
+    return quote.live;
+}
 
-    if (!quote) {
-        return null;
+// 歷史日 K 的價格欄位。今天除權息、減資、分割時，歷史要整段乘上今天的還原倍數才接得上即時棒。
+const KLINE_SCALED_FIELDS = ['open', 'high', 'low', 'close', 'previousClose', 'ma5', 'ma10', 'ma20', 'ma60', 'ma240'];
+
+function scaleKLineBar(bar, factor) {
+    if (!(factor > 0) || factor === 1) {
+        return bar;
     }
 
-    return {
-        date: TAIPEI_DATE.format(new Date()),
-        open: quote.open,
-        high: quote.high,
-        low: quote.low,
-        close: quote.close,
-        tradingVolume: quote.tradingVolume
-    };
+    const scaled = { ...bar };
+
+    for (const field of KLINE_SCALED_FIELDS) {
+        if (!missing(scaled[field])) {
+            scaled[field] = Number(scaled[field]) * factor;
+        }
+    }
+
+    return scaled;
 }
 
 function selectedKLineBars(ticker) {
@@ -18105,7 +18258,7 @@ function selectedKLineBars(ticker) {
 
     // 盤中把 MIS 的當日開高低與最新現價接到歷史日 K 尾端；排行榜與族群列表
     // 都讀各自正在呈現的同一輪盤中資料，不能拿前一次切換頁籤的排名資料湊。
-    // 資產頁的台股持倉另外接自己那份 assetIntradayQuotes（見 fetchAssetIntradayQuotes），
+    // 資產頁的台股持倉接的是 chooseAssetTwQuote 選中的那一輪快照（和自訂頁盤中同一份），
     // 不是排行榜的 current.rows，否則從資產頁開的彈窗會永遠停在最近一個已收盤日。
     const liveBar = isIntradayDataView() || isEtfIntradayView()
         ? current?.rows.find(row => row.ticker === ticker)?.liveKLine
@@ -18128,13 +18281,21 @@ function selectedKLineBars(ticker) {
     }
 
     // 資產頁的即時棒可能比靜態 K 線尾日晚一天；只去除同日歷史棒，保留 endDate 的前收棒。
-    const historicalBars = bars.filter(bar => bar.date !== liveBar.date);
+    // 歷史是換算到「昨天為止」的基準，今天有權益事件（除息、減資、分割……）時，
+    // 收集器會在即時列帶上今天的還原倍數，歷史要乘上它，否則事件當天會憑空出現一個缺口。
+    const factor = Number(liveBar.adjustmentFactor);
+    const historicalBars = bars
+        .filter(bar => bar.date !== liveBar.date)
+        .map(bar => scaleKLineBar(bar, factor));
+    const lastHistoricalClose = historicalBars.length
+        ? historicalBars[historicalBars.length - 1].close
+        : null;
 
     return [...historicalBars, {
         ...liveBar,
-        previousClose: historicalBars.length
-            ? historicalBars[historicalBars.length - 1].close
-            : null,
+
+        // 前收取今天的基準價（交易所參考價，已換算事件）；沒有時才退回歷史最後一根的收盤。
+        previousClose: !missing(liveBar.referencePrice) ? liveBar.referencePrice : lastHistoricalClose,
         isLive: true
     }]
         .sort((left, right) => left.date.localeCompare(right.date));
@@ -18749,9 +18910,9 @@ function renderKLinePopover(ticker, name, anchor) {
     const title = document.createElement('div');
     const payload = klineData.get(ticker);
     const isUs = expandedKLineMarket === '美股' || payload?.market === 'US';
-    const isEtf = expandedKLineIsEtf || payload?.adjustmentMethod === 'raw-tw-etf-daily';
-    const isTdr = payload?.adjustmentMethod === 'raw-tw-tdr-daily';
-    const isEmerging = payload?.adjustmentMethod === 'raw-tw-emerging-daily';
+    const isEtf = expandedKLineIsEtf || String(payload?.adjustmentMethod ?? '').endsWith('-tw-etf-daily');
+    const isTdr = String(payload?.adjustmentMethod ?? '').endsWith('-tw-tdr-daily');
+    const isEmerging = String(payload?.adjustmentMethod ?? '').endsWith('-tw-emerging-daily');
     const holdingCost = klineHoldingCost(ticker, expandedKLineMarket);
 
     // id 留在外層的 <strong> 上：index.html 的 aria-labelledby 指著它。
@@ -18772,9 +18933,9 @@ function renderKLinePopover(ticker, name, anchor) {
     const requestedStartDate = endDate ? klineStartDate(endDate) : '';
     const bars = klineData.has(ticker) ? selectedKLineBars(ticker) : [];
     const actualStartDate = bars[0]?.date ?? requestedStartDate;
-    const periodLabel = isEtf ? 'ETF 日 K'
-        : isTdr ? 'TDR 日 K'
-        : isEmerging ? '興櫃日 K（日均價）'
+    const periodLabel = isEtf ? 'ETF 還原權息日 K'
+        : isTdr ? 'TDR 還原權息日 K'
+        : isEmerging ? '興櫃還原權息日 K（日均價）'
         : isUs ? '美股日 K'
         : '還原權息日 K';
     period.textContent = endDate
@@ -19510,6 +19671,10 @@ function appendRankingCell(tr, row, column, options = {}) {
             const label = document.createElement('span');
             label.className = 'metric-label';
             label.textContent = line.label;
+
+            if (line.hint) {
+                span.title = line.hint;
+            }
 
             span.append(label, line.text);
             target.append(span);
@@ -21151,6 +21316,29 @@ function applyKnownEmergingMarkets(rows, referenceByTicker) {
     }
 }
 
+// change_percent 系列欄位存的是百分點（-0.39 就是 -0.39%），畫面的格式化函式吃比率，這裡統一除一次。
+const percentToRate = value => (missing(value) ? null : Number(value) / 100);
+
+// 盤中日 K 即時棒：MIS 的當日開高低與最新現價，接在歷史日 K 尾端。
+// referencePrice 是這一檔今天的基準價（前一棒的收盤要接到它）；adjustmentFactor 是今天除權息、
+// 減資、分割時的還原倍數——歷史 K 棒是換算到「昨天為止」的基準，要乘上它才接得起來（見 selectedKLineBars）。
+function intradayLiveKLine(row, summary) {
+    return {
+        date: summary.trade_date,
+        open: missing(row.open_price) ? null : Number(row.open_price),
+        high: missing(row.high_price) ? null : Number(row.high_price),
+        low: missing(row.low_price) ? null : Number(row.low_price),
+        close: missing(row.price) ? null : Number(row.price),
+        tradingVolume: intradayTradingVolume(row.price, row.turnover),
+        referencePrice: missing(row.reference_price) ? null : Number(row.reference_price),
+        adjustmentFactor: missing(row.adjustment_factor) ? null : Number(row.adjustment_factor)
+    };
+}
+
+// 週與今年以來的漲跌、基準價、還原倍數全部由收集器用和盤後同一套規則算好放進快照
+// （C# 的 IntradayAdjustment／PricePerformanceCalculator）；瀏覽器不再拿前一天的盤後檔自己推導基準，
+// 那樣會在除權息日算出錯的週漲跌。資料庫備援路徑沒有這些欄位，對應的欄位就是 null（畫面顯示 —），
+// 不退回錯的數字。
 function mapIntradayRows(raw, summary, includeEstimate = false) {
     const fraction = turnoverFraction(summary.captured_at);
     const estimable = fraction !== null && fraction >= INTRADAY_TURNOVER_MIN_FRACTION;
@@ -21166,16 +21354,13 @@ function mapIntradayRows(raw, summary, includeEstimate = false) {
         estimate: includeEstimate && estimable && String(row.market ?? '').toLocaleLowerCase() !== 'emerging'
             ? Number(row.turnover) / fraction
             : null,
-        priceChange: missing(row.change_percent) ? null : Number(row.change_percent) / 100,
+        priceChange: percentToRate(row.change_percent),
+        weeklyPriceChange: percentToRate(row.weekly_change_percent),
+        yearToDatePriceChange: percentToRate(row.year_to_date_change_percent),
+        weeklyFromListing: row.weekly_from_listing === true,
+        yearToDateFromListing: row.year_to_date_from_listing === true,
         close: missing(row.price) ? null : Number(row.price),
-        liveKLine: {
-            date: summary.trade_date,
-            open: missing(row.open_price) ? null : Number(row.open_price),
-            high: missing(row.high_price) ? null : Number(row.high_price),
-            low: missing(row.low_price) ? null : Number(row.low_price),
-            close: missing(row.price) ? null : Number(row.price),
-            tradingVolume: intradayTradingVolume(row.price, row.turnover)
-        }
+        liveKLine: intradayLiveKLine(row, summary)
     }));
 }
 
@@ -21241,8 +21426,6 @@ async function loadIntraday(silent = false, force = false) {
         : null;
     const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
     applyKnownEmergingMarkets(rows, referenceByTicker);
-    const sameWeekAsReference = referenceDate !== undefined
-        && weekStartKey(summary.trade_date) === weekStartKey(referenceDate);
 
     if (state.mode === 'accel' && referenceByTicker.size === 0) {
         showNotice(`讀不到過去 ${state.period} 個交易日的對照資料，資金加速排不出來，請改用成交熱度。`, true);
@@ -21251,15 +21434,10 @@ async function loadIntraday(silent = false, force = false) {
 
     for (const row of rows) {
         const past = referenceByTicker.get(row.ticker);
-        const weeklyBaseline = sameWeekAsReference
-            ? past?.weeklyBaselineClose
-            : past?.close;
 
+        // 週漲跌已由收集器算進快照（mapIntradayRows），這裡只算成交比的變化。
         row.share = marketTotal > 0 ? row.value / marketTotal : null;
         row.shareChange = past && !missing(row.share) ? row.share - past.share : null;
-        row.weeklyPriceChange = !missing(row.close) && Number(weeklyBaseline) > 0
-            ? (row.close - Number(weeklyBaseline)) / Number(weeklyBaseline)
-            : null;
     }
 
     // 資金加速的分子分母都是「市場成交比」，跟盤後用 AverageDailyTradingValue
@@ -21680,34 +21858,17 @@ async function loadCustomIntraday(silent = false, force = false) {
     const liveRows = mapIntradayRows(
         raw.filter(row => !isEtfIntradayRawRow(row)),
         summary);
-    const referenceDate = dates.filter(date => date < summary.trade_date).at(-1);
-    const reference = referenceDate
-        ? await fetchPeriod(`1-${referenceDate}`)
-        : null;
-    const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
 
-    // TDR 不在排行檔裡，週漲跌的基準價要讀它自己的逐日檔。
-    if (referenceDate !== undefined && liveRows.some(row => row.kind === 'tdr')) {
-        for (const row of (await fetchTdrDaily(referenceDate)).rows) {
-            if (!referenceByTicker.has(row.ticker)) {
-                referenceByTicker.set(row.ticker, row);
-            }
-        }
-    }
-
-    applyKnownEmergingMarkets(liveRows, referenceByTicker);
-    const sameWeekAsReference = referenceDate !== undefined
-        && weekStartKey(summary.trade_date) === weekStartKey(referenceDate);
-
-    for (const row of liveRows) {
-        const past = referenceByTicker.get(row.ticker);
-        const weeklyBaseline = sameWeekAsReference
-            ? past?.weeklyBaselineClose
-            : past?.close;
-
-        row.weeklyPriceChange = !missing(row.close) && Number(weeklyBaseline) > 0
-            ? (row.close - Number(weeklyBaseline)) / Number(weeklyBaseline)
+    // 資料庫備援路徑的興櫃會被讀成上櫃；排行對照檔的 market 是權威，用它改回來。
+    // CDN 快照本來就帶 EMERGING，平常不必多載那份 2 MB 多的對照檔。
+    if (intradayCdnDegraded) {
+        const referenceDate = dates.filter(date => date < summary.trade_date).at(-1);
+        const reference = referenceDate
+            ? await fetchPeriod(`1-${referenceDate}`)
             : null;
+        applyKnownEmergingMarkets(
+            liveRows,
+            new Map((reference?.rows ?? []).map(row => [row.ticker, row])));
     }
 
     nameByTicker = new Map(liveRows.map(row => [row.ticker, row.name]));
@@ -21893,6 +22054,8 @@ function normalizeEtfDailyRows(entries, fallbackDate) {
                 yearToDatePriceChange: assetNumber(entry?.yearToDatePriceChange),
                 weeklyBaselineClose: assetNumber(entry?.weeklyBaselineClose),
                 yearToDateBaselineClose: assetNumber(entry?.yearToDateBaselineClose),
+                weeklyFromListing: entry?.weeklyFromListing === true,
+                yearToDateFromListing: entry?.yearToDateFromListing === true,
                 tradingValue: assetNumber(entry?.tradingValue),
                 quoteDate: String(entry?.tradeDate ?? fallbackDate ?? '').trim()
             };
@@ -22048,30 +22211,6 @@ function localEtfRows(session, tradeDate) {
     });
 }
 
-async function loadPublishedEtfDailyForIntraday(tradeDate) {
-    try {
-        return await fetchEtfDaily(tradeDate);
-    } catch (error) {
-        if (error?.status !== 404) {
-            console.warn('ETF 盤後資料讀取失敗，盤中先顯示現價：', error);
-            return null;
-        }
-
-        const previousDate = dates.filter(date => date < tradeDate).at(-1);
-
-        if (!previousDate) {
-            return null;
-        }
-
-        try {
-            return await fetchEtfDaily(previousDate);
-        } catch (fallbackError) {
-            console.warn('ETF 前一交易日資料也讀取失敗，盤中先顯示現價：', fallbackError);
-            return null;
-        }
-    }
-}
-
 function renderEtfRows(allRows, session, tradeDate, capturedAtIso = '', liveEtfCount = null) {
     if (state.view !== 'etf') {
         return;
@@ -22155,42 +22294,29 @@ async function loadEtfDaily(force = false) {
     renderEtfRows(data.rows, 'daily', data.tradeDate || state.date);
 }
 
-// ETF 盤中表格的列：名冊每一檔都出現，有盤中報價的填現價、當日漲跌與成交值，沒有的一律是 —。
-// 沒有現價就算不出週、年漲跌，也不能拿上一個收盤日的週漲跌充數：那是舊數字，
+// ETF 盤中表格的列：名冊每一檔都出現，有盤中報價的填現價、當日漲跌、週與今年以來漲跌、成交值，
+// 沒有的一律是 —。沒有現價就算不出任何漲跌，也不能拿上一個收盤日的數字充數：那是舊數字，
 // 畫面上看起來會像「有資料只是沒動」。2026-10-05 ETF 盤中只收到 58／355 檔、其餘卻顯示
 // 成交值 0.00 與舊的週漲跌，就是因為這樣一直沒有人發現。
 //
-// 週漲跌的基準：盤後檔的 weeklyBaselineClose 是「那一天所在那一週」開始前最後一個收盤。
-// 盤中的今天若已經是新的一週（週一，或連假後第一天，最近的盤後檔是上週五），
-// 本週基準就是那個盤後檔當天的收盤，而不是它的週基準——個股盤中頁一直是這樣處理的
-// （loadCustomIntraday 的 sameWeekAsReference），ETF 盤中頁原本漏了，週一的週漲跌會多算上一週。
-function buildEtfIntradayRows(catalog, liveRows, daily, tradeDate) {
+// 日、週、今年以來的漲跌與基準價全部由收集器用和盤後同一套規則算好放進快照（還原權息、掛牌以來），
+// 這裡只負責把名冊和即時列對起來。以前瀏覽器拿前一天的盤後檔當基準自己算，除息、分割當天會算錯
+// （00400A 2026-10-08 除息：週漲跌顯示 +2.34%，還原後是 +3.10%）。
+function buildEtfIntradayRows(catalog, liveRows, tradeDate) {
     const liveByKey = new Map(liveRows.map(row => [`${row.market}:${row.ticker}`, row]));
-    const dailyByTicker = new Map((daily?.rows ?? []).map(row => [row.ticker, row]));
-    const sameWeekAsReference = Boolean(daily?.tradeDate)
-        && Boolean(tradeDate)
-        && weekStartKey(daily.tradeDate) === weekStartKey(tradeDate);
 
     return catalog.map(row => {
         const live = liveByKey.get(`${row.market}:${row.ticker}`);
-        const historical = dailyByTicker.get(row.ticker);
-        const close = live?.close ?? null;
-        const weeklyBaseline = sameWeekAsReference
-            ? historical?.weeklyBaselineClose
-            : historical?.close;
-        const yearToDateBaseline = historical?.yearToDateBaselineClose;
 
         return {
             ...row,
             session: 'intraday',
-            close,
+            close: live?.close ?? null,
             priceChange: live?.priceChange ?? null,
-            weeklyPriceChange: close !== null && weeklyBaseline > 0
-                ? (close - weeklyBaseline) / weeklyBaseline
-                : null,
-            yearToDatePriceChange: close !== null && yearToDateBaseline > 0
-                ? (close - yearToDateBaseline) / yearToDateBaseline
-                : null,
+            weeklyPriceChange: live?.weeklyPriceChange ?? null,
+            yearToDatePriceChange: live?.yearToDatePriceChange ?? null,
+            weeklyFromListing: live?.weeklyFromListing === true,
+            yearToDateFromListing: live?.yearToDateFromListing === true,
             tradingValue: live?.value ?? null,
             quoteDate: tradeDate,
             liveKLine: live?.liveKLine ?? null
@@ -22244,8 +22370,7 @@ async function loadEtfIntraday(silent = false, force = false) {
     const liveRows = mapIntradayRows(
         raw.filter(isEtfIntradayRawRow),
         summary);
-    const daily = await loadPublishedEtfDailyForIntraday(summary.trade_date);
-    const rows = buildEtfIntradayRows(catalog, liveRows, daily, summary.trade_date);
+    const rows = buildEtfIntradayRows(catalog, liveRows, summary.trade_date);
 
     lastIntradayLoadedAt = Date.now();
     renderEtfRows(rows, 'intraday', summary.trade_date, summary.captured_at, liveRows.length);

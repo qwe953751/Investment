@@ -252,6 +252,7 @@ public sealed class EmergingIntradayClient(HttpClient httpClient, ILogger<Emergi
             LowPrice = bar.Low,
             TradingVolume = volume,
             EstimatedTradingValue = traded ? decimal.Round(average!.Value * volume, 0) : 0m,
+            ReferencePrice = previousAverage,
             ChangePercent = price is { } current && previousAverage is { } baseline
                 ? decimal.Round((current - baseline) / baseline * 100m, 2)
                 : null

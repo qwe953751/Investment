@@ -38,185 +38,215 @@ public static class PriceAdjustmentBuilder
         IReadOnlyList<DailyReferenceSnapshot> references,
         IReadOnlyList<ReferenceAction> actions)
     {
-        var report = new PriceAdjustmentReport();
-
         if (snapshots.Count == 0)
         {
-            return new PriceAdjustmentTable(
-                [],
-                new Dictionary<string, ListingReference>(),
-                new Dictionary<string, (DateOnly[] Dates, decimal[] Values)>(),
-                report);
+            return PriceAdjustmentTable.Empty;
         }
 
-        var firstDate = snapshots[0].TradingDate;
+        var engine = new PriceAdjustmentEngine(actions, snapshots[0].TradingDate);
         var referencesByDate = references
             .GroupBy(item => item.TradingDate)
             .ToDictionary(group => group.Key, group => group.Last());
-        var actionsByTicker = actions
+
+        foreach (var snapshot in snapshots)
+        {
+            engine.ProcessDay(
+                snapshot.TradingDate,
+                snapshot.Quotes.Select(quote => new EngineQuote(quote.Ticker, quote.Market, quote.Name, quote.ClosePrice)),
+                referencesByDate.GetValueOrDefault(snapshot.TradingDate));
+        }
+
+        return engine.ToTable();
+    }
+}
+
+/// <summary>一檔標的在某一天的行情，餵給 <see cref="PriceAdjustmentEngine"/> 的最小資料。</summary>
+public readonly record struct EngineQuote(string Ticker, Market Market, string Name, decimal? Close);
+
+/// <summary>
+/// 逐個交易日往前推的還原權息引擎，狀態（每檔標的最後一天的收盤、基準、次日參考價、買賣價）都在這裡。
+/// 盤後匯出一口氣餵完歷史；盤中收集器先餵完歷史，再用今天的官方參考價餵「今天」，
+/// 就能用<b>同一份程式</b>算出今天的事件與基準價，盤中盤後不會各說各話。
+/// </summary>
+public sealed class PriceAdjustmentEngine
+{
+    private readonly DateOnly _firstDate;
+    private readonly Dictionary<string, ReferenceAction[]> _actionsByTicker;
+    private readonly Dictionary<string, int> _actionPointers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, TickerState> _states = new(StringComparer.Ordinal);
+    private readonly List<StockPriceAdjustment> _adjustments = [];
+    private readonly Dictionary<string, ListingReference> _listings = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<(DateOnly Date, decimal Value)>> _bases = new(StringComparer.Ordinal);
+    private readonly PriceAdjustmentReport _report = new();
+
+    public PriceAdjustmentEngine(IReadOnlyList<ReferenceAction> actions, DateOnly firstDate)
+    {
+        _firstDate = firstDate;
+        _actionsByTicker = actions
             .GroupBy(action => action.Ticker, StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,
                 group => group.OrderBy(action => action.Date).ToArray(),
                 StringComparer.Ordinal);
-        var actionPointers = new Dictionary<string, int>(StringComparer.Ordinal);
-        var states = new Dictionary<string, TickerState>(StringComparer.Ordinal);
-        var adjustments = new List<StockPriceAdjustment>();
-        var listings = new Dictionary<string, ListingReference>(StringComparer.Ordinal);
-        var bases = new Dictionary<string, List<(DateOnly Date, decimal Value)>>(StringComparer.Ordinal);
+    }
 
-        foreach (var snapshot in snapshots)
+    public void ProcessDay(DateOnly date, IEnumerable<EngineQuote> quotes, DailyReferenceSnapshot? reference)
+    {
+        var rowsByTicker = reference is null
+            ? null
+            : reference.Rows
+                .GroupBy(row => row.Ticker, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var quote in quotes)
         {
-            var date = snapshot.TradingDate;
-            referencesByDate.TryGetValue(date, out var reference);
-            var rowsByTicker = reference is null
-                ? null
-                : reference.Rows
-                    .GroupBy(row => row.Ticker, StringComparer.Ordinal)
-                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-
-            foreach (var quote in snapshot.Quotes)
+            if (!seen.Add(quote.Ticker))
             {
-                if (!seen.Add(quote.Ticker))
+                continue;
+            }
+
+            var ticker = quote.Ticker;
+            var market = quote.Market;
+            _states.TryGetValue(ticker, out var state);
+            var close = quote.Close is > 0m ? quote.Close : null;
+
+            var row = reference is not null && Covers(reference, market)
+                && rowsByTicker!.TryGetValue(ticker, out var found)
+                && found.Market == market
+                    ? found
+                    : null;
+
+            if (row is null)
+            {
+                _report.UncoveredQuoteDays++;
+            }
+
+            var (benchmark, expected) = Evaluate(market, row, state);
+            var tableEvents = ConsumeActions(ticker, date, hasHistory: state is not null);
+            var transfer = state is not null && state.Market != market;
+            var applied = 1m;
+            decimal? ruleBase = null;
+
+            if (transfer)
+            {
+                _report.MarketTransfers++;
+            }
+
+            // 事件表的倍數是 P1 ÷ P0，乘回基準價會有小數雜訊；P0 剛好就是目前的基準價（絕大多數情況）
+            // 就直接取 P1，基準價才是交易所公布的那個數字。
+            decimal? running = null;
+
+            if (tableEvents.Count > 0)
+            {
+                var baseForFactor = expected ?? state?.LastClose;
+                running = baseForFactor;
+
+                foreach (var action in tableEvents)
                 {
-                    continue;
-                }
+                    var maybeFactor = action.Factor(baseForFactor);
 
-                var ticker = quote.Ticker;
-                var market = quote.Market;
-                states.TryGetValue(ticker, out var state);
-                var close = quote.ClosePrice is > 0m ? quote.ClosePrice : null;
-
-                var row = reference is not null && Covers(reference, market)
-                    && rowsByTicker!.TryGetValue(ticker, out var found)
-                    && found.Market == market
-                        ? found
-                        : null;
-
-                if (row is null)
-                {
-                    report.UncoveredQuoteDays++;
-                }
-
-                var (benchmark, expected) = Evaluate(market, row, state);
-                var tableEvents = ConsumeActions(
-                    ticker, date, hasHistory: state is not null, actionsByTicker, actionPointers);
-                var transfer = state is not null && state.Market != market;
-                var applied = 1m;
-                decimal? ruleBase = null;
-
-                if (transfer)
-                {
-                    report.MarketTransfers++;
-                }
-
-                if (tableEvents.Count > 0)
-                {
-                    var baseForFactor = expected ?? state?.LastClose;
-
-                    foreach (var action in tableEvents)
+                    if (maybeFactor is not > 0m)
                     {
-                        var maybeFactor = action.Factor(baseForFactor);
-
-                        if (maybeFactor is not > 0m)
-                        {
-                            report.UnresolvedTableEvents++;
-                            continue;
-                        }
-
-                        var factor = maybeFactor.Value;
-
-                        if (factor == 1m)
-                        {
-                            continue;
-                        }
-
-                        var previous = action.PreviousClose is > 0m ? action.PreviousClose.Value : baseForFactor!.Value;
-                        var referencePrice = action.ReferencePrice is > 0m ? action.ReferencePrice.Value : previous * factor;
-
-                        adjustments.Add(new StockPriceAdjustment(ticker, date, previous, referencePrice, action.Source)
-                        {
-                            Market = market
-                        });
-                        applied *= factor;
-                        report.TableEvents++;
+                        _report.UnresolvedTableEvents++;
+                        continue;
                     }
 
-                    if (benchmark is > 0m && expected is > 0m && benchmark != expected)
+                    var factor = maybeFactor.Value;
+
+                    if (factor == 1m)
                     {
-                        report.TableEventsAlsoMovedBenchmark++;
+                        continue;
                     }
-                }
-                else if (!transfer && benchmark is > 0m && expected is > 0m && benchmark != expected)
-                {
-                    adjustments.Add(new StockPriceAdjustment(
-                        ticker, date, expected.Value, benchmark.Value, "official-reference")
+
+                    var previous = action.PreviousClose is > 0m ? action.PreviousClose.Value : baseForFactor!.Value;
+                    var referencePrice = action.ReferencePrice is > 0m ? action.ReferencePrice.Value : previous * factor;
+
+                    _adjustments.Add(new StockPriceAdjustment(ticker, date, previous, referencePrice, action.Source)
                     {
                         Market = market
                     });
-                    applied = benchmark.Value / expected.Value;
-                    ruleBase = benchmark;
-                    report.ReferenceEvents++;
-
-                    if (report.ReferenceEventSamples.Count < PriceAdjustmentReport.MaxSamples)
-                    {
-                        report.ReferenceEventSamples.Add(
-                            $"{date:yyyy-MM-dd} {ticker} {quote.Name}：{expected.Value:0.####} → {benchmark.Value:0.####}"
-                            + $"（×{applied:0.####}）");
-                    }
+                    applied *= factor;
+                    running = running is > 0m && action.PreviousClose == running && action.ReferencePrice is > 0m
+                        ? action.ReferencePrice
+                        : running * factor;
+                    _report.TableEvents++;
                 }
 
-                // 這一天的基準價 = 沒有事件時應有的參考價，乘上這一天套用的事件倍數。
-                // 前一日沒有成交造成的漂移已經包含在 expected 裡，所以和交易所對當天算的漲跌一致。
-                decimal? baseValue = null;
-
-                if (expected is > 0m)
+                if (benchmark is > 0m && expected is > 0m && benchmark != expected)
                 {
-                    // 規則事件的基準價就是官方公布的參考價本身，不要經過除法再乘回來而多出小數雜訊。
-                    baseValue = ruleBase ?? expected.Value * applied;
+                    _report.TableEventsAlsoMovedBenchmark++;
                 }
-                else if (state is null && date > firstDate && benchmark is > 0m)
-                {
-                    // 第一個交易日：沒有前收盤，官方參考價就是掛牌參考價。
-                    baseValue = benchmark;
-                    listings[ticker] = new ListingReference(ticker, date, benchmark.Value);
-                    report.Listings++;
-                }
-
-                if (baseValue is > 0m)
-                {
-                    if (!bases.TryGetValue(ticker, out var list))
-                    {
-                        list = [];
-                        bases[ticker] = list;
-                    }
-
-                    list.Add((date, baseValue.Value));
-                }
-
-                states[ticker] = new TickerState
-                {
-                    Market = market,
-                    Close = close,
-                    LastClose = close ?? state?.LastClose,
-                    Benchmark = benchmark ?? state?.Benchmark,
-                    NextReference = row?.NextReference,
-                    Bid = row?.Bid,
-                    Ask = row?.Ask
-                };
             }
-        }
+            else if (!transfer && benchmark is > 0m && expected is > 0m && benchmark != expected)
+            {
+                _adjustments.Add(new StockPriceAdjustment(
+                    ticker, date, expected.Value, benchmark.Value, "official-reference")
+                {
+                    Market = market
+                });
+                applied = benchmark.Value / expected.Value;
+                ruleBase = benchmark;
+                _report.ReferenceEvents++;
 
-        return new PriceAdjustmentTable(
-            adjustments,
-            listings,
-            bases.ToDictionary(
+                if (_report.ReferenceEventSamples.Count < PriceAdjustmentReport.MaxSamples)
+                {
+                    _report.ReferenceEventSamples.Add(
+                        $"{date:yyyy-MM-dd} {ticker} {quote.Name}：{expected.Value:0.####} → {benchmark.Value:0.####}"
+                        + $"（×{applied:0.####}）");
+                }
+            }
+
+            // 這一天的基準價 = 沒有事件時應有的參考價，乘上這一天套用的事件倍數。
+            // 前一日沒有成交造成的漂移已經包含在 expected 裡，所以和交易所對當天算的漲跌一致。
+            decimal? baseValue = null;
+
+            if (expected is > 0m)
+            {
+                // 規則事件的基準價就是官方公布的參考價本身，不要經過除法再乘回來而多出小數雜訊。
+                baseValue = ruleBase ?? (tableEvents.Count > 0 && applied != 1m ? running : null) ?? expected.Value * applied;
+            }
+            else if (state is null && date > _firstDate && benchmark is > 0m)
+            {
+                // 第一個交易日：沒有前收盤，官方參考價就是掛牌參考價。
+                baseValue = benchmark;
+                _listings[ticker] = new ListingReference(ticker, date, benchmark.Value);
+                _report.Listings++;
+            }
+
+            if (baseValue is > 0m)
+            {
+                if (!_bases.TryGetValue(ticker, out var list))
+                {
+                    list = [];
+                    _bases[ticker] = list;
+                }
+
+                list.Add((date, baseValue.Value));
+            }
+
+            _states[ticker] = new TickerState
+            {
+                Market = market,
+                Close = close,
+                LastClose = close ?? state?.LastClose,
+                Benchmark = benchmark ?? state?.Benchmark,
+                NextReference = row?.NextReference,
+                Bid = row?.Bid,
+                Ask = row?.Ask
+            };
+        }
+    }
+
+    public PriceAdjustmentTable ToTable()
+        => new(
+            [.. _adjustments],
+            new Dictionary<string, ListingReference>(_listings, StringComparer.Ordinal),
+            _bases.ToDictionary(
                 pair => pair.Key,
                 pair => (pair.Value.Select(item => item.Date).ToArray(), pair.Value.Select(item => item.Value).ToArray()),
                 StringComparer.Ordinal),
-            report);
-    }
+            _report);
 
     /// <summary>
     /// 這一天官方的參考價（benchmark）與「沒有權益事件時應有的參考價」（expected）。
@@ -224,15 +254,15 @@ public static class PriceAdjustmentBuilder
     /// </summary>
     private static (decimal? Benchmark, decimal? Expected) Evaluate(Market market, ReferenceRow? row, TickerState? state)
     {
-        if (row is null)
-        {
-            return (null, null);
-        }
-
         switch (market)
         {
             case Market.Twse:
                 {
+                    if (row is null)
+                    {
+                        return (null, null);
+                    }
+
                     // 上市的股價升降幅度同一列就有前一日的收盤、基準與買賣揭示價，直接套規則。
                     // 前一日沒有任何資料（停牌中、分割或減資恢復買賣的第一天）時，退回我們自己記的最後一天：
                     // 有收盤用收盤（停止買賣前收盤價），沒有就沿用最後的基準。
@@ -252,7 +282,8 @@ public static class PriceAdjustmentBuilder
                     // 上櫃的表格是「這一天收盤後」的資料，次日參考價就是下一個交易日的基準：
                     // 這一天的基準來自前一天那一列的次日參考價（除權息當天漲跌欄是文字，只能這樣取），
                     // 有數字漲跌時直接用收盤減漲跌。應有的參考價用前一天那一列的收盤與買賣價套規則。
-                    var benchmark = row.Reference ?? state?.NextReference;
+                    // 因此即使當天的表格還沒有（盤中、或那天沒補到），只要有前一天的列就算得出來。
+                    var benchmark = row?.Reference ?? state?.NextReference;
                     var expected = state is null
                         ? null
                         : ReferenceRule.Expected(state.Close, state.Benchmark, state.Bid, state.Ask);
@@ -263,7 +294,7 @@ public static class PriceAdjustmentBuilder
             case Market.Emerging:
                 // 興櫃的參考價就是前一個有成交日的日均價（72 個交易日逐檔核對 24,406 筆完全相等），
                 // 沒有委託簿規則；除權息不會反映在這裡，由事件表負責。
-                return (row.Reference, state?.LastClose);
+                return row is null ? (null, null) : (row.Reference, state?.LastClose);
 
             default:
                 return (null, null);
@@ -284,21 +315,16 @@ public static class PriceAdjustmentBuilder
     /// 或遇到颱風假事件日順延到下一個交易日，都不會漏掉也不會重複。
     /// 這檔標的的第一天之前的事件屬於我們沒有資料的期間，直接略過。
     /// </summary>
-    private static List<ReferenceAction> ConsumeActions(
-        string ticker,
-        DateOnly date,
-        bool hasHistory,
-        Dictionary<string, ReferenceAction[]> actionsByTicker,
-        Dictionary<string, int> pointers)
+    private List<ReferenceAction> ConsumeActions(string ticker, DateOnly date, bool hasHistory)
     {
         var due = new List<ReferenceAction>();
 
-        if (!actionsByTicker.TryGetValue(ticker, out var list))
+        if (!_actionsByTicker.TryGetValue(ticker, out var list))
         {
             return due;
         }
 
-        var index = pointers.GetValueOrDefault(ticker);
+        var index = _actionPointers.GetValueOrDefault(ticker);
 
         while (index < list.Length && list[index].Date <= date)
         {
@@ -310,7 +336,7 @@ public static class PriceAdjustmentBuilder
             index++;
         }
 
-        pointers[ticker] = index;
+        _actionPointers[ticker] = index;
         return due;
     }
 

@@ -161,8 +161,16 @@ public sealed class StaticSiteExporter(
             Path.Combine(dataDirectory, "asset-catalog.json"),
             dataSet,
             usSnapshots,
-            tradingDates.Length > 0 ? tradingDates[^1] : null,
             cancellationToken);
+
+        if (tradingDates.Length > 0)
+        {
+            await WriteLatestQuotesAsync(
+                Path.Combine(dataDirectory, "quotes-latest.json"),
+                dataSet,
+                tradingDates[^1],
+                cancellationToken);
+        }
 
         progress?.Report(
             $"已寫出 {kLineFileCount} 檔台股最近三個月還原權息日 K 資料"
@@ -1410,8 +1418,10 @@ public sealed class StaticSiteExporter(
             kindsByTicker.TryGetValue(ticker, out var kind);
             marketsByTicker.TryGetValue(ticker, out var market);
             var adjustmentMethod = KLineAdjustmentMethod(kind, market);
-            var isRaw = adjustmentMethod != ForwardAdjustedKLineMethod;
-            var tickerEvents = !isRaw && eventsByTicker.TryGetValue(ticker, out var foundEvents)
+
+            // 所有台股標的（普通股、ETF、TDR、興櫃）都用官方參考價與官方事件表還原，
+            // 沒有事件的標的 tickerEvents 就是空的，K 線等於原始價。
+            var tickerEvents = eventsByTicker.TryGetValue(ticker, out var foundEvents)
                 ? foundEvents
                 : [];
             var points = DailyKLineCalculator.Calculate(
@@ -1459,16 +1469,17 @@ public sealed class StaticSiteExporter(
     internal const string ForwardAdjustedKLineMethod = "forward-rights-dividends";
 
     /// <summary>
-    /// 日 K 的價格基準。普通股用還原權息；其餘一律原始價格：
-    /// ETF 與 TDR 沒有普通股的除權息邏輯（TDR 要有適用且驗證過的公司行動資料才能還原），
-    /// 興櫃的「收」是日均價、「開」是前日均價（參考價），不是真的開收盤成交價，
-    /// 前端要據此標示，不能讓使用者以為那是一般的收盤 K 棒。
+    /// 日 K 的價格基準名稱。全部台股都向前還原權息（以官方參考價與官方事件表換算，今天的價格維持真實成交價），
+    /// 名稱依種類區分只是給前端決定標題與說明用：
+    /// 普通股沿用 forward-rights-dividends；ETF、TDR 與興櫃加上種類字尾。
+    /// 興櫃的「收」是日均價、「開」是前日均價（參考價），不是真的開收盤成交價，前端要據此標示，
+    /// 不能讓使用者以為那是一般的收盤 K 棒。
     /// </summary>
     internal static string KLineAdjustmentMethod(StockKind kind, Domain.Stocks.Market market) => kind switch
     {
-        StockKind.Etf => "raw-tw-etf-daily",
-        StockKind.Tdr => "raw-tw-tdr-daily",
-        _ when market == Domain.Stocks.Market.Emerging => "raw-tw-emerging-daily",
+        StockKind.Etf => "forward-official-reference-tw-etf-daily",
+        StockKind.Tdr => "forward-official-reference-tw-tdr-daily",
+        _ when market == Domain.Stocks.Market.Emerging => "forward-official-reference-tw-emerging-daily",
         _ => ForwardAdjustedKLineMethod
     };
 
@@ -1538,6 +1549,13 @@ public sealed class StaticSiteExporter(
             .ThenBy(stock => stock.Ticker, StringComparer.Ordinal)
             .ToArray();
 
+        var eventsByTicker = dataSet.PriceAdjustments
+            .GroupBy(item => item.Ticker, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<StockPriceAdjustment>)group.ToArray(),
+                StringComparer.Ordinal);
+
         var count = 0;
 
         foreach (var date in selectableDates)
@@ -1557,7 +1575,13 @@ public sealed class StaticSiteExporter(
                         return null;
                     }
 
-                    var performance = PricePerformanceCalculator.Calculate(history, [], date);
+                    // ETF、TDR 與普通股吃同一份還原權息事件與掛牌參考價（只算到這個日期以前的事件，
+                    // 歷史上每一天的漲跌不會因為之後才發生的事件而改變）。
+                    var performance = PricePerformanceCalculator.Calculate(
+                        history,
+                        eventsByTicker.GetValueOrDefault(stock.Ticker, []),
+                        date,
+                        dataSet.AdjustmentTable.Listings.GetValueOrDefault(stock.Ticker));
 
                     return new EtfRowExport(
                         stock.Ticker,
@@ -1569,7 +1593,9 @@ public sealed class StaticSiteExporter(
                         Round(performance.YearToDateChangeRate),
                         Round(performance.WeeklyBaselineClose),
                         Round(performance.YearToDateBaselineClose),
-                        day.TradingValue is { } tradingValue ? Math.Round(tradingValue) : null);
+                        day.TradingValue is { } tradingValue ? Math.Round(tradingValue) : null,
+                        performance.WeeklyFromListing ? true : null,
+                        performance.YearToDateFromListing ? true : null);
                 })
                 .OfType<EtfRowExport>()
                 .ToArray();
@@ -1585,30 +1611,19 @@ public sealed class StaticSiteExporter(
     }
 
     /// <summary>
-    /// 資產頁只需一份輕量名冊：輸入代號時帶回名稱，並用最新可用收盤／前收顯示漲跌。
-    /// ETF 仍保留在這份資料內；是否參加成交值排行由排名計算器的 StockKind 篩選決定。
+    /// 資產頁的名冊：輸入代號時帶回名稱、判斷市場與種類。
+    ///
+    /// <b>台股條目只有名稱與分類，沒有任何價格。</b>台股報價統一走自訂頁籤同一份資料——盤中是盤中快照，
+    /// 盤後是 <c>quotes-latest.json</c>（與排行、ETF、TDR 每日檔同一個計算器、同一份還原權息表產生）。
+    /// 名冊以前自己再算一份收盤與漲跌（ETF 還刻意不還原），兩份數字在除權息、分割日對不上，
+    /// 資產頁和自訂頁因此看到不同的價格。美股沒有這個問題，維持原樣帶最新收盤與漲跌。
     /// </summary>
     private static async Task<int> WriteAssetCatalogAsync(
         string path,
         MarketDataSet dataSet,
         IReadOnlyList<DailyQuoteSnapshot> usSnapshots,
-        DateOnly? adjustmentThroughDate,
         CancellationToken cancellationToken)
     {
-        var rowsByTicker = dataSet.DailyTrading
-            .GroupBy(row => row.Ticker, StringComparer.Ordinal)
-            .ToDictionary(
-                group => group.Key,
-                group => (IReadOnlyList<DailyStockTrading>)group
-                    .OrderByDescending(row => row.TradingDate)
-                    .ToArray(),
-                StringComparer.Ordinal);
-        var eventsByTicker = dataSet.PriceAdjustments
-            .GroupBy(item => item.Ticker, StringComparer.Ordinal)
-            .ToDictionary(
-                group => group.Key,
-                group => (IReadOnlyList<StockPriceAdjustment>)group.ToArray(),
-                StringComparer.Ordinal);
         var entries = new List<AssetCatalogEntry>();
 
         foreach (var stock in dataSet.Stocks
@@ -1616,13 +1631,27 @@ public sealed class StaticSiteExporter(
             .OrderBy(stock => stock.Market)
             .ThenBy(stock => stock.Ticker, StringComparer.Ordinal))
         {
-            rowsByTicker.TryGetValue(stock.Ticker, out var rows);
-            eventsByTicker.TryGetValue(stock.Ticker, out var adjustments);
-            entries.Add(ToTaiwanAssetCatalogEntry(
-                stock,
-                rows ?? [],
-                stock.Kind == StockKind.Etf ? [] : adjustments ?? [],
-                adjustmentThroughDate));
+            entries.Add(new AssetCatalogEntry(
+                stock.Market switch
+                {
+                    Market.Twse => "TWSE",
+                    Market.Tpex => "TPEX",
+                    _ => "EMERGING"
+                },
+                stock.Ticker,
+                stock.Name,
+                stock.Kind switch
+                {
+                    StockKind.Etf => "etf",
+                    StockKind.Tdr => "tdr",
+                    _ => "stock"
+                },
+                null,
+                null,
+                null,
+                stock.Kind == StockKind.Etf && TaiwanSecurityRules.IsForeignCurrencyEtfLine(stock.Ticker)
+                    ? true
+                    : null));
         }
 
         foreach (var group in usSnapshots
@@ -1660,63 +1689,68 @@ public sealed class StaticSiteExporter(
         return entries.Count;
     }
 
-    private static AssetCatalogEntry ToTaiwanAssetCatalogEntry(
-        Stock stock,
-        IReadOnlyList<DailyStockTrading> rows,
-        IReadOnlyList<StockPriceAdjustment> adjustments,
-        DateOnly? adjustmentThroughDate)
+    /// <summary>
+    /// 最新一個交易日全部台股（上市、上櫃、興櫃、ETF、TDR）的收盤與日漲跌，給資產頁與其他只需要
+    /// 「現在這個價」的畫面用。檔案很小（約 160 KB），不必為了持倉的幾檔去下載 2 MB 的排行檔。
+    ///
+    /// 每一檔都和自訂頁用同一個計算器（<see cref="PricePerformanceCalculator"/>）、同一份還原權息表算出，
+    /// 不是另一套公式；日、週、今年以來漲跌都是小數（0.0123 = +1.23%），和排行、ETF 每日檔一致。
+    /// </summary>
+    internal static async Task WriteLatestQuotesAsync(
+        string path,
+        MarketDataSet dataSet,
+        DateOnly latestDate,
+        CancellationToken cancellationToken)
     {
-        var priceRows = rows
-            .Where(row => row.ClosePrice is > 0m)
-            .ToArray();
-        var latest = priceRows.FirstOrDefault();
-        var previous = priceRows.Skip(1).FirstOrDefault();
-        var throughDate = adjustmentThroughDate ?? latest?.TradingDate;
-        var latestClose = AdjustAssetClose(latest, adjustments, throughDate);
-        var previousClose = AdjustAssetClose(previous, adjustments, throughDate);
+        var rowsByTicker = dataSet.DailyTrading
+            .GroupBy(row => row.Ticker, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+        var eventsByTicker = dataSet.PriceAdjustments
+            .GroupBy(item => item.Ticker, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<StockPriceAdjustment>)group.ToArray(),
+                StringComparer.Ordinal);
+        var quotes = new List<LatestQuoteExport>();
 
-        return new AssetCatalogEntry(
-            stock.Market switch
-            {
-                Market.Twse => "TWSE",
-                Market.Tpex => "TPEX",
-                _ => "EMERGING"
-            },
-            stock.Ticker,
-            stock.Name,
-            stock.Kind switch
-            {
-                StockKind.Etf => "etf",
-                StockKind.Tdr => "tdr",
-                _ => "stock"
-            },
-            latest?.TradingDate.ToString("yyyy-MM-dd"),
-            RoundKLine(latestClose),
-            ToChangePercent(latestClose, previousClose),
-            stock.Kind == StockKind.Etf && TaiwanSecurityRules.IsForeignCurrencyEtfLine(stock.Ticker)
-                ? true
-                : null);
-    }
-
-    private static decimal? AdjustAssetClose(
-        DailyStockTrading? row,
-        IReadOnlyList<StockPriceAdjustment> adjustments,
-        DateOnly? adjustmentThroughDate)
-    {
-        if (row?.ClosePrice is not { } close)
+        foreach (var stock in dataSet.Stocks
+            .Where(stock => stock.Market is Market.Twse or Market.Tpex or Market.Emerging)
+            .OrderBy(stock => stock.Ticker, StringComparer.Ordinal))
         {
-            return null;
+            if (!rowsByTicker.TryGetValue(stock.Ticker, out var history)
+                || !history.Any(row => row.TradingDate == latestDate && row.ClosePrice is > 0m))
+            {
+                continue;
+            }
+
+            var performance = PricePerformanceCalculator.Calculate(
+                history,
+                eventsByTicker.GetValueOrDefault(stock.Ticker, []),
+                latestDate,
+                dataSet.AdjustmentTable.Listings.GetValueOrDefault(stock.Ticker));
+
+            quotes.Add(new LatestQuoteExport(
+                stock.Ticker,
+                stock.Name,
+                RankingFormatter.ToMarketKey(stock.Market),
+                stock.Kind switch
+                {
+                    StockKind.Etf => "etf",
+                    StockKind.Tdr => "tdr",
+                    _ => "stock"
+                },
+                Round(history.First(row => row.TradingDate == latestDate).ClosePrice),
+                Round(performance.DailyChangeRate),
+                Round(performance.WeeklyChangeRate),
+                Round(performance.YearToDateChangeRate),
+                performance.WeeklyFromListing ? true : null,
+                performance.YearToDateFromListing ? true : null));
         }
 
-        var throughDate = adjustmentThroughDate ?? row.TradingDate;
-        var factor = adjustments
-            .Where(item => item.EffectiveDate > row.TradingDate
-                && item.EffectiveDate <= throughDate
-                && item.PreviousClose > 0m
-                && item.ReferencePrice > 0m)
-            .Aggregate(1m, (current, item) => current * item.Factor);
-
-        return close * factor;
+        await WriteJsonAsync(
+            path,
+            new LatestQuotesExport(latestDate.ToString("yyyy-MM-dd"), quotes),
+            cancellationToken);
     }
 
     private static decimal? ToChangePercent(decimal? current, decimal? previous)
@@ -1874,7 +1908,8 @@ public sealed class StaticSiteExporter(
             CollectionSchedule.IntradayStart.ToString("HH:mm", CultureInfo.InvariantCulture),
             CollectionSchedule.IntradayEnd.ToString("HH:mm", CultureInfo.InvariantCulture),
             (int)CollectionSchedule.IntradayInterval.TotalMinutes,
-            CollectionSchedule.DailyRefresh.ToString("HH:mm", CultureInfo.InvariantCulture));
+            CollectionSchedule.DailyRefresh.ToString("HH:mm", CultureInfo.InvariantCulture),
+            CollectionSchedule.EmergingIntradayEnd.ToString("HH:mm", CultureInfo.InvariantCulture));
 
     /// <summary>
     /// 讀不到（本機沒接 Supabase、樣本天數不足）就退回寫死的實測表，不讓匯出整個中斷——
@@ -2134,9 +2169,25 @@ public sealed class StaticSiteExporter(
         decimal? YearToDatePriceChange,
         decimal? WeeklyBaselineClose,
         decimal? YearToDateBaselineClose,
-        decimal? TradingValue);
+        decimal? TradingValue,
+        bool? WeeklyFromListing = null,
+        bool? YearToDateFromListing = null);
 
     private sealed record AssetCatalogExport(IReadOnlyList<AssetCatalogEntry> Entries);
+
+    private sealed record LatestQuotesExport(string TradeDate, IReadOnlyList<LatestQuoteExport> Rows);
+
+    private sealed record LatestQuoteExport(
+        string Ticker,
+        string Name,
+        string Market,
+        string Kind,
+        decimal? Close,
+        decimal? PriceChange,
+        decimal? WeeklyPriceChange,
+        decimal? YearToDatePriceChange,
+        bool? WeeklyFromListing = null,
+        bool? YearToDateFromListing = null);
 
     /// <param name="ForeignCurrency">
     /// 只有外幣交易線（00625K、00687C 這類 K／C 結尾的 ETF）才是 true，其餘一律 null 不輸出。
@@ -2196,7 +2247,8 @@ public sealed class StaticSiteExporter(
         string IntradayStart,
         string IntradayEnd,
         int IntradayIntervalMinutes,
-        string DailyRefresh);
+        string DailyRefresh,
+        string EmergingIntradayEnd);
 
     /// <summary>f(t) 曲線上的一個桶：時刻與該時刻累計成交額通常已經跑掉的比例。</summary>
     private sealed record CurvePointExport(string Time, double Ratio);
