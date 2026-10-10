@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Invest.Web.Tests;
 
 /// <summary>
-/// 恢復買賣參考價公告的讀取：上市的幾張表從 GitHub 的雲端 IP 讀到網頁而不是 JSON（2026-10-10 實測），
+/// 恢復買賣參考價公告的讀取：上市的幾張表偶爾讀到網頁而不是 JSON（2026-10-10 在 GitHub 上實際發生過），
 /// 上櫃的是必要的。某一張讀不到不能拖垮其他張，也不能讓整個月份被判定「查完了」或「全失敗」。
 /// </summary>
 public sealed class ResumptionFetchTests
