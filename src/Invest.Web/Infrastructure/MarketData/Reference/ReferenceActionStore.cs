@@ -27,6 +27,14 @@ public sealed record ReferenceActionBook
     public IReadOnlyDictionary<string, DateOnly> CoveredThrough { get; init; }
         = new Dictionary<string, DateOnly>();
 
+    /// <summary>
+    /// 恢復買賣參考價公告（減資、變更面額、ETF 分割）的已查詢月份，記法同 <see cref="CoveredThrough"/>。
+    /// 分開記是因為這幾張表是後來才加的：既有事件簿已查過的月份不能因此作廢（匯出會因為「沒涵蓋」而現場向交易所
+    /// 查整段歷史），只要把還沒查過公告表的月份補上就好。沒有這個欄位的舊事件簿讀進來是空的，下次回補會一次補齊。
+    /// </summary>
+    public IReadOnlyDictionary<string, DateOnly> ResumptionCoveredThrough { get; init; }
+        = new Dictionary<string, DateOnly>();
+
     public IReadOnlyList<ReferenceAction> Actions { get; init; } = [];
 
     /// <summary>指定月份在 <paramref name="through"/> 之前是否已經查過。</summary>
@@ -36,6 +44,15 @@ public sealed record ReferenceActionBook
         var needed = monthEnd < through ? monthEnd : through;
 
         return CoveredThrough.TryGetValue(Key(month), out var covered) && covered >= needed;
+    }
+
+    /// <summary>指定月份在 <paramref name="through"/> 之前，恢復買賣參考價公告是否已經查過。</summary>
+    public bool CoversResumptions(DateOnly month, DateOnly through)
+    {
+        var monthEnd = new DateOnly(month.Year, month.Month, 1).AddMonths(1).AddDays(-1);
+        var needed = monthEnd < through ? monthEnd : through;
+
+        return ResumptionCoveredThrough.TryGetValue(Key(month), out var covered) && covered >= needed;
     }
 
     public static string Key(DateOnly month) => $"{month:yyyy-MM}";
@@ -130,7 +147,8 @@ public sealed class ReferenceActionStore
         ReferenceActionBook existing,
         IEnumerable<ReferenceAction> fetched,
         IEnumerable<(DateOnly Month, DateOnly Through)> covered,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        IEnumerable<(DateOnly Month, DateOnly Through)>? coveredResumptions = null)
     {
         var known = existing.Actions
             .Select(Identity)
@@ -145,7 +163,27 @@ public sealed class ReferenceActionStore
             }
         }
 
-        var coverage = new Dictionary<string, DateOnly>(existing.CoveredThrough);
+        var coverage = Extend(existing.CoveredThrough, covered);
+        var resumptionCoverage = Extend(existing.ResumptionCoveredThrough, coveredResumptions ?? []);
+
+        return existing with
+        {
+            SchemaVersion = ReferenceActionBook.CurrentSchemaVersion,
+            UpdatedAt = now,
+            CoveredThrough = coverage,
+            ResumptionCoveredThrough = resumptionCoverage,
+            Actions = [.. merged
+                .OrderBy(action => action.Date)
+                .ThenBy(action => action.Ticker, StringComparer.Ordinal)
+                .ThenBy(action => action.Source, StringComparer.Ordinal)]
+        };
+    }
+
+    private static Dictionary<string, DateOnly> Extend(
+        IReadOnlyDictionary<string, DateOnly> existing,
+        IEnumerable<(DateOnly Month, DateOnly Through)> covered)
+    {
+        var coverage = new Dictionary<string, DateOnly>(existing);
 
         foreach (var (month, through) in covered)
         {
@@ -157,16 +195,7 @@ public sealed class ReferenceActionStore
             }
         }
 
-        return existing with
-        {
-            SchemaVersion = ReferenceActionBook.CurrentSchemaVersion,
-            UpdatedAt = now,
-            CoveredThrough = coverage,
-            Actions = [.. merged
-                .OrderBy(action => action.Date)
-                .ThenBy(action => action.Ticker, StringComparer.Ordinal)
-                .ThenBy(action => action.Source, StringComparer.Ordinal)]
-        };
+        return coverage;
     }
 
     private static (DateOnly, int, string, string, string?) Identity(ReferenceAction action)

@@ -158,9 +158,18 @@ public sealed record ReferenceAction
     [JsonPropertyName("p1")]
     public decimal? ReferencePrice { get; init; }
 
-    /// <summary>官方的「權／息」欄（權、息、權息）。</summary>
+    /// <summary>
+    /// 官方的「權／息」欄（權、息、權息）；恢復買賣參考價公告是「減資」「面額變更」「分割」「反分割」。
+    /// </summary>
     [JsonPropertyName("k")]
     public string? Kind { get; init; }
+
+    /// <summary>
+    /// 是不是恢復買賣參考價公告（減資、變更面額、ETF 分割／反分割）。這類事件 <see cref="ReferencePrice"/> 就是
+    /// 交易所恢復買賣當天的開盤競價基準，所以標的當天沒有成交、沒有每日官方參考價可看時，它就是那一天的官方基準。
+    /// </summary>
+    [JsonIgnore]
+    public bool IsResumption => Kind is "減資" or "面額變更" or "分割" or "反分割";
 
     [JsonPropertyName("s")]
     public required string Source { get; init; }
@@ -186,7 +195,11 @@ public sealed record ReferenceAction
     /// 上市／上櫃事件表直接給 P0 與 P1；興櫃事件表只給股利與配股的組成，要拿前日均價 <paramref name="basePrice"/>
     /// 當 P0，依櫃買中心公布的公式計算：
     /// P1 = (P0 − 現金股利 + 認購價 × 認購配股率) ÷ (1 + 無償配股率 + 認購配股率)。
-    /// 算不出來（缺價格或組成）時回傳 null，由使用端決定怎麼處理，不猜。
+    ///
+    /// 認購價不低於前日均價時，認股權沒有價值（沒有人會用高於市價的價格認購），整段認股項目視為不存在：
+    /// 照公式算會得到高於前價的「參考價」，把歷史價格往上放大，當天憑空多出一個下跌
+    ///（2026-08-27 興櫃 6793：均價 5.33、認購價 10.5，公式倍數 1.2553，實際股價 5.31 幾乎沒動）。
+    /// 缺前日均價、完全沒有可算的組成、或認購股數有值但認購價缺漏時回傳 null，由使用端決定怎麼處理，不猜。
     /// </summary>
     public decimal? Factor(decimal? basePrice)
     {
@@ -202,7 +215,20 @@ public sealed record ReferenceAction
 
         var stockRate = (StockDividendPer1000 ?? 0m) / 1000m;
         var rightsRate = (RightsSharesPer1000 ?? 0m) / 1000m;
-        var reference = (basePrice.Value - (CashDividend ?? 0m) + (RightsPrice ?? 0m) * rightsRate)
+        var rightsPrice = RightsPrice ?? 0m;
+
+        if (rightsRate > 0m && rightsPrice <= 0m)
+        {
+            return null;
+        }
+
+        if (rightsPrice >= basePrice.Value)
+        {
+            rightsRate = 0m;
+            rightsPrice = 0m;
+        }
+
+        var reference = (basePrice.Value - (CashDividend ?? 0m) + rightsPrice * rightsRate)
             / (1m + stockRate + rightsRate);
 
         return reference > 0m ? reference / basePrice.Value : null;

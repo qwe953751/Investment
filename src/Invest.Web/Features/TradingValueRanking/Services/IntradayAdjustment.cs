@@ -155,7 +155,10 @@ public sealed class IntradayAdjustment
     private IntradayQuote Enrich(DateOnly tradeDate, IntradayQuote quote)
     {
         // 官方參考價資料算得出來的基準價優先；上市的參考價沒讀到時退回 MIS 的昨收。
-        var computed = _table.BaseFor(quote.Ticker, tradeDate);
+        // 轉板首日（興櫃轉上櫃）是例外：今天的上櫃沒有參考價表格，算出來的只是前一個市場的收盤，
+        // 官方的承銷價參考價就是 MIS 的昨收，盤後也是對它算，所以直接用它。
+        var transferDay = _table.IsMarketTransferDay(quote.Ticker, tradeDate) && quote.ReferencePrice is > 0m;
+        var computed = transferDay ? null : _table.BaseFor(quote.Ticker, tradeDate);
         var baseline = computed is > 0m ? computed : quote.ReferencePrice;
         var enriched = quote with { ReferencePrice = baseline };
 

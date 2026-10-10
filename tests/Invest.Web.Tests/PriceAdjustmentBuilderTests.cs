@@ -378,6 +378,132 @@ public sealed class PriceAdjustmentBuilderTests
     }
 
     [Fact]
+    public void 興櫃現金增資認購價高於股價時認股權沒有價值_不把還原往上推_6793()
+    {
+        // 2026-08-27 興櫃 6793：前日均價 5.33，每仟股認購 357.14 股、認購價 10.5。
+        // 照公式 (5.33 + 10.5 × 0.35714) ÷ 1.35714 = 6.69，倍數 1.2553，會憑空多出一個假的下跌；
+        // 認購價高於股價，沒有人會認購，不是權益事件，倍數必須是 1。
+        var action = new ReferenceAction
+        {
+            Date = D4, Market = Market.Emerging, Ticker = "6793", Source = "TPEx 興櫃除權除息",
+            CashDividend = 0m, StockDividendPer1000 = 0m, RightsSharesPer1000 = 357.14m, RightsPrice = 10.5m
+        };
+
+        Assert.Equal(1m, action.Factor(5.33m));
+    }
+
+    [Fact]
+    public void 興櫃認購價高於股價時只略過認股項目_現金股利與配股照樣還原()
+    {
+        var action = new ReferenceAction
+        {
+            Date = D4, Market = Market.Emerging, Ticker = "6793", Source = "TPEx 興櫃除權除息",
+            CashDividend = 0.5m, StockDividendPer1000 = 100m, RightsSharesPer1000 = 200m, RightsPrice = 20m
+        };
+
+        var factor = action.Factor(10m);
+
+        Assert.Equal((10m - 0.5m) / 1.1m / 10m, factor!.Value, 10);
+    }
+
+    [Fact]
+    public void 興櫃認購價恰好等於股價時沒有價值_認購價低於股價才稀釋()
+    {
+        var atTheMoney = new ReferenceAction
+        {
+            Date = D4, Market = Market.Emerging, Ticker = "2256", Source = "TPEx 興櫃除權除息",
+            RightsSharesPer1000 = 100m, RightsPrice = 10m, CashDividend = 0m
+        };
+        var inTheMoney = atTheMoney with { RightsPrice = 8m };
+
+        Assert.Equal(1m, atTheMoney.Factor(10m));
+        Assert.Equal((10m + 8m * 0.1m) / 1.1m / 10m, inTheMoney.Factor(10m)!.Value, 10);
+    }
+
+    [Fact]
+    public void 興櫃有認購股數卻缺認購價時算不出倍數_不猜()
+    {
+        var action = new ReferenceAction
+        {
+            Date = D4, Market = Market.Emerging, Ticker = "2256", Source = "TPEx 興櫃除權除息",
+            CashDividend = 0m, RightsSharesPer1000 = 76.24m, RightsPrice = null
+        };
+
+        Assert.Null(action.Factor(80m));
+    }
+
+    // ───────────────────────── 恢復買賣公告 ─────────────────────────
+
+    private static ReferenceAction Resumption(
+        DateOnly date, Market market, string ticker, decimal previousClose, decimal benchmark, string kind = "減資")
+        => new()
+        {
+            Date = date, Market = market, Ticker = ticker, PreviousClose = previousClose, ReferencePrice = benchmark,
+            Kind = kind, Source = market == Market.Twse ? "TWSE 減資恢復買賣" : "TPEx 減資恢復買賣"
+        };
+
+    [Fact]
+    public void 上櫃減資恢復買賣當天沒有成交_規則看不到事件_靠公告表補上_桂田文創4806()
+    {
+        // 2025-10-03 恢復買賣，停止買賣前收盤 7.54、開始交易基準價 15.10；那天完全沒有成交，
+        // 所以前一個交易日沒有它的列、當天也沒有參考價，下一個交易日（10/07）才有成交，參考價 15.95 是最高買價。
+        var table = PriceAdjustmentBuilder.Build(
+            [Snapshot(D1, Quote(Market.Tpex, "4806", 7.54m)),
+             Snapshot(D3, Quote(Market.Tpex, "4806", null)),
+             Snapshot(D4, Quote(Market.Tpex, "4806", 15.5m))],
+            [
+                References(D1, tpex: true, rows: Tpex("4806", 7.54m, 7.55m, 7.54m, bid: 7.37m, ask: 7.55m)),
+                References(D3, tpex: true, rows: Tpex("4806", null, null, 15.95m, bid: 15.95m, ask: 16.0m)),
+                References(D4, tpex: true, rows: Tpex("4806", 15.5m, 15.95m, 15.5m, bid: 15.5m, ask: 15.7m))
+            ],
+            [Resumption(D3, Market.Tpex, "4806", 7.54m, 15.10m)]);
+
+        var adjustment = Assert.Single(table.Adjustments);
+        Assert.Equal(D3, adjustment.EffectiveDate);
+        Assert.Equal(15.10m / 7.54m, adjustment.Factor);
+        Assert.Equal(15.10m, table.BaseFor("4806", D3));
+        // 10/07：參考價 15.95 = 最高買價（營業細則 58 條），不再是事件。
+        Assert.Equal(15.95m, table.BaseFor("4806", D4));
+    }
+
+    [Fact]
+    public void 恢復買賣當天沒有成交也沒有委託_公告表的基準價要接到下一個交易日_不能重複套用()
+    {
+        // 恢復買賣當天沒有任何委託：次日參考價 = 當天的開始交易基準價 15.10。
+        // 若狀態裡還是停牌前的舊基準 7.54，下一個交易日會把 15.10 再偵測成一次事件，倍數變成兩倍。
+        var table = PriceAdjustmentBuilder.Build(
+            [Snapshot(D1, Quote(Market.Tpex, "4806", 7.54m)),
+             Snapshot(D3, Quote(Market.Tpex, "4806", null)),
+             Snapshot(D4, Quote(Market.Tpex, "4806", 15.5m))],
+            [
+                References(D1, tpex: true, rows: Tpex("4806", 7.54m, 7.55m, 7.54m, bid: 7.37m, ask: 7.55m)),
+                References(D3, tpex: true, rows: Tpex("4806", null, null, 15.10m)),
+                References(D4, tpex: true, rows: Tpex("4806", 15.5m, 15.10m, 15.5m, bid: 15.5m, ask: 15.7m))
+            ],
+            [Resumption(D3, Market.Tpex, "4806", 7.54m, 15.10m)]);
+
+        Assert.Equal(15.10m / 7.54m, Assert.Single(table.Adjustments).Factor);
+        Assert.Equal(15.10m, table.BaseFor("4806", D4));
+    }
+
+    [Fact]
+    public void 公告表和每日參考價同一天看到同一個事件_只算一次_大同2371()
+    {
+        // 2025-06-23 大同減資退還股款：停止買賣前收盤 40.15，開盤競價基準 41.75。每日參考價（規則）和公告表都看得到。
+        var table = PriceAdjustmentBuilder.Build(
+            [Snapshot(D1, Quote(Market.Twse, "2371", 40.15m)), Snapshot(D2, Quote(Market.Twse, "2371", 42.0m))],
+            [
+                References(D1, twse: true, rows: Twse("2371", 40.15m, 40.0m, 40.15m)),
+                References(D2, twse: true, rows: Twse("2371", 41.75m, 40.15m, 40.15m))
+            ],
+            [Resumption(D2, Market.Twse, "2371", 40.15m, 41.75m)]);
+
+        var adjustment = Assert.Single(table.Adjustments);
+        Assert.Equal(41.75m / 40.15m, adjustment.Factor);
+        Assert.Equal(41.75m, table.BaseFor("2371", D2));
+    }
+
+    [Fact]
     public void 興櫃前日均價若被交易所調整過也會被當成事件_目前72個交易日沒有發生過()
     {
         var table = PriceAdjustmentBuilder.Build(
@@ -556,6 +682,11 @@ public sealed class PriceAdjustmentBuilderTests
 
         Assert.Empty(table.Adjustments);
         Assert.Equal(1, table.Report.MarketTransfers);
+
+        // 轉板首日的日漲跌對官方參考價（承銷價 90），不是對前一個市場的收盤 120——和交易所、券商一致。
+        Assert.Equal(90m, table.BaseFor("3595", D4));
+        // 轉板不是新掛牌：它在興櫃就有行情，週與今年以來的起點仍是興櫃的收盤。
+        Assert.DoesNotContain("3595", table.Listings.Keys);
     }
 
     // ───────────────────────── 防呆 ─────────────────────────

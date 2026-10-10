@@ -398,4 +398,151 @@ public sealed class ReferenceRowParserTests
         var both = actions.Single(action => action.Ticker == "2245");
         Assert.Equal((100m - 1m) / 1.05m / 100m, both.Factor(100m));
     }
+
+    [Fact]
+    public void 證交所恢復買賣公告的解析_減資與面額變更_價格是停止買賣前收盤與開盤競價基準()
+    {
+        const string json = """
+            {
+              "stat": "OK",
+              "fields": ["恢復買賣日期","股票代號","名稱","停止買賣前收盤價格","恢復買賣參考價","漲停價格","跌停價格","開盤競價基準","除權參考價","減資原因","詳細資料"],
+              "data": [
+                ["114/06/23","2371","大同","40.15","41.73","45.90","37.60","41.75","--","退還股款","2371  ,20250611"],
+                ["115/10/27","1516","川飛","-","-","-","-","-","--","彌補虧損","1516  ,20261014"]
+              ]
+            }
+            """;
+        using var document = JsonDocument.Parse(json);
+
+        var actions = CorporateActionClient.ParseResumptionTable(
+            document.RootElement, Market.Twse, "TWSE 減資恢復買賣", "減資", null,
+            "恢復買賣日期", "股票代號", "停止買賣前收盤價格", "開盤競價基準");
+
+        // 尚未公布參考價的預告列（價格是「-」）略過，等日期到了重新查詢才會有數字。
+        var action = Assert.Single(actions);
+        Assert.Equal(new DateOnly(2025, 6, 23), action.Date);
+        Assert.Equal("2371", action.Ticker);
+        Assert.Equal(40.15m, action.PreviousClose);
+        Assert.Equal(41.75m, action.ReferencePrice);
+        Assert.Equal("減資", action.Kind);
+        Assert.True(action.IsResumption);
+        Assert.Equal(41.75m / 40.15m, action.Factor(null));
+    }
+
+    [Fact]
+    public void 證交所ETF分割公告_分割與反分割由欄位決定()
+    {
+        const string json = """
+            {
+              "stat": "OK",
+              "fields": ["恢復買賣日期","ETF代號","名稱","分割(反分割)","停止買賣前收盤價格","恢復買賣參考價","漲停價格","跌停價格","開盤競價基準"],
+              "data": [
+                ["115/03/31","00631L","元大台灣50正2","分割","443.15","20.14","22.15","18.13","20.14"],
+                ["114/10/22","00673R","期元大S&P原油反1","反分割","7.02","28.08","30.90","25.30","28.08"]
+              ]
+            }
+            """;
+        using var document = JsonDocument.Parse(json);
+
+        var actions = CorporateActionClient.ParseResumptionTable(
+            document.RootElement, Market.Twse, "TWSE ETF 分割恢復買賣", "分割", "分割(反分割)",
+            "恢復買賣日期", "ETF代號", "停止買賣前收盤價格", "開盤競價基準");
+
+        Assert.Equal("分割", actions.Single(item => item.Ticker == "00631L").Kind);
+        Assert.Equal("反分割", actions.Single(item => item.Ticker == "00673R").Kind);
+        Assert.Equal(20.14m / 443.15m, actions.Single(item => item.Ticker == "00631L").Factor(null));
+    }
+
+    [Fact]
+    public void 櫃買恢復買賣公告的解析_日期是民國三位年加月日_名稱尾端有空白()
+    {
+        const string json = """
+            {
+              "fields": ["恢復買賣日期","證券代號","證券名稱","最後交易日之收盤價格","恢復買賣開始參考價","漲停價格","跌停價格","開始交易基準價","詳細資料"],
+              "data": [
+                ["1150809","5904","寶雅*           ","720.00","72.00","79.20","64.80","72.00","<table></table>"]
+              ]
+            }
+            """;
+        using var document = JsonDocument.Parse(json);
+
+        var action = Assert.Single(CorporateActionClient.ParseResumptionTable(
+            document.RootElement, Market.Tpex, "TPEx 變更面額恢復買賣", "面額變更", null,
+            "恢復買賣日期", "證券代號", "最後交易日之收盤價格", "開始交易基準價"));
+
+        Assert.Equal(new DateOnly(2026, 8, 9), action.Date);
+        Assert.Equal("5904", action.Ticker);
+        Assert.Equal(720m, action.PreviousClose);
+        Assert.Equal(72m, action.ReferencePrice);
+        Assert.Equal("面額變更", action.Kind);
+    }
+
+    [Fact]
+    public void 空的公告表是正常的空月份_不是失敗()
+    {
+        using var document = JsonDocument.Parse("""{"fields":["恢復買賣日期","證券代號","證券名稱","最後交易日之收盤價格","恢復買賣開始參考價","漲停價格","跌停價格","開始交易基準價","詳細資料"],"data":[]}""");
+
+        Assert.Empty(CorporateActionClient.ParseResumptionTable(
+            document.RootElement, Market.Tpex, "TPEx ETF 分割恢復買賣", "分割", null,
+            "恢復買賣日期", "證券代號", "最後交易日之收盤價格", "開始交易基準價"));
+    }
+
+    [Fact]
+    public void 公告表的日期不在查詢區間內_代表回應不是要求的區間_直接失敗()
+    {
+        const string json = """
+            {
+              "stat": "OK",
+              "fields": ["恢復買賣日期","股票代號","名稱","停止買賣前收盤價格","恢復買賣參考價","漲停價格","跌停價格","開盤競價基準","詳細資料"],
+              "data": [["115/08/10","5904","寶雅","720.00","72.00","79.20","64.80","72.00",""]]
+            }
+            """;
+        using var document = JsonDocument.Parse(json);
+
+        Assert.Throws<InvalidDataException>(() => CorporateActionClient.ParseResumptionTable(
+            document.RootElement, Market.Twse, "TWSE 變更面額恢復買賣", "面額變更", null,
+            "恢復買賣日期", "股票代號", "停止買賣前收盤價格", "開盤競價基準",
+            new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 30)));
+    }
+
+    [Fact]
+    public async Task 事件簿的事件表涵蓋與公告表涵蓋分開記_舊檔沒有公告表涵蓋時只需補公告表()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"actions-{Guid.NewGuid():N}.json");
+
+        try
+        {
+            // 加入公告表之前存的事件簿：只有 coveredThrough，沒有 resumptionCoveredThrough。
+            File.WriteAllText(path, """
+                {"schemaVersion":1,"updatedAt":"2026-10-10T00:00:00+08:00",
+                 "coveredThrough":{"2026-08":"2026-08-31"},
+                 "actions":[{"d":"2026-08-10","m":"Tpex","t":"5904","p0":720,"p1":72,"k":"面額變更","s":"x"}]}
+                """);
+            var store = new ReferenceActionStore(path, NullLogger<ReferenceActionStore>.Instance);
+
+            var book = await store.LoadAsync();
+            var august = new DateOnly(2026, 8, 1);
+            var through = new DateOnly(2026, 10, 10);
+
+            // 事件表涵蓋不作廢（匯出靠它判斷要不要現場查整段歷史）；公告表還沒查過。
+            Assert.Single(book.Actions);
+            Assert.True(book.Covers(august, through));
+            Assert.False(book.CoversResumptions(august, through));
+
+            var merged = ReferenceActionStore.Merge(
+                book,
+                [],
+                [],
+                DateTimeOffset.Now,
+                [(august, new DateOnly(2026, 8, 31))]);
+
+            Assert.True(merged.Covers(august, through));
+            Assert.True(merged.CoversResumptions(august, through));
+            Assert.False(merged.CoversResumptions(new DateOnly(2026, 9, 1), through));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

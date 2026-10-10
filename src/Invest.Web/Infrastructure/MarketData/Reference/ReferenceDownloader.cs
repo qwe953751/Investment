@@ -123,8 +123,10 @@ public sealed class ReferenceDownloader(
     }
 
     /// <summary>
-    /// 確認官方除權息事件簿涵蓋 <paramref name="from"/> 到 <paramref name="through"/> 的每個月份，
-    /// 沒查過（或當月已經過了新的日子）的月份才去查，查到的併進事件簿。
+    /// 確認官方事件簿涵蓋 <paramref name="from"/> 到 <paramref name="through"/> 的每個月份：
+    /// 除權息事件表（TWT49U、exDailyQ、興櫃除權除息）與恢復買賣參考價公告（減資、變更面額、ETF 分割）
+    /// 各自記錄查到哪一天，沒查過（或當月已經過了新的日子）的才去查，查到的併進事件簿。
+    /// 兩種分開記，所以後來才加的公告表只需要補還沒查過的月份，既有的事件表涵蓋不會作廢。
     /// 事件簿只增不減。回傳是否全部成功。
     /// </summary>
     internal async Task<bool> EnsureActionsAsync(
@@ -142,7 +144,7 @@ public sealed class ReferenceDownloader(
              month <= new DateOnly(through.Year, through.Month, 1);
              month = month.AddMonths(1))
         {
-            if (!book.Covers(month, upTo))
+            if (!book.Covers(month, upTo) || !book.CoversResumptions(month, upTo))
             {
                 months.Add(month);
             }
@@ -155,35 +157,69 @@ public sealed class ReferenceDownloader(
 
         var fetched = new List<ReferenceAction>();
         var covered = new List<(DateOnly Month, DateOnly Through)>();
+        var coveredResumptions = new List<(DateOnly Month, DateOnly Through)>();
         var allSucceeded = true;
 
         foreach (var month in months)
         {
             var monthEnd = month.AddMonths(1).AddDays(-1);
-            progress?.Report($"補抓官方除權息事件 {month:yyyy-MM}");
+            var monthThrough = monthEnd < upTo ? monthEnd : upTo;
 
-            var actions = await WithRetryAsync(
-                () => corporateActionClient.GetAllKindsAsync(month, monthEnd, cancellationToken),
-                $"官方除權息事件 {month:yyyy-MM}",
-                progress,
-                cancellationToken);
-            await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
-
-            if (actions is null)
+            if (!book.Covers(month, upTo))
             {
-                allSucceeded = false;
-                progress?.Report($"官方除權息事件 {month:yyyy-MM} 下載失敗，下次重試");
-                continue;
+                progress?.Report($"補抓官方除權息事件 {month:yyyy-MM}");
+
+                var actions = await WithRetryAsync(
+                    () => corporateActionClient.GetAllKindsAsync(month, monthEnd, cancellationToken),
+                    $"官方除權息事件 {month:yyyy-MM}",
+                    progress,
+                    cancellationToken);
+                await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+
+                if (actions is null)
+                {
+                    allSucceeded = false;
+                    progress?.Report($"官方除權息事件 {month:yyyy-MM} 下載失敗，下次重試");
+                }
+                else
+                {
+                    fetched.AddRange(actions);
+                    covered.Add((month, monthThrough));
+                }
             }
 
-            fetched.AddRange(actions);
-            covered.Add((month, monthEnd < upTo ? monthEnd : upTo));
+            if (!book.CoversResumptions(month, upTo))
+            {
+                progress?.Report($"補抓恢復買賣參考價公告 {month:yyyy-MM}");
+
+                var resumptions = await WithRetryAsync(
+                    () => corporateActionClient.GetResumptionsAsync(
+                        month,
+                        monthEnd,
+                        TimeSpan.FromMilliseconds(_options.RequestDelayMilliseconds),
+                        cancellationToken),
+                    $"恢復買賣參考價公告 {month:yyyy-MM}",
+                    progress,
+                    cancellationToken);
+                await Task.Delay(_options.RequestDelayMilliseconds, cancellationToken);
+
+                if (resumptions is null)
+                {
+                    allSucceeded = false;
+                    progress?.Report($"恢復買賣參考價公告 {month:yyyy-MM} 下載失敗，下次重試");
+                }
+                else
+                {
+                    fetched.AddRange(resumptions);
+                    coveredResumptions.Add((month, monthThrough));
+                }
+            }
         }
 
-        if (covered.Count > 0)
+        if (covered.Count > 0 || coveredResumptions.Count > 0)
         {
             await actionStore.SaveAsync(
-                ReferenceActionStore.Merge(book, fetched, covered, DateTimeOffset.Now),
+                ReferenceActionStore.Merge(book, fetched, covered, DateTimeOffset.Now, coveredResumptions),
                 cancellationToken);
         }
 

@@ -77,6 +77,7 @@ public sealed class PriceAdjustmentEngine
     private readonly List<StockPriceAdjustment> _adjustments = [];
     private readonly Dictionary<string, ListingReference> _listings = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<(DateOnly Date, decimal Value)>> _bases = new(StringComparer.Ordinal);
+    private readonly HashSet<(string Ticker, DateOnly Date)> _transferDays = [];
     private readonly PriceAdjustmentReport _report = new();
 
     public PriceAdjustmentEngine(IReadOnlyList<ReferenceAction> actions, DateOnly firstDate)
@@ -124,6 +125,17 @@ public sealed class PriceAdjustmentEngine
 
             var (benchmark, expected) = Evaluate(market, row, state);
             var tableEvents = ConsumeActions(ticker, date, hasHistory: state is not null);
+
+            // 恢復買賣公告（減資、變更面額、分割）上的開盤競價基準就是交易所那一天的官方基準。
+            // 上櫃標的恢復買賣當天完全沒有成交時，前一個交易日沒有它的列、當天的表格也沒有參考價，
+            // 這裡取到的會是停牌前的舊數字；不換成公告上的數字，下一個交易日就會把這個基準變動
+            //（桂田文創 4806：2025-10-03 減資恢復買賣，10/07 才有成交）當成沒有人解釋得了的變動，倍數重複套用。
+            if (row?.Reference is not > 0m
+                && tableEvents.LastOrDefault(action => action.IsResumption && action.ReferencePrice is > 0m)
+                    is { } resumption)
+            {
+                benchmark = resumption.ReferencePrice;
+            }
             var transfer = state is not null && state.Market != market;
             var applied = 1m;
             decimal? ruleBase = null;
@@ -131,6 +143,7 @@ public sealed class PriceAdjustmentEngine
             if (transfer)
             {
                 _report.MarketTransfers++;
+                _transferDays.Add((ticker, date));
             }
 
             // 事件表的倍數是 P1 ÷ P0，乘回基準價會有小數雜訊；P0 剛好就是目前的基準價（絕大多數情況）
@@ -201,7 +214,15 @@ public sealed class PriceAdjustmentEngine
             // 前一日沒有成交造成的漂移已經包含在 expected 裡，所以和交易所對當天算的漲跌一致。
             decimal? baseValue = null;
 
-            if (expected is > 0m)
+            if (transfer && tableEvents.Count == 0 && benchmark is > 0m)
+            {
+                // 轉板首日（絕大多數是興櫃轉上市櫃）：官方參考價是承銷價之類的另一套基準，和前一個市場的收盤
+                // 沒有可比性（2025-07～2026-10 共 89 次轉板，其中 86 次參考價與前收盤差距超過 5%）。
+                // 這一天的漲跌跟交易所、券商一致，對官方參考價算；它不是權益事件，所以不對歷史乘倍數，
+                // 週與今年以來的基準仍沿用前一個市場的最後收盤，讓同一檔標的的走勢保持連續。
+                baseValue = benchmark;
+            }
+            else if (expected is > 0m)
             {
                 // 規則事件的基準價就是官方公布的參考價本身，不要經過除法再乘回來而多出小數雜訊。
                 baseValue = ruleBase ?? (tableEvents.Count > 0 && applied != 1m ? running : null) ?? expected.Value * applied;
@@ -246,7 +267,8 @@ public sealed class PriceAdjustmentEngine
                 pair => pair.Key,
                 pair => (pair.Value.Select(item => item.Date).ToArray(), pair.Value.Select(item => item.Value).ToArray()),
                 StringComparer.Ordinal),
-            _report);
+            _report,
+            _transferDays);
 
     /// <summary>
     /// 這一天官方的參考價（benchmark）與「沒有權益事件時應有的參考價」（expected）。
@@ -370,17 +392,20 @@ public sealed record ListingReference(string Ticker, DateOnly Date, decimal Refe
 public sealed class PriceAdjustmentTable
 {
     private readonly IReadOnlyDictionary<string, (DateOnly[] Dates, decimal[] Values)> _bases;
+    private readonly IReadOnlySet<(string Ticker, DateOnly Date)> _transferDays;
 
     public PriceAdjustmentTable(
         IReadOnlyList<StockPriceAdjustment> adjustments,
         IReadOnlyDictionary<string, ListingReference> listings,
         IReadOnlyDictionary<string, (DateOnly[] Dates, decimal[] Values)> bases,
-        PriceAdjustmentReport report)
+        PriceAdjustmentReport report,
+        IReadOnlySet<(string Ticker, DateOnly Date)>? transferDays = null)
     {
         Adjustments = adjustments;
         Listings = listings;
         _bases = bases;
         Report = report;
+        _transferDays = transferDays ?? new HashSet<(string Ticker, DateOnly Date)>();
     }
 
     public static PriceAdjustmentTable Empty { get; } = new(
@@ -396,6 +421,12 @@ public sealed class PriceAdjustmentTable
     public IReadOnlyDictionary<string, ListingReference> Listings { get; }
 
     public PriceAdjustmentReport Report { get; }
+
+    /// <summary>
+    /// 這檔標的這一天是不是轉板首日（興櫃轉上市櫃、上櫃轉上市）。轉板首日的官方參考價是承銷價之類的另一套基準，
+    /// 盤中取不到上櫃當天的參考價表格時，使用端要改用 MIS 的昨收（就是同一個官方參考價）。
+    /// </summary>
+    public bool IsMarketTransferDay(string ticker, DateOnly date) => _transferDays.Contains((ticker, date));
 
     /// <summary>
     /// 某檔標的在某一天的基準價：前一日收盤（或前一日沒有成交時依委託簿規則決定的參考價）換算過當天的權益事件。

@@ -241,6 +241,43 @@ public sealed class IntradayAdjustmentTests
     }
 
     [Fact]
+    public void 興櫃轉上櫃首日_日漲跌對官方參考價_週與今年以來仍接前一個市場的收盤()
+    {
+        // 昨天還在興櫃，均價 120；今天上櫃掛牌，官方參考價（承銷價）90 就是 MIS 的昨收，盤中現價 100。
+        var history = new[]
+        {
+            Snapshot(LastYearEnd, Quote(Market.Emerging, "3595", 80m)),
+            Snapshot(Friday, Quote(Market.Emerging, "3595", 110m)),
+            Snapshot(Wednesday, Quote(Market.Emerging, "3595", 120m))
+        };
+        var references = new[]
+        {
+            new DailyReferenceSnapshot
+            {
+                SchemaVersion = DailyReferenceSnapshot.CurrentSchemaVersion,
+                TradingDate = Wednesday,
+                DownloadedAt = DateTimeOffset.Now,
+                HasEmerging = true,
+                Rows = [new ReferenceRow { Market = Market.Emerging, Ticker = "3595", Close = 120m, Reference = 110m }]
+            }
+        };
+        var adjustment = new IntradayAdjustment(history, references, []);
+        var universe = new[] { Live(Market.Tpex, "3595", 100m, 90m) };
+
+        adjustment.Prepare(Thursday, null, universe);
+        var quote = Assert.Single(adjustment.Apply(Thursday, universe));
+
+        // 日漲跌 = 100 ÷ 90 − 1（交易所、券商看到的），不是對昨天的興櫃均價 120。
+        Assert.Equal(90m, quote.ReferencePrice);
+        Assert.Equal(11.11m, quote.ChangePercent);
+        // 轉板不是權益事件：週與今年以來的起點是前一個市場的收盤（上週五 110、去年底 80），沒有倍數。
+        Assert.Null(quote.AdjustmentFactor);
+        Assert.Equal(decimal.Round((100m / 110m - 1m) * 100m, 2), quote.WeeklyChangePercent);
+        Assert.Equal(25m, quote.YearToDateChangePercent);
+        Assert.False(quote.YearToDateFromListing);
+    }
+
+    [Fact]
     public void 日期不符或沒準備時原樣回傳()
     {
         var adjustment = new IntradayAdjustment([Snapshot(Wednesday, Quote(Market.Twse, "2330", 2585m))], [], []);
