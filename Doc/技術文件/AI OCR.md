@@ -23,6 +23,7 @@
 | 改了 OCR 程式要怎麼部署 | [§1.7 部署與重啟](#ocr-deploy) |
 | Supabase／AI 訂閱用量 | [§2 用量](#ocr-usage) |
 | 尚待驗收、未實作、已知風險 | [§3 待辦、驗收與已知風險](#ocr-acceptance) |
+| **在線確認重構的完整實作規格（給接手模型）** | [§3.5](#ocr-probe-spec) |
 | 某次事故的根因與修法 | [§4 事故與修正紀錄](#ocr-incidents) |
 | 為什麼選 D+、為什麼用個人訂閱 CLI | [§5 設計決策與原始規劃](#ocr-design) |
 | 接手前要注意什麼 | [§6 接手作業注意事項](#ocr-handoff) |
@@ -42,7 +43,8 @@
 AI OCR 主線已在正式環境運作：**公司 Windows Worker（`e6c08fd1`）已部署且為預設節點**，
 `db/054`／`db/055` 與對應的 `ocr-jobs` Edge Function 已套用；**家裡 Mac Worker 仍是舊版**，
 多項正式驗收（相位測試、7 張三槽、跨機接力、Golden Set）尚未實測，另有一個關機後
-`realtime_connected` 旗標卡住的已知風險（[§3.4](#ocr-known-risks)）。
+`realtime_connected` 旗標卡住的已知風險（[§3.4](#ocr-known-risks)）。2026-10-11 已定案以「指名詢問 Windows→Mac
+各 5 次」取代所有在線猜測，完整實作規格見 [§3.5](#ocr-probe-spec)（待實作；順序：Mac → 文件 → Windows）。
 
 ### 0.2 元件部署狀態
 
@@ -489,13 +491,278 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
    原規格把這個行為描述為「刻意往樂觀倒，由 `last_seen_at` 退路與 stall 偵測吸收」，但 `OR` 判定讓
    `last_seen_at` 無法覆蓋旗標，`db/055` 又讓 stall 偵測在這種情況下不觸發，所以實際上吸收不了。
    Windows 程序當機時排程 2 分鐘內會補啟動並重寫 `false`，影響有限；**整台關機（例如下班、週末）**
-   時才會長時間出現。可能修法（待另行決定）：旗標也加上時間上限（例如 `realtime_connected and last_seen_at
-   在某個較寬門檻內`），或補上規格要求的斷線即時回報。改動牽涉 DB／Edge／Worker 三處，屬獨立任務。
+   時才會長時間出現。**2026-10-11 定案的修法見 [§3.5](#ocr-probe-spec)**：不再用旗標或時間窗猜測，
+   改為上傳前與批次中有疑慮時指名詢問。
 2. **AI 已開始辨識後才取消**：Worker 要等 CLI 跑完、下一次回報才發現租約失效，仍會消耗該次額度。
 3. **只有 Codex 單 Agent**：Claude 未登入前沒有 Agent 故障切換，Codex 額度用完就整批走 Tesseract。
 4. **Mac 仍為舊版**：舊版 Mac 不回報 `heartbeatIntervalSeconds`／`realtimeConnected`（Edge 以 60 秒、`false`
    補預設），也沒有 09-22 的 409 修正，接力到 Mac 時可能重演槽死亡。
 5. **三條並行是否撞 Codex 訂閱速率限制**：使用者要求直接上 3 並行時已知但未驗證；實測若出現 429 再依證據處理。
+
+<a id="ocr-probe-spec"></a>
+
+### 3.5 在線確認重構：完整實作規格（2026-10-11 定案，待實作）
+
+> **給接手模型**：本節是可獨立執行的完整規格，不需要原始對話。先讀 `AGENTS.md`、本文件 §1、§3.4，
+> 再照 §3.5.9 的順序實作。實作完成後，本節改寫成「已實作」並把 §1.2、§1.4、§1.8、§2 同步更新為新行為，
+> 在 §4 新增一節事故紀錄；不要另開規格檔。
+
+#### 3.5.1 要解決的問題
+
+目前「Windows／Mac 在不在線」全部靠**猜**：`last_seen_at`（最多 300 秒前的紀錄）與
+`realtime_connected`（最後一次心跳時的狀態，關機後不會清掉，見 [§3.4](#ocr-known-risks)）。
+結果是：機器關機、停電、睡眠、斷網、登出後仍被當成在線，截圖照樣上傳，等前端 9 分鐘時限才回退 Tesseract；
+Windows 關機時 Mac 也拿不到工作；`db/055` 的 stall 守衛用同一套猜測，所以也救不了。
+
+**解法原則：不要猜，直接問。** 上傳前與批次中有疑慮時，指名送出「你在嗎」，幾秒內有回應就是在線（事實），
+沒回應就是不在線（事實）。
+
+#### 3.5.2 使用者定案的流程與參數（不可更改）
+
+```text
+整批開始前（readiness）：
+  問 Windows「你在嗎」最多 5 次（每次等 1.5 秒）
+    ├ 有回應且有可用 Agent → 這批交給 Windows
+    └ 沒回應／沒有可用 Agent → 問 Mac 最多 5 次（每次等 1.5 秒）
+         ├ 有回應且有可用 Agent → 這批交給 Mac
+         └ 沒回應 → 整批在手機跑 Tesseract，圖片不上傳
+
+整批進行中（寄生在前端既有的 status 輪詢）：
+  負責機器超過 45 秒沒有任何接觸 → 問它 5 次（同一台 30 秒內最多問一輪）
+    ├ 有回應 → 只是在忙，繼續等
+    └ 沒回應 → 標記離線 → 依同樣順序問下一台（Windows 掛了就問 Mac）
+         ├ 有回應 → 這批剩下的工作（排隊中＋卡在該機器上的）改交給它
+         └ 沒回應 → 這些工作改走 Tesseract（手機仍保有原圖）
+```
+
+| 參數 | 值 | 依據 |
+|---|---|---|
+| 每台詢問次數 | 5 | 使用者定案 |
+| 每次等待 | 1.5 秒 | 2026-10-11 正式環境實測：送出喚醒到 Windows 回應 0.51～1.52 秒（5 次：1.52／0.74／0.67／0.58／0.51，第 1 次含 Edge 冷啟動）。5 次合計 7.5 秒，也涵蓋 Realtime 斷線後 5 秒重連的空窗 |
+| 批次中「沒動靜才問」門檻 | 45 秒 | 使用者定案 |
+| 同一台詢問節流 | 30 秒 | 前端三條輪詢迴圈同時在查，避免重複詢問 |
+| 「有回應」的判定 | 該機器 `last_seen_at` ≥ 第一次詢問送出時的 **DB 時間** | 晚到的回應在後續次數中一樣算數；用 DB 時鐘避免 Edge／DB 時鐘差 |
+
+**最壞等待**：Windows 在線約 1 秒；Windows 不在、Mac 在約 8～9 秒；兩台都不在約 15 秒（取代現在的 9 分鐘）。
+
+#### 3.5.3 已確認的現況事實（實作前不必重查，但實作時要以當下程式為準）
+
+- 前端整批只在開始時呼叫一次 readiness（`site.js` `scanAssetScreenshots` 約 15881 行），之後 3 條迴圈
+  （`ASSET_AI_OCR_CONCURRENCY = 3`）各自「送出一張 → 輪詢到終態 → 才送下一張」，一批最多 20 張、每張平均
+  88 秒（最長 397 秒），整批可能 10～40 分鐘以上。**所以任何「送出前 N 分鐘內有回應」的時間窗都會誤判，
+  也抓不到批次中途掛掉**——這是本規格不在 submit 用時間窗的原因。
+- 前端呼叫 readiness 沒有逾時限制；submit 回 409 時該張改走 Tesseract（`assetAiOcrJson` 拋錯 → catch 回
+  `mode: 'tesseract'`），**不需要改前端就能運作**。
+- 現有 Worker 收到**任何** Realtime broadcast 都只呼叫 `signalWake()`、不看內容（`OcrWorkerApiClient.cs`
+  約 399 行）；空閒槽會呼叫 claim，而 `ocr_claim_job()` 第一行把 `last_seen_at` 設成 `now()`。因此**舊版
+  Worker 也會「回答」詢問**，只是三槽都忙時答不出來。
+- `WaitForWakeAsync()` 沒有檢查 `TryRead` 的結果：一個喚醒訊號會讓所有等待中的槽都去 claim（每台約 3 次
+  claim＋3 次 evaluation-claim）。
+- Worker 目前不知道自己的 worker id：`AuthSession` 只解析 `access_token`／`refresh_token`／`expires_in`；
+  Supabase Auth token 回應另含 `user.id`，就是 `ocr_workers.id`。
+- Worker 的 `OcrWorkerApiClient` HttpClient 用預設 100 秒逾時，`relay` 請求在 Edge 內等候詢問（最多約 8 秒）不會逾時。
+- Edge `handleHeartbeat()` 只接受 `heartbeatIntervalSeconds` 10～600。
+- 最新 migration 是 `db/061_device_presence_access_modes.sql`；本規格使用 **`db/062_ocr_worker_probe.sql`**，
+  實作前先 `git fetch` 確認沒撞號。
+
+#### 3.5.4 資料庫（`db/062_ocr_worker_probe.sql`）
+
+1. `ocr_workers` 新增欄位：
+   - `last_pong_at timestamptz`：最後一次回應「你在嗎」的時間（舊版 Worker 永遠是 null，用來辨識新舊版）。
+   - `offline_since timestamptz`：詢問 5 次都沒回應時寫入；**任何接觸**（heartbeat、claim、progress、complete、
+     relay、pong）都要清成 null。
+   - `last_probe_at timestamptz`：詢問節流用。
+2. 新增 `ocr_user_routing`（每位使用者一列，只開放 service_role）：`user_id uuid primary key`、
+   `target_worker_id uuid null`、`target_platform text null`（`windows`／`other`／null＝無人可用）、
+   `decided_at timestamptz not null`。readiness 與「批次中改派」都寫這張表，submit 只讀它。
+3. 新增 `ocr_begin_probe(p_worker_id uuid, p_min_interval_seconds int) returns timestamptz`：
+   原子更新 `last_probe_at = now()`（條件：`last_probe_at is null or last_probe_at < now() - interval`），
+   成功回傳 DB `now()`（作為「詢問起點」），被節流時回 null。readiness 呼叫時節流參數傳 0（每批都要真的問）。
+4. 新增 `ocr_mark_worker_offline(p_worker_id uuid) returns void`：設定 `offline_since = now()`。
+5. 新增 `ocr_reroute_jobs(p_dead_worker_id uuid, p_dead_is_windows boolean, p_to_platform text) returns int`：
+   找出原本該由死掉那台處理、尚未結束的工作——
+   - 死掉的是 Windows：`status='queued' and windows_attempt_failed_at is null`，以及
+     `status='leased' and lease_owner = p_dead_worker_id`；
+   - 死掉的是非 Windows：`status='queued' and windows_attempt_failed_at is not null`，以及
+     `status='leased' and lease_owner = p_dead_worker_id`；
+
+   `p_to_platform = 'other'`：清空 lease、`status='queued'`、`windows_attempt_failed_at = coalesce(..., now())`
+   （UPDATE 會觸發既有 Realtime trigger，立即喚醒 Mac）；`p_to_platform is null`：`status='fallback_required'`、
+   `fallback_reason='worker_offline'`、清空 lease。回傳影響筆數。（目前只有 Windows→Mac 一個方向的接力；
+   死掉的是 Mac 時一律 `null`。）
+6. 改寫 `ocr_claim_job()`：
+   - 開頭的 `update ocr_workers set last_seen_at = now()` 同時 `offline_since = null`。
+   - **移除** `v_other_fresh`（猜 Windows 在不在）：非 Windows 只能拿 `windows_attempt_failed_at is not null`
+     的工作；路由改由 readiness／改派在工作上明確標記。lease 逾時回收規則不變。
+7. 改寫 `ocr_relay_agent_failure()`：新增參數 `p_other_available boolean`，由 Edge 先詢問後傳入，
+   **不再**在 SQL 內用 `ocr_worker_alive()` 猜。
+8. `ocr_stall_to_fallback()` 不再被呼叫（由 3.5.5 的批次中詢問取代），migration 中 `drop function`。
+   `ocr_worker_alive()`／`ocr_available_workers()` 保留給顯示用，不再用於任何閘門。
+9. 結尾 `insert into schema_migrations (filename) values ('062_ocr_worker_probe.sql') on conflict do nothing;`
+   權限：新函式 `revoke all ... from public, anon, authenticated; grant execute ... to service_role;`。
+
+#### 3.5.5 Edge Function（`supabase/functions/ocr-jobs/index.js`）
+
+1. **共用 helper `probeWorker(worker)`**：
+   - 呼叫 `ocr_begin_probe(worker.id, minInterval)` 取得 `t0`（null＝被節流，視為「詢問進行中」直接回傳現況）。
+   - 最多 5 次：送出 private broadcast（沿用 `handleWake()` 的 Realtime REST 路徑）到 topic `ocr:queue`、
+     event **`ocr_ping`**、payload `{ target_worker_id, t0 }`；接著每 250 毫秒查一次該列，最多 1.5 秒；
+     `last_seen_at >= t0` 即回傳 `{ answered: true, ms }`。
+   - 5 次都沒有 → `ocr_mark_worker_offline()`，回傳 `{ answered: false }`。
+   - 「可用」＝有回應 **且** `agent_status` 至少一個 `authenticated=true` 且 `quotaAvailable` 不是 `false`
+     （新版 Worker 在 pong 時會順便更新 `agent_status`）。
+2. **`selectTarget()`（照 3.5.2 的順序）**：Windows 列＝`platform ilike '%windows%'`（多列取 `last_seen_at`
+   最新的一列），非 Windows 同理；先 `probeWorker(Windows)`，不可用再 `probeWorker(Mac)`。沒有任何 Worker 列時
+   回 `no_worker`。
+3. **`handleReadiness()`**：呼叫 `selectTarget()`，把結果 upsert 到 `ocr_user_routing`；回應維持現有形狀
+   （`ready`、`workerPlatform`、`workers`、`decidedBy`、`fallbackReason`），另加
+   `probes: [{ name, platform, attempts, answered, ms }]`。`decidedBy` 改為 `windows`／`mac`／`none`／`no_worker`；
+   `fallbackReason`：有機器回應但沒有可用 Agent → `no_available_agent`；都沒回應 → `worker_offline`；
+   沒有列 → `no_worker`。前端現有的 `assetAiOcrFallbackText()` 已涵蓋這三個值。
+4. **`handleSubmit()`**：**不再詢問、不再用任何時間窗**。讀 `ocr_user_routing`：
+   - 沒有列、或 `target_platform is null`、或 `decided_at` 早於 60 分鐘（與工作 `expires_at` 一致）→
+     `409 ai_not_ready`（`fallbackReason: 'worker_offline'`），前端該張改走 Tesseract。
+   - `target_platform='other'` → 新工作 insert 時就帶 `windows_attempt_failed_at = now()`，Mac 才能 claim。
+   - 移除 `checkAvailableWorkers()` 呼叫（函式可刪除）。
+5. **`handleStatus()`：批次中的詢問**（取代 stall 偵測，寄生在既有輪詢，不新增排程）：
+   - 只處理 `queued`／`leased`。負責機器：`leased` → `lease_owner`；`queued` → 依 `windows_attempt_failed_at`
+     決定是 Windows 列還是非 Windows 列。
+   - 負責機器 `offline_since` 不是 null，或 `queued` 卻找不到負責機器 → 直接進入「改派」。
+   - 否則，若 `now - 負責機器.last_seen_at > 45 秒`，**且**（`leased`，或 `queued` 已超過 20 秒）→
+     `probeWorker(負責機器, 節流 30 秒)`。
+   - **新舊版相容**：負責機器 `last_pong_at is null`（舊版 Worker，忙碌時答不出來）且持有未到期的 lease
+     （`lease_until > now()`）→ 不判定離線，維持現有行為；此例外在兩台都換成新版後即自然不再觸發。
+   - 「改派」：死掉的是 Windows → `probeWorker(Mac)`；Mac 可用 → `ocr_reroute_jobs(dead, true, 'other')`，
+     並把 `ocr_user_routing` 改成 Mac；不可用 → `ocr_reroute_jobs(dead, true, null)`，routing 改成 null
+     （之後 submit 一律 409 → 手機 Tesseract）。死掉的是 Mac → `ocr_reroute_jobs(dead, false, null)`。
+   - 改派後重新讀取本張工作並回傳；前端看到 `fallback_required` 會用記憶體中的原圖跑 Tesseract（不下載）。
+   - 保留 `queuePosition`。
+6. **`handleRelay()`**：Windows 兩個 Agent 都失敗時，先 `probeWorker(Mac)`，把結果當
+   `p_other_available` 傳給 `ocr_relay_agent_failure()`；Mac 被選中時同步更新 `ocr_user_routing`。
+7. **新增 action `pong`**（加入 `workerAction` 清單，只接受 `ocr_worker` JWT）：body `{ agentStatus? }`；
+   更新 `last_seen_at = now()`、`last_pong_at = now()`、`offline_since = null`，有帶 `agentStatus` 就一併更新。
+8. `handleHeartbeat()`／`touchWorkerLastSeen()`（progress、complete）都要清 `offline_since`；
+   `heartbeatIntervalSeconds` 接受範圍改為 10～3600。
+9. 部署：`npx supabase functions deploy ocr-jobs --project-ref dehzxlxyfvtnylwgbmqy --use-api`，確認
+   `verify_jwt=false` 維持不變；部署後以 Management API `GET /v1/projects/{ref}/functions/ocr-jobs` 核對版本。
+
+#### 3.5.6 Worker（C#，兩台都要重建）
+
+1. **取得自己的 worker id**：`AuthSession` 解析 Auth 回應的 `user.id`，sign-in 與 refresh 後保存。
+2. **Realtime 監聽分流**（`OcrWorkerApiClient.RunWakeListenerAsync`／`ReceiveRealtimeAsync`）：
+   broadcast 訊息內層 `payload.event`：
+   - `ocr_ping` 且 `payload.payload.target_worker_id == 自己的 id` → **不叫醒處理槽**，射後不理地呼叫
+     `PongAsync()`（失敗只記 log、不重試、不得阻塞接收迴圈）。
+   - `ocr_ping` 但目標不是自己 → 忽略。
+   - 其他事件（`ocr_job_queued`、`ocr_evaluation_queued`、wake）→ 維持 `signalWake()`。
+   - 因為監聽迴圈獨立於三個處理槽，**三槽全忙時也答得出來**——這是本規格必須重建 Worker 的原因。
+3. **`PongAsync()`**：`POST action=pong`，body 帶目前快取的 `agentStatus`。這份狀態必須反映 Router 的額度冷卻
+   （`AgentQuotaRouter._quotaBlockedUntil`），不能只回報上一次 CLI 探測結果；**pong 時不得執行 CLI 探測**
+   （探測可能要數秒，會拖慢回答）。
+4. **修正喚醒風暴**：`WaitForWakeAsync()` 改回傳 `TryRead` 是否拿到訊號；沒拿到的槽回去繼續等。拿到訊號且
+   claim 成功的槽，再補寫一個喚醒訊號（接力），讓佇列有多件時其他空閒槽也會依序接手，維持三槽並行排空。
+   啟動時與 Realtime join 成功時的 catch-up drain 行為不變。
+5. **心跳拉長**：`WorkerHeartbeatInterval` 300 秒 → **1,800 秒**（在線判斷已改為詢問，心跳只剩更新 Agent 狀態與
+   版本資訊）；`WorkerHeartbeatRecoveryPollInterval` 10 秒不變。
+6. **啟動訊息**加上可辨識的新字樣，例如「…並行上限 3（常駐槽）；在線詢問：指名回應…」，部署驗收以此確認是新版。
+7. 不改：409 lease_lost 處理、fail-fast、單實例鎖、log 導向、`--once`。
+
+#### 3.5.7 前端（可選，需要 publish-only 發布）
+
+不改也能運作。建議只改顯示：readiness 期間顯示「確認 Windows／Mac 是否在線…（最多約 15 秒）」；
+回傳 `probes` 時把「Windows 未回應 5 次、Mac 已回應」之類的結果顯示在狀態列。`site.js` 是 CRLF，用精確字串替換。
+
+#### 3.5.8 測試
+
+- `.NET`：
+  - 監聽分流：`ocr_ping` 指名自己 → 呼叫 pong 且不 `signalWake`；指名別人 → 忽略；其他事件 → `signalWake`。
+  - `AuthSession` 解析 `user.id`。
+  - 喚醒：一個訊號只讓一個槽 claim；claim 成功會接力喚醒下一個槽。
+  - 心跳常數 1,800 秒、回復輪詢 10 秒（更新 `OcrCliWiringTests.cs` 與 Node 端同一常數斷言）。
+  - pong 回報的 Agent 狀態包含 Router 額度冷卻。
+- 原始碼接線測試（`OcrWorkerAvailabilityTests.cs`）：改為斷言 `db/062` 的新函式、`handleSubmit` 不再呼叫任何
+  詢問／時間窗、`handleStatus` 的 45 秒／30 秒／5×1.5 秒常數、`ocr_claim_job` 不再有 `v_other_fresh`；
+  移除對 `db/055` 守衛的斷言。字串比對一律 `ReplaceLineEndings("\n")`。
+- 正式 DB rollback 測試（比照 §4.7 做法：暫時卸除 `auth.users` 外鍵、rollback 後確認 0 筆殘留）：
+  `ocr_begin_probe` 節流的原子性、`ocr_reroute_jobs` 兩個方向、claim 不再讓 Mac 拿到未標記的工作、relay 新參數。
+- `.NET 10.0.302` Release `Invest.Web.Tests` 全綠；Node `tests/*.test.mjs` 全綠。
+
+<a id="ocr-probe-rollout"></a>
+
+#### 3.5.9 實作與部署順序（使用者定案：先做 Mac，再寫文件，Windows 由 Windows Agent 執行）
+
+**階段 M：家裡 Mac（本機）**
+
+1. `git fetch`，確認 `main` 最新、工作區乾淨，`dotnet --version` 為 10.x。
+2. 實作 3.5.4～3.5.6（以及可選的 3.5.7），跑 3.5.8 全部測試。
+3. commit、push `main`（只 stage 自己的檔案）。
+4. **經使用者明確授權後**，以 Management API 套用 `db/062`，查 `schema_migrations` 與新函式確認；
+   跑 rollback 測試。
+5. 部署 `ocr-jobs` 並核對版本。此時 Windows 仍是舊版：閒置時能透過 claim 回答詢問；忙碌時由 3.5.5 第 5 點的
+   「新舊版相容」例外保護，不會被誤判離線。
+6. 重建 Mac Worker：`scripts/install-ocr-worker-launchagent-macos.sh`，看 LaunchAgent log 的啟動訊息含新字樣；
+   查 `ocr_workers` 的 Mac 列 `last_seen_at` 更新、`heartbeat_interval_seconds=1800`。
+7. 從 Mac 這端可做的驗收：對 Mac 指名詢問，確認 `last_pong_at` 在 1.5 秒內更新；闔上 MacBook 蓋子後再詢問，
+   確認 5 次後 `offline_since` 被寫入，打開後任何接觸會清掉。
+8. 若前端有改，跑 publish-only 發布並驗證線上 `site.js`。
+
+**階段 D：寫文件（仍在 Mac）**
+
+把本節改寫成「已實作」，同步 §0、§1.2、§1.4、§1.8、§2、§3.4，§4 新增事故紀錄；更新 `Doc/TODO.md` #15、
+`Doc/版本紀錄.md`、`Doc/完成進度.md`；commit、push。
+
+**階段 W：公司 Windows（由 Windows Agent 執行）**
+
+1. `git pull`，確認 HEAD 包含階段 M／D 的 commit。
+2. `Stop-ScheduledTask "Invest D+ OCR Worker"` → `scripts\publish-ocr-worker-windows.ps1` → 確認 EXE
+   `LastWriteTime` → `Start-ScheduledTask`。
+3. 看 `logs/ocr-worker-*.out.log` 啟動訊息含新字樣（不能只看排程 Running）。
+4. 跑 3.5.10 的正式驗收，結果補進 `Doc/版本紀錄.md`。
+
+#### 3.5.10 正式驗收
+
+| # | 情境 | 通過條件 |
+|---|---|---|
+| P1 | 兩台在線，傳 1 張 | readiness 約 1～2 秒，`decidedBy=windows`，`probes` 顯示 Windows 第 1 次即回應；`succeeded` |
+| P2 | Windows 排程停止，Mac 在線 | readiness 約 8～9 秒，`decidedBy=mac`；工作由 Mac claim、`succeeded` |
+| P3 | 兩台都停 | 約 15 秒內手機走 Tesseract；`ocr_jobs` **沒有**新列（圖片沒上傳） |
+| P4 | 批次中途掛掉 | 傳 9 張，前 3 張 leased 後停止 Windows；約 1 分鐘內剩餘工作改由 Mac 處理（Mac 也停時改走 Tesseract），沒有任何一張等到 9 分鐘 |
+| P5 | 忙碌不誤判 | 正常傳 9～20 張，`offline_since` 全程保持 null，所有工作由原機器完成 |
+| P6 | 接力 | 讓 Windows 兩個 Agent 都不可用一次，確認先詢問 Mac 再交給 Mac |
+| P7 | 晚到的結果 | P4 中被改派的工作，原 Windows 恢復後回寫收到 409、結果丟棄、處理槽繼續服務 |
+| P8 | 用量 | 一週後以 Supabase Dashboard 比較 Edge Function invocation，應不高於改版前一週 |
+
+原 [§3.2](#ocr-pending-acceptance) 的相位測試由 P1／P5 取代；離線、斷線測試由 P2～P4 取代。
+
+#### 3.5.11 用量預估（以每月約 40 批計）
+
+| 項目 | 每月 |
+|---|---:|
+| readiness 詢問（新版每次回應 1 次 pong） | +40～80 次 invocation |
+| 批次中詢問（45 秒沒動靜才問、同台 30 秒節流；10 分鐘的批次約 10 次） | 約 +200～400 |
+| Realtime 訊息（每次詢問 1 送出＋1 接收） | 約 +500 則（額度 2,000,000） |
+| 心跳 300 秒 → 1,800 秒（單台） | 約 −7,200 |
+| 修正喚醒風暴（每件工作少約 4 次 claim／evaluation-claim） | 約 −500 |
+| 兩台都離線時不再等 9 分鐘（每次省約 1,200 次 status） | 視發生次數 |
+| **合計** | **比目前更低**（約 −7,000 次／月，以閒置推算值 17,280 為基準） |
+
+#### 3.5.12 刻意不採用的方案
+
+| 方案 | 不採用原因 |
+|---|---|
+| submit 時用「N 分鐘內有回應」判斷 | 整批 10～40 分鐘、AI 單張最長 4 分鐘不回報，會誤判健康機器；也抓不到批次中途掛掉 |
+| 每張 submit 都重新詢問 | 每張多一輪詢問，用量隨張數放大，且同一批已確認過 |
+| Supabase Realtime Presence | 斷電時多久判定離線取決於伺服器逾時，未實測；Edge 無法從 REST 讀 presence，要改頻道權限或讓手機訂閱，比詢問複雜 |
+| 縮短心跳到 60 秒 | 本質仍是猜，且每月多數萬次 invocation |
+| Worker 關機時主動回報離線 | 停電、睡眠、當機時來不及送出，只能當輔助 |
+| 縮短前端 9 分鐘時限 | 前端分不出「機器掛了」與「合理排隊／慢圖」，會誤殺正常工作 |
+
+#### 3.5.13 回退方案
+
+- Edge：`git checkout` 前一版 `supabase/functions/ocr-jobs/index.js` 重新部署（改版前正式版為 v22）。
+- DB：`db/062` 的新欄位、新表只是新增，不需移除；若要回到舊閘門，另寫 migration 還原 `ocr_claim_job()`、
+  `ocr_relay_agent_failure()` 與 `ocr_stall_to_fallback()`（定義見 `db/054`、`db/055`）。
+- Worker：舊版 EXE／舊 commit 重建即可；舊版 Worker 與新版 Edge 相容（以 claim 回答詢問）。
 
 ---
 

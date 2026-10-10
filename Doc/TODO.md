@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29。Windows EXE 已以 `e6c08fd1` 重建，`Invest D+ OCR Worker` 排程已註冊並 Running（每 2 分鐘 recovery、三槽與 Realtime 喚醒均已核對）；**家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。2026-10-10 新發現 `realtime_connected` 關機後卡在 true 的風險（待決）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29。Windows EXE 已以 `e6c08fd1` 重建，`Invest D+ OCR Worker` 排程已註冊並 Running（每 2 分鐘 recovery、三槽與 Realtime 喚醒均已核對）；**家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。2026-10-10 發現在線判斷靠猜（關機後仍算在線）；2026-10-11 定案改為指名詢問 Windows→Mac 各 5 次，待實作（Mac → 文件 → Windows）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 2026-09-23 日韓盤中快照保留、日期選擇器隱藏與排行節流已由 commit `e0bf561b` 發布；.NET 549/549、Node 146/146 通過。線上 KR 已更新至 9/23 14:05；JP 仍指向 9/14。9/15 起舊 workflow 因 KIS 金鑰缺失失敗，9/19 改 Yahoo、9/22 修 Storage bucket 判定；JP 9/21～23 休市，待 9/24 開市驗收新快照。其餘市場切換產品議題仍見下方 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [日韓成交排行來源日期檢查過嚴，09/22 起韓股每輪都失敗](#todo-18) | 🟡 工項 A～E 已實作完成，.NET 556/556、Node 148/148 通過；待 09-28（日韓同為交易日）驗收 |
@@ -1337,7 +1337,17 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-### 🔴 2026-10-10：`realtime_connected` 旗標關機後卡在 true（待決，未修）
+### 🔴 2026-10-11：在線確認重構已定案，待實作（取代下方 10-10 的待決事項）
+
+使用者定案：不再用心跳時間或連線旗標猜測 Windows／Mac 在不在線，改為**指名詢問**——
+上傳前先問 Windows 最多 5 次（每次等 1.5 秒），不可用再問 Mac 5 次，都沒回應才在手機跑 Tesseract；
+批次進行中負責機器超過 45 秒沒動靜才再問（同台 30 秒節流），沒回應就依同樣順序改派或改走 Tesseract。
+2026-10-11 正式環境實測喚醒到 Windows 回應 0.51～1.52 秒。需要 `db/062`、`ocr-jobs`、兩台 Worker 一起改，
+預估每月 Edge invocation 比現在更低。執行順序：**家裡 Mac 實作＋部署＋重建 Mac Worker → 寫文件 →
+由 Windows Agent 重建公司 Windows 並做正式驗收**。完整規格（可直接交給其他模型）見
+[AI OCR §3.5](技術文件/AI%20OCR.md#ocr-probe-spec)。
+
+### 🔴 2026-10-10：`realtime_connected` 旗標關機後卡在 true（已由上方方案取代）
 
 整合 OCR 文件時核對程式發現：`ocr_worker_alive()`（`db/054`）與 `checkAvailableWorkers()` 都是
 `realtime_connected OR last_seen_at 在 2×心跳週期內`，但 Worker 只在 300 秒週期 heartbeat 回報旗標，
