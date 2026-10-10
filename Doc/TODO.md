@@ -1394,11 +1394,15 @@ readiness 只有 15/67≈22% 機率判定在線。當天實測 5 次 readiness �
   （5 分鐘 TTL，且復原輪詢時強制略過快取，避免重蹈本專案先前移除探測快取的覆轍）。
 - 489 個 .NET 測試＋94 個 Node 測試全綠；程式已 commit。
 
-**🔴 尚未完成、正式環境的 bug 依然存在**：
-1. `db/054` 尚未套用到正式 Supabase。
-2. `ocr-jobs` Edge Function 尚未重新部署（正式環境還在跑含 bug 的 v15）。
-3. Worker EXE 尚未在任何機器重新 build／部署（治本二對正式環境沒有效果）。
-4. 相位測試待正式環境驗收：修好後應間隔 20 秒連續觸發 5 次上傳，5 次都要有 `?action=submit`。
+**部署狀態（2026-10-11 唯讀查正式環境核對；本段原本是 09-13 部署前寫的，已過時改寫）**：
+1. ✅ `db/054` 已套用（`schema_migrations` 登記 2026-09-13 03:40 UTC）；`db/055` 已套用（2026-09-14 03:13 UTC），
+   正式 `ocr_stall_to_fallback` 已含 `ocr_available_workers()` 守衛。
+2. ✅ `ocr-jobs` 正式版為 v22（最後部署 2026-09-14 11:13 台北），部署內容含 `checkAvailableWorkers()`／`queuePosition`，
+   已不是含 15 秒門檻 bug 的 v15。
+3. 🟡 公司 Windows Worker 已重建（09-13、09-22 `e6c08fd1`），正式 `ocr_workers` 顯示心跳週期 300 秒、
+   `realtime_connected=true`、心跳新鮮，治本二已生效；**家裡 Mac Worker 最後心跳停在 2026-09-13，近一個月離線**，
+   仍是舊版（心跳 60 秒），需到場重建。
+4. 🔴 相位測試仍待正式環境驗收：間隔 20 秒連續觸發 5 次上傳，5 次都要有 `?action=submit`。
 
 **狀態：AI-first 前端、正式 Supabase 私有佇列、Validator、Mac Worker、重載恢復、submit 冪等、
 fallback 受控取回、獨立逾期清理與 CLI 路徑接線修正已整合並發布；本輪已加入

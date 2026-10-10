@@ -50,10 +50,10 @@ AI OCR 主線已在正式環境運作：**公司 Windows Worker（`e6c08fd1`）�
 |---|---|---|
 | `db/054_ocr_worker_availability.sql` | ✅ 2026-09-13 已套用正式 Supabase | 版本紀錄 2026-09-13 |
 | `db/055_ocr_stall_guard.sql` | ✅ 2026-09-14 已套用 | 版本紀錄 2026-09-13（第六個問題） |
-| `ocr-jobs` Edge Function | ✅ 2026-09-13、09-14 兩次重新部署（v15 之後的新版，版本號未記錄） | 同上 |
+| `ocr-jobs` Edge Function | ✅ 正式 v22，最後部署 2026-09-14 11:13（台北）；部署內容含 `checkAvailableWorkers()`／`queuePosition` | 2026-10-11 Management API 唯讀核對 |
 | 前端 `site.js` | ✅ 隨 publish-only 發布（readiness 原因顯示、wake 30 秒節流、排隊位置、deadline 從 leased 重新起算） | 同上 |
 | 公司 Windows Worker | ✅ 2026-09-22 以 `e6c08fd1` 重建自包含 EXE；排程 `Invest D+ OCR Worker` Running、每 2 分鐘補啟動、`IgnoreNew`；啟動訊息「Realtime 喚醒；斷線每 5 秒重連；並行上限 3」 | 版本紀錄 2026-09-22 |
-| 家裡 Mac Worker | 🔴 **仍待重建**；治本二（300 秒心跳、連線旗標、探測快取）與 09-22 的 409 修正對 Mac 都尚未生效 | TODO #15 |
+| 家裡 Mac Worker | 🔴 **仍待重建**，且正式 `ocr_workers` 顯示最後心跳停在 2026-09-13（近一個月離線）；治本二與 09-22 的 409 修正對 Mac 都尚未生效 | TODO #15；2026-10-11 唯讀核對 |
 | Claude CLI | 🟡 公司 Windows 已安裝 `2.1.263`，但 `claude auth status --text` 回「Not logged in」；目前實際只有 Codex 單 Agent，沒有 Agent 故障切換 | §4.3 |
 | 自動化測試 | ✅ 09-22 本機完整 `Invest.Web.Tests` 547/547、OCR 目標 29/29 | TODO #15 |
 
