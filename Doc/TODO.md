@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29。Windows EXE 已以 `e6c08fd1` 重建，`Invest D+ OCR Worker` 排程已註冊並 Running（每 2 分鐘 recovery、三槽與 Realtime 喚醒均已核對）；**家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。詳見 [版本紀錄.md](版本紀錄.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-09-22 已修復 Worker 完成回寫 `409 lease_lost` 造成並行槽逐一死亡；OCR 目標測試 29/29。Windows EXE 已以 `e6c08fd1` 重建，`Invest D+ OCR Worker` 排程已註冊並 Running（每 2 分鐘 recovery、三槽與 Realtime 喚醒均已核對）；**家裡 Mac Worker 仍待重建**；7 張手機截圖的三槽端到端驗收仍待實測。舊有 `db/054`／相位測試與 Golden Set 驗收狀態維持不變。2026-10-10 新發現 `realtime_connected` 關機後卡在 true 的風險（待決）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 2026-09-23 日韓盤中快照保留、日期選擇器隱藏與排行節流已由 commit `e0bf561b` 發布；.NET 549/549、Node 146/146 通過。線上 KR 已更新至 9/23 14:05；JP 仍指向 9/14。9/15 起舊 workflow 因 KIS 金鑰缺失失敗，9/19 改 Yahoo、9/22 修 Storage bucket 判定；JP 9/21～23 休市，待 9/24 開市驗收新快照。其餘市場切換產品議題仍見下方 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [日韓成交排行來源日期檢查過嚴，09/22 起韓股每輪都失敗](#todo-18) | 🟡 工項 A～E 已實作完成，.NET 556/556、Node 148/148 通過；待 09-28（日韓同為交易日）驗收 |
@@ -1337,6 +1337,19 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
+### 🔴 2026-10-10：`realtime_connected` 旗標關機後卡在 true（待決，未修）
+
+整合 OCR 文件時核對程式發現：`ocr_worker_alive()`（`db/054`）與 `checkAvailableWorkers()` 都是
+`realtime_connected OR last_seen_at 在 2×心跳週期內`，但 Worker 只在 300 秒週期 heartbeat 回報旗標，
+停止、當機、關機都不會寫回 `false`。整台 Windows 關機（下班、週末）且最後一次 heartbeat 為 `true` 時：
+readiness 一直放行上傳；`db/055` 守衛認為有可用 Worker 所以不觸發 `worker_stalled`，要等前端 9 分鐘時限才回退
+Tesseract；`ocr_claim_job()` 也讓 Mac 拿不到全新工作。程序當機時排程 2 分鐘內重啟會清掉，影響有限。
+可能方向：旗標加時間上限，或補上規格原本要求的 join／斷線即時回報；需要 DB＋Edge＋Worker 三處一起改、
+兩台 Worker 重建，屬獨立任務，待使用者決定。完整說明見
+[AI OCR §3.4](技術文件/AI%20OCR.md#ocr-known-risks)；同節 §3.3 另列出規格中尚未實作的流量優化項目。
+
+OCR 技術文件已於同日合併成單一 [`AI OCR.md`](技術文件/AI%20OCR.md)，原本的可用性重構規格與實作進度兩份檔案已刪除。
+
 ### ✅ 2026-09-22：完成回寫 `409 lease_lost` 會殺死並行槽，程式修復完成；Windows Worker 已重建
 
 本次手機 7 張截圖的現象不是「前端只開一條辨識線」，而是 Worker 在處理完成回寫時遇到
@@ -1372,7 +1385,7 @@ readiness 只有 15/67≈22% 機率判定在線。當天實測 5 次 readiness �
 分流／relay 五個地方各自維護一份門檻常數（15／120／120／120 秒），沒有單一真相來源，是同類
 事故第 N 次而非運氣問題。
 
-**已完成**（規格見 [`AI OCR 可用性重構實作規格.md`](技術文件/AI%20OCR%20可用性重構實作規格.md)，
+**已完成**（規格見 [`AI OCR.md` §4.11](技術文件/AI%20OCR.md#ocr-incident-0913-readiness)，
 完整實作記錄見 [版本紀錄.md](版本紀錄.md) 最新一節）：
 - 治本一：`db/054_ocr_worker_availability.sql` 新增事實優先的存活判定
   （`ocr_worker_alive()`／`ocr_worker_has_agent()`）與工作層級 stall 偵測（`ocr_stall_to_fallback()`）；
@@ -1408,7 +1421,7 @@ v11 並驗證 Worker progress／租約邊界；2026-09-07 公司 Windows 專用 
 修正（`9654ab3f`，09-09 18:10）早 17 小時，一直在跑舊的 2 秒輪詢迴圈，兩天半燒掉 443,155 次
 Edge Function invocation（整期額度的 88%）與約 2.5 GB egress，詳見 [TODO 14](#todo-14) 的
 「2026-09-11 用量歸因」。完整根因、Task Scheduler 事件記錄與本次復原步驟已寫入
-[AI OCR §0.1](技術文件/AI%20OCR.md#01-2026-09-11090-12-事件驅動版本落後事故與復原)。
+[AI OCR §4.6](技術文件/AI%20OCR.md#ocr-incident-0911-stale-exe)。
 
 **2026-09-12 已完成公司 Windows 復原**：`Disable/Stop-ScheduledTask` → 重新
 `publish-ocr-worker-windows.ps1`（EXE `LastWriteTime` 確認為當天 10:22）→ `-Once` 診斷
@@ -1435,7 +1448,7 @@ Codex→Claude 都不行才換 Mac 的 Codex→Claude，都不行才回退 Tesse
 - `db/049_ocr_agent_relay.sql`：`ocr_jobs` 新增 `windows_attempt_failed_at`；`ocr_claim_job()`
   依平台分流、新增 `ocr_relay_agent_failure()` 決定接力或終結。已套用正式 Supabase，
   rollback smoke test 十項斷言全過（過程與結果見
-  [AI OCR §0.2](技術文件/AI%20OCR.md#02-2026-09-12-agent-跨機接力windows-兩個-agent--mac-兩個-agent--tesseract)）。
+  [AI OCR §4.7](技術文件/AI%20OCR.md#ocr-incident-0912-relay)）。
 - `ocr-jobs` Edge Function 新增 `relay` action，已部署 v14，`verify_jwt=false` 維持不變，
   未帶 JWT 已實測回 401。
 - `OcrWorkerApiClient.cs`／`OcrWorkerRunner.cs` 已接上 `RelayOrFallbackAsync()`；
@@ -1458,7 +1471,7 @@ Codex 完全正常，`ocr_jobs` 這次**確實有**新工作列（推翻上一�
 排隊時被取消的。
 
 兩個真正根因，完整診斷與修正見
-[AI OCR §0.3](技術文件/AI%20OCR.md#03-2026-09-12-真正根因worker-併行槽會陣亡前端用心跳猜測就取消排隊中的工作)：
+[AI OCR §4.8](技術文件/AI%20OCR.md#ocr-incident-0912-slots)：
 
 1. **`OcrWorkerRunner` 的 3 個並行槽包在同一個 `Task.WhenAll` 裡**，`claim` 落空就
    永久 `return`；外層「收到喚醒才處理」的迴圈逐一 await、不平行，新工作的喚醒信號
@@ -1499,7 +1512,7 @@ fail-closed（逾時、非零結束碼都直接判定未登入，不保留上次
 `run-ocr-worker-windows.ps1` 常駐模式改用 `Start-Process` 把 stdout/stderr 分別
 導向 `logs/ocr-worker-<timestamp>.{out,err}.log`（保留 30 天），修補這次「完全沒有
 log 可查、只能反推」的盲點。`.NET Invest.Web.Tests` 459/459 全綠，完整診斷見
-[AI OCR §0.4](技術文件/AI%20OCR.md#04-2026-09-12同日再一次readiness-探測-fail-closed單次抖動整批靜默降級)。
+[AI OCR §4.9](技術文件/AI%20OCR.md#ocr-incident-0912-probe)。
 
 **誠實說明**：這次根因是反推的，不是第一手證據——沒有 log、使用者當下也沒回報畫面上
 顯示的回退原因文字。下次再發生，log 檔會直接留下探測的實際輸出。§0.3 的前端修正
@@ -1571,7 +1584,7 @@ constraint 與 RPC 內部驗證各自一份，`ocr-jobs` 同步更新部署為 v
 downloading→回報 ai_recognition（成功，證明新階段合法）→模擬使用者取消→Worker
 不知情繼續用舊 lease_token 回報 ai_recognition（回傳 false，證明 S5 正確運作）」，
 四項斷言全過、rollback 後無殘留。完整診斷見
-[AI OCR §0.5](技術文件/AI%20OCR.md#05-2026-09-13強制取消辨識與重整恢復流程競態導致取消後彈回掃描中下一批誤判離線)。
+[AI OCR §4.10](技術文件/AI%20OCR.md#ocr-incident-0913-cancel)。
 
 **尚未做的**：前端修正沒有真正的瀏覽器端到端測試（沒有登入帳密，只驗證到程式
 邏輯層級），下次使用者實際照這個流程操作會是第一次真正驗證。
@@ -1639,7 +1652,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
   60 秒只更新 `ocr_workers` 在線狀態，25 秒只維持 WebSocket，沒有截圖時 claim／evaluation／
   Codex／Claude 全為 0。健康空轉 30 天估算為 51,840 次 OCR Edge invocation；35 筆 Max 與 3 筆 Low
   的 token 實測、每張與每月公式及可靠性取捨詳見
-  [AI OCR：目前生效的 AI OCR 最終方案與用量](技術文件/AI%20OCR.md#目前生效的-ai-ocr-最終方案與用量單一維護區塊)。
+  [AI OCR：目前生效的 AI OCR 最終方案與用量](技術文件/AI%20OCR.md#ocr-architecture)。
 
 ### 本輪已完成與仍待外部驗收
 
@@ -1658,7 +1671,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
    Windows 已用官方原生安裝器裝上 Claude Code CLI `2.1.263`（真正 exe，非 npm shim），並釘選
    `OCR_CLAUDE_PATH`／`OCR_CODEX_PATH`／`OCR_AGENT_PRIMARY=codex` 為使用者環境變數；重新發布 Worker
    並以 `-Once` 驗證 exit code 0，排程重啟後恢復 `Running`。完整脈絡見
-   [AI OCR §14.6](技術文件/AI%20OCR.md#146-2026-09-07-windows-agent-優先序修正與-claude-cli-安裝第一階段已實作仍待登入與外部驗收)。
+   [AI OCR §4.3](技術文件/AI%20OCR.md#ocr-incident-0907-agent-order)。
 5. 2026-09-07（筆記 #52）：根因是前端逐張序列 `for...of` 與 Worker 單一 `do` 迴圈雙層序列化，DB
    `FOR UPDATE SKIP LOCKED` 早已支援並行、不是瓶頸。已實作：Worker 每輪依 `OCR_WORKER_MAX_CONCURRENCY`
    （預設 3）並行 claim／處理多件工作；`OcrWorkerApiClient` 用 `SemaphoreSlim` 序列化認證換發，
