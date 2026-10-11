@@ -60,14 +60,13 @@ public sealed class OcrCliWiringTests
             "Services",
             "OcrWorkerApiClient.cs"));
 
-        // 2026-09-13 治本二：連線事實旗標（OcrWorkerApiClient.IsRealtimeConnected）上線後，
-        // 心跳頻率從 60 秒降到 300 秒（省下約 33,000 次/月的 heartbeat invocation）；
-        // 沒有可用 Agent 時仍用下面的 10 秒回復輪詢，不受這個調整影響。
-        Assert.Contains("WorkerHeartbeatInterval = TimeSpan.FromSeconds(300)", worker, StringComparison.Ordinal);
+        // 2026-10-11：在線與否改由伺服器指名詢問決定，心跳只剩更新 Agent 狀態／版本資訊的用途，
+        // 從 5 分鐘拉長到 30 分鐘；沒有可用 Agent 時仍用下面的 10 秒回復輪詢，不受這個調整影響。
+        Assert.Contains("WorkerHeartbeatInterval = TimeSpan.FromSeconds(1800)", worker, StringComparison.Ordinal);
         Assert.Contains("RunWakeListenerAsync(", worker, StringComparison.Ordinal);
         Assert.Contains("var delay = wasAvailable ? WorkerHeartbeatInterval : WorkerHeartbeatRecoveryPollInterval;", worker, StringComparison.Ordinal);
         Assert.Contains("Enumerable.Range(0, options.MaxConcurrency)", worker, StringComparison.Ordinal);
-        Assert.Contains(".Select(_ => RunSlotAsync(api, options, wakeSignals.Reader, workerCancellation.Token))", worker, StringComparison.Ordinal);
+        Assert.Contains(".Select(_ => RunSlotAsync(api, options, wakeSignals.Reader, wakeSignals.Writer, workerCancellation.Token))", worker, StringComparison.Ordinal);
         Assert.Contains("var job = await api.ClaimAsync(cancellationToken);", worker, StringComparison.Ordinal);
         Assert.Contains("await ProcessJobAsync(api, job, _agentStates, options, cancellationToken);", worker, StringComparison.Ordinal);
         // 2026-09-12 修正的根因：舊版每個槽 claim 落空就直接 return，槽因此永久死掉；

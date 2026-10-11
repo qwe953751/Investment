@@ -66,8 +66,8 @@ test('OCR worker has an event-driven wake path and no idle claim polling', () =>
     assert.match(api, /realtime_join_failed/);
     assert.match(worker, /RunWakeListenerAsync/);
     assert.doesNotMatch(worker, /Task\.Delay\(options\.PollInterval, cancellationToken\)/);
-    // 2026-09-13 治本二：連線事實旗標上線後，心跳頻率從 60 秒降到 300 秒。
-    assert.match(worker, /WorkerHeartbeatInterval = TimeSpan\.FromSeconds\(300\)/);
+    // 2026-10-11：在線與否改由伺服器指名詢問決定，心跳降到 30 分鐘（只更新 Agent 狀態與版本資訊）。
+    assert.match(worker, /WorkerHeartbeatInterval = TimeSpan\.FromSeconds\(1800\)/);
     assert.match(realtimeMigration, /realtime\.send/);
     assert.match(realtimeMigration, /realtime\.topic\(\)/);
     assert.match(realtimeMigration, /access_role.*ocr_worker/);

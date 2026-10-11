@@ -13,13 +13,12 @@ public sealed class OcrWorkerRunner(
     OcrRecognitionValidator validator)
 {
     private static readonly string[] SupportedExtensions = [".png", ".jpg", ".jpeg", ".webp"];
-    // 治本二：2026-09-13 事故根因是 readiness 的時間門檻與這個心跳週期的相位差
-    // （原本 60 秒設定值，因 CLI 探測重試被拖到實測 67 秒）。治本一已把離線判定
-    // 收斂成事實優先（OcrWorkerApiClient.IsRealtimeConnected）、時間退路其次
-    // （2×這個週期）；有了連線事實當主要依據，才把心跳頻率從 60 秒降到 300 秒，
-    // 省下約 33,000 次/月的 heartbeat invocation。這個降頻的前提是連線旗標必須
-    // 先上線——沒有它，300 秒的時間退路窗口（600 秒）在真正斷線時會太寬鬆。
-    private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(300);
+    // 2026-10-11 起 Windows／Mac 是否在線改由伺服器「指名詢問」決定（ocr_ping → 接收訊號的那一段直接回
+    // pong，見 OcrWorkerApiClient.RespondToPing），心跳不再是在線依據，只剩更新 Agent 登入／額度狀態與
+    // 版本資訊的用途，所以從 5 分鐘拉長到 30 分鐘（單台每月約少 7,200 次 Edge Function 呼叫）。
+    // 額度用完會立刻反映在 pong 回報的狀態（Router 的冷卻時間），登入狀態變化最慢 30 分鐘後才會被看見；
+    // 看不見的情況下 Worker 取到工作會因認證失敗而走 relay／Tesseract，不會卡住。
+    private static readonly TimeSpan WorkerHeartbeatInterval = TimeSpan.FromSeconds(1800);
     // 探測顯示「沒有可用 Agent」時，心跳改用這個較短的間隔重新探測，讓額度／登入剛好
     // 復原時能在十幾秒內回到可用，不必最多卡到下一個心跳週期才被看見。
     private static readonly TimeSpan WorkerHeartbeatRecoveryPollInterval = TimeSpan.FromSeconds(10);
@@ -68,7 +67,7 @@ public sealed class OcrWorkerRunner(
         var api = new OcrWorkerApiClient(httpClientFactory.CreateClient(nameof(OcrWorkerApiClient)), options);
         Console.WriteLine(
             $"D+ OCR Worker 啟動：{options.Name}（Realtime 喚醒；斷線每 {options.PollInterval.TotalSeconds:0} 秒重連；"
-            + $"並行上限 {options.MaxConcurrency}（常駐槽）；Max effort {options.MaxReasoningEffort}；"
+            + $"並行上限 {options.MaxConcurrency}（常駐槽）；在線詢問：指名回應；Max effort {options.MaxReasoningEffort}；"
             + $"評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
 
         _agentStates = await ProbeAgentsAsync(cancellationToken);
@@ -84,8 +83,12 @@ public sealed class OcrWorkerRunner(
             return;
         }
 
-        var wakeSignals = Channel.CreateUnbounded<bool>(new UnboundedChannelOptions
+        // 喚醒訊號只表示「佇列裡可能有工作」，不計數：容量 1、滿了就丟掉，批次期間大量的上傳通知
+        // 合併成一則，不會在所有槽都忙時累積成一堆日後各打一次落空 claim 的訊號。不會漏接工作：
+        // 有空閒槽時訊號立刻被消耗；槽都忙時，處理完的槽會直接回頭 claim 到佇列空為止。
+        var wakeSignals = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
         {
+            FullMode = BoundedChannelFullMode.DropWrite,
             SingleReader = false,
             SingleWriter = false,
             AllowSynchronousContinuations = false
@@ -94,7 +97,8 @@ public sealed class OcrWorkerRunner(
         var realtimeTask = api.RunWakeListenerAsync(
             () => wakeSignals.Writer.TryWrite(true),
             options.PollInterval,
-            workerCancellation.Token);
+            workerCancellation.Token,
+            CurrentAgentStatus);
         var heartbeatTask = MaintainHeartbeatAsync(
             api,
             workerCancellation.Token,
@@ -108,7 +112,7 @@ public sealed class OcrWorkerRunner(
         // 根因：舊版把整批槽包在同一個 Task.WhenAll 裡，外層喚醒佇列要等這個 WhenAll
         // 完全結束才處理下一個喚醒信號，慢工作會連帶卡住其他已經空出來的槽。
         var slots = Enumerable.Range(0, options.MaxConcurrency)
-            .Select(_ => RunSlotAsync(api, options, wakeSignals.Reader, workerCancellation.Token))
+            .Select(_ => RunSlotAsync(api, options, wakeSignals.Reader, wakeSignals.Writer, workerCancellation.Token))
             .ToArray();
 
         try
@@ -186,6 +190,7 @@ public sealed class OcrWorkerRunner(
         OcrWorkerApiClient api,
         OcrWorkerOptions options,
         ChannelReader<bool> wakeReader,
+        ChannelWriter<bool> wakeWriter,
         CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -199,6 +204,10 @@ public sealed class OcrWorkerRunner(
             var job = await api.ClaimAsync(cancellationToken);
             if (job is not null)
             {
+                // 一個喚醒訊號只叫醒一個槽（見 WaitForWakeAsync），拿到工作的槽補寫一個訊號接力：
+                // 佇列裡還有更多件時（例如改派一次移來多件、啟動時的 catch-up），下一個空閒槽接著去拿，
+                // 三條處理線仍能一起排空；佇列空了就落空、不再接力。
+                wakeWriter.TryWrite(true);
                 await ProcessJobAsync(api, job, _agentStates, options, cancellationToken);
                 continue;
             }
@@ -216,17 +225,44 @@ public sealed class OcrWorkerRunner(
         }
     }
 
-    private static async Task WaitForWakeAsync(ChannelReader<bool> wakeReader, CancellationToken cancellationToken)
+    // 一個喚醒訊號只叫醒一個槽：Channel 有多個讀取者時，WaitToReadAsync 會讓所有等待中的槽一起醒來，
+    // 但 TryRead 只有一個拿得到——拿不到的槽回去繼續等，不是照樣去 claim（舊版的喚醒風暴：
+    // 每個訊號讓每個槽各打一次 claim 與 evaluation-claim，落空也算一次 Edge Function 呼叫）。
+    // 回傳 true＝拿到訊號；false＝Channel 已完成（Worker 關閉中）。
+    internal static async Task<bool> WaitForWakeAsync(ChannelReader<bool> wakeReader, CancellationToken cancellationToken)
     {
         try
         {
-            await wakeReader.WaitToReadAsync(cancellationToken);
-            wakeReader.TryRead(out _);
+            while (await wakeReader.WaitToReadAsync(cancellationToken))
+            {
+                if (wakeReader.TryRead(out _))
+                {
+                    return true;
+                }
+            }
         }
         catch (ChannelClosedException)
         {
         }
+
+        return false;
     }
+
+    // pong 回報的 Agent 狀態：最近一次 CLI 探測結果，再套上 Router 目前的額度冷卻
+    // （額度剛用完時不必等下一次探測就能讓伺服器知道）。不在這裡執行 CLI 探測，避免拖慢回答。
+    private IReadOnlyDictionary<string, OcrWorkerAgentState> CurrentAgentStatus()
+        => ApplyQuotaBlocks(_agentStates, router.QuotaBlockedUntil, DateTimeOffset.UtcNow);
+
+    internal static IReadOnlyDictionary<string, OcrWorkerAgentState> ApplyQuotaBlocks(
+        IReadOnlyDictionary<string, OcrWorkerAgentState> states,
+        IReadOnlyDictionary<OcrAgentKind, DateTimeOffset> blockedUntil,
+        DateTimeOffset now)
+        => states.ToDictionary(
+            pair => pair.Key,
+            pair => Enum.TryParse<OcrAgentKind>(pair.Key, ignoreCase: true, out var kind)
+                ? WithQuota(pair.Value, blockedUntil, kind, now)
+                : pair.Value,
+            StringComparer.OrdinalIgnoreCase);
 
     private async Task MaintainHeartbeatAsync(
         OcrWorkerApiClient api,
@@ -621,8 +657,15 @@ public sealed class OcrWorkerRunner(
         OcrWorkerAgentState state,
         OcrAgentKind kind,
         DateTimeOffset now)
+        => WithQuota(state, router.QuotaBlockedUntil, kind, now);
+
+    private static OcrWorkerAgentState WithQuota(
+        OcrWorkerAgentState state,
+        IReadOnlyDictionary<OcrAgentKind, DateTimeOffset> blockedUntil,
+        OcrAgentKind kind,
+        DateTimeOffset now)
     {
-        if (!router.QuotaBlockedUntil.TryGetValue(kind, out var retryAfter) || retryAfter <= now)
+        if (!blockedUntil.TryGetValue(kind, out var retryAfter) || retryAfter <= now)
         {
             return state;
         }

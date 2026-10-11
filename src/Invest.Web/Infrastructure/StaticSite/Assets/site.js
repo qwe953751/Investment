@@ -12616,6 +12616,19 @@ async function assetAiOcrDownload(jobId, signal = null) {
     });
 }
 
+// readiness 回傳的指名詢問結果（probes）轉成一句話，例如
+// 「Windows 5 次詢問皆未回應，Mac 已回應」。沒有詢問結果（舊版伺服器）回空字串。
+function assetAiOcrProbeSummary(readiness) {
+    const probes = Array.isArray(readiness?.probes) ? readiness.probes : [];
+    return probes.map(probe => {
+        const label = /windows/i.test(probe.platform ?? '') ? 'Windows' : 'Mac';
+        if (probe.busy) return `${label} 忙碌中（視為在線）`;
+        if (probe.answered && probe.available) return `${label} 已回應`;
+        if (probe.answered) return `${label} 已回應但沒有可用的 AI`;
+        return `${label} ${probe.attempts ?? 0} 次詢問皆未回應`;
+    }).join('，');
+}
+
 function assetAiOcrFallbackText(reason) {
     switch (reason) {
         case 'worker_offline': return 'AI Worker 離線';
@@ -15871,27 +15884,35 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         // 代號仍可直接辨識；只有名稱反查會少一條路，不能因此阻斷手動校對流程。
     }
 
-    // 先問正式端點，而不是先跑 Tesseract 再猜 AI 是否值得用。這一關現在是樂觀語意
-    // （見 supabase/functions/ocr-jobs/index.js 的 checkAvailableWorkers()）：只有
-    // 「查無任何 Worker」或「所有 Worker 都沒有已登入的 Agent」才會擋下，其餘一律放行，
-    // 真正的離線由 submit 之後的 claim／relay／stall 偵測（事實層級）處理。
+    // 先問正式端點，而不是先跑 Tesseract 再猜 AI 是否值得用。這一關現在是「指名詢問」
+    // （見 supabase/functions/ocr-jobs/index.js 的 selectTarget()）：伺服器先問 Windows 最多 5 次，
+    // 沒回應或沒有可用 Agent 再問 Mac 最多 5 次，都不行才回 ready:false，整批在本機跑 Tesseract、
+    // 圖片不上傳。回應的是「現在真的有沒有人回答」，不是心跳時間或連線旗標的推測。
+    // 這批交給誰由伺服器記下（ocr_user_routing），之後每張 submit 只照那個決定。
     let aiReadiness = null;
     let preflightFallbackReason = null;
     try {
-        setAssetOcrStatus('檢查 D+ AI Worker…');
+        setAssetOcrStatus('確認 Windows／Mac 是否在線…（最多約 15 秒）');
         aiReadiness = await assetAiOcrReadiness(null, signal);
         if (!aiReadiness?.ready) {
             preflightFallbackReason = aiReadiness?.fallbackReason ?? 'ai_execution_failed';
             // 2026-09-13 事故教訓：畫面只顯示一句籠統的「AI 執行失敗」，查了 7 小時
-            // 才找到根因是 readiness 的時間門檻 bug。現在把真正原因與 Worker 清單
-            // 直接列出來，下次再發生同類問題不必再翻 log。
+            // 才找到根因。現在把真正原因、每台機器的詢問結果與 Worker 清單直接列出來，
+            // 下次再發生同類問題不必再翻 log。
             const workerSummary = (aiReadiness?.workers ?? [])
                 .map(w => `${w.name}（${w.agents?.length > 0 ? w.agents.join('/') : '無可用 Agent'}）`)
                 .join('、');
+            const probeSummary = assetAiOcrProbeSummary(aiReadiness);
             setAssetOcrStatus(
                 `D+ AI 目前不可用：${assetAiOcrFallbackText(preflightFallbackReason)}`
+                + (probeSummary === '' ? '' : `；${probeSummary}`)
                 + (workerSummary === '' ? '（尚無 Worker 註冊）' : `（${workerSummary}）`)
                 + '，改用 Tesseract…');
+        } else {
+            const probeSummary = assetAiOcrProbeSummary(aiReadiness);
+            setAssetOcrStatus(
+                `D+ AI：由 ${/windows/i.test(aiReadiness.workerPlatform ?? '') ? 'Windows' : 'Mac'} 處理`
+                + (probeSummary === '' ? '' : `（${probeSummary}）`));
         }
     } catch (error) {
         if (signal.aborted) {

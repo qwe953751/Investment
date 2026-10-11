@@ -104,18 +104,27 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
     private static readonly TimeSpan RealtimeHeartbeatInterval = TimeSpan.FromSeconds(25);
     private const string RealtimeTopic = "realtime:ocr:queue";
     private readonly SemaphoreSlim _authLock = new(1, 1);
+    private int _pongInFlight;
     private string? _accessToken;
     private string? _refreshToken;
     private DateTimeOffset _accessTokenExpiresAt = DateTimeOffset.MinValue;
 
     /// <summary>
-    /// 治本二：連線事實旗標，由 <see cref="ReceiveRealtimeAsync"/> 的 WebSocket 生命週期
-    /// 更新（join 成功後 true；接收迴圈結束或例外前 false）。心跳送出時一併回報，
-    /// 讓 db/054 的 ocr_worker_alive() 優先信任這個事實，而不是每次都靠時間推測。
-    /// 這是「樂觀傾向」的設計：crash 會讓旗標卡在 true，由 last_seen_at 的時間退路
-    /// （2×心跳週期）吸收，不影響正確性，只是多等一個週期才會被判定離線。
+    /// Realtime 連線狀態，由 <see cref="ReceiveRealtimeAsync"/> 的 WebSocket 生命週期更新
+    /// （join 成功後 true；接收迴圈結束或例外前 false）。心跳送出時一併回報，**只供畫面顯示**：
+    /// 2026-10-11 起 Windows／Mac 是否在線改由指名詢問（ocr_ping／pong）決定，不再信任這個旗標
+    /// （crash、關機、睡眠時它會卡在 true）。
     /// </summary>
     public volatile bool IsRealtimeConnected;
+
+    /// <summary>這個 Worker 自己的 id（Supabase Auth user id，等於 ocr_workers.id），登入後才有值。</summary>
+    public string? WorkerId { get; private set; }
+
+    /// <summary>
+    /// 接收即時訊號的那一段宣告自己能獨立回應 pong（三條處理線都忙時也答得出來）。
+    /// 舊版 Worker 沒有這個欄位，伺服器一律當 0，並對忙碌中的舊版 Worker 套用相容規則。
+    /// </summary>
+    public const int ProbeProtocol = 1;
 
     public async Task HeartbeatAsync(
         IReadOnlyDictionary<string, OcrWorkerAgentState> agentStatus,
@@ -130,9 +139,22 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
             version = typeof(OcrWorkerApiClient).Assembly.GetName().Version?.ToString() ?? "unknown",
             agentStatus,
             heartbeatIntervalSeconds,
-            realtimeConnected = IsRealtimeConnected
+            realtimeConnected = IsRealtimeConnected,
+            probeProtocol = ProbeProtocol
         }, cancellationToken);
         await EnsureSuccessAsync(response, "heartbeat");
+    }
+
+    /// <summary>
+    /// 回應伺服器的「你在嗎」：只回報目前快取的 Agent 狀態（含 Router 的額度冷卻），**不執行 CLI 探測**
+    /// （探測可能要數秒，會拖慢回答）。由接收即時訊號的那一段直接呼叫，不經過處理槽。
+    /// </summary>
+    public async Task PongAsync(
+        IReadOnlyDictionary<string, OcrWorkerAgentState>? agentStatus,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendJsonAsync(new { action = "pong", agentStatus }, cancellationToken);
+        await EnsureSuccessAsync(response, "pong");
     }
 
     public async Task<OcrClaimedJob?> ClaimAsync(CancellationToken cancellationToken)
@@ -282,7 +304,8 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
     public async Task RunWakeListenerAsync(
         Action signalWake,
         TimeSpan reconnectInterval,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<IReadOnlyDictionary<string, OcrWorkerAgentState>>? agentStatusProvider = null)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -308,7 +331,7 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
                     @ref = "1",
                     join_ref = "1"
                 }, cancellationToken);
-                await ReceiveRealtimeAsync(socket, signalWake, cancellationToken);
+                await ReceiveRealtimeAsync(socket, signalWake, agentStatusProvider, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -351,6 +374,7 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
     private async Task ReceiveRealtimeAsync(
         ClientWebSocket socket,
         Action signalWake,
+        Func<IReadOnlyDictionary<string, OcrWorkerAgentState>>? agentStatusProvider,
         CancellationToken cancellationToken)
     {
         var joined = false;
@@ -372,33 +396,23 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
                         return;
                     }
 
-                    using var document = JsonDocument.Parse(message);
-                    var root = document.RootElement;
-                    var eventName = root.TryGetProperty("event", out var eventElement)
-                        ? eventElement.GetString()
-                        : null;
-                    if (eventName is "phx_error" or "phx_close")
+                    switch (InterpretRealtimeMessage(message, joined, WorkerId))
                     {
-                        throw new InvalidOperationException($"realtime_{eventName}");
-                    }
-
-                    if (eventName == "phx_reply"
-                        && root.TryGetProperty("payload", out var replyPayload)
-                        && replyPayload.TryGetProperty("status", out var replyStatus)
-                        && !joined)
-                    {
-                        if (replyStatus.GetString() != "ok")
-                        {
-                            throw new InvalidOperationException("realtime_join_failed");
-                        }
-
-                        joined = true;
-                        IsRealtimeConnected = true;
-                        signalWake();
-                    }
-                    else if (eventName == "broadcast")
-                    {
-                        signalWake();
+                        case RealtimeEvent.Joined:
+                            joined = true;
+                            IsRealtimeConnected = true;
+                            signalWake();
+                            // 重連後立刻回應一次：重連空窗期間送來的詢問會漏接，這一則讓進行中的詢問
+                            // （詢問起點早於重連）也能算到回應，不會把剛重連的健康機器誤判成離線。
+                            RespondToPing(agentStatusProvider, cancellationToken);
+                            break;
+                        case RealtimeEvent.Wake:
+                            signalWake();
+                            break;
+                        case RealtimeEvent.Ping:
+                            // 指名詢問自己：獨立回應，不叫醒處理槽，三條處理線都忙時也答得出來。
+                            RespondToPing(agentStatusProvider, cancellationToken);
+                            break;
                     }
 
                     receiveTask = ReceiveTextAsync(socket, cancellationToken);
@@ -433,6 +447,101 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         }
     }
 
+    internal enum RealtimeEvent { None, Joined, Wake, Ping }
+
+    /// <summary>
+    /// 解讀一則 Phoenix 訊息：phx_error／phx_close 與 join 失敗拋例外（讓外層重連）；
+    /// join 成功回 Joined；broadcast 的內層事件是 ocr_ping 時，只有 target_worker_id 是自己才回 Ping
+    /// （指名別人或缺少目標一律忽略；不知道自己的 id 時退回一般喚醒）；其他 broadcast（ocr_job_queued、ocr_evaluation_queued、wake）都是 Wake。
+    /// </summary>
+    internal static RealtimeEvent InterpretRealtimeMessage(string message, bool alreadyJoined, string? workerId)
+    {
+        using var document = JsonDocument.Parse(message);
+        var root = document.RootElement;
+        var eventName = root.TryGetProperty("event", out var eventElement)
+            ? eventElement.GetString()
+            : null;
+        if (eventName is "phx_error" or "phx_close")
+        {
+            throw new InvalidOperationException($"realtime_{eventName}");
+        }
+
+        if (eventName == "phx_reply"
+            && root.TryGetProperty("payload", out var replyPayload)
+            && replyPayload.TryGetProperty("status", out var replyStatus)
+            && !alreadyJoined)
+        {
+            if (replyStatus.GetString() != "ok")
+            {
+                throw new InvalidOperationException("realtime_join_failed");
+            }
+
+            return RealtimeEvent.Joined;
+        }
+
+        if (eventName != "broadcast")
+        {
+            return RealtimeEvent.None;
+        }
+
+        if (root.TryGetProperty("payload", out var broadcast)
+            && broadcast.ValueKind == JsonValueKind.Object
+            && broadcast.TryGetProperty("event", out var innerEvent)
+            && innerEvent.ValueKind == JsonValueKind.String
+            && innerEvent.GetString() == "ocr_ping")
+        {
+            var target = broadcast.TryGetProperty("payload", out var pingPayload)
+                && pingPayload.ValueKind == JsonValueKind.Object
+                && pingPayload.TryGetProperty("target_worker_id", out var targetElement)
+                && targetElement.ValueKind == JsonValueKind.String
+                    ? targetElement.GetString()
+                    : null;
+            if (string.IsNullOrEmpty(workerId))
+            {
+                // 不知道自己的 id 就沒辦法判斷是不是問我：退回舊版行為（當成一般喚醒，由 claim 回答）。
+                return RealtimeEvent.Wake;
+            }
+
+            return !string.IsNullOrEmpty(target)
+                && string.Equals(target, workerId, StringComparison.OrdinalIgnoreCase)
+                    ? RealtimeEvent.Ping
+                    : RealtimeEvent.None;
+        }
+
+        return RealtimeEvent.Wake;
+    }
+
+    // 射後不理：不阻塞接收迴圈，失敗只記 log、不重試（伺服器會再問，最多 5 次）。同一時間只飛一個 pong，
+    // 後面的詢問由已在途的那個 pong 一併回應（它在伺服器端的接觸時間仍晚於詢問起點）。
+    private void RespondToPing(
+        Func<IReadOnlyDictionary<string, OcrWorkerAgentState>>? agentStatusProvider,
+        CancellationToken cancellationToken)
+    {
+        if (Interlocked.CompareExchange(ref _pongInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await PongAsync(agentStatusProvider?.Invoke(), cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"OCR Worker pong 失敗：{Safe(exception.Message)}");
+            }
+            finally
+            {
+                Volatile.Write(ref _pongInFlight, 0);
+            }
+        }, CancellationToken.None);
+    }
+
     private static async Task<string?> ReceiveTextAsync(
         ClientWebSocket socket,
         CancellationToken cancellationToken)
@@ -461,6 +570,31 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
     }
 
     private static string Safe(string value) => value.Length <= 500 ? value : value[..500];
+
+    /// <summary>讀 JWT payload 的 sub（Supabase Auth user id）；格式不對回 null。只解碼，不驗證簽章。</summary>
+    internal static string? ReadJwtSubject(string? jwt)
+    {
+        var parts = jwt?.Split('.');
+        if (parts is not { Length: 3 })
+        {
+            return null;
+        }
+
+        try
+        {
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
+            using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
+            return document.RootElement.TryGetProperty("sub", out var subject)
+                && subject.ValueKind == JsonValueKind.String
+                    ? subject.GetString()
+                    : null;
+        }
+        catch (Exception exception) when (exception is FormatException or JsonException)
+        {
+            return null;
+        }
+    }
 
     private async Task<HttpResponseMessage> SendJsonAsync(object body, CancellationToken cancellationToken)
     {
@@ -559,6 +693,7 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
             ?? throw new InvalidOperationException("worker_auth_empty_response");
         _accessToken = session.AccessToken;
         _refreshToken = session.RefreshToken;
+        WorkerId = session.User?.Id ?? ReadJwtSubject(session.AccessToken) ?? WorkerId;
         var expiresIn = session.ExpiresIn.GetValueOrDefault(3600);
         _accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(expiresIn > 0 ? expiresIn : 3600);
     }
@@ -578,7 +713,9 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
     private sealed record AuthSession(
         [property: JsonPropertyName("access_token")] string AccessToken,
         [property: JsonPropertyName("refresh_token")] string RefreshToken,
-        [property: JsonPropertyName("expires_in")] int? ExpiresIn);
+        [property: JsonPropertyName("expires_in")] int? ExpiresIn,
+        [property: JsonPropertyName("user")] AuthUser? User = null);
+    private sealed record AuthUser([property: JsonPropertyName("id")] string? Id);
     private sealed record OcrClaimResponse(OcrClaimedJob? Job);
     private sealed record OcrEvaluationClaimResponse(OcrClaimedEvaluation? Evaluation);
     private sealed record OcrRelayResponse(bool Relayed);

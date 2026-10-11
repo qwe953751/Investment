@@ -2,9 +2,16 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const OCR_BUCKET = 'ocr-private';
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
-// 心跳新鮮度門檻已移到 db/054 的 ocr_worker_alive()（2×該機器自己宣告的心跳週期），
-// 這裡不再保留任何寫死的秒數常數，避免又長出一份不同步的判定。
-const OCR_FIRST_CLAIM_STALL_MS = 20_000;
+// 在線確認（2026-10-11 使用者定案，說明見 Doc/技術文件/AI OCR.md §3.5）：
+// Windows／Mac 是否在線不再靠心跳時間或連線旗標「猜」，而是指名詢問（ocr_ping），
+// 有回應就是在線、5 次都沒回應就是不在線。這裡的常數是唯一一份，不要在別處另寫門檻。
+const OCR_PROBE_ATTEMPTS = 5;
+const OCR_PROBE_WAIT_MS = 1_500;
+const OCR_PROBE_POLL_MS = 250;
+// 批次進行中，負責機器超過這麼久沒有任何接觸才值得問一次（只決定「要不要問」，判定一律看回應）。
+const OCR_BATCH_SILENCE_MS = 45_000;
+// 批次中同一台機器至少間隔這麼久才再問一輪（前端三條輪詢迴圈同時在查）。
+const OCR_BATCH_PROBE_MIN_INTERVAL_SECONDS = 30;
 const CLEANUP_SECRET = Deno.env.get('OCR_CLEANUP_SECRET') ?? '';
 const ALLOWED_ORIGINS = new Set([
     'https://frank-invest.github.io',
@@ -97,10 +104,8 @@ function availableAgents(agentStatus) {
         .map(([name]) => name);
 }
 
-// readinessHeartbeatAgeMs／workerIsFresh／isWindowsWorker／latestWorker 已刪除
-// （治本一：五處各自判定收斂成 checkAvailableWorkers() 這唯一入口，
-//  時間判定移到 db/054 的 ocr_worker_alive()，門檻與 heartbeat_interval_seconds 綁定，
-//  不再有第二份寫死的門檻常數）
+// readinessHeartbeatAgeMs／workerIsFresh／isWindowsWorker／latestWorker／checkAvailableWorkers
+// 已全部刪除：在線與否一律由下面的 probeWorker() 指名詢問決定，沒有任何心跳時間門檻。
 
 async function cleanupExpiredObjects() {
     const cutoff = encodeURIComponent(new Date().toISOString());
@@ -222,70 +227,307 @@ async function insertJob(job) {
     });
 }
 
-// 治本一：單一真相來源 —— handleReadiness 與 handleSubmit 都呼叫這個函式，
-// 保證兩者的判定不可能互相矛盾（這是本次事故根因之一：兩處各自維護一份門檻常數）。
-// 語意是樂觀的：只有「有証據說不行」才判定不可用；否則一律放行，讓 submit 之後的
-// claim／relay／lease 逾時（都是事實層級的判定）去處理真正的離線情況。
-async function checkAvailableWorkers() {
-    const allWorkersResp = await serviceFetch(
-        '/rest/v1/ocr_workers?select=id,name,platform,last_seen_at,realtime_connected,heartbeat_interval_seconds,agent_status');
-    if (!allWorkersResp.ok) {
-        // 查詢本身失敗（非「查到 0 筆」）不能因此擋下所有使用者；樂觀放行，
-        // 真正沒有 Worker 時 claim 階段一樣會發現並走 stall 偵測。
-        return { ready: true, workerPlatform: null, workers: [], decidedBy: 'query_failed', fallbackReason: null };
+// ===== 在線確認：指名詢問（取代心跳時間／連線旗標的猜測） =====
+// 流程與參數見 Doc/技術文件/AI OCR.md §3.5。要點：
+// * 「有回應」＝該機器的 last_seen_at >= 這輪詢問的起點（DB 時間，ocr_begin_probe 回傳）。
+//   任何接觸都算（pong、claim、progress、complete、heartbeat、relay），晚到的回應在後續次數一樣算數。
+// * 每台最多問 OCR_PROBE_ATTEMPTS 次，每次等 OCR_PROBE_WAIT_MS；全部沒回應才標記離線。
+// * 批次中的詢問有 30 秒節流（OCR_BATCH_PROBE_MIN_INTERVAL_SECONDS），被節流時看上一輪的結果。
+
+const WORKER_SELECT = 'id,name,platform,last_seen_at,last_probe_at,last_pong_at,offline_since,probe_protocol,agent_status';
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isWindowsPlatform(platform) {
+    return /windows/i.test(String(platform ?? ''));
+}
+
+async function listWorkers() {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+            const response = await serviceFetch(
+                `/rest/v1/ocr_workers?select=${WORKER_SELECT}&order=last_seen_at.desc`);
+            if (response.ok) {
+                const rows = await response.json();
+                return Array.isArray(rows) ? rows : [];
+            }
+        } catch {
+            // 暫時性錯誤再試一次；兩次都失敗才回報查不到。
+        }
     }
 
-    const workers = await allWorkersResp.json();
-    if (!Array.isArray(workers) || workers.length === 0) {
+    return null;
+}
+
+// workers 已依 last_seen_at 由新到舊排序，同平台有多列時取最近出現的那一列。
+function pickWorker(workers, windows) {
+    return workers.find(worker => isWindowsPlatform(worker.platform) === windows) ?? null;
+}
+
+async function fetchWorkerRow(workerId, extraQuery = '') {
+    const response = await serviceFetch(
+        `/rest/v1/ocr_workers?id=eq.${encodeURIComponent(workerId)}${extraQuery}`
+        + `&select=${WORKER_SELECT}&limit=1`);
+    if (!response.ok) {
+        return null;
+    }
+
+    const rows = await response.json();
+    return rows[0] ?? null;
+}
+
+async function sendPing(workerId, t0) {
+    try {
+        const response = await fetch(
+            `${SUPABASE_URL}/realtime/v1/api/broadcast/${encodeURIComponent('ocr:queue')}`
+                + `/events/${encodeURIComponent('ocr_ping')}?private=true`,
+            {
+                method: 'POST',
+                headers: serviceHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ target_worker_id: workerId, t0 })
+            });
+        return response.ok;
+    } catch {
+        return false;
+    }
+}
+
+// 另一個請求正在（或剛剛才）詢問同一台機器時，不重複詢問，改看那一輪的結果：
+// 有接觸晚於上一輪詢問起點＝已回應；已被標記離線＝沒回應；兩者都不是＝還在問，這輪先等。
+async function sharedProbeOutcome(worker) {
+    const row = await fetchWorkerRow(worker.id);
+    if (!row) {
+        return { throttled: true, answered: false, available: false, attempts: 0, ms: 0, worker };
+    }
+
+    const probeAt = Date.parse(row.last_probe_at ?? '');
+    const seenAt = Date.parse(row.last_seen_at ?? '');
+    if (Number.isFinite(probeAt) && Number.isFinite(seenAt) && seenAt >= probeAt) {
         return {
-            ready: false,
-            workerPlatform: null,
-            workers: [],
-            decidedBy: 'no_worker',
-            fallbackReason: 'no_worker'
+            answered: true,
+            available: availableAgents(row.agent_status).length > 0,
+            attempts: 0,
+            ms: 0,
+            cached: true,
+            worker: row
         };
     }
 
-    // 計算每台的 alive 狀態和可用 agents（alive 用「連線事實優先、時間退路其次」，
-    // 對齊 db/054 的 ocr_worker_alive() SQL 判定，門檻 = 2 × 該機器自己宣告的心跳週期）。
-    const workerStates = workers.map(w => {
-        const heartbeatInterval = Math.max(30, w.heartbeat_interval_seconds || 60);
-        const lastSeenAt = w.last_seen_at ? Date.parse(w.last_seen_at) : NaN;
-        const alive = w.realtime_connected
-            || (Number.isFinite(lastSeenAt) && Date.now() - lastSeenAt <= heartbeatInterval * 2000);
-        const agents = availableAgents(w.agent_status);
+    if (row.offline_since) {
+        return { answered: false, available: false, attempts: 0, ms: 0, cached: true, worker: row };
+    }
 
-        return { ...w, alive, availableAgents: agents };
+    return { throttled: true, answered: false, available: false, attempts: 0, ms: 0, worker: row };
+}
+
+// 指名詢問一台機器。回傳 { answered, available, attempts, ms, worker, throttled?, cached? }。
+// available＝有回應且至少一個 Agent 已登入、有額度。
+async function probeWorker(worker, throttleSeconds) {
+    const startedAt = Date.now();
+    const begin = await serviceFetch('/rest/v1/rpc/ocr_begin_probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_worker_id: worker.id, p_min_interval_seconds: throttleSeconds })
     });
+    if (!begin.ok) {
+        // 無法登記詢問不代表機器離線：不標記離線，呼叫端視為「沒有回應」走較保守的路徑。
+        return { answered: false, available: false, attempts: 0, ms: 0, error: 'probe_unavailable', worker };
+    }
 
-    const availableWorkers = workerStates.filter(w => w.alive && w.availableAgents.length > 0);
-    const allAgentsFailed = workerStates.every(w => w.availableAgents.length === 0);
+    const t0 = await begin.json();
+    if (!t0) {
+        return await sharedProbeOutcome(worker);
+    }
 
+    const polls = Math.max(1, Math.ceil(OCR_PROBE_WAIT_MS / OCR_PROBE_POLL_MS));
+    for (let attempt = 1; attempt <= OCR_PROBE_ATTEMPTS; attempt += 1) {
+        await sendPing(worker.id, t0);
+        for (let poll = 0; poll < polls; poll += 1) {
+            await sleep(OCR_PROBE_POLL_MS);
+            const row = await fetchWorkerRow(worker.id, `&last_seen_at=gte.${encodeURIComponent(t0)}`);
+            if (row) {
+                return {
+                    answered: true,
+                    available: availableAgents(row.agent_status).length > 0,
+                    attempts: attempt,
+                    ms: Date.now() - startedAt,
+                    worker: row
+                };
+            }
+        }
+    }
+
+    await serviceFetch('/rest/v1/rpc/ocr_mark_worker_offline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_worker_id: worker.id, p_since: t0 })
+    });
     return {
-        ready: availableWorkers.length > 0,
-        workerPlatform: availableWorkers[0]?.platform ?? null,
-        workers: workerStates.map(w => ({
-            id: w.id,
-            name: w.name,
-            platform: w.platform,
-            realtimeConnected: w.realtime_connected,
-            lastSeenAt: w.last_seen_at,
-            agents: w.availableAgents
-        })),
-        decidedBy: availableWorkers.length > 0
-            ? 'available'
-            : allAgentsFailed
-            ? 'no_available_agent'
-            : 'worker_offline',
-        fallbackReason: availableWorkers.length > 0
-            ? null
-            : (allAgentsFailed ? 'no_available_agent' : 'worker_offline')
+        answered: false,
+        available: false,
+        attempts: OCR_PROBE_ATTEMPTS,
+        ms: Date.now() - startedAt,
+        worker
     };
 }
 
-async function handleReadiness(request) {
-    const state = await checkAvailableWorkers();
-    return json(request, 200, state);
+// 舊版（尚未重建的）Worker 在三條處理線都忙時答不出詢問：手上有沒到期的 lease 就是它正在工作的證據，
+// 不能用「沒回應」判它離線。新版 Worker 由接收訊號的那一段獨立回應（probe_protocol = 1），
+// 不套用這條規則——死掉的新版 Worker 留下的 lease 不能當作它還活著。兩台都換成新版後這個例外自然不再觸發。
+async function holdsLiveLease(workerId, leasedJob) {
+    if (leasedJob
+        && leasedJob.lease_owner === workerId
+        && Date.parse(leasedJob.lease_until ?? '') > Date.now()) {
+        return true;
+    }
+
+    const response = await serviceFetch(
+        `/rest/v1/ocr_jobs?lease_owner=eq.${encodeURIComponent(workerId)}&status=eq.leased`
+        + `&lease_until=gt.${encodeURIComponent(new Date().toISOString())}&select=id&limit=1`);
+    return response.ok && (await response.json()).length > 0;
+}
+
+// 詢問一台機器；舊版 Worker 正忙（手上有有效 lease）時視為在線，不送詢問。
+async function probeOrBusy(worker, throttleSeconds) {
+    if ((worker.probe_protocol ?? 0) < 1 && await holdsLiveLease(worker.id, null)) {
+        return {
+            answered: true,
+            available: availableAgents(worker.agent_status).length > 0,
+            attempts: 0,
+            ms: 0,
+            busy: true,
+            worker
+        };
+    }
+
+    return await probeWorker(worker, throttleSeconds);
+}
+
+// 上傳前的選機：先問 Windows，不可用（沒回應或沒有可用 Agent）再問 Mac，都不行就是沒有。
+async function selectTarget() {
+    const workers = await listWorkers();
+    if (workers === null) {
+        return { queryFailed: true, workers: [], probes: [], chosen: null, anyAnswered: false, noWorker: false };
+    }
+
+    const windows = pickWorker(workers, true);
+    const mac = pickWorker(workers, false);
+    const probes = [];
+    const probedRows = new Map();
+    let chosen = null;
+    let anyAnswered = false;
+    for (const [worker, isWindows] of [[windows, true], [mac, false]]) {
+        if (!worker) {
+            continue;
+        }
+
+        const result = await probeOrBusy(worker, 0);
+        probedRows.set(worker.id, result.worker ?? worker);
+        probes.push({
+            name: worker.name,
+            platform: worker.platform,
+            attempts: result.attempts,
+            answered: result.answered === true,
+            available: result.available === true,
+            busy: result.busy === true,
+            ms: result.ms
+        });
+        anyAnswered ||= result.answered === true;
+        if (result.answered && result.available) {
+            chosen = { worker: result.worker ?? worker, isWindows };
+            break;
+        }
+    }
+
+    return {
+        queryFailed: false,
+        workers: workers.map(worker => {
+            const row = probedRows.get(worker.id) ?? worker;
+            return {
+                id: worker.id,
+                name: worker.name,
+                platform: worker.platform,
+                lastSeenAt: row.last_seen_at,
+                agents: availableAgents(row.agent_status)
+            };
+        }),
+        probes,
+        chosen,
+        anyAnswered,
+        noWorker: windows === null && mac === null
+    };
+}
+
+async function saveRouting(userId, chosen) {
+    const response = await serviceFetch('/rest/v1/ocr_user_routing?on_conflict=user_id', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates,return=minimal'
+        },
+        body: JSON.stringify({
+            user_id: userId,
+            target_worker_id: chosen?.worker.id ?? null,
+            target_platform: chosen ? (chosen.isWindows ? 'windows' : 'other') : null,
+            decided_at: new Date().toISOString()
+        })
+    });
+    return response.ok;
+}
+
+async function getRouting(userId) {
+    const response = await serviceFetch(
+        `/rest/v1/ocr_user_routing?user_id=eq.${encodeURIComponent(userId)}`
+        + '&select=target_worker_id,target_platform,decided_at&limit=1');
+    if (!response.ok) {
+        return null;
+    }
+
+    const rows = await response.json();
+    return rows[0] ?? null;
+}
+
+async function handleReadiness(request, user) {
+    const selection = await selectTarget();
+    if (selection.queryFailed) {
+        return json(request, 200, {
+            ready: false,
+            workerPlatform: null,
+            workers: [],
+            probes: [],
+            decidedBy: 'query_failed',
+            fallbackReason: 'worker_offline'
+        });
+    }
+
+    const saved = await saveRouting(user.id, selection.chosen);
+    if (!saved) {
+        // 決定存不下來，後面的 submit 會讀到過期的路由；寧可這批改走 Tesseract。
+        return json(request, 200, {
+            ready: false,
+            workerPlatform: null,
+            workers: selection.workers,
+            probes: selection.probes,
+            decidedBy: 'routing_failed',
+            fallbackReason: 'worker_offline'
+        });
+    }
+
+    const chosen = selection.chosen;
+    return json(request, 200, {
+        ready: chosen !== null,
+        workerPlatform: chosen?.worker.platform ?? null,
+        workers: selection.workers,
+        probes: selection.probes,
+        decidedBy: chosen
+            ? (chosen.isWindows ? 'windows' : 'mac')
+            : (selection.noWorker ? 'no_worker' : 'none'),
+        fallbackReason: chosen
+            ? null
+            : (selection.noWorker ? 'no_worker' : (selection.anyAnswered ? 'no_available_agent' : 'worker_offline'))
+    });
 }
 
 async function handleWake(request, user, body) {
@@ -333,14 +575,15 @@ async function handleWake(request, user, body) {
 }
 
 async function handleSubmit(request, user) {
-    // 與 handleReadiness 共用同一個判定（checkAvailableWorkers），
-    // 保證「① readiness 說可以」與「② submit 自己再驗一次」不可能互相矛盾。
-    const state = await checkAvailableWorkers();
-    if (!state.ready) {
+    // submit 不詢問、也不用任何「N 分鐘內有回應」的時間窗：整批最多 20 張、可能跑 10～40 分鐘以上，
+    // 時間窗會誤判健康的機器，也抓不到批次中途掛掉。這批交給誰，完全照 readiness 決定的路由
+    // （ocr_user_routing）；批次中機器掛掉由 handleStatus 的指名詢問改派並覆寫路由。
+    const routing = await getRouting(user.id);
+    if (!routing || !routing.target_platform) {
         return json(request, 409, {
             error: 'ai_not_ready',
-            workerPlatform: state.workerPlatform ?? null,
-            fallbackReason: state.fallbackReason ?? 'worker_offline'
+            workerPlatform: null,
+            fallbackReason: 'worker_offline'
         });
     }
 
@@ -396,7 +639,12 @@ async function handleSubmit(request, user) {
         content_type: image.contentType,
         size_bytes: file.size,
         idempotency_key: idempotencyKey,
-        input_hash: inputHash
+        input_hash: inputHash,
+        // 這批交給 Mac 時送出就標記「略過 Windows」，Mac 才拿得到（ocr_claim_job 的平台分流）；
+        // 交給 Windows 時不標記。
+        ...(routing.target_platform === 'other'
+            ? { windows_attempt_failed_at: new Date().toISOString() }
+            : {})
     });
     if (!inserted.ok) {
         await removeObject(path);
@@ -423,11 +671,11 @@ async function ownJob(userId, jobId) {
     const base = `/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(jobId)}`
         + `&user_id=eq.${encodeURIComponent(userId)}`;
     let response = await serviceFetch(
-        `${base}&select=id,status,result,fallback_reason,error_code,created_at,updated_at,completed_at,expires_at,storage_path,progress_stage,progress_percent,progress_updated_at,usage_summary&limit=1`);
+        `${base}&select=id,status,result,fallback_reason,error_code,created_at,updated_at,completed_at,expires_at,storage_path,progress_stage,progress_percent,progress_updated_at,usage_summary,lease_owner,lease_until,windows_attempt_failed_at&limit=1`);
     // migration 041 可分開套用；在正式資料庫尚未套用前，維持既有 OCR status／fallback 正常工作。
     if (!response.ok) {
         response = await serviceFetch(
-            `${base}&select=id,status,result,fallback_reason,error_code,created_at,updated_at,completed_at,expires_at,storage_path&limit=1`);
+            `${base}&select=id,status,result,fallback_reason,error_code,created_at,updated_at,completed_at,expires_at,storage_path,lease_owner,lease_until,windows_attempt_failed_at&limit=1`);
     }
     if (!response.ok) {
         return null;
@@ -435,6 +683,110 @@ async function ownJob(userId, jobId) {
 
     const rows = await response.json();
     return rows[0] ?? null;
+}
+
+// 批次進行中決定這件工作要不要繼續等負責機器、還是改派。寄生在前端既有的 status 輪詢，
+// 不新增任何排程。判斷順序（只看事實）：
+//   1 找不到負責機器：queued 直接改派；leased 的等 lease 逾時由 claim 回收。
+//   2 舊版 Worker 且手上有有效 lease：忙碌中，繼續等。
+//   3 已被標記離線：改派（含正由它處理的 leased 工作）。
+//   4 queued 且負責機器宣告沒有可用 Agent：改派排隊中的工作（leased 的由它自己走 relay）。
+//   5 超過 OCR_BATCH_SILENCE_MS 沒有任何接觸：指名問 5 次，有回應就繼續等，沒回應改派。
+async function decideRoute(job, responsible, leased) {
+    if (!responsible) {
+        return leased
+            ? { action: 'wait' }
+            : { action: 'reroute', reason: 'worker_offline', includeLeased: false };
+    }
+
+    if ((responsible.probe_protocol ?? 0) < 1
+        && await holdsLiveLease(responsible.id, leased ? job : null)) {
+        return { action: 'wait' };
+    }
+
+    if (responsible.offline_since) {
+        return { action: 'reroute', reason: 'worker_offline', includeLeased: true };
+    }
+
+    if (!leased && availableAgents(responsible.agent_status).length === 0) {
+        return { action: 'reroute', reason: 'no_available_agent', includeLeased: false };
+    }
+
+    const silentMs = Date.now() - Date.parse(responsible.last_seen_at ?? '');
+    if (!(silentMs > OCR_BATCH_SILENCE_MS)) {
+        return { action: 'wait' };
+    }
+
+    const probe = await probeWorker(responsible, OCR_BATCH_PROBE_MIN_INTERVAL_SECONDS);
+    if (probe.throttled || probe.error) {
+        return { action: 'wait' };
+    }
+
+    if (probe.answered && probe.available) {
+        return { action: 'wait' };
+    }
+
+    return probe.answered
+        ? { action: 'reroute', reason: 'no_available_agent', includeLeased: false }
+        : { action: 'reroute', reason: 'worker_offline', includeLeased: true };
+}
+
+// 回傳（可能已被改派的）最新工作列。
+async function maintainJobRoute(job, userId) {
+    if (job.status !== 'queued' && job.status !== 'leased') {
+        return job;
+    }
+
+    const workers = await listWorkers();
+    if (workers === null) {
+        return job;
+    }
+
+    const leased = job.status === 'leased';
+    const queuedOnWindows = !leased && job.windows_attempt_failed_at == null;
+    const responsible = leased
+        ? workers.find(worker => worker.id === job.lease_owner) ?? null
+        : pickWorker(workers, queuedOnWindows);
+
+    const decision = await decideRoute(job, responsible, leased);
+    if (decision.action !== 'reroute') {
+        return job;
+    }
+
+    // 下一站：Windows 掛了（或沒有可用 Agent）就指名問 Mac；Mac 掛了沒有第三站。
+    const fromWindows = leased ? isWindowsPlatform(responsible?.platform) : queuedOnWindows;
+    let target = null;
+    if (fromWindows) {
+        const mac = pickWorker(workers, false);
+        if (mac) {
+            const probe = await probeOrBusy(mac, OCR_BATCH_PROBE_MIN_INTERVAL_SECONDS);
+            if (probe.throttled || probe.error) {
+                // 有人正在問 Mac，這輪先等，下一次輪詢再處理。
+                return job;
+            }
+
+            if (probe.answered && probe.available) {
+                target = mac;
+            }
+        }
+    }
+
+    const rerouted = await serviceFetch('/rest/v1/rpc/ocr_reroute_jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            p_from_worker_id: responsible?.id ?? null,
+            p_from_is_windows: fromWindows,
+            p_to_worker_id: target?.id ?? null,
+            p_include_leased: decision.includeLeased,
+            p_fallback_reason: decision.reason
+        })
+    });
+    if (!rerouted.ok) {
+        return job;
+    }
+
+    return (await ownJob(userId, job.id)) ?? job;
 }
 
 async function handleStatus(request, user, jobId) {
@@ -447,30 +799,13 @@ async function handleStatus(request, user, jobId) {
         return json(request, 404, { error: 'job_not_found' });
     }
 
-    // 治本一（db/054）＋守衛（db/055）：工作層級的 stall 偵測。
-    // ocr_stall_to_fallback 的 SQL 判定：queued 超過 20 秒「且」ocr_available_workers() 回傳空。
-    // 後者是 db/055 加入的守衛——Worker 槽全滿（正常排隊）時不 fallback，
-    // 只有真的沒有任何可用 Worker 時才降級。寄生在既有的 status 輪詢裡，
-    // 不新增任何排程或額外呼叫（前端本來就每 1~幾秒問一次 status）。
-    const createdAtMs = Date.parse(job.created_at ?? '');
-    if (job.status === 'queued'
-        && Number.isFinite(createdAtMs)
-        && Date.now() - createdAtMs > OCR_FIRST_CLAIM_STALL_MS) {
-        const stallResponse = await serviceFetch('/rest/v1/rpc/ocr_stall_to_fallback', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                p_job_id: jobId,
-                p_user_id: user.id,
-                p_min_age_seconds: Math.floor(OCR_FIRST_CLAIM_STALL_MS / 1000)
-            })
-        });
-        if (stallResponse.ok) {
-            const stalledJob = await stallResponse.json();
-            if (stalledJob) {
-                job = stalledJob;
-            }
-        }
+    // 批次進行中的在線確認：負責機器太久沒有任何接觸才指名詢問，沒回應就改派（見 maintainJobRoute）。
+    // 寄生在前端既有的 status 輪詢裡，不新增任何排程或額外的 Edge Function 呼叫。
+    // 維護失敗（暫時性網路／資料庫錯誤）不能讓 status 本身失敗：照原樣回傳目前的工作狀態，下一次輪詢再試。
+    try {
+        job = await maintainJobRoute(job, user.id);
+    } catch (error) {
+        console.error('ocr route maintenance failed', error instanceof Error ? error.message : 'unknown');
     }
 
     let queuePosition = null;
@@ -593,14 +928,19 @@ async function handleCleanup(request) {
 }
 
 async function handleHeartbeat(request, user, body) {
+    // 心跳降頻到 30 分鐘後只剩「更新 Agent 狀態與版本資訊」的用途，在線與否改由指名詢問決定；
+    // heartbeatIntervalSeconds 仍記錄 Worker 自己宣告的週期，僅供顯示。
     const heartbeatIntervalSeconds = Number.isInteger(Number(body?.heartbeatIntervalSeconds))
-        && Number(body?.heartbeatIntervalSeconds) >= 10 && Number(body?.heartbeatIntervalSeconds) <= 600
+        && Number(body?.heartbeatIntervalSeconds) >= 10 && Number(body?.heartbeatIntervalSeconds) <= 3600
         ? Number(body.heartbeatIntervalSeconds)
         : 60;
-    // realtimeConnected 是治本二（Worker 重 build 後）才會真的傳入的連線事實；
-    // 治本一先接受這個欄位，缺省維持 false，不影響現有行為。
     const realtimeConnected = body?.realtimeConnected === true;
+    // 新版 Worker 宣告 probeProtocol=1：接收訊號的那一段獨立回應 pong，三條處理線都忙時也答得出來。
+    // 舊版沒有這個欄位，一律當 0（忙碌時答不出詢問，見 decideRoute 的相容例外）。
+    const probeProtocol = Number(body?.probeProtocol) === 1 ? 1 : 0;
     const now = new Date().toISOString();
+    // last_seen_at／offline_since 刻意不在這裡寫：在線證據一律由 ocr_touch_worker 用 DB 時間記錄，
+    // 避免 Edge 與 DB 的時鐘差讓「last_seen_at >= 詢問起點」的比較出錯。
     const payload = {
         id: user.id,
         name: String(body?.name ?? 'OCR Worker').slice(0, 100),
@@ -608,9 +948,9 @@ async function handleHeartbeat(request, user, body) {
         version: String(body?.version ?? 'unknown').slice(0, 100),
         agent_status: body?.agentStatus && typeof body.agentStatus === 'object' ? body.agentStatus : {},
         last_heartbeat_at: now,
-        last_seen_at: now,
         heartbeat_interval_seconds: heartbeatIntervalSeconds,
         realtime_connected: realtimeConnected,
+        probe_protocol: probeProtocol,
         updated_at: now
     };
     const response = await serviceFetch('/rest/v1/ocr_workers?on_conflict=id', {
@@ -621,10 +961,36 @@ async function handleHeartbeat(request, user, body) {
         },
         body: JSON.stringify(payload)
     });
+    if (!response.ok) {
+        return json(request, 502, { error: 'heartbeat_failed' });
+    }
+
+    await touchWorker(user.id);
+    return json(request, 200, { ok: true });
+}
+
+// 回應「你在嗎」：只更新自己那一列（worker id 取自 JWT，不接受 body 指定），並順便回報目前的 Agent 狀態。
+// Worker 端由接收即時訊號的那一段直接呼叫，不經過三條處理線，所以忙碌時也答得出來。
+async function handlePong(request, user, body) {
+    const agentStatus = body?.agentStatus
+        && typeof body.agentStatus === 'object'
+        && !Array.isArray(body.agentStatus)
+        ? body.agentStatus
+        : null;
+    const response = await serviceFetch('/rest/v1/rpc/ocr_touch_worker', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            p_worker_id: user.id,
+            p_agent_status: agentStatus,
+            p_pong: true,
+            p_probe_protocol: 1
+        })
+    });
 
     return response.ok
         ? json(request, 200, { ok: true })
-        : json(request, 502, { error: 'heartbeat_failed' });
+        : json(request, 502, { error: 'pong_failed' });
 }
 
 async function handleClaim(request, user) {
@@ -708,19 +1074,23 @@ async function handleProgress(request, user, body) {
         return json(request, 409, { error: 'lease_lost' });
     }
 
-    touchWorkerLastSeen(user.id);
+    await touchWorker(user.id);
     return json(request, 200, { ok: true });
 }
 
-// progress／complete 是 Worker 處理工作期間最頻繁的呼叫，用它們順手更新
-// ocr_workers.last_seen_at 比等下一次心跳更即時；失敗不影響主流程（不 await 結果、
-// 忽略錯誤），因為這只是輔助性的新鮮度證據，不是這次請求本身要保證的事。
-function touchWorkerLastSeen(workerId) {
-    void serviceFetch(`/rest/v1/ocr_workers?id=eq.${encodeURIComponent(workerId)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-        body: JSON.stringify({ last_seen_at: new Date().toISOString() })
-    }).catch(() => {});
+// progress／complete 是 Worker 處理工作期間最頻繁的呼叫，順手記錄「這台機器剛剛有接觸」
+// （last_seen_at 用 DB 時間、清掉 offline_since），是在線詢問的證據之一。失敗不影響主流程。
+// 這裡 await 而不是射後不理：Edge 回應送出後未完成的背景請求可能被直接中止。
+async function touchWorker(workerId) {
+    try {
+        await serviceFetch('/rest/v1/rpc/ocr_touch_worker', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ p_worker_id: workerId })
+        });
+    } catch {
+        // 輔助性的證據，忽略。
+    }
 }
 
 function finiteNonNegativeInteger(value) {
@@ -907,7 +1277,7 @@ async function handleComplete(request, user, body) {
         return json(request, 409, { error: 'lease_lost' });
     }
 
-    touchWorkerLastSeen(user.id);
+    await touchWorker(user.id);
 
     if (status !== 'fallback_required' && !evaluationQueued) {
         const job = await serviceFetch(`/rest/v1/ocr_jobs?id=eq.${encodeURIComponent(jobId)}&select=storage_path&limit=1`);
@@ -932,6 +1302,21 @@ async function handleRelay(request, user, body) {
         return json(request, 400, { error: 'invalid_relay' });
     }
 
+    // Windows 兩個 Agent 都不可用時，交給 Mac 之前先指名問 Mac（最多 5 次），不再用 SQL 猜它在不在。
+    // Mac 呼叫時已經是最後一站，不需要問。
+    const caller = await fetchWorkerRow(user.id);
+    let mac = null;
+    let otherAvailable = false;
+    if (caller && isWindowsPlatform(caller.platform)) {
+        const workers = await listWorkers();
+        const candidate = workers ? pickWorker(workers, false) : null;
+        if (candidate) {
+            const probe = await probeOrBusy(candidate, 0);
+            otherAvailable = probe.answered === true && probe.available === true;
+            mac = otherAvailable ? (probe.worker ?? candidate) : null;
+        }
+    }
+
     const response = await serviceFetch('/rest/v1/rpc/ocr_relay_agent_failure', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -940,7 +1325,8 @@ async function handleRelay(request, user, body) {
             p_job_id: jobId,
             p_lease_token: leaseToken,
             p_fallback_reason: body?.fallbackReason ? String(body.fallbackReason).slice(0, 100) : null,
-            p_error_code: body?.errorCode ? String(body.errorCode).slice(0, 100) : null
+            p_error_code: body?.errorCode ? String(body.errorCode).slice(0, 100) : null,
+            p_other_available: otherAvailable
         })
     });
     if (!response.ok) {
@@ -951,6 +1337,20 @@ async function handleRelay(request, user, body) {
     if (!result || (result.relayed !== true && result.completed !== true)) {
         return json(request, 409, { error: 'lease_lost' });
     }
+
+    // 同批後續的圖片不必每張都先在 Windows 失敗一次：交給 Mac 就改路由到 Mac；
+    // 沒有任何機器可接（最後一站也失敗）就改成沒有可用機器，之後的 submit 直接回 409 走 Tesseract。
+    await serviceFetch(
+        `/rest/v1/ocr_user_routing?target_worker_id=eq.${encodeURIComponent(user.id)}`,
+        {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+            body: JSON.stringify({
+                target_worker_id: result.relayed === true ? mac?.id ?? null : null,
+                target_platform: result.relayed === true ? 'other' : null,
+                decided_at: new Date().toISOString()
+            })
+        }).catch(() => {});
 
     return json(request, 200, { ok: true, relayed: result.relayed === true });
 }
@@ -1123,12 +1523,12 @@ Deno.serve(async request => {
         const { action, body } = await parseAction(request);
         const role = accessRole(user);
         const adminAction = ['readiness', 'submit', 'status', 'download', 'wake', 'acknowledge', 'cancel', 'fallback', 'evaluation-truth'].includes(action);
-        const workerAction = ['heartbeat', 'claim', 'progress', 'complete', 'relay', 'evaluation-claim', 'evaluation-complete'].includes(action);
+        const workerAction = ['heartbeat', 'pong', 'claim', 'progress', 'complete', 'relay', 'evaluation-claim', 'evaluation-complete'].includes(action);
         if ((adminAction && role !== 'admin') || (workerAction && role !== 'ocr_worker')) {
             return json(request, 403, { error: 'forbidden' });
         }
 
-        if (action === 'readiness') return await handleReadiness(request);
+        if (action === 'readiness') return await handleReadiness(request, user);
         if (action === 'submit') return await handleSubmit(request, user);
         if (action === 'status') return await handleStatus(request, user, new URL(request.url).searchParams.get('jobId') ?? '');
         if (action === 'download') return await handleDownload(request, user, new URL(request.url).searchParams.get('jobId') ?? '');
@@ -1138,6 +1538,7 @@ Deno.serve(async request => {
         }
         if (action === 'evaluation-truth') return await handleEvaluationTruth(request, user, body);
         if (action === 'heartbeat') return await handleHeartbeat(request, user, body);
+        if (action === 'pong') return await handlePong(request, user, body);
         if (action === 'claim') return await handleClaim(request, user);
         if (action === 'progress') return await handleProgress(request, user, body);
         if (action === 'complete') return await handleComplete(request, user, body);
