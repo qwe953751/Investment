@@ -102,17 +102,16 @@ Google Sheet 是主檔：網站有尚未匯出的草稿時按「從 Google Sheet
 密碼登入會在網址下限之上提升權限；在 RLS 收回匿名寫入前，資料表仍沿用公開 anon 模型。
 
 「資產」可在 Dashboard 與帳戶明細間切換、新增使用者／帳戶，並以 D+ AI-first 讀券商未實現損益截圖。
-網站先查兩分鐘內的 Worker 心跳及 Agent 登入／額度狀態，優先選取新鮮的 Windows Worker；AI 可用才把圖片放入 `ocr-private`。
-**2026-09-13 已查明並修好此判定的根因 bug（幾乎每次都誤判離線改走 Tesseract），改為樂觀語意：只有
-查無 Worker 或所有 Agent 都未登入才擋下；程式已完成但 DB migration／Edge Function 部署／Worker
-重新 build 尚待執行，上述行為在此之前仍是正式網站的實際狀態，細節見 [版本紀錄.md](Doc/版本紀錄.md) 最新一節。**
-2026-09-22 又修復一個獨立的 Worker 多工退化根因：完成回寫遇到 `409 lease_lost` 時，舊版會重送
+上傳前由伺服器**指名詢問** Worker 是否在線（2026-10-11 起，取代原本靠心跳時間與連線旗標的推測）：先問 Windows、不可用再問 Mac，各最多 5 次、每次等 1.5 秒，
+有回應且有已登入的 Agent 才建立 AI 工作並把圖片放入 `ocr-private`；兩台都沒回應（約 15～18 秒）整批直接在瀏覽器跑 Tesseract、圖片不上傳，畫面會列出每台的詢問結果。
+批次進行中，負責機器超過 45 秒沒有任何動靜才再問一次，沒回應就依同樣順序改派給 Mac 或改走 Tesseract。
+`db/062_ocr_worker_probe.sql`、`ocr-jobs` v24 與前端已上線，**家裡 Mac Worker 已重建並由 LaunchAgent 常駐；公司 Windows Worker 仍待依
+[AI OCR §3.5.9](Doc/技術文件/AI%20OCR.md#ocr-probe-rollout) 重建**，使用者的正式驗收 P1～P10 也尚未執行，細節見 [版本紀錄.md](Doc/版本紀錄.md) 最新一節。
+2026-09-22 修復一個獨立的 Worker 多工退化根因：完成回寫遇到 `409 lease_lost` 時，舊版會重送
 `complete` 並讓常駐槽死亡，3 個槽遂靜默變成 2 個、1 個，造成手機上傳看起來逐張排隊。現在每件工作
-只有一個終態回寫點，409 會安全丟棄結果，任一槽異常退出則讓整個 Worker fail-fast；OCR 目標測試
-29/29 通過。這次只改 Worker，未發布網站；2026-09-22 已在本機以 `e6c08fd1` 重建 Windows
-自包含 EXE，並由既有隱藏 launcher 重啟，log 已確認「Realtime 喚醒；斷線每 5 秒重連；並行上限 3」。
-Windows 已註冊 `Invest D+ OCR Worker` 排程並以隱藏 launcher 執行，狀態為 `Running`，每 2 分鐘補啟動且
-`MultipleInstances=IgnoreNew`；家裡 Mac 與 7 張手機截圖的端到端三槽驗收仍待完成。
+只有一個終態回寫點，409 會安全丟棄結果，任一槽異常退出則讓整個 Worker fail-fast。公司 Windows 的
+`Invest D+ OCR Worker` 排程以隱藏 launcher 執行，每 2 分鐘補啟動且 `MultipleInstances=IgnoreNew`；
+7 張手機截圖的端到端三槽驗收仍待完成。
 未抽樣的 Max 完成後立即刪除；抽樣工作會保留到背景 Low 完成／失敗，異常時最長 60 分鐘清理。
 AI 不可用時圖片不離開瀏覽器，直接由 Tesseract 備援；
 若工作建立後才耗盡額度，也會回傳 `fallback_required` 再用原頁記憶體中的圖片執行備援。
@@ -390,14 +389,17 @@ queued／leased 工作；重新整理後仍需取回私有圖片的 queued 工�
 
 正式網站不持有 Codex／Claude 登入資訊。專用 .NET Worker 以一般 Supabase Auth 帳號主動向外
 維持 private Realtime 連線；只有收到 OCR 佇列 Broadcast 才 claim，拿到短效私有圖片 URL 後才啟動
-CLI。Worker 每 60 秒只回報在線狀態，Realtime 斷線才以 `OCR_WORKER_RECONNECT_SECONDS` 重連；
+CLI。Worker 每 30 分鐘才更新一次 Agent 狀態，是否在線由伺服器透過同一條 Realtime 指名詢問、Worker 即時回應；Realtime 斷線才以 `OCR_WORKER_RECONNECT_SECONDS` 重連；
 程式會移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、`ANTHROPIC_API_KEY`，不會偷偷改走按量 API。
 
-目前 Mac 已用 Codex CLI 實測，腳本已設為 executable：
+Mac 以 LaunchAgent 常駐。**不能直接從 repo 執行**：repo 在 `~/Desktop` 底下時 launchd 讀不到（macOS 隱私保護，exit 126），所以安裝腳本會先把 Worker 發布到
+`~/Library/Application Support/Invest/ocr-worker`，之後改了 Worker 程式必須重新執行安裝腳本才會生效（與 Windows 的自包含 EXE 相同）。log 在
+`~/Library/Logs/Invest/ocr-worker.log`，啟動訊息要含「Worker 發布版本」與「在線詢問：指名回應」：
 
 ```bash
 cd <repo-root>
-scripts/run-ocr-worker-macos.sh
+scripts/install-ocr-worker-launchagent-macos.sh        # 發布 → 安裝 → 啟動 LaunchAgent
+scripts/run-ocr-worker-macos.sh --once                 # 在終端機從原始碼單輪診斷
 ```
 
 Windows 專用帳號的密碼使用目前登入使用者的 DPAPI 保護，檔案只存在
