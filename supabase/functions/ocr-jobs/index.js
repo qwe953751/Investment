@@ -343,9 +343,13 @@ async function probeWorker(worker, throttleSeconds) {
 
     const polls = Math.max(1, Math.ceil(OCR_PROBE_WAIT_MS / OCR_PROBE_POLL_MS));
     for (let attempt = 1; attempt <= OCR_PROBE_ATTEMPTS; attempt += 1) {
+        const attemptStartedAt = Date.now();
         await sendPing(worker.id, t0);
-        for (let poll = 0; poll < polls; poll += 1) {
-            await sleep(OCR_PROBE_POLL_MS);
+        for (let poll = 1; poll <= polls; poll += 1) {
+            // 依這次詢問的起點排程（第 k 次查詢在起點後 k × 間隔），而不是每次再睡一個完整間隔：
+            // 查詢本身的往返時間不會累加，每次詢問貼近規格的 OCR_PROBE_WAIT_MS。
+            const wait = attemptStartedAt + poll * OCR_PROBE_POLL_MS - Date.now();
+            await sleep(Math.max(0, wait));
             const row = await fetchWorkerRow(worker.id, `&last_seen_at=gte.${encodeURIComponent(t0)}`);
             if (row) {
                 return {
