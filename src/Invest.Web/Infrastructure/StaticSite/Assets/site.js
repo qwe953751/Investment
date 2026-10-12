@@ -2516,6 +2516,7 @@ let marketIndexYearStarts = new Map();
 let marketStructureDescriptor = null;
 let marketStructureClose = null;
 let marketStructureRequestSequence = 0;
+let marketStructureRetryTimer = null;
 function normalizeMarketStructureDate(value) {
     return typeof value === 'string' ? value.replaceAll('/', '-') : '';
 }
@@ -20480,8 +20481,9 @@ function renderSummary() {
                 === normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate)
                 ? marketStructureClose
                 : null);
-    if (structure || current.marketStructurePending) {
-        summary.append(renderMarketStructure(structure, current.marketStructurePending === true));
+    if (structure || state.view === 'intraday') {
+        summary.append(renderMarketStructure(
+            structure, current.marketStructurePending === true, current.marketStructureMessage));
     }
 }
 
@@ -20491,7 +20493,7 @@ function marketStructurePercent(value) {
         : `${Number(value).toFixed(2)}%`;
 }
 
-function renderMarketStructure(result, pending = false) {
+function renderMarketStructure(result, pending = false, message = null) {
     const panel = document.createElement('section');
     panel.className = 'market-structure-panel';
 
@@ -20504,15 +20506,13 @@ function renderMarketStructure(result, pending = false) {
     heading.append(title, mode);
     panel.append(heading);
 
-    if (pending) {
+    if (pending || !result) {
         const waiting = document.createElement('p');
         waiting.className = 'market-structure-waiting';
-        waiting.textContent = '正在等待這一輪行情的分類結果。';
+        waiting.textContent = message ?? (pending
+            ? '正在等待這一輪行情的分類結果。'
+            : '尚無這一輪行情的市場結構結果。');
         panel.append(waiting);
-        return panel;
-    }
-
-    if (!result) {
         return panel;
     }
 
@@ -20633,7 +20633,7 @@ async function fetchIntradayMarketStructure(tradeDate, runId, capturedAt) {
         throw new TypeError('盤中市場結構 latest 指標格式不正確。');
     }
 
-    const sameSnapshot = pointer.tradeDate === tradeDate
+    const sameSnapshot = normalizeMarketStructureDate(pointer.tradeDate) === normalizeMarketStructureDate(tradeDate)
         && (runId !== null && runId !== undefined
             ? pointer.runId === runId
             : Math.abs(Date.parse(pointer.capturedAt) - Date.parse(capturedAt)) < 1_000);
@@ -20662,7 +20662,8 @@ async function fetchIntradayMarketStructure(tradeDate, runId, capturedAt) {
         if (result?.schemaVersion !== 1
             || result.mode !== 'intraday'
             || result.runId !== pointer.runId
-            || result.tradeDate !== pointer.tradeDate) {
+            || result.tradeDate !== pointer.tradeDate
+            || result.capturedAt !== pointer.capturedAt) {
             throw new TypeError('盤中市場結構快照與 latest 指標不一致。');
         }
         return result;
@@ -20672,35 +20673,56 @@ async function fetchIntradayMarketStructure(tradeDate, runId, capturedAt) {
 }
 
 function refreshIntradayMarketStructure(tradeDate, runId, capturedAt) {
+    clearTimeout(marketStructureRetryTimer);
+    marketStructureRetryTimer = null;
     const requestSequence = ++marketStructureRequestSequence;
     current.marketStructure = null;
     current.marketStructurePending = Boolean(marketStructureDescriptor?.intradayBaseUrl);
+    current.marketStructureMessage = null;
     current.intradayRunId = runId;
     if (!current.marketStructurePending) {
+        current.marketStructureMessage = '盤中市場結構來源尚未提供。';
         return;
     }
     renderSummary();
 
-    void fetchIntradayMarketStructure(tradeDate, runId, capturedAt).then(result => {
-        if (requestSequence !== marketStructureRequestSequence
-            || current?.tradeDate !== tradeDate
-            || current?.intradayRunId !== runId) {
+    let attempts = 0;
+    const isCurrentSnapshot = () => state.view === 'intraday'
+        && requestSequence === marketStructureRequestSequence
+        && normalizeMarketStructureDate(current?.tradeDate) === normalizeMarketStructureDate(tradeDate)
+        && current?.intradayRunId === runId;
+
+    async function loadSameSnapshot() {
+        if (!isCurrentSnapshot()) {
             return;
         }
-        current.marketStructure = result;
-        current.marketStructurePending = false;
-        renderSummary();
-    }).catch(error => {
-        if (requestSequence !== marketStructureRequestSequence
-            || current?.tradeDate !== tradeDate
-            || current?.intradayRunId !== runId) {
-            return;
+        try {
+            const result = await fetchIntradayMarketStructure(tradeDate, runId, capturedAt);
+            if (!isCurrentSnapshot()) {
+                return;
+            }
+            current.marketStructure = result;
+            current.marketStructurePending = !result;
+            current.marketStructureMessage = result ? null : '這一輪行情的分類結果尚未完成，將自動更新。';
+        } catch (error) {
+            if (!isCurrentSnapshot()) {
+                return;
+            }
+            current.marketStructure = null;
+            current.marketStructurePending = true;
+            current.marketStructureMessage = '盤中市場結構暫時無法載入，將自動重試。';
+            console.warn('盤中市場結構暫時無法載入：', error?.message ?? error);
         }
-        current.marketStructure = null;
-        current.marketStructurePending = false;
-        console.warn('盤中市場結構暫時無法載入：', error?.message ?? error);
         renderSummary();
-    });
+        if (current.marketStructurePending) {
+            // 分類 consumer 晚於 raw 發布；只重讀小型指標，等待同輪結果，不借用別輪或盤後資料。
+            marketStructureRetryTimer = setTimeout(() => {
+                marketStructureRetryTimer = null;
+                void loadSameSnapshot();
+            }, Math.min(30_000, 10_000 * ++attempts));
+        }
+    }
+    void loadSameSnapshot();
 }
 
 function renderMarketHeat(heat, index) {

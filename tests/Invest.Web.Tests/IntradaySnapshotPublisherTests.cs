@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.MarketStructure.Models;
+using Invest.Web.Features.MarketStructure.Services;
 using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Infrastructure.MarketData;
@@ -278,6 +280,64 @@ public sealed class IntradaySnapshotPublisherTests
             Assert.Contains(
                 capturedRequests,
                 request => request.RequestUri!.ToString().EndsWith("/topic-latest.json", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, null);
+        }
+    }
+
+    [Theory]
+    [InlineData(7, true)]
+    [InlineData(8, false)]
+    public async Task 市場結構首次缺少指標仍可發布但不覆蓋更新raw輪次(long rawRunId, bool shouldPublish)
+    {
+        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, "test-secret");
+        try
+        {
+            var requests = new List<HttpRequestMessage>();
+            var uploads = new Dictionary<string, string>();
+            var publisher = CreatePublisher(new CapturingHandler(requests, request =>
+            {
+                var url = request.RequestUri!.ToString();
+                if (url.Contains("/latest.json?", StringComparison.Ordinal))
+                {
+                    return Respond(HttpStatusCode.OK,
+                        $"{{\"schemaVersion\":1,\"runId\":{rawRunId},\"tradeDate\":\"2026-10-13\","
+                        + "\"capturedAt\":\"2026-10-13T01:02:00+00:00\","
+                        + $"\"file\":\"intraday-20261013-0902-run{rawRunId}.json\",\"rowCount\":1}}");
+                }
+                if (url.Contains("/structure-latest.json?", StringComparison.Ordinal))
+                {
+                    return Respond(HttpStatusCode.BadRequest,
+                        "{\"statusCode\":\"404\",\"error\":\"not_found\",\"code\":\"NoSuchKey\"}");
+                }
+                if (request.Method == HttpMethod.Post && request.Content is not null
+                    && !url.Contains("/list/", StringComparison.Ordinal))
+                {
+                    uploads[url] = request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                }
+                return Respond(HttpStatusCode.OK, "[]");
+            }));
+            var time = new DateTimeOffset(2026, 10, 13, 1, 2, 0, TimeSpan.Zero);
+            var result = MarketStructureCalculator.Calculate(new MarketStructureInput(
+                new DateOnly(2026, 10, 13), time, "intraday", [], [], [], RunId: 7, EvaluatedAt: time));
+            var published = await publisher.PublishMarketStructureAsync(7, result);
+            Assert.Equal(shouldPublish, published.Published);
+            if (!shouldPublish)
+            {
+                Assert.Empty(uploads);
+                return;
+            }
+            var pointer = Assert.Single(uploads, pair => pair.Key.EndsWith("/structure-latest.json", StringComparison.Ordinal));
+            using var json = JsonDocument.Parse(pointer.Value);
+            var root = json.RootElement;
+            Assert.Equal(7, root.GetProperty("runId").GetInt64());
+            Assert.Equal("2026-10-13", root.GetProperty("tradeDate").GetString());
+            var file = root.GetProperty("file").GetString()!;
+            var snapshot = Assert.Single(uploads, pair => pair.Key.EndsWith("/" + file, StringComparison.Ordinal));
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(snapshot.Value))).ToLowerInvariant();
+            Assert.Equal(hash, root.GetProperty("contentHash").GetString());
         }
         finally
         {
