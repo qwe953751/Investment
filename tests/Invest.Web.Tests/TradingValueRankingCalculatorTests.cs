@@ -433,6 +433,30 @@ public class TradingValueRankingCalculatorTests
     }
 
     [Fact]
+    public void 期間內有交易但終點那天停牌_現價沿用最後收盤_日漲跌留白_週漲跌照終點所在的週算()
+    {
+        // 1101：1/9（週五）收 100、1/12（週一）收 110，之後兩天（1/13、1/14）停牌沒有行情；2330 每天都有，
+        // 所以 1/13、1/14 是交易日。看到 1/14 的三日排行時，1101 期間內有交易（1/12），終點那天沒有。
+        var dataSet = new MarketDataSetBuilder()
+            .Day(5, "1101", 100, close: 100)
+            .Day(8, "1101", 100, close: 110)
+            .Days(5, 10, "2330", 1_000, close: 500)
+            .Build();
+
+        var row = Row(_calculator.Calculate(
+            dataSet,
+            Query(periodDays: 3) with { EndDate = MarketDataSetBuilder.DayOf(10) }), "1101");
+
+        // 今天（終點）沒有價格變動：日漲跌留白，不是 0%。
+        Assert.Null(row.DailyPriceChangeRate);
+        Assert.Equal(110m, row.ClosePrice);
+
+        // 本週從 1/12 起，開始前最後一個收盤是 1/9 的 100：110 ÷ 100 − 1 = +10%（沒有沿用就是空的）。
+        Assert.Equal(0.1m, row.WeeklyPriceChangeRate);
+        Assert.Equal(100m, row.WeeklyBaselineClosePrice);
+    }
+
+    [Fact]
     public void 除權息當天的日漲跌以參考價為基準而不是前一日收盤價()
     {
         // 第 8 天除息 10 元：前一日收 110，參考價 100，當天收 100。

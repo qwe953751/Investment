@@ -253,7 +253,7 @@ public sealed class TaiwanSecurityExportTests : IDisposable
         Directory.CreateDirectory(_directory);
         var path = Path.Combine(_directory, "quotes-latest.json");
 
-        await StaticSiteExporter.WriteLatestQuotesAsync(path, dataSet, days[1], CancellationToken.None);
+        await StaticSiteExporter.WriteLatestQuotesAsync(path, dataSet, days[1], [], CancellationToken.None);
 
         using var document = JsonDocument.Parse(File.ReadAllText(path));
         Assert.Equal("2026-10-08", document.RootElement.GetProperty("tradeDate").GetString());
@@ -270,6 +270,147 @@ public sealed class TaiwanSecurityExportTests : IDisposable
 
         // 這個樣本沒有本週開始前的收盤，所以週與年都算不出來——欄位直接不輸出，不會是 0 也不會是舊值。
         Assert.False(rows["00400A"].TryGetProperty("weeklyPriceChange", out _));
+    }
+
+    // ───────── 筆記 #84：停止交易的標的與當天無成交的冷門股 ─────────
+
+    private static readonly DateOnly[] SuspensionDays =
+        [new(2026, 9, 30), new(2026, 10, 2), new(2026, 10, 5), new(2026, 10, 6), new(2026, 10, 7), new(2026, 10, 8)];
+
+    private static DailyStockTrading Row(DateOnly day, string ticker, decimal? close)
+        => new() { TradingDate = day, Ticker = ticker, ClosePrice = close, TradingValue = close is null ? 0m : 1_000m };
+
+    private static MarketDataSet SuspensionDataSet() => new()
+    {
+        Stocks =
+        [
+            new() { Market = Market.Twse, Ticker = "2330", Name = "台積電" },
+            new() { Market = Market.Tpex, Ticker = "6173", Name = "信昌電" },
+            new() { Market = Market.Twse, Ticker = "1435", Name = "中福" },
+            new() { Market = Market.Twse, Ticker = "9999", Name = "已終止上市" }
+        ],
+        DailyTrading =
+        [
+            // 台積電：每天都有收盤。
+            .. SuspensionDays.Select(day => Row(day, "2330", 2500m)),
+
+            // 信昌電：10/06 以後整列消失（停止交易），最後收盤 284.00。
+            Row(SuspensionDays[0], "6173", 270m), Row(SuspensionDays[1], "6173", 275m),
+            Row(SuspensionDays[2], "6173", 280m), Row(SuspensionDays[3], "6173", 284m),
+
+            // 中福：10/08 有列但沒成交（沒有收盤），前一個收盤 21.05。
+            Row(SuspensionDays[0], "1435", 20m), Row(SuspensionDays[1], "1435", 20.5m),
+            Row(SuspensionDays[2], "1435", 21m), Row(SuspensionDays[3], "1435", 21.05m),
+            Row(SuspensionDays[4], "1435", 21.05m), Row(SuspensionDays[5], "1435", null),
+
+            // 已終止上市：10/02 以後再也沒有行情，而且不在停止交易名單上。
+            Row(SuspensionDays[0], "9999", 5m), Row(SuspensionDays[1], "9999", 5m)
+        ],
+        MarketIndices = [],
+        PriceAdjustments = []
+    };
+
+    private static TradingSuspension Suspension6173() => new()
+    {
+        Ticker = "6173",
+        Name = "信昌電",
+        Market = Market.Tpex,
+        Kind = StockKind.CommonStock,
+        Start = new DateOnly(2026, 10, 7),
+        End = null,
+        Close = 284m,
+        CloseDate = new DateOnly(2026, 10, 6),
+        ResumeDate = new DateOnly(2026, 10, 19),
+        Reason = "減資",
+        Segments = [new SuspensionSegment(new DateOnly(2026, 10, 7), 284m / 275m - 1m, 0.42m, false, false)]
+    };
+
+    [Fact]
+    public async Task 最新收盤報價檔_停止交易與當天無成交都有一列_沿用最後收盤_日漲跌不輸出_終止上市的照舊不輸出()
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "quotes-latest.json");
+
+        await StaticSiteExporter.WriteLatestQuotesAsync(
+            path, SuspensionDataSet(), SuspensionDays[^1], [Suspension6173()], CancellationToken.None);
+
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var rows = document.RootElement.GetProperty("rows").EnumerateArray()
+            .ToDictionary(row => row.GetProperty("ticker").GetString()!);
+
+        Assert.Equal(["1435", "2330", "6173"], rows.Keys.Order());
+
+        // 一般標的：沒有 status 欄位，和以前完全一樣。
+        Assert.False(rows["2330"].TryGetProperty("status", out _));
+        Assert.Equal(2500m, rows["2330"].GetProperty("close").GetDecimal());
+
+        // 停止交易：價格是停牌前最後收盤，日期、預計恢復日與原因一起給；日漲跌不輸出（不是 0）。
+        var suspended = rows["6173"];
+        Assert.Equal("suspended", suspended.GetProperty("status").GetString());
+        Assert.Equal(284m, suspended.GetProperty("close").GetDecimal());
+        Assert.Equal("2026-10-06", suspended.GetProperty("closeDate").GetString());
+        Assert.Equal("2026-10-19", suspended.GetProperty("resumeDate").GetString());
+        Assert.Equal("減資", suspended.GetProperty("reason").GetString());
+        Assert.False(suspended.TryGetProperty("priceChange", out _));
+
+        // 本週（10/05 起）開始前最後收盤是 10/02 的 275：週漲跌 = 284 ÷ 275 − 1。
+        Assert.Equal(284m / 275m - 1m, suspended.GetProperty("weeklyPriceChange").GetDecimal(), 6);
+
+        // 當天無成交：有列沒收盤，一樣沿用最後收盤；沒有預計恢復日。
+        var idle = rows["1435"];
+        Assert.Equal("noTrade", idle.GetProperty("status").GetString());
+        Assert.Equal(21.05m, idle.GetProperty("close").GetDecimal());
+        Assert.Equal("2026-10-07", idle.GetProperty("closeDate").GetString());
+        Assert.False(idle.TryGetProperty("priceChange", out _));
+        Assert.False(idle.TryGetProperty("resumeDate", out _));
+        // 本週（10/05 起）開始前最後一個收盤是 10/02 的 20.5：週漲跌 = 21.05 ÷ 20.5 − 1。
+        Assert.Equal(21.05m / 20.5m - 1m, idle.GetProperty("weeklyPriceChange").GetDecimal(), 6);
+    }
+
+    [Fact]
+    public async Task 停止交易區間檔_依代號與起始日排序_沒有結束日的是仍在停牌_每段帶週與年的漲跌()
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "suspensions.json");
+        var ended = Suspension6173() with
+        {
+            Ticker = "2323",
+            Name = "中環",
+            Market = Market.Twse,
+            Start = new DateOnly(2026, 10, 1),
+            End = new DateOnly(2026, 10, 12),
+            ResumeDate = null,
+            Close = 11m,
+            CloseDate = new DateOnly(2026, 9, 30)
+        };
+
+        await StaticSiteExporter.WriteSuspensionsAsync(
+            path, [Suspension6173(), ended], new DateOnly(2026, 10, 12), CancellationToken.None);
+
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        Assert.Equal("2026-10-12", document.RootElement.GetProperty("asOf").GetString());
+        var episodes = document.RootElement.GetProperty("episodes").EnumerateArray().ToArray();
+
+        Assert.Equal(["2323", "6173"], episodes.Select(item => item.GetProperty("ticker").GetString()));
+
+        // 已結束：有 end，沒有預計恢復日。
+        Assert.Equal("2026-10-12", episodes[0].GetProperty("end").GetString());
+        Assert.False(episodes[0].TryGetProperty("resumeDate", out _));
+        Assert.Equal("twse", episodes[0].GetProperty("market").GetString());
+
+        // 進行中：沒有 end，帶預計恢復日與原因，以及切段。
+        var ongoing = episodes[1];
+        Assert.False(ongoing.TryGetProperty("end", out _));
+        Assert.Equal("tpex", ongoing.GetProperty("market").GetString());
+        Assert.Equal("stock", ongoing.GetProperty("kind").GetString());
+        Assert.Equal(284m, ongoing.GetProperty("close").GetDecimal());
+        Assert.Equal("2026-10-06", ongoing.GetProperty("closeDate").GetString());
+        Assert.Equal("2026-10-19", ongoing.GetProperty("resumeDate").GetString());
+        Assert.Equal("減資", ongoing.GetProperty("reason").GetString());
+
+        var segment = Assert.Single(ongoing.GetProperty("segments").EnumerateArray());
+        Assert.Equal("2026-10-07", segment.GetProperty("from").GetString());
+        Assert.Equal(0.42m, segment.GetProperty("yearToDate").GetDecimal());
     }
 
     [Theory]

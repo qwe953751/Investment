@@ -4970,6 +4970,38 @@ td.stock-name.stock-name-change-down {
     color: #6a1b9a;
 }
 
+/* 停止交易（停牌，筆記 #84）：實心反白。「處／全」是淡底彩字、刻意不搶眼，但停牌是這一列的價格根本不是今天的，
+   使用者一眼就要看到，所以用實心深底白字；不用紅或綠，才不會跟本站紅漲綠跌的漲跌色混在一起。
+   深色外觀反過來用淺底深字，兩種外觀下對比都最大。 */
+.badge.suspended {
+    min-width: 19px;
+    border-color: #1f2937;
+    background: #1f2937;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+:root[data-theme="dark"] .badge.suspended {
+    border-color: #f3f4f6;
+    background: #f3f4f6;
+    color: #111827;
+}
+
+/* K 線彈窗標題旁的「停」，以及標題下面那一行說明。 */
+.kline-title-badge {
+    margin-left: 4px;
+    padding: 0 3px;
+    vertical-align: middle;
+}
+
+.daily-kline-suspension-note {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
 .market-mark {
     display: inline-block;
     min-width: 18px;

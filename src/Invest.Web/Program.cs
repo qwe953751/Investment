@@ -91,6 +91,7 @@ builder.Services.AddHttpClient<TpexMarketIndexClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseNonRegularTradingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexNonRegularTradingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MarketFlagClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<ListedCompanyClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<CorporateActionClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseHolidayCalendar>(ConfigureQuoteClient);
 
@@ -751,6 +752,10 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     IReadOnlyList<(Market Market, string Ticker)>? etfUniverse = null;
     IReadOnlyList<(Market Market, string Ticker)>? tdrUniverse = null;
 
+    // 公開個股清單是交易所現行公司名單（而不是資料庫備援清單）時，「名單上有、MIS 卻沒回報價」才能判成停止交易
+    //（筆記 #84）。備援清單可能含已終止上市的公司，這種判斷就不成立。
+    var universeIsOfficial = false;
+
     // 興櫃是額外資料源，偶爾一輪讀不到不能讓排行與市場成交額跟著抖一下（興櫃約占 1%）。
     // 同一個交易日內沿用上一輪的興櫃最多三輪（約 6 分鐘），再讀不到就如實不含興櫃。
     const int maxEmergingCarryRounds = 3;
@@ -803,6 +808,44 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
             + $"回應正常卻悄悄少了 {report.Vanished} 檔（沿用上一輪 {report.CarriedVanished} 檔）。");
     }
 
+    // 今天沒有報價、而且確定是停止交易的標的（含停牌前最後收盤）。回傳 null 代表這一輪沒有判斷。
+    // 判斷本身在 IntradayAdjustment.DescribeSuspendedRound（有單元測試）；這裡只負責把這一輪問過哪些代號交給它、寫日誌。
+    static IReadOnlyList<IntradaySuspendedQuote>? DescribeSuspendedQuotes(
+        IntradayAdjustment adjustment,
+        IntradaySnapshot snapshot,
+        IReadOnlyList<(Market Market, string Ticker)>? universe,
+        IReadOnlyList<(Market Market, string Ticker)>? etfUniverse,
+        IReadOnlyList<(Market Market, string Ticker)>? tdrUniverse,
+        IReadOnlySet<string> failed,
+        bool universeIsOfficial,
+        DateTimeOffset localNow)
+    {
+        var askedGroups = new List<IReadOnlyList<string>>();
+
+        foreach (var list in new[] { universe, etfUniverse, tdrUniverse })
+        {
+            if (list is not null)
+            {
+                askedGroups.Add([.. list.Select(item => item.Ticker)]);
+            }
+        }
+
+        var round = adjustment.DescribeSuspendedRound(snapshot, askedGroups, failed, universeIsOfficial);
+
+        if (round.Suspended is null && round.AbsentCount > IntradayAdjustment.MaxAbsentCandidates)
+        {
+            Console.WriteLine(
+                $"{localNow:HH:mm:ss} 沒有報價的代號有 {round.AbsentCount} 檔，多到不像停牌（多半是 MIS 異常），這一輪不判斷停止交易。");
+        }
+        else if (round.Suspended is { Count: > 0 } suspended)
+        {
+            Console.WriteLine(
+                $"{localNow:HH:mm:ss} 停止交易 {suspended.Count} 檔：{string.Join("、", suspended.Select(item => item.Ticker))}。");
+        }
+
+        return round.Suspended;
+    }
+
     try
     {
         Console.WriteLine($"來源標記：{source}");
@@ -821,6 +864,12 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
             {
                 IntradaySnapshot snapshot;
                 var etfDegraded = false;
+
+                // 這一輪「查詢失敗」的代號，以及 ETF／TDR 這一路有沒有併進來。判斷停止交易時，
+                // 查詢失敗的代號只是這一輪沒讀到，不是停牌，必須排除；沒併進來的 ETF／TDR 整路都不判斷。
+                var roundFailed = new HashSet<string>(StringComparer.Ordinal);
+                var etfRoundMerged = false;
+                var tdrRoundMerged = false;
 
                 if (tail)
                 {
@@ -870,6 +919,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                             .ToHashSet(StringComparer.Ordinal);
 
                         universe = await universeClient.GetTickersAsync(knownEmerging, cts.Token);
+                        universeIsOfficial = !universeClient.LastLoadUsedFallback;
                         Console.WriteLine($"{localTime:HH:mm:ss} 個股清單共 {universe.Count} 檔。");
 
                         // 六碼 TDR 不在公司基本資料名單裡，用最近一個交易日行情裡已知的 TDR 另外問
@@ -929,6 +979,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                             snapshot.TradeDate, capturedAt, snapshot.MarketIndices)
                     };
                     ReportCarry(localTime, "個股", carryForward.LastReport);
+                    roundFailed.UnionWith(snapshot.MissingTickers.Select(item => item.Ticker));
                     ValidateIntradaySnapshot(universe, snapshot);
 
                     // 這一輪 ETF 是否不完整：名冊讀不到、查詢失敗、日期不符或覆蓋率偏低都算。
@@ -950,6 +1001,8 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                                     etfSnapshot.MissingTickers,
                                     required: false);
                                 ReportCarry(localTime, "ETF", carryForward.LastReport);
+                                etfRoundMerged = true;
+                                roundFailed.UnionWith(etfSnapshot.MissingTickers.Select(item => item.Ticker));
 
                                 snapshot = snapshot with
                                 {
@@ -999,6 +1052,8 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                                     tdrSnapshot.MissingTickers,
                                     required: false);
                                 ReportCarry(localTime, "TDR", carryForward.LastReport);
+                                tdrRoundMerged = true;
+                                roundFailed.UnionWith(tdrSnapshot.MissingTickers.Select(item => item.Ticker));
 
                                 snapshot = snapshot with
                                 {
@@ -1164,6 +1219,32 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                             Console.WriteLine(
                                 $"{localTime:HH:mm:ss} 還原權息計算失敗，這一場停用、只用 MIS 的昨收（沒有週與今年以來漲跌）：{exception}");
                             adjustment = null;
+                        }
+                    }
+
+                    // 停止交易（停牌）的標的盤中 MIS 只回空殼，畫面因此看不到、搜尋不到。這裡補上它們與停牌前最後收盤，
+                    // 隨快照發布（筆記 #84）。尾段沿用凍結的最後一輪，不重算。這是加值資訊：出錯只記錄、不影響這一輪。
+                    if (adjustment is not null && !tail)
+                    {
+                        try
+                        {
+                            snapshot = snapshot with
+                            {
+                                Suspended = DescribeSuspendedQuotes(
+                                    adjustment,
+                                    snapshot,
+                                    universe,
+                                    etfRoundMerged ? etfUniverse : null,
+                                    tdrRoundMerged ? tdrUniverse : null,
+                                    roundFailed,
+                                    universeIsOfficial,
+                                    localTime)
+                            };
+                        }
+                        catch (Exception exception)
+                            when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
+                        {
+                            Console.WriteLine($"{localTime:HH:mm:ss} 停止交易名單計算失敗，這一輪不含：{exception.Message}");
                         }
                     }
 

@@ -703,10 +703,290 @@ let alteredTrading = new Set();
 let intradayDispositions = new Map();
 let intradayAlteredTrading = new Set();
 
-function toBadges(ticker) {
+// ───────────────────────── 停止交易（停牌）（筆記 #84）─────────────────────────
+//
+// 停止交易的標的在交易所的每日行情裡整列消失（盤中 MIS 也只回空殼），所以以前畫面看不到它、自訂頁搜尋不到，
+// 持倉沒有價格可用，整個帳戶的資產總值還會跟著變成「—」。現在由 C# 找出這些區間（TradingSuspensionBuilder）、
+// 帶上停牌前最後的收盤與週、年初至今漲跌，前端只負責「哪一天掛不掛『停』」與顯示——公式一行都不在這裡：
+//
+//   盤後  data/suspensions.json：每一段的標的、起迄交易日、停牌前最後收盤、預計恢復日，
+//         以及停牌期間每個週／年一換時的週、年初至今漲跌（前端挑最後一個不晚於所選日期的）；
+//   盤中  盤中快照的 suspended 陣列：收集器每輪判斷，附上同樣的欄位。
+//
+// 價格是停牌前最後一個收盤；日漲跌不算（今天沒有價格變動，不能算成 0%）。
+let suspensionIndex = new Map();
+let suspensionsAsOf = '';
+let suspensionsLoaded = false;
+let suspensionsLoading = null;
+
+// 盤中快照裡的停止交易名單：Map<代號, 條目>；null 代表這一輪沒有判斷（舊快照、資料庫備援、缺席代號多到不像停牌），
+// 不能把「不知道」當成「沒有停牌」。
+let intradaySuspended = null;
+
+const SUSPENSION_REASON_TEXT = {
+    減資: '減資',
+    面額變更: '變更面額',
+    分割: 'ETF 分割',
+    反分割: 'ETF 反分割'
+};
+
+function normalizeSuspensionKind(value) {
+    const kind = String(value ?? '').trim().toLocaleLowerCase();
+
+    return kind === 'etf' || kind === 'tdr' ? kind : 'stock';
+}
+
+const suspensionRate = value => (missing(value) ? null : Number(value));
+
+// data/suspensions.json → { asOf, index: Map<代號, 區間[]（依起始日排序）> }。
+function normalizeSuspensions(payload) {
+    const index = new Map();
+
+    for (const item of Array.isArray(payload?.episodes) ? payload.episodes : []) {
+        const ticker = String(item?.ticker ?? '').trim().toUpperCase();
+        const start = String(item?.start ?? '');
+        const close = Number(item?.close);
+
+        if (ticker === '' || start === '' || !Number.isFinite(close)) {
+            continue;
+        }
+
+        const episode = {
+            ticker,
+            name: String(item.name ?? '').trim(),
+            market: String(item.market ?? '').trim().toLocaleLowerCase(),
+            kind: normalizeSuspensionKind(item.kind),
+            start,
+            end: item.end ? String(item.end) : null,
+            close,
+            closeDate: String(item.closeDate ?? ''),
+            resumeDate: item.resumeDate ? String(item.resumeDate) : null,
+            reason: item.reason ? String(item.reason) : null,
+            segments: (Array.isArray(item.segments) ? item.segments : [])
+                .map(segment => ({
+                    from: String(segment?.from ?? ''),
+                    weeklyPriceChange: suspensionRate(segment?.weekly),
+                    yearToDatePriceChange: suspensionRate(segment?.yearToDate),
+                    weeklyFromListing: segment?.weeklyFromListing === true,
+                    yearToDateFromListing: segment?.yearToDateFromListing === true
+                }))
+                .filter(segment => segment.from !== '')
+                .sort((left, right) => left.from.localeCompare(right.from))
+        };
+        const list = index.get(ticker) ?? [];
+        list.push(episode);
+        index.set(ticker, list);
+    }
+
+    for (const list of index.values()) {
+        list.sort((left, right) => left.start.localeCompare(right.start));
+    }
+
+    return { asOf: String(payload?.asOf ?? ''), index };
+}
+
+// 區間 + 所選日期 → 畫面用的條目（和盤中快照的條目同一個形狀）。
+// 週、年初至今取「最後一個不晚於所選日期」的那一段——數字是 C# 算好的，這裡只挑。
+function suspensionEntry(episode, date) {
+    let segment = null;
+
+    for (const candidate of episode.segments) {
+        if (candidate.from <= date) {
+            segment = candidate;
+        } else {
+            break;
+        }
+    }
+
+    return {
+        ticker: episode.ticker,
+        name: episode.name,
+        market: episode.market,
+        kind: episode.kind,
+        close: episode.close,
+        closeDate: episode.closeDate,
+        weeklyPriceChange: segment?.weeklyPriceChange ?? null,
+        yearToDatePriceChange: segment?.yearToDatePriceChange ?? null,
+        weeklyFromListing: segment?.weeklyFromListing === true,
+        yearToDateFromListing: segment?.yearToDateFromListing === true,
+        start: episode.start,
+        end: episode.end,
+        resumeDate: episode.end === null ? episode.resumeDate : null,
+        reason: episode.reason
+    };
+}
+
+// 這檔標的在某個交易日是不是停止交易；是的話回傳條目，不是回傳 null。
+function suspensionOn(ticker, date) {
+    const day = String(date ?? '');
+
+    if (day === '') {
+        return null;
+    }
+
+    for (const episode of suspensionIndex.get(ticker) ?? []) {
+        if (episode.start <= day && (episode.end === null || day < episode.end)) {
+            return suspensionEntry(episode, day);
+        }
+    }
+
+    return null;
+}
+
+// 某個交易日全部停止交易的標的（自訂頁要把它們補進清單）。
+function suspensionsOn(date) {
+    const result = [];
+
+    for (const ticker of suspensionIndex.keys()) {
+        const entry = suspensionOn(ticker, date);
+
+        if (entry !== null) {
+            result.push(entry);
+        }
+    }
+
+    return result;
+}
+
+// 盤中快照的 suspended 陣列 → Map<代號, 條目>。欄位不存在（舊快照、資料庫備援）回傳 null。
+// change_percent 系列存的是百分點，這裡統一除成比率，和盤後條目一致。
+function normalizeIntradaySuspended(list) {
+    if (!Array.isArray(list)) {
+        return null;
+    }
+
+    const result = new Map();
+
+    for (const item of list) {
+        const ticker = String(item?.symbol ?? '').trim().toUpperCase();
+        const close = Number(item?.last_close);
+
+        if (ticker === '' || !Number.isFinite(close)) {
+            continue;
+        }
+
+        result.set(ticker, {
+            ticker,
+            name: String(item.name ?? '').trim(),
+            market: String(item.market ?? '').trim().toLocaleLowerCase(),
+            kind: normalizeSuspensionKind(item.kind),
+            close,
+            closeDate: String(item.last_close_date ?? ''),
+            weeklyPriceChange: missing(item.weekly_change_percent) ? null : Number(item.weekly_change_percent) / 100,
+            yearToDatePriceChange: missing(item.year_to_date_change_percent)
+                ? null
+                : Number(item.year_to_date_change_percent) / 100,
+            weeklyFromListing: item.weekly_from_listing === true,
+            yearToDateFromListing: item.year_to_date_from_listing === true,
+            start: null,
+            end: null,
+            resumeDate: item.resume_date ? String(item.resume_date) : null,
+            reason: item.reason ? String(item.reason) : null
+        });
+    }
+
+    return result;
+}
+
+// 提示文字裡的日期：2026-10-06 → 10/06。
+function suspensionDateText(value) {
+    const text = String(value ?? '');
+
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text.slice(5).replace('-', '/') : text;
+}
+
+// 「停」徽章的滑鼠提示：講清楚為什麼這個價格不是今天的、以及什麼時候會恢復。
+function suspensionHint(entry) {
+    const parts = [];
+    const closeText = Number.isFinite(entry.close) ? toCloseText(entry.close) : '—';
+    const dateText = entry.closeDate ? `（${suspensionDateText(entry.closeDate)}）` : '';
+
+    parts.push(`停止交易：這段期間沒有行情，價格是停牌前最後一個收盤 ${closeText}${dateText}，日漲跌不計算。`);
+
+    const reason = entry.reason ? SUSPENSION_REASON_TEXT[entry.reason] ?? entry.reason : '';
+
+    if (entry.resumeDate) {
+        parts.push(`官方公告預計 ${suspensionDateText(entry.resumeDate)} 恢復買賣${reason ? `（${reason}）` : ''}。`);
+    } else if (entry.end) {
+        parts.push(`${suspensionDateText(entry.end)} 恢復買賣${reason ? `（${reason}）` : ''}。`);
+    } else {
+        parts.push('目前沒有公告的恢復買賣日。');
+    }
+
+    return parts.join('');
+}
+
+// 「停」徽章（實心反白，比「處／全」的淡底彩字明顯）；沒有停牌回傳 null。
+function suspensionBadge(entry) {
+    return entry ? { text: '停', cls: 'suspended', hint: suspensionHint(entry) } : null;
+}
+
+// 載入 data/suspensions.json。舊版發布沒有這個檔（404）當作沒有停牌；其他錯誤先不標示，下一次再試。
+// 失敗不能擋住任何畫面：它只是附加資訊。
+async function ensureSuspensions() {
+    if (suspensionsLoaded) {
+        return;
+    }
+
+    if (suspensionsLoading === null) {
+        suspensionsLoading = (async () => {
+            try {
+                const payload = await fetchJsonWithRetry(
+                    `data/suspensions.json?v=${version}`,
+                    {},
+                    { timeoutMs: 30_000, retryDelays: [1_000] });
+                const normalized = normalizeSuspensions(payload);
+
+                suspensionIndex = normalized.index;
+                suspensionsAsOf = normalized.asOf;
+                suspensionsLoaded = true;
+            } catch (error) {
+                if (error?.status === 404) {
+                    suspensionsLoaded = true;
+                    return;
+                }
+
+                console.warn('停止交易名單讀取失敗，這次先不標示「停」：', error);
+            }
+        })().finally(() => {
+            suspensionsLoading = null;
+        });
+    }
+
+    await suspensionsLoading;
+}
+
+// 目前這個畫面該用哪一天的停止交易狀態：族群頁是它計算的基準日，其他頁是所選的交易日。
+function suspensionContextDate() {
+    return state.view === 'topics' && topicData?.baseDate
+        ? String(topicData.baseDate)
+        : state.date;
+}
+
+// 某檔標的在「目前這個畫面」是不是停止交易。盤中畫面看盤中快照（今天），盤後畫面看所選日期。
+// 盤中快照沒有判斷（null）時一律不標示：寧可漏標，不可把恢復買賣的當天誤標成停牌。
+function currentSuspensionOf(ticker, date = null) {
+    if (usesIntradaySnapshot()) {
+        return intradaySuspended?.get(ticker) ?? null;
+    }
+
+    return suspensionOn(ticker, date ?? suspensionContextDate());
+}
+
+function toBadges(ticker, row = null) {
     const badges = [];
     const isIntraday = isIntradayDataView();
     const entry = (isIntraday ? intradayDispositions : dispositions).get(ticker);
+
+    // 停止交易放在最前面：它是最重要的狀態——這一列的價格根本不是今天的。
+    // 列自己帶著判斷（row.suspension：條目或 null，例如自訂頁補進來的停牌列、資產持倉檢視）就用它，
+    // 其餘列依目前畫面的日期查。
+    const suspended = suspensionBadge(
+        row !== null && row.suspension !== undefined ? row.suspension : currentSuspensionOf(ticker));
+
+    if (suspended !== null) {
+        badges.push(suspended);
+    }
 
     if (entry) {
         const interval = missing(entry.matchingMinutes)
@@ -1589,10 +1869,11 @@ function normalizeRevenueHistoryRow(row) {
     };
 }
 
-function customStatusMatches(ticker) {
+// row 是自訂頁的一列：停止交易的列帶著 row.suspension（筆記 #84），「停止交易」篩選靠它判斷。
+function customStatusMatches(ticker, row = null) {
     const filters = state.customStatusFilters;
 
-    if (filters.all || (!filters.disposition && !filters.fullDelivery)) {
+    if (filters.all || (!filters.disposition && !filters.fullDelivery && !filters.suspended)) {
         return true;
     }
 
@@ -1600,7 +1881,8 @@ function customStatusMatches(ticker) {
     const activeAlteredTrading = isCustomIntradayView() ? intradayAlteredTrading : alteredTrading;
 
     return (filters.disposition && activeDispositions.has(ticker))
-        || (filters.fullDelivery && activeAlteredTrading.has(ticker));
+        || (filters.fullDelivery && activeAlteredTrading.has(ticker))
+        || (filters.suspended && row?.suspension !== undefined);
 }
 
 function customSearchMatches(row) {
@@ -1686,7 +1968,7 @@ const toTickerCell = row => ({
     text: row.ticker,
     cls: 'ticker',
     marketMark: row.kind === 'tdr' ? 'DR' : MARKET_MARK[row.market],
-    tickerBadges: toBadges(row.ticker)
+    tickerBadges: toBadges(row.ticker, row)
 });
 
 // 創幾個月新高。N+ 代表往回數到手上的資料用完都沒有更高的，
@@ -1763,8 +2045,8 @@ const VOLUME_RATIO_HINT = '本期平均每日成交值 ÷ 這檔股票平常一�
 const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看量比。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '前期排名 − 本期排名，▲ 代表名次上升。前期算不出名次時顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
-    { key: 'ticker', title: '代號', hint: '只收一般股票（上市、上櫃與興櫃普通股，不含 ETF 與 TDR）。右側「市／櫃／興」標記代表上市、上櫃或興櫃；再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
-    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
+    { key: 'ticker', title: '代號', hint: '只收一般股票（上市、上櫃與興櫃普通股，不含 ETF 與 TDR）。右側「市／櫃／興」標記代表上市、上櫃或興櫃；再右側的「停」代表停止交易（價格是停牌前最後收盤），「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「停」是停止交易，「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '平均成交值（億）', hint: '期間總成交值 ÷ 期間交易日數。只計一般交易，零股、盤後定價與鉅額交易都已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
@@ -1820,8 +2102,8 @@ function rankingColumnHint(column) {
 const INTRADAY_COLUMNS = [
     { key: 'rank', title: '排名', hint: '依今日累計成交額由大到小。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
     { key: 'change', title: '排名變化', hint: '過去觀察期間的排名 − 今日盤中排名，▲ 代表今天的名次比平常前面。名次是相對的，所以今天只走了半天也能直接比。過去期間沒有這一檔就顯示 —。', value: row => row.rankChange, cell: row => ({ text: toRankChangeText(row.rankChange), cls: toTrendClass(row.rankChange) }) },
-    { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單（上市、上櫃與興櫃普通股）；右側「市／櫃／興」標記代表上市、上櫃或興櫃，再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
-    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
+    { key: 'ticker', title: '代號', hint: '只收一般股票，與盤後排行同一份名單（上市、上櫃與興櫃普通股）；右側「市／櫃／興」標記代表上市、上櫃或興櫃，再右側的「停」代表停止交易（價格是停牌前最後收盤），「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「停」是停止交易，「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'topic', title: '族群', hint: TOPIC_COLUMN_HINT, sortable: false, text: row => topicColumnText(row.ticker), cell: row => ({ cls: 'topic-cell', topic: attributionOf(row.ticker) }) },
     { key: 'value', title: '成交值（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
@@ -1836,8 +2118,8 @@ const INTRADAY_COLUMNS = [
 ];
 
 const CUSTOM_COLUMNS = [
-    { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列；右側「市／櫃／興」標記代表上市、上櫃或興櫃，「DR」代表 TDR（臺灣存託憑證），再右側的「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
-    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
+    { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列；右側「市／櫃／興」標記代表上市、上櫃或興櫃，「DR」代表 TDR（臺灣存託憑證），再右側的「停」代表停止交易（價格是停牌前最後收盤），「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
+    { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「停」是停止交易，「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'close', title: '收盤價', hint: '所選交易日的收盤價。興櫃沒有收盤價，顯示的是當日日均價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
@@ -2033,7 +2315,8 @@ const state = {
     customStatusFilters: {
         all: true,
         disposition: false,
-        fullDelivery: false
+        fullDelivery: false,
+        suspended: false
     },
     customSearch: '',
     customSearchDraft: '',
@@ -3143,11 +3426,12 @@ function renderCustomControls() {
     const statusHost = el('custom-status-options');
     statusHost.replaceChildren();
     statusHost.setAttribute('role', 'group');
-    statusHost.setAttribute('aria-label', '交易限制：全部不過濾；處置股與全額交割可複選');
+    statusHost.setAttribute('aria-label', '交易限制：全部不過濾；處置股、全額交割與停止交易可複選');
     const statusDefinitions = [
         ['all', '全部'],
         ['disposition', '處置股'],
-        ['fullDelivery', '全額交割']
+        ['fullDelivery', '全額交割'],
+        ['suspended', '停止交易']
     ];
     const filters = state.customStatusFilters;
 
@@ -3169,13 +3453,14 @@ function renderCustomControls() {
             if (key === 'all' && input.checked) {
                 next.disposition = false;
                 next.fullDelivery = false;
+                next.suspended = false;
             } else if (key !== 'all' && input.checked) {
-                // 點選任一特殊狀態時，取消「全部」，但保留另一個特殊狀態，
-                // 因此處置股與全額交割可以同時勾選。
+                // 點選任一特殊狀態時，取消「全部」，但保留其他特殊狀態，
+                // 因此處置股、全額交割與停止交易可以同時勾選。
                 next.all = false;
             }
 
-            if (!next.all && !next.disposition && !next.fullDelivery) {
+            if (!next.all && !next.disposition && !next.fullDelivery && !next.suspended) {
                 next.all = true;
             }
 
@@ -3198,6 +3483,7 @@ function renderCustomControls() {
     specialGroup.append(specialLabel);
     addStatusOption(specialGroup, statusDefinitions[1][0], statusDefinitions[1][1], 'status-option-special');
     addStatusOption(specialGroup, statusDefinitions[2][0], statusDefinitions[2][1], 'status-option-special');
+    addStatusOption(specialGroup, statusDefinitions[3][0], statusDefinitions[3][1], 'status-option-special');
 
     const allRow = document.createElement('div');
     allRow.className = 'status-filter-row';
@@ -3663,10 +3949,11 @@ function applyStoredSettings() {
         const next = {
             all: filters.all === true,
             disposition: filters.disposition === true,
-            fullDelivery: filters.fullDelivery === true
+            fullDelivery: filters.fullDelivery === true,
+            suspended: filters.suspended === true
         };
 
-        if (!next.all && !next.disposition && !next.fullDelivery) {
+        if (!next.all && !next.disposition && !next.fullDelivery && !next.suspended) {
             next.all = true;
         }
 
@@ -7481,12 +7768,46 @@ function assetIntradayRowOf(ticker) {
 }
 
 // 這一檔現在該用哪一份報價；回傳 null 代表兩份都沒有。
+//
+// 停止交易（停牌）與當天無成交的標的（筆記 #84）：它們在官方日行情裡整列消失／沒有收盤，盤中 MIS 也沒有報價，
+// 以前因此兩份都沒有，資產頁沒有價格可用，市值與整個帳戶的資產總值全部變成「—」。現在兩份都帶著
+// 最後一個收盤與狀態（status）：
+//
+//   盤後檔 quotes-latest.json   suspended 停止交易、noTrade 當天無成交——價格是最後收盤（closeDate 那天），日漲跌不給；
+//   盤中快照 suspended 陣列     收集器今天確定它停止交易，比昨晚的盤後檔新，優先採用。
+//
+// 其餘規則不變：用「資料日期」決定，不看時鐘。
 function chooseAssetTwQuote(ticker) {
     const daily = assetDailyQuotes?.byTicker.get(ticker);
     const dailyDate = assetDailyQuotes?.tradeDate ?? '';
-    const row = assetIntradayUsable() ? assetIntradayRowOf(ticker) : undefined;
+    const intradayUsable = assetIntradayUsable();
+    const row = intradayUsable ? assetIntradayRowOf(ticker) : undefined;
     const liveDate = String(intradaySummary?.trade_date ?? '');
     const liveValid = row !== undefined && !missing(row.price) && Number(row.price) > 0;
+    const liveHalted = intradayUsable && !liveValid ? intradaySuspended?.get(ticker) : undefined;
+
+    // 官方盤後資料上線後（資料日期追上今天）改用盤後檔，和其他報價同一個規則。
+    if (liveHalted !== undefined && (daily === undefined || liveDate > dailyDate)) {
+        return {
+            session: '盤中',
+            quoteDate: liveDate,
+            quoteTime: '',
+            close: liveHalted.close,
+            priceChange: null,
+            weeklyPriceChange: liveHalted.weeklyPriceChange === null ? null : liveHalted.weeklyPriceChange * 100,
+            yearToDatePriceChange: liveHalted.yearToDatePriceChange === null
+                ? null
+                : liveHalted.yearToDatePriceChange * 100,
+            weeklyFromListing: liveHalted.weeklyFromListing,
+            yearToDateFromListing: liveHalted.yearToDateFromListing,
+            live: null,
+            preliminary: false,
+            status: 'suspended',
+            closeDate: liveHalted.closeDate,
+            resumeDate: liveHalted.resumeDate,
+            reason: liveHalted.reason
+        };
+    }
 
     if (daily !== undefined && !missing(daily.close) && (!liveValid || dailyDate >= liveDate)) {
         return {
@@ -7500,7 +7821,11 @@ function chooseAssetTwQuote(ticker) {
             weeklyFromListing: daily.weeklyFromListing === true,
             yearToDateFromListing: daily.yearToDateFromListing === true,
             live: null,
-            preliminary: false
+            preliminary: false,
+            status: daily.status === 'suspended' || daily.status === 'noTrade' ? daily.status : null,
+            closeDate: daily.closeDate ? String(daily.closeDate) : '',
+            resumeDate: daily.resumeDate ? String(daily.resumeDate) : null,
+            reason: daily.reason ? String(daily.reason) : null
         };
     }
 
@@ -7528,7 +7853,11 @@ function chooseAssetTwQuote(ticker) {
         live: intradayLiveKLine(row, intradaySummary),
 
         // 上市櫃已收盤（最後一輪在 13:35 之前）但官方收盤資料還沒上線：這是最後一輪盤中價，不是官方收盤。
-        preliminary: !isEmerging && parseHourMinute(quoteTime) >= closeMinutes - 10
+        preliminary: !isEmerging && parseHourMinute(quoteTime) >= closeMinutes - 10,
+        status: null,
+        closeDate: '',
+        resumeDate: null,
+        reason: null
     };
 }
 
@@ -7558,6 +7887,12 @@ function applyAssetTwQuotes() {
         entry.session = chosen.session;
         entry.live = chosen.live;
         entry.preliminary = chosen.preliminary;
+
+        // 停止交易／當天無成交（筆記 #84）：價格是 closeDate 那天的收盤，不是 quoteDate 的。
+        entry.status = chosen.status;
+        entry.closeDate = chosen.closeDate;
+        entry.resumeDate = chosen.resumeDate;
+        entry.reason = chosen.reason;
     }
 }
 
@@ -7808,6 +8143,12 @@ function assetHoldingForAccount(account, holding) {
     const quoteTime = account.market === '台股' ? quote?.quoteTime ?? '' : '';
     const quotePreliminary = account.market === '台股' && quote?.preliminary === true;
 
+    // 停止交易／當天無成交（筆記 #84）：價格是 quoteCloseDate 那天的收盤，不是今天的。
+    const quoteStatus = account.market === '台股' ? quote?.status ?? null : null;
+    const quoteCloseDate = quoteStatus === null ? '' : quote?.closeDate ?? '';
+    const quoteResumeDate = quoteStatus === 'suspended' ? quote?.resumeDate ?? null : null;
+    const quoteReason = quoteStatus === 'suspended' ? quote?.reason ?? null : null;
+
     if (close === null || quantity === null) {
         return {
             ...holding,
@@ -7819,7 +8160,11 @@ function assetHoldingForAccount(account, holding) {
             quoteDate,
             quoteSession,
             quoteTime,
-            quotePreliminary
+            quotePreliminary,
+            quoteStatus,
+            quoteCloseDate,
+            quoteResumeDate,
+            quoteReason
         };
     }
 
@@ -7837,7 +8182,28 @@ function assetHoldingForAccount(account, holding) {
         quoteDate,
         quoteSession,
         quoteTime,
-        quotePreliminary
+        quotePreliminary,
+        quoteStatus,
+        quoteCloseDate,
+        quoteResumeDate,
+        quoteReason
+    };
+}
+
+// 持倉的報價狀態 → 「停」徽章用的條目（和自訂頁、盤中快照的條目同一個形狀）；不是停止交易回傳 null。
+function assetHoldingSuspension(holding) {
+    if (holding?.quoteStatus !== 'suspended') {
+        return null;
+    }
+
+    return {
+        ticker: assetHoldingTicker(holding),
+        name: holding.name ?? '',
+        close: holding.price,
+        closeDate: holding.quoteCloseDate ?? '',
+        resumeDate: holding.quoteResumeDate ?? null,
+        reason: holding.quoteReason ?? null,
+        end: null
     };
 }
 
@@ -9117,7 +9483,7 @@ function makeAssetSummaryMetrics(summary, annualPreviewRows = null) {
         assetMetric('資產總值', assetCurrency(summary.totalValue),
             document.createTextNode(
                 `持倉 ${assetCurrency(summary.marketValue)} ＋ 現金 ${assetCurrency(summary.cash)}`
-                    + (summary.incomplete ? '；有美股尚缺匯率或行情' : ''))),
+                    + (summary.incomplete ? '；有持倉尚缺行情或匯率' : ''))),
         assetMetric('投入成本', assetCurrency(summary.cost),
             document.createTextNode('由每一筆持倉的成本加總')),
         assetMetric('未實現損益', assetUnrealizedText(summary.unrealized, summary.cost),
@@ -11106,6 +11472,14 @@ function makeAssetHoldings(view) {
         const row = document.createElement('tr');
         const ticker = document.createElement('td');
         ticker.textContent = holding.ticker || '—';
+
+        // 停止交易的持倉掛「停」（筆記 #84）：市值用的是停牌前最後收盤，要讓人一眼看出來。
+        const holdingSuspension = assetHoldingSuspension(holding);
+
+        if (holdingSuspension !== null) {
+            appendTickerBadges(ticker, [suspensionBadge(holdingSuspension)]);
+        }
+
         const name = document.createElement('td');
         name.className = `stock-name ${stockNameChangeClass(holding.priceChange)}`.trim();
 
@@ -11124,19 +11498,29 @@ function makeAssetHoldings(view) {
         changeValue.textContent = assetHoldingPriceChangeText(holding.priceChange);
         const session = document.createElement('small');
         session.className = 'asset-holding-quote-session';
-        session.textContent = holding.priceChange === null || holding.priceChange === undefined
-            ? '行情未提供'
-            : holding.quoteSession ?? '盤後';
+        session.textContent = holding.quoteStatus === 'suspended'
+            ? '停止交易'
+            : holding.quoteStatus === 'noTrade'
+                ? '今日無成交'
+                : holding.priceChange === null || holding.priceChange === undefined
+                    ? '行情未提供'
+                    : holding.quoteSession ?? '盤後';
 
         // 盤中標示報價時間；上市櫃收盤後到當天官方盤後資料上線之前，顯示的是最後一輪盤中價，
         // 不是官方收盤價，要明講（資料日期一追上就會自動換成盤後）。
         const quoteTimeText = holding.quoteSession === '盤中' && holding.quoteTime
             ? ` ${holding.quoteTime}`
             : '';
-        change.title = holding.quoteDate === '' || holding.quoteDate === undefined
-            ? session.textContent
-            : `${session.textContent} ${holding.quoteDate}${quoteTimeText}`
-                + (holding.quotePreliminary ? '：最後一輪盤中價，官方收盤資料尚未公布' : '');
+        const statusTitle = holdingSuspension !== null
+            ? suspensionHint(holdingSuspension)
+            : holding.quoteStatus === 'noTrade'
+                ? `今日無成交：價格是 ${suspensionDateText(holding.quoteCloseDate)} 的收盤，日漲跌不計算。`
+                : null;
+        change.title = statusTitle
+            ?? (holding.quoteDate === '' || holding.quoteDate === undefined
+                ? session.textContent
+                : `${session.textContent} ${holding.quoteDate}${quoteTimeText}`
+                    + (holding.quotePreliminary ? '：最後一輪盤中價，官方收盤資料尚未公布' : ''));
         change.append(changeValue, session);
 
         const quantity = document.createElement('td');
@@ -16659,8 +17043,12 @@ function makeAssetAccountDetails(owner, view) {
     if (view.missingQuoteTickers.length > 0) {
         const warning = document.createElement('p');
         warning.className = 'asset-data-warning';
-        warning.textContent = `下列美股尚無資料庫收盤價：${view.missingQuoteTickers.join('、')}。`
-            + '為避免把成本誤當市值，資產總值只顯示已有行情持倉的小計。';
+        warning.textContent = view.market === '美股'
+            ? `下列美股尚無資料庫收盤價：${view.missingQuoteTickers.join('、')}。`
+                + '為避免把成本誤當市值，資產總值只顯示已有行情持倉的小計。'
+            : `下列${view.market}標的查不到報價：${view.missingQuoteTickers.join('、')}。`
+                + '可能是代號輸入錯誤、剛掛牌或已終止上市（停止交易的標的有停牌前收盤，不會在這裡）。'
+                + '為避免把成本誤當市值，資產總值只顯示已有行情持倉的小計。';
         content.append(warning);
     } else if (view.market === '美股' && assetLatestUsdTwdRate === null) {
         const warning = document.createElement('p');
@@ -16797,7 +17185,11 @@ function assetHoldingsViewerRow(holding, rank, latestRow = null) {
             ? latestRow?.priceChange ?? null
             : holdingPriceChange / 100,
         weeklyPriceChange,
-        close
+        close,
+
+        // 資產頁自己的報價狀態（已依資料日期選好盤中或盤後）：停止交易就掛「停」，否則明確是 null，
+        // 不讓排行表用所選日期的停牌名單再判斷一次（筆記 #84）。
+        suspension: assetHoldingSuspension(holding)
     };
 }
 
@@ -18923,6 +19315,27 @@ function positionPopover(popoverId, anchor) {
 const positionKLinePopover = anchor => positionPopover('kline-popover', anchor);
 const positionRevenuePopover = anchor => positionPopover('revenue-popover', anchor);
 
+// K 線彈窗標題要不要掛「停」：資產頁持倉看持倉報價自己的狀態（已依資料日期選好盤中或盤後），
+// 其他地方看目前畫面的日期（盤中看盤中快照）。沒有停牌回傳 null。
+function klineSuspensionOf(ticker) {
+    if (klineUseLatestDate) {
+        const quote = assetTickerQuotes.get(ticker);
+
+        return quote?.status === 'suspended'
+            ? {
+                ticker,
+                close: quote.close,
+                closeDate: quote.closeDate ?? '',
+                resumeDate: quote.resumeDate ?? null,
+                reason: quote.reason ?? null,
+                end: null
+            }
+            : null;
+    }
+
+    return currentSuspensionOf(ticker, klineEndDate() || null);
+}
+
 function renderKLinePopover(ticker, name, anchor) {
     const popover = el('kline-popover');
     popover.setAttribute('aria-labelledby', 'kline-title');
@@ -18954,6 +19367,18 @@ function renderKLinePopover(ticker, name, anchor) {
     titleLink.title = '在 MoneyDJ 財經百科查這家公司（公司簡介、產品與競爭條件、市場銷售及競爭）';
     titleLink.textContent = `${ticker} ${name}`;
     strong.append(titleLink);
+
+    const klineSuspension = klineSuspensionOf(ticker);
+    const klineSuspensionBadge = suspensionBadge(klineSuspension);
+
+    if (klineSuspensionBadge !== null) {
+        const mark = document.createElement('span');
+        mark.className = `badge ${klineSuspensionBadge.cls} kline-title-badge`;
+        mark.textContent = klineSuspensionBadge.text;
+        mark.dataset.hint = klineSuspensionBadge.hint;
+        strong.append(' ', mark);
+    }
+
     const period = document.createElement('span');
     period.className = 'daily-kline-period';
     const endDate = klineEndDate();
@@ -18981,6 +19406,13 @@ function renderKLinePopover(ticker, name, anchor) {
     // 從其他列表開啟彈窗時也能顯示完整標的名稱。
     nameByTicker.set(ticker, name);
     card.append(header);
+
+    if (klineSuspension !== null) {
+        const note = document.createElement('p');
+        note.className = 'daily-kline-suspension-note';
+        note.textContent = suspensionHint(klineSuspension);
+        card.append(note);
+    }
 
     if (!isUs && !isEtf && !isTdr) {
         const topicRow = document.createElement('div');
@@ -19625,6 +20057,26 @@ function configureRevenuePopover() {
     window.addEventListener('scroll', () => positionRevenuePopover(revenueAnchor), true);
 }
 
+// 代號右側的標記（停／處／全）：排行、自訂頁、族群成員與資產持倉共用同一個畫法。
+function appendTickerBadges(parent, badges) {
+    if (badges.length === 0) {
+        return;
+    }
+
+    const container = document.createElement('span');
+    container.className = 'badges ticker-badges';
+
+    for (const badge of badges) {
+        const mark = document.createElement('span');
+        mark.className = 'badge ' + badge.cls;
+        mark.textContent = badge.text;
+        mark.dataset.hint = badge.hint;
+        container.append(mark);
+    }
+
+    parent.append(container);
+}
+
 // 排行榜與持倉檢視共用同一套儲存格內容：代號市場標記／交易限制、名稱 K 線、族群連結、
 // 日週漲跌、營收彈窗與創高月數都在這裡畫。呼叫端只負責提供資料列與 K 線尾端選項。
 function appendRankingCell(tr, row, column, options = {}) {
@@ -19645,20 +20097,7 @@ function appendRankingCell(tr, row, column, options = {}) {
             td.append(mark);
         }
 
-        if (tickerBadges.length > 0) {
-            const badges = document.createElement('span');
-            badges.className = 'badges ticker-badges';
-
-            for (const badge of tickerBadges) {
-                const mark = document.createElement('span');
-                mark.className = 'badge ' + badge.cls;
-                mark.textContent = badge.text;
-                mark.dataset.hint = badge.hint;
-                badges.append(mark);
-            }
-
-            td.append(badges);
-        }
+        appendTickerBadges(td, tickerBadges);
 
         tr.append(td);
         return;
@@ -19833,6 +20272,11 @@ function customMarketCountItem(counts) {
     ];
 }
 
+// 停止交易的標的不計入「全市場資料」與各市場家數（它們當天沒有行情），另外標出來讓人知道清單裡多了幾檔。
+function customSuspendedCountItems() {
+    return current.suspendedCount > 0 ? [['停止交易', `${current.suspendedCount} 檔`]] : [];
+}
+
 // 盤中報價筆數低於名冊的 85% 就明講「偏低」，不要讓使用者把缺資料看成「沒有變動」。
 // 名冊裡總有少數標的 MIS 本來就查不到（2026-10-05 夜間實測 9 檔上櫃債券 ETF），所以門檻不是 100%。
 function etfLiveCoverageText(liveCount, totalCount) {
@@ -19892,6 +20336,7 @@ function renderSummary() {
                 ['資料時間', current.capturedAt + intradayAgeText()],
                 ['全市場資料', `${current.totalStockCount} 檔`],
                 customMarketCountItem(current.marketCounts),
+                ...customSuspendedCountItems(),
                 ['成交值下限', threshold === 0 ? '不限' : `${toBillionText(threshold)} 億元`],
                 ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
             ]
@@ -19899,6 +20344,7 @@ function renderSummary() {
                 ['交易日', state.date.replaceAll('-', '/')],
                 ['全市場資料', `${current.totalStockCount} 檔`],
                 customMarketCountItem(current.marketCounts),
+                ...customSuspendedCountItems(),
                 ['成交值下限', threshold === 0 ? '不限' : `${toBillionText(threshold)} 億元`],
                 ['符合條件', `${current.rankedStockCount} 檔，每頁 ${CUSTOM_PAGE_SIZE} 檔`]
             ];
@@ -21440,6 +21886,9 @@ function applyIntradaySnapshot(document, broadcast = true) {
 
     intradayRaw = document.rows;
     intradaySummary = document.summary;
+
+    // 停止交易（停牌）的名單跟著同一輪快照走；舊快照與資料庫備援沒有這個欄位（null＝沒有判斷）。
+    intradaySuspended = normalizeIntradaySuspended(document.suspended);
     // fallback 沒有 runId 時保留已知版本，避免下一個舊 CDN 回應重新取得套用資格。
     intradaySnapshotRunId = nextRunId ?? intradaySnapshotRunId;
     intradayRawLoadedAt = Date.now();
@@ -22128,11 +22577,17 @@ async function loadCustomIntraday(silent = false, force = false) {
             new Map((reference?.rows ?? []).map(row => [row.ticker, row])));
     }
 
-    nameByTicker = new Map(liveRows.map(row => [row.ticker, row.name]));
+    // 盤中停止交易的標的 MIS 只回空殼，沒有報價也不在 liveRows 裡；收集器每輪判斷後放在快照的 suspended，
+    // 補進清單才搜尋得到（筆記 #84）。快照沒有判斷（null）時就只有有報價的列。
+    const { allRows, suspendedCount } = withSuspendedRows(
+        liveRows,
+        intradaySuspended === null ? [] : [...intradaySuspended.values()]);
 
-    const rows = liveRows.filter(row =>
-        row.value >= state.customThreshold
-        && customStatusMatches(row.ticker)
+    nameByTicker = new Map(allRows.map(row => [row.ticker, row.name]));
+
+    const rows = allRows.filter(row =>
+        (row.suspension !== undefined || row.value >= state.customThreshold)
+        && customStatusMatches(row.ticker, row)
         && customSearchMatches(row));
     const marketTotal = liveRows.reduce((total, row) => total + row.value, 0);
     const progress = sessionProgress(summary.captured_at);
@@ -22146,10 +22601,11 @@ async function loadCustomIntraday(silent = false, force = false) {
         rows,
         totalStockCount: liveRows.length,
         marketCounts: customMarketCounts(liveRows),
+        suspendedCount,
         rankedStockCount: rows.length,
         rankByTicker: new Map()
     };
-    assetTypeCounts.stock = liveRows.length;
+    assetTypeCounts.stock = allRows.length;
 
     const pageCount = Math.max(1, Math.ceil(rows.length / CUSTOM_PAGE_SIZE));
     state.customPage = Math.min(state.customPage, pageCount);
@@ -22200,21 +22656,25 @@ async function loadCustom(silent = false, force = false) {
         return;
     }
 
-    // 個股清單 = 排行檔的普通股（上市、上櫃、興櫃）＋ TDR。TDR 不進排行，所以另外讀它的逐日檔。
-    const tdr = await fetchTdrDaily(state.date);
-    const allRows = [...data.rows, ...tdr.rows.map(toCustomTdrRow)];
+    // 個股清單 = 排行檔的普通股（上市、上櫃、興櫃）＋ TDR ＋ 當天停止交易的標的。
+    // TDR 不進排行，所以另外讀它的逐日檔；停止交易的標的當天沒有行情，要從停牌區間檔補進來（筆記 #84）。
+    const [tdr] = await Promise.all([fetchTdrDaily(state.date), ensureSuspensions()]);
+    const tradedRows = [...data.rows, ...tdr.rows.map(toCustomTdrRow)];
+    const { allRows, suspendedCount } = withSuspendedRows(tradedRows, suspensionsOn(state.date));
 
     nameByTicker = new Map(allRows.map(row => [row.ticker, row.name]));
 
+    // 停止交易的列成交值是 0，不受成交值下限限制——否則下限一設就搜尋不到它們。
     const rows = allRows.filter(row =>
-        row.value >= state.customThreshold
-        && customStatusMatches(row.ticker)
+        (row.suspension !== undefined || row.value >= state.customThreshold)
+        && customStatusMatches(row.ticker, row)
         && customSearchMatches(row));
     current = {
         ...data,
         rows,
-        totalStockCount: allRows.length,
-        marketCounts: customMarketCounts(allRows),
+        totalStockCount: tradedRows.length,
+        marketCounts: customMarketCounts(tradedRows),
+        suspendedCount,
         rankedStockCount: rows.length,
         rankByTicker: new Map()
     };
@@ -22410,6 +22870,31 @@ async function fetchTdrDaily(date) {
     return tdrDailyLoading.get(key);
 }
 
+// 停止交易的標的轉成自訂頁個股表格用的列（筆記 #84）。它們在當天的日行情裡不存在，所以排行檔與 TDR 檔都沒有，
+// 自訂頁原本根本搜尋不到。價格是停牌前最後收盤，日漲跌留白，成交值 0；整列帶著條目（row.suspension），
+// 「停」徽章與提示就用它。
+const toCustomSuspendedRow = entry => ({
+    ticker: entry.ticker,
+    name: entry.name,
+    market: entry.market,
+    kind: entry.kind === 'tdr' ? 'tdr' : 'stock',
+    value: 0,
+    close: entry.close,
+    priceChange: null,
+    weeklyPriceChange: entry.weeklyPriceChange,
+    suspension: entry
+});
+
+// 把停止交易的列接在已有成交的列後面；同一檔已經有列（不該發生）就以有成交的為準。
+function withSuspendedRows(tradedRows, entries) {
+    const known = new Set(tradedRows.map(row => row.ticker));
+    const suspendedRows = entries
+        .filter(entry => entry.kind !== 'etf' && !known.has(entry.ticker))
+        .map(toCustomSuspendedRow);
+
+    return { allRows: [...tradedRows, ...suspendedRows], suspendedCount: suspendedRows.length };
+}
+
 // TDR 的快照列轉成自訂頁個股表格用的列：欄位跟排行檔的列同名，營收與族群欄位自然是空的。
 const toCustomTdrRow = row => ({
     ticker: row.ticker,
@@ -22548,7 +23033,45 @@ async function loadEtfDaily(force = false) {
         return;
     }
 
-    renderEtfRows(data.rows, 'daily', data.tradeDate || state.date);
+    // 當天停止交易的 ETF（極少見：分割、反分割的停止買賣期間）在當天的日行情裡沒有列，要從停牌區間檔補進來。
+    await ensureSuspensions();
+    const tradeDate = data.tradeDate || state.date;
+
+    renderEtfRows(
+        withSuspendedEtfRows(data.rows, suspensionsOn(state.date), tradeDate),
+        'daily',
+        tradeDate);
+}
+
+// 停止交易的 ETF 轉成 ETF 表格的列（筆記 #84）：價格是停牌前最後收盤，日漲跌留白，成交值沒有。
+const toEtfSuspendedRow = (entry, date) => ({
+    ticker: entry.ticker,
+    name: entry.name,
+    market: entry.market,
+    close: entry.close,
+    priceChange: null,
+    weeklyPriceChange: entry.weeklyPriceChange,
+    yearToDatePriceChange: entry.yearToDatePriceChange,
+    weeklyBaselineClose: null,
+    yearToDateBaselineClose: null,
+    weeklyFromListing: entry.weeklyFromListing,
+    yearToDateFromListing: entry.yearToDateFromListing,
+    tradingValue: null,
+    quoteDate: date,
+    suspension: entry
+});
+
+function withSuspendedEtfRows(rows, entries, date) {
+    const known = new Set(rows.map(row => row.ticker));
+
+    return [
+        ...rows,
+        ...entries
+            .filter(entry => entry.kind === 'etf'
+                && ['twse', 'tpex'].includes(entry.market)
+                && !known.has(entry.ticker))
+            .map(entry => toEtfSuspendedRow(entry, date))
+    ];
 }
 
 // ETF 盤中表格的列：名冊每一檔都出現，有盤中報價的填現價、當日漲跌、週與今年以來漲跌、成交值，
@@ -22559,11 +23082,32 @@ async function loadEtfDaily(force = false) {
 // 日、週、今年以來的漲跌與基準價全部由收集器用和盤後同一套規則算好放進快照（還原權息、掛牌以來），
 // 這裡只負責把名冊和即時列對起來。以前瀏覽器拿前一天的盤後檔當基準自己算，除息、分割當天會算錯
 // （00400A 2026-10-08 除息：週漲跌顯示 +2.34%，還原後是 +3.10%）。
-function buildEtfIntradayRows(catalog, liveRows, tradeDate) {
+//
+// 收集器確定停止交易的 ETF（快照的 suspended）顯示停牌前最後收盤與「停」，而不是 —：
+// 那是有官方公告為證的狀態，價格也清楚標示是停牌前的，不是拿舊數字充數（筆記 #84）。
+function buildEtfIntradayRows(catalog, liveRows, tradeDate, suspended = null) {
     const liveByKey = new Map(liveRows.map(row => [`${row.market}:${row.ticker}`, row]));
 
     return catalog.map(row => {
         const live = liveByKey.get(`${row.market}:${row.ticker}`);
+        const halted = live === undefined ? suspended?.get(row.ticker) : undefined;
+
+        if (halted !== undefined) {
+            return {
+                ...row,
+                session: 'intraday',
+                close: halted.close,
+                priceChange: null,
+                weeklyPriceChange: halted.weeklyPriceChange,
+                yearToDatePriceChange: halted.yearToDatePriceChange,
+                weeklyFromListing: halted.weeklyFromListing,
+                yearToDateFromListing: halted.yearToDateFromListing,
+                tradingValue: null,
+                quoteDate: tradeDate,
+                liveKLine: null,
+                suspension: halted
+            };
+        }
 
         return {
             ...row,
@@ -22627,7 +23171,7 @@ async function loadEtfIntraday(silent = false, force = false) {
     const liveRows = mapIntradayRows(
         raw.filter(isEtfIntradayRawRow),
         summary);
-    const rows = buildEtfIntradayRows(catalog, liveRows, summary.trade_date);
+    const rows = buildEtfIntradayRows(catalog, liveRows, summary.trade_date, intradaySuspended);
 
     lastIntradayLoadedAt = Date.now();
     renderEtfRows(rows, 'intraday', summary.trade_date, summary.captured_at, liveRows.length);
@@ -25226,6 +25770,10 @@ function makeTopicMemberTable(members, onSortChanged = null) {
             ticker.append(mark);
         }
 
+        // 停止交易的成員掛「停」（筆記 #84）：這一列的漲跌與成交比來自停牌之前，不是現在。
+        const memberSuspended = suspensionBadge(currentSuspensionOf(member.ticker));
+        appendTickerBadges(ticker, memberSuspended === null ? [] : [memberSuspended]);
+
         const name = document.createElement('td');
         name.className = 'stock-name ' + stockNameChangeClass(member.priceChangeRate);
         const memberName = member.name || topicData?.stockNames?.[member.ticker] || '—';
@@ -27506,6 +28054,15 @@ async function load() {
     if (state.view !== 'notes') {
         void ensureAttributions().then(loaded => {
             if (loaded) {
+                renderRevenueForCurrentView();
+            }
+        });
+
+        // 停止交易（停牌）的區間檔也一樣：每個頁籤都要用它掛「停」（筆記 #84），背景補載一次。
+        // 載過就直接回；只有「這次才載到」的才需要重畫。載不到不影響任何畫面，只是沒有「停」。
+        const suspensionsWereLoaded = suspensionsLoaded;
+        void ensureSuspensions().then(() => {
+            if (!suspensionsWereLoaded && suspensionsLoaded) {
                 renderRevenueForCurrentView();
             }
         });

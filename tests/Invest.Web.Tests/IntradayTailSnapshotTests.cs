@@ -47,6 +47,11 @@ public sealed class IntradayTailSnapshotTests
              "change_percent":-0.89,"year_to_date_change_percent":17.78,"year_to_date_from_listing":true},
             {"symbol":"910322","name":"康師傅-DR","market":"TWSE","kind":"tdr","price":24.15,"turnover":1000,"change_percent":0.4},
             {"symbol":"1260","name":"富味鄉","market":"EMERGING","kind":"stock","price":31.43,"turnover":123456,"change_percent":1.1}
+          ],
+          "suspended": [
+            {"symbol":"6173","name":"信昌電","market":"TPEX","kind":"stock","last_close":284.0,"last_close_date":"2026-10-06",
+             "weekly_change_percent":0.0,"year_to_date_change_percent":42.0,"resume_date":"2026-10-19","reason":"減資"},
+            {"symbol":"1589","name":"永冠-KY","market":"TWSE","kind":"stock","last_close":20.0,"last_close_date":"2026-04-02"}
           ]
         }
         """;
@@ -89,6 +94,35 @@ public sealed class IntradayTailSnapshotTests
         var listed = Load().Quotes.Single(quote => quote.Ticker == "00411A");
         Assert.True(listed.YearToDateFromListing);
         Assert.False(listed.WeeklyFromListing);
+    }
+
+    [Fact]
+    public void 停止交易名單跟著凍結_尾段不重算_停牌前收盤與恢復日原樣重建()
+    {
+        var suspended = Load().Suspended;
+
+        Assert.NotNull(suspended);
+        Assert.Equal(["1589", "6173"], suspended.Select(item => item.Ticker).Order());
+
+        var item = suspended.Single(quote => quote.Ticker == "6173");
+        Assert.Equal(Market.Tpex, item.Market);
+        Assert.Equal(284m, item.LastClose);
+        Assert.Equal(new DateOnly(2026, 10, 6), item.LastCloseDate);
+        Assert.Equal(42m, item.YearToDateChangePercent);
+        Assert.Equal(new DateOnly(2026, 10, 19), item.ResumeDate);
+        Assert.Equal("減資", item.Reason);
+
+        // 長期停牌：沒有公告的恢復日。
+        Assert.Null(suspended.Single(quote => quote.Ticker == "1589").ResumeDate);
+    }
+
+    [Fact]
+    public void 舊快照沒有停止交易欄位_重建後是null_代表沒有判斷()
+    {
+        var document = JsonSerializer.Deserialize<IntradaySnapshotPublisher.SnapshotDocument>(
+            Document.Replace("\"suspended\"", "\"notSuspended\""), Options)!;
+
+        Assert.Null(IntradaySnapshotPublisher.FromDocument(document, new DateOnly(2026, 10, 8)).Suspended);
     }
 
     [Fact]

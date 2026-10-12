@@ -474,7 +474,37 @@ public sealed class IntradaySnapshotPublisher(
             TradeDate = tradeDate,
             Quotes = quotes,
             MarketIndices = [.. new[] { Index(Market.Twse, "twse"), Index(Market.Tpex, "tpex") }.OfType<MarketIndexQuote>()],
-            ListedCapturedAt = Time("listed_captured_at") ?? document.CapturedAt
+            ListedCapturedAt = Time("listed_captured_at") ?? document.CapturedAt,
+
+            // 尾段（只更新興櫃）沿用凍結的最後一輪，停止交易的名單跟著凍結，不重算。
+            Suspended = document.Suspended?
+                .Where(item => !string.Equals(item.Market, "EMERGING", StringComparison.OrdinalIgnoreCase)
+                    && DateOnly.TryParseExact(item.LastCloseDate, "yyyy-MM-dd", out _))
+                .Select(item => new IntradaySuspendedQuote
+                {
+                    Market = string.Equals(item.Market, "TWSE", StringComparison.OrdinalIgnoreCase)
+                        ? Market.Twse
+                        : Market.Tpex,
+                    Ticker = item.Symbol,
+                    Name = item.Name,
+                    Kind = item.Kind switch
+                    {
+                        "etf" => StockKind.Etf,
+                        "tdr" => StockKind.Tdr,
+                        _ => StockKind.CommonStock
+                    },
+                    LastClose = item.LastClose,
+                    LastCloseDate = DateOnly.ParseExact(item.LastCloseDate, "yyyy-MM-dd"),
+                    WeeklyChangePercent = item.WeeklyChangePercent,
+                    YearToDateChangePercent = item.YearToDateChangePercent,
+                    WeeklyFromListing = item.WeeklyFromListing == true,
+                    YearToDateFromListing = item.YearToDateFromListing == true,
+                    ResumeDate = DateOnly.TryParseExact(item.ResumeDate, "yyyy-MM-dd", out var resume)
+                        ? resume
+                        : null,
+                    Reason = item.Reason
+                })
+                .ToArray()
         };
     }
 
@@ -1028,6 +1058,33 @@ public sealed class IntradaySnapshotPublisher(
                 JsonSerializer.SerializeToElement(topicHeat.Rows, JsonOptions));
         }
 
+        var suspended = snapshot.Suspended?
+            .OrderBy(quote => quote.Ticker, StringComparer.Ordinal)
+            .Select(quote => new SnapshotSuspended(
+                quote.Ticker,
+                quote.Name,
+                quote.Market switch
+                {
+                    Market.Twse => "TWSE",
+                    Market.Emerging => "EMERGING",
+                    _ => "TPEX"
+                },
+                quote.Kind switch
+                {
+                    StockKind.Etf => "etf",
+                    StockKind.Tdr => "tdr",
+                    _ => "stock"
+                },
+                quote.LastClose,
+                quote.LastCloseDate.ToString("yyyy-MM-dd"),
+                quote.WeeklyChangePercent,
+                quote.YearToDateChangePercent,
+                quote.WeeklyFromListing ? true : null,
+                quote.YearToDateFromListing ? true : null,
+                quote.ResumeDate?.ToString("yyyy-MM-dd"),
+                quote.Reason))
+            .ToArray();
+
         return new SnapshotDocument(
             SchemaVersion,
             runId,
@@ -1036,7 +1093,8 @@ public sealed class IntradaySnapshotPublisher(
             rows.Length,
             summary,
             rows,
-            exportedTopicHeat);
+            exportedTopicHeat,
+            suspended);
     }
 
     private sealed record PublisherSettings(string SupabaseUrl, string Bucket, string Secret, int RetainedSnapshotCount);
@@ -1049,7 +1107,26 @@ public sealed class IntradaySnapshotPublisher(
         int RowCount,
         IReadOnlyDictionary<string, object?> Summary,
         IReadOnlyList<SnapshotRow> Rows,
-        SnapshotTopicHeat? TopicHeat);
+        SnapshotTopicHeat? TopicHeat,
+        IReadOnlyList<SnapshotSuspended>? Suspended = null);
+
+    /// <summary>
+    /// 這一輪確定停止交易（停牌）的標的與停牌前最後收盤（筆記 #84）。<b>欄位不存在代表這一輪沒有判斷</b>，
+    /// 空陣列才是「判斷過了，沒有停牌」；前端據此分辨「不知道」與「沒有」。
+    /// </summary>
+    internal sealed record SnapshotSuspended(
+        [property: JsonPropertyName("symbol")] string Symbol,
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("market")] string Market,
+        [property: JsonPropertyName("kind")] string Kind,
+        [property: JsonPropertyName("last_close")] decimal LastClose,
+        [property: JsonPropertyName("last_close_date")] string LastCloseDate,
+        [property: JsonPropertyName("weekly_change_percent")] decimal? WeeklyChangePercent = null,
+        [property: JsonPropertyName("year_to_date_change_percent")] decimal? YearToDateChangePercent = null,
+        [property: JsonPropertyName("weekly_from_listing")] bool? WeeklyFromListing = null,
+        [property: JsonPropertyName("year_to_date_from_listing")] bool? YearToDateFromListing = null,
+        [property: JsonPropertyName("resume_date")] string? ResumeDate = null,
+        [property: JsonPropertyName("reason")] string? Reason = null);
 
     private sealed record TopicSnapshotDocument(
         int SchemaVersion,

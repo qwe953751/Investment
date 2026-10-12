@@ -198,8 +198,15 @@ public sealed class StaticKLineAssetTests
         var styles = ReadAsset("site.css");
 
         Assert.Contains("const stockNameChangeClass", script, StringComparison.Ordinal);
-        Assert.Contains("tickerBadges: toBadges(row.ticker)", script, StringComparison.Ordinal);
+        Assert.Contains("tickerBadges: toBadges(row.ticker, row)", script, StringComparison.Ordinal);
         Assert.Contains("className = 'badges ticker-badges'", script, StringComparison.Ordinal);
+
+        // 停止交易（筆記 #84）：「停」是實心反白的單字徽章，排在「處／全」前面；
+        // 排行、自訂頁、族群成員與資產持倉共用同一個畫法。
+        Assert.Contains("badges.push(suspended)", script, StringComparison.Ordinal);
+        Assert.Contains("function appendTickerBadges(parent, badges)", script, StringComparison.Ordinal);
+        Assert.Contains(".badge.suspended", styles, StringComparison.Ordinal);
+        Assert.Contains(":root[data-theme=\"dark\"] .badge.suspended", styles, StringComparison.Ordinal);
         Assert.Contains("stockNameChangeClass(member.priceChangeRate)", script, StringComparison.Ordinal);
         Assert.Contains("td.stock-name.stock-name-change-up", styles, StringComparison.Ordinal);
         Assert.Contains("td.stock-name.stock-name-change-down", styles, StringComparison.Ordinal);

@@ -174,11 +174,14 @@ public sealed class TradingValueRankingCalculator
         var rows = ranked
             .Select((candidate, index) =>
             {
+                // 期間內有交易、但終點那天停牌或沒成交的標的：現價沿用最後收盤、日漲跌留白，
+                // 週漲跌照終點所在的週算（筆記 #84）；終點當天有收盤的標的結果完全不變。
                 var price = PricePerformanceCalculator.Calculate(
                     _byTicker[candidate.Stock.Ticker],
                     _adjustmentsByTicker.GetValueOrDefault(candidate.Stock.Ticker, []),
                     current[^1],
-                    _listingsByTicker.GetValueOrDefault(candidate.Stock.Ticker));
+                    _listingsByTicker.GetValueOrDefault(candidate.Stock.Ticker),
+                    carryForward: true);
 
                 // 候選有上千檔，前期名次超過 MaxPreviousRankForDisplay 只是雜訊帶裡的隨機數，
                 // 顯示出來的「±1900」只會誤導人，不如顯示「新」。只有資金加速模式會踩到這個問題——

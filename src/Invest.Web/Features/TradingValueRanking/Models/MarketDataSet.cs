@@ -1,6 +1,7 @@
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
+using Invest.Web.Infrastructure.MarketData.Reference;
 
 namespace Invest.Web.Features.TradingValueRanking.Models;
 
@@ -30,6 +31,14 @@ public sealed class MarketDataSet
     /// 沒有官方參考價資料（本機沒有 data/imports-ref）時是空表，行為退回只有事件表的還原。
     /// </summary>
     public PriceAdjustmentTable AdjustmentTable { get; init; } = PriceAdjustmentTable.Empty;
+
+    /// <summary>
+    /// 官方公告的恢復買賣（減資、變更面額、ETF 分割與反分割），<b>含尚未發生的</b>：
+    /// <see cref="AdjustmentTable"/> 只留已經生效的事件，停止交易中的標的要知道「預計哪天恢復買賣、為什麼停」
+    /// 就得看這份。同時也是判斷「這檔沒有行情是停止交易，不是終止上市」最可靠的證據——
+    /// 交易所只會替還要回來的標的公告恢復買賣參考價。
+    /// </summary>
+    public IReadOnlyList<ReferenceAction> ResumptionActions { get; init; } = [];
 
     public static MarketDataSet Empty { get; } = new()
     {

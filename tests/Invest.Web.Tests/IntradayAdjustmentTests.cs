@@ -289,4 +289,188 @@ public sealed class IntradayAdjustmentTests
 
         Assert.Same(universe, adjustment.Apply(Friday, universe));
     }
+
+    // ───────── 筆記 #84：盤中沒有報價的停止交易標的 ─────────
+
+    private static readonly DateOnly NextMonday = new(2026, 10, 12);
+
+    private static IntradayAdjustment SuspendedFixture(params ReferenceAction[] actions)
+    {
+        // 信昌電 6173（上櫃）：10/02 收 275、10/05 收 280、10/06 收 284，10/07 起停止買賣；去年最後收盤 200。
+        // 訊映 4155（上市）同樣停牌；永冠-KY 1589（上市）長期停牌，沒有公告的恢復日。
+        // 00847B（上櫃債券 ETF）：名冊還在，但沒有任何官方公告。
+        var history = new[]
+        {
+            Snapshot(LastYearEnd,
+                Quote(Market.Tpex, "6173", 200m), Quote(Market.Twse, "4155", 12m),
+                Quote(Market.Twse, "1589", 18m), Quote(Market.Tpex, "00847B", 30m, StockKind.Etf)),
+            Snapshot(Friday,
+                Quote(Market.Tpex, "6173", 275m), Quote(Market.Twse, "4155", 14m),
+                Quote(Market.Twse, "1589", 20m), Quote(Market.Tpex, "00847B", 31m, StockKind.Etf)),
+            Snapshot(Monday, Quote(Market.Tpex, "6173", 280m), Quote(Market.Twse, "4155", 14.2m)),
+            Snapshot(Tuesday, Quote(Market.Tpex, "6173", 284m))
+        };
+
+        return new IntradayAdjustment(history, [], actions);
+    }
+
+    private static ReferenceAction Resume(string ticker, DateOnly date, string kind = "減資") => new()
+    {
+        Date = date, Market = Market.Tpex, Ticker = ticker,
+        PreviousClose = 284m, ReferencePrice = 301.5m, Kind = kind, Source = "TPEx 減資恢復買賣"
+    };
+
+    [Fact]
+    public void 停止交易_最後收盤與週年漲跌從盤後歷史算_日漲跌不給_並帶出官方公告的恢復日()
+    {
+        var adjustment = SuspendedFixture(Resume("6173", new DateOnly(2026, 10, 19)));
+        adjustment.Prepare(NextMonday, null, []);
+
+        var suspended = Assert.Single(
+            adjustment.DescribeSuspended(NextMonday, ["6173"], universeIsOfficial: true));
+
+        Assert.Equal("6173", suspended.Ticker);
+        Assert.Equal(Market.Tpex, suspended.Market);
+        Assert.Equal(284m, suspended.LastClose);
+        Assert.Equal(Tuesday, suspended.LastCloseDate);
+        Assert.Equal(new DateOnly(2026, 10, 19), suspended.ResumeDate);
+        Assert.Equal("減資", suspended.Reason);
+
+        // 週一盤中：本週開始前最後一個收盤就是 10/06 的 284，整週停牌 → 週 0.00%。
+        Assert.Equal(0m, suspended.WeeklyChangePercent);
+
+        // 今年以來：284 對去年最後收盤 200 = +42.00%。
+        Assert.Equal(42m, suspended.YearToDateChangePercent);
+    }
+
+    [Fact]
+    public void 停止交易_普通股只在公開名單是交易所現行名單時才判斷_備援清單可能含已終止上市的公司()
+    {
+        var adjustment = SuspendedFixture();
+        adjustment.Prepare(NextMonday, null, []);
+
+        // 長期停牌、沒有任何公告：靠「名單上有、MIS 卻沒有報價」判斷。
+        var official = adjustment.DescribeSuspended(NextMonday, ["1589"], universeIsOfficial: true);
+
+        Assert.Equal("1589", Assert.Single(official).Ticker);
+        Assert.Null(official[0].ResumeDate);
+
+        // 資料庫備援清單：這檔也許早就終止上市了，不能標成停牌。
+        Assert.Empty(adjustment.DescribeSuspended(NextMonday, ["1589"], universeIsOfficial: false));
+    }
+
+    [Fact]
+    public void 停止交易_ETF沒有官方公告的恢復日就不判斷_有公告才算()
+    {
+        var withoutAnnouncement = SuspendedFixture();
+        withoutAnnouncement.Prepare(NextMonday, null, []);
+
+        // 就算名單是官方的，ETF 名冊含已終止的商品，沒有公告不能判斷。
+        Assert.Empty(withoutAnnouncement.DescribeSuspended(NextMonday, ["00847B"], universeIsOfficial: true));
+
+        var withAnnouncement = SuspendedFixture(Resume("00847B", new DateOnly(2026, 10, 19), "分割"));
+        withAnnouncement.Prepare(NextMonday, null, []);
+
+        var suspended = Assert.Single(
+            withAnnouncement.DescribeSuspended(NextMonday, ["00847B"], universeIsOfficial: false));
+
+        Assert.Equal(StockKind.Etf, suspended.Kind);
+        Assert.Equal("分割", suspended.Reason);
+        Assert.Equal(31m, suspended.LastClose);
+    }
+
+    [Fact]
+    public void 停止交易_公告的恢復日已經過了就不算_從來沒有收盤價的代號略過_還沒準備好就不判斷()
+    {
+        // 公告的恢復買賣日是 10/08，今天 10/12 還沒有報價：公告已經過期，不能單憑它判斷。
+        var stale = SuspendedFixture(Resume("00847B", new DateOnly(2026, 10, 8)));
+        stale.Prepare(NextMonday, null, []);
+
+        Assert.Empty(stale.DescribeSuspended(NextMonday, ["00847B"], universeIsOfficial: false));
+
+        // 沒有任何歷史收盤的代號（剛掛牌、從沒成交）沒有價格可以顯示。
+        Assert.Empty(stale.DescribeSuspended(NextMonday, ["7001"], universeIsOfficial: true));
+
+        // 還沒為今天準備好（歷史沒載入或日期不符）：不判斷。
+        var notReady = SuspendedFixture();
+
+        Assert.Empty(notReady.DescribeSuspended(NextMonday, ["6173"], universeIsOfficial: true));
+
+        // 呼叫端靠 IsPreparedFor 分辨「判斷過沒有停牌」與「沒有判斷」：後者要發布成「沒有判斷」。
+        Assert.False(notReady.IsPreparedFor(NextMonday));
+        notReady.Prepare(NextMonday, null, []);
+        Assert.True(notReady.IsPreparedFor(NextMonday));
+        Assert.False(notReady.IsPreparedFor(Tuesday));
+    }
+
+    private static IntradaySnapshot Round(DateOnly date, params IntradayQuote[] quotes) => new()
+    {
+        TradeDate = date,
+        Quotes = quotes
+    };
+
+    [Fact]
+    public void 一輪的判斷_問過卻沒有報價的才算缺席_查詢失敗的代號不是停牌()
+    {
+        var adjustment = SuspendedFixture(Resume("6173", new DateOnly(2026, 10, 19)));
+        adjustment.Prepare(NextMonday, null, []);
+
+        // 這一輪問了 4 檔：台積電有報價；信昌電（停牌）與訊映（停牌）沒有；永冠-KY 查詢失敗。
+        var snapshot = Round(NextMonday, Live(Market.Twse, "2330", 2550m, 2585m));
+        string[] asked = ["2330", "6173", "4155", "1589"];
+
+        var round = adjustment.DescribeSuspendedRound(
+            snapshot, [asked], new HashSet<string> { "1589" }, universeIsOfficial: true);
+
+        Assert.NotNull(round.Suspended);
+        Assert.Equal(["4155", "6173"], round.Suspended.Select(item => item.Ticker).Order());
+        Assert.Equal(2, round.AbsentCount);
+
+        // 查詢失敗的永冠-KY 絕對不能被標成停牌——它只是這一輪沒讀到。
+        Assert.DoesNotContain(round.Suspended, item => item.Ticker == "1589");
+    }
+
+    [Fact]
+    public void 一輪的判斷_缺席多到不像停牌就整輪不判斷_回傳null而不是空清單()
+    {
+        var adjustment = SuspendedFixture();
+        adjustment.Prepare(NextMonday, null, []);
+
+        var asked = Enumerable.Range(0, IntradayAdjustment.MaxAbsentCandidates + 1)
+            .Select(index => $"X{index:000}")
+            .ToArray();
+
+        var round = adjustment.DescribeSuspendedRound(
+            Round(NextMonday), [asked], new HashSet<string>(), universeIsOfficial: true);
+
+        // null＝這一輪沒有判斷（前端不能把它當成「沒有停牌」）。
+        Assert.Null(round.Suspended);
+        Assert.Equal(asked.Length, round.AbsentCount);
+    }
+
+    [Fact]
+    public void 一輪的判斷_今天的歷史基準沒準備好就是沒有判斷_不是沒有停牌()
+    {
+        var notReady = SuspendedFixture();
+
+        var round = notReady.DescribeSuspendedRound(
+            Round(NextMonday), [["6173"]], new HashSet<string>(), universeIsOfficial: true);
+
+        Assert.Null(round.Suspended);
+    }
+
+    [Fact]
+    public void 一輪的判斷_判斷過了沒有停牌是空清單_跨主清單與ETF兩組也不會重複()
+    {
+        var adjustment = SuspendedFixture();
+        adjustment.Prepare(NextMonday, null, []);
+        var snapshot = Round(NextMonday, Live(Market.Twse, "2330", 2550m, 2585m));
+
+        var round = adjustment.DescribeSuspendedRound(
+            snapshot, [["2330"], ["2330"]], new HashSet<string>(), universeIsOfficial: true);
+
+        Assert.NotNull(round.Suspended);
+        Assert.Empty(round.Suspended);
+        Assert.Equal(0, round.AbsentCount);
+    }
 }

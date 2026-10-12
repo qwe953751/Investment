@@ -45,7 +45,12 @@ function applySnapshot() {
     };
 
     vm.createContext(context);
-    vm.runInContext(functionSource('applyIntradaySnapshot'), context);
+    vm.runInContext([
+        "const missing = value => value === null || value === undefined || value === '';",
+        functionSource('normalizeSuspensionKind'),
+        functionSource('normalizeIntradaySuspended'),
+        functionSource('applyIntradaySnapshot')
+    ].join('\n\n'), context);
 
     return { context, apply: context.applyIntradaySnapshot };
 }

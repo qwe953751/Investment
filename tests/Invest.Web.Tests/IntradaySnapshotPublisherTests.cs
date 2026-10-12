@@ -71,6 +71,59 @@ public sealed class IntradaySnapshotPublisherTests
     }
 
     [Fact]
+    public void 停止交易名單隨快照發布_沒有判斷與判斷過沒有停牌是兩件事()
+    {
+        var capturedAt = new DateTimeOffset(2026, 10, 12, 1, 0, 0, TimeSpan.Zero);
+        IntradaySnapshot Snapshot(IReadOnlyList<IntradaySuspendedQuote>? suspended) => new()
+        {
+            TradeDate = new DateOnly(2026, 10, 12),
+            Quotes = [Quote(Market.Twse, "2330", "台積電", 1_200m)],
+            Suspended = suspended
+        };
+
+        // null：這一輪沒有判斷，欄位不存在，前端不能把它當成「沒有停牌」。
+        using (var unknown = JsonDocument.Parse(
+            IntradaySnapshotPublisher.SerializeSnapshot(1, Snapshot(null), capturedAt)))
+        {
+            Assert.False(unknown.RootElement.TryGetProperty("suspended", out _));
+        }
+
+        // 空清單：判斷過了，沒有停牌。
+        using (var none = JsonDocument.Parse(
+            IntradaySnapshotPublisher.SerializeSnapshot(1, Snapshot([]), capturedAt)))
+        {
+            Assert.Equal(0, none.RootElement.GetProperty("suspended").GetArrayLength());
+        }
+
+        using var document = JsonDocument.Parse(IntradaySnapshotPublisher.SerializeSnapshot(
+            1,
+            Snapshot(
+            [
+                new IntradaySuspendedQuote
+                {
+                    Market = Market.Tpex, Ticker = "6173", Name = "信昌電", LastClose = 284m,
+                    LastCloseDate = new DateOnly(2026, 10, 6), WeeklyChangePercent = 0m,
+                    YearToDateChangePercent = 42m, ResumeDate = new DateOnly(2026, 10, 19), Reason = "減資"
+                }
+            ]),
+            capturedAt));
+        var item = Assert.Single(document.RootElement.GetProperty("suspended").EnumerateArray());
+
+        Assert.Equal("6173", item.GetProperty("symbol").GetString());
+        Assert.Equal("TPEX", item.GetProperty("market").GetString());
+        Assert.Equal("stock", item.GetProperty("kind").GetString());
+        Assert.Equal(284m, item.GetProperty("last_close").GetDecimal());
+        Assert.Equal("2026-10-06", item.GetProperty("last_close_date").GetString());
+        Assert.Equal(0m, item.GetProperty("weekly_change_percent").GetDecimal());
+        Assert.Equal(42m, item.GetProperty("year_to_date_change_percent").GetDecimal());
+        Assert.Equal("2026-10-19", item.GetProperty("resume_date").GetString());
+        Assert.Equal("減資", item.GetProperty("reason").GetString());
+
+        // 一般報價列沒有因此多出任何東西。
+        Assert.False(document.RootElement.GetProperty("rows")[0].TryGetProperty("last_close", out _));
+    }
+
+    [Fact]
     public void 舊快照清理只刪除超出保留數量的版本檔()
     {
         var objects = new[]

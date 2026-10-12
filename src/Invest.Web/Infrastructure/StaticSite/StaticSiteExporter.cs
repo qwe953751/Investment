@@ -38,6 +38,7 @@ public sealed class StaticSiteExporter(
     TradingValueRankingQueryService ranking,
     MarketStructureQueryService marketStructure,
     MarketFlagClient marketFlags,
+    ListedCompanyClient listedCompanies,
     GoogleSheetTopicClient topics,
     MaterialEventStore materialEvents,
     IntradaySnapshotPublisher snapshotPublisher,
@@ -168,9 +169,29 @@ public sealed class StaticSiteExporter(
 
         if (tradingDates.Length > 0)
         {
+            // 停止交易（停牌）的標的在交易所的日行情裡整列消失。現行公司名單用來分辨「停牌」與「終止上市」；
+            // 抓不到就退回比較保守的判斷（最近 20 個交易日內還有行情），不讓匯出失敗。
+            var listed = await listedCompanies.TryGetListedTickersAsync(cancellationToken);
+            var suspensions = TradingSuspensionBuilder.Build(
+                dataSet,
+                listed,
+                selectableDates.Count > 0 ? selectableDates[0] : null);
+
+            progress?.Report(
+                $"停止交易的標的：目前 {suspensions.Count(item => item.IsOngoing)} 檔"
+                + (listed is null ? "（現行公司名單沒讀到，用最近 20 個交易日的行情判斷）" : string.Empty)
+                + $"，近期區間共 {suspensions.Count} 段");
+
             await WriteLatestQuotesAsync(
                 Path.Combine(dataDirectory, "quotes-latest.json"),
                 dataSet,
+                tradingDates[^1],
+                suspensions,
+                cancellationToken);
+
+            await WriteSuspensionsAsync(
+                Path.Combine(dataDirectory, "suspensions.json"),
+                suspensions,
                 tradingDates[^1],
                 cancellationToken);
         }
@@ -1728,11 +1749,20 @@ public sealed class StaticSiteExporter(
     ///
     /// 每一檔都和自訂頁用同一個計算器（<see cref="PricePerformanceCalculator"/>）、同一份還原權息表算出，
     /// 不是另一套公式；日、週、今年以來漲跌都是小數（0.0123 = +1.23%），和排行、ETF 每日檔一致。
+    ///
+    /// <para>
+    /// <b>最新一天沒有收盤的標的也要有一列</b>（筆記 #84）：停止交易的標的在交易所的日行情裡整列消失，
+    /// 當天沒成交的冷門股則是有列沒收盤；兩者以前都被略過，資產頁因此沒有價格可用，
+    /// 持倉市值與整個帳戶的資產總值全部變成「—」。現在這兩種都輸出最後一個收盤與它的日期，
+    /// 以 <c>status</c> 標示（<c>suspended</c> 停止交易、<c>noTrade</c> 當天無成交），日漲跌不輸出，
+    /// 週與年初至今照最新交易日所在的週、年計算。已終止上市的標的（沒有列、也不在停止交易名單）照舊不輸出。
+    /// </para>
     /// </summary>
     internal static async Task WriteLatestQuotesAsync(
         string path,
         MarketDataSet dataSet,
         DateOnly latestDate,
+        IReadOnlyList<TradingSuspension> suspensions,
         CancellationToken cancellationToken)
     {
         var rowsByTicker = dataSet.DailyTrading
@@ -1744,23 +1774,55 @@ public sealed class StaticSiteExporter(
                 group => group.Key,
                 group => (IReadOnlyList<StockPriceAdjustment>)group.ToArray(),
                 StringComparer.Ordinal);
+        var ongoing = suspensions
+            .Where(item => item.IsOngoing)
+            .GroupBy(item => item.Ticker, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.MaxBy(item => item.Start)!, StringComparer.Ordinal);
         var quotes = new List<LatestQuoteExport>();
 
         foreach (var stock in dataSet.Stocks
             .Where(stock => stock.Market is Market.Twse or Market.Tpex or Market.Emerging)
             .OrderBy(stock => stock.Ticker, StringComparer.Ordinal))
         {
-            if (!rowsByTicker.TryGetValue(stock.Ticker, out var history)
-                || !history.Any(row => row.TradingDate == latestDate && row.ClosePrice is > 0m))
+            if (!rowsByTicker.TryGetValue(stock.Ticker, out var history))
             {
                 continue;
+            }
+
+            var todayRow = history.FirstOrDefault(row => row.TradingDate == latestDate);
+            var hasClose = todayRow?.ClosePrice is > 0m;
+            string? status = null;
+
+            if (!hasClose)
+            {
+                if (ongoing.ContainsKey(stock.Ticker))
+                {
+                    status = "suspended";
+                }
+                else if (todayRow is not null)
+                {
+                    status = "noTrade";
+                }
+                else
+                {
+                    continue;
+                }
             }
 
             var performance = PricePerformanceCalculator.Calculate(
                 history,
                 eventsByTicker.GetValueOrDefault(stock.Ticker, []),
                 latestDate,
-                dataSet.AdjustmentTable.Listings.GetValueOrDefault(stock.Ticker));
+                dataSet.AdjustmentTable.Listings.GetValueOrDefault(stock.Ticker),
+                carryForward: true);
+
+            // 從來沒有過收盤價（剛掛牌就停牌、從沒成交）：沒有價格可以顯示。
+            if (performance.Close is not { } close)
+            {
+                continue;
+            }
+
+            var suspension = status == "suspended" ? ongoing[stock.Ticker] : null;
 
             quotes.Add(new LatestQuoteExport(
                 stock.Ticker,
@@ -1772,17 +1834,70 @@ public sealed class StaticSiteExporter(
                     StockKind.Tdr => "tdr",
                     _ => "stock"
                 },
-                Round(history.First(row => row.TradingDate == latestDate).ClosePrice),
+                Round(close),
                 Round(performance.DailyChangeRate),
                 Round(performance.WeeklyChangeRate),
                 Round(performance.YearToDateChangeRate),
                 performance.WeeklyFromListing ? true : null,
-                performance.YearToDateFromListing ? true : null));
+                performance.YearToDateFromListing ? true : null,
+                status,
+                status is null ? null : performance.CloseDate?.ToString("yyyy-MM-dd"),
+                suspension?.ResumeDate?.ToString("yyyy-MM-dd"),
+                suspension?.Reason));
         }
 
         await WriteJsonAsync(
             path,
             new LatestQuotesExport(latestDate.ToString("yyyy-MM-dd"), quotes),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// 停止交易的區間（<c>data/suspensions.json</c>）：每一段的標的、起迄交易日、停牌前最後收盤，
+    /// 以及停牌期間每個週／年一換時的週、年初至今漲跌。前端用它決定任何一天哪些標的要掛「停」，
+    /// 以及自訂頁要補哪些列（這些標的在當天的日行情裡不存在，自訂頁原本根本搜尋不到）。
+    /// 輸出的區間依代號、起始日排序，沒有任何隨機順序。
+    ///
+    /// ETF 的外幣交易線（00625K、00687C 這類）不輸出：台股頁籤只顯示新台幣商品，這份檔案的用途是
+    /// 「哪一天掛『停』、自訂頁要補哪些列」。資產頁持倉的報價另走 <c>quotes-latest.json</c>，不受影響。
+    /// </summary>
+    internal static async Task WriteSuspensionsAsync(
+        string path,
+        IReadOnlyList<TradingSuspension> suspensions,
+        DateOnly latestDate,
+        CancellationToken cancellationToken)
+    {
+        var episodes = suspensions
+            .Where(item => !(item.Kind == StockKind.Etf && TaiwanSecurityRules.IsForeignCurrencyEtfLine(item.Ticker)))
+            .OrderBy(item => item.Ticker, StringComparer.Ordinal)
+            .ThenBy(item => item.Start)
+            .Select(item => new SuspensionExport(
+                item.Ticker,
+                item.Name,
+                RankingFormatter.ToMarketKey(item.Market),
+                item.Kind switch
+                {
+                    StockKind.Etf => "etf",
+                    StockKind.Tdr => "tdr",
+                    _ => "stock"
+                },
+                item.Start.ToString("yyyy-MM-dd"),
+                item.End?.ToString("yyyy-MM-dd"),
+                Round(item.Close),
+                item.CloseDate.ToString("yyyy-MM-dd"),
+                item.ResumeDate?.ToString("yyyy-MM-dd"),
+                item.Reason,
+                [.. item.Segments.Select(segment => new SuspensionSegmentExport(
+                    segment.From.ToString("yyyy-MM-dd"),
+                    Round(segment.WeeklyChangeRate),
+                    Round(segment.YearToDateChangeRate),
+                    segment.WeeklyFromListing ? true : null,
+                    segment.YearToDateFromListing ? true : null))]))
+            .ToArray();
+
+        await WriteJsonAsync(
+            path,
+            new SuspensionsExport(latestDate.ToString("yyyy-MM-dd"), episodes),
             cancellationToken);
     }
 
@@ -2213,6 +2328,10 @@ public sealed class StaticSiteExporter(
 
     private sealed record LatestQuotesExport(string TradeDate, IReadOnlyList<LatestQuoteExport> Rows);
 
+    /// <param name="Status">
+    /// 最新交易日沒有收盤的標的才有：<c>suspended</c> 停止交易（日行情裡整列消失）、<c>noTrade</c> 當天無成交。
+    /// 此時 <paramref name="Close"/> 是最後一個收盤、<paramref name="CloseDate"/> 是那一天，日漲跌不輸出。
+    /// </param>
     private sealed record LatestQuoteExport(
         string Ticker,
         string Name,
@@ -2223,7 +2342,33 @@ public sealed class StaticSiteExporter(
         decimal? WeeklyPriceChange,
         decimal? YearToDatePriceChange,
         bool? WeeklyFromListing = null,
-        bool? YearToDateFromListing = null);
+        bool? YearToDateFromListing = null,
+        string? Status = null,
+        string? CloseDate = null,
+        string? ResumeDate = null,
+        string? Reason = null);
+
+    private sealed record SuspensionsExport(string AsOf, IReadOnlyList<SuspensionExport> Episodes);
+
+    private sealed record SuspensionExport(
+        string Ticker,
+        string Name,
+        string Market,
+        string Kind,
+        string Start,
+        string? End,
+        decimal Close,
+        string CloseDate,
+        string? ResumeDate,
+        string? Reason,
+        IReadOnlyList<SuspensionSegmentExport> Segments);
+
+    private sealed record SuspensionSegmentExport(
+        string From,
+        decimal? Weekly,
+        decimal? YearToDate,
+        bool? WeeklyFromListing,
+        bool? YearToDateFromListing);
 
     /// <param name="ForeignCurrency">
     /// 只有外幣交易線（00625K、00687C 這類 K／C 結尾的 ETF）才是 true，其餘一律 null 不輸出。

@@ -30,6 +30,8 @@ public sealed class IntradayAdjustment
     private Dictionary<string, DailyStockTrading[]> _baselines = new(StringComparer.Ordinal);
     private Dictionary<string, StockPriceAdjustment[]> _eventsByTicker = new(StringComparer.Ordinal);
     private Dictionary<string, decimal> _todayFactors = new(StringComparer.Ordinal);
+    private Dictionary<string, (Market Market, string Name, StockKind Kind)> _latestMeta = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ReferenceAction[]> _resumptionsByTicker;
 
     public IntradayAdjustment(
         IReadOnlyList<DailyQuoteSnapshot> history,
@@ -39,10 +41,24 @@ public sealed class IntradayAdjustment
         _history = history;
         _references = references;
         _actions = actions;
+        _resumptionsByTicker = actions
+            .Where(action => action.IsResumption)
+            .GroupBy(action => action.Ticker, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(action => action.Date).ToArray(),
+                StringComparer.Ordinal);
     }
 
     /// <summary>歷史加今天算出來的還原權息表（含每一天的基準價），給盤中也要用同一份基準的其他計算用。</summary>
     public PriceAdjustmentTable Table => _table;
+
+    /// <summary>
+    /// 有沒有為這個交易日準備好（歷史已載入、今天的基準價與事件已算出）。
+    /// 沒準備好時 <see cref="DescribeSuspended"/> 一律回傳空清單——那不是「判斷過沒有停牌」，而是「沒有判斷」，
+    /// 呼叫端要先用這個確認，才不會把「不知道」當成「沒有」。
+    /// </summary>
+    public bool IsPreparedFor(DateOnly tradeDate) => _preparedFor == tradeDate;
 
     public PriceAdjustmentReport Report => _table.Report;
 
@@ -152,6 +168,121 @@ public sealed class IntradayAdjustment
         return result;
     }
 
+    /// <summary>缺席代號多到這個數量就不像停牌（多半是 MIS 本身異常），整輪不判斷。</summary>
+    public const int MaxAbsentCandidates = 80;
+
+    /// <summary>
+    /// 一輪收集結束後的判斷（筆記 #84）：這一輪問過、卻沒有報價、而且不是「查詢失敗」的代號，確定是停止交易的有哪些。
+    ///
+    /// 回傳的 <c>Suspended</c> 是 null 代表<b>這一輪沒有判斷</b>（今天的歷史基準沒準備好、缺席代號多到不像停牌），
+    /// 空清單才是「判斷過了，沒有停牌」；前端據此分辨「不知道」與「沒有」。
+    /// </summary>
+    /// <param name="snapshot">已併入個股、ETF、TDR、興櫃並補洞完成的這一輪報價。</param>
+    /// <param name="askedGroups">這一輪實際問過 MIS 的代號，主清單、ETF、TDR 各一組；沒問成的（整路失敗）不要放進來。</param>
+    /// <param name="failed">這一輪查詢失敗的代號：它們只是沒讀到，不是停牌。</param>
+    public SuspendedRound DescribeSuspendedRound(
+        IntradaySnapshot snapshot,
+        IEnumerable<IReadOnlyList<string>> askedGroups,
+        IReadOnlySet<string> failed,
+        bool universeIsOfficial)
+    {
+        if (!IsPreparedFor(snapshot.TradeDate))
+        {
+            return new SuspendedRound(null, 0);
+        }
+
+        var returned = snapshot.Quotes
+            .Select(quote => quote.Ticker)
+            .ToHashSet(StringComparer.Ordinal);
+        var absent = askedGroups
+            .SelectMany(group => group)
+            .Where(ticker => !returned.Contains(ticker) && !failed.Contains(ticker))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        return absent.Length > MaxAbsentCandidates
+            ? new SuspendedRound(null, absent.Length)
+            : new SuspendedRound(DescribeSuspended(snapshot.TradeDate, absent, universeIsOfficial), absent.Length);
+    }
+
+    /// <summary>
+    /// 今天沒有報價的標的裡，哪些確定是停止交易（停牌），並附上停牌前最後的收盤與週、年初至今漲跌（筆記 #84）。
+    ///
+    /// 停止交易的標的盤中 MIS 只回空殼，連昨收都沒有，所以最後收盤只能從盤後歷史來。
+    /// 週、年初至今由 <see cref="PricePerformanceCalculator"/> 的沿用最後收盤模式算——
+    /// 和盤後匯出同一個計算器，今天沒有價格變動所以日漲跌不算。
+    ///
+    /// <para>
+    /// <b>什麼才算「確定」</b>（寧可漏標，不可誤標）：
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>官方已公告恢復買賣日（今天或之後）：交易所只會替還要回來的標的公告，一定是停止交易。</description></item>
+    /// <item><description>普通股且公開名單是交易所現行公司名單（<paramref name="universeIsOfficial"/>）：
+    /// 名單上的公司就是還在掛牌的，MIS 不回報價就是停牌。資料庫備援清單可能含已終止上市的公司，不算。</description></item>
+    /// </list>
+    /// ETF、TDR 沒有官方公告就不判斷：官方名冊含已終止的商品，沒有報價不代表停牌。
+    /// 沒有歷史收盤的代號（從沒成交過）沒有價格可以顯示，也略過。
+    /// </summary>
+    public IReadOnlyList<IntradaySuspendedQuote> DescribeSuspended(
+        DateOnly tradeDate,
+        IEnumerable<string> absentTickers,
+        bool universeIsOfficial)
+    {
+        if (_preparedFor != tradeDate)
+        {
+            return [];
+        }
+
+        var result = new List<IntradaySuspendedQuote>();
+
+        foreach (var ticker in absentTickers.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+        {
+            if (!_baselines.TryGetValue(ticker, out var history)
+                || !_latestMeta.TryGetValue(ticker, out var meta))
+            {
+                continue;
+            }
+
+            var announced = _resumptionsByTicker.GetValueOrDefault(ticker)
+                ?.FirstOrDefault(action => action.Date >= tradeDate);
+
+            if (announced is null && !(meta.Kind == StockKind.CommonStock && universeIsOfficial))
+            {
+                continue;
+            }
+
+            var performance = PricePerformanceCalculator.Calculate(
+                history,
+                _eventsByTicker.GetValueOrDefault(ticker, []),
+                tradeDate,
+                _table.Listings.GetValueOrDefault(ticker),
+                carryForward: true);
+
+            if (performance.Close is not { } close || performance.CloseDate is not { } closeDate)
+            {
+                continue;
+            }
+
+            result.Add(new IntradaySuspendedQuote
+            {
+                Market = meta.Market,
+                Ticker = ticker,
+                Name = meta.Name,
+                Kind = meta.Kind,
+                LastClose = close,
+                LastCloseDate = closeDate,
+                WeeklyChangePercent = ToPercent(performance.WeeklyChangeRate),
+                YearToDateChangePercent = ToPercent(performance.YearToDateChangeRate),
+                WeeklyFromListing = performance.WeeklyFromListing,
+                YearToDateFromListing = performance.YearToDateFromListing,
+                ResumeDate = announced?.Date,
+                Reason = announced?.Kind
+            });
+        }
+
+        return result;
+    }
+
     private IntradayQuote Enrich(DateOnly tradeDate, IntradayQuote quote)
     {
         // 官方參考價資料算得出來的基準價優先；上市的參考價沒讀到時退回 MIS 的昨收。
@@ -217,6 +348,7 @@ public sealed class IntradayAdjustment
         var weekStart = tradeDate.AddDays(-daysSinceMonday);
         var previousYearEnd = new DateOnly(tradeDate.Year - 1, 12, 31);
         var perTicker = new Dictionary<string, (DateOnly Date, decimal Close)?[]>(StringComparer.Ordinal);
+        var meta = new Dictionary<string, (Market Market, string Name, StockKind Kind)>(StringComparer.Ordinal);
 
         foreach (var snapshot in _history.Where(snapshot => snapshot.TradingDate < tradeDate))
         {
@@ -226,6 +358,9 @@ public sealed class IntradayAdjustment
                 {
                     continue;
                 }
+
+                // 歷史由舊到新，後面的覆蓋前面的，留下最新的名稱、市場與種類。
+                meta[quote.Ticker] = (quote.Market, quote.Name, quote.Kind);
 
                 if (!perTicker.TryGetValue(quote.Ticker, out var slots))
                 {
@@ -249,6 +384,8 @@ public sealed class IntradayAdjustment
             }
         }
 
+        _latestMeta = meta;
+
         return perTicker.ToDictionary(
             pair => pair.Key,
             pair => pair.Value
@@ -266,3 +403,7 @@ public sealed class IntradayAdjustment
             StringComparer.Ordinal);
     }
 }
+
+/// <param name="Suspended">確定停止交易的標的；null 代表這一輪沒有判斷。</param>
+/// <param name="AbsentCount">這一輪問過卻沒有報價、也不是查詢失敗的代號數（含不是停牌的）。</param>
+public sealed record SuspendedRound(IReadOnlyList<IntradaySuspendedQuote>? Suspended, int AbsentCount);

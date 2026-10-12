@@ -96,7 +96,7 @@ public sealed class TradingValueRankingQueryService(
 
         LogAdjustmentReport(adjustmentTable.Report, references.Count, snapshots.Count);
 
-        var dataSet = ToDataSet(snapshots, adjustmentTable);
+        var dataSet = ToDataSet(snapshots, adjustmentTable, actions);
 
         logger.LogInformation(
             "已載入 {DayCount} 個交易日、{StockCount} 檔個股的行情，還原權息事件 {AdjustmentCount} 筆。",
@@ -180,7 +180,8 @@ public sealed class TradingValueRankingQueryService(
     /// </summary>
     private static MarketDataSet ToDataSet(
         IReadOnlyList<DailyQuoteSnapshot> snapshots,
-        PriceAdjustmentTable adjustmentTable)
+        PriceAdjustmentTable adjustmentTable,
+        IReadOnlyList<ReferenceAction> actions)
     {
         var stocks = new Dictionary<string, Stock>();
         var trading = new List<DailyStockTrading>();
@@ -226,7 +227,8 @@ public sealed class TradingValueRankingQueryService(
             DailyTrading = trading,
             MarketIndices = marketIndices,
             PriceAdjustments = adjustmentTable.Adjustments,
-            AdjustmentTable = adjustmentTable
+            AdjustmentTable = adjustmentTable,
+            ResumptionActions = [.. actions.Where(action => action.IsResumption)]
         };
     }
 }

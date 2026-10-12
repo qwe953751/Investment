@@ -705,4 +705,11 @@ public sealed record IntradaySnapshot
     /// 一般輪次為 null（等於收集時間）。
     /// </summary>
     public DateTimeOffset? ListedCapturedAt { get; init; }
+
+    /// <summary>
+    /// 這一輪確定停止交易的標的與停牌前最後收盤。<b>null 代表這一輪沒有判斷</b>（還原權息沒準備好、
+    /// 缺席代號多到不像停牌、公開名單退回資料庫備援……），空清單才代表「判斷過了，沒有停牌」。
+    /// 前端只在這個欄位不是 null 時才信任它，不能把「沒有判斷」當成「沒有停牌」。
+    /// </summary>
+    public IReadOnlyList<IntradaySuspendedQuote>? Suspended { get; init; }
 }

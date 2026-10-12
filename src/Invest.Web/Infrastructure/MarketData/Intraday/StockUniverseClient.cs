@@ -17,6 +17,13 @@ public sealed class StockUniverseClient(HttpClient httpClient, ILogger<StockUniv
     private const string TpexUrl = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O";
     private const int MaxAttempts = 3;
 
+    /// <summary>
+    /// 最近一次 <see cref="GetTickersAsync(IReadOnlySet{string}, CancellationToken)"/> 是不是退回了資料庫備援清單。
+    /// 交易所現行公司名單天然只含還在掛牌的公司，所以「名單裡有、MIS 卻沒回報價」才能判成停止交易；
+    /// 資料庫備援清單可能含已終止上市的公司，這種判斷就不成立（筆記 #84）。
+    /// </summary>
+    public bool LastLoadUsedFallback { get; private set; }
+
     public Task<IReadOnlyList<(Market Market, string Ticker)>> GetTickersAsync(
         CancellationToken cancellationToken = default)
         => GetTickersAsync(new HashSet<string>(StringComparer.Ordinal), cancellationToken);
@@ -42,6 +49,7 @@ public sealed class StockUniverseClient(HttpClient httpClient, ILogger<StockUniv
             }
 
             logger.LogInformation("個股清單：上市 {Twse} 檔、上櫃 {Tpex} 檔。", twse.Count, tpex.Count);
+            LastLoadUsedFallback = false;
 
             return
             [
@@ -69,6 +77,7 @@ public sealed class StockUniverseClient(HttpClient httpClient, ILogger<StockUniv
         CancellationToken cancellationToken)
     {
         logger.LogWarning(exception, "交易所個股清單取得失敗，改用資料庫中的個股清單。");
+        LastLoadUsedFallback = true;
 
         var stored = await SecurityCatalog.LoadForIntradayAsync(cancellationToken);
         var fallback = ExcludeTickers(stored, excludedTickers);

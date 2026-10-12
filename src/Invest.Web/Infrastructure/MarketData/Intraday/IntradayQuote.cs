@@ -126,3 +126,41 @@ public sealed record IntradayQuote
     /// </summary>
     public decimal? AdjustmentFactor { get; init; }
 }
+
+/// <summary>
+/// 這一輪沒有報價、但確定是「停止交易」（停牌）的標的，附上停牌前最後一個收盤（筆記 #84）。
+///
+/// 停止交易的標的在盤中 MIS 只回空殼，既沒有報價也沒有昨收，畫面因此看不到它、搜尋不到它，
+/// 持倉也沒有價格可用。收集器用盤後歷史（<c>IntradayAdjustment</c>）補上最後收盤與週、年初至今漲跌，
+/// 隨快照一起發布；日漲跌不計算（今天沒有價格變動）。
+/// </summary>
+public sealed record IntradaySuspendedQuote
+{
+    public required Market Market { get; init; }
+
+    public required string Ticker { get; init; }
+
+    public required string Name { get; init; }
+
+    public StockKind Kind { get; init; } = StockKind.CommonStock;
+
+    /// <summary>停止交易前最後一個收盤（原始價）與那一天。</summary>
+    public required decimal LastClose { get; init; }
+
+    public required DateOnly LastCloseDate { get; init; }
+
+    /// <summary>本週漲跌幅（百分比）；整週都在停牌時是 0。</summary>
+    public decimal? WeeklyChangePercent { get; init; }
+
+    /// <summary>今年以來漲跌幅（百分比）。</summary>
+    public decimal? YearToDateChangePercent { get; init; }
+
+    public bool WeeklyFromListing { get; init; }
+
+    public bool YearToDateFromListing { get; init; }
+
+    /// <summary>官方公告的恢復買賣日與公告種類；沒有公告（長期停牌）時為 null。</summary>
+    public DateOnly? ResumeDate { get; init; }
+
+    public string? Reason { get; init; }
+}

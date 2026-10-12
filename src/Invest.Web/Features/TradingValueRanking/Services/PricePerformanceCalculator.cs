@@ -21,6 +21,12 @@ namespace Invest.Web.Features.TradingValueRanking.Services;
 /// 期初之前沒有收盤（今年才掛牌）時，起算點改用掛牌參考價（<see cref="ListingReference"/>），
 /// 結果標示為「掛牌以來」。
 /// </description></item>
+/// <item><description>
+/// <b>沿用最後收盤</b>（<c>carryForward</c>，筆記 #84）：標的在 <c>endDate</c> 這天沒有收盤（停止交易、當天無成交）時，
+/// 現價改用 <c>endDate</c> 以前最後一個收盤，<b>日漲跌不計算</b>（今天沒有價格變動，不能算成 0%），
+/// 週與年初至今仍照 <c>endDate</c> 所在的週、年取基準——整週都在停牌時週漲跌就是 0.00%，這是對的。
+/// 預設關閉，既有呼叫端的行為完全不變。
+/// </description></item>
 /// </list>
 /// </summary>
 public static class PricePerformanceCalculator
@@ -29,7 +35,8 @@ public static class PricePerformanceCalculator
         IEnumerable<DailyStockTrading> source,
         IEnumerable<StockPriceAdjustment> sourceAdjustments,
         DateOnly endDate,
-        ListingReference? listing = null)
+        ListingReference? listing = null,
+        bool carryForward = false)
     {
         var rows = source
             .Where(row => row.TradingDate <= endDate)
@@ -84,6 +91,16 @@ public static class PricePerformanceCalculator
             }
         }
 
+        // endDate 當天沒有收盤：沿用 endDate 以前最後一個收盤當現價（日漲跌在最後一併排除）。
+        var carried = false;
+
+        if (carryForward && endClose is null && dailyBaseline is { } lastClose && dailyBaselineDate is { } lastCloseDate)
+        {
+            endClose = lastClose;
+            endCloseDate = lastCloseDate;
+            carried = true;
+        }
+
         var adjustedDaily = endReference is > 0m
             ? endReference
             : Rebase(dailyBaseline, dailyBaselineDate, endCloseDate, adjustments);
@@ -114,13 +131,16 @@ public static class PricePerformanceCalculator
             adjustments);
 
         return new PricePerformance(
-            ChangeRate(endClose, adjustedDaily),
+            carried ? null : ChangeRate(endClose, adjustedDaily),
             ChangeRate(endClose, adjustedWeekly),
             ChangeRate(endClose, adjustedYearToDate),
             adjustedWeekly,
             adjustedYearToDate,
             weeklyFromListing,
-            yearToDateFromListing);
+            yearToDateFromListing,
+            endClose,
+            endCloseDate,
+            carried);
     }
 
     /// <summary>
@@ -156,6 +176,9 @@ public static class PricePerformanceCalculator
             : null;
 }
 
+/// <param name="Close">算出這些漲跌用的現價（<c>endDate</c> 當天的收盤；沿用模式下是更早的最後一個收盤）。</param>
+/// <param name="CloseDate">那個收盤的交易日。</param>
+/// <param name="Carried">現價是不是沿用 <c>endDate</c> 以前的收盤（<c>endDate</c> 當天沒有收盤）。</param>
 public sealed record PricePerformance(
     decimal? DailyChangeRate,
     decimal? WeeklyChangeRate,
@@ -163,4 +186,7 @@ public sealed record PricePerformance(
     decimal? WeeklyBaselineClose,
     decimal? YearToDateBaselineClose,
     bool WeeklyFromListing = false,
-    bool YearToDateFromListing = false);
+    bool YearToDateFromListing = false,
+    decimal? Close = null,
+    DateOnly? CloseDate = null,
+    bool Carried = false);

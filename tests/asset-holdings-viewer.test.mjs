@@ -59,6 +59,7 @@ function holdingsViewerRow() {
         "const assetTickerQuotes = new Map([['2308', { market: 'TWSE', name: '台燿', weeklyPriceChange: 5.88 }], ['2330', { market: 'TWSE', name: '台積電' }]]);",
         functionSource('assetNumber'),
         functionSource('assetHoldingTicker'),
+        functionSource('assetHoldingSuspension'),
         functionSource('assetHoldingsViewerMarketCode'),
         functionSource('assetHoldingsViewerRow')
     ].join('\n\n'), context);
