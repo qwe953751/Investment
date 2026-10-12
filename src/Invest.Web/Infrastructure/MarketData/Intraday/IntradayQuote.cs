@@ -105,6 +105,9 @@ public sealed record IntradayQuote
     /// </summary>
     public decimal? ReferencePrice { get; init; }
 
+    /// <summary>MIS 原始昨收 y；與會依權息規則校正的 ReferencePrice 分開保存。</summary>
+    public decimal? RawPreviousClose { get; init; }
+
     /// <summary>本週漲跌幅（百分比）；基準是上週最後一個收盤，已換算期間內的權益事件。</summary>
     public decimal? WeeklyChangePercent { get; init; }
 

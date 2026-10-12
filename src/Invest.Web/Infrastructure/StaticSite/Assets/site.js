@@ -2230,6 +2230,9 @@ let dates = [];
 let marketIndices = new Map();
 let marketHeatHistory = [];
 let marketIndexYearStarts = new Map();
+let marketStructureDescriptor = null;
+let marketStructureClose = null;
+let marketStructureRequestSequence = 0;
 let version = '';
 let latestTradingDate = '';
 let marketHeatAnalysisOpen = false;
@@ -20021,6 +20024,234 @@ function renderSummary() {
     if (!current.marketHeat) {
         summary.append(indexRow);
     }
+
+    const structure = current.marketStructure
+        ?? (state.view === 'daily'
+            && state.comparisonMode === 'single'
+            && state.date === marketStructureDescriptor?.tradeDate
+                ? marketStructureClose
+                : null);
+    if (structure || current.marketStructurePending) {
+        summary.append(renderMarketStructure(structure, current.marketStructurePending === true));
+    }
+}
+
+function marketStructurePercent(value) {
+    return value === null || value === undefined || !Number.isFinite(Number(value))
+        ? '—'
+        : `${Number(value).toFixed(2)}%`;
+}
+
+function renderMarketStructure(result, pending = false) {
+    const panel = document.createElement('section');
+    panel.className = 'market-structure-panel';
+
+    const heading = document.createElement('div');
+    heading.className = 'market-structure-heading';
+    const title = document.createElement('strong');
+    title.textContent = '市場結構';
+    const mode = document.createElement('span');
+    mode.textContent = state.view === 'intraday' ? '盤中同輪結果' : '最新單日盤後結果';
+    heading.append(title, mode);
+    panel.append(heading);
+
+    if (pending) {
+        const waiting = document.createElement('p');
+        waiting.className = 'market-structure-waiting';
+        waiting.textContent = '正在等待這一輪行情的分類結果。';
+        panel.append(waiting);
+        return panel;
+    }
+
+    if (!result) {
+        return panel;
+    }
+
+    const date = document.createElement('span');
+    date.className = 'market-structure-date';
+    date.textContent = `${String(result.tradeDate ?? '').replaceAll('-', '/')} · 規則 ${result.rulesVersion ?? '—'}`;
+    heading.append(date);
+
+    if (result.isEstimated) {
+        const estimate = document.createElement('p');
+        estimate.className = 'market-structure-estimate';
+        estimate.textContent = '權值名單與指數貢獻為估算；依普通股股數及前收市值推估，正式成分權重仍待來源授權與驗證。';
+        panel.append(estimate);
+    }
+
+    const markets = document.createElement('div');
+    markets.className = 'market-structure-markets';
+    for (const [marketName, market] of [['上市', result.twse], ['上櫃', result.tpex]]) {
+        if (!market) {
+            continue;
+        }
+
+        const card = document.createElement('article');
+        card.className = 'market-structure-market';
+        const cardHeading = document.createElement('div');
+        cardHeading.className = 'market-structure-market-heading';
+        const name = document.createElement('strong');
+        name.textContent = marketName;
+        const status = document.createElement('span');
+        status.className = `market-structure-status${market.dataStatus === 'ready' ? '' : ' is-insufficient'}`;
+        status.textContent = market.displayName ?? '資料不足';
+        cardHeading.append(name, status);
+        card.append(cardHeading);
+
+        const explanation = document.createElement('p');
+        explanation.className = 'market-structure-explanation';
+        explanation.textContent = market.explanation ?? '';
+        card.append(explanation);
+
+        const metrics = document.createElement('dl');
+        metrics.className = 'market-structure-metrics';
+        const metricRows = [
+            ['指數漲跌', market.indexChangePercent],
+            ['權值前 20 成交值占比', market.weightGroupTurnoverShare === null || market.weightGroupTurnoverShare === undefined
+                ? null
+                : Number(market.weightGroupTurnoverShare) * 100],
+            ['權值外上漲比例', market.otherStockBreadth?.risingRate === null || market.otherStockBreadth?.risingRate === undefined
+                ? null
+                : Number(market.otherStockBreadth.risingRate) * 100],
+            ['上漲族群比例', market.risingIndustryRate === null || market.risingIndustryRate === undefined
+                ? null
+                : Number(market.risingIndustryRate) * 100],
+            ['權值估算指數貢獻', market.weightGroupNetContributionPercent]
+        ];
+        for (const [label, value] of metricRows) {
+            const term = document.createElement('dt');
+            term.textContent = label;
+            const detail = document.createElement('dd');
+            detail.textContent = marketStructurePercent(value);
+            metrics.append(term, detail);
+        }
+        card.append(metrics);
+
+        if (market.warnings?.length) {
+            const note = document.createElement('p');
+            note.className = 'market-structure-note';
+            note.textContent = market.warnings.join(' ');
+            card.append(note);
+        }
+
+        if (market.weightGroup?.length) {
+            const details = document.createElement('details');
+            details.className = 'market-structure-weights';
+            const summary = document.createElement('summary');
+            summary.textContent = `指數權重估算前 ${market.weightGroup.length} 名（固定名單）`;
+            details.append(summary);
+            const list = document.createElement('ol');
+            for (const stock of market.weightGroup) {
+                const item = document.createElement('li');
+                const identity = document.createElement('span');
+                identity.textContent = `${stock.ticker} ${stock.name}`;
+                const change = document.createElement('span');
+                change.textContent = marketStructurePercent(stock.adjustedChangePercent);
+                const turnover = document.createElement('span');
+                turnover.textContent = stock.tradingValueShare === null || stock.tradingValueShare === undefined
+                    ? '成交值 —'
+                    : `成交值 ${(Number(stock.tradingValueShare) * 100).toFixed(2)}%`;
+                item.append(identity, change, turnover);
+                list.append(item);
+            }
+            details.append(list);
+            card.append(details);
+        }
+
+        markets.append(card);
+    }
+    panel.append(markets);
+    return panel;
+}
+
+async function fetchIntradayMarketStructure(tradeDate, runId, capturedAt) {
+    const baseUrl = marketStructureDescriptor?.intradayBaseUrl;
+    if (!baseUrl) {
+        return null;
+    }
+
+    const pointerUrl = new URL(`${baseUrl}/structure-latest.json`, location.href);
+    pointerUrl.searchParams.set('slot', String(Math.floor(Date.now() / 10_000)));
+    const pointer = await fetchJsonAttempt(pointerUrl, { cache: 'no-store' }, 10_000);
+    if (pointer?.schemaVersion !== 1
+        || !Number.isInteger(pointer.runId)
+        || typeof pointer.tradeDate !== 'string'
+        || typeof pointer.capturedAt !== 'string'
+        || typeof pointer.file !== 'string'
+        || !/^intraday-structure-\d{8}-\d{4}-run\d+-[a-f0-9]{8}-[a-f0-9]{8}\.json$/.test(pointer.file)
+        || typeof pointer.contentHash !== 'string'
+        || !/^[a-f0-9]{64}$/.test(pointer.contentHash)) {
+        throw new TypeError('盤中市場結構 latest 指標格式不正確。');
+    }
+
+    const sameSnapshot = pointer.tradeDate === tradeDate
+        && (runId !== null && runId !== undefined
+            ? pointer.runId === runId
+            : Math.abs(Date.parse(pointer.capturedAt) - Date.parse(capturedAt)) < 1_000);
+    if (!sameSnapshot) {
+        return null;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+        const response = await fetch(`${baseUrl}/${encodeURIComponent(pointer.file)}`, {
+            cache: 'force-cache',
+            signal: controller.signal
+        });
+        if (!response.ok) {
+            throw new Error(`盤中市場結構快照讀取失敗：${response.status}`);
+        }
+        const bytes = await response.arrayBuffer();
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const actualHash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+        if (actualHash !== pointer.contentHash) {
+            throw new TypeError('盤中市場結構快照 hash 與 latest 指標不符。');
+        }
+
+        const result = JSON.parse(new TextDecoder().decode(bytes));
+        if (result?.schemaVersion !== 1
+            || result.mode !== 'intraday'
+            || result.runId !== pointer.runId
+            || result.tradeDate !== pointer.tradeDate) {
+            throw new TypeError('盤中市場結構快照與 latest 指標不一致。');
+        }
+        return result;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+function refreshIntradayMarketStructure(tradeDate, runId, capturedAt) {
+    const requestSequence = ++marketStructureRequestSequence;
+    current.marketStructure = null;
+    current.marketStructurePending = Boolean(marketStructureDescriptor?.intradayBaseUrl);
+    current.intradayRunId = runId;
+    if (!current.marketStructurePending) {
+        return;
+    }
+    renderSummary();
+
+    void fetchIntradayMarketStructure(tradeDate, runId, capturedAt).then(result => {
+        if (requestSequence !== marketStructureRequestSequence
+            || current?.tradeDate !== tradeDate
+            || current?.intradayRunId !== runId) {
+            return;
+        }
+        current.marketStructure = result;
+        current.marketStructurePending = false;
+        renderSummary();
+    }).catch(error => {
+        if (requestSequence !== marketStructureRequestSequence
+            || current?.tradeDate !== tradeDate
+            || current?.intradayRunId !== runId) {
+            return;
+        }
+        current.marketStructure = null;
+        current.marketStructurePending = false;
+        console.warn('盤中市場結構暫時無法載入：', error?.message ?? error);
+        renderSummary();
+    });
 }
 
 function renderMarketHeat(heat, index) {
@@ -21563,6 +21794,8 @@ async function loadIntraday(silent = false, force = false) {
 
     el('notice').hidden = true;
     el('ranking').hidden = false;
+
+    refreshIntradayMarketStructure(summary.trade_date, intradaySnapshotRunId, summary.captured_at);
 
     renderSummary();
     renderTable();
@@ -31705,6 +31938,20 @@ async function start() {
     marketHeatHistory = manifest.marketHeatHistory ?? [];
     marketIndexYearStarts = new Map((manifest.marketIndexYearStarts ?? [])
         .map(entry => [String(entry.year), entry]));
+    marketStructureDescriptor = manifest.marketStructure ?? null;
+    marketStructureClose = null;
+    if (marketStructureDescriptor?.closeFile
+        && marketStructureDescriptor.tradeDate === manifest.latestTradingDate) {
+        try {
+            marketStructureClose = await fetchJsonWithRetry(
+                `${marketStructureDescriptor.closeFile}?v=${encodeURIComponent(manifest.version)}`);
+            if (marketStructureClose?.tradeDate !== marketStructureDescriptor.tradeDate) {
+                marketStructureClose = null;
+            }
+        } catch (error) {
+            console.warn('盤後市場結構載入失敗：', error?.message ?? error);
+        }
+    }
     version = manifest.version;
     latestTradingDate = manifest.latestTradingDate;
     schedule = manifest.schedule ?? null;

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.MarketStructure.Models;
 using Invest.Web.Features.StockTopics.Models;
 
 namespace Invest.Web.Infrastructure.MarketData.Intraday;
@@ -34,6 +35,9 @@ public sealed class IntradaySnapshotPublisher(
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly Regex TopicSnapshotFileName = new(
         "^intraday-topic-\\d{8}-\\d{4}-run\\d+\\.json$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex MarketStructureSnapshotFileName = new(
+        "^intraday-structure-\\d{8}-\\d{4}-run\\d+-[a-f0-9]{8}-[a-f0-9]{8}\\.json$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -257,6 +261,149 @@ public sealed class IntradaySnapshotPublisher(
         return document is null ? null : FromDocument(document, expectedTradeDate);
     }
 
+    /// <summary>讀取帶有 CDN run id 與時間的最新原始快照，供市場結構 consumer 啟動恢復。</summary>
+    public async Task<PublishedIntradaySnapshot?> TryLoadLatestPublishedSnapshotAsync(
+        DateOnly expectedTradeDate,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = ReadSettings();
+        if (settings is null)
+        {
+            return null;
+        }
+
+        var pointer = await ReadRawLatestAsync(settings, cancellationToken);
+        if (pointer is null || pointer.TradeDate != expectedTradeDate.ToString("yyyy-MM-dd"))
+        {
+            return null;
+        }
+
+        var endpoint = $"{settings.SupabaseUrl}/storage/v1/object/public/"
+            + $"{Uri.EscapeDataString(settings.Bucket)}/{pointer.File}";
+        var bytes = await httpClient.GetByteArrayAsync(endpoint, cancellationToken);
+        var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        if (!string.Equals(hash, pointer.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("盤中 CDN 原始快照 SHA256 與 latest 指標不符。");
+        }
+
+        var document = JsonSerializer.Deserialize<SnapshotDocument>(bytes, JsonOptions);
+        if (document is null
+            || document.RunId != pointer.RunId
+            || document.TradeDate != pointer.TradeDate
+            || document.RowCount != pointer.RowCount)
+        {
+            throw new InvalidDataException("盤中 CDN latest 指標與原始快照內容不一致。");
+        }
+
+        return new PublishedIntradaySnapshot(
+            pointer.RunId,
+            expectedTradeDate,
+            pointer.CapturedAt,
+            FromDocument(document, expectedTradeDate));
+    }
+
+    /// <summary>
+    /// 發布獨立的盤中市場結構結果。結果檔不可變，只有小型 latest 指標會覆寫；
+    /// raw 尚未追上此 run 時拒絕晉升，且舊 run 不可倒退覆蓋較新指標。
+    /// </summary>
+    public async Task<IntradayMarketStructurePublishResult> PublishMarketStructureAsync(
+        long runId,
+        MarketStructureResult result,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        if (!string.Equals(result.Mode, "intraday", StringComparison.OrdinalIgnoreCase)
+            || result.RunId != runId
+            || result.TradeDate == default)
+        {
+            throw new InvalidOperationException("盤中市場結構結果的模式、run id 或交易日不符。");
+        }
+
+        var settings = ReadSettings();
+        if (settings is null)
+        {
+            return IntradayMarketStructurePublishResult.NotConfigured;
+        }
+
+        var currentRaw = await ReadRawLatestAsync(settings, cancellationToken);
+        if (currentRaw is null || currentRaw.RunId < runId)
+        {
+            throw new InvalidOperationException($"原始 CDN latest 尚未追上市場結構 run {runId}。");
+        }
+
+        if (currentRaw.RunId > runId)
+        {
+            logger.LogInformation(
+                "略過已過期的市場結構 run {RunId}；原始 CDN 已到 run {CurrentRunId}。",
+                runId,
+                currentRaw.RunId);
+            return IntradayMarketStructurePublishResult.Superseded;
+        }
+
+        if (currentRaw.TradeDate != result.TradeDate.ToString("yyyy-MM-dd"))
+        {
+            throw new InvalidOperationException("市場結構結果交易日與原始 CDN latest 不符。");
+        }
+
+        var resultBytes = JsonSerializer.SerializeToUtf8Bytes(result, JsonOptions);
+        var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
+        var localCapturedAt = TimeZoneInfo.ConvertTime(result.CapturedAt, taipei);
+        var fileName = $"intraday-structure-{localCapturedAt:yyyyMMdd-HHmm}-run{runId}-"
+            + $"{result.RulesHash[..8]}-{result.BasisHash[..8]}.json";
+        var contentHash = Convert.ToHexString(SHA256.HashData(resultBytes)).ToLowerInvariant();
+
+        await UploadAsync(settings, fileName, resultBytes, cacheSeconds: 31_536_000, immutable: true, cancellationToken);
+
+        var latest = await ReadMarketStructureLatestAsync(settings, cancellationToken);
+        if (latest is not null && latest.RunId > runId)
+        {
+            return IntradayMarketStructurePublishResult.Superseded;
+        }
+
+        var pointerBytes = JsonSerializer.SerializeToUtf8Bytes(
+            new MarketStructureLatestDocument(
+                SchemaVersion,
+                runId,
+                result.TradeDate.ToString("yyyy-MM-dd"),
+                result.CapturedAt,
+                fileName,
+                contentHash,
+                result.RulesVersion,
+                result.BasisHash),
+            JsonOptions);
+        await UploadAsync(
+            settings,
+            "structure-latest.json",
+            pointerBytes,
+            cacheSeconds: 10,
+            immutable: false,
+            cancellationToken);
+
+        try
+        {
+            await PruneExpiredSnapshotsAsync(
+                settings,
+                fileName,
+                settings.RetainedSnapshotCount,
+                MarketStructureSnapshotFileName,
+                "盤中市場結構 CDN 舊快照清理",
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(exception, "盤中市場結構 CDN 舊快照清理失敗，保留新快照與 structure-latest 指標。");
+        }
+
+        logger.LogInformation(
+            "已發布盤中市場結構 CDN 快照 {FileName}（run {RunId}，上市 {TwseStatus}、上櫃 {TpexStatus}）。",
+            fileName,
+            runId,
+            result.Twse.DisplayName,
+            result.Tpex.DisplayName);
+        return new IntradayMarketStructurePublishResult(true, fileName);
+    }
+
     /// <summary>把快照文件還原成報價；興櫃一律不收，由尾段收集器每輪重新讀。</summary>
     internal static IntradaySnapshot FromDocument(SnapshotDocument document, DateOnly tradeDate)
     {
@@ -279,13 +426,16 @@ public sealed class IntradaySnapshotPublisher(
                 OpenPrice = row.OpenPrice,
                 HighPrice = row.HighPrice,
                 LowPrice = row.LowPrice,
-                PriceSource = IntradayPriceSource.LastTrade,
+                PriceSource = Enum.TryParse<IntradayPriceSource>(row.PriceSource, out var priceSource)
+                    ? priceSource
+                    : IntradayPriceSource.LastTrade,
                 EstimatedTradingValue = row.Turnover,
 
                 // 快照沒有保存累計量；成交金額除以現價是同一個關係式的反推（見前端 intradayTradingVolume）。
                 TradingVolume = row.Price is > 0m ? decimal.Round(row.Turnover / row.Price.Value, 0) : 0m,
                 ChangePercent = row.ChangePercent,
                 ReferencePrice = row.ReferencePrice,
+                RawPreviousClose = row.RawPreviousClose,
                 WeeklyChangePercent = row.WeeklyChangePercent,
                 YearToDateChangePercent = row.YearToDateChangePercent,
                 WeeklyFromListing = row.WeeklyFromListing == true,
@@ -626,6 +776,49 @@ public sealed class IntradaySnapshotPublisher(
         return latest;
     }
 
+    private async Task<MarketStructureLatestDocument?> ReadMarketStructureLatestAsync(
+        PublisherSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = $"{settings.SupabaseUrl}/storage/v1/object/public/"
+            + $"{Uri.EscapeDataString(settings.Bucket)}/structure-latest.json"
+            + $"?guard={DateTimeOffset.UtcNow.Ticks}";
+        using var response = await httpClient.GetAsync(endpoint, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        if (response.StatusCode == System.Net.HttpStatusCode.BadRequest)
+        {
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (detail.Contains("NoSuchKey", StringComparison.OrdinalIgnoreCase)
+                || detail.Contains("\"not_found\"", StringComparison.OrdinalIgnoreCase)
+                || detail.Contains("\"statusCode\":\"404\"", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            throw new InvalidOperationException(
+                $"讀取市場結構 CDN latest 指標失敗（HTTP {(int)response.StatusCode}）："
+                + detail[..Math.Min(detail.Length, 300)]);
+        }
+
+        await EnsureSuccessAsync(response, "讀取市場結構 CDN latest 指標", cancellationToken);
+        var latest = await response.Content.ReadFromJsonAsync<MarketStructureLatestDocument>(
+            JsonOptions,
+            cancellationToken);
+        if (latest is null
+            || latest.SchemaVersion != SchemaVersion
+            || latest.RunId < 0
+            || !MarketStructureSnapshotFileName.IsMatch(latest.File))
+        {
+            throw new InvalidOperationException("盤中市場結構 structure-latest.json 格式不正確。");
+        }
+
+        return latest;
+    }
+
     private async Task<LatestDocument?> ReadRawLatestAsync(
         PublisherSettings settings,
         CancellationToken cancellationToken)
@@ -816,7 +1009,9 @@ public sealed class IntradaySnapshotPublisher(
                 quote.YearToDateChangePercent,
                 quote.WeeklyFromListing ? true : null,
                 quote.YearToDateFromListing ? true : null,
-                quote.AdjustmentFactor))
+                quote.AdjustmentFactor,
+                quote.RawPreviousClose,
+                quote.PriceSource.ToString()))
             .ToArray();
 
         SnapshotTopicHeat? exportedTopicHeat = null;
@@ -884,7 +1079,9 @@ public sealed class IntradaySnapshotPublisher(
         [property: JsonPropertyName("year_to_date_change_percent")] decimal? YearToDateChangePercent = null,
         [property: JsonPropertyName("weekly_from_listing")] bool? WeeklyFromListing = null,
         [property: JsonPropertyName("year_to_date_from_listing")] bool? YearToDateFromListing = null,
-        [property: JsonPropertyName("adjustment_factor")] decimal? AdjustmentFactor = null);
+        [property: JsonPropertyName("adjustment_factor")] decimal? AdjustmentFactor = null,
+        [property: JsonPropertyName("raw_previous_close")] decimal? RawPreviousClose = null,
+        [property: JsonPropertyName("price_source")] string? PriceSource = null);
 
     internal sealed record SnapshotTopicHeat(
         [property: JsonPropertyName("trade_date")] string TradeDate,
@@ -913,6 +1110,16 @@ public sealed class IntradaySnapshotPublisher(
         int RowCount,
         int MappingVersion,
         string Sha256);
+
+    private sealed record MarketStructureLatestDocument(
+        int SchemaVersion,
+        long RunId,
+        string TradeDate,
+        DateTimeOffset CapturedAt,
+        string File,
+        string ContentHash,
+        string RulesVersion,
+        string BasisHash);
 }
 
 public sealed record IntradaySnapshotPublishResult(bool Published, string? File)
@@ -923,4 +1130,16 @@ public sealed record IntradaySnapshotPublishResult(bool Published, string? File)
 public sealed record IntradayTopicSnapshotPublishResult(bool Published, string? File)
 {
     public static readonly IntradayTopicSnapshotPublishResult NotConfigured = new(false, null);
+}
+
+public sealed record PublishedIntradaySnapshot(
+    long RunId,
+    DateOnly TradeDate,
+    DateTimeOffset CapturedAt,
+    IntradaySnapshot Snapshot);
+
+public sealed record IntradayMarketStructurePublishResult(bool Published, string? File)
+{
+    public static readonly IntradayMarketStructurePublishResult NotConfigured = new(false, null);
+    public static readonly IntradayMarketStructurePublishResult Superseded = new(false, null);
 }

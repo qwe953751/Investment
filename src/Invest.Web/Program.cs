@@ -2,6 +2,7 @@ using Invest.Web.Components;
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.Assets.Ocr.Services;
 using Invest.Web.Features.Assets.Services;
+using Invest.Web.Features.MarketStructure.Services;
 using Invest.Web.Features.Revenue;
 using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.StockTopics.Services;
@@ -20,6 +21,7 @@ using Invest.Web.Infrastructure.MarketData.Turnover;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
 using Invest.Web.Infrastructure.MarketData.UsStocks;
+using Invest.Web.Infrastructure.MarketData.Structure;
 using Invest.Web.Infrastructure.StaticSite;
 using Invest.Web.Infrastructure.StockTopics;
 using Microsoft.Extensions.Options;
@@ -125,6 +127,7 @@ builder.Services.AddHttpClient(nameof(YahooScreenerMarketTurnoverClient), Config
         CookieContainer = new System.Net.CookieContainer(),
         UseCookies = true
     });
+builder.Services.AddHttpClient("MarketStructureBasis", ConfigureQuoteClient);
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
@@ -148,6 +151,7 @@ builder.Services.AddSingleton<IntradayQuoteStore>();
 builder.Services.AddSingleton<IntradayCurveStore>();
 builder.Services.AddSingleton<IntradayTopicHeatStore>();
 builder.Services.AddTransient<IntradayTopicHeatWorker>();
+builder.Services.AddTransient<IntradayMarketStructureWorker>();
 builder.Services.AddSingleton<MarketFlagStore>();
 builder.Services.AddSingleton<RevenueStore>();
 builder.Services.AddSingleton<MaterialEventStore>();
@@ -168,6 +172,8 @@ builder.Services.AddTransient<MarketTurnoverCollector>();
 builder.Services.AddTransient<MarketTurnoverBackfiller>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
+builder.Services.AddSingleton<MarketStructureBasisClient>();
+builder.Services.AddSingleton<MarketStructureQueryService>();
 builder.Services.AddTransient<StaticSiteExporter>();
 builder.Services.AddSingleton(_ => new ClaudeCodeCliRunner(
     OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude)));
@@ -657,6 +663,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var marketFlagStore = scope.ServiceProvider.GetRequiredService<MarketFlagStore>();
     var snapshotPublisher = scope.ServiceProvider.GetRequiredService<IntradaySnapshotPublisher>();
     var topicWorker = scope.ServiceProvider.GetRequiredService<IntradayTopicHeatWorker>();
+    var marketStructureWorker = scope.ServiceProvider.GetRequiredService<IntradayMarketStructureWorker>();
     var curveStore = scope.ServiceProvider.GetRequiredService<IntradayCurveStore>();
     var twseQuoteClient = scope.ServiceProvider.GetRequiredService<TwseDailyQuoteClient>();
     var corporateActionClient = scope.ServiceProvider.GetRequiredService<CorporateActionClient>();
@@ -670,6 +677,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
         cts.Cancel();
     };
     topicWorker.Start(cts.Token);
+    marketStructureWorker.Start(cts.Token);
 
     // 收工時要靠這三個數字判斷這一場到底算成功還是失敗，所以每一輪的結果都要記。
     var writtenRounds = 0;
@@ -1177,11 +1185,19 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                             {
                                 // Collector 只負責 raw 報價與 raw CDN；分類、計算與 topic CDN
                                 // 由獨立 consumer 追同一個 run，不得阻塞下一個兩分鐘輪次。
-                                await snapshotPublisher.PublishRawAsync(
+                                var rawPublish = await snapshotPublisher.PublishRawAsync(
                                     publishedRunId,
                                     snapshot,
                                     capturedAt,
                                     cts.Token);
+                                if (rawPublish.Published)
+                                {
+                                    marketStructureWorker.Signal(new PublishedIntradaySnapshot(
+                                        publishedRunId,
+                                        snapshot.TradeDate,
+                                        capturedAt,
+                                        snapshot));
+                                }
                             }
                             catch (Exception exception)
                                 when (exception is not OperationCanceledException || !cts.IsCancellationRequested)
@@ -1284,6 +1300,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     }
     finally
     {
+        await marketStructureWorker.StopAsync();
         await topicWorker.StopAsync();
     }
 

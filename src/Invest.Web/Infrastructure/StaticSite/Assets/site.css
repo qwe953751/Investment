@@ -3430,6 +3430,108 @@ body {
     background: var(--surface-alt);
 }
 
+.market-structure-panel {
+    display: grid;
+    gap: 12px;
+    padding: 12px 16px 14px;
+    border: 1px solid #d9e0ea;
+    border-radius: 10px;
+    background: var(--surface-alt);
+}
+
+.market-structure-heading,
+.market-structure-market-heading {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+}
+
+.market-structure-heading > span,
+.market-structure-date,
+.market-structure-waiting,
+.market-structure-note {
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.market-structure-markets {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.market-structure-market {
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid #e1e6ee;
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+.market-structure-status {
+    color: #176b3a;
+    font-size: 18px;
+}
+
+.market-structure-status.is-insufficient {
+    color: #8a5b00;
+}
+
+.market-structure-explanation,
+.market-structure-estimate {
+    margin: 8px 0;
+    line-height: 1.55;
+}
+
+.market-structure-estimate {
+    color: #8a5b00;
+    font-size: 13px;
+}
+
+.market-structure-metrics {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 5px 12px;
+    margin: 10px 0;
+}
+
+.market-structure-metrics dt {
+    color: var(--text-muted);
+}
+
+.market-structure-metrics dd {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.market-structure-weights {
+    margin-top: 10px;
+    border-top: 1px solid #e1e6ee;
+    padding-top: 8px;
+}
+
+.market-structure-weights > summary {
+    cursor: pointer;
+    color: var(--accent);
+}
+
+.market-structure-weights ol {
+    display: grid;
+    gap: 4px;
+    margin: 8px 0 0;
+    padding-left: 24px;
+}
+
+.market-structure-weights li {
+    display: grid;
+    grid-template-columns: minmax(90px, 1fr) auto auto;
+    gap: 8px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+
 .market-heat-overview {
     display: flex;
     min-width: 0;
@@ -5350,6 +5452,10 @@ td.stock-name.stock-name-change-down {
     .market-heat-panel {
         grid-template-columns: 1fr;
         gap: 10px;
+    }
+
+    .market-structure-markets {
+        grid-template-columns: 1fr;
     }
 
     .market-heat-overview {

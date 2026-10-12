@@ -573,6 +573,7 @@ public sealed class MisIntradayClient(HttpClient httpClient, ILogger<MisIntraday
             TradingVolume = volume,
             EstimatedTradingValue = price is { } value ? decimal.Round(value * volume, 0) : 0m,
             ReferencePrice = previousClose is > 0m ? previousClose : null,
+            RawPreviousClose = previousClose is > 0m ? previousClose : null,
             ChangePercent = price is { } current && previousClose is { } baseline && baseline > 0
                 ? decimal.Round((current - baseline) / baseline * 100m, 2)
                 : null

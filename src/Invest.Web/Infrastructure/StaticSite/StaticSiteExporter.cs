@@ -6,6 +6,8 @@ using System.Text.Json.Serialization;
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.StockTopics.Services;
+using Invest.Web.Features.MarketStructure.Models;
+using Invest.Web.Features.MarketStructure.Services;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
@@ -34,6 +36,7 @@ namespace Invest.Web.Infrastructure.StaticSite;
 /// </summary>
 public sealed class StaticSiteExporter(
     TradingValueRankingQueryService ranking,
+    MarketStructureQueryService marketStructure,
     MarketFlagClient marketFlags,
     GoogleSheetTopicClient topics,
     MaterialEventStore materialEvents,
@@ -277,6 +280,27 @@ public sealed class StaticSiteExporter(
         var turnoverCalibration = await LoadTurnoverCalibrationAsync(
             OfficialTurnover.ByDate(dataSet), cancellationToken);
 
+        var intradayCdnExport = await ToIntradayCdnExportAsync(cancellationToken);
+
+        MarketStructureExport? marketStructureExport = null;
+        var latestMarketStructure = await marketStructure.CalculateLatestCloseAsync(cancellationToken);
+        if (latestMarketStructure is not null)
+        {
+            const string relativePath = "data/market-structure/latest.json";
+            await WriteJsonAsync(
+                Path.Combine(outputDirectory, "data", "market-structure", "latest.json"),
+                latestMarketStructure,
+                cancellationToken);
+            marketStructureExport = new MarketStructureExport(
+                relativePath,
+                latestMarketStructure.TradeDate.ToString("yyyy-MM-dd"),
+                intradayCdnExport?.BaseUrl,
+                latestMarketStructure.RulesVersion);
+            progress?.Report(
+                $"已寫出 {latestMarketStructure.TradeDate:yyyy-MM-dd} 市場結構，"
+                + $"上市 {latestMarketStructure.Twse.DisplayName}、上櫃 {latestMarketStructure.Tpex.DisplayName}");
+        }
+
         await WriteJsonAsync(
             Path.Combine(outputDirectory, "manifest.json"),
             new ManifestExport(
@@ -293,13 +317,14 @@ public sealed class StaticSiteExporter(
                 ToMarketIndexYearStartExports(dataSet, tradingDates),
                 ToScheduleExport(),
                 ToSupabaseExport(),
-                await ToIntradayCdnExportAsync(cancellationToken),
+                intradayCdnExport,
                 await ToMarketOverviewIntradayCdnExportAsync(cancellationToken),
                 await ToMarketTurnoverCdnExportAsync(cancellationToken),
                 ToDispositionExports(dispositions),
                 [.. alteredTrading],
                 ToCurveExport(turnoverCalibration),
-                ToAccelerationExport()),
+                ToAccelerationExport(),
+                marketStructureExport),
             cancellationToken);
 
         await WriteMarketOverviewAsync(dataDirectory, cancellationToken);
@@ -317,6 +342,12 @@ public sealed class StaticSiteExporter(
 
         return new StaticSiteExportReport(outputDirectory, fileCount, selectableDates.Count, tradingDates.Length);
     }
+
+    private sealed record MarketStructureExport(
+        string CloseFile,
+        string TradeDate,
+        string? IntradayBaseUrl,
+        string RulesVersion);
 
     /// <summary>
     /// 市場切換總覽（美股／日股／韓股／加密貨幣）的指數、產業熱力圖與風險指數，寫成 data/market-overview.json，
@@ -2110,7 +2141,10 @@ public sealed class StaticSiteExporter(
 
         // 「資金加速」排行的收縮量比係數與當期流動性門檻（筆記 #10）。
         // site.js 的 rankRows() 與 loadIntraday() 都要讀這裡，不得各自寫死字面量。
-        AccelerationExport Acceleration);
+        AccelerationExport Acceleration,
+
+        // 市場結構只輸出最新單日結果；舊日期沒有 basis 時不以目前名單重算。
+        MarketStructureExport? MarketStructure);
 
     private sealed record ThresholdExport(int Key, string Text);
 
