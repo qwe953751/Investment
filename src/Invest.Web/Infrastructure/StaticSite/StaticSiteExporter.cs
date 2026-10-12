@@ -287,8 +287,10 @@ public sealed class StaticSiteExporter(
         if (latestMarketStructure is not null)
         {
             const string relativePath = "data/market-structure/latest.json";
+            var marketStructureDirectory = Path.Combine(dataDirectory, "market-structure");
+            Directory.CreateDirectory(marketStructureDirectory);
             await WriteJsonAsync(
-                Path.Combine(outputDirectory, "data", "market-structure", "latest.json"),
+                Path.Combine(marketStructureDirectory, "latest.json"),
                 latestMarketStructure,
                 cancellationToken);
             marketStructureExport = new MarketStructureExport(
