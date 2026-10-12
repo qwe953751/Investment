@@ -49,7 +49,8 @@
 在那之前它與新版 Edge 相容（閒置時靠 claim 回答詢問、忙碌時以有效 lease 視為在線，見 [§1.2](#ocr-availability)）。
 Windows／Mac 是否在線**不再靠心跳或旗標猜測**，改由 Edge 指名詢問（先 Windows 後 Mac，各最多 5 次）。
 正式驗收 P1～P10（[§3.5.10](#ocr-probe-acceptance)）尚待使用者以最高權限帳號上傳實測：admin 端的
-readiness／submit／status 只用「假 Supabase 跑真正的 Edge 程式」與正式 Worker 端動作驗證過，沒有用真實登入走過。
+readiness／submit／status 的失敗情境只用「假 Supabase 跑真正的 Edge 程式」與正式 Worker 端動作驗證過。
+2026-10-12 09:15（台北）正式資料庫出現一次使用者的真實上傳紀錄：`ocr_user_routing` 由 readiness 寫入「windows」、約 1.7 秒後 `ocr_jobs` 新增一件未標記的工作，由（舊版）Windows 接走並 `succeeded`——代表 admin 端的 happy path 在正式環境走通過一次；失敗情境（P2～P10）仍未執行。
 
 ### 0.2 元件部署狀態
 
@@ -530,8 +531,8 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
    重建後這些限制全部消失。
 2. **Agent 登入狀態最慢 30 分鐘才看得到變化**：pong 回報的是最近一次 CLI 探測結果＋Router 額度冷卻（額度用完會立刻反映），不在回答時重新探測。
    登入被撤銷時取到工作會因認證失敗走 relay／Tesseract，不會卡住。
-3. **admin 端路徑尚未用真實登入驗證**：readiness／submit／status 只用「假 Supabase 跑真正的 Edge 程式」（28 項）與正式 Worker 端動作驗證過；AI agent 沒有登入帳密，
-   P1～P10 要由使用者實測。
+3. **admin 端路徑只有 happy path 在正式環境走通過一次**：2026-10-12 09:15（台北）正式資料庫出現一次使用者的真實上傳紀錄：`ocr_user_routing` 由 readiness 寫入「windows」、約 1.7 秒後 `ocr_jobs` 新增一件未標記的工作，由（舊版）Windows 接走並 `succeeded`——代表 admin 端的 happy path 在正式環境走通過一次；失敗情境（P2～P10）仍未執行。其餘情境只用「假 Supabase 跑真正的 Edge 程式」（28 項）與正式 Worker 端動作驗證過；
+   AI agent 沒有登入帳密，P2～P10 要由使用者實測。
 4. **MacBook 蓋上或睡眠＝不在線**（設計如此）：LaunchAgent 只在登入的使用者 session 內執行，睡眠時問不到、會被判定離線；醒來後任何接觸即自動恢復。
    Mac 是備援，所以 Windows 關機又沒開 Mac 時整批走本機 Tesseract。2026-10-11 當天就看到一次實例：Mac 網路中斷／睡眠後，Worker 的 error log 出現
    `Realtime 連線失敗：The SSL connection could not be established`、`pong 失敗`、`D+ OCR Worker 啟動失敗`（啟動時第一個 heartbeat 送不出去，程序以失敗結束），
@@ -558,7 +559,7 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 | Worker（`OcrWorkerApiClient.cs`／`OcrWorkerRunner.cs`） | ✅ 程式完成（commit `ea373ea5`）；家裡 Mac ✅ 已重建；**公司 Windows 🔴 待重建** |
 | 前端 | ✅ 已發布 |
 | 測試 | ✅ `Invest.Web.Tests` 805、Node 231（含 `tests/ocr-jobs-probe.test.mjs` 28 項：以假 Supabase 實際執行 Edge Function） |
-| 正式驗收 P1～P10 | 🔴 待使用者（[§3.5.10](#ocr-probe-acceptance)） |
+| 正式驗收 P1～P10 | 🟡 P1 的 happy path 已有一次真實紀錄（2026-10-12，見 [§3.4](#ocr-known-risks)）；其餘待使用者（[§3.5.10](#ocr-probe-acceptance)） |
 
 **與最初規格的差異（以實作為準）**：
 

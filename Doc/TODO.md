@@ -1357,7 +1357,7 @@ Windows／Mac 是否在線不再靠心跳時間或連線旗標猜測，改為**�
 1. 🔴 **公司 Windows Worker 重建**（Windows Agent）：目前仍是 `e6c08fd1` 舊版（`probe_protocol=0`）。與新版 Edge 相容（閒置靠 claim 回答、忙碌以有效 lease 視為在線），
    但要重建後兩台才完整生效。步驟：`git pull` → `Stop-ScheduledTask` → `scripts\publish-ocr-worker-windows.ps1` → `Start-ScheduledTask`；
    log 啟動訊息必須含「**在線詢問：指名回應**」；`ocr_workers` 的 Windows 列要變成 `probe_protocol=1`、`heartbeat_interval_seconds=1800`。詳見 [AI OCR §3.5.9](技術文件/AI%20OCR.md#ocr-probe-rollout)。
-2. 🔴 **使用者實測 P1～P10**（[AI OCR §3.5.10](技術文件/AI%20OCR.md#ocr-probe-acceptance)）：需要最高權限帳號上傳；AI agent 沒有登入帳密，admin 端的 readiness／submit／status 只用假 Supabase 驗證過。
+2. 🔴 **使用者實測 P1～P10**（[AI OCR §3.5.10](技術文件/AI%20OCR.md#ocr-probe-acceptance)）：需要最高權限帳號上傳；AI agent 沒有登入帳密。目前只有 happy path 有一次真實紀錄（2026-10-12 09:15 台北，readiness 選 Windows、工作由舊版 Windows 接走並成功）；失敗情境 P2～P10 尚未執行，建議等 Windows 重建後一起驗。
 3. 驗收完成後補一次「發布驗證」紀錄（比照 `c47ebdf6`／`8e62f7de`）。
 4. 一週後以 Supabase Dashboard 比較 Edge Function invocation，確認不高於改版前一週（預估約少 6,000 次／月）。
 
