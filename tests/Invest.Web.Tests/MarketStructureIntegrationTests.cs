@@ -30,6 +30,17 @@ public sealed class MarketStructureIntegrationTests
     }
 
     [Fact]
+    public void manifest與市場結構交易日格式不同時仍載入最新盤後結果()
+    {
+        var script = ReadSource("Infrastructure", "StaticSite", "Assets", "site.js");
+
+        Assert.Contains("function normalizeMarketStructureDate(value)", script, StringComparison.Ordinal);
+        Assert.Contains("value.replaceAll('/', '-')", script, StringComparison.Ordinal);
+        Assert.Contains("normalizeMarketStructureDate(marketStructureDescriptor.tradeDate)\n            === normalizeMarketStructureDate(manifest.latestTradingDate)", script, StringComparison.Ordinal);
+        Assert.Contains("normalizeMarketStructureDate(state.date)\n                === normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate)", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Collector只在raw成功後喚醒獨立consumer且CDN探測共用一次()
     {
         var program = ReadSource("Program.cs");

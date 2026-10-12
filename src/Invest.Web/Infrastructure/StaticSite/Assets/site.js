@@ -2233,6 +2233,9 @@ let marketIndexYearStarts = new Map();
 let marketStructureDescriptor = null;
 let marketStructureClose = null;
 let marketStructureRequestSequence = 0;
+function normalizeMarketStructureDate(value) {
+    return typeof value === 'string' ? value.replaceAll('/', '-') : '';
+}
 let version = '';
 let latestTradingDate = '';
 let marketHeatAnalysisOpen = false;
@@ -20027,7 +20030,8 @@ function renderSummary() {
 
     const structure = current.marketStructure
         ?? (state.view === 'daily'
-            && state.date === marketStructureDescriptor?.tradeDate
+            && normalizeMarketStructureDate(state.date)
+                === normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate)
                 ? marketStructureClose
                 : null);
     if (structure || current.marketStructurePending) {
@@ -31940,11 +31944,13 @@ async function start() {
     marketStructureDescriptor = manifest.marketStructure ?? null;
     marketStructureClose = null;
     if (marketStructureDescriptor?.closeFile
-        && marketStructureDescriptor.tradeDate === manifest.latestTradingDate) {
+        && normalizeMarketStructureDate(marketStructureDescriptor.tradeDate)
+            === normalizeMarketStructureDate(manifest.latestTradingDate)) {
         try {
             marketStructureClose = await fetchJsonWithRetry(
                 `${marketStructureDescriptor.closeFile}?v=${encodeURIComponent(manifest.version)}`);
-            if (marketStructureClose?.tradeDate !== marketStructureDescriptor.tradeDate) {
+            if (normalizeMarketStructureDate(marketStructureClose?.tradeDate)
+                !== normalizeMarketStructureDate(marketStructureDescriptor.tradeDate)) {
                 marketStructureClose = null;
             }
         } catch (error) {
