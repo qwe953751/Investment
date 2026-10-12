@@ -20027,7 +20027,6 @@ function renderSummary() {
 
     const structure = current.marketStructure
         ?? (state.view === 'daily'
-            && state.comparisonMode === 'single'
             && state.date === marketStructureDescriptor?.tradeDate
                 ? marketStructureClose
                 : null);
