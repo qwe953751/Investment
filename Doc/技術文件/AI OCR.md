@@ -1,6 +1,6 @@
 # AI OCR
 
-> 最後整理：2026-10-12（公司 Windows Worker 依 [§3.5.9](#ocr-probe-rollout) 階段 W 重建；程式、`db/062` 與 `ocr-jobs` v24 仍是 2026-10-11 以 `main` `441ca855` 核對的內容）
+> 最後整理：2026-10-13（公司 Windows Worker 依 [§3.5.9](#ocr-probe-rollout) 階段 W 重建並以 `ocr_workers` 核對；程式、`db/062` 與 `ocr-jobs` v24 仍是 2026-10-11 以 `main` `441ca855` 核對的內容）
 >
 > 這是 D+ AI OCR 的**唯一技術文件**。2026-10-10 已把原本分開的三份文件合併進來：
 >
@@ -13,7 +13,7 @@
 >
 > **2026-10-11 完成「在線確認重構」**：Windows／Mac 是否在線不再靠心跳時間或連線旗標猜測，改由 `ocr-jobs` 指名詢問
 > （[§1.2](#ocr-availability)）。設計、驗證證據與部署狀態在 [§3.5](#ocr-probe-spec)，紀錄在 [§4.14](#ocr-incident-1011-probe)；
-> 2026-10-12 公司 Windows Worker 也已重建（[§3.5.9](#ocr-probe-rollout)）。
+> 2026-10-12 公司 Windows Worker 也已重建，10-13 以 `ocr_workers` 唯讀核對通過（[§3.5.9](#ocr-probe-rollout)）。
 >
 > 起因：筆記 #38「OCR 辨識效果不佳」及後續 AI OCR 構想。
 
@@ -46,9 +46,9 @@
 
 **在線確認重構（[§3.5](#ocr-probe-spec)）已實作並部署到兩台 Worker**：`db/062` 已套用、`ocr-jobs` 為 v24、前端狀態列已發布；
 **家裡 Mac Worker** 2026-10-11 用新版重建並常駐（LaunchAgent，改為執行發布到 `~/Library/Application Support` 的輸出），
-**公司 Windows Worker** 2026-10-12 依 [§3.5.9](#ocr-probe-rollout) 階段 W 以 `a4a795acd` 重建（啟動訊息含「在線詢問：指名回應」、`-Once` 診斷 exit 0、常駐 err log 無錯誤）。
-Windows 列的 `ocr_workers` 唯讀核對（`probe_protocol=1`、`heartbeat_interval_seconds=1800`、`last_pong_at`）**尚未完成**：公司 Windows 的
-`SUPABASE_ACCESS_TOKEN` 仍是舊 token（Management API 回 401，見 [TODO #4](../TODO.md#todo-4)），換新後補查。
+**公司 Windows Worker** 2026-10-12 依 [§3.5.9](#ocr-probe-rollout) 階段 W 以 `a4a795acd` 重建（啟動訊息含「在線詢問：指名回應」、`-Once` 診斷 exit 0），
+2026-10-13 唯讀核對 `ocr_workers` 的 Windows 列：`probe_protocol=1`、`heartbeat_interval_seconds=1800`、`last_pong_at` 有值、`offline_since` 為 null。
+重建後的兩次真實上傳（10-12 22:15、22:20 台北）都由新版 Windows 以 Codex 辨識成功（24～30 秒）。
 Windows／Mac 是否在線**不再靠心跳或旗標猜測**，改由 Edge 指名詢問（先 Windows 後 Mac，各最多 5 次）。
 正式驗收 P1～P10（[§3.5.10](#ocr-probe-acceptance)）尚待使用者以最高權限帳號上傳實測：admin 端的
 readiness／submit／status 的失敗情境只用「假 Supabase 跑真正的 Edge 程式」與正式 Worker 端動作驗證過。
@@ -63,17 +63,16 @@ readiness／submit／status 的失敗情境只用「假 Supabase 跑真正的 Ed
 | `db/062_ocr_worker_probe.sql` | ✅ 2026-10-11 已套用。套用前在正式資料庫單一交易內連 migration 一起執行並跑完 31 項斷言，確認 rollback 無痕跡 | 版本紀錄 2026-10-11 |
 | `ocr-jobs` Edge Function | ✅ v24（2026-10-11），`verify_jwt=false`，未帶 JWT 回 401 | Management API 核對 |
 | 前端 `site.js` | ✅ 2026-10-11 publish-only run `38140004887`（head `441ca855`）發布；readiness 期間顯示「確認 Windows／Mac 是否在線…」與每台的詢問結果 | gh-pages manifest `1791722367` |
-| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。🟡 `ocr_workers` 唯讀核對待公司 Windows 換新 Management API token | [§3.5.9](#ocr-probe-rollout) |
+| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功 | [§3.5.9](#ocr-probe-rollout) |
 | 家裡 Mac Worker | ✅ 2026-10-11 以 `ea373ea56` 發布並由 LaunchAgent 常駐；啟動訊息含「在線詢問：指名回應」與「Worker 發布版本」；`probe_protocol=1`、心跳週期 1800 秒；已用合成圖片走完整條 Codex 辨識 | [§4.14](#ocr-incident-1011-probe) |
 | Claude CLI | 🟡 公司 Windows 已安裝 `2.1.263` 但未登入；Mac 沒有安裝。目前實際只有 Codex 單 Agent，沒有 Agent 故障切換 | §4.3 |
 | 自動化測試 | ✅ 2026-10-11 `Invest.Web.Tests` 805/805、Node 231/231（含 Edge Function 假 Supabase 行為測試 28 項）；2026-10-12 公司 Windows 重跑結果相同 | — |
 
 ### 0.3 尚待處理（詳見 [§3](#ocr-acceptance)）
 
-1. **公司 Windows Worker 已於 2026-10-12 重建**（[§3.5.9](#ocr-probe-rollout) 階段 W）；剩 Windows 列的 `ocr_workers` 唯讀核對，
-   要先把公司 Windows 的 `SUPABASE_ACCESS_TOKEN` 換成新 token（[TODO #4](../TODO.md#todo-4)）。
-2. **正式驗收 P1～P10**（[§3.5.10](#ocr-probe-acceptance)）：需要最高權限帳號上傳，AI agent 無法代為登入。
-3. 7 張手機截圖確認三槽同時工作（驗證 09-22 的 409 修正）、Golden Set、Windows 鎖屏／重開機／斷網復原、Claude 登入後的雙 Agent。
+1. **正式驗收 P1～P10**（[§3.5.10](#ocr-probe-acceptance)）：需要最高權限帳號上傳，AI agent 無法代為登入。P1 在資料庫與 Worker log 端的條件
+   已由 10-12 22:15、22:20 兩次真實上傳滿足（手機畫面文字待使用者確認）；P2～P10 未執行。
+2. 7 張手機截圖確認三槽同時工作（驗證 09-22 的 409 修正）、Golden Set、Windows 鎖屏／重開機／斷網復原、Claude 登入後的雙 Agent。
 
 ---
 
@@ -486,7 +485,7 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 | `ocr-jobs` 部署 | ✅ v24（2026-10-11） | 依序 v23（初版）→ v24（詢問輪詢依起點排程） |
 | 前端發布 | ✅ 2026-10-11 run `38140004887` | publish-only，head `441ca855` |
 | 家裡 Mac 重建 | ✅ 2026-10-11 | LaunchAgent 改為執行發布到 Application Support 的輸出；見 [§1.8](#ocr-deploy) |
-| 公司 Windows 重建 | ✅ 2026-10-12 | `a4a795acd`；啟動訊息、`-Once`、排程與程序已核對；`ocr_workers` 唯讀核對待公司 Windows 換新 token（[§3.5.9](#ocr-probe-rollout) 階段 W） |
+| 公司 Windows 重建 | ✅ 2026-10-12 | `a4a795acd`；啟動訊息、`-Once`、排程與程序已核對；10-13 `ocr_workers` 唯讀核對通過（[§3.5.9](#ocr-probe-rollout) 階段 W） |
 | Claude Pro 登入（Windows） | 🔴 待使用者互動完成 | `claude auth login`；完成前只有 Codex，沒有 Agent 故障切換 |
 | 「發布驗證」紀錄 | 🔴 | 正式驗收 P1～P10 完成後補一次 commit，記錄實際結果（比照 `c47ebdf6`／`8e62f7de`） |
 
@@ -533,12 +532,13 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 
 ### 3.4 已知殘留風險
 
-1. **舊版 Worker 相容規則（兩台重建後應不再觸發）。** 公司 Windows 已於 2026-10-12 重建為新版，heartbeat 宣告 `probeProtocol=1`（`-Once` 已確認 heartbeat 成功，
-   資料庫欄位待換新 token 後核對，見 [§3.5.9](#ocr-probe-rollout)）。Edge 對舊版（`probe_protocol < 1`）「手上有有效 lease 視為在線」的相容規則仍保留，
+1. **舊版 Worker 相容規則（兩台重建後不再觸發）。** 公司 Windows 已於 2026-10-12 重建為新版，10-13 唯讀核對 `ocr_workers` 兩台都是 `probe_protocol=1`
+   （見 [§3.5.9](#ocr-probe-rollout)）。Edge 對舊版（`probe_protocol < 1`）「手上有有效 lease 視為在線」的相容規則仍保留，
    只有日後又跑起舊版 EXE 時才會觸發：忙碌時答不出詢問、死掉的舊版若留有沒到期的 lease（最長 600 秒）仍被當成忙碌、畫面顯示「忙碌中（視為在線）」。
 2. **Agent 登入狀態最慢 30 分鐘才看得到變化**：pong 回報的是最近一次 CLI 探測結果＋Router 額度冷卻（額度用完會立刻反映），不在回答時重新探測。
    登入被撤銷時取到工作會因認證失敗走 relay／Tesseract，不會卡住。
-3. **admin 端路徑只有 happy path 在正式環境走通過一次**：2026-10-12 09:15（台北）正式資料庫出現一次使用者的真實上傳紀錄：`ocr_user_routing` 由 readiness 寫入「windows」、約 1.7 秒後 `ocr_jobs` 新增一件未標記的工作，由（舊版）Windows 接走並 `succeeded`——代表 admin 端的 happy path 在正式環境走通過一次；失敗情境（P2～P10）仍未執行。其餘情境只用「假 Supabase 跑真正的 Edge 程式」（28 項）與正式 Worker 端動作驗證過；
+3. **admin 端路徑只有 happy path 在正式環境走通過**：2026-10-12 09:15（台北）正式資料庫出現一次使用者的真實上傳紀錄：`ocr_user_routing` 由 readiness 寫入「windows」、約 1.7 秒後 `ocr_jobs` 新增一件未標記的工作，由（舊版）Windows 接走並 `succeeded`；
+   Windows 重建後 22:15、22:20 又有兩次，都由新版 Windows 辨識成功（22:20 那次詢問起點到路由決定約 0.8 秒，即第 1 次詢問就回應）；失敗情境（P2～P10）仍未執行。其餘情境只用「假 Supabase 跑真正的 Edge 程式」（28 項）與正式 Worker 端動作驗證過；
    AI agent 沒有登入帳密，P2～P10 要由使用者實測。
 4. **MacBook 蓋上或睡眠＝不在線**（設計如此）：LaunchAgent 只在登入的使用者 session 內執行，睡眠時問不到、會被判定離線；醒來後任何接觸即自動恢復。
    Mac 是備援，所以 Windows 關機又沒開 Mac 時整批走本機 Tesseract。2026-10-11 當天就看到一次實例：Mac 網路中斷／睡眠後，Worker 的 error log 出現
@@ -563,10 +563,10 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 |---|---|
 | `db/062_ocr_worker_probe.sql` | ✅ 已套用（2026-10-11） |
 | `ocr-jobs` Edge Function | ✅ v24 |
-| Worker（`OcrWorkerApiClient.cs`／`OcrWorkerRunner.cs`） | ✅ 程式完成（commit `ea373ea5`）；家裡 Mac ✅ 2026-10-11 已重建；公司 Windows ✅ 2026-10-12 已重建（`ocr_workers` 核對待補） |
+| Worker（`OcrWorkerApiClient.cs`／`OcrWorkerRunner.cs`） | ✅ 程式完成（commit `ea373ea5`）；家裡 Mac ✅ 2026-10-11 已重建；公司 Windows ✅ 2026-10-12 已重建、10-13 `ocr_workers` 核對通過 |
 | 前端 | ✅ 已發布 |
 | 測試 | ✅ `Invest.Web.Tests` 805、Node 231（含 `tests/ocr-jobs-probe.test.mjs` 28 項：以假 Supabase 實際執行 Edge Function） |
-| 正式驗收 P1～P10 | 🟡 P1 的 happy path 已有一次真實紀錄（2026-10-12，見 [§3.4](#ocr-known-risks)）；其餘待使用者（[§3.5.10](#ocr-probe-acceptance)） |
+| 正式驗收 P1～P10 | 🟡 P1 的 happy path 已有三次真實紀錄（2026-10-12 09:15 舊版 Windows；22:15、22:20 新版 Windows，見 [§3.4](#ocr-known-risks)）；其餘待使用者（[§3.5.10](#ocr-probe-acceptance)） |
 
 **與最初規格的差異（以實作為準）**：
 
@@ -696,7 +696,7 @@ readiness 期間顯示「確認 Windows／Mac 是否在線…（最多約 15 秒
 
 **階段 D（文件）✅ 2026-10-11 完成**：本文件、TODO #15、版本紀錄、完成進度、README、開發環境。
 
-**階段 W（公司 Windows，由 Windows Agent 執行）🟡 2026-10-12 重建完成**（步驟 1～3 ✅；步驟 4 待公司 Windows 換新 token；步驟 5 待使用者）：
+**階段 W（公司 Windows，由 Windows Agent 執行）✅ 2026-10-12 重建、2026-10-13 核對完成**（步驟 1～4 ✅；步驟 5 的 P1～P10 待使用者）：
 
 1. `git pull`，確認 HEAD 包含 `441ca855` 之後的 commit（`git log --oneline | head`）。
 2. `Stop-ScheduledTask "Invest D+ OCR Worker"` → `scripts\publish-ocr-worker-windows.ps1` → 確認 EXE `LastWriteTime` 是剛剛 → `Start-ScheduledTask`。
@@ -704,17 +704,17 @@ readiness 期間顯示「確認 Windows／Mac 是否在線…（最多約 15 秒
 4. 唯讀查 `ocr_workers`：Windows 那列 `probe_protocol=1`、`heartbeat_interval_seconds=1800`、`last_pong_at` 有值。
 5. 跑 [§3.5.10](#ocr-probe-acceptance) 的驗收，結果補進 `Doc/版本紀錄.md`。
 
-2026-10-12 執行紀錄（`[Company||Windows||Claude]`，細節見[版本紀錄](../版本紀錄.md)同日章節）：
+2026-10-12～13 執行紀錄（`[Company||Windows||Claude]`，細節見[版本紀錄](../版本紀錄.md) 2026-10-12 章節）：
 
 | 步驟 | 結果 |
 |---|---|
 | 1 | `git pull --ff-only` 到 `a4a795acd`（含 `441ca855`；`ea373ea5` 之後沒有 Worker／CLI Adapter 程式變更）；`Invest.Web.Tests` 805/805、Node 231/231 |
 | 2 | 先把同一支腳本試發布到暫存目錄（157 秒成功），才依 [§1.8](#ocr-deploy) `Disable`＋`Stop` 排程（舊 EXE 是 09-22 建置的 `e6c08fd1`，與 launcher 一併結束、無殘留）→ 正式發布 12 秒，EXE `LastWriteTime` 21:33:12、ProductVersion `1.0.0+a4a795acd…` → `-Once` exit 0 → `Enable`＋`Start`：排程 Running，只有一個新 EXE 程序與一個 launcher |
-| 3 | `logs\ocr-worker-20261012-213346.out.log` 啟動訊息含「在線詢問：指名回應」；`.err.log` 為空（沒有 heartbeat／pong／Realtime 失敗）；程序與 Supabase 維持一條 443 連線（Realtime） |
-| 4 | 🔴 未完成：公司 Windows 的 `SUPABASE_ACCESS_TOKEN` 仍是舊 token（Management API `/v1/projects` 回 401；[TODO #4](../TODO.md#todo-4) 記載 10-06 只換了 Mac 的 `~/.zshrc`）。`SUPABASE_DB_URL`（`invest_writer`）因 RLS 讀不到 `ocr_workers`（只開放 `service_role`），不能替代 |
-| 5 | 待使用者 |
+| 3 | `logs\ocr-worker-20261012-213346.out.log` 啟動訊息含「在線詢問：指名回應」；`.err.log` 前 28 分鐘為空，之後只有約每小時一行預期的 `realtime_phx_close`（沒有 heartbeat／pong 失敗）；程序與 Supabase 維持一條 443 連線（Realtime） |
+| 4 | ✅ 2026-10-13 01:06（台北）唯讀核對 Windows 列：`probe_protocol=1`、`heartbeat_interval_seconds=1800`、`last_pong_at` 00:34:11（00:34:04 Realtime 重連後 7 秒內回 pong）、`offline_since` null、`last_heartbeat_at` 01:04:49。一開始卡在公司 Windows 的 `SUPABASE_ACCESS_TOKEN` 是舊 token（Management API 回 401，[TODO #4](../TODO.md#todo-4)），使用者換新後才查得到；`SUPABASE_DB_URL`（`invest_writer`）因 RLS 讀不到 `ocr_workers`（只開放 `service_role`），不能替代 |
+| 5 | 待使用者。重建後 10-12 22:15、22:20（台北）兩次真實上傳：readiness 選 Windows（22:20 那次詢問起點 22:20:22.70 → 路由決定 22:20:23.51，約 0.8 秒，即第 1 次詢問就回應），由新版 Windows 以 Codex 辨識 6／10 列、總耗時 24.3／30.2 秒、`fallback=False`——P1 在資料庫與 Worker log 端的條件已滿足，手機畫面文字待使用者確認 |
 
-換新 token 後的唯讀核對（Management API `database/query`，只送 SELECT）：
+唯讀核對語句（2026-10-13 使用；Management API `database/query`，只送 SELECT）：
 
 ```sql
 select name, platform, probe_protocol, heartbeat_interval_seconds,
@@ -1467,7 +1467,7 @@ reconciliation 或引入 durable push consumer；不能同時宣稱零空閒 cla
 10. 密碼、token、Supabase 金鑰、Worker 憑證、JWT、signed URL 不得寫入 repo、文件、log 或 commit。
 11. 「已修好」必須附正式環境證據（`ocr_jobs` 新列、Edge log、Worker 啟動訊息、畫面文字）；本機測試通過不等於正式 OCR 成功率。
 12. 公司 Windows 的 `SUPABASE_ACCESS_TOKEN` 是**使用者環境變數**（不在 `~/.zshrc`）；在 Mac 換新 token 時要一併更新，否則 Windows 端的
-    `ocr_workers` 唯讀核對、DDL 與 Edge 部署都會回 401（2026-10-12 實例，見 [TODO #4](../TODO.md#todo-4)）。
+    `ocr_workers` 唯讀核對、DDL 與 Edge 部署都會回 401（2026-10-12 實例，10-13 已換新，見 [TODO #4](../TODO.md#todo-4)）。
 
 ---
 
