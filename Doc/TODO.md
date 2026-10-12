@@ -15,7 +15,7 @@
 | 1 | [盤中與盤後的比較策略](#todo-1) | 🔵 進行中 |
 | 2 | [寫入帳號拆分：invest_writer_pc / invest_writer_ci](#todo-2) | ⚪ 未開始 |
 | 3 | [權限模型：密碼登入權限（登入空白事故已修，既有表 RLS 收權限待驗收）](#todo-3) | 🟡 等驗收 |
-| 4 | [Supabase Management API token 到期](#todo-4) | 🟡 10/06 已換新，等下次到期 |
+| 4 | [Supabase Management API token 到期](#todo-4) | 🟡 Mac 10/06 已換新；公司 Windows 的使用者環境變數仍是舊 token（10/12 回 401），待換新 |
 | 5 | [盤後「抓到有為止」碰上國定假日會誤紅燈](#todo-5) | 🟡 休市日閘門已完成，待下一交易日驗收 |
 | 6 | [記住上次選的選項，重整後不要跳回預設](#todo-6) | 🟡 等實地驗收 |
 | 7 | [盤中成交額準確度：對照已經在背景收，等收滿六天](#todo-7) | 🟡 等資料 |
@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布），**家裡 Mac Worker 已重建並常駐**；**公司 Windows Worker 仍待重建（Windows Agent）**，P1～P10 正式驗收待使用者實測。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布）；**兩台 Worker 都已重建為新版**（家裡 Mac 10-11、公司 Windows 10-12）；Windows 列 `ocr_workers` 唯讀核對待公司 Windows 換新 token（[#4](#todo-4)），P1～P10 正式驗收待使用者實測。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 2026-09-23 日韓盤中快照保留、日期選擇器隱藏與排行節流已由 commit `e0bf561b` 發布；.NET 549/549、Node 146/146 通過。線上 KR 已更新至 9/23 14:05；JP 仍指向 9/14。9/15 起舊 workflow 因 KIS 金鑰缺失失敗，9/19 改 Yahoo、9/22 修 Storage bucket 判定；JP 9/21～23 休市，待 9/24 開市驗收新快照。其餘市場切換產品議題仍見下方 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [日韓成交排行來源日期檢查過嚴，09/22 起韓股每輪都失敗](#todo-18) | 🟡 工項 A～E 已實作完成，.NET 556/556、Node 148/148 通過；待 09-28（日韓同為交易日）驗收 |
@@ -196,7 +196,7 @@ Node 回歸測試已加入「公開 query 不帶 JWT」「Excel allowlist」「4
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：2026-10-06 已換新 token；下次到期日依建立時的設定（未記錄），到期症狀是 Management API／CLI 回 401。**
+**狀態：2026-10-06 已在 Mac 換新 token；公司 Windows 的使用者環境變數仍是舊 token（2026-10-12 回 401），待換新。下次到期日依建立時的設定（未記錄），到期症狀是 Management API／CLI 回 401。**
 
 ### 已討論
 
@@ -213,6 +213,12 @@ Edge Function 必須重新產生 token（https://supabase.com/dashboard/account/
 
 **2026-10-06 更新：已解除。** 使用者重新產生 token 並更新 `~/.zshrc`；`asset-operation-sync` 已部署 v23，
 卡住的草稿已由使用者按匯入確認覆蓋解除（見版本紀錄 2026-10-06）。下方 #20 被同一把 token 擋住的 DDL／部署現在可以做，但尚未執行。
+
+**2026-10-12 更新：公司 Windows 仍是舊 token。** 10-06 換新只更新了 Mac 的 `~/.zshrc`；公司 Windows 的 `SUPABASE_ACCESS_TOKEN` 放在**使用者環境變數**，
+值仍是舊的，Management API（`database/query`、`/v1/projects`）回 401，擋住了 AI OCR 階段 W 的 `ocr_workers` 唯讀核對（[#15](#todo-15)）。
+不影響 Worker 本身與每日流程。換新方式：在公司 Windows 使用者自己的 PowerShell 執行
+`[Environment]::SetEnvironmentVariable('SUPABASE_ACCESS_TOKEN', (Read-Host 'SUPABASE_ACCESS_TOKEN'), 'User')`，貼上新 token（不要貼進對話或文件），
+之後新開的終端機才會讀到。之後每次換 token 都要兩台一起換。
 
 **2026-10-04 補充：同一個 token 也擋住「資產頁日股／韓股／加密貨幣」**（見 [#20](#todo-20)）：
 OCR 匯入的 `ocr_jobs.market` 有 check constraint、新持倉即時補抓要部署 Edge Function 與 Database Webhook，都需要 DDL 與部署權限。
@@ -1337,7 +1343,7 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-### 🟡 2026-10-11：在線確認重構已實作並部署（家裡 Mac 完成；公司 Windows 待重建；正式驗收待使用者）
+### 🟡 2026-10-11：在線確認重構已實作並部署（家裡 Mac 10-11、公司 Windows 10-12 已重建；正式驗收待使用者）
 
 Windows／Mac 是否在線不再靠心跳時間或連線旗標猜測，改為**指名詢問**：上傳前先問 Windows 最多 5 次（每次等 1.5 秒），不可用再問 Mac 5 次，
 都沒回應才在手機跑 Tesseract（約 15～18 秒，取代以前的 9 分鐘）；批次進行中負責機器超過 45 秒沒動靜才再問（同台 30 秒節流），
@@ -1352,12 +1358,14 @@ Windows／Mac 是否在線不再靠心跳時間或連線旗標猜測，改為**�
   exit 126）；啟動訊息含「在線詢問：指名回應」。實測：新版 Mac 指名詢問 0.62～0.82 秒回應、舊版 Windows 靠 claim 0.61～0.63 秒回應、
   停止 Mac 後 5 次無回應並標記離線、重啟後清除；合成圖片工作由 Mac 接走並成功辨識。
 - 自動化測試：`Invest.Web.Tests` 805、Node 231（含以假 Supabase 實際執行 Edge Function 的 28 項）。
+- **2026-10-12 公司 Windows Worker 已依 [AI OCR §3.5.9](技術文件/AI%20OCR.md#ocr-probe-rollout) 階段 W 重建**：`git pull` 到 `a4a795acd` → `Disable`＋`Stop` 排程 →
+  `scripts\publish-ocr-worker-windows.ps1`（EXE ProductVersion 含 `a4a795acd`）→ `-Once` exit 0 → `Enable`＋`Start`；排程 Running、只有一個程序，
+  `logs\ocr-worker-20261012-213346.out.log` 啟動訊息含「在線詢問：指名回應」，err log 為空。舊版 `e6c08fd1` 已停止。
 
 **待辦（依序）**：
-1. 🔴 **公司 Windows Worker 重建**（Windows Agent）：目前仍是 `e6c08fd1` 舊版（`probe_protocol=0`）。與新版 Edge 相容（閒置靠 claim 回答、忙碌以有效 lease 視為在線），
-   但要重建後兩台才完整生效。步驟：`git pull` → `Stop-ScheduledTask` → `scripts\publish-ocr-worker-windows.ps1` → `Start-ScheduledTask`；
-   log 啟動訊息必須含「**在線詢問：指名回應**」；`ocr_workers` 的 Windows 列要變成 `probe_protocol=1`、`heartbeat_interval_seconds=1800`。詳見 [AI OCR §3.5.9](技術文件/AI%20OCR.md#ocr-probe-rollout)。
-2. 🔴 **使用者實測 P1～P10**（[AI OCR §3.5.10](技術文件/AI%20OCR.md#ocr-probe-acceptance)）：需要最高權限帳號上傳；AI agent 沒有登入帳密。目前只有 happy path 有一次真實紀錄（2026-10-12 09:15 台北，readiness 選 Windows、工作由舊版 Windows 接走並成功）；失敗情境 P2～P10 尚未執行，建議等 Windows 重建後一起驗。
+1. 🟡 **Windows 列 `ocr_workers` 唯讀核對**：要看到 `probe_protocol=1`、`heartbeat_interval_seconds=1800`、`last_pong_at` 有值。公司 Windows 的
+   `SUPABASE_ACCESS_TOKEN` 仍是舊 token（Management API 回 401），先依 [#4](#todo-4) 換新；查詢語句見 [AI OCR §3.5.9](技術文件/AI%20OCR.md#ocr-probe-rollout)。
+2. 🔴 **使用者實測 P1～P10**（[AI OCR §3.5.10](技術文件/AI%20OCR.md#ocr-probe-acceptance)）：需要最高權限帳號上傳；AI agent 沒有登入帳密。目前只有 happy path 有一次真實紀錄（2026-10-12 09:15 台北，readiness 選 Windows、工作由舊版 Windows 接走並成功）；失敗情境 P2～P10 尚未執行。兩台 Worker 都已是新版，可以開始驗。
 3. 驗收完成後補一次「發布驗證」紀錄（比照 `c47ebdf6`／`8e62f7de`）。
 4. 一週後以 Supabase Dashboard 比較 Edge Function invocation，確認不高於改版前一週（預估約少 6,000 次／月）。
 

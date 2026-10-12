@@ -105,8 +105,8 @@ Google Sheet 是主檔：網站有尚未匯出的草稿時按「從 Google Sheet
 上傳前由伺服器**指名詢問** Worker 是否在線（2026-10-11 起，取代原本靠心跳時間與連線旗標的推測）：先問 Windows、不可用再問 Mac，各最多 5 次、每次等 1.5 秒，
 有回應且有已登入的 Agent 才建立 AI 工作並把圖片放入 `ocr-private`；兩台都沒回應（約 15～18 秒）整批直接在瀏覽器跑 Tesseract、圖片不上傳，畫面會列出每台的詢問結果。
 批次進行中，負責機器超過 45 秒沒有任何動靜才再問一次，沒回應就依同樣順序改派給 Mac 或改走 Tesseract。
-`db/062_ocr_worker_probe.sql`、`ocr-jobs` v24 與前端已上線，**家裡 Mac Worker 已重建並由 LaunchAgent 常駐；公司 Windows Worker 仍待依
-[AI OCR §3.5.9](Doc/技術文件/AI%20OCR.md#ocr-probe-rollout) 重建**，使用者的正式驗收 P1～P10 也尚未執行，細節見 [版本紀錄.md](Doc/版本紀錄.md) 最新一節。
+`db/062_ocr_worker_probe.sql`、`ocr-jobs` v24 與前端已上線，**家裡 Mac Worker（2026-10-11，LaunchAgent 常駐）與公司 Windows Worker（2026-10-12，依
+[AI OCR §3.5.9](Doc/技術文件/AI%20OCR.md#ocr-probe-rollout) 重建）都已是新版**；使用者的正式驗收 P1～P10 尚未執行，細節見 [版本紀錄.md](Doc/版本紀錄.md) 最新一節。
 2026-09-22 修復一個獨立的 Worker 多工退化根因：完成回寫遇到 `409 lease_lost` 時，舊版會重送
 `complete` 並讓常駐槽死亡，3 個槽遂靜默變成 2 個、1 個，造成手機上傳看起來逐張排隊。現在每件工作
 只有一個終態回寫點，409 會安全丟棄結果，任一槽異常退出則讓整個 Worker fail-fast。公司 Windows 的
