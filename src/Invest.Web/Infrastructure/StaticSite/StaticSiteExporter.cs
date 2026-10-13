@@ -170,7 +170,7 @@ public sealed class StaticSiteExporter(
         if (tradingDates.Length > 0)
         {
             // 停止交易（停牌）的標的在交易所的日行情裡整列消失。現行公司名單用來分辨「停牌」與「終止上市」；
-            // 抓不到就退回比較保守的判斷（最近 20 個交易日內還有行情），不讓匯出失敗。
+            // 抓不到就只認官方已公告恢復買賣日的（寧可漏標長期停牌，不誤標已終止上市），不讓匯出失敗。
             var listed = await listedCompanies.TryGetListedTickersAsync(cancellationToken);
             var suspensions = TradingSuspensionBuilder.Build(
                 dataSet,
@@ -179,7 +179,7 @@ public sealed class StaticSiteExporter(
 
             progress?.Report(
                 $"停止交易的標的：目前 {suspensions.Count(item => item.IsOngoing)} 檔"
-                + (listed is null ? "（現行公司名單沒讀到，用最近 20 個交易日的行情判斷）" : string.Empty)
+                + (listed is null ? "（現行公司名單沒讀到，只認官方已公告恢復買賣日的，長期停牌這次暫時漏標）" : string.Empty)
                 + $"，近期區間共 {suspensions.Count} 段");
 
             await WriteLatestQuotesAsync(

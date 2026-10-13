@@ -18,7 +18,22 @@ public sealed class ListedCompanyClient(HttpClient httpClient, ILogger<ListedCom
     private const string TwseUrl = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L";
     private const string TpexUrl = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O";
     private const string EmergingUrl = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_R";
-    private const int MaxAttempts = 3;
+
+    /// <summary>
+    /// 上市、上櫃名單缺一不可，值得多試幾次；興櫃是附加的，少試幾次就放棄。
+    /// </summary>
+    private const int RequiredAttempts = 4;
+    private const int OptionalAttempts = 2;
+
+    /// <summary>
+    /// 單次請求的上限。共用的 HttpClient 設 60 秒是為了盤後那些大報表；這三份名單只有數百 KB，正常不到一秒。
+    /// 2026-10-13 18:14 在 GitHub 上實測證交所 OpenAPI 整個逾時，三次各卡滿 60 秒、一共三分鐘都沒回——
+    /// 卡住的那一次與其等它，不如 20 秒就放棄、換下一次。
+    /// </summary>
+    internal TimeSpan AttemptTimeout { get; init; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>重試的間隔單位，第 n 次失敗後等 n 倍。測試可以設成零。</summary>
+    internal TimeSpan RetryDelayUnit { get; init; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// 上市、上櫃各自至少要有這麼多家才算讀對（2026-10-12 實測上市 1,095、上櫃 893）。
@@ -30,8 +45,15 @@ public sealed class ListedCompanyClient(HttpClient httpClient, ILogger<ListedCom
     {
         try
         {
-            var twse = await ReadAsync(TwseUrl, "公司代號", cancellationToken);
-            var tpex = await ReadAsync(TpexUrl, "SecuritiesCompanyCode", cancellationToken);
+            // 三份名單互相獨立，同時讀：總等待時間取最慢的那一份，不是三份加起來。
+            var twseTask = ReadAsync(TwseUrl, "公司代號", RequiredAttempts, cancellationToken);
+            var tpexTask = ReadAsync(TpexUrl, "SecuritiesCompanyCode", RequiredAttempts, cancellationToken);
+            var emergingTask = ReadOptionalAsync(cancellationToken);
+
+            await Task.WhenAll(twseTask, tpexTask);
+
+            var twse = await twseTask;
+            var tpex = await tpexTask;
 
             if (twse.Count < MinimumCompaniesPerMarket || tpex.Count < MinimumCompaniesPerMarket)
             {
@@ -43,16 +65,7 @@ public sealed class ListedCompanyClient(HttpClient httpClient, ILogger<ListedCom
                 return null;
             }
 
-            var emerging = new List<string>();
-
-            try
-            {
-                emerging.AddRange(await ReadAsync(EmergingUrl, "SecuritiesCompanyCode", cancellationToken));
-            }
-            catch (Exception exception) when (IsTransient(exception, cancellationToken))
-            {
-                logger.LogWarning(exception, "讀不到興櫃公司名單，興櫃的長期停牌這次看不到。");
-            }
+            var emerging = await emergingTask;
 
             var listed = new HashSet<string>(StringComparer.Ordinal);
             listed.UnionWith(twse);
@@ -75,6 +88,21 @@ public sealed class ListedCompanyClient(HttpClient httpClient, ILogger<ListedCom
         }
     }
 
+    /// <summary>興櫃名單：讀不到只代表興櫃的長期停牌這次看不到，不影響其他市場。</summary>
+    private async Task<IReadOnlyList<string>> ReadOptionalAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ReadAsync(EmergingUrl, "SecuritiesCompanyCode", OptionalAttempts, cancellationToken);
+        }
+        catch (Exception exception) when (IsTransient(exception, cancellationToken))
+        {
+            logger.LogWarning(exception, "讀不到興櫃公司名單，興櫃的長期停牌這次看不到。");
+
+            return [];
+        }
+    }
+
     private static bool IsTransient(Exception exception, CancellationToken cancellationToken)
         => !cancellationToken.IsCancellationRequested
             && exception is HttpRequestException or JsonException or OperationCanceledException or InvalidDataException;
@@ -82,17 +110,22 @@ public sealed class ListedCompanyClient(HttpClient httpClient, ILogger<ListedCom
     private async Task<IReadOnlyList<string>> ReadAsync(
         string url,
         string tickerProperty,
+        int maxAttempts,
         CancellationToken cancellationToken)
     {
         for (var attempt = 1; ; attempt++)
         {
             try
             {
-                using var response = await httpClient.GetAsync(url, cancellationToken);
+                // 每一次嘗試自己有上限，卡住的那一次不會把整份名單的時間吃光。
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(AttemptTimeout);
+
+                using var response = await httpClient.GetAsync(url, timeout.Token);
                 response.EnsureSuccessStatusCode();
 
-                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
 
                 if (document.RootElement.ValueKind != JsonValueKind.Array)
                 {
@@ -107,17 +140,17 @@ public sealed class ListedCompanyClient(HttpClient httpClient, ILogger<ListedCom
                     .Select(ticker => ticker!)
                     .Distinct(StringComparer.Ordinal)];
             }
-            catch (Exception exception) when (IsTransient(exception, cancellationToken) && attempt < MaxAttempts)
+            catch (Exception exception) when (IsTransient(exception, cancellationToken) && attempt < maxAttempts)
             {
                 logger.LogWarning(
                     exception,
                     "{Url} 取得失敗，第 {Attempt}/{MaxAttempts} 次，{DelaySeconds} 秒後重試。",
                     url,
                     attempt,
-                    MaxAttempts,
-                    attempt * 2);
+                    maxAttempts,
+                    (RetryDelayUnit * attempt).TotalSeconds);
 
-                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), cancellationToken);
+                await Task.Delay(RetryDelayUnit * attempt, cancellationToken);
             }
         }
     }

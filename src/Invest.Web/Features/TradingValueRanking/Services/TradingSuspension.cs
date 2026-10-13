@@ -69,7 +69,9 @@ public sealed record SuspensionSegment(
 /// </description></item>
 /// <item><description>
 /// <b>最後一天之後再也沒有行情</b>（仍在進行中）：要分清楚是「停牌」還是「已經終止上市」。
-/// 普通股用交易所<b>現行的</b>上市、上櫃、興櫃公司名單判斷；名單抓不到時退回「最近 20 個交易日內還有行情」。
+/// 普通股用交易所<b>現行的</b>上市、上櫃、興櫃公司名單判斷；名單抓不到時（GitHub 上讀交易所 OpenAPI 偶爾整個逾時，
+/// 2026-10-13 18:14 實測三次都逾時）<b>只認官方已公告恢復買賣日的</b>，寧可暫時漏標長期停牌的標的，也不把已經終止上市的
+/// 標的誤標成停牌——曾用「最近 20 個交易日內還有行情」當退路，同一次匯出就多標了三檔已終止的公司（百辰、永虹先進、精星）。
 /// ETF、TDR 不能用名冊判斷（櫃買的債券 ETF 名冊還留著已經終止的商品），所以只認官方已公告恢復買賣日的——
 /// 交易所只會替還要回來的標的公告恢復買賣參考價。
 /// </description></item>
@@ -87,12 +89,9 @@ public static class TradingSuspensionBuilder
     /// <summary>判斷完整與否時，往前後各看幾個交易日。</summary>
     private const int CompletenessWindow = 5;
 
-    /// <summary>沒有現行名單可對照時，最後一次有行情距今不超過這麼多個交易日才算還在停牌。</summary>
-    public const int FallbackMaxStaleTradingDays = 20;
-
     /// <param name="dataSet">逐日行情、標的名冊、權益事件與官方恢復買賣公告。</param>
     /// <param name="listedTickers">
-    /// 交易所現行的上市、上櫃、興櫃公司代號；null 代表沒抓到，退回比較保守的判斷。
+    /// 交易所現行的上市、上櫃、興櫃公司代號；null 代表沒抓到，這時普通股只認官方已公告恢復買賣日的。
     /// </param>
     /// <param name="visibleFrom">
     /// 畫面最早能選的交易日。早於它就結束的區間用不到，不輸出；跨過它的區間從它開始切段。
@@ -193,7 +192,7 @@ public static class TradingSuspensionBuilder
                 var announced = resumptions.FirstOrDefault(action => action.Date > lastRowDate);
 
                 if (trailing.Length > 0
-                    && IsStillSuspended(stock, announced, latestDate, trailing.Length, listedTickers))
+                    && IsStillSuspended(stock, announced, latestDate, listedTickers))
                 {
                     episodes.Add((trailing[0], null, lastRowDate, announced));
                 }
@@ -235,7 +234,6 @@ public static class TradingSuspensionBuilder
         Stock stock,
         ReferenceAction? announced,
         DateOnly latestDate,
-        int missingTradingDays,
         IReadOnlySet<string>? listedTickers)
     {
         // 官方公告的恢復買賣日還沒到：一定是停止交易，不管名單怎麼說。
@@ -250,9 +248,9 @@ public static class TradingSuspensionBuilder
             return false;
         }
 
-        return listedTickers is not null
-            ? listedTickers.Contains(stock.Ticker)
-            : missingTradingDays <= FallbackMaxStaleTradingDays;
+        // 名單沒抓到（null）：沒有證據分辨停牌與終止上市，不標。這樣同一份行情不會因為 API 當時順不順而時有時無，
+        // 最壞也只是長期停牌（沒有公告恢復日）的暫時漏標，下一次名單讀得到就補回來。
+        return listedTickers?.Contains(stock.Ticker) == true;
     }
 
     private static TradingSuspension? ToSuspension(

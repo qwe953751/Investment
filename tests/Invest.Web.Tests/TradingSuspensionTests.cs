@@ -124,30 +124,36 @@ public sealed class TradingSuspensionTests
     }
 
     [Fact]
-    public void 現行名單沒讀到時退回最近二十個交易日內還有行情才算停牌()
+    public void 現行名單沒讀到時只認官方已公告恢復買賣日的_寧可漏標長期停牌也不誤標已終止上市()
     {
-        var recent = DataSet(SuspendedSince1007(), [Otc("6173", "信昌電")]);
+        // GitHub 上讀交易所 OpenAPI 偶爾整個逾時（2026-10-13 18:14 三次都逾時）。名單讀不到時沒有證據分辨
+        // 「停牌」與「終止上市」：舊版退回「最近 20 個交易日內還有行情」，同一次匯出就多標了三檔已終止的公司。
+        var dataSet = DataSet(
+            [.. SuspendedSince1007("6173"), .. SuspendedSince1007("6618")],
+            [Otc("6173", "信昌電"), Otc("6618", "永虹先進")],
+            [Resumption("6173", new DateOnly(2026, 10, 19))]);
 
-        Assert.Contains(TradingSuspensionBuilder.Build(recent, null), item => item.Ticker == "6173");
+        var suspensions = TradingSuspensionBuilder.Build(dataSet, null);
 
-        // 最後一次有行情是 30 多個交易日以前：不再當成停牌（可能早就終止上市）。
-        var longAgo = Enumerable.Range(0, 70).Select(offset => new DateOnly(2026, 8, 3).AddDays(offset))
-            .Where(date => date.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday))
-            .ToArray();
-        var rows = longAgo.Take(10).Select(day => Row(day, "6173", 284m))
-            .Concat(MarketRows(longAgo))
-            .ToList();
-        var stale = new MarketDataSet
-        {
-            Stocks = [Otc("6173", "信昌電"), .. Enumerable.Range(1, 30).Select(index => new Stock
-            {
-                Market = Domain.Stocks.Market.Twse, Ticker = $"M{index:00}", Name = $"大盤{index}"
-            })],
-            DailyTrading = rows,
-            MarketIndices = []
-        };
+        // 有公告恢復買賣日的（信昌電）一定是停牌；沒有公告、最近才沒行情的（永虹先進）可能是終止上市，不標。
+        Assert.Contains(suspensions, item => item.Ticker == "6173");
+        Assert.DoesNotContain(suspensions, item => item.Ticker == "6618");
+    }
 
-        Assert.DoesNotContain(TradingSuspensionBuilder.Build(stale, null), item => item.Ticker == "6173");
+    [Fact]
+    public void 現行名單讀得到時_長期停牌沒有公告恢復日的也標出來_已終止上市的不標()
+    {
+        var dataSet = DataSet(
+            [.. SuspendedSince1007("1589"), .. SuspendedSince1007("6618")],
+            [
+                new Stock { Market = Domain.Stocks.Market.Twse, Ticker = "1589", Name = "永冠-KY" },
+                Otc("6618", "永虹先進")
+            ]);
+
+        var suspensions = TradingSuspensionBuilder.Build(dataSet, new HashSet<string> { "1589" });
+
+        Assert.Contains(suspensions, item => item.Ticker == "1589");
+        Assert.DoesNotContain(suspensions, item => item.Ticker == "6618");
     }
 
     [Fact]
