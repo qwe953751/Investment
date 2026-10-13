@@ -20293,6 +20293,10 @@ function renderSummary() {
     // 兩者綁在一起才不會有「資料換了、警告還留在上一輪」的空窗。
     renderStaleBanner();
     renderCustomAssetSwitch();
+    const summaryHost = el('summary');
+    const rankingHost = el('ranking');
+    rankingHost.querySelector(':scope > .summary-explanation-row')?.remove();
+    const marketStructureExpanded = summaryHost.querySelector('.market-structure-panel')?.open === true;
 
     if (state.view === 'etf') {
         const items = isEtfIntradayView()
@@ -20413,6 +20417,7 @@ function renderSummary() {
     summary.replaceChildren();
     const explanationRow = document.createElement('div');
     explanationRow.className = 'summary-row summary-explanation-row';
+    explanationRow.classList.add('ranking-summary-metadata');
 
     for (const [label, value] of baseItems) {
         const item = document.createElement('div');
@@ -20469,21 +20474,38 @@ function renderSummary() {
         summary.append(renderMarketHeat(current.marketHeat, displayIndex));
     }
 
-    summary.append(explanationRow);
-
     if (!current.marketHeat) {
         summary.append(indexRow);
     }
 
-    const structure = current.marketStructure
-        ?? (state.view === 'daily'
+    const structure = state.view === 'intraday'
+        ? current.marketStructure
+        : state.view === 'daily'
             && normalizeMarketStructureDate(state.date)
                 === normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate)
-                ? marketStructureClose
-                : null);
-    if (structure || state.view === 'intraday') {
+            ? marketStructureClose
+            : null;
+    const selectedCloseHasSnapshot = state.view === 'daily'
+        && normalizeMarketStructureDate(state.date)
+            === normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate);
+    if (structure || state.view === 'intraday' || state.view === 'daily') {
+        const historyMissing = state.view === 'daily' && !structure && !selectedCloseHasSnapshot;
         summary.append(renderMarketStructure(
-            structure, current.marketStructurePending === true, current.marketStructureMessage));
+            structure,
+            state.view === 'intraday' && current.marketStructurePending === true,
+            historyMissing
+                ? '這個交易日沒有封存當日股數與產業資料，為避免用目前名冊回填舊日，暫不計算歷史市場結構。'
+                : state.view === 'daily' && !structure
+                    ? '最新交易日的市場結構快照暫時無法讀取。'
+                    : current.marketStructureMessage,
+            marketStructureExpanded));
+    }
+
+    const filterPanel = rankingHost.querySelector(':scope > .filter-panel');
+    if (filterPanel) {
+        filterPanel.after(explanationRow);
+    } else {
+        summary.append(explanationRow);
     }
 }
 
@@ -20493,18 +20515,176 @@ function marketStructurePercent(value) {
         : `${Number(value).toFixed(2)}%`;
 }
 
-function renderMarketStructure(result, pending = false, message = null) {
-    const panel = document.createElement('section');
-    panel.className = 'market-structure-panel';
+function marketStructureCount(value) {
+    return Number(value ?? 0).toLocaleString('zh-TW');
+}
+
+function marketStructureTone(value) {
+    const number = Number(value);
+    return !Number.isFinite(number) || number === 0
+        ? 'is-flat'
+        : number > 0 ? 'is-up' : 'is-down';
+}
+
+function marketStructureStatusTone(market) {
+    if (market?.dataStatus !== 'ready') {
+        return 'is-insufficient';
+    }
+    if (['weight_led_up', 'broad_up', 'sector_up', 'weight_drag_broad_up'].includes(market.statusCode)) {
+        return 'is-up';
+    }
+    if (['weight_led_down', 'broad_down', 'sector_down', 'weight_support_broad_down'].includes(market.statusCode)) {
+        return 'is-down';
+    }
+    return 'is-flat';
+}
+
+function makeMarketStructureBreadthRow(label, breadth) {
+    if (!breadth) {
+        return null;
+    }
+
+    const rising = Number(breadth.risingCount ?? 0);
+    const falling = Number(breadth.fallingCount ?? 0);
+    const total = rising + falling;
+    const row = document.createElement('div');
+    row.className = 'market-structure-breadth-row';
 
     const heading = document.createElement('div');
-    heading.className = 'market-structure-heading';
+    heading.className = 'market-structure-breadth-label';
+    const labelText = document.createElement('strong');
+    labelText.textContent = label;
+    const labelNote = document.createElement('small');
+    labelNote.textContent = '(標的漲跌數量)';
+    heading.append(labelText, labelNote);
+
+    const chart = document.createElement('div');
+    chart.className = 'market-structure-breadth-chart';
+
+    const bar = document.createElement('div');
+    bar.className = 'market-structure-breadth-bar';
+    bar.setAttribute('role', 'img');
+    bar.setAttribute('aria-label', `${label}：上漲 ${rising} 檔、下跌 ${falling} 檔`);
+    for (const [className, count] of [
+        ['is-up', rising],
+        ['is-down', falling]
+    ]) {
+        const segment = document.createElement('span');
+        segment.className = className;
+        segment.style.width = `${total > 0 ? (count / total) * 100 : 0}%`;
+        bar.append(segment);
+    }
+
+    const counts = document.createElement('div');
+    counts.className = 'market-structure-breadth-counts';
+    for (const [caption, count, tone] of [
+        ['漲', rising, 'is-up'],
+        ['跌', falling, 'is-down']
+    ]) {
+        const item = document.createElement('span');
+        item.className = tone;
+        item.textContent = `${caption} ${marketStructureCount(count)}`;
+        counts.append(item);
+    }
+
+    chart.append(counts, bar);
+    row.append(heading, chart);
+    return row;
+}
+
+function makeMarketStructureWeightStrip(market, estimated) {
+    if (!market.weightGroup?.length) {
+        return null;
+    }
+
+    const strip = document.createElement('div');
+    strip.className = 'market-structure-breadth-row market-structure-weight-row';
+    strip.setAttribute('role', 'group');
+    strip.setAttribute('aria-label', `權值前 ${market.weightGroup.length} 檔漲跌分布`);
+
+    const heading = document.createElement('div');
+    heading.className = 'market-structure-breadth-label market-structure-weight-heading';
+    const labelCopy = document.createElement('div');
+    labelCopy.className = 'market-structure-weight-copy';
+    const label = document.createElement('strong');
+    label.textContent = `權值前 ${market.weightGroup.length}`;
+    const labelNote = document.createElement('small');
+    labelNote.textContent = '(標的漲跌)';
+    labelCopy.append(label, labelNote);
+    heading.append(labelCopy);
+    if (estimated || market.weightGroup.some(stock => stock.isEstimated)) {
+        const badge = document.createElement('span');
+        badge.className = 'market-structure-estimate-badge';
+        badge.textContent = '估算';
+        heading.append(badge);
+    }
+
+    const cells = document.createElement('div');
+    cells.className = 'market-structure-weight-cells';
+    market.weightGroup.forEach((stock, index) => {
+        const change = stock.adjustedChangePercent;
+        const cell = document.createElement('span');
+        cell.className = `market-structure-weight-cell ${marketStructureTone(change)}`;
+        cell.textContent = String(index + 1).padStart(2, '0');
+        const details = `${stock.ticker} ${stock.name}：${marketStructurePercent(change)}`;
+        cell.title = details;
+        cell.setAttribute('aria-label', details);
+        cells.append(cell);
+    });
+
+    strip.append(heading, cells);
+    return strip;
+}
+
+function renderMarketStructure(result, pending = false, message = null, expanded = false) {
+    const panel = document.createElement('details');
+    panel.className = 'market-structure-panel';
+    panel.open = expanded;
+
+    const overview = document.createElement('summary');
+    overview.className = 'market-structure-summary';
     const title = document.createElement('strong');
+    title.className = 'market-structure-title';
     title.textContent = '市場結構';
     const mode = document.createElement('span');
-    mode.textContent = state.view === 'intraday' ? '盤中同輪結果' : '最新單日盤後結果';
-    heading.append(title, mode);
-    panel.append(heading);
+    mode.className = 'market-structure-mode';
+    mode.textContent = state.view === 'intraday' ? '盤中' : '盤後';
+    const quickMarkets = document.createElement('span');
+    quickMarkets.className = 'market-structure-quick-markets';
+    for (const [marketName, market] of [['上市', result?.twse], ['上櫃', result?.tpex]]) {
+        if (!market) {
+            continue;
+        }
+        const item = document.createElement('span');
+        item.className = 'market-structure-quick-market';
+        const name = document.createElement('strong');
+        name.textContent = marketName;
+        const status = document.createElement('span');
+        status.className = `market-structure-quick-status ${marketStructureStatusTone(market)}`;
+        status.textContent = market.displayName ?? '資料不足';
+        item.append(name, status);
+        quickMarkets.append(item);
+    }
+    if (pending) {
+        const waiting = document.createElement('span');
+        waiting.className = 'market-structure-quick-market is-pending';
+        waiting.textContent = '分類更新中';
+        quickMarkets.append(waiting);
+    } else if (!result) {
+        const unavailable = document.createElement('span');
+        unavailable.className = 'market-structure-quick-status is-insufficient';
+        unavailable.textContent = '歷史資料不足';
+        quickMarkets.append(unavailable);
+    }
+    const toggleHint = document.createElement('span');
+    toggleHint.className = 'market-structure-toggle';
+    toggleHint.setAttribute('aria-hidden', 'true');
+    overview.append(title, mode, quickMarkets, toggleHint);
+    panel.append(overview);
+
+    const body = document.createElement('div');
+    body.className = 'market-structure-body';
+    panel.append(body);
 
     if (pending || !result) {
         const waiting = document.createElement('p');
@@ -20512,45 +20692,56 @@ function renderMarketStructure(result, pending = false, message = null) {
         waiting.textContent = message ?? (pending
             ? '正在等待這一輪行情的分類結果。'
             : '尚無這一輪行情的市場結構結果。');
-        panel.append(waiting);
+        body.append(waiting);
         return panel;
     }
 
-    const date = document.createElement('span');
-    date.className = 'market-structure-date';
-    date.textContent = `${String(result.tradeDate ?? '').replaceAll('-', '/')} · 規則 ${result.rulesVersion ?? '—'}`;
-    heading.append(date);
-
-    if (result.isEstimated) {
-        const estimate = document.createElement('p');
-        estimate.className = 'market-structure-estimate';
-        estimate.textContent = '權值名單與指數貢獻為估算；依普通股股數及前收市值推估，正式成分權重仍待來源授權與驗證。';
-        panel.append(estimate);
-    }
-
-    const markets = document.createElement('div');
-    markets.className = 'market-structure-markets';
-    for (const [marketName, market] of [['上市', result.twse], ['上櫃', result.tpex]]) {
+    const marketEntries = [['上市', result.twse], ['上櫃', result.tpex]]
+        .filter(([, market]) => market);
+    const cards = document.createElement('div');
+    cards.className = 'market-structure-cards';
+    for (const [marketName, market] of marketEntries) {
         if (!market) {
             continue;
         }
 
-        const card = document.createElement('article');
-        card.className = 'market-structure-market';
-        const cardHeading = document.createElement('div');
-        cardHeading.className = 'market-structure-market-heading';
+        const card = document.createElement('section');
+        card.className = 'market-structure-card market-structure-market-chart';
+        const cardHeading = document.createElement('header');
+        cardHeading.className = 'market-structure-chart-heading';
+        const identity = document.createElement('div');
+        identity.className = 'market-structure-chart-identity';
         const name = document.createElement('strong');
         name.textContent = marketName;
         const status = document.createElement('span');
-        status.className = `market-structure-status${market.dataStatus === 'ready' ? '' : ' is-insufficient'}`;
+        status.className = 'market-structure-status ' + marketStructureStatusTone(market);
         status.textContent = market.displayName ?? '資料不足';
-        cardHeading.append(name, status);
-        card.append(cardHeading);
-
+        identity.append(name, status);
         const explanation = document.createElement('p');
         explanation.className = 'market-structure-explanation';
-        explanation.textContent = market.explanation ?? '';
-        card.append(explanation);
+        explanation.textContent = market.explanation
+            ? market.explanation.split('。')[0] + '。'
+            : '';
+        const coverage = document.createElement('div');
+        coverage.className = 'market-structure-coverage';
+        const coverageLabel = document.createElement('span');
+        coverageLabel.textContent = '有效報價';
+        const coverageValue = document.createElement('strong');
+        coverageValue.textContent = market.allStockBreadth
+            ? `${marketStructureCount(market.allStockBreadth.quotedCount)}/${marketStructureCount(market.allStockBreadth.expectedCount)}`
+            : '—';
+        coverage.append(coverageLabel, coverageValue);
+        cardHeading.append(identity, explanation, coverage);
+        card.append(cardHeading);
+
+        const weightStrip = makeMarketStructureWeightStrip(market, result.isEstimated === true);
+        if (weightStrip) {
+            card.append(weightStrip);
+        }
+        const otherStockRow = makeMarketStructureBreadthRow('權值群外', market.otherStockBreadth);
+        if (otherStockRow) {
+            card.append(otherStockRow);
+        }
 
         const metrics = document.createElement('dl');
         metrics.className = 'market-structure-metrics';
@@ -20562,9 +20753,6 @@ function renderMarketStructure(result, pending = false, message = null) {
             ['權值外上漲比例', market.otherStockBreadth?.risingRate === null || market.otherStockBreadth?.risingRate === undefined
                 ? null
                 : Number(market.otherStockBreadth.risingRate) * 100],
-            ['上漲族群比例', market.risingIndustryRate === null || market.risingIndustryRate === undefined
-                ? null
-                : Number(market.risingIndustryRate) * 100],
             ['權值估算指數貢獻', market.weightGroupNetContributionPercent]
         ];
         for (const [label, value] of metricRows) {
@@ -20587,7 +20775,7 @@ function renderMarketStructure(result, pending = false, message = null) {
             const details = document.createElement('details');
             details.className = 'market-structure-weights';
             const summary = document.createElement('summary');
-            summary.textContent = `指數權重估算前 ${market.weightGroup.length} 名（固定名單）`;
+            summary.textContent = '指數權重估算前 20 名（固定名單）';
             details.append(summary);
             const list = document.createElement('ol');
             for (const stock of market.weightGroup) {
@@ -20607,9 +20795,10 @@ function renderMarketStructure(result, pending = false, message = null) {
             card.append(details);
         }
 
-        markets.append(card);
+        cards.append(card);
     }
-    panel.append(markets);
+
+    body.append(cards);
     return panel;
 }
 

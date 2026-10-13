@@ -18,13 +18,14 @@ public sealed class MarketStructureIntegrationTests
     public void 市場結構卡片只呈現伺服器計算狀態和權值成交證據()
     {
         var script = ReadSource("Infrastructure", "StaticSite", "Assets", "site.js");
-        var renderer = Slice(script, "function renderMarketStructure(", "async function fetchIntradayMarketStructure(");
+        var renderer = Slice(script, "function marketStructureCount(", "async function fetchIntradayMarketStructure(");
 
         Assert.Contains("market.displayName", renderer, StringComparison.Ordinal);
         Assert.Contains("market.explanation", renderer, StringComparison.Ordinal);
         Assert.Contains("權值前 20 成交值占比", renderer, StringComparison.Ordinal);
         Assert.Contains("權值估算指數貢獻', market.weightGroupNetContributionPercent", renderer, StringComparison.Ordinal);
-        Assert.Contains("權值名單與指數貢獻為估算", renderer, StringComparison.Ordinal);
+        Assert.Contains("badge.textContent = '估算'", renderer, StringComparison.Ordinal);
+        Assert.Contains("標的漲跌數量", renderer, StringComparison.Ordinal);
         Assert.Contains("stock.adjustedChangePercent", renderer, StringComparison.Ordinal);
         Assert.DoesNotContain("MarketStructureStatusCodes", renderer, StringComparison.Ordinal);
     }
@@ -36,8 +37,10 @@ public sealed class MarketStructureIntegrationTests
 
         Assert.Contains("function normalizeMarketStructureDate(value)", script, StringComparison.Ordinal);
         Assert.Contains("value.replaceAll('/', '-')", script, StringComparison.Ordinal);
-        Assert.Contains("normalizeMarketStructureDate(marketStructureDescriptor.tradeDate)\n            === normalizeMarketStructureDate(manifest.latestTradingDate)", script, StringComparison.Ordinal);
-        Assert.Contains("normalizeMarketStructureDate(state.date)\n                === normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate)", script, StringComparison.Ordinal);
+        Assert.Contains("normalizeMarketStructureDate(marketStructureDescriptor.tradeDate)", script, StringComparison.Ordinal);
+        Assert.Contains("normalizeMarketStructureDate(manifest.latestTradingDate)", script, StringComparison.Ordinal);
+        Assert.Contains("normalizeMarketStructureDate(state.date)", script, StringComparison.Ordinal);
+        Assert.Contains("normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate)", script, StringComparison.Ordinal);
     }
 
     [Fact]

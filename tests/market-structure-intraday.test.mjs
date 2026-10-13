@@ -115,12 +115,66 @@ test('別輪指標不下載結果；內容 hash 或時間不一致均拒絕', as
 });
 
 test('等待與未提供來源均有可見文字，摘要無結果時仍保留盤中卡片', () => {
-    const context = vm.createContext({ state: { view: 'intraday' }, document: { createElement: () => ({
-        children: [], append(...nodes) { this.children.push(...nodes); }
-    }) } });
-    vm.runInContext(slice('function renderMarketStructure(', 'async function fetchIntradayMarketStructure('), context);
+    const context = vm.createContext({ state: { view: 'intraday' }, document: testDocument() });
+    vm.runInContext(slice('function marketStructurePercent(', 'async function fetchIntradayMarketStructure('), context);
     const card = context.renderMarketStructure(null, true, '盤中市場結構暫時無法載入，將自動重試。');
-    assert.match(card.children.at(-1).textContent, /自動重試/);
-    assert.match(context.renderMarketStructure(null, false).children.at(-1).textContent, /尚無/);
-    assert.match(slice('function renderSummary(', 'function marketStructurePercent('), /if \(structure \|\| state.view === 'intraday'\)/);
+    assert.match(allText(card), /自動重試/);
+    assert.match(allText(context.renderMarketStructure(null, false)), /尚無/);
+    assert.match(slice('function renderSummary(', 'function marketStructurePercent('), /if \(structure \|\| state.view === 'intraday' \|\| state.view === 'daily'\)/);
+    assert.match(slice('function renderSummary(', 'function marketStructurePercent('), /為避免用目前名冊回填舊日/);
 });
+
+test('樣版 B 保留說明、有效報價、20 個權值燈號與權值群外數量圖', () => {
+    const context = vm.createContext({ state: { view: 'daily' }, document: testDocument() });
+    vm.runInContext(slice('function marketStructurePercent(', 'async function fetchIntradayMarketStructure('), context);
+    const weightGroup = Array.from({ length: 20 }, (_, index) => ({
+        ticker: String(1000 + index), name: `測試股${index + 1}`, adjustedChangePercent: index % 2 ? -1 : 1
+    }));
+    const market = {
+        dataStatus: 'ready', statusCode: 'broad_down', displayName: '全面下跌',
+        explanation: '權值群外多數股票與多數產業同向下跌，市場跌勢擴散。有效報價 1,083/1,083 檔。',
+        allStockBreadth: { quotedCount: 1083, expectedCount: 1083 },
+        otherStockBreadth: { risingCount: 209, fallingCount: 807, risingRate: 0.2 },
+        weightGroup, weightGroupTurnoverShare: 0.37, weightGroupNetContributionPercent: -1.2,
+        indexChangePercent: -2.05, warnings: []
+    };
+    const card = context.renderMarketStructure({ isEstimated: true, twse: market, tpex: market }, false);
+    const cells = findNode(card, node => node.className === 'market-structure-weight-cells');
+    const breadthLabel = findNode(card, node => node.className === 'market-structure-breadth-label'
+        && node.children.some(child => child.textContent === '權值群外'));
+    assert.equal(cells.children.length, 20);
+    assert.match(allText(card), /權值群外多數股票與多數產業同向下跌，市場跌勢擴散。/);
+    assert.match(allText(card), /有效報價1,083\/1,083/);
+    assert.match(allText(card), /標的漲跌/);
+    assert.match(allText(breadthLabel), /標的漲跌數量/);
+    assert.match(allText(card), /漲 209/);
+    assert.match(allText(card), /跌 807/);
+});
+
+function testDocument() {
+    return {
+        createElement(tag) {
+            return {
+                tag,
+                children: [],
+                attributes: {},
+                style: {},
+                append(...nodes) { this.children.push(...nodes); },
+                setAttribute(name, value) { this.attributes[name] = value; }
+            };
+        }
+    };
+}
+
+function findNode(root, predicate) {
+    if (predicate(root)) return root;
+    for (const child of root.children ?? []) {
+        const match = findNode(child, predicate);
+        if (match) return match;
+    }
+    return null;
+}
+
+function allText(node) {
+    return [node.textContent ?? '', ...(node.children ?? []).map(allText)].join('');
+}
