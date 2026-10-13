@@ -72,22 +72,101 @@ public sealed class OcrRecognitionValidator
     {
         var ticker = NormalizeTicker(row.TickerText);
         var name = NormalizeNameForOutput(row.NameText);
-        var quantity = ParseNumber(row.QuantityText);
         var cost = ParseNumber(row.TotalCostText);
         var rowWarnings = new List<string>();
+        var quantity = ResolveQuantity(row, rowWarnings, out var needsReview);
 
         if (ticker.Length == 0 && name.Length == 0) rowWarnings.Add("缺少股票代號與名稱。");
-        if (quantity is null) rowWarnings.Add("股數無法安全解析。");
         if (cost is null) rowWarnings.Add("總成本無法安全解析。");
         if (row.RowObscured) rowWarnings.Add("畫面可能有遮擋。");
+        if (quantity == 0) rowWarnings.Add("股數為 0，可能已全部賣出，請確認要保留或移除。");
+
+        // 成本為 0 卻還有股數，是昨日餘額版型最常見的矛盾：當天全部賣出後券商把成本歸零，
+        // 但「今賣成」欄不在截圖內時，股數仍是昨日餘額。不改數字，只降級讓人核對。
+        if (quantity is > 0 && cost == 0)
+        {
+            rowWarnings.Add("總成本為 0 但股數大於 0（例如當天已全部賣出、賣出欄未入鏡），請對照券商畫面核對。");
+            needsReview = true;
+        }
 
         var verified = imageReadable
             && (ticker.Length > 0 || name.Length > 0)
             && quantity is > 0
             && cost is >= 0
-            && !row.RowObscured;
+            && !row.RowObscured
+            && !needsReview;
         return new(ticker, name, quantity, cost, verified, rowWarnings);
     }
+
+    /// <summary>
+    /// 股數有兩種版型：單一庫存欄（直接用 <c>QuantityText</c>），或券商拆成「昨日餘額／今買成／今賣成」。
+    /// 後者 AI 只逐欄照抄，這裡才計算：昨日餘額＋今買成－今賣成。
+    /// 今買成或今賣成沒有出現在畫面（AI 回 null，通常是被裁切）時視為 0——這是 2026-10-13
+    /// 使用者定案的取捨，代價是當天有賣出、而賣出欄不在截圖內時，股數會偏高。
+    /// 看不懂的數字、負數、小數或賣超過持有量一律不猜：股數留空並降級給人工修正。
+    /// </summary>
+    private static decimal? ResolveQuantity(PassRow row, List<string> warnings, out bool needsReview)
+    {
+        needsReview = false;
+        var listed = ParseNumber(row.QuantityText);
+        var hasYesterday = !string.IsNullOrWhiteSpace(row.YesterdayBalanceText);
+
+        if (!hasYesterday)
+        {
+            if (!string.IsNullOrWhiteSpace(row.TodayBuyText) || !string.IsNullOrWhiteSpace(row.TodaySellText))
+            {
+                warnings.Add("只看到今買成或今賣成、沒有昨日餘額，無法計算股數。");
+                needsReview = true;
+            }
+
+            if (listed is null) warnings.Add("股數無法安全解析。");
+            return listed;
+        }
+
+        var yesterday = ParseNumber(row.YesterdayBalanceText);
+        if (yesterday is null or < 0
+            || !TryParseMovement(row.TodayBuyText, out var buy)
+            || !TryParseMovement(row.TodaySellText, out var sell))
+        {
+            warnings.Add("昨日餘額、今買成或今賣成無法安全解析，無法計算股數。");
+            needsReview = true;
+            return null;
+        }
+
+        var computed = yesterday.Value + buy - sell;
+        if (computed < 0 || computed != decimal.Truncate(computed))
+        {
+            warnings.Add(
+                $"昨日餘額 {FormatNumber(yesterday.Value)}＋今買成 {FormatNumber(buy)}－今賣成 {FormatNumber(sell)}"
+                + $" = {FormatNumber(computed)}，不是合理的股數。");
+            needsReview = true;
+            return null;
+        }
+
+        if (listed is not null && listed != computed)
+        {
+            warnings.Add(
+                $"股數欄 {FormatNumber(listed.Value)} 與昨日餘額＋今買成－今賣成 = {FormatNumber(computed)} 不一致，"
+                + "已採用後者，請核對。");
+            needsReview = true;
+        }
+
+        return computed;
+    }
+
+    /// <summary>空白視為沒有出現（0）；有內容就必須是非負數，否則算看不懂。</summary>
+    private static bool TryParseMovement(string? text, out decimal value)
+    {
+        value = 0;
+        if (string.IsNullOrWhiteSpace(text)) return true;
+        var parsed = ParseNumber(text);
+        if (parsed is null or < 0) return false;
+        value = parsed.Value;
+        return true;
+    }
+
+    private static string FormatNumber(decimal value)
+        => value.ToString("#,##0.####", CultureInfo.InvariantCulture);
 
     private static decimal? ParseNumber(string? value)
     {
@@ -128,6 +207,9 @@ public sealed class OcrRecognitionValidator
         string? TickerText,
         string? NameText,
         string? QuantityText,
+        string? YesterdayBalanceText,
+        string? TodayBuyText,
+        string? TodaySellText,
         string? TotalCostText,
         string? Currency,
         bool RowObscured,

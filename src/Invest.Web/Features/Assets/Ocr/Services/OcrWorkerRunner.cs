@@ -586,7 +586,7 @@ public sealed class OcrWorkerRunner(
                 : "帳戶市場未限定；只能抄錄畫面，不得自行推測市場。";
         return new(
             imagePath,
-            $"{context} 圖片是券商持倉截圖。從上到下完整擷取每一列可見持股，排除頁首、時間、按鈕、合計與彈窗。只輸出股票身份、庫存股數與總成本；不要輸出幣別或逐列證據欄位。代號缺少時保留名稱，名稱缺少時保留代號；看不清楚填 null 並加入 warnings，不得猜測或由市值、損益反推。",
+            $"{context} 圖片是券商持倉截圖。從上到下完整擷取每一列可見持股，排除頁首、時間、按鈕、合計與彈窗。只輸出股票身份、股數與總成本；不要輸出幣別或逐列證據欄位。{OcrRecognitionContract.QuantityColumnsPrompt} 代號缺少時保留名稱，名稱缺少時保留代號；看不清楚填 null 並加入 warnings，不得猜測或由市值、損益反推。",
             schemaPath,
             workingDirectory,
             OutputPath: Path.Combine(workingDirectory, "ai-result.json"),
@@ -763,6 +763,19 @@ public sealed class OcrWorkerRunner(
 
 public static class OcrRecognitionContract
 {
+    /// <summary>
+    /// 股數有兩種版型：單一庫存欄，或券商拆成「昨日餘額／今買成／今賣成」。AI 只逐欄照抄，
+    /// 加總一律由 <see cref="OcrRecognitionValidator"/> 用 C# 計算（昨日＋今買－今賣），
+    /// 公式只有一份。正式 Worker 與 POC 共用這段指令，避免兩邊分歧。
+    /// </summary>
+    public const string QuantityColumnsPrompt =
+        "股數有兩種版型。"
+        + "(1) 畫面只有單一的庫存或持有股數欄：填入 quantityText，yesterdayBalanceText、todayBuyText、todaySellText 填 null。"
+        + "(2) 畫面把股數拆成「昨日餘額」「今買成」（或今日買進）「今賣成」（或今日賣出）等多欄："
+        + "把各欄數字原樣抄進 yesterdayBalanceText、todayBuyText、todaySellText，quantityText 填 null；"
+        + "不得自行加總、相減或換算，某一欄沒有入鏡、標題被截斷或數字看不到就填 null，不得補 0。"
+        + "投資成本、市值等金額欄不是股數，不可填進任何股數欄位。";
+
     public const string Schema = """
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -783,10 +796,13 @@ public static class OcrRecognitionContract
                   "tickerText": { "type": ["string", "null"] },
                   "nameText": { "type": ["string", "null"] },
                   "quantityText": { "type": ["string", "null"] },
+                  "yesterdayBalanceText": { "type": ["string", "null"] },
+                  "todayBuyText": { "type": ["string", "null"] },
+                  "todaySellText": { "type": ["string", "null"] },
                   "totalCostText": { "type": ["string", "null"] },
                   "rowObscured": { "type": "boolean" }
                 },
-                "required": ["rowIndex", "tickerText", "nameText", "quantityText", "totalCostText", "rowObscured"]
+                "required": ["rowIndex", "tickerText", "nameText", "quantityText", "yesterdayBalanceText", "todayBuyText", "todaySellText", "totalCostText", "rowObscured"]
               }
             },
             "warnings": { "type": "array", "items": { "type": "string" } }

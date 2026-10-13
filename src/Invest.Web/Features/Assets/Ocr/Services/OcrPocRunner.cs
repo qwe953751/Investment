@@ -66,7 +66,7 @@ public sealed class OcrPocRunner(AgentQuotaRouter router)
             File.Copy(sourceImagePath, stagedImagePath, overwrite: true);
 
             var schemaPath = Path.Combine(stagingDirectory.FullName, "recognition-schema.json");
-            await File.WriteAllTextAsync(schemaPath, RecognitionSchema, cancellationToken);
+            await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
 
             var request = CreateRequest(
                 stagedImagePath,
@@ -101,7 +101,7 @@ public sealed class OcrPocRunner(AgentQuotaRouter router)
         string outputPath)
         => new(
             imagePath,
-            $"讀取圖片 {imagePath}，從上到下完整擷取所有可見券商持股列。只回傳符合 Schema 的股票身份、股數與總成本，不要輸出幣別或逐列證據欄位；代號缺少時保留名稱；看不清楚就填 null 並加入 warnings，不得猜測，也不要使用目前持倉資料。",
+            $"讀取圖片 {imagePath}，從上到下完整擷取所有可見券商持股列。只回傳符合 Schema 的股票身份、股數與總成本，不要輸出幣別或逐列證據欄位。{OcrRecognitionContract.QuantityColumnsPrompt} 代號缺少時保留名稱；看不清楚就填 null 並加入 warnings，不得猜測，也不要使用目前持倉資料。",
             schemaPath,
             workingDirectory,
             OutputPath: outputPath,
@@ -189,38 +189,6 @@ public sealed class OcrPocRunner(AgentQuotaRouter router)
         string InputPath,
         string? TruthPath,
         string OutputDirectory);
-
-    private const string RecognitionSchema = """
-        {
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "schemaVersion": { "type": "string" },
-            "promptVersion": { "type": "string" },
-            "imageReadable": { "type": "boolean" },
-            "visibleRowCount": { "type": ["integer", "null"] },
-            "rows": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "rowIndex": { "type": "integer" },
-                  "tickerText": { "type": ["string", "null"] },
-                  "nameText": { "type": ["string", "null"] },
-                  "quantityText": { "type": ["string", "null"] },
-                  "totalCostText": { "type": ["string", "null"] },
-                  "rowObscured": { "type": "boolean" }
-                },
-                "required": ["rowIndex", "tickerText", "nameText", "quantityText", "totalCostText", "rowObscured"]
-              }
-            },
-            "warnings": { "type": "array", "items": { "type": "string" } }
-          },
-          "required": ["schemaVersion", "promptVersion", "imageReadable", "visibleRowCount", "rows", "warnings"]
-        }
-        """;
 }
 
 public sealed record OcrPocRunSummary(
