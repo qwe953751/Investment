@@ -1,7 +1,8 @@
 # AI OCR
 
 > 最後整理：2026-10-13（公司 Windows Worker 依 [§3.5.9](#ocr-probe-rollout) 階段 W 重建並以 `ocr_workers` 核對；`db/062` 與 `ocr-jobs` v24 仍是 2026-10-11 核對的內容；
-> 同日新增 [§4.15](#ocr-incident-1013-quantity-columns)「昨日餘額／今買成／今賣成」三欄股數修正——**程式已在 `main`、家裡 Mac 已重建，公司 Windows 尚待重建**）
+> 同日新增 [§4.15](#ocr-incident-1013-quantity-columns)「昨日餘額／今買成／今賣成」三欄股數修正，晚上再加上 **AI OCR Worker 版本警告（v2）**——
+> **程式已在 `main`（`be8069d6f`）、家裡 Mac 已是 v2，公司 Windows 尚待重建**）
 >
 > 這是 D+ AI OCR 的**唯一技術文件**。2026-10-10 已把原本分開的三份文件合併進來：
 >
@@ -59,6 +60,10 @@ readiness／submit／status 的失敗情境只用「假 Supabase 跑真正的 Ed
 當天買進的股數被漏掉卻仍標成綠色「AI 已辨識」。現在 AI 只逐欄照抄三欄，由 C# 驗證器計算昨日＋今買－今賣。這是 **Worker 程式**的修正，不會跟網站發布生效：
 家裡 Mac 已重建，**公司 Windows（預設處理機）尚待重建**，重建前使用者的上傳仍是舊行為。
 
+**同日晚上加上 AI OCR Worker 版本警告（使用者選的方案 A 簡化版，[§4.15](#ocr-incident-1013-quantity-columns)）**：Worker 把版本放在回報的 platform 最前面
+（`AI OCR v2 · …`），網站在上傳前決定交給哪台時就比對，負責的 Worker 比網站要求的舊就顯示黃色警告。改了 Worker 端 AI OCR 程式一律升版（[§1.8](#ocr-deploy)），
+所以以後「Windows 沒重建」會直接寫在畫面上，不再沉默。
+
 ### 0.2 元件部署狀態
 
 | 元件 | 目前狀態 | 依據 |
@@ -67,17 +72,18 @@ readiness／submit／status 的失敗情境只用「假 Supabase 跑真正的 Ed
 | `db/055_ocr_stall_guard.sql` | ✅ 2026-09-14 已套用；它守衛的 `ocr_stall_to_fallback` 已被 `db/062` 移除 | 同上 |
 | `db/062_ocr_worker_probe.sql` | ✅ 2026-10-11 已套用。套用前在正式資料庫單一交易內連 migration 一起執行並跑完 31 項斷言，確認 rollback 無痕跡 | 版本紀錄 2026-10-11 |
 | `ocr-jobs` Edge Function | ✅ v24（2026-10-11），`verify_jwt=false`，未帶 JWT 回 401 | Management API 核對 |
-| 前端 `site.js` | ✅ 2026-10-11 publish-only run `38140004887`（head `441ca855`）發布；readiness 期間顯示「確認 Windows／Mac 是否在線…」與每台的詢問結果 | gh-pages manifest `1791722367` |
-| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功。**🟡 2026-10-13 起落後 `8cc0a5bc4`（缺三欄股數修正），待依 [§1.8](#ocr-deploy) 重建** | [§3.5.9](#ocr-probe-rollout)、[§4.15](#ocr-incident-1013-quantity-columns) |
-| 家裡 Mac Worker | ✅ 2026-10-11 以 `ea373ea56` 發布並由 LaunchAgent 常駐；啟動訊息含「在線詢問：指名回應」與「Worker 發布版本」；`probe_protocol=1`、心跳週期 1800 秒；已用合成圖片走完整條 Codex 辨識。**2026-10-13 又以 `8cc0a5bc4` 重建**（三欄股數修正；`PUBLISHED_COMMIT`＝`8cc0a5bc4`，啟動訊息「Worker 發布版本：8cc0a5bc4」，單一程序，新版啟動後 error log 無新增） | [§4.14](#ocr-incident-1011-probe)、[§4.15](#ocr-incident-1013-quantity-columns) |
-| AI 三欄股數（昨日餘額／今買成／今賣成） | 🟡 程式與測試已在 `main`（`8cc0a5bc4`）；Mac 已重建；**公司 Windows 待重建**；使用者以原三張截圖重新上傳的正式驗收尚未執行（見 [§3.2](#ocr-pending-acceptance)） | [§4.15](#ocr-incident-1013-quantity-columns) |
+| 前端 `site.js` | ✅ 2026-10-13 publish-only run `38409067142`（head `be8069d6f`）發布：上傳前比對負責那台的 AI OCR 版本，舊版顯示黃色警告；readiness 期間仍顯示「確認 Windows／Mac 是否在線…」與每台的詢問結果（2026-10-11 run `38140004887` 起） | gh-pages 與公開 manifest `1791899888` |
+| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功。**🔴 2026-10-13 起落後：要依 [§1.8](#ocr-deploy) 重建到 `be8069d6f` 或之後（AI OCR v2：三欄股數＋回報版本），啟動訊息要含「AI OCR v2」；在那之前網站上傳時會對它顯示舊版警告** | [§3.5.9](#ocr-probe-rollout)、[§4.15](#ocr-incident-1013-quantity-columns) |
+| 家裡 Mac Worker | ✅ 2026-10-11 以 `ea373ea56` 發布並由 LaunchAgent 常駐；啟動訊息含「在線詢問：指名回應」與「Worker 發布版本」；`probe_protocol=1`、心跳週期 1800 秒；已用合成圖片走完整條 Codex 辨識。**2026-10-13 20:49 以 `8cc0a5bc4` 重建（三欄股數），21:55 再以 `be8069d6f` 重建為 AI OCR v2**（`PUBLISHED_COMMIT`＝`be8069d6f`，啟動訊息含「AI OCR v2」與「Worker 發布版本：be8069d6f」，launchd running、新版啟動後 error log 無新增） | [§4.14](#ocr-incident-1011-probe)、[§4.15](#ocr-incident-1013-quantity-columns) |
+| AI 三欄股數（昨日餘額／今買成／今賣成） | 🟡 程式與測試已在 `main`（`8cc0a5bc4`）；Mac 已重建；**公司 Windows 待重建**。使用者 21:08 那批 5 張截圖（38 檔）以新版本機端到端重跑 38/38 正確；正式驗收待 Windows 重建後重新上傳（見 [§3.2](#ocr-pending-acceptance) #10） | [§4.15](#ocr-incident-1013-quantity-columns) |
+| AI OCR Worker 版本警告（v2） | 🟡 程式在 `main`（`be8069d6f`）；Mac 已回報 v2；網站發布見上方「前端 `site.js`」列；**公司 Windows 重建前，交給它的上傳會被警告**（預期行為） | [§1.5](#ocr-architecture)、[§1.8](#ocr-deploy)、[§4.15](#ocr-incident-1013-quantity-columns) |
 | Claude CLI | 🟡 公司 Windows 已安裝 `2.1.263` 但未登入；Mac 沒有安裝。目前實際只有 Codex 單 Agent，沒有 Agent 故障切換 | §4.3 |
-| 自動化測試 | ✅ 2026-10-13 `Invest.Web.Tests` 884/884、Node 262/262（`8cc0a5bc4`＋其上最新 `main`）；其中 OCR 驗證器 22 項（三欄股數新增 18 項，還原舊版檢查程式時 10 項轉紅）。2026-10-11 Edge Function 假 Supabase 行為測試 28 項仍在 Node 內 | — |
+| 自動化測試 | ✅ 2026-10-13 `be8069d6f`：`Invest.Web.Tests` 887/887、Node 268/268；其中 OCR 驗證器 22 項（三欄股數新增 18 項，還原舊版檢查程式時 10 項轉紅）、Worker 版本 3 項（含程式指紋）、前端版本警告 6 項。2026-10-11 Edge Function 假 Supabase 行為測試 28 項仍在 Node 內 | — |
 
 ### 0.3 尚待處理（詳見 [§3](#ocr-acceptance)）
 
-0. 🔴 **公司 Windows Worker 重建**（[§1.8](#ocr-deploy) Windows 正確順序）：它是預設處理機，重建前三欄股數修正對使用者不生效。重建後以啟動訊息核對版本，
-   再請使用者用原三張截圖重新上傳確認（見 [§3.2](#ocr-pending-acceptance) #10）。
+0. 🔴 **公司 Windows Worker 重建到 `be8069d6f` 或之後**（[§1.8](#ocr-deploy) Windows 正確順序）：它是預設處理機，重建前三欄股數修正對使用者不生效，網站上傳時也會顯示舊版警告。
+   重建後啟動訊息要含「AI OCR v2」；再請使用者重新上傳那 5 張截圖確認股數、且不再出現警告（見 [§3.2](#ocr-pending-acceptance) #10、#11）。
 1. **正式驗收 P1～P10**（[§3.5.10](#ocr-probe-acceptance)）：需要最高權限帳號上傳，AI agent 無法代為登入。P1 在資料庫與 Worker log 端的條件
    已由 10-12 22:15、22:20 兩次真實上傳滿足（手機畫面文字待使用者確認）；P2～P10 未執行。
 2. 7 張手機截圖確認三槽同時工作（驗證 09-22 的 409 修正）、Golden Set、Windows 鎖屏／重開機／斷網復原、Claude 登入後的雙 Agent。
@@ -267,6 +273,7 @@ Worker 整個結束，交由 Windows 排程每 2 分鐘的 recovery／Mac Launch
 | 項目 | 現行行為 |
 |---|---|
 | 上傳前 | 呼叫 `readiness`，狀態列顯示「確認 Windows／Mac 是否在線…（最多約 15 秒）」；`ready:false` 時整批在瀏覽器跑 Tesseract、圖片不上傳，並列出每台的詢問結果（`assetAiOcrProbeSummary()`，例如「Windows 5 次詢問皆未回應，Mac 已回應」）；`ready:true` 顯示由哪台處理 |
+| Worker 版本警告（2026-10-13 起） | `ready:true` 時用 `assetAiOcrWorkerVersion(readiness.workerPlatform)` 讀出負責那台的 AI OCR 版本（Worker 把「AI OCR vN」放在 platform 最前面；沒有就當 v1），比 `ASSET_AI_OCR_WORKER_VERSION` 舊就把 `assetAiOcrOutdatedWorkerNotice()` 的文字存進這批草稿的 `workerWarning`，在辨識中與校對畫面上方以黃色 `.asset-ocr-worker-warning` 顯示（例：「⚠ AI OCR 已更新到 v2，但這批交給的 Windows Worker 還是更新前的 v1…」），換下一批清掉。只警告、不擋上傳；重整後恢復批次（`resumeAssetAiJobs()`）不重新詢問，所以不顯示 |
 | 輪詢節奏 | `assetAiOcrPollDelayMs()`：`queued` 固定 3 秒；`leased` 前 10 秒 0.7 秒、之後 1.5 秒 |
 | `wake` | 只在 `queued`、進度超過 5 秒沒更新、且距上次 wake ≥ 30 秒才送；`leased` 不送。伺服器端 `ocr_wake_job` 另有 5 秒 row lock 節流 |
 | 已送出的工作 | **不再用心跳新鮮度猜測離線而提早取消**（2026-09-12 修正）；離線偵測交給伺服器在 status 輪詢中指名詢問，前端只看工作自己的狀態與 9 分鐘時限 |
@@ -317,12 +324,17 @@ Edge Function action 權限：
 
 **OCR Worker 是常駐在各台機器上的程式，不會跟著網站發布更新。** 改了
 `src/Invest.Web/Features/Assets/Ocr/**`、`Infrastructure/Ai/Cli/**` 或其依賴，push 完還要重建兩台；
-不重建就會「repo 已修好、正式環境還在跑舊版」而且沒有任何徵兆（2026-09-11 事故，見
-[§4.6](#ocr-incident-0911-stale-exe)）。
+不重建就會「repo 已修好、正式環境還在跑舊版」（2026-09-11 事故，見 [§4.6](#ocr-incident-0911-stale-exe)；2026-10-13 再發生一次，見
+[§4.15](#ocr-incident-1013-quantity-columns)）。
+
+**升版規則（2026-10-13 起）**：改了 Worker 端 AI OCR 程式，就把 C# `OcrWorkerVersion.Current` 與 `site.js` 的 `ASSET_AI_OCR_WORKER_VERSION` 一起 +1。
+`OcrWorkerVersionTests` 會比對兩邊相同，並對 `Features/Assets/Ocr/**`、`Infrastructure/Ai/Cli/**` 的程式算指紋（換行統一、排除 `OcrWorkerVersion.cs`）：
+改了程式沒升版就失敗，失敗訊息會給新的指紋與版本——連只改註解也要照做，因為網站判斷 Worker 是否最新只看這個版本號。
+Worker 把「AI OCR vN」放在 heartbeat 的 platform 最前面、啟動訊息也會印出；網站發布後，交給尚未重建之 Worker 的上傳會顯示黃色警告（[§1.5](#ocr-architecture)）。
 
 | 情況 | 需要做什麼 |
 |---|---|
-| 改了 Worker 程式 | **必須**依下方順序重建兩台 |
+| 改了 Worker 程式 | **先升版**，再依下方順序重建兩台 |
 | 只改 `ocr-jobs` Edge Function | `zsh -ic 'supabase functions deploy ocr-jobs --project-ref dehzxlxyfvtnylwgbmqy --use-api'`，部署後以 Management API 核對版本與 `verify_jwt=false`，未帶 JWT 應回 401 |
 | 只改 `site.js` | `gh workflow run daily-snapshot.yml --ref main -f trading-days=300 -f publish-only=true`，並驗證公開 manifest 與 `site.js?v=<manifest version>` |
 | 新增 DB migration | 先確認編號沒撞號；**先在單一 DO 區塊內連 migration 一起執行並以結尾 `raise exception` 強制回滾**驗證（見 [§4.14](#ocr-incident-1011-probe)），再走 Management API 獨立套用；不可混進網站發布；順序必須 migration → Edge |
@@ -337,8 +349,8 @@ Edge Function action 權限：
    確認 EXE `LastWriteTime` 是剛剛。
 3. 可先 `scripts\run-ocr-worker-windows.ps1 -Once` 診斷（exit code 0）。
 4. `Enable-ScheduledTask`／`Start-ScheduledTask`，確認 `State=Running` 且只有一個程序。
-5. **用啟動訊息核對版本**（`logs\ocr-worker-*.out.log`）：必須含「Realtime 喚醒；斷線每 5 秒重連；並行上限 3（常駐槽）；**在線詢問：指名回應**」；
-   出現「輪詢 N 秒」是更舊的版本，沒有「在線詢問：指名回應」是 2026-10-11 之前的版本。`Running` 只代表有程序活著，不代表是新版。
+5. **用啟動訊息核對版本**（`logs\ocr-worker-*.out.log`）：必須含「**AI OCR v{目前版本}**；Realtime 喚醒；斷線每 5 秒重連；並行上限 3（常駐槽）；**在線詢問：指名回應**」；
+   沒有「AI OCR v」字樣是 2026-10-13 之前的版本，出現「輪詢 N 秒」是更舊的版本，沒有「在線詢問：指名回應」是 2026-10-11 之前的版本。`Running` 只代表有程序活著，不代表是新版。
 6. 查 `ocr_workers`：該列 `probe_protocol=1`、`heartbeat_interval_seconds=1800`、`last_pong_at` 不是 null（啟動時重連會立刻回一次 pong）。
 
 可選：停機前先用 `scripts\publish-ocr-worker-windows.ps1 -OutputDirectory <暫存目錄>` 試發布一次，舊 Worker 不必停機就能確認 .NET 10 SDK 與
@@ -361,7 +373,8 @@ win-x64 runtime pack 在目前網路下可用（公司網路連不到 nuget.org 
 > 也不會再因為重啟時 `dotnet run` 從編輯到一半的工作目錄重新建置而壞掉。終端機手動診斷仍可用 `scripts/run-ocr-worker-macos.sh --once`（從原始碼執行）。
 
 Mac 驗收（不是只看 `launchctl` 的 running）：`~/Library/Logs/Invest/ocr-worker.log` 要有「Codex CLI 路徑」「Worker 發布版本：<commit>」與含
-「在線詢問：指名回應」的啟動訊息；`~/Library/Logs/Invest/ocr-worker.error.log` 不應有 `Operation not permitted`。
+「AI OCR v{目前版本}」「在線詢問：指名回應」的啟動訊息；`~/Library/Logs/Invest/ocr-worker.error.log` 不應有 `Operation not permitted`。
+同一個 repo 資料夾有別的 session 在改檔時，從乾淨的 git worktree 執行安裝腳本（腳本以自己所在位置推算 repo 根目錄），才不會把別人的半成品編進 Worker。
 Mac 前置條件：Keychain 有 `invest-ocr-worker`（account `ocr-worker@investment.local`）、.NET 10、Codex CLI 已登入。ChatGPT App 內建的 Codex 已搬到
 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`（啟動腳本兩個位置都會找；舊位置 `Resources/codex` 已不存在）。
 launchd 的 PATH 只有 `/usr/bin:/bin:/usr/sbin:/sbin`，啟動腳本會補上 `/opt/homebrew/bin` 等位置才找得到 `dotnet`。
@@ -517,6 +530,7 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 | 8 | Golden Set | 見 [§5.8](#ocr-poc)：危險假陽性 0、完整正確列 ≥95%、召回率 ≥95%、整張正確率 ≥90% |
 | 9 | 自動化測試 | `Invest.Web.Tests` 與 Node 測試全綠（2026-10-13：884／262） |
 | 10 | 三欄股數（[§4.15](#ocr-incident-1013-quantity-columns)） | **公司 Windows 重建後**，使用者用「投資成本／昨日餘額／今買成／今賣成」版型的截圖重新上傳：有今買成的列，股數＝昨日餘額＋今買成（不是只有昨日餘額）；成本為 0 的列標黃；被裁切的今賣成欄不造成整批黃色。三張原截圖的預期值見 §4.15 的驗證段 |
+| 11 | Worker 版本警告（[§1.5](#ocr-architecture)） | 公司 Windows 重建前上傳：辨識中與校對畫面上方出現「⚠ AI OCR 已更新到 v2，但這批交給的 Windows Worker 還是更新前的 v1…」；重建到 v2 後再上傳：不再出現警告，且啟動訊息含「AI OCR v2」 |
 
 <a id="ocr-not-implemented"></a>
 
@@ -557,8 +571,9 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 5. **AI 已開始辨識後才取消**：Worker 要等 CLI 跑完、下一次回報才發現租約失效，仍會消耗該次額度。
 6. **只有 Codex 單 Agent**：Claude 未登入前沒有 Agent 故障切換，Codex 額度用完就整批走 Tesseract。
 7. **三條並行是否撞 Codex 訂閱速率限制**：使用者要求直接上 3 並行時已知但未驗證；實測若出現 429 再依證據處理。
-8. **重建 Worker 的漏洞仍在**：Mac 與 Windows 一樣，改了 Worker 程式必須手動重建，不會跟著網站發布。2026-10-13 的三欄股數修正（[§4.15](#ocr-incident-1013-quantity-columns)）
-   就是這個狀態：Mac 已重建、公司 Windows 待重建，使用者在 Windows 重建前上傳仍會得到舊行為，而且畫面沒有任何徵兆。
+8. **重建 Worker 仍是手動步驟，但已不再沉默**：Mac 與 Windows 一樣，改了 Worker 程式必須手動重建，不會跟著網站發布。2026-10-13 的三欄股數修正
+   （[§4.15](#ocr-incident-1013-quantity-columns)）就因此對使用者無效、畫面毫無徵兆；同日加上版本警告後，只要依 [§1.8](#ocr-deploy) 升版，交給未重建 Worker 的上傳都會在畫面上警告。
+   殘留：警告只在上傳前那次詢問時判斷，批次中途改派到另一台、或重整後恢復批次時不會重新判斷；而且只是警告，不會擋下上傳。
 9. **今賣成欄不在截圖內、但當天有賣出時，股數會偏高（使用者 2026-10-13 定案的取捨，[§4.15](#ocr-incident-1013-quantity-columns)）。**
    券商畫面常把「今賣成」放在最右邊而被截掉；C# 驗證器把沒入鏡的今買成／今賣成視為 0，列仍是綠色。唯一的保護網是「總成本為 0 但股數大於 0」會標黃
    （當天全部賣出時券商會把成本歸零，是目前唯一能從畫面推得的徵兆）；部分賣出（成本不為 0）沒有徵兆。要根治只能請使用者截圖時把賣出欄拍進來，
@@ -1162,9 +1177,19 @@ function readinessHeartbeatAgeMs(request) {
   （run `38400351010` 成功、`headSha` `8cc0a5bc4`，gh-pages 與公開 manifest 皆為 `1791897074`）。
 - **21:08 使用者實測仍是舊行為——已查證是 Windows 未重建，不是修正失效**：readiness 選 Windows，5 件工作都由 Windows 完成，Mac 新版 0 件；
   唯一被抽中評估的草稿仍是舊版輸出（有今買成的列只有昨日餘額、全綠）。畫面下半段一整段股數空白、底色為 `asset-ai-row-review`，也是同一台 Windows 舊版 AI 回 null
-  （前端合併只補空白不清值，已排除前端）；新版處理那兩張圖是否仍空白**尚未驗證**（待使用者提供截圖）。
+  （前端合併只補空白不清值，已排除前端）。**後來以使用者補傳的那兩張截圖實測確認**：舊版（`41dcba272`）重跑，14 檔股數全部空白並標黃，
+  AI 自己的說明是「庫存股數欄位被裁切…未由昨日餘額或今買成推算」——舊指令只要「庫存股數」，畫面沒有這欄時模型有時抄昨日餘額、有時乾脆留空，是同一個根因的兩種表現。
+  新版重跑整批 5 張（38 檔）與手抄畫面逐檔比對 **0 檔不一致**（37 綠、成本為 0 的一檔黃），下半段全部有值（例如 444＋100、414＋93、555＋250 都正確加總）。
   這暴露的是 [§3.4](#ocr-known-risks) #8 的老問題：readiness 只要 Windows 有回應就選它，而 `ocr_workers.version` 只是組件版本 `1.0.0.0`，看不出 Worker 落後。
-  治本方案（A 回報並顯示 commit／契約版本、B 路由優先新版、C Windows 自動更新）待使用者決定，見 [TODO #15](../TODO.md#todo-15)。
+- **後續：AI OCR Worker 版本警告（使用者選方案 A 的簡化版，commit `be8069d6f`）**。使用者要求「AI OCR 有更新時，上傳若還是更新前的機制就寫警告訊息就好」：
+  - Worker：新增 `OcrWorkerVersion.Current`（v2）；heartbeat 的 platform 改成「AI OCR v2 · 原作業系統描述」、version 改成「AI OCR v2」，啟動訊息也印出版本。
+    Edge／資料庫判斷 Windows 都是子字串比對，加前綴不影響分流；readiness 本來就把負責那台的 platform 回給網站，所以**不改 Edge、不改資料庫、不必部署**。
+  - 網站：`ASSET_AI_OCR_WORKER_VERSION`（v2）；readiness 決定交給誰時比對，舊版（沒有字樣當 v1）就在辨識中與校對畫面上方顯示黃色警告（[§1.5](#ocr-architecture)）。
+  - 防止忘記升版：`OcrWorkerVersionTests` 比對兩邊版本號，並對 Worker 端 OCR 程式算指紋，改了程式沒升版就失敗（[§1.8](#ocr-deploy)）。
+  - 沒選的做法：讓 Edge 回傳 `ocr_workers.version`（要部署 Edge，需要密鑰）；把版本放進辨識結果（要等辨識完才知道，做不到「上傳時」）；路由優先新版、Windows 自動更新（使用者要求從簡）。
+  - 驗證：.NET 887/887、Node 268/268；指紋測試反向檢查（加一行註解就失敗、全部改 CRLF 仍通過）；在正式網站分頁內以 375px 注入新樣式與警告元素確認外觀、無橫向捲動。
+  - 部署：家裡 Mac 21:55 以 `be8069d6f` 重建，啟動訊息含「AI OCR v2」；網站 publish-only run `38409067142` 成功（gh-pages 與公開 manifest `1791899888`，
+    公開 `site.js` 已含版本常數，正式網站上以實際部署的函式確認舊版會警告、v2 不警告）；**公司 Windows 待重建到 v2**，在那之前交給它的上傳會顯示警告。
 
 ### 4.16 共同教訓
 
@@ -1179,6 +1204,8 @@ function readinessHeartbeatAgeMs(request) {
 8. **「抄錄」與「計算」要拆開，領域規則只留一份**（2026-10-13）：AI 只逐欄照抄畫面，加總、檢查一律由 C# 做；同一條規則（股數公式）不要在兩條辨識路徑各寫一份——
    2026-09-01 的昨日餘額版型只加在 Tesseract，AI 路徑設計時漏搬，一個月後才被使用者的當日加碼截圖發現。新增路徑時要把既有路徑的版型特例逐項對照。
 9. **綠色標記只代表「格式合理」，不代表「抄對欄位」**：驗證器能擋的是看不懂、負數、小數與明顯矛盾；抄錯欄只能靠契約設計（給每個欄位一個位置）與端到端用真實截圖驗證。
+10. **部署狀態要讓使用者在畫面上看得到**：同樣的「Worker 沒重建」在 09-11 與 10-13 各發生一次，兩次都靠使用者發現結果不對才查出來。
+    現在 Worker 回報版本、網站上傳前比對；升版由測試指紋強制，不靠人記得。
 
 ---
 

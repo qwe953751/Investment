@@ -109,6 +109,9 @@ Google Sheet 是主檔：網站有尚未匯出的草稿時按「從 Google Sheet
 批次進行中，負責機器超過 45 秒沒有任何動靜才再問一次，沒回應就依同樣順序改派給 Mac 或改走 Tesseract。
 `db/062_ocr_worker_probe.sql`、`ocr-jobs` v24 與前端已上線，**家裡 Mac Worker（2026-10-11，LaunchAgent 常駐）與公司 Windows Worker（2026-10-12，依
 [AI OCR §3.5.9](Doc/技術文件/AI%20OCR.md#ocr-probe-rollout) 重建）都已是新版**；使用者的正式驗收 P1～P10 尚未執行，細節見 [版本紀錄.md](Doc/版本紀錄.md) 最新一節。
+Worker 不會跟著網站發布更新，所以 2026-10-13 起 Worker 會把「AI OCR vN」版本放在回報的平台描述最前面：上傳前決定交給哪台時，
+若那台比網站要求的版本舊，辨識中與校對畫面上方會顯示黃色警告（只提醒、不擋上傳）。改了 Worker 端 AI OCR 程式就要升版並重建兩台，
+測試以程式指紋強制升版，見 [AI OCR §1.8](Doc/技術文件/AI%20OCR.md#ocr-deploy)。
 2026-09-22 修復一個獨立的 Worker 多工退化根因：完成回寫遇到 `409 lease_lost` 時，舊版會重送
 `complete` 並讓常駐槽死亡，3 個槽遂靜默變成 2 個、1 個，造成手機上傳看起來逐張排隊。現在每件工作
 只有一個終態回寫點，409 會安全丟棄結果，任一槽異常退出則讓整個 Worker fail-fast。公司 Windows 的

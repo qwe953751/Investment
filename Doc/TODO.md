@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔴 **2026-10-13 AI 漏掉「今買成」的修正已在 `main`、Mac 已重建，公司 Windows 待重建**（重建前使用者上傳仍是舊行為）。🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布）；**兩台 Worker 都已重建為新版**（家裡 Mac 10-11、公司 Windows 10-12，10-13 `ocr_workers` 核對通過）；P1～P10 正式驗收待使用者實測（P1 已有新版 Windows 的真實紀錄）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔴 **2026-10-13 AI 漏掉「今買成」的修正與 Worker 版本警告（AI OCR v2）已在 `main`、Mac 已是 v2，公司 Windows 待重建到 v2**（重建前使用者上傳仍是舊行為，網站會顯示舊版警告）。🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布）；**兩台 Worker 都已重建為新版**（家裡 Mac 10-11、公司 Windows 10-12，10-13 `ocr_workers` 核對通過）；P1～P10 正式驗收待使用者實測（P1 已有新版 Windows 的真實紀錄）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 2026-09-23 日韓盤中快照保留、日期選擇器隱藏與排行節流已由 commit `e0bf561b` 發布；.NET 549/549、Node 146/146 通過。線上 KR 已更新至 9/23 14:05；JP 仍指向 9/14。9/15 起舊 workflow 因 KIS 金鑰缺失失敗，9/19 改 Yahoo、9/22 修 Storage bucket 判定；JP 9/21～23 休市，待 9/24 開市驗收新快照。其餘市場切換產品議題仍見下方 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [日韓成交排行來源日期檢查過嚴，09/22 起韓股每輪都失敗](#todo-18) | 🟡 工項 A～E 已實作完成，.NET 556/556、Node 148/148 通過；待 09-28（日韓同為交易日）驗收 |
@@ -1345,7 +1345,7 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-### 🔴 2026-10-13：AI 漏掉「今買成」的修正已在 `main`、家裡 Mac 已重建，公司 Windows 待重建
+### 🔴 2026-10-13：AI 漏掉「今買成」的修正與 Worker 版本警告（AI OCR v2）已在 `main`、家裡 Mac 已是 v2，公司 Windows 待重建
 
 券商把股數拆成「昨日餘額／今買成／今賣成」三欄時，AI 路徑只抄了昨日餘額，當天買進的股數被漏掉（投資成本卻已含今天買進），而且仍是綠色「AI 已辨識」。
 舊版同一張真實截圖重跑實測重現；修正後 AI 逐欄照抄三欄、C# 驗證器計算昨日＋今買－今賣，24 檔逐檔核對 0 檔不一致。
@@ -1354,24 +1354,27 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 **21:08 使用者實測「還是不行」已查證**：整批 5 張被派給公司 Windows（未重建的舊版），Mac 新版 0 件；抽樣評估留存的草稿仍是舊版輸出。
 畫面下半段一整段股數空白，也是同一台 Windows 舊版 AI 回 null（黃色 `asset-ai-row-review`，非前端造成）。細節見[版本紀錄](版本紀錄.md) 2026-10-13 本節。
 **修正要等 Windows 重建後才會對使用者生效**；網站發布與此無關（run `38400351010` 已成功，但辨識是常駐 Worker 做的）。
+使用者補傳的那批 5 張截圖已在本機用新版重跑：38 檔逐檔核對 0 檔不一致；舊版重跑則重現了「股數空白」的那 14 檔（舊指令找不到庫存股數欄就留空）。
+
+**使用者選方案 A 的簡化版，已實作（commit `be8069d6f`）**：Worker 回報「AI OCR v2」（放在 platform 最前面），網站上傳前比對，
+交給舊版 Worker 時在辨識中與校對畫面上方顯示黃色警告；改了 Worker 端 AI OCR 程式就要升版，測試以程式指紋強制（[AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy)）。
+不改 Edge、不改資料庫。家裡 Mac 21:55 已重建為 v2。
 
 **待辦（依序）**：
-1. 🔴 **重建公司 Windows Worker**（它是預設處理機，沒重建前這次修正對使用者不生效，而且畫面沒有任何徵兆）。步驟照 [AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy)
-   Windows 正確順序：`git pull --ff-only origin main`（要含 `8cc0a5bc4`）→ `Disable-ScheduledTask`＋`Stop-ScheduledTask "Invest D+ OCR Worker"`
+1. 🔴 **重建公司 Windows Worker 到 v2**（它是預設處理機；沒重建前三欄股數修正不生效，網站上傳時會顯示舊版警告）。**若稍早已依 `8cc0a5bc4` 重建過，仍要再做一次**——那一版還沒有版本回報，網站會把它當 v1。
+   步驟照 [AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy)
+   Windows 正確順序：`git pull --ff-only origin main`（要含 `be8069d6f`）→ `Disable-ScheduledTask`＋`Stop-ScheduledTask "Invest D+ OCR Worker"`
    （排程每 2 分鐘會補啟動，只 Stop 不 Disable 可能在發布期間把舊 EXE 又拉起來而鎖檔；確認沒有殘留 `Invest.Web` 程序）→
    `scripts\publish-ocr-worker-windows.ps1`（確認 EXE `LastWriteTime` 是剛剛）→ 可選 `scripts\run-ocr-worker-windows.ps1 -Once`（exit 0）→
-   `Enable-ScheduledTask`＋`Start-ScheduledTask`，再看 `logs\ocr-worker-*.out.log` 啟動訊息含「在線詢問：指名回應」、排程 `Running` 且只有一個程序、
-   EXE ProductVersion 含 `8cc0a5bc4`（或其後代 commit）。這是 2026-10-12 重建時實際執行過的順序（[AI OCR §3.5.9](技術文件/AI%20OCR.md#ocr-probe-rollout)）。
-2. 🔴 **使用者用原三張截圖重新上傳確認**（[AI OCR §3.2](技術文件/AI%20OCR.md#ocr-pending-acceptance) #10）：有今買成的列股數＝昨日餘額＋今買成；成本為 0 的列標黃；
-   被裁切的今賣成欄不造成整批黃色（AI 會在警告區說明「今賣成未入鏡」，這是預期的）。
+   `Enable-ScheduledTask`＋`Start-ScheduledTask`，再看 `logs\ocr-worker-*.out.log` 啟動訊息含「**AI OCR v2**」與「在線詢問：指名回應」、排程 `Running` 且只有一個程序、
+   EXE ProductVersion 含 `be8069d6f`（或其後代 commit）。這是 2026-10-12 重建時實際執行過的順序（[AI OCR §3.5.9](技術文件/AI%20OCR.md#ocr-probe-rollout)）。
+2. 🔴 **使用者重新上傳那 5 張截圖確認**（[AI OCR §3.2](技術文件/AI%20OCR.md#ocr-pending-acceptance) #10、#11）：不再出現舊版警告；有今買成的列股數＝昨日餘額＋今買成；
+   成本為 0 的列標黃；被裁切的今賣成欄不造成整批黃色（AI 會在警告區說明「今賣成未入鏡」，這是預期的）。
 3. 🟡 **已知取捨**（使用者 2026-10-13 定案）：今賣成欄不在截圖內且當天有部分賣出時，股數會偏高、仍是綠色（[AI OCR §3.4](技術文件/AI%20OCR.md#ocr-known-risks) #9）。
    想根治只能請使用者截圖時把最右邊的賣出欄一起拍進來。
-4. 🟡 **待使用者提供另外兩張截圖**（含 5475～8358 那段，21:08 那批的 IMG_3562／IMG_3563）：在本機用新版跑一次，確認新版不會再把股數留空；若新版也空白，是另一個問題要另查。
-5. 🟡 **治本方案待使用者決定（未改程式）**——讓「Worker 還是舊版」不再沉默：
-   - A：Worker 回報實際 commit 與辨識契約版本（目前 `ocr_workers.version` 只是組件版本 `1.0.0.0`）、結果附上處理的機器與版本，網站狀態列顯示，落後時紅字警告。
-   - B：readiness 優先選契約版本符合的 Worker（Windows 落後而 Mac 是新版時改派 Mac）；Mac 睡眠時仍會落回 Windows，所以要搭配 A。
-   - C：Windows 啟動器偵測 `main` 有 Worker 變更就自動 pull＋重建（免手動，但公司電腦自動建置要另設回退）。
-   建議 A＋B。這兩項本身也要改 Worker，所以要等定案後再重建一次兩台。
+4. ✅ **另外兩張截圖已驗證**（2026-10-13）：新版整批 5 張 38 檔 0 檔不一致，下半段不再空白；舊版重跑重現空白，根因相同。
+5. ✅ **治本方案已定案並實作**：使用者選 A 的簡化版（見上）。B（路由優先新版）與 C（Windows 自動更新）使用者未選，暫不做；
+   若日後又發生「Worker 沒重建」造成損失，再評估 C。
 
 ### 🟡 2026-10-11：在線確認重構已實作並部署（家裡 Mac 10-11、公司 Windows 10-12 已重建；正式驗收待使用者）
 

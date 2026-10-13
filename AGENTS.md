@@ -117,11 +117,12 @@ git push origin main
 
 推送前若發現 `.git` 權限錯誤，先修正目前使用者對 repo `.git` 的寫入權限，再重試原指令；不要刪除不確定來源的 `index.lock`，也不要用 `reset --hard` 覆蓋工作內容。
 
-**改動 `src/Invest.Web/Features/Assets/Ocr/**` 時，push 完還沒結束。** OCR Worker 是常駐在各台機器上的自包含 EXE／LaunchAgent，**不會**跟著網站發布更新；不重新 build 就會出現「repo 已修好、正式環境還在跑舊版」而且完全沒有徵兆。2026-09-11（筆記 #61）就是因此讓舊的 2 秒輪詢版跑了兩天半，燒掉整期 88% 的 Supabase Edge Function 額度。所以：
+**改動 `src/Invest.Web/Features/Assets/Ocr/**` 或 `src/Invest.Web/Infrastructure/Ai/Cli/**` 時，push 完還沒結束。** OCR Worker 是常駐在各台機器上的自包含 EXE／LaunchAgent，**不會**跟著網站發布更新；不重新 build 就會出現「repo 已修好、正式環境還在跑舊版」。2026-09-11（筆記 #61）讓舊的 2 秒輪詢版跑了兩天半，燒掉整期 88% 的 Supabase Edge Function 額度；2026-10-13 公司 Windows 沒重建，三欄股數修正對使用者無效。所以：
 
-1. 公司 Windows：先 `Stop-ScheduledTask`（EXE 執行中會被鎖住無法覆寫），再 `scripts\publish-ocr-worker-windows.ps1`，最後 `Start-ScheduledTask`。
-2. 家裡 Mac：重新 build 後以 `scripts/install-ocr-worker-launchagent-macos.sh` 重載 LaunchAgent。
-3. **用啟動訊息核對版本**，不要只看「排程 Running」——目前正確的訊息是「Realtime 喚醒；斷線每 5 秒重連」，出現「輪詢 N 秒」就代表跑的是舊版。
+0. **先升版**：把 C# `OcrWorkerVersion.Current` 與 `site.js` 的 `ASSET_AI_OCR_WORKER_VERSION` 一起 +1。`OcrWorkerVersionTests` 用程式指紋擋下「改了 OCR 程式沒升版」，失敗訊息會給新的指紋。網站發布後，交給尚未重建之 Worker 的上傳會在畫面上顯示黃色警告——這是提醒，不是可以略過的理由。
+1. 公司 Windows：先 `Disable-ScheduledTask`＋`Stop-ScheduledTask`（EXE 執行中會被鎖住無法覆寫；排程每 2 分鐘會補啟動），再 `scripts\publish-ocr-worker-windows.ps1`，最後 `Enable-ScheduledTask`＋`Start-ScheduledTask`。
+2. 家裡 Mac：以 `scripts/install-ocr-worker-launchagent-macos.sh` 重新發布並重載 LaunchAgent（同一個資料夾有別的 session 在改檔時，從乾淨的 git worktree 執行這支腳本，免得把半成品編進 Worker）。
+3. **用啟動訊息核對版本**，不要只看「排程 Running」——啟動訊息要含「AI OCR v{目前版本}」與「在線詢問：指名回應」（Mac 另有「Worker 發布版本：{commit}」）；沒有「AI OCR v」字樣的就是 2026-10-13 之前的舊版。
 
 #### 3. 觸發網站發布
 
