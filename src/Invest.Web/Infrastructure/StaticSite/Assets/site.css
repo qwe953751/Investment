@@ -2750,6 +2750,19 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+/* 負責這批的 AI OCR Worker 還是舊版。配色沿用 .stale-banner：要醒目到不會被當成一般進度字。 */
+.asset-ocr-worker-warning {
+    margin: 0 !important;
+    padding: 9px 10px;
+    border: 1px solid #f0c36d;
+    border-left: 4px solid #d99100;
+    border-radius: 8px;
+    background: #fdf6e3;
+    color: #7a5b00 !important;
+    font-size: 13px !important;
+    font-weight: 600;
+}
+
 .asset-screenshot-review {
     display: grid;
     gap: 10px;

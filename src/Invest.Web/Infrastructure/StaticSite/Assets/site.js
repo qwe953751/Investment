@@ -12753,6 +12753,10 @@ const ASSET_AI_OCR_WAKE_AFTER_MS = 5_000;
 const ASSET_AI_OCR_WAKE_MIN_INTERVAL_MS = 30_000;
 const ASSET_AI_OCR_TIMEOUT_MS = 9 * 60_000;
 const ASSET_AI_OCR_CONCURRENCY = 3;
+// AI OCR Worker 的版本，必須和 C# OcrWorkerVersion.Current 相同（OcrWorkerVersionTests 會比對）。
+// Worker 是常駐在各台機器上的程式，不會跟著網站發布更新；改了 Worker 端 AI OCR 就兩邊一起 +1，
+// 上傳時若負責的 Worker 比這個舊，畫面直接警告（2026-10-13：公司 Windows 沒重建卻毫無徵兆）。
+const ASSET_AI_OCR_WORKER_VERSION = 2;
 const ASSET_AI_PENDING_JOBS_KEY = 'invest.assetAiOcrJobs.v1';
 
 function assetAiOcrPollDelayMs(queuedAt, status) {
@@ -13018,6 +13022,37 @@ function assetAiOcrProbeSummary(readiness) {
         if (probe.answered) return `${label} 已回應但沒有可用的 AI`;
         return `${label} ${probe.attempts ?? 0} 次詢問皆未回應`;
     }).join('，');
+}
+
+// Worker 把版本放在回報的 platform 最前面（例如「AI OCR v2 · Microsoft Windows 10.0.19044」）；
+// 2026-10-13 之前的 Worker 沒有這段，一律當 v1。
+function assetAiOcrWorkerVersion(platform) {
+    const match = /AI OCR v(\d+)/i.exec(String(platform ?? ''));
+    return match === null ? 1 : Number(match[1]);
+}
+
+// readiness 決定這批交給哪一台時就檢查版本：那台比網站要求的舊，回傳警告文字，否則回空字串。
+function assetAiOcrOutdatedWorkerNotice(readiness) {
+    if (!readiness?.ready) {
+        return '';
+    }
+
+    const version = assetAiOcrWorkerVersion(readiness.workerPlatform);
+    if (version >= ASSET_AI_OCR_WORKER_VERSION) {
+        return '';
+    }
+
+    const machine = /windows/i.test(readiness.workerPlatform ?? '') ? 'Windows' : 'Mac';
+    return `⚠ AI OCR 已更新到 v${ASSET_AI_OCR_WORKER_VERSION}，但這批交給的 ${machine} Worker 還是更新前的 v${version}：`
+        + '辨識結果可能不正確（例如股數漏掉今買成），請先重建那台 Worker 再上傳。';
+}
+
+function makeAssetOcrWorkerWarning(text) {
+    const warning = document.createElement('p');
+    warning.className = 'asset-ocr-worker-warning';
+    warning.setAttribute('role', 'alert');
+    warning.textContent = text;
+    return warning;
 }
 
 function assetAiOcrFallbackText(reason) {
@@ -16257,6 +16292,8 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
         selections: {},
         diffStale: false,
         notice: '',
+        // 負責這批的 Worker 比網站要求的 AI OCR 版本舊時的警告；辨識中與校對時都顯示，換下一批就清掉。
+        workerWarning: '',
         usedAi: false,
         usedTesseract: false
     };
@@ -16304,6 +16341,11 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             setAssetOcrStatus(
                 `D+ AI：由 ${/windows/i.test(aiReadiness.workerPlatform ?? '') ? 'Windows' : 'Mac'} 處理`
                 + (probeSummary === '' ? '' : `（${probeSummary}）`));
+            const workerWarning = assetAiOcrOutdatedWorkerNotice(aiReadiness);
+            if (workerWarning !== '' && assetScreenshotGeneration === myGeneration) {
+                assetScreenshotDraft.workerWarning = workerWarning;
+                renderAssetsDashboard();
+            }
         }
     } catch (error) {
         if (signal.aborted) {
@@ -16670,7 +16712,11 @@ function makeAssetScreenshotFlow(view) {
         status.className = 'asset-ocr-status';
         status.id = 'asset-ocr-status';
         status.textContent = assetOcrStatus === '' ? '辨識中…' : assetOcrStatus;
-        section.append(previews, caption, status);
+        section.append(previews, caption);
+        if (assetScreenshotDraft.workerWarning) {
+            section.append(makeAssetOcrWorkerWarning(assetScreenshotDraft.workerWarning));
+        }
+        section.append(status);
         return section;
     }
 
@@ -16970,7 +17016,12 @@ function makeAssetScreenshotFlow(view) {
     });
     refreshSelectionSummary();
     review.append(diffPanel, editor);
-    section.append(previews, caption, review);
+    section.append(previews, caption);
+    // 舊版 Worker 辨識的結果仍會列出來讓人校對，但警告要留在表格上方，不能只在辨識中閃一下。
+    if (assetScreenshotDraft.workerWarning) {
+        section.append(makeAssetOcrWorkerWarning(assetScreenshotDraft.workerWarning));
+    }
+    section.append(review);
     return section;
 }
 

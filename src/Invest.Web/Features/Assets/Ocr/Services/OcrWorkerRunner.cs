@@ -66,7 +66,7 @@ public sealed class OcrWorkerRunner(
         using var singleInstance = OcrWorkerSingleInstance.Acquire();
         var api = new OcrWorkerApiClient(httpClientFactory.CreateClient(nameof(OcrWorkerApiClient)), options);
         Console.WriteLine(
-            $"D+ OCR Worker 啟動：{options.Name}（Realtime 喚醒；斷線每 {options.PollInterval.TotalSeconds:0} 秒重連；"
+            $"D+ OCR Worker 啟動：{options.Name}（{OcrWorkerVersion.Label}；Realtime 喚醒；斷線每 {options.PollInterval.TotalSeconds:0} 秒重連；"
             + $"並行上限 {options.MaxConcurrency}（常駐槽）；在線詢問：指名回應；Max effort {options.MaxReasoningEffort}；"
             + $"評估抽樣 {options.EvaluationSampleRate:P0}；單實例鎖：{singleInstance.Path}）");
 

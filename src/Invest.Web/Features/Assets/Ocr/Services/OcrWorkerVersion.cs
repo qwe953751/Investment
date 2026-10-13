@@ -1,0 +1,25 @@
+namespace Invest.Web.Features.Assets.Ocr.Services;
+
+/// <summary>
+/// AI OCR Worker 的版本號。Worker 是常駐在各台機器上的程式，不會跟著網站發布更新；
+/// 網站上傳前會從 readiness 回應讀到負責那台的版本，比網站要求的舊就顯示警告
+/// （2026-10-13：公司 Windows 沒重建，三欄股數修正對使用者無效，畫面卻沒有任何徵兆）。
+///
+/// 改了 Worker 端的 AI OCR 程式（<c>Features/Assets/Ocr</c>、<c>Infrastructure/Ai/Cli</c>）就要把 <see cref="Current"/> +1，
+/// 並同步 site.js 的 <c>ASSET_AI_OCR_WORKER_VERSION</c>；<c>OcrWorkerVersionTests</c> 會比對兩邊相同，
+/// 也會用程式指紋擋下「改了程式卻忘了升版」。
+/// </summary>
+public static class OcrWorkerVersion
+{
+    /// <summary>1＝2026-10-13 之前（沒有回報版本）；2＝昨日餘額／今買成／今賣成三欄股數＋回報版本。</summary>
+    public const int Current = 2;
+
+    public static string Label => $"AI OCR v{Current}";
+
+    /// <summary>
+    /// 回報給伺服器的 platform：版本放最前面，作業系統描述接在後面。伺服器與資料庫判斷 Windows
+    /// 都是子字串比對（<c>/windows/i</c>、<c>ilike '%windows%'</c>），加前綴不影響分流；
+    /// Edge 只保留前 100 字，版本放前面才不會被截掉。
+    /// </summary>
+    public static string DescribePlatform(string osDescription) => $"{Label} · {osDescription}";
+}

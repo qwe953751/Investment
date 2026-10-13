@@ -296,6 +296,12 @@ public sealed class OcrWorkerApiClientTests
         Assert.Equal(1800, document.RootElement.GetProperty("heartbeatIntervalSeconds").GetInt32());
         Assert.Equal(OcrWorkerApiClient.ProbeProtocol, document.RootElement.GetProperty("probeProtocol").GetInt32());
         Assert.Equal(1, OcrWorkerApiClient.ProbeProtocol);
+        // 網站靠 platform 前綴判斷負責的 Worker 是不是最新的 AI OCR 版本。
+        Assert.StartsWith(
+            $"AI OCR v{OcrWorkerVersion.Current} · ",
+            document.RootElement.GetProperty("platform").GetString(),
+            StringComparison.Ordinal);
+        Assert.Equal(OcrWorkerVersion.Label, document.RootElement.GetProperty("version").GetString());
     }
 
     private sealed class CapturingHandler(string? userId, string accessToken = "access-token") : HttpMessageHandler

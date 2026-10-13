@@ -135,8 +135,10 @@ public sealed class OcrWorkerApiClient(HttpClient httpClient, OcrWorkerOptions o
         {
             action = "heartbeat",
             name = options.Name,
-            platform = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-            version = typeof(OcrWorkerApiClient).Assembly.GetName().Version?.ToString() ?? "unknown",
+            // platform 前面帶 AI OCR 版本：readiness 會把負責那台的 platform 原樣回給網站，網站據此在上傳前
+            // 警告「這台 Worker 還沒更新」，不必改 Edge 或資料庫（見 OcrWorkerVersion）。
+            platform = OcrWorkerVersion.DescribePlatform(System.Runtime.InteropServices.RuntimeInformation.OSDescription),
+            version = OcrWorkerVersion.Label,
             agentStatus,
             heartbeatIntervalSeconds,
             realtimeConnected = IsRealtimeConnected,
