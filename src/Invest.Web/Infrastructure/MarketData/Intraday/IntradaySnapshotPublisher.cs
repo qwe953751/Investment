@@ -347,11 +347,13 @@ public sealed class IntradaySnapshotPublisher(
         }
 
         var resultBytes = JsonSerializer.SerializeToUtf8Bytes(result, JsonOptions);
+        var contentHash = Convert.ToHexString(SHA256.HashData(resultBytes)).ToLowerInvariant();
         var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
         var localCapturedAt = TimeZoneInfo.ConvertTime(result.CapturedAt, taipei);
+        // 同輪重試／恢復可能改變 CalculatedAt 或品質狀態；不同內容必須用新 URL，
+        // 否則 immutable 快取仍回舊內容。保留兩段 8 碼的路徑格式相容既有前端。
         var fileName = $"intraday-structure-{localCapturedAt:yyyyMMdd-HHmm}-run{runId}-"
-            + $"{result.RulesHash[..8]}-{result.BasisHash[..8]}.json";
-        var contentHash = Convert.ToHexString(SHA256.HashData(resultBytes)).ToLowerInvariant();
+            + $"{contentHash[..8]}-{contentHash[8..16]}.json";
 
         await UploadAsync(settings, fileName, resultBytes, cacheSeconds: 31_536_000, immutable: true, cancellationToken);
 

@@ -345,6 +345,66 @@ public sealed class IntradaySnapshotPublisherTests
         }
     }
 
+    [Fact]
+    public async Task 同輪重算的不同內容不覆寫immutable檔且快取內容與指標hash一致()
+    {
+        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, "test-secret");
+        try
+        {
+            var requests = new List<HttpRequestMessage>();
+            var immutableCache = new Dictionary<string, string>();
+            var pointers = new List<string>();
+            var publisher = CreatePublisher(new CapturingHandler(requests, request =>
+            {
+                var url = request.RequestUri!.ToString();
+                if (url.Contains("/latest.json?", StringComparison.Ordinal))
+                {
+                    return Respond(HttpStatusCode.OK,
+                        "{\"schemaVersion\":1,\"runId\":7,\"tradeDate\":\"2026-10-13\","
+                        + "\"capturedAt\":\"2026-10-13T01:02:00+00:00\",\"file\":\"intraday-20261013-0902-run7.json\",\"rowCount\":1}");
+                }
+                if (url.Contains("/structure-latest.json?", StringComparison.Ordinal))
+                {
+                    return pointers.Count > 0 ? Respond(HttpStatusCode.OK, pointers[^1])
+                        : Respond(HttpStatusCode.BadRequest, "{\"code\":\"NoSuchKey\"}");
+                }
+                if (request.Method == HttpMethod.Post && request.Content is not null
+                    && !url.Contains("/list/", StringComparison.Ordinal))
+                {
+                    var body = request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    if (url.EndsWith("/structure-latest.json", StringComparison.Ordinal))
+                    {
+                        pointers.Add(body);
+                    }
+                    else
+                    {
+                        // immutable 瀏覽器快取保留第一次拿到的內容，即使源站之後 upsert。
+                        immutableCache.TryAdd(Path.GetFileName(request.RequestUri!.AbsolutePath), body);
+                    }
+                }
+                return Respond(HttpStatusCode.OK, "[]");
+            }));
+            var time = new DateTimeOffset(2026, 10, 13, 1, 2, 0, TimeSpan.Zero);
+            var first = MarketStructureCalculator.Calculate(new MarketStructureInput(
+                new DateOnly(2026, 10, 13), time, "intraday", [], [], [], RunId: 7, EvaluatedAt: time));
+            await publisher.PublishMarketStructureAsync(7, first);
+            await publisher.PublishMarketStructureAsync(7, first with { CalculatedAt = time.AddSeconds(30) });
+            Assert.Equal(2, immutableCache.Count);
+            foreach (var pointer in pointers)
+            {
+                using var json = JsonDocument.Parse(pointer);
+                var root = json.RootElement;
+                var body = immutableCache[root.GetProperty("file").GetString()!];
+                var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(body))).ToLowerInvariant();
+                Assert.Equal(hash, root.GetProperty("contentHash").GetString());
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, null);
+        }
+    }
+
     private static IntradaySnapshotPublisher CreatePublisher(CapturingHandler handler)
     {
         var configuration = new ConfigurationBuilder()
