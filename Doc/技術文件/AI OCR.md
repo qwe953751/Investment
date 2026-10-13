@@ -1,6 +1,7 @@
 # AI OCR
 
-> 最後整理：2026-10-13（公司 Windows Worker 依 [§3.5.9](#ocr-probe-rollout) 階段 W 重建並以 `ocr_workers` 核對；程式、`db/062` 與 `ocr-jobs` v24 仍是 2026-10-11 以 `main` `441ca855` 核對的內容）
+> 最後整理：2026-10-13（公司 Windows Worker 依 [§3.5.9](#ocr-probe-rollout) 階段 W 重建並以 `ocr_workers` 核對；`db/062` 與 `ocr-jobs` v24 仍是 2026-10-11 核對的內容；
+> 同日新增 [§4.15](#ocr-incident-1013-quantity-columns)「昨日餘額／今買成／今賣成」三欄股數修正——**程式已在 `main`、家裡 Mac 已重建，公司 Windows 尚待重建**）
 >
 > 這是 D+ AI OCR 的**唯一技術文件**。2026-10-10 已把原本分開的三份文件合併進來：
 >
@@ -54,6 +55,10 @@ Windows／Mac 是否在線**不再靠心跳或旗標猜測**，改由 Edge 指�
 readiness／submit／status 的失敗情境只用「假 Supabase 跑真正的 Edge 程式」與正式 Worker 端動作驗證過。
 2026-10-12 09:15（台北）正式資料庫出現一次使用者的真實上傳紀錄：`ocr_user_routing` 由 readiness 寫入「windows」、約 1.7 秒後 `ocr_jobs` 新增一件未標記的工作，由（舊版）Windows 接走並 `succeeded`——代表 admin 端的 happy path 在正式環境走通過一次；失敗情境（P2～P10）仍未執行。
 
+**2026-10-13 另修正一個辨識內容問題（[§4.15](#ocr-incident-1013-quantity-columns)）**：券商把股數拆成「昨日餘額／今買成／今賣成」三欄時，AI 路徑只抄了昨日餘額，
+當天買進的股數被漏掉卻仍標成綠色「AI 已辨識」。現在 AI 只逐欄照抄三欄，由 C# 驗證器計算昨日＋今買－今賣。這是 **Worker 程式**的修正，不會跟網站發布生效：
+家裡 Mac 已重建，**公司 Windows（預設處理機）尚待重建**，重建前使用者的上傳仍是舊行為。
+
 ### 0.2 元件部署狀態
 
 | 元件 | 目前狀態 | 依據 |
@@ -63,13 +68,16 @@ readiness／submit／status 的失敗情境只用「假 Supabase 跑真正的 Ed
 | `db/062_ocr_worker_probe.sql` | ✅ 2026-10-11 已套用。套用前在正式資料庫單一交易內連 migration 一起執行並跑完 31 項斷言，確認 rollback 無痕跡 | 版本紀錄 2026-10-11 |
 | `ocr-jobs` Edge Function | ✅ v24（2026-10-11），`verify_jwt=false`，未帶 JWT 回 401 | Management API 核對 |
 | 前端 `site.js` | ✅ 2026-10-11 publish-only run `38140004887`（head `441ca855`）發布；readiness 期間顯示「確認 Windows／Mac 是否在線…」與每台的詢問結果 | gh-pages manifest `1791722367` |
-| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功 | [§3.5.9](#ocr-probe-rollout) |
-| 家裡 Mac Worker | ✅ 2026-10-11 以 `ea373ea56` 發布並由 LaunchAgent 常駐；啟動訊息含「在線詢問：指名回應」與「Worker 發布版本」；`probe_protocol=1`、心跳週期 1800 秒；已用合成圖片走完整條 Codex 辨識 | [§4.14](#ocr-incident-1011-probe) |
+| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功。**🟡 2026-10-13 起落後 `8cc0a5bc4`（缺三欄股數修正），待依 [§1.8](#ocr-deploy) 重建** | [§3.5.9](#ocr-probe-rollout)、[§4.15](#ocr-incident-1013-quantity-columns) |
+| 家裡 Mac Worker | ✅ 2026-10-11 以 `ea373ea56` 發布並由 LaunchAgent 常駐；啟動訊息含「在線詢問：指名回應」與「Worker 發布版本」；`probe_protocol=1`、心跳週期 1800 秒；已用合成圖片走完整條 Codex 辨識。**2026-10-13 又以 `8cc0a5bc4` 重建**（三欄股數修正；`PUBLISHED_COMMIT`＝`8cc0a5bc4`，啟動訊息「Worker 發布版本：8cc0a5bc4」，單一程序，新版啟動後 error log 無新增） | [§4.14](#ocr-incident-1011-probe)、[§4.15](#ocr-incident-1013-quantity-columns) |
+| AI 三欄股數（昨日餘額／今買成／今賣成） | 🟡 程式與測試已在 `main`（`8cc0a5bc4`）；Mac 已重建；**公司 Windows 待重建**；使用者以原三張截圖重新上傳的正式驗收尚未執行（見 [§3.2](#ocr-pending-acceptance)） | [§4.15](#ocr-incident-1013-quantity-columns) |
 | Claude CLI | 🟡 公司 Windows 已安裝 `2.1.263` 但未登入；Mac 沒有安裝。目前實際只有 Codex 單 Agent，沒有 Agent 故障切換 | §4.3 |
-| 自動化測試 | ✅ 2026-10-11 `Invest.Web.Tests` 805/805、Node 231/231（含 Edge Function 假 Supabase 行為測試 28 項）；2026-10-12 公司 Windows 重跑結果相同 | — |
+| 自動化測試 | ✅ 2026-10-13 `Invest.Web.Tests` 884/884、Node 262/262（`8cc0a5bc4`＋其上最新 `main`）；其中 OCR 驗證器 22 項（三欄股數新增 18 項，還原舊版檢查程式時 10 項轉紅）。2026-10-11 Edge Function 假 Supabase 行為測試 28 項仍在 Node 內 | — |
 
 ### 0.3 尚待處理（詳見 [§3](#ocr-acceptance)）
 
+0. 🔴 **公司 Windows Worker 重建**（[§1.8](#ocr-deploy) Windows 正確順序）：它是預設處理機，重建前三欄股數修正對使用者不生效。重建後以啟動訊息核對版本，
+   再請使用者用原三張截圖重新上傳確認（見 [§3.2](#ocr-pending-acceptance) #10）。
 1. **正式驗收 P1～P10**（[§3.5.10](#ocr-probe-acceptance)）：需要最高權限帳號上傳，AI agent 無法代為登入。P1 在資料庫與 Worker log 端的條件
    已由 10-12 22:15、22:20 兩次真實上傳滿足（手機畫面文字待使用者確認）；P2～P10 未執行。
 2. 7 張手機截圖確認三槽同時工作（驗證 09-22 的 409 修正）、Golden Set、Windows 鎖屏／重開機／斷網復原、Claude 登入後的雙 Agent。
@@ -285,8 +293,9 @@ Worker 整個結束，交由 Windows 排程每 2 分鐘的 recovery／Mac Launch
 | Worker API／Realtime | `Features/Assets/Ocr/Services/OcrWorkerApiClient.cs` |
 | Worker 憑證／單實例 | `OcrWorkerCredentialStore.cs`（Windows DPAPI／Mac Keychain）、`OcrWorkerSingleInstance.cs` |
 | 辨識流程 | `AiOcrOrchestrator.cs`、`AgentQuotaRouter.cs`、`OcrExecutionCoordinator.cs`、`OcrEngineFallbackPolicy.cs` |
-| 驗證 | `OcrRecognitionValidator.cs`（數值解析、列驗證、`verified` 判定） |
-| POC | `OcrPocRunner.cs`（`ocr-poc`） |
+| 辨識契約 | `OcrWorkerRunner.cs` 檔尾的 `OcrRecognitionContract`：`Schema`（JSON Schema）與 `QuantityColumnsPrompt`（股數版型指令，正式 Worker 與 POC 共用） |
+| 驗證 | `OcrRecognitionValidator.cs`（數值解析、**三欄股數計算（昨日＋今買－今賣）**、列驗證、`verified` 判定） |
+| POC | `OcrPocRunner.cs`（`ocr-poc`；Schema 與股數指令共用 `OcrRecognitionContract`，不再自帶複本） |
 | CLI Adapter | `src/Invest.Web/Infrastructure/Ai/Cli/`：`CodexCliRunner.cs`、`ClaudeCodeCliRunner.cs`、`ProcessCliRunnerBase.cs`、`AgentCliResultClassifier.cs`、`OcrAgentExecutableResolver.cs`、`OcrAgentContracts.cs` |
 | Edge Function | `supabase/functions/ocr-jobs/index.js`（`verify_jwt=false`，函式內手動驗 admin／`ocr_worker` JWT） |
 | 前端 | `src/Invest.Web/Infrastructure/StaticSite/Assets/site.js` |
@@ -506,7 +515,8 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 | 6 | 雙 Agent | Claude 登入後：真實截圖確認 Claude 能透過 Read 讀圖、`structured_output` 符合 Schema；`OCR_CODEX_PATH` 指向不存在路徑時自動切 Claude |
 | 7 | Windows 長期情境 | 關閉所有可見終端機、鎖屏、重開機後登入、斷網復線、撤銷 Codex 登入、額度耗盡 |
 | 8 | Golden Set | 見 [§5.8](#ocr-poc)：危險假陽性 0、完整正確列 ≥95%、召回率 ≥95%、整張正確率 ≥90% |
-| 9 | 自動化測試 | `Invest.Web.Tests` 與 Node 測試全綠（2026-10-11：805／231） |
+| 9 | 自動化測試 | `Invest.Web.Tests` 與 Node 測試全綠（2026-10-13：884／262） |
+| 10 | 三欄股數（[§4.15](#ocr-incident-1013-quantity-columns)） | **公司 Windows 重建後**，使用者用「投資成本／昨日餘額／今買成／今賣成」版型的截圖重新上傳：有今買成的列，股數＝昨日餘額＋今買成（不是只有昨日餘額）；成本為 0 的列標黃；被裁切的今賣成欄不造成整批黃色。三張原截圖的預期值見 §4.15 的驗證段 |
 
 <a id="ocr-not-implemented"></a>
 
@@ -547,7 +557,12 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 5. **AI 已開始辨識後才取消**：Worker 要等 CLI 跑完、下一次回報才發現租約失效，仍會消耗該次額度。
 6. **只有 Codex 單 Agent**：Claude 未登入前沒有 Agent 故障切換，Codex 額度用完就整批走 Tesseract。
 7. **三條並行是否撞 Codex 訂閱速率限制**：使用者要求直接上 3 並行時已知但未驗證；實測若出現 429 再依證據處理。
-8. **重建 Worker 的漏洞仍在**：Mac 與 Windows 一樣，改了 Worker 程式必須手動重建，不會跟著網站發布。
+8. **重建 Worker 的漏洞仍在**：Mac 與 Windows 一樣，改了 Worker 程式必須手動重建，不會跟著網站發布。2026-10-13 的三欄股數修正（[§4.15](#ocr-incident-1013-quantity-columns)）
+   就是這個狀態：Mac 已重建、公司 Windows 待重建，使用者在 Windows 重建前上傳仍會得到舊行為，而且畫面沒有任何徵兆。
+9. **今賣成欄不在截圖內、但當天有賣出時，股數會偏高（使用者 2026-10-13 定案的取捨，[§4.15](#ocr-incident-1013-quantity-columns)）。**
+   券商畫面常把「今賣成」放在最右邊而被截掉；C# 驗證器把沒入鏡的今買成／今賣成視為 0，列仍是綠色。唯一的保護網是「總成本為 0 但股數大於 0」會標黃
+   （當天全部賣出時券商會把成本歸零，是目前唯一能從畫面推得的徵兆）；部分賣出（成本不為 0）沒有徵兆。要根治只能請使用者截圖時把賣出欄拍進來，
+   或日後改採有「庫存股數」欄的畫面。2026-10-13 的三張原截圖就是這種情況，其中一檔成本為 0 因此被標黃。
 
 <a id="ocr-probe-spec"></a>
 
@@ -1101,7 +1116,48 @@ function readinessHeartbeatAgeMs(request) {
   這部分以假 Supabase 執行真正的 Edge 程式驗證，正式端驗收交給使用者的 P1～P10。
 - **對 2026-10-10 發現的風險的結論**：「`realtime_connected` 關機後卡在 true」不再是問題——旗標不再參與任何判斷。
 
-### 4.15 共同教訓
+<a id="ocr-incident-1013-quantity-columns"></a>
+
+### 4.15 2026-10-13 券商把股數拆成「昨日餘額／今買成／今賣成」三欄：AI 只抄昨日餘額，漏掉今天買進
+
+- **症狀（使用者提出）**：券商未實現損益畫面的欄位是「股票名稱／投資成本／昨日餘額／今買成／今賣成…」，**投資成本已含今天買進**，AI OCR 給的股數卻沒有加上今買成
+  （使用者 3 張手機截圖共 24 檔，其中 10 檔當天有買進）。這些列仍是綠色「D+ AI 已辨識」，差異表又預設全部勾選，錯誤的股數可以一鍵套用。
+- **根因（已用舊版程式實測重現）**：
+  1. 辨識契約只有一個股數欄位 `quantityText`（[§5.7](#ocr-contract)）；畫面沒有單一庫存欄時，模型只能挑一欄，挑了第一個股數欄「昨日餘額」。
+     同一張截圖用修正前的程式（`41dcba272`）、真實 Codex（`gpt-5.6-luna`、max）重跑：5 檔有買進的列全都抄成昨日餘額，而且全部綠色。
+  2. 「昨日餘額＋今買成－今賣成」這條公式早在 2026-09-01 就加進瀏覽器 Tesseract 路徑（`site.js`），但 2026-09-05 設計 AI 路徑時沒有一起搬過去；
+     README 卻把它寫成截圖 OCR 的通用規則，文件與程式對不上。
+  3. 驗證器對股數只檢查「大於 0」，沒有任何管道能發現「抄錯欄」，所以綠色標記保護不了這種錯誤。
+- **修法**（commit `8cc0a5bc4`）：
+  - Schema 新增 `yesterdayBalanceText`／`todayBuyText`／`todaySellText`（皆可為 null、列入 required）。指令要求：單一庫存欄只填 `quantityText`；
+    拆成多欄就逐欄**原樣照抄**、`quantityText` 填 null，**不得自行加總**；沒入鏡、被截斷、看不到就填 null，**不得補 0**。指令集中在
+    `OcrRecognitionContract.QuantityColumnsPrompt`，正式 Worker 與 `ocr-poc` 共用；POC 原本自帶一份 Schema 複本，已改用 `OcrRecognitionContract.Schema`
+    （避免評估工具與正式契約分歧）。
+  - `OcrRecognitionValidator` 計算股數：有昨日餘額就用「昨日＋今買－今賣」（今買成／今賣成為 null 視為 0），否則維持直接用 `quantityText`。
+    **公式只有 C# 這一份**——不讓 AI 做算術，因為它算錯了也無從驗證。
+  - 不猜、不硬算（股數留空、整列標黃、加警告）：三欄任一有看不懂的內容或負數、算出小數、賣超過持有量、只有今買成／今賣成而沒有昨日餘額。
+  - 降級但保留計算值：單一股數欄與三欄計算結果不一致（警告同時列出兩個數字）；股數為 0（可能已全部賣出）；總成本為 0 但股數大於 0（見下一點）。
+  - 草稿輸出格式（`ticker`／`name`／`quantity`／`cost`／`verified`／`warnings`）**不變**：網頁、`ocr-jobs`、資料庫都沒改，舊版 Worker 的輸出（沒有新欄位）仍可解析。
+- **使用者定案（2026-10-13）**：「今賣成」欄不在截圖內（AI 回 null）時，**直接當 0、維持綠色**（相對的方案是照算但標黃提示）。代價記在 [§3.4](#ocr-known-risks) #9。
+  為了不讓這個取捨靜默吞掉明顯的矛盾，另外加了「總成本為 0 但股數大於 0 → 標黃」：當天全部賣出時券商會把成本歸零，但賣出欄被截掉就只能保留昨日餘額。
+  這條只降級、不改數字，且不論版型都適用（總成本為 0 卻持有股數，在任何版型都不是正常狀態）。三張原截圖中有一檔就是這種情況，已被標黃。
+- **驗證**：
+  - 單元測試：驗證器新增 18 項（三欄加總、賣出欄 null 視為 0 且維持綠色、有賣出、昨日餘額為 0 的新持股、賣光、成本為 0 降級、賣超過、小數、5 種看不懂／負數、
+    缺昨日餘額、單一欄與三欄一致／不一致、單一欄版型的原行為、Schema 與兩處指令共用同一份契約）；**暫時還原舊版驗證器時其中 10 項轉紅**，證明測試抓得到缺陷。
+    `Invest.Web.Tests` 884/884、Node 262/262（合併當時最新 `main`）。
+  - 端到端（不經 Supabase，其餘與正式相同）：以三張真實截圖，經 Worker 的 `CreateRequest`（反射呼叫）→ 真實 `AgentQuotaRouter`／Codex（`gpt-5.6-luna`、max、priority）→ 真實驗證器。
+    24 檔逐檔與手抄的畫面數字比對，**0 檔不一致**：AI 把三欄逐欄照抄（`quantityText` 全為 null、`todaySellText` 全為 null），C# 算出的股數對上昨日＋今買；
+    10 檔有買進的列股數都已含今買成；23 檔綠色、1 檔（成本為 0）黃色；AI 另以 warnings 說明「今賣成未入鏡」。同一張截圖舊版 5 檔有買進的列全部少算且全是綠色。
+  - 這些是模型輸出，不是確定性結果：驗證器是保護網（看不懂就留空標黃），不是保證；正式驗收見 [§3.2](#ocr-pending-acceptance) #10。
+- **刻意沒有做**：
+  - 沒有在前端加算式或顯示「昨日＋今買」明細（草稿格式不變，才不必連動網站、Edge 與資料庫；日後要顯示再擴充草稿）。
+  - 沒有用均價／收盤價反推股數或偵測抄錯欄（需要行情，且只能偵測不能修正；列為可選的額外防線）。
+  - 沒有改 Tesseract 路徑：它本來就把沒有的今買成／今賣成當 0，與這次的定案一致。
+  - 沒有把三張截圖放進 repo：內含帳號與持股，只留在 repo 外的暫存目錄；Golden Set（[§5.8](#ocr-poc)）仍需要可公開的樣本。
+- **部署狀態與待辦**：`8cc0a5bc4` 已推到 `main`；**家裡 Mac 已用該 commit 重建**（[§0.2](#ocr-current)）；**公司 Windows 尚待重建**——它是預設處理機，重建前使用者的上傳仍是舊行為。
+  重建步驟見 [§1.8](#ocr-deploy)，務必用啟動訊息核對版本，`Running` 不代表新版。沒有網站程式變更，publish-only 只是依使用者要求重發。
+
+### 4.16 共同教訓
 
 1. **看不見的狀態最危險**：EXE 版本、readiness 判定原因、槽數量、log 編碼——每次事故都是因為畫面或 log
    看不出真正狀態。新功能要讓「為什麼走 Tesseract」直接顯示在畫面或 log（現在連每台機器的詢問結果都會顯示）。
@@ -1111,6 +1167,9 @@ function readinessHeartbeatAgeMs(request) {
 5. **Worker 部署獨立於網站**：每次改 Worker 都要重建兩台並看啟動訊息；Mac 另外要注意 launchd 的隱私權限與 PATH。
 6. **新舊版本並存要明確設計**：Worker 不會跟著網站發布，所以伺服器端必須同時相容舊版（用明確的 `probe_protocol` 宣告區分，不要用「欄位是 null」推測）。
 7. **對正式資料庫的 DDL 先做「必定回滾」的完整演練**：單一 DO 區塊連 migration 一起執行、結尾一定 raise exception，失敗訊息會指出是哪一項斷言。
+8. **「抄錄」與「計算」要拆開，領域規則只留一份**（2026-10-13）：AI 只逐欄照抄畫面，加總、檢查一律由 C# 做；同一條規則（股數公式）不要在兩條辨識路徑各寫一份——
+   2026-09-01 的昨日餘額版型只加在 Tesseract，AI 路徑設計時漏搬，一個月後才被使用者的當日加碼截圖發現。新增路徑時要把既有路徑的版型特例逐項對照。
+9. **綠色標記只代表「格式合理」，不代表「抄對欄位」**：驗證器能擋的是看不懂、負數、小數與明顯矛盾；抄錯欄只能靠契約設計（給每個欄位一個位置）與端到端用真實截圖驗證。
 
 ---
 
@@ -1204,9 +1263,12 @@ Validator 維持單一份。2026-06-15 起 `claude -p`／Agent SDK 的訂閱用�
 
 歷史雙 Pass（擷取遍＋稽核遍、不同 Agent 交叉、checkpoint、`single_agent_fallback`）已由單次 AI 取代，不是目前契約。
 
+<a id="ocr-contract"></a>
+
 ### 5.7 D+ 辨識契約與確定性驗證
 
-AI 以 JSON Schema 限制形狀，數值先以字串保存，避免模型或反序列化改變逗號、小數點、負號或前導零：
+AI 以 JSON Schema 限制形狀，數值先以字串保存，避免模型或反序列化改變逗號、小數點、負號或前導零。
+下例是「單一庫存欄」版型（`OcrRecognitionContract.Schema`；每一列的所有欄位都列入 required，沒有的填 `null`）：
 
 ```json
 {
@@ -1220,6 +1282,9 @@ AI 以 JSON Schema 限制形狀，數值先以字串保存，避免模型或反�
       "tickerText": "6213",
       "nameText": "聯茂",
       "quantityText": "1,000",
+      "yesterdayBalanceText": null,
+      "todayBuyText": null,
+      "todaySellText": null,
       "totalCostText": "87,200",
       "rowObscured": false
     }
@@ -1230,6 +1295,24 @@ AI 以 JSON Schema 限制形狀，數值先以字串保存，避免模型或反�
 
 （2026-09-08 起 Schema 已移除未使用的 `currency`／`evidence` 輸出以降低負擔。）欄位看不清楚必須回 `null` 或警告，
 不得補猜；模型自報 `confidence` 不列入通過條件。模型不得取得目前持倉名單，以免錨定。
+
+**股數有兩種版型（2026-10-13 起，[§4.15](#ocr-incident-1013-quantity-columns)；指令文字在 `OcrRecognitionContract.QuantityColumnsPrompt`，正式 Worker 與 `ocr-poc` 共用）**：
+
+| 版型 | AI 填寫 | C# 驗證器怎麼得到股數 |
+|---|---|---|
+| 畫面只有單一庫存／持有股數欄 | `quantityText`；三個新欄位填 `null` | 直接解析 `quantityText` |
+| 券商拆成「昨日餘額／今買成（今日買進）／今賣成（今日賣出）」 | 三欄逐欄**原樣照抄**到 `yesterdayBalanceText`／`todayBuyText`／`todaySellText`，`quantityText` 填 `null`；不得自行加總，沒入鏡、被截斷、看不到就填 `null`，不得補 `0` | 昨日餘額＋今買成－今賣成；今買成／今賣成為 `null` 視為 0（使用者定案，見 [§3.4](#ocr-known-risks) #9） |
+
+```json
+{
+  "rowIndex": 1, "tickerText": "2330", "nameText": "台積電", "quantityText": null,
+  "yesterdayBalanceText": "1,000", "todayBuyText": "250", "todaySellText": null,
+  "totalCostText": "87,200", "rowObscured": false
+}
+```
+
+上例股數為 1,000＋250－0＝1,250。三欄版型的降級規則（股數一律不猜）：任一欄有看不懂的內容或負數、算出小數或負數（賣超過持有量）、只有今買成／今賣成而沒有昨日餘額
+→ 股數留空、整列標黃；單一股數欄與三欄計算不一致 → 採計算值、標黃、警告列出兩個數字。另外**不論版型**：股數為 0、或總成本為 0 但股數大於 0 → 標黃（不改數字）。
 
 正式持倉只接受：股票身份（代號為主、名稱交叉驗證）、庫存數量、總成本、帳戶已知市場與幣別。現價、市值、
 未實現損益由既有行情與公式重算。
