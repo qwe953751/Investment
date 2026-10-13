@@ -19,29 +19,23 @@ public static class MarketStructureStatusCodes
 /// <summary>候選規則集中管理；所有漲跌幅門檻都是百分點。</summary>
 public sealed record MarketStructureRules
 {
-    public string Version { get; init; } = "market-structure-v1-candidate";
+    public string Version { get; init; } = "market-structure-v2-price-breadth";
     public int WeightGroupSize { get; init; } = 20;
     public decimal StockNeutralPct { get; init; } = 0.10m;
     public decimal IndexNeutralPct { get; init; } = 0.10m;
-    public decimal BroadStockRate { get; init; } = 0.65m;
+    public decimal BroadStockRate { get; init; } = 0.60m;
     public decimal GroupBreadthRate { get; init; } = 0.60m;
-    public decimal BroadGroupRate { get; init; } = 2m / 3m;
+    public decimal BroadGroupRate { get; init; } = 0.50m;
     public int MinGroupMembers { get; init; } = 5;
     public int MinEligibleGroups { get; init; } = 5;
-    public decimal WeightContributionShare { get; init; } = 0.80m;
-    public decimal MinWeightNetContributionPct { get; init; } = 0.05m;
+    public int MinDirectionalWeightCount { get; init; } = 1;
+    public decimal WeightTurnoverShare { get; init; } = 0.35m;
     public decimal RestDirectionCeiling { get; init; } = 0.45m;
-    public decimal MaxLocalGroupRate { get; init; } = 0.30m;
     public decimal LocalTurnoverShare { get; init; } = 0.10m;
     public decimal WeightTurnoverTagShare { get; init; } = 0.50m;
     public decimal MinQuoteCoverage { get; init; } = 0.90m;
     public decimal MinIndustryCoverage { get; init; } = 0.95m;
     public decimal MinGroupQuoteCoverage { get; init; } = 0.90m;
-    public decimal MinIndexPriceWeightCoverage { get; init; } = 0.99m;
-    public decimal MaxIndexResidualPct { get; init; } = 0.15m;
-    public int MaxBasisAgeDays { get; init; } = 7;
-    public int MaxLiveAgeMinutes { get; init; } = 10;
-    public decimal MaxWeightTotalError { get; init; } = 0.001m;
     public decimal MinPriceTurnoverCoverage { get; init; } = 0.95m;
 }
 
@@ -52,8 +46,8 @@ public sealed record MarketStructureSource(
     string Sha256);
 
 /// <summary>
-/// 一檔上市／上櫃普通股同輪資料。RawPreviousClose 用於價格指數貢獻；ReferencePrice
-/// 用於還原權息後的股票廣度，兩者不能混成同一口徑。
+/// 一檔上市／上櫃普通股同輪資料。最終價格／漲跌與畫面共用；WeightRank 僅為外部觀察群身分。
+/// IssuedShares／RawPreviousClose 保留舊呼叫相容，不用來重建市值或指數。
 /// </summary>
 public sealed record MarketStructureStockInput(
     Market Market,
@@ -66,7 +60,9 @@ public sealed record MarketStructureStockInput(
     decimal IssuedShares,
     string? IndustryCode,
     string? IndustryName,
-    string? PriceSource = null);
+    string? PriceSource = null,
+    int? WeightRank = null,
+    decimal? ChangePercent = null);
 
 public sealed record MarketStructureIndexInput(Market Market, decimal? ChangePercent);
 
@@ -80,7 +76,8 @@ public sealed record MarketStructureInput(
     string IndustryVersion = "exchange-industry-current-v1",
     bool IndexConstituentsVerified = false,
     long? RunId = null,
-    DateTimeOffset? EvaluatedAt = null);
+    DateTimeOffset? EvaluatedAt = null,
+    string? ClassificationNote = null);
 
 public sealed record MarketStructureResult(
     int SchemaVersion,
@@ -130,7 +127,11 @@ public sealed record MarketStructureMarketResult(
     decimal? FallingIndustryRate,
     IReadOnlyList<MarketStructureIndustry> Industries,
     IReadOnlyList<MarketStructureWeightStock> WeightGroup,
-    MarketStructureEvidence Evidence);
+    MarketStructureEvidence Evidence,
+    int WeightIdentityKnownCount = 0,
+    bool WeightMetricsAreLowerBound = false,
+    decimal? WeightPriceLowerBoundPercent = null,
+    decimal? WeightPriceUpperBoundPercent = null);
 
 public sealed record MarketStructureBreadth(
     int ExpectedCount,

@@ -6,460 +6,161 @@ using Invest.Web.Features.MarketStructure.Models;
 
 namespace Invest.Web.Features.MarketStructure.Services;
 
-/// <summary>當日市場結構唯一計算來源；不讀檔、不連線，也不使用歷史基準。</summary>
+/// <summary>只用同輪價格、成交、分類及官方指數；不重建市值／指數，不存衍生基礎。</summary>
 public static class MarketStructureCalculator
 {
     private static readonly JsonSerializerOptions HashJsonOptions = new(JsonSerializerDefaults.Web);
 
-    public static MarketStructureResult Calculate(
-        MarketStructureInput input,
-        MarketStructureRules? rules = null)
+    public static MarketStructureResult Calculate(MarketStructureInput input, MarketStructureRules? rules = null)
     {
         ArgumentNullException.ThrowIfNull(input);
         rules ??= new MarketStructureRules();
         ValidateRules(rules);
-
-        var rulesHash = Hash(rules);
-        var basisHash = Hash(input.Sources.OrderBy(source => source.Market).ToArray());
-        var inputHash = Hash(new
+        return new MarketStructureResult(2, rules.Version, Hash(rules), Hash(new
         {
-            input.TradeDate,
-            input.CapturedAt,
-            input.Mode,
-            input.RunId,
-            input.IndustryVersion,
-            input.IndexConstituentsVerified,
-            Sources = input.Sources.OrderBy(source => source.Market).ToArray(),
-            Stocks = input.Stocks.OrderBy(stock => stock.Market).ThenBy(stock => stock.Ticker, StringComparer.Ordinal).ToArray(),
-            Indices = input.Indices.OrderBy(index => index.Market).ToArray()
-        });
-        var sourceGroups = input.Sources.GroupBy(source => source.Market)
-            .ToDictionary(group => group.Key, group => group.ToArray());
-
-        return new MarketStructureResult(
-            SchemaVersion: 1,
-            RulesVersion: rules.Version,
-            RulesHash: rulesHash,
-            InputHash: inputHash,
-            BasisHash: basisHash,
-            TradeDate: input.TradeDate,
-            CapturedAt: input.CapturedAt,
-            Mode: input.Mode,
-            IndustryVersion: input.IndustryVersion,
-            IsEstimated: !input.IndexConstituentsVerified,
-            RunId: input.RunId,
-            CalculatedAt: input.EvaluatedAt ?? input.CapturedAt,
-            Twse: CalculateMarket(input, Market.Twse, sourceGroups.GetValueOrDefault(Market.Twse), rules),
-            Tpex: CalculateMarket(input, Market.Tpex, sourceGroups.GetValueOrDefault(Market.Tpex), rules));
+            input.TradeDate, input.CapturedAt, input.Mode, input.RunId, input.IndustryVersion,
+            input.ClassificationNote,
+            Sources = input.Sources.OrderBy(x => x.Market).ToArray(),
+            Stocks = input.Stocks.OrderBy(x => x.Market).ThenBy(x => x.Ticker, StringComparer.Ordinal).ToArray(),
+            Indices = input.Indices.OrderBy(x => x.Market).ToArray()
+        }), Hash(input.Sources.OrderBy(x => x.Market).ToArray()), input.TradeDate, input.CapturedAt,
+            input.Mode, input.IndustryVersion, true, input.RunId, input.EvaluatedAt ?? input.CapturedAt,
+            CalculateMarket(input, Market.Twse, rules), CalculateMarket(input, Market.Tpex, rules));
     }
 
     private static string Hash<T>(T value)
-        => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(value, HashJsonOptions)))
-            .ToLowerInvariant();
+        => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(value, HashJsonOptions))).ToLowerInvariant();
 
-    private static MarketStructureMarketResult CalculateMarket(
-        MarketStructureInput input,
-        Market market,
-        IReadOnlyList<MarketStructureSource>? sourceGroup,
-        MarketStructureRules rules)
+    private static MarketStructureMarketResult CalculateMarket(MarketStructureInput input, Market market, MarketStructureRules rules)
     {
-        var marketName = market == Market.Twse ? "上市" : "上櫃";
-        var sourceStocks = input.Stocks.Where(stock => stock.Market == market).ToArray();
-        var indexChange = input.Indices.FirstOrDefault(index => index.Market == market)?.ChangePercent;
-        var duplicate = sourceStocks.GroupBy(stock => stock.Ticker, StringComparer.Ordinal)
-            .Any(group => group.Count() > 1);
-        var uniqueStocks = sourceStocks
-            .GroupBy(stock => stock.Ticker, StringComparer.Ordinal)
-            .Select(group => group.First())
-            .ToArray();
+        var sourceStocks = input.Stocks.Where(x => x.Market == market).ToArray();
         var issues = new List<string>();
         var warnings = new List<string>();
-
-        if (duplicate)
-        {
+        if (sourceStocks.GroupBy(x => x.Ticker, StringComparer.Ordinal).Any(g => g.Count() > 1))
             issues.Add("duplicate_ticker");
-        }
-
-        var source = sourceGroup?.FirstOrDefault();
-        if (source is null)
-        {
-            issues.Add("missing_basis");
-        }
-        else if (source.SourceDate > input.TradeDate
-            || input.TradeDate.DayNumber - source.SourceDate.DayNumber > rules.MaxBasisAgeDays)
-        {
-            issues.Add("basis_date_invalid");
-        }
-
-        if (sourceGroup?.Count > 1)
-        {
-            issues.Add("duplicate_basis");
-        }
-
-        if (input.Mode.Equals("intraday", StringComparison.OrdinalIgnoreCase)
-            && input.EvaluatedAt is { } evaluatedAt
-            && (evaluatedAt - input.CapturedAt > TimeSpan.FromMinutes(rules.MaxLiveAgeMinutes)
-                || input.CapturedAt - evaluatedAt > TimeSpan.FromMinutes(2)))
-        {
-            issues.Add("stale_snapshot");
-        }
-
-        if (sourceStocks.Length < rules.WeightGroupSize)
-        {
-            issues.Add("universe_too_small");
-        }
-
-        if (indexChange is null)
-        {
-            issues.Add("missing_index_change");
-        }
-
-        if (uniqueStocks.Any(stock => stock.TradingValue < 0m
-                || stock.IssuedShares < 0m
-                || stock.Price < 0m
-                || stock.ReferencePrice < 0m
-                || stock.RawPreviousClose < 0m))
-        {
+        var stocks = sourceStocks.DistinctBy(x => x.Ticker, StringComparer.Ordinal).ToArray();
+        if (stocks.Any(x => x.Price < 0m || x.ReferencePrice < 0m || x.TradingValue < 0m))
             issues.Add("invalid_numeric_input");
-        }
+        if (input.EvaluatedAt is { } evaluated && input.CapturedAt - evaluated > TimeSpan.FromMinutes(2))
+            issues.Add("future_snapshot");
 
-        var weighted = uniqueStocks
-            .Where(stock => stock.IssuedShares > 0m && stock.RawPreviousClose is > 0m)
-            .Select(stock => new WeightedStock(stock, stock.IssuedShares * stock.RawPreviousClose!.Value))
-            .ToArray();
-        var expectedCapitalization = weighted.Sum(item => item.MarketCapitalization);
-        var validShares = uniqueStocks.Count(stock => stock.IssuedShares > 0m);
-        var shareCoverage = uniqueStocks.Length > 0 ? (decimal)validShares / uniqueStocks.Length : 0m;
-        var weightBasisComplete = weighted.Length == uniqueStocks.Length && validShares == uniqueStocks.Length;
-        var quoted = weighted.Where(item => item.Stock.Price is > 0m).ToArray();
-        decimal? priceWeightCoverage = weightBasisComplete && expectedCapitalization > 0m
-            ? quoted.Sum(item => item.MarketCapitalization) / expectedCapitalization
-            : null;
-
-        if (shareCoverage < 1m)
+        var index = input.Indices.FirstOrDefault(x => x.Market == market)?.ChangePercent;
+        if (index is null) warnings.Add("官方指數漲跌缺值；不判權值主導或指數背離，保留量價／族群判讀。");
+        var weights = stocks.Where(x => x.WeightRank is > 0 && x.WeightRank <= rules.WeightGroupSize)
+            .OrderBy(x => x.WeightRank).ToArray();
+        if (weights.Length > rules.WeightGroupSize || weights.Select(x => x.WeightRank).Distinct().Count() != weights.Length)
         {
-            issues.Add("share_coverage_low");
+            warnings.Add("權值身分順位重複或超量；保留全市場判讀，不採用這份名單。");
+            weights = [];
         }
-
-        if (weighted.Length != uniqueStocks.Length)
-        {
-            issues.Add("weight_basis_coverage_low");
-        }
-
-        if (expectedCapitalization <= 0m || priceWeightCoverage is null
-            || priceWeightCoverage < rules.MinIndexPriceWeightCoverage)
-        {
-            issues.Add("index_price_weight_coverage_low");
-        }
-
-        decimal? totalContribution = weightBasisComplete && expectedCapitalization > 0m
-            ? quoted.Sum(item => item.MarketCapitalization / expectedCapitalization * RawChangePercent(item.Stock))
-            : null;
-        decimal? residual = indexChange is not null && totalContribution is not null
-            ? indexChange.Value - totalContribution.Value
-            : null;
-
-        if (residual is null || Math.Abs(residual.Value) > rules.MaxIndexResidualPct)
-        {
-            issues.Add("index_reconstruction_failed");
-        }
-
-        var estimated = !input.IndexConstituentsVerified;
-
-        if (estimated)
-        {
-            warnings.Add("以普通股發行股數與前收市值推估指數權重；未使用交易所付費成分權重檔。");
-        }
-
-        var weightGroup = weightBasisComplete
-            ? weighted
-                .OrderByDescending(item => item.MarketCapitalization)
-                .ThenBy(item => item.Stock.Ticker, StringComparer.Ordinal)
-                .Take(rules.WeightGroupSize)
-                .ToArray()
-            : [];
-        var weightTickers = weightGroup.Select(item => item.Stock.Ticker)
-            .ToHashSet(StringComparer.Ordinal);
-        var rest = uniqueStocks.Where(stock => !weightTickers.Contains(stock.Ticker)).ToArray();
-        var totalTradingValue = uniqueStocks.Sum(stock => Math.Max(0m, stock.TradingValue));
-        var weightTradingValue = weightGroup.Sum(item => Math.Max(0m, item.Stock.TradingValue));
-        decimal? weightTurnoverShare = weightBasisComplete && totalTradingValue > 0m
-            ? weightTradingValue / totalTradingValue
-            : null;
-        decimal? weightMarketCapShare = weightBasisComplete && expectedCapitalization > 0m
-            ? weightGroup.Sum(item => item.MarketCapitalization) / expectedCapitalization
-            : null;
-        var weightPriceChange = WeightedByTurnover(weightGroup.Select(item => item.Stock));
-
-        var allBreadth = CalculateBreadth(uniqueStocks, rules.StockNeutralPct);
-        var weightBreadth = weightBasisComplete
-            ? CalculateBreadth(weightGroup.Select(item => item.Stock).ToArray(), rules.StockNeutralPct)
-            : null;
-        var otherBreadth = weightBasisComplete ? CalculateBreadth(rest, rules.StockNeutralPct) : null;
-        var otherPriceChange = weightBasisComplete ? WeightedByTurnover(rest) : null;
-        MarketStructureIndustry[] industries = weightBasisComplete
-            ? [.. CalculateIndustries(uniqueStocks, weightTickers, totalTradingValue, rules)]
-            : [];
-        var eligibleIndustries = industries.Where(industry => industry.ExpectedMembers >= rules.MinGroupMembers).ToArray();
-        var risingIndustries = eligibleIndustries.Count(industry => industry.IsRising);
-        var fallingIndustries = eligibleIndustries.Count(industry => industry.IsFalling);
-        var risingIndustryRate = eligibleIndustries.Length > 0
-            ? (decimal)risingIndustries / eligibleIndustries.Length
-            : (decimal?)null;
-        var fallingIndustryRate = eligibleIndustries.Length > 0
-            ? (decimal)fallingIndustries / eligibleIndustries.Length
-            : (decimal?)null;
-        var groupQuoteCoverage = eligibleIndustries.Length == 0
-            ? (decimal?)null
-            : eligibleIndustries.Sum(industry => industry.QuotedMembers)
-                / (decimal)eligibleIndustries.Sum(industry => industry.ExpectedMembers);
-        var industryCoverage = uniqueStocks.Length == 0
-            ? 0m
-            : uniqueStocks.Count(stock => !string.IsNullOrWhiteSpace(stock.IndustryCode))
-                / (decimal)uniqueStocks.Length;
-        var priceTurnoverCoverage = totalTradingValue <= 0m
-            ? (decimal?)null
-            : uniqueStocks.Where(HasAdjustedPrice)
-                .Sum(stock => Math.Max(0m, stock.TradingValue)) / totalTradingValue;
-
-        if (uniqueStocks.Length == 0 || allBreadth.QuotedCount / (decimal)Math.Max(1, allBreadth.ExpectedCount)
-                < rules.MinQuoteCoverage)
-        {
-            issues.Add("quote_coverage_low");
-        }
-
-        if (industryCoverage < rules.MinIndustryCoverage)
-        {
-            issues.Add("industry_coverage_low");
-        }
-
-        if (eligibleIndustries.Length < rules.MinEligibleGroups)
-        {
-            issues.Add("group_coverage_low");
-        }
-
-        if (groupQuoteCoverage is null || groupQuoteCoverage < rules.MinGroupQuoteCoverage)
-        {
-            issues.Add("group_quote_coverage_low");
-        }
-
-        if (priceTurnoverCoverage is null || priceTurnoverCoverage < rules.MinPriceTurnoverCoverage)
-        {
+        var weightComplete = weights.Length == rules.WeightGroupSize
+            && weights.Select(x => x.WeightRank).Distinct().Count() == rules.WeightGroupSize;
+        if (!weightComplete) warnings.Add("該日權值前20身分未齊；不以成交排行替代，只有保守界線仍成立才推估權值方向。");
+        var tickers = weights.Select(x => x.Ticker).ToHashSet(StringComparer.Ordinal);
+        var rest = stocks.Where(x => !tickers.Contains(x.Ticker)).ToArray();
+        var all = CalculateBreadth(stocks, rules.StockNeutralPct);
+        var weightBreadth = weightComplete ? CalculateBreadth(weights, rules.StockNeutralPct) : null;
+        var other = weightComplete ? CalculateBreadth(rest, rules.StockNeutralPct) : null;
+        var breadth = other ?? CalculateBreadth(rest, rules.StockNeutralPct);
+        var turnover = stocks.Sum(x => Math.Max(0m, x.TradingValue));
+        decimal? weightShare = weights.Length > 0 && turnover > 0m ? weights.Sum(x => Math.Max(0m, x.TradingValue)) / turnover : null;
+        var weightChange = WeightedByTurnover(weights);
+        var restChange = weightComplete ? WeightedByTurnover(rest) : null;
+        var quoteCoverage = all.QuotedCount / (decimal)Math.Max(1, all.ExpectedCount);
+        var industries = CalculateIndustries(stocks, tickers, turnover, rules).ToArray();
+        // 合格群分母包含覆蓋不足的群；漏報不能把全面比例墊高。
+        var eligible = industries.Where(x => x.ExpectedMembers >= rules.MinGroupMembers).ToArray();
+        var upGroups = eligible.Count(x => x.IsRising);
+        var downGroups = eligible.Count(x => x.IsFalling);
+        decimal? upRate = eligible.Length > 0 ? (decimal)upGroups / eligible.Length : null;
+        decimal? downRate = eligible.Length > 0 ? (decimal)downGroups / eligible.Length : null;
+        decimal? groupCoverage = eligible.Length > 0 ? eligible.Sum(x => x.QuotedMembers) / (decimal)eligible.Sum(x => x.ExpectedMembers) : null;
+        var industryCoverage = stocks.Count(x => !string.IsNullOrWhiteSpace(x.IndustryCode)) / (decimal)Math.Max(1, stocks.Length);
+        decimal? priceTurnoverCoverage = turnover > 0m ? stocks.Where(HasAdjustedPrice).Sum(x => Math.Max(0m, x.TradingValue)) / turnover : null;
+        if (all.MissingCount > 0) warnings.Add($"{all.MissingCount}檔缺有效日漲跌，保留缺值，不當平盤。");
+        if (industryCoverage < 1m) warnings.Add("部分股票缺分類身分，已列覆蓋，不任意補進族群。");
+        if (quoteCoverage < rules.MinQuoteCoverage) issues.Add("quote_coverage_low");
+        if (industryCoverage < rules.MinIndustryCoverage) issues.Add("industry_coverage_low");
+        if (eligible.Length < rules.MinEligibleGroups) issues.Add("group_coverage_low");
+        if (groupCoverage is null || groupCoverage < rules.MinGroupQuoteCoverage) issues.Add("group_quote_coverage_low");
+        if (turnover > 0m && (priceTurnoverCoverage is null || priceTurnoverCoverage < rules.MinPriceTurnoverCoverage))
             issues.Add("price_turnover_coverage_low");
-        }
 
-        if (totalTradingValue <= 0m)
-        {
-            issues.Add("zero_turnover");
-        }
-
-        if (weightGroup.Length != rules.WeightGroupSize)
-        {
-            issues.Add("weight_group_incomplete");
-        }
-
-        var totalWeightError = expectedCapitalization > 0m
-            ? Math.Abs(weighted.Sum(item => item.MarketCapitalization / expectedCapitalization) - 1m)
-            : decimal.MaxValue;
-        if (totalWeightError > rules.MaxWeightTotalError)
-        {
-            issues.Add("weight_total_invalid");
-        }
-
-        var weightContributions = weightGroup
-            .Select(item => (Item: item, Contribution: Contribution(item, expectedCapitalization)))
-            .ToArray();
-        var otherContributions = quoted
-            .Select(item => (Item: item, Contribution: Contribution(item, expectedCapitalization)))
-            .ToArray();
-        var positiveTotal = otherContributions.Sum(item => Math.Max(0m, item.Contribution));
-        var negativeTotal = otherContributions.Sum(item => Math.Max(0m, -item.Contribution));
-        var weightPositive = weightContributions.Sum(item => Math.Max(0m, item.Contribution));
-        var weightNegative = weightContributions.Sum(item => Math.Max(0m, -item.Contribution));
-        decimal? positiveContributionShare = weightBasisComplete && positiveTotal > 0m
-            ? weightPositive / positiveTotal
-            : null;
-        decimal? negativeContributionShare = weightBasisComplete && negativeTotal > 0m
-            ? weightNegative / negativeTotal
-            : null;
-        decimal? netWeightContribution = weightBasisComplete
-            ? weightContributions.Sum(item => item.Contribution)
-            : null;
-
-        var broadUp = otherBreadth is { } risingRest
-            && risingRest.RisingRate >= rules.BroadStockRate
-            && risingRest.MedianChangePercent > rules.StockNeutralPct
-            && risingIndustryRate >= rules.BroadGroupRate;
-        var broadDown = otherBreadth is { } fallingRest
-            && fallingRest.FallingRate >= rules.BroadStockRate
-            && fallingRest.MedianChangePercent < -rules.StockNeutralPct
-            && fallingIndustryRate >= rules.BroadGroupRate;
-        var weightUp = netWeightContribution is { } positiveNet
-            && positiveContributionShare is { } positiveShare
-            && positiveNet >= rules.MinWeightNetContributionPct
-            && positiveShare >= rules.WeightContributionShare
-            && weightPriceChange > rules.StockNeutralPct;
-        var weightDown = netWeightContribution is { } negativeNet
-            && negativeContributionShare is { } negativeShare
-            && negativeNet <= -rules.MinWeightNetContributionPct
-            && negativeShare >= rules.WeightContributionShare
-            && weightPriceChange < -rules.StockNeutralPct;
-        var localUpGroups = eligibleIndustries.Where(industry => industry.IsRising).ToArray();
-        var localDownGroups = eligibleIndustries.Where(industry => industry.IsFalling).ToArray();
-        var localUpCodes = localUpGroups.Select(industry => industry.Code).ToHashSet(StringComparer.Ordinal);
-        var localDownCodes = localDownGroups.Select(industry => industry.Code).ToHashSet(StringComparer.Ordinal);
-        var localUpTurnover = uniqueStocks.Where(stock => stock.IndustryCode is not null
-                && localUpCodes.Contains(stock.IndustryCode.Trim()))
-            .Sum(stock => Math.Max(0m, stock.TradingValue));
-        var localDownTurnover = uniqueStocks.Where(stock => stock.IndustryCode is not null
-                && localDownCodes.Contains(stock.IndustryCode.Trim()))
-            .Sum(stock => Math.Max(0m, stock.TradingValue));
-        var localUp = eligibleIndustries.Length > 0
-            && risingIndustryRate > 0m
-            && risingIndustryRate <= rules.MaxLocalGroupRate
-            && totalTradingValue > 0m
-            && localUpTurnover / totalTradingValue >= rules.LocalTurnoverShare;
-        var localDown = eligibleIndustries.Length > 0
-            && fallingIndustryRate > 0m
-            && fallingIndustryRate <= rules.MaxLocalGroupRate
-            && totalTradingValue > 0m
-            && localDownTurnover / totalTradingValue >= rules.LocalTurnoverShare;
-
-        if (!input.IndexConstituentsVerified)
-        {
-            // 普通股市值排序是透明估算，不會冒充逐日官方成分表；偏差超限時前面已轉為資料不足。
-            warnings.Add("盤勢名稱使用候選規則與估算權重，正式成分權重仍待資料授權與驗證。");
-        }
-
-        var status = issues.Count > 0
-            ? MarketStructureStatusCodes.InsufficientData
-            : Classify(indexChange!.Value, broadUp, broadDown, weightUp, weightDown,
-                localUp, localDown, otherBreadth!, rules);
-        var displayName = DisplayName(status);
-        var explanation = Explanation(status, marketName, allBreadth, otherBreadth,
-            risingIndustryRate, fallingIndustryRate,
-            weightTurnoverShare is { } turnoverShare && turnoverShare >= rules.WeightTurnoverTagShare,
-            estimated);
-        var reasonCodes = issues.Distinct(StringComparer.Ordinal).ToArray();
-
-        return new MarketStructureMarketResult(
-            StatusCode: status,
-            DisplayName: displayName,
-            Explanation: explanation,
-            DataStatus: issues.Count == 0 ? "ready" : "insufficient",
-            ReasonCodes: reasonCodes,
-            Warnings: warnings.Distinct(StringComparer.Ordinal).ToArray(),
-            IsEstimated: estimated,
-            IndexChangePercent: indexChange,
-            IndexContributionChangePercent: totalContribution,
-            IndexResidualPercent: residual,
-            IndexPriceWeightCoverage: priceWeightCoverage,
-            QuoteCoverage: uniqueStocks.Length == 0 ? 0m : (decimal)allBreadth.QuotedCount / uniqueStocks.Length,
-            IndustryCoverage: industryCoverage,
-            GroupQuoteCoverage: groupQuoteCoverage,
-            PriceTurnoverCoverage: priceTurnoverCoverage,
-            TotalTradingValue: totalTradingValue > 0m ? totalTradingValue : null,
-            WeightGroupTurnoverShare: weightTurnoverShare,
-            WeightTurnoverConcentrated: weightTurnoverShare is { } concentratedShare
-                && concentratedShare >= rules.WeightTurnoverTagShare,
-            WeightGroupMarketCapShare: weightMarketCapShare,
-            WeightGroupPriceChangePercent: weightPriceChange,
-            OtherStockPriceChangePercent: otherPriceChange,
-            WeightGroupNetContributionPercent: netWeightContribution,
-            PositiveContributionShare: positiveContributionShare,
-            NegativeContributionShare: negativeContributionShare,
-            AllStockBreadth: allBreadth,
-            WeightStockBreadth: weightBreadth,
-            OtherStockBreadth: otherBreadth,
-            RisingIndustryRate: risingIndustryRate,
-            FallingIndustryRate: fallingIndustryRate,
-            Industries: industries,
-            WeightGroup: weightGroup.Select(item => ToWeightStock(
-                item,
-                totalTradingValue,
-                expectedCapitalization,
-                estimated)).ToArray(),
-            Evidence: new MarketStructureEvidence(
-                broadUp,
-                broadDown,
-                weightUp,
-                weightDown,
-                localUp,
-                localDown,
-                eligibleIndustries.Length,
-                risingIndustries,
-                fallingIndustries,
-                [
-                    $"broadStockRate={rules.BroadStockRate}",
-                    $"broadGroupRate={rules.BroadGroupRate}",
-                    $"weightContributionShare={rules.WeightContributionShare}",
-                    $"maxIndexResidualPct={rules.MaxIndexResidualPct}"
-                ]));
+        // 多數族群必須嚴格過半；家數、中位數與群內參與皆需同向。
+        var unknownWeights = Math.Max(0, rules.WeightGroupSize - weights.Length);
+        // 身分未全時，最壞扣除未知權值的同向股票／族群；仍成立才說全面，不能靠H20自身冒充擴散。
+        var broadUp = OutsideRate(breadth.RisingCount, breadth.QuotedCount, unknownWeights) >= rules.BroadStockRate
+            && breadth.MedianChangePercent > rules.StockNeutralPct
+            && StableGroupRate(eligible, true, unknownWeights, rules) > rules.BroadGroupRate;
+        var broadDown = OutsideRate(breadth.FallingCount, breadth.QuotedCount, unknownWeights) >= rules.BroadStockRate
+            && breadth.MedianChangePercent < -rules.StockNeutralPct
+            && StableGroupRate(eligible, false, unknownWeights, rules) > rules.BroadGroupRate;
+        var weightPricesReady = weights.Length > 0 && weights.All(x => HasAdjustedPrice(x) || x.TradingValue == 0m);
+        var knownDirection = CalculateBreadth(weights, rules.StockNeutralPct);
+        var maximumTurnover = weights.Sum(x => Math.Max(0m, x.TradingValue))
+            + rest.OrderByDescending(x => x.TradingValue).Take(unknownWeights).Sum(x => Math.Max(0m, x.TradingValue));
+        var knownNet = weights.Where(HasAdjustedPrice).Sum(x => x.TradingValue * AdjustedChangePercent(x)!.Value);
+        var outsideFlows = rest.Where(HasAdjustedPrice).Select(x => x.TradingValue * AdjustedChangePercent(x)!.Value).ToArray();
+        var minimumTurnover = weights.Sum(x => Math.Max(0m, x.TradingValue));
+        var lowerNet = knownNet + outsideFlows.Where(x => x < 0m).Order().Take(unknownWeights).Sum();
+        var upperNet = knownNet + outsideFlows.Where(x => x > 0m).OrderDescending().Take(unknownWeights).Sum();
+        decimal? lowerPrice = minimumTurnover > 0m ? lowerNet / (lowerNet < 0m ? minimumTurnover : maximumTurnover) : null;
+        decimal? upperPrice = minimumTurnover > 0m ? upperNet / (upperNet > 0m ? minimumTurnover : maximumTurnover) : null;
+        var pricesCovered = stocks.All(x => x.TradingValue <= 0m || HasAdjustedPrice(x));
+        // 已知成員足以證明「任意剩餘未知成員」也成立時，可保守推估；不猜第18～20名身分。
+        var weightUp = weightPricesReady && pricesCovered && knownDirection.RisingCount >= rules.MinDirectionalWeightCount
+            && lowerPrice > rules.StockNeutralPct && weightShare >= rules.WeightTurnoverShare;
+        var weightDown = weightPricesReady && pricesCovered && knownDirection.FallingCount >= rules.MinDirectionalWeightCount
+            && upperPrice < -rules.StockNeutralPct && weightShare >= rules.WeightTurnoverShare;
+        if (weights.Length > 0 && !weightPricesReady) warnings.Add("權值觀察群有價格／基準缺值，保留原名單，不補第21名。");
+        if (!weightComplete && weights.Length > 0) warnings.Add($"已知{weights.Length}/20檔權值身分；成交占比為下限，權值方向以其餘成員最壞界線推估，不猜缺席身分。");
+        var upTurnover = industries.Where(x => x.IsRising).Sum(x => x.TradingValue ?? 0m);
+        var downTurnover = industries.Where(x => x.IsFalling).Sum(x => x.TradingValue ?? 0m);
+        // 沒達全面仍可為局部，避免舊30%～2/3空白區間；兩邊都有參與則方向未明。
+        var localUp = !broadUp && upGroups > 0 && turnover > 0m && upTurnover / turnover >= rules.LocalTurnoverShare;
+        var localDown = !broadDown && downGroups > 0 && turnover > 0m && downTurnover / turnover >= rules.LocalTurnoverShare;
+        var waiting = input.Mode == "intraday" && stocks.Any(x => x.PriceSource != "missing" && x.Price is > 0m)
+            && turnover == 0m && issues.All(x => x.EndsWith("coverage_low", StringComparison.Ordinal));
+        if (turnover == 0m && !waiting) issues.Add("zero_turnover");
+        var status = waiting ? MarketStructureStatusCodes.Undirected : issues.Count > 0 ? MarketStructureStatusCodes.InsufficientData
+            : Classify(index, broadUp, broadDown, weightUp, weightDown, localUp, localDown, breadth with
+            { RisingRate = OutsideUpperRate(breadth.RisingCount, breadth.QuotedCount, unknownWeights),
+              FallingRate = OutsideUpperRate(breadth.FallingCount, breadth.QuotedCount, unknownWeights) }, rules);
+        var dataStatus = waiting ? "waiting" : issues.Count > 0 ? "insufficient" : warnings.Count > 0 ? "partial" : "ready";
+        if (!string.IsNullOrWhiteSpace(input.ClassificationNote)) warnings.Add(input.ClassificationNote);
+        warnings.Add("量價／廣度推估；成交值是換手集中程度，不是淨流入或精確指數貢獻。");
+        var explanation = waiting ? "尚無當日累計成交，等待開盤／第一筆行情；不是來源故障。"
+            : Explanation(status, all, other, upRate, downRate, issues);
+        return new MarketStructureMarketResult(status, DisplayName(status), explanation, dataStatus,
+            waiting ? [] : issues.Distinct().ToArray(), warnings.Distinct().ToArray(), true,
+            index, null, null, null, quoteCoverage, industryCoverage, groupCoverage, priceTurnoverCoverage,
+            turnover > 0m ? turnover : null, weightShare, weightShare >= rules.WeightTurnoverTagShare,
+            null, weightChange, restChange, null, null, null, all, weightBreadth, other, upRate, downRate,
+            industries, weights.Select(x => new MarketStructureWeightStock(x.Ticker, x.Name, null,
+                x.TradingValue > 0m ? x.TradingValue : null, turnover > 0m ? x.TradingValue / turnover : null,
+                AdjustedChangePercent(x), null, x.PriceSource, true)).ToArray(),
+            new MarketStructureEvidence(broadUp, broadDown, weightUp, weightDown, localUp, localDown,
+                eligible.Length, upGroups, downGroups,
+                [$"broadStockRate={rules.BroadStockRate}", $"broadGroupRate>{rules.BroadGroupRate}",
+                 $"minDirectionalWeightCount={rules.MinDirectionalWeightCount}", $"weightTurnoverShare={rules.WeightTurnoverShare}",
+                 $"unknownWeightBudget={unknownWeights}" ]), weights.Length, !weightComplete, lowerPrice, upperPrice);
     }
 
-    private static string Classify(
-        decimal indexChange,
-        bool broadUp,
-        bool broadDown,
-        bool weightUp,
-        bool weightDown,
-        bool localUp,
-        bool localDown,
-        MarketStructureBreadth other,
-        MarketStructureRules rules)
+    private static string Classify(decimal? index, bool broadUp, bool broadDown, bool weightUp, bool weightDown,
+        bool localUp, bool localDown, MarketStructureBreadth other, MarketStructureRules rules)
     {
-        var indexUp = indexChange > rules.IndexNeutralPct;
-        var indexDown = indexChange < -rules.IndexNeutralPct;
-
-        if (indexUp && broadDown && weightUp)
-        {
-            return MarketStructureStatusCodes.WeightSupportBroadDown;
-        }
-
-        if (indexDown && broadUp && weightDown)
-        {
-            return MarketStructureStatusCodes.WeightDragBroadUp;
-        }
-
-        if ((indexDown && broadUp) || (indexUp && broadDown))
-        {
-            return MarketStructureStatusCodes.Undirected;
-        }
-
-        if (broadUp)
-        {
-            return MarketStructureStatusCodes.BroadUp;
-        }
-
-        if (broadDown)
-        {
-            return MarketStructureStatusCodes.BroadDown;
-        }
-
-        if (indexUp && weightUp
-            && other.RisingRate <= rules.RestDirectionCeiling
-            && other.MedianChangePercent <= rules.StockNeutralPct)
-        {
+        var indexUp = index > rules.IndexNeutralPct;
+        var indexDown = index < -rules.IndexNeutralPct;
+        if (indexUp && broadDown && weightUp) return MarketStructureStatusCodes.WeightSupportBroadDown;
+        if (indexDown && broadUp && weightDown) return MarketStructureStatusCodes.WeightDragBroadUp;
+        if (broadUp) return MarketStructureStatusCodes.BroadUp;
+        if (broadDown) return MarketStructureStatusCodes.BroadDown;
+        if (indexUp && weightUp && other.RisingRate <= rules.RestDirectionCeiling && other.MedianChangePercent <= rules.StockNeutralPct)
             return MarketStructureStatusCodes.WeightLedUp;
-        }
-
-        if (indexDown && weightDown
-            && other.FallingRate <= rules.RestDirectionCeiling
-            && other.MedianChangePercent >= -rules.StockNeutralPct)
-        {
+        if (indexDown && weightDown && other.FallingRate <= rules.RestDirectionCeiling && other.MedianChangePercent >= -rules.StockNeutralPct)
             return MarketStructureStatusCodes.WeightLedDown;
-        }
-
-        if (localUp && !localDown)
-        {
-            return MarketStructureStatusCodes.SectorUp;
-        }
-
-        if (localDown && !localUp)
-        {
-            return MarketStructureStatusCodes.SectorDown;
-        }
-
+        if (localUp && !localDown) return MarketStructureStatusCodes.SectorUp;
+        if (localDown && !localUp) return MarketStructureStatusCodes.SectorDown;
         return MarketStructureStatusCodes.Undirected;
     }
 
@@ -548,72 +249,54 @@ public static class MarketStructureCalculator
             .ToArray();
     }
 
-    private static MarketStructureWeightStock ToWeightStock(
-        WeightedStock weighted,
-        decimal totalTradingValue,
-        decimal totalCapitalization,
-        bool estimated)
-    {
-        var stock = weighted.Stock;
-        var contribution = Contribution(weighted, totalCapitalization);
+    private static decimal? OutsideUpperRate(int directional, int quoted, int unknown)
+        => quoted > unknown ? Math.Min(1m, (decimal)directional / (quoted - unknown)) : null;
 
-        return new MarketStructureWeightStock(
-            Ticker: stock.Ticker,
-            Name: stock.Name,
-            StartWeight: totalCapitalization > 0m ? weighted.MarketCapitalization / totalCapitalization : null,
-            TradingValue: stock.TradingValue > 0m ? stock.TradingValue : null,
-            TradingValueShare: totalTradingValue > 0m ? Math.Max(0m, stock.TradingValue) / totalTradingValue : null,
-            AdjustedChangePercent: AdjustedChangePercent(stock),
-            IndexContributionPercent: contribution,
-            PriceSource: stock.PriceSource,
-            IsEstimated: estimated);
+    private static decimal? OutsideRate(int directional, int quoted, int unknown)
+        => quoted > unknown ? (decimal)Math.Max(0, directional - unknown) / (quoted - unknown) : null;
+
+    private static decimal? StableGroupRate(MarketStructureIndustry[] groups, bool up, int budget, MarketStructureRules rules)
+    {
+        if (groups.Length == 0) return null;
+        var directional = groups.Where(x => up ? x.IsRising : x.IsFalling).ToArray();
+        var costs = directional.Select(group =>
+        {
+            var count = up ? group.RisingCount : group.FallingCount;
+            for (var removed = 1; removed <= Math.Min(budget, count); removed++)
+            {
+                var expected = group.ExpectedMembers - removed;
+                var quoted = group.QuotedMembers - removed;
+                if (expected < rules.MinGroupMembers || quoted <= 0
+                    || (decimal)quoted / expected < rules.MinGroupQuoteCoverage
+                    || (decimal)(count - removed) / quoted < rules.GroupBreadthRate)
+                    return removed;
+            }
+            return budget + 1;
+        }).Order().ToArray();
+        var invalidated = 0;
+        foreach (var cost in costs)
+        {
+            if (cost > budget) break;
+            budget -= cost; invalidated++;
+        }
+        return (decimal)(directional.Length - invalidated) / groups.Length;
     }
 
     private static decimal? WeightedByTurnover(IEnumerable<MarketStructureStockInput> stocks)
     {
-        var valid = stocks.Where(stock => stock.TradingValue > 0m && AdjustedChangePercent(stock) is not null).ToArray();
-        var total = valid.Sum(stock => stock.TradingValue);
-        return total > 0m
-            ? valid.Sum(stock => stock.TradingValue * AdjustedChangePercent(stock)!.Value) / total
-            : null;
-    }
-
-    private static decimal Contribution(WeightedStock item, decimal totalCapitalization)
-    {
-        var change = RawChangePercent(item.Stock);
-        return totalCapitalization > 0m && change is not null
-            ? item.MarketCapitalization / totalCapitalization * change.Value
-            : 0m;
+        var valid = stocks.Where(x => x.TradingValue > 0m && HasAdjustedPrice(x)).ToArray();
+        var total = valid.Sum(x => x.TradingValue);
+        return total > 0m ? valid.Sum(x => x.TradingValue * AdjustedChangePercent(x)!.Value) / total : null;
     }
 
     private static decimal? AdjustedChangePercent(MarketStructureStockInput stock)
-    {
-        var reference = stock.ReferencePrice is > 0m ? stock.ReferencePrice : stock.RawPreviousClose;
-        return stock.Price is > 0m && reference is > 0m
-            ? (stock.Price.Value / reference.Value - 1m) * 100m
-            : null;
-    }
+        => stock.Price is > 0m ? stock.ChangePercent ?? (stock.ReferencePrice is > 0m
+            ? (stock.Price.Value / stock.ReferencePrice.Value - 1m) * 100m : null) : null;
 
-    private static decimal? RawChangePercent(MarketStructureStockInput stock)
-        => stock.Price is > 0m && stock.RawPreviousClose is > 0m
-            ? (stock.Price.Value / stock.RawPreviousClose.Value - 1m) * 100m
-            : null;
-
-    private static bool HasAdjustedPrice(MarketStructureStockInput stock)
-        => AdjustedChangePercent(stock) is not null;
-
+    private static bool HasAdjustedPrice(MarketStructureStockInput stock) => AdjustedChangePercent(stock) is not null;
     private static decimal? Median(IReadOnlyList<decimal> sorted)
-    {
-        if (sorted.Count == 0)
-        {
-            return null;
-        }
-
-        var middle = sorted.Count / 2;
-        return sorted.Count % 2 == 0
-            ? (sorted[middle - 1] + sorted[middle]) / 2m
-            : sorted[middle];
-    }
+        => sorted.Count == 0 ? null : sorted.Count % 2 == 0
+            ? (sorted[sorted.Count / 2 - 1] + sorted[sorted.Count / 2]) / 2m : sorted[sorted.Count / 2];
 
     private static string DisplayName(string status) => status switch
     {
@@ -629,74 +312,44 @@ public static class MarketStructureCalculator
         _ => "方向未明"
     };
 
-    private static string Explanation(
-        string status,
-        string marketName,
-        MarketStructureBreadth all,
-        MarketStructureBreadth? other,
-        decimal? risingIndustryRate,
-        decimal? fallingIndustryRate,
-        bool weightTurnoverConcentrated,
-        bool estimated)
+    private static string Explanation(string status, MarketStructureBreadth all, MarketStructureBreadth? rest,
+        decimal? upGroups, decimal? downGroups, IReadOnlyList<string> issues)
     {
-        var participation = other is null
-            ? $"{marketName}權值前 20 的股數或前收基準不完整。"
-            : $"{marketName}有效報價 {all.QuotedCount}/{all.ExpectedCount} 檔；"
-                + $"權值群外上漲 {other.RisingCount} 檔、下跌 {other.FallingCount} 檔；"
-                + $"上漲／下跌產業 {Percent(risingIndustryRate)}／{Percent(fallingIndustryRate)}";
-        var estimate = estimated ? "（權重為估算）" : string.Empty;
-        var turnoverTag = weightTurnoverConcentrated
-            ? "H20 成交占比達集中門檻。"
-            : string.Empty;
-
-        return status switch
+        var direction = status switch
         {
-            MarketStructureStatusCodes.WeightLedUp => $"指數上漲由權值群貢獻主導，非權值股票跟漲有限。{participation}{estimate}{turnoverTag}。",
-            MarketStructureStatusCodes.BroadUp => $"權值群外多數股票與多數產業同向上漲，市場參與面廣。{participation}。",
-            MarketStructureStatusCodes.SectorUp => $"少數產業內有多檔股票走強，尚未擴散至多數產業。{participation}。",
-            MarketStructureStatusCodes.WeightLedDown => $"指數下跌主要由權值群貢獻帶動，非權值股票普遍跌勢有限。{participation}{estimate}{turnoverTag}。",
-            MarketStructureStatusCodes.BroadDown => $"權值群外多數股票與多數產業同向下跌，市場跌勢擴散。{participation}。",
-            MarketStructureStatusCodes.SectorDown => $"少數產業內有多檔股票走弱，跌勢尚未擴散至多數產業。{participation}。",
-            MarketStructureStatusCodes.WeightSupportBroadDown => $"指數上漲由權值群撐住，但多數非權值股票及產業下跌。{participation}{estimate}{turnoverTag}。",
-            MarketStructureStatusCodes.WeightDragBroadUp => $"指數下跌由權值群壓住，但多數非權值股票及產業上漲。{participation}{estimate}{turnoverTag}。",
-            MarketStructureStatusCodes.InsufficientData => $"{marketName}必要行情、權重或分類資料未通過品質檢查。{participation}。",
-            _ => $"漲跌交錯、變化有限或證據分歧，尚無明確主導方向。{participation}。"
+            MarketStructureStatusCodes.WeightLedUp => "指數與權值群量價走強，成交集中於權值，其他股票跟漲有限。",
+            MarketStructureStatusCodes.WeightLedDown => "指數與權值群量價走弱，成交集中於權值，其他股票跌勢有限。",
+            MarketStructureStatusCodes.BroadUp => "多數股票與多數族群同向上漲，市場參與面廣。",
+            MarketStructureStatusCodes.BroadDown => "多數股票與多數族群同向下跌，市場跌勢擴散。",
+            MarketStructureStatusCodes.SectorUp => "部分族群內多檔股票走強，成交參與尚未全面擴散。",
+            MarketStructureStatusCodes.SectorDown => "部分族群內多檔股票走弱，跌勢尚未全面擴散。",
+            MarketStructureStatusCodes.WeightSupportBroadDown => "指數與權值量價走強，但權值外多數股票及族群下跌。",
+            MarketStructureStatusCodes.WeightDragBroadUp => "指數與權值量價走弱，但權值外多數股票及族群上漲。",
+            MarketStructureStatusCodes.InsufficientData => "缺少分類必要資料：" + string.Join("、", issues.Select(ReasonText)) + "。",
+            _ => "漲跌交錯、變化有限或證據分歧，尚無明確主導方向。"
         };
+        var breadth = rest ?? all;
+        return direction + $"有效漲跌 {all.QuotedCount}/{all.ExpectedCount} 檔；"
+            + (rest is null ? "全市場" : "權值群外") + $"上漲 {breadth.RisingCount}、下跌 {breadth.FallingCount}；"
+            + $"上漲／下跌族群 {Percent(upGroups)}／{Percent(downGroups)}。";
     }
-
-    private static string Percent(decimal? value)
-        => value is null ? "資料不足" : value.Value.ToString("P0", CultureInfo.InvariantCulture);
-
+    private static string ReasonText(string reason) => reason switch
+    {
+        "duplicate_ticker" => "同市場代號重複", "invalid_numeric_input" => "價格或成交為負數",
+        "future_snapshot" => "行情時間在未來", "quote_coverage_low" => "有效價格／日漲跌基準覆蓋不足",
+        "industry_coverage_low" => "族群身分覆蓋不足", "group_coverage_low" => "可比較族群太少",
+        "group_quote_coverage_low" => "族群內有效漲跌覆蓋不足", "price_turnover_coverage_low" => "成交對應有效價格覆蓋不足",
+        "zero_turnover" => "無成交值", _ => reason
+    };
+    private static string Percent(decimal? value) => value is null ? "—" : value.Value.ToString("P0", CultureInfo.InvariantCulture);
     private static void ValidateRules(MarketStructureRules rules)
     {
-        if (string.IsNullOrWhiteSpace(rules.Version)
-            || rules.WeightGroupSize <= 0
-            || rules.MinGroupMembers <= 0
-            || rules.MinEligibleGroups <= 0
-            || rules.MaxBasisAgeDays < 0
-            || rules.MaxLiveAgeMinutes < 0
-            || rules.StockNeutralPct < 0m
-            || rules.IndexNeutralPct < 0m
-            || rules.BroadStockRate is <= 0m or > 1m
-            || rules.GroupBreadthRate is <= 0m or > 1m
-            || rules.BroadGroupRate is <= 0m or > 1m
-            || rules.WeightContributionShare is <= 0m or > 1m
-            || rules.MinQuoteCoverage is <= 0m or > 1m
-            || rules.MinIndustryCoverage is <= 0m or > 1m
-            || rules.MinGroupQuoteCoverage is <= 0m or > 1m
-            || rules.MinIndexPriceWeightCoverage is <= 0m or > 1m
-            || rules.MinPriceTurnoverCoverage is <= 0m or > 1m
-            || rules.RestDirectionCeiling is < 0m or > 1m
-            || rules.MaxLocalGroupRate is <= 0m or > 1m
-            || rules.LocalTurnoverShare is <= 0m or > 1m
-            || rules.WeightTurnoverTagShare is <= 0m or > 1m
-            || rules.MinWeightNetContributionPct < 0m
-            || rules.MaxIndexResidualPct < 0m
-            || rules.MaxWeightTotalError < 0m)
-        {
-            throw new ArgumentOutOfRangeException(nameof(rules), "市場結構規則門檻超出範圍。");
-        }
+        if (string.IsNullOrWhiteSpace(rules.Version) || rules.WeightGroupSize < 1 || rules.MinGroupMembers < 2
+            || rules.MinEligibleGroups < 1 || rules.MinDirectionalWeightCount < 1 || rules.MinDirectionalWeightCount > rules.WeightGroupSize || rules.StockNeutralPct < 0m || rules.IndexNeutralPct < 0m
+            || new[] { rules.BroadStockRate, rules.GroupBreadthRate, rules.BroadGroupRate,
+                rules.WeightTurnoverShare, rules.MinQuoteCoverage, rules.MinIndustryCoverage, rules.MinGroupQuoteCoverage,
+                rules.MinPriceTurnoverCoverage, rules.LocalTurnoverShare, rules.WeightTurnoverTagShare }.Any(x => x <= 0m || x > 1m)
+            || rules.RestDirectionCeiling < 0m || rules.RestDirectionCeiling > 1m)
+            throw new ArgumentOutOfRangeException(nameof(rules));
     }
-
-    private sealed record WeightedStock(MarketStructureStockInput Stock, decimal MarketCapitalization);
 }

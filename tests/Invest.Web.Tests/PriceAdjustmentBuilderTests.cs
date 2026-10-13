@@ -77,6 +77,29 @@ public sealed class PriceAdjustmentBuilderTests
         Ask = ask
     };
 
+    [Fact]
+    public void 起始日上櫃已有官方當日參考價就能算日漲跌但不誤算新掛牌()
+    {
+        var table = PriceAdjustmentBuilder.Build([Snapshot(D1, Quote(Market.Tpex, "1240", 58.2m))],
+            [References(D1, tpex: true, rows: Tpex("1240", 58.2m, 58.5m, 58.2m))], []);
+        Assert.Equal(58.5m, table.BaseFor("1240", D1));
+        Assert.Empty(table.Listings);
+        Assert.Equal(0, table.Report.Listings);
+        Assert.Empty(table.Adjustments);
+        var price = PricePerformanceCalculator.Calculate([new DailyStockTrading { TradingDate = D1, Ticker = "1240",
+            ClosePrice = 58.2m, ReferencePrice = table.BaseFor("1240", D1), TradingValue = 100m }], [], D1);
+        Assert.Equal((58.2m - 58.5m) / 58.5m, price.DailyChangeRate);
+    }
+
+    [Fact]
+    public void 起始日缺官方參考價仍保留缺值不拿收盤價假造平盤()
+    {
+        var table = PriceAdjustmentBuilder.Build([Snapshot(D1, Quote(Market.Tpex, "1240", 58.2m))],
+            [References(D1, tpex: true, rows: Tpex("1240", 58.2m, null, 58.2m))], []);
+        Assert.Null(table.BaseFor("1240", D1));
+        Assert.Empty(table.Listings);
+    }
+
     // ───────────────────────── 上市 ─────────────────────────
 
     [Fact]

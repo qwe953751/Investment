@@ -20532,23 +20532,15 @@ function renderSummary() {
     const structure = state.view === 'intraday'
         ? current.marketStructure
         : state.view === 'daily'
-            && normalizeMarketStructureDate(state.date)
-                === normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate)
-            ? marketStructureClose
+            ? current.marketStructure
             : null;
-    const selectedCloseHasSnapshot = state.view === 'daily'
-        && normalizeMarketStructureDate(state.date)
-            === normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate);
     if (structure || state.view === 'intraday' || state.view === 'daily') {
-        const historyMissing = state.view === 'daily' && !structure && !selectedCloseHasSnapshot;
         summary.append(renderMarketStructure(
             structure,
             state.view === 'intraday' && current.marketStructurePending === true,
-            historyMissing
-                ? '這個交易日沒有封存當日股數與產業資料，為避免用目前名冊回填舊日，暫不計算歷史市場結構。'
-                : state.view === 'daily' && !structure
-                    ? '最新交易日的市場結構快照暫時無法讀取。'
-                    : current.marketStructureMessage,
+            state.view === 'daily' && !structure
+                ? '這個交易日的市場結構暫時無法讀取，請重新載入。'
+                : current.marketStructureMessage,
             marketStructureExpanded));
     }
 
@@ -20558,6 +20550,13 @@ function renderSummary() {
     } else {
         summary.append(explanationRow);
     }
+}
+
+async function resolveCloseMarketStructure(data, date) {
+    const key = normalizeMarketStructureDate(date);
+    const single = data?.marketStructure ? data : await fetchPeriod(`1-${key}`);
+    const result = single?.marketStructure;
+    return normalizeMarketStructureDate(result?.tradeDate) === key ? result : null;
 }
 
 function marketStructurePercent(value) {
@@ -20578,7 +20577,7 @@ function marketStructureTone(value) {
 }
 
 function marketStructureStatusTone(market) {
-    if (market?.dataStatus !== 'ready') {
+    if (market?.dataStatus === 'insufficient') {
         return 'is-insufficient';
     }
     if (['weight_led_up', 'broad_up', 'sector_up', 'weight_drag_broad_up'].includes(market.statusCode)) {
@@ -20651,16 +20650,16 @@ function makeMarketStructureWeightStrip(market, estimated) {
     const strip = document.createElement('div');
     strip.className = 'market-structure-breadth-row market-structure-weight-row';
     strip.setAttribute('role', 'group');
-    strip.setAttribute('aria-label', `權值前 ${market.weightGroup.length} 檔漲跌分布`);
+    strip.setAttribute('aria-label', `權值前20觀察群，已知${market.weightGroup.length}檔身分`);
 
     const heading = document.createElement('div');
     heading.className = 'market-structure-breadth-label market-structure-weight-heading';
     const labelCopy = document.createElement('div');
     labelCopy.className = 'market-structure-weight-copy';
     const label = document.createElement('strong');
-    label.textContent = `權值前 ${market.weightGroup.length}`;
+    label.textContent = '權值前 20';
     const labelNote = document.createElement('small');
-    labelNote.textContent = '(標的漲跌)';
+    labelNote.textContent = market.weightGroup.length < 20 ? `(已知${market.weightGroup.length}/20檔)` : '(標的漲跌)';
     labelCopy.append(label, labelNote);
     heading.append(labelCopy);
     if (estimated || market.weightGroup.some(stock => stock.isEstimated)) {
@@ -20683,6 +20682,14 @@ function makeMarketStructureWeightStrip(market, estimated) {
         cells.append(cell);
     });
 
+    for (let index = market.weightGroup.length; index < 20; index++) {
+        const cell = document.createElement('span');
+        cell.className = 'market-structure-weight-cell is-flat';
+        cell.textContent = '？';
+        cell.title = '身分未取得；未以其他股票替補';
+        cell.setAttribute('aria-label', cell.title);
+        cells.append(cell);
+    }
     strip.append(heading, cells);
     return strip;
 }
@@ -20712,7 +20719,7 @@ function renderMarketStructure(result, pending = false, message = null, expanded
         name.textContent = marketName;
         const status = document.createElement('span');
         status.className = `market-structure-quick-status ${marketStructureStatusTone(market)}`;
-        status.textContent = market.displayName ?? '資料不足';
+        status.textContent = market.dataStatus === 'waiting' ? '等待開盤' : market.displayName ?? '資料不足';
         item.append(name, status);
         quickMarkets.append(item);
     }
@@ -20766,12 +20773,12 @@ function renderMarketStructure(result, pending = false, message = null, expanded
         name.textContent = marketName;
         const status = document.createElement('span');
         status.className = 'market-structure-status ' + marketStructureStatusTone(market);
-        status.textContent = market.displayName ?? '資料不足';
+        status.textContent = market.dataStatus === 'waiting' ? '等待開盤' : market.displayName ?? '資料不足';
         identity.append(name, status);
         const explanation = document.createElement('p');
         explanation.className = 'market-structure-explanation';
         explanation.textContent = market.explanation
-            ? market.explanation.split('。')[0] + '。'
+            ? market.explanation
             : '';
         const coverage = document.createElement('div');
         coverage.className = 'market-structure-coverage';
@@ -20789,7 +20796,7 @@ function renderMarketStructure(result, pending = false, message = null, expanded
         if (weightStrip) {
             card.append(weightStrip);
         }
-        const otherStockRow = makeMarketStructureBreadthRow('權值群外', market.otherStockBreadth);
+        const otherStockRow = makeMarketStructureBreadthRow(market.otherStockBreadth ? '權值群外' : '全市場', market.otherStockBreadth ?? market.allStockBreadth);
         if (otherStockRow) {
             card.append(otherStockRow);
         }
@@ -20798,13 +20805,13 @@ function renderMarketStructure(result, pending = false, message = null, expanded
         metrics.className = 'market-structure-metrics';
         const metricRows = [
             ['指數漲跌', market.indexChangePercent],
-            ['權值前 20 成交值占比', market.weightGroupTurnoverShare === null || market.weightGroupTurnoverShare === undefined
+            [market.weightMetricsAreLowerBound ? '權值已知成員成交占比（至少）' : '權值前 20 成交值占比', market.weightGroupTurnoverShare === null || market.weightGroupTurnoverShare === undefined
                 ? null
                 : Number(market.weightGroupTurnoverShare) * 100],
             ['權值外上漲比例', market.otherStockBreadth?.risingRate === null || market.otherStockBreadth?.risingRate === undefined
                 ? null
                 : Number(market.otherStockBreadth.risingRate) * 100],
-            ['權值估算指數貢獻', market.weightGroupNetContributionPercent]
+            [market.weightMetricsAreLowerBound ? '已知權值成交加權漲跌' : '權值成交加權漲跌', market.weightGroupPriceChangePercent]
         ];
         for (const [label, value] of metricRows) {
             const term = document.createElement('dt');
@@ -20826,7 +20833,7 @@ function renderMarketStructure(result, pending = false, message = null, expanded
             const details = document.createElement('details');
             details.className = 'market-structure-weights';
             const summary = document.createElement('summary');
-            summary.textContent = '指數權重估算前 20 名（固定名單）';
+            summary.textContent = `權值觀察群（已知 ${market.weightGroup.length}/20 檔；固定名單）`;
             details.append(summary);
             const list = document.createElement('ol');
             for (const stock of market.weightGroup) {
@@ -20899,7 +20906,7 @@ async function fetchIntradayMarketStructure(tradeDate, runId, capturedAt) {
         }
 
         const result = JSON.parse(new TextDecoder().decode(bytes));
-        if (result?.schemaVersion !== 1
+        if (![1, 2].includes(result?.schemaVersion)
             || result.mode !== 'intraday'
             || result.runId !== pointer.runId
             || result.tradeDate !== pointer.tradeDate
@@ -28392,6 +28399,8 @@ async function load() {
         return;
     }
 
+    const closeLoadState = JSON.stringify(state);
+    const structureDate = state.date;
     const key = state.view === 'daily' && state.comparisonMode === 'single'
         ? `1-${state.date}`
         : `${state.period}-${state.date}`;
@@ -28401,6 +28410,7 @@ async function load() {
     }
 
     const loaded = await fetchPeriod(key);
+    if (JSON.stringify(state) !== closeLoadState) return;
 
     if (!loaded) {
         // 抓不到資料，通常是因為手上這份頁面是舊的：新版改了檔名的組成方式。
@@ -28440,8 +28450,11 @@ async function load() {
     }
 
     const ranked = rankRows(data);
+    const structure = await resolveCloseMarketStructure(data, structureDate);
+    if (JSON.stringify(state) !== closeLoadState) return;
     current = {
         ...data,
+        marketStructure: structure,
         rows: ranked.rows,
         rankedStockCount: ranked.count,
         rankByTicker: ranked.rankByTicker

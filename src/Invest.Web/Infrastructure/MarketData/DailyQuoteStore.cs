@@ -44,6 +44,23 @@ public sealed class DailyQuoteStore
         await JsonSerializer.SerializeAsync(stream, snapshot, SerializerOptions, cancellationToken);
     }
 
+    /// <summary>修補指數時只改原始JSON的指數欄位，保留未知欄位及未正規化的歷史標的種類。</summary>
+    public async Task SaveMarketIndicesAsync(DateOnly date, IReadOnlyList<MarketIndexQuote> indices, CancellationToken ct = default)
+    {
+        var path = GetPath(date);
+        var root = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(path, ct))
+            ?? throw new InvalidDataException("原始行情檔無內容。");
+        root["marketIndices"] = JsonSerializer.SerializeToNode(indices, SerializerOptions);
+        root["marketIndexSchemaVersion"] = Math.Max(root["marketIndexSchemaVersion"]?.GetValue<int>() ?? 0, DailyQuoteSnapshot.CurrentMarketIndexSchemaVersion);
+        var temporary = path + ".indices-" + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporary, root.ToJsonString(SerializerOptions), ct);
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     public Task<DailyQuoteSnapshot?> LoadAsync(
         DateOnly tradingDate,
         CancellationToken cancellationToken = default)

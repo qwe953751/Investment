@@ -97,6 +97,7 @@ public sealed class StaticSiteExporter(
             .ToArray();
 
         var selectableDates = RankingDates.Selectable(tradingDates);
+        var structureByDate = await marketStructure.CalculateAllCloseAsync(cancellationToken);
         var fileCount = 0;
         var marketHeatHistory = new List<MarketHeatChartExport>();
         var marketTradingTurnovers = ToMarketTradingTurnovers(dataSet);
@@ -280,7 +281,8 @@ public sealed class StaticSiteExporter(
                         periodDays,
                         historyLength,
                         result,
-                        periodDays == 1 ? singleComparisons : null),
+                        periodDays == 1 ? singleComparisons : null,
+                        periodDays == 1 ? structureByDate.GetValueOrDefault(date) : null),
                     cancellationToken);
 
                 fileCount++;
@@ -304,7 +306,7 @@ public sealed class StaticSiteExporter(
         var intradayCdnExport = await ToIntradayCdnExportAsync(cancellationToken);
 
         MarketStructureExport? marketStructureExport = null;
-        var latestMarketStructure = await marketStructure.CalculateLatestCloseAsync(cancellationToken);
+        var latestMarketStructure = structureByDate.Values.LastOrDefault();
         if (latestMarketStructure is not null)
         {
             const string relativePath = "data/market-structure/latest.json";
@@ -1157,7 +1159,8 @@ public sealed class StaticSiteExporter(
         int periodDays,
         int historyLength,
         TradingValueRankingResult result,
-        IReadOnlyList<SingleComparisonExport>? singleComparisons = null)
+        IReadOnlyList<SingleComparisonExport>? singleComparisons = null,
+        MarketStructureResult? structure = null)
     {
         var accelerationDays = periodDays * 2 + TradingValueRankingCalculator.BaselineDays;
         var accelerationAvailable = historyLength >= accelerationDays;
@@ -1182,7 +1185,8 @@ public sealed class StaticSiteExporter(
                 : "—",
             ToMarketHeatExport(result.MarketHeat),
             [.. result.Rows.Select(ToExport)],
-            singleComparisons);
+            singleComparisons,
+            structure);
     }
 
     private static SingleComparisonExport ToSingleComparisonExport(
@@ -2453,7 +2457,8 @@ public sealed class StaticSiteExporter(
         string MarketDailyAverage,
         MarketHeatExport? MarketHeat,
         IReadOnlyList<RowExport> Rows,
-        IReadOnlyList<SingleComparisonExport>? SingleComparisons);
+        IReadOnlyList<SingleComparisonExport>? SingleComparisons,
+        MarketStructureResult? MarketStructure);
 
     private sealed record SingleComparisonExport(
         int PeriodDays,

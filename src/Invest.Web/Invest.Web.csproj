@@ -30,6 +30,7 @@
 
     <!-- 產業別代碼要掛到哪個族群節點。分類的最後兜底，同樣得跟著組件走。 -->
     <EmbeddedResource Include="Features/StockTopics/IndustryTopicMap.json" />
+    <EmbeddedResource Include="Features/MarketStructure/IndustryObservation.json" />
 
     <!-- 說明泡泡兩邊都要用：Blazor 頁面直接從 wwwroot 載，靜態網站則靠這裡內嵌後輸出。
          同一份檔案掛兩個身分，才不會改了一邊忘了另一邊。 -->

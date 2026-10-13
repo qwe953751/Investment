@@ -81,8 +81,8 @@ test('切離盤中後停止重試；缺少來源只顯示說明，不發請求',
     assert.match(context.current.marketStructureMessage, /尚未提供/); assert.equal(calls, 1);
 });
 
-function fetchContext({ pointerRun = 7, corruptHash = false, wrongTime = false } = {}) {
-    const result = { schemaVersion: 1, mode: 'intraday', runId: 7, tradeDate: day,
+function fetchContext({ pointerRun = 7, corruptHash = false, wrongTime = false, schemaVersion = 1 } = {}) {
+    const result = { schemaVersion, mode: 'intraday', runId: 7, tradeDate: day,
         capturedAt: wrongTime ? '2026-10-13T01:04:00+00:00' : capturedAt };
     const bytes = Buffer.from(JSON.stringify(result));
     const pointer = { schemaVersion: 1, runId: pointerRun, tradeDate: day, capturedAt,
@@ -121,7 +121,7 @@ test('等待與未提供來源均有可見文字，摘要無結果時仍保留�
     assert.match(allText(card), /自動重試/);
     assert.match(allText(context.renderMarketStructure(null, false)), /尚無/);
     assert.match(slice('function renderSummary(', 'function marketStructurePercent('), /if \(structure \|\| state.view === 'intraday' \|\| state.view === 'daily'\)/);
-    assert.match(slice('function renderSummary(', 'function marketStructurePercent('), /為避免用目前名冊回填舊日/);
+    assert.match(slice('function renderSummary(', 'function marketStructurePercent('), /current.marketStructure/);
 });
 
 test('樣版 B 保留說明、有效報價、20 個權值燈號與權值群外數量圖', () => {
@@ -178,3 +178,55 @@ function findNode(root, predicate) {
 function allText(node) {
     return [node.textContent ?? '', ...(node.children ?? []).map(allText)].join('');
 }
+
+
+test('歷史市場結構依日期取單日檔，不受排行期間與latest日期限制', async () => {
+    const context = vm.createContext({ fetchPeriod: async key => ({ marketStructure: { tradeDate: key.slice(2), twse: { displayName: '全面上漲' } } }) });
+    vm.runInContext(normalize + slice('async function resolveCloseMarketStructure(', 'function marketStructurePercent('), context);
+    assert.equal((await context.resolveCloseMarketStructure({}, '2025/06/03')).tradeDate, '2025-06-03');
+    assert.equal(await context.resolveCloseMarketStructure({ marketStructure: { tradeDate: '2026-10-13' } }, '2025-06-03'), null);
+});
+
+test('資料能力有限仍呈現方向與全市場廣度；等待開盤不顯示來源故障', () => {
+    const context = vm.createContext({ state: { view: 'intraday' }, document: testDocument() });
+    vm.runInContext(slice('function marketStructurePercent(', 'async function fetchIntradayMarketStructure('), context);
+    const partial = { dataStatus: 'partial', statusCode: 'broad_up', displayName: '全面上漲', explanation: '多數族群上漲。權值身分未齊。',
+        allStockBreadth: { quotedCount: 100, expectedCount: 100, risingCount: 80, fallingCount: 20 }, warnings: [] };
+    const card = context.renderMarketStructure({ twse: partial, tpex: { ...partial, dataStatus: 'waiting' } });
+    assert.equal(context.marketStructureStatusTone(partial), 'is-up');
+    assert.match(allText(card), /全市場/);
+    assert.match(allText(card), /權值身分未齊/);
+    assert.match(allText(card), /等待開盤/);
+    assert.doesNotMatch(allText(card), /指數貢獻/);
+});
+
+
+test('盤中schema 2仍校驗同輪與完整hash，未知schema拒絕', async () => {
+    const { context } = fetchContext({ schemaVersion: 2 });
+    assert.equal((await context.fetchIntradayMarketStructure(day, 7, capturedAt)).schemaVersion, 2);
+    const bad = fetchContext({ schemaVersion: 3 });
+    await assert.rejects(bad.context.fetchIntradayMarketStructure(day, 7, capturedAt), /不一致/);
+});
+
+test('盤後結構載入期間換日或換觀察週期，不讓舊回應覆蓋目前畫面', async () => {
+    for (const changed of [{ date: '2026-10-12' }, { period: 5 }, { view: 'intraday' }]) {
+        let finish;
+        const context = vm.createContext({
+            state: { view: 'daily', date: day, period: 1, comparisonMode: 'range' },
+            current: { sentinel: true }, cache: new Map([[`1-${day}`, {}]]),
+            fetchPeriod: async () => ({ rows: [], hasSufficientData: true }),
+            rankRows: () => ({ rows: [], count: 0 }),
+            resolveCloseMarketStructure: () => new Promise(resolve => { finish = resolve; }),
+            showNotice() {}, nameByTicker: new Map()
+        });
+        const start = script.indexOf('    const closeLoadState = JSON.stringify(state);', script.indexOf('async function load()'));
+        const end = script.indexOf("    el('notice').hidden = true;", start);
+        vm.runInContext('async function closeLoadForTest() {' + script.slice(start, end) + '}', context);
+        const loading = context.closeLoadForTest();
+        await settle();
+        Object.assign(context.state, changed);
+        finish({ tradeDate: day });
+        await loading;
+        assert.equal(context.current.sentinel, true);
+    }
+});

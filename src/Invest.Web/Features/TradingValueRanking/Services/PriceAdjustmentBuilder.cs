@@ -227,6 +227,12 @@ public sealed class PriceAdjustmentEngine
                 // 規則事件的基準價就是官方公布的參考價本身，不要經過除法再乘回來而多出小數雜訊。
                 baseValue = ruleBase ?? (tableEvents.Count > 0 && applied != 1m ? running : null) ?? expected.Value * applied;
             }
+            else if (state is null && date == _firstDate && benchmark is > 0m)
+            {
+                // 行情期間起點不等於新掛牌。即使沒有更早收盤，也可直接使用已存在的官方當日基準。
+                // 不反推歷史股數、不把未提供的基準補成收盤；事件表有精確結果時仍優先沿用。
+                baseValue = running is > 0m ? running : benchmark;
+            }
             else if (state is null && date > _firstDate && benchmark is > 0m)
             {
                 // 第一個交易日：沒有前收盤，官方參考價就是掛牌參考價。

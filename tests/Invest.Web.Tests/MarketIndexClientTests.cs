@@ -96,6 +96,25 @@ public sealed class MarketIndexClientTests
     }
 
     [Fact]
+    public async Task TWSE月首日K用官方漲跌點數補跨月基準()
+    {
+        var client = new TwseDailyQuoteClient(new HttpClient(new MonthStartHandler()), NullLogger<TwseDailyQuoteClient>.Instance);
+        var index = await client.GetMarketIndexWithBarsAsync(new DateOnly(2026, 5, 4));
+        Assert.NotNull(index);
+        Assert.Equal(40705.14m, index.Value);
+        Assert.Equal(4.57m, index.ChangePercent);
+    }
+
+    private sealed class MonthStartHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(
+                request.RequestUri!.AbsoluteUri.Contains("FMTQIK")
+                    ? """{"fields":["日期","成交股數","成交金額","成交筆數","發行量加權股價指數","漲跌點數"],"data":[["115/05/04","1","1","1","40705.14","1778.51"]]}"""
+                    : """{"fields":["日期","開盤指數","最高指數","最低指數","收盤指數"],"data":[["115/05/04","38900.00","40800.00","38800.00","40705.14"]]}""", Encoding.UTF8, "application/json") });
+    }
+
+    [Fact]
     public async Task TPEx會以收市與漲跌點數計算櫃買漲跌幅()
     {
         var client = new TpexMarketIndexClient(

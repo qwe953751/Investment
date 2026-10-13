@@ -242,7 +242,11 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
 
-        return ParseMarketIndexBar(document.RootElement, tradingDate);
+        var bar = ParseMarketIndexBar(document.RootElement, tradingDate);
+        if (bar is null || bar.ChangePercent is not null) return bar;
+        // 月首日的前收不在本月日K表；改用官方月報的漲跌點數，不把null當平盤。
+        var official = await GetMarketIndexAsync(tradingDate, cancellationToken);
+        return official?.Value == bar.Value ? bar with { ChangePercent = official.ChangePercent } : bar;
     }
 
     /// <summary>

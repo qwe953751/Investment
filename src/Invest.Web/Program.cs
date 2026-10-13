@@ -66,7 +66,7 @@ using System.Text.Json.Serialization;
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
-        or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet";
+        or "market-structure-intraday-audit" or "market-structure-audit" or "repair-market-indices" or "rebuild-market-structure" or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -128,7 +128,7 @@ builder.Services.AddHttpClient(nameof(YahooScreenerMarketTurnoverClient), Config
         CookieContainer = new System.Net.CookieContainer(),
         UseCookies = true
     });
-builder.Services.AddHttpClient("MarketStructureBasis", ConfigureQuoteClient);
+builder.Services.AddHttpClient("MarketStructureMembers", client => { ConfigureQuoteClient(client); client.Timeout = TimeSpan.FromSeconds(15); });
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
@@ -173,8 +173,10 @@ builder.Services.AddTransient<MarketTurnoverCollector>();
 builder.Services.AddTransient<MarketTurnoverBackfiller>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
-builder.Services.AddSingleton<MarketStructureBasisClient>();
+builder.Services.AddSingleton<MarketStructureMemberClient>();
 builder.Services.AddSingleton<MarketStructureQueryService>();
+builder.Services.AddTransient<MarketIndexRepairService>();
+builder.Services.AddTransient<MarketStructureAuditService>();
 builder.Services.AddTransient<StaticSiteExporter>();
 builder.Services.AddSingleton(_ => new ClaudeCodeCliRunner(
     OcrAgentExecutableResolver.Resolve(OcrAgentKind.Claude)));
@@ -196,6 +198,73 @@ builder.Services.AddSingleton<OcrRecognitionValidator>();
 builder.Services.AddTransient<OcrWorkerRunner>();
 
 var app = builder.Build();
+
+if (command is "market-structure-intraday-audit")
+{
+    if (args.Length < 3) throw new ArgumentException("market-structure-intraday-audit <raw-json> <output-json> [--all-db]");
+    try
+    {
+        var allDatabase = args.Contains("--all-db");
+        var results = await app.Services.GetRequiredService<MarketStructureAuditService>().AuditAsync(args[1], allDatabase);
+        await File.WriteAllTextAsync(args[2], System.Text.Json.JsonSerializer.Serialize(new
+        {
+            note = allDatabase ? "DB保留精度／欄位的診斷；非原raw hash逐位重播，尾段時間為run記錄時間。" : "同輪完整raw組裝；不選另一時點價格。",
+            results
+        }, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)));
+        Console.WriteLine($"盤中驗證 {results.Count} 輪；" + string.Join("、", results.GroupBy(x => x.Twse.DataStatus + "/" + x.Tpex.DataStatus).Select(x => x.Key + "=" + x.Count())));
+        if (results.Count == 0 || results.Any(x => x.Twse.DataStatus == "insufficient" || x.Tpex.DataStatus == "insufficient")) Environment.ExitCode = 1;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine("盤中唯讀驗證失敗：" + exception.GetType().Name);
+        Environment.ExitCode = 1;
+    }
+    return;
+}
+
+if (command is "repair-market-indices")
+{
+    var count = await app.Services.GetRequiredService<MarketIndexRepairService>().RepairAsync(Console.WriteLine);
+    Console.WriteLine($"修復 {count} 個既有交易日的指數；未新增衍生資料。");
+    return;
+}
+if (command is "market-structure-audit")
+{
+    var results = await app.Services.GetRequiredService<MarketStructureQueryService>().CalculateAllCloseAsync();
+    if (args.Length > 1)
+        await File.WriteAllTextAsync(args[1], System.Text.Json.JsonSerializer.Serialize(results.Values,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)));
+    Console.WriteLine($"市場結構全量驗證：{results.Count} 個交易日");
+    foreach (var market in new[] { Market.Twse, Market.Tpex })
+    {
+        var rows = results.Values.Select(x => market == Market.Twse ? x.Twse : x.Tpex).ToArray();
+        Console.WriteLine($"{market}：" + string.Join("、", rows.GroupBy(x => x.StatusCode).Select(x => $"{x.Key}={x.Count()}")));
+        var insufficient = results.Where(x => (market == Market.Twse ? x.Value.Twse : x.Value.Tpex).DataStatus == "insufficient").ToArray();
+        foreach (var (date, result) in insufficient)
+            Console.WriteLine($"{date:yyyy-MM-dd} {market}：{string.Join(',', (market == Market.Twse ? result.Twse : result.Tpex).ReasonCodes)}");
+        if (insufficient.Length > 0) Environment.ExitCode = 1;
+    }
+    return;
+}
+if (command is "rebuild-market-structure")
+{
+    if (!IntradaySnapshotPublisher.IsPublishingConfigured(app.Configuration))
+        throw new InvalidOperationException("缺少既有盤中Storage發佈設定，停止，不使用假值。");
+    var publisher = app.Services.GetRequiredService<IntradaySnapshotPublisher>();
+    var store = app.Services.GetRequiredService<DailyQuoteStore>();
+    var latestDay = await store.LoadLatestAsync();
+    var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTimeOffset.UtcNow, "Asia/Taipei").DateTime);
+    var raw = await publisher.TryLoadLatestPublishedSnapshotAsync(today);
+    if (raw is null && latestDay is not null)
+        raw = await publisher.TryLoadLatestPublishedSnapshotAsync(latestDay.TradingDate);
+    if (raw is null) { Console.WriteLine("無適用的既有raw快照，保留來源狀態，等待下一輪。"); return; }
+    var result = await app.Services.GetRequiredService<MarketStructureQueryService>().CalculateIntradayAsync(raw.RunId, raw.Snapshot, raw.CapturedAt);
+    var published = await publisher.PublishMarketStructureAsync(raw.RunId, result);
+    Console.WriteLine($"同輪重算 {raw.TradeDate:yyyy-MM-dd} run {raw.RunId}：上市 {result.Twse.DisplayName}／上櫃 {result.Tpex.DisplayName}；發布={published.Published}");
+    if (!published.Published)
+        throw new InvalidOperationException("盤中raw已更新或結構未發布；請確認最新輪次後重試，不能將本次發布視為成功。");
+    return;
+}
 
 if (command is "backfill")
 {

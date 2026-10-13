@@ -23,7 +23,7 @@ public sealed class MarketStructureIntegrationTests
         Assert.Contains("market.displayName", renderer, StringComparison.Ordinal);
         Assert.Contains("market.explanation", renderer, StringComparison.Ordinal);
         Assert.Contains("權值前 20 成交值占比", renderer, StringComparison.Ordinal);
-        Assert.Contains("權值估算指數貢獻', market.weightGroupNetContributionPercent", renderer, StringComparison.Ordinal);
+        Assert.Contains("'權值成交加權漲跌', market.weightGroupPriceChangePercent", renderer, StringComparison.Ordinal);
         Assert.Contains("badge.textContent = '估算'", renderer, StringComparison.Ordinal);
         Assert.Contains("標的漲跌數量", renderer, StringComparison.Ordinal);
         Assert.Contains("stock.adjustedChangePercent", renderer, StringComparison.Ordinal);
@@ -39,8 +39,8 @@ public sealed class MarketStructureIntegrationTests
         Assert.Contains("value.replaceAll('/', '-')", script, StringComparison.Ordinal);
         Assert.Contains("normalizeMarketStructureDate(marketStructureDescriptor.tradeDate)", script, StringComparison.Ordinal);
         Assert.Contains("normalizeMarketStructureDate(manifest.latestTradingDate)", script, StringComparison.Ordinal);
-        Assert.Contains("normalizeMarketStructureDate(state.date)", script, StringComparison.Ordinal);
-        Assert.Contains("normalizeMarketStructureDate(marketStructureDescriptor?.tradeDate)", script, StringComparison.Ordinal);
+        Assert.Contains("normalizeMarketStructureDate(date)", script, StringComparison.Ordinal);
+        Assert.Contains("resolveCloseMarketStructure(data, structureDate)", script, StringComparison.Ordinal);
     }
 
     [Fact]
