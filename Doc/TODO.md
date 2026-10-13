@@ -1353,9 +1353,11 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 
 **待辦（依序）**：
 1. 🔴 **重建公司 Windows Worker**（它是預設處理機，沒重建前這次修正對使用者不生效，而且畫面沒有任何徵兆）。步驟照 [AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy)
-   Windows 正確順序：`git pull` 到含 `8cc0a5bc4` 的 `main` → `Stop-ScheduledTask "Invest D+ OCR Worker"`（確認沒有殘留 `Invest.Web` 程序）→
-   `scripts\publish-ocr-worker-windows.ps1`（確認 EXE `LastWriteTime` 是剛剛）→ 可選 `scripts\run-ocr-worker-windows.ps1 -Once`（exit 0）→ `Start-ScheduledTask`，
-   再看 `logs\ocr-worker-*.out.log` 啟動訊息含「在線詢問：指名回應」、EXE ProductVersion 含 `8cc0a5bc4`（或其後代 commit）。
+   Windows 正確順序：`git pull --ff-only origin main`（要含 `8cc0a5bc4`）→ `Disable-ScheduledTask`＋`Stop-ScheduledTask "Invest D+ OCR Worker"`
+   （排程每 2 分鐘會補啟動，只 Stop 不 Disable 可能在發布期間把舊 EXE 又拉起來而鎖檔；確認沒有殘留 `Invest.Web` 程序）→
+   `scripts\publish-ocr-worker-windows.ps1`（確認 EXE `LastWriteTime` 是剛剛）→ 可選 `scripts\run-ocr-worker-windows.ps1 -Once`（exit 0）→
+   `Enable-ScheduledTask`＋`Start-ScheduledTask`，再看 `logs\ocr-worker-*.out.log` 啟動訊息含「在線詢問：指名回應」、排程 `Running` 且只有一個程序、
+   EXE ProductVersion 含 `8cc0a5bc4`（或其後代 commit）。這是 2026-10-12 重建時實際執行過的順序（[AI OCR §3.5.9](技術文件/AI%20OCR.md#ocr-probe-rollout)）。
 2. 🔴 **使用者用原三張截圖重新上傳確認**（[AI OCR §3.2](技術文件/AI%20OCR.md#ocr-pending-acceptance) #10）：有今買成的列股數＝昨日餘額＋今買成；成本為 0 的列標黃；
    被裁切的今賣成欄不造成整批黃色（AI 會在警告區說明「今賣成未入鏡」，這是預期的）。
 3. 🟡 **已知取捨**（使用者 2026-10-13 定案）：今賣成欄不在截圖內且當天有部分賣出時，股數會偏高、仍是綠色（[AI OCR §3.4](技術文件/AI%20OCR.md#ocr-known-risks) #9）。
