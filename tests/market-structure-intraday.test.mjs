@@ -230,3 +230,12 @@ test('盤後結構載入期間換日或換觀察週期，不讓舊回應覆蓋�
         assert.equal(context.current.sentinel, true);
     }
 });
+
+test('權值身分全缺仍保留20格未知燈號，不用其他股票填補', () => {
+    const context = vm.createContext({ document: testDocument() });
+    vm.runInContext(slice('function marketStructurePercent(', 'async function fetchIntradayMarketStructure('), context);
+    const strip = context.makeMarketStructureWeightStrip({ weightGroup: [] }, true);
+    assert.match(allText(strip), /已知0\/20檔/);
+    assert.equal((allText(strip).match(/？/g) ?? []).length, 20);
+    assert.equal(strip.children[1].children.length, 20);
+});

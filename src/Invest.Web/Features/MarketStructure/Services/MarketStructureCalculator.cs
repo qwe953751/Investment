@@ -85,6 +85,8 @@ public static class MarketStructureCalculator
         if (groupCoverage is null || groupCoverage < rules.MinGroupQuoteCoverage) issues.Add("group_quote_coverage_low");
         if (turnover > 0m && (priceTurnoverCoverage is null || priceTurnoverCoverage < rules.MinPriceTurnoverCoverage))
             issues.Add("price_turnover_coverage_low");
+        if (stocks.Any(x => x.PriceSource == "missing"))
+            warnings.Add("當輪有整列缺席，成交亦未知；成交欄為可用資料占比，不確證權值成交集中。保留一般族群判讀。");
 
         // 多數族群必須嚴格過半；家數、中位數與群內參與皆需同向。
         var unknownWeights = Math.Max(0, rules.WeightGroupSize - weights.Length);
@@ -95,7 +97,8 @@ public static class MarketStructureCalculator
         var broadDown = OutsideRate(breadth.FallingCount, breadth.QuotedCount, unknownWeights) >= rules.BroadStockRate
             && breadth.MedianChangePercent < -rules.StockNeutralPct
             && StableGroupRate(eligible, false, unknownWeights, rules) > rules.BroadGroupRate;
-        var weightPricesReady = weights.Length > 0 && weights.All(x => HasAdjustedPrice(x) || x.TradingValue == 0m);
+        var weightPricesReady = weights.Length > 0 && weights.All(x => x.PriceSource != "missing"
+            && (HasAdjustedPrice(x) || x.TradingValue == 0m));
         var knownDirection = CalculateBreadth(weights, rules.StockNeutralPct);
         var maximumTurnover = weights.Sum(x => Math.Max(0m, x.TradingValue))
             + rest.OrderByDescending(x => x.TradingValue).Take(unknownWeights).Sum(x => Math.Max(0m, x.TradingValue));
@@ -106,7 +109,8 @@ public static class MarketStructureCalculator
         var upperNet = knownNet + outsideFlows.Where(x => x > 0m).OrderDescending().Take(unknownWeights).Sum();
         decimal? lowerPrice = minimumTurnover > 0m ? lowerNet / (lowerNet < 0m ? minimumTurnover : maximumTurnover) : null;
         decimal? upperPrice = minimumTurnover > 0m ? upperNet / (upperNet > 0m ? minimumTurnover : maximumTurnover) : null;
-        var pricesCovered = stocks.All(x => x.TradingValue <= 0m || HasAdjustedPrice(x));
+        // 整列缺席的成交亦未知，不能把占位0當作已知零成交，進而確證權值成交集中。
+        var pricesCovered = stocks.All(x => x.PriceSource != "missing" && (x.TradingValue <= 0m || HasAdjustedPrice(x)));
         // 已知成員足以證明「任意剩餘未知成員」也成立時，可保守推估；不猜第18～20名身分。
         var weightUp = weightPricesReady && pricesCovered && knownDirection.RisingCount >= rules.MinDirectionalWeightCount
             && lowerPrice > rules.StockNeutralPct && weightShare >= rules.WeightTurnoverShare;
@@ -143,7 +147,9 @@ public static class MarketStructureCalculator
                 eligible.Length, upGroups, downGroups,
                 [$"broadStockRate={rules.BroadStockRate}", $"broadGroupRate>{rules.BroadGroupRate}",
                  $"minDirectionalWeightCount={rules.MinDirectionalWeightCount}", $"weightTurnoverShare={rules.WeightTurnoverShare}",
-                 $"unknownWeightBudget={unknownWeights}" ]), weights.Length, !weightComplete, lowerPrice, upperPrice);
+                 $"unknownWeightBudget={unknownWeights}" ]), weights.Length, !weightComplete, lowerPrice, upperPrice,
+            weights.Length > 0 ? input.Sources.FirstOrDefault(x => x.Market == market
+                && x.Name.StartsWith("前交易日官方市值排行身分輸入", StringComparison.Ordinal))?.SourceDate : null);
     }
 
     private static string Classify(decimal? index, bool broadUp, bool broadDown, bool weightUp, bool weightDown,

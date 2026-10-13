@@ -119,6 +119,18 @@ public sealed class MarketStructureCalculatorTests
     }
 
     [Fact]
+    public void 缺席占位零成交不能用來證明權值主導()
+    {
+        var input = CreateInput("weight-up");
+        input = input with { Stocks = input.Stocks.Select((x, i) => i == 25
+            ? x with { Price = null, ChangePercent = null, TradingValue = 0m, PriceSource = "missing" } : x).ToArray() };
+        var result = MarketStructureCalculator.Calculate(input).Twse;
+        Assert.NotEqual("insufficient", result.DataStatus);
+        Assert.False(result.Evidence.WeightUp);
+        Assert.NotEqual("weight_led_up", result.StatusCode);
+    }
+
+    [Fact]
     public void 股數以外真實缺漏與負值仍阻擋且列具體原因()
     {
         var input = CreateInput("broad-up");

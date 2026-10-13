@@ -405,6 +405,33 @@ public sealed class IntradaySnapshotPublisherTests
         }
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task 續用配送身分前驗完整hash及輪次(bool corruptHash, bool wrongRun)
+    {
+        var priorSecret = Environment.GetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable);
+        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, "test-secret");
+        try
+        {
+            const string body = """{"schemaVersion":2,"rulesVersion":"market-structure-v2-price-breadth","tradeDate":"2026-10-14","mode":"intraday","runId":7}""";
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(body))).ToLowerInvariant();
+            var pointer = JsonSerializer.Serialize(new { schemaVersion = 1, runId = wrongRun ? 8 : 7,
+                tradeDate = "2026-10-14", capturedAt = "2026-10-14T01:02:00+00:00",
+                file = $"intraday-structure-20261014-0902-run7-{hash[..8]}-{hash[8..16]}.json",
+                contentHash = corruptHash ? new string('0', 64) : hash,
+                rulesVersion = "market-structure-v2-price-breadth", basisHash = "test" });
+            var publisher = CreatePublisher(new CapturingHandler([], request => Respond(HttpStatusCode.OK,
+                request.RequestUri!.AbsolutePath.EndsWith("structure-latest.json", StringComparison.Ordinal) ? pointer : body)));
+            if (corruptHash || wrongRun)
+                await Assert.ThrowsAsync<InvalidDataException>(() => publisher.TryLoadLatestMarketStructureAsync());
+            else
+                Assert.Equal(7, (await publisher.TryLoadLatestMarketStructureAsync())!.RunId);
+        }
+        finally { Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, priorSecret); }
+    }
+
     private static IntradaySnapshotPublisher CreatePublisher(CapturingHandler handler)
     {
         var configuration = new ConfigurationBuilder()

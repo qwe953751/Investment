@@ -9,6 +9,7 @@ namespace Invest.Web.Infrastructure.MarketData.Structure;
 public sealed class MarketStructureMemberClient(IHttpClientFactory factory, ILogger<MarketStructureMemberClient> logger)
 {
     private readonly ConcurrentDictionary<DateOnly, Task<IReadOnlyList<string>>> tpex = new();
+    private readonly ConcurrentDictionary<DateOnly, IReadOnlyList<string>> twseMembers = new();
     private readonly SemaphoreSlim requests = new(3);
     private Task<JsonElement>? twse;
     private DateTimeOffset twseExpiresAt;
@@ -24,6 +25,7 @@ public sealed class MarketStructureMemberClient(IHttpClientFactory factory, ILog
                 if (members.Count == 0) tpex.TryRemove(referenceDate, out _);
                 return members;
             }
+            if (twseMembers.TryGetValue(referenceDate, out var fixedMembers)) return fixedMembers;
             // 免費上市榜單只提供最新20檔證券（含ETF）。日期不適用、或剔除ETF後不足20均不冒充完整H20。
             if (twse is null || DateTimeOffset.UtcNow >= twseExpiresAt)
             {
@@ -31,7 +33,9 @@ public sealed class MarketStructureMemberClient(IHttpClientFactory factory, ILog
                 twseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(30);
             }
             var root = await twse.WaitAsync(cancellationToken);
-            return ParseTwse(root, referenceDate);
+            var found = ParseTwse(root, referenceDate);
+            if (found.Count > 0) return twseMembers.GetOrAdd(referenceDate, found);
+            return found;
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {

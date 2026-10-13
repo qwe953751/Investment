@@ -303,6 +303,25 @@ public sealed class IntradaySnapshotPublisher(
             FromDocument(document, expectedTradeDate));
     }
 
+    /// <summary>讀同日已發布的結構配送內容；只供續用可驗證成員身分，行情不可沿用。</summary>
+    public async Task<MarketStructureResult?> TryLoadLatestMarketStructureAsync(CancellationToken ct = default)
+    {
+        var settings = ReadSettings();
+        if (settings is null) return null;
+        var pointer = await ReadMarketStructureLatestAsync(settings, ct);
+        if (pointer is null) return null;
+        var endpoint = $"{settings.SupabaseUrl}/storage/v1/object/public/"
+            + $"{Uri.EscapeDataString(settings.Bucket)}/{pointer.File}";
+        var bytes = await httpClient.GetByteArrayAsync(endpoint, ct);
+        if (!string.Equals(Convert.ToHexString(SHA256.HashData(bytes)), pointer.ContentHash, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("續用結構內容與指標SHA256不符。");
+        var result = JsonSerializer.Deserialize<MarketStructureResult>(bytes, JsonOptions);
+        if (result is null || result.RunId != pointer.RunId || result.TradeDate.ToString("yyyy-MM-dd") != pointer.TradeDate
+            || result.Mode != "intraday" || result.RulesVersion != pointer.RulesVersion)
+            throw new InvalidDataException("續用結構日期／輪次／規則不符。");
+        return result;
+    }
+
     /// <summary>
     /// 發布獨立的盤中市場結構結果。結果檔不可變，只有小型 latest 指標會覆寫；
     /// raw 尚未追上此 run 時拒絕晉升，且舊 run 不可倒退覆蓋較新指標。

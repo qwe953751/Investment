@@ -14,7 +14,8 @@ namespace Invest.Web.Features.MarketStructure.Services;
 
 /// <summary>依日期或同輪raw組裝；分類與排行共用日漲跌，沒有股數API或每日basis依賴。</summary>
 public sealed class MarketStructureQueryService(DailyQuoteStore dailyQuoteStore,
-    TradingValueRankingQueryService ranking, MarketStructureMemberClient members)
+    TradingValueRankingQueryService ranking, MarketStructureMemberClient members,
+    IntradaySnapshotPublisher publisher, ILogger<MarketStructureQueryService> logger)
 {
     private static readonly JsonElement Observation = LoadObservation();
     private static readonly DateOnly ObservedDate = DateOnly.ParseExact(Observation.GetProperty("asOfDate").GetString()!, "yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -43,10 +44,12 @@ public sealed class MarketStructureQueryService(DailyQuoteStore dailyQuoteStore,
         var referenceDates = snapshots.Select((day, i) => i > 0 ? snapshots[i - 1].TradingDate : PreviousWeekday(day.TradingDate)).ToArray();
         var memberTasks = snapshots.Select((day, i) => LoadMembersAsync(referenceDates[i], ct)).ToArray();
         await Task.WhenAll(memberTasks);
+        var delivered = await ReadDeliveredAsync(ct);
         for (var i = 0; i < snapshots.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
             var day = snapshots[i]; var ranks = await memberTasks[i];
+            RetainDailyMembers(ranks, delivered, day.TradingDate, referenceDates[i]);
             var stocks = day.Quotes.Where(IsCommon).Select(quote =>
             {
                 var price = PricePerformanceCalculator.Calculate(rows.GetValueOrDefault(quote.Ticker) ?? [],
@@ -68,6 +71,8 @@ public sealed class MarketStructureQueryService(DailyQuoteStore dailyQuoteStore,
     {
         var prior = await GetPriorAsync(snapshot.TradeDate, cancellationToken);
         var ranks = await LoadMembersAsync(prior?.TradingDate ?? PreviousWeekday(snapshot.TradeDate), cancellationToken);
+        RetainDailyMembers(ranks, await ReadDeliveredAsync(cancellationToken), snapshot.TradeDate,
+            prior?.TradingDate ?? PreviousWeekday(snapshot.TradeDate));
         var stocks = snapshot.Quotes.Where(x => x.Kind == StockKind.CommonStock && x.Market is Market.Twse or Market.Tpex)
             .Select(x => ToInput(x.Market, x.Ticker, x.Name, x.Price, x.ReferencePrice,
                 x.EstimatedTradingValue, x.PriceSource.ToString(), x.ChangePercent, ranks)).ToList();
@@ -86,6 +91,35 @@ public sealed class MarketStructureQueryService(DailyQuoteStore dailyQuoteStore,
         var twse = members.GetAsync(Market.Twse, date, ct); var tpex = members.GetAsync(Market.Tpex, date, ct);
         await Task.WhenAll(twse, tpex);
         return new() { [Market.Twse] = await twse, [Market.Tpex] = await tpex };
+    }
+
+    private async Task<MarketStructureResult?> ReadDeliveredAsync(CancellationToken ct)
+    {
+        try { return await publisher.TryLoadLatestMarketStructureAsync(ct); }
+        catch (Exception exception) when (exception is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            logger.LogWarning("同日結構身分續用不可用（{Type}）；保留官方來源及一般分類。", exception.GetType().Name);
+            return null;
+        }
+    }
+
+    internal static void RetainDailyMembers(Dictionary<Market, IReadOnlyList<string>> ranks,
+        MarketStructureResult? delivered, DateOnly tradeDate, DateOnly referenceDate)
+    {
+        if (delivered is not { SchemaVersion: 2, Mode: "intraday" } || delivered.TradeDate != tradeDate
+            || delivered.RulesVersion != new MarketStructureRules().Version) return;
+        foreach (var market in new[] { Market.Twse, Market.Tpex })
+        {
+            var result = market == Market.Twse ? delivered.Twse : delivered.Tpex;
+            if (result?.WeightIdentityReferenceDate != referenceDate || result.WeightGroup is not { Count: > 0 and <= 20 }) continue;
+            var ids = result.WeightGroup.Select(x => x.Ticker).ToArray();
+            // 當同來源日已取得更完整名單，不讓先前配送的部分身分把它降回缺漏。
+            if (ids.Length < (ranks.GetValueOrDefault(market)?.Count ?? 0)) continue;
+            if (ids.Distinct(StringComparer.Ordinal).Count() != ids.Length
+                || ids.Any(x => x is not { Length: 4 } || x[0] == '0' || !x.All(char.IsAsciiDigit))) continue;
+            // 只續用當日已固定的身分；ToInput的價／漲跌／成交仍全取本輪raw。
+            ranks[market] = ids;
+        }
     }
     private static MarketStructureStockInput ToInput(Market market, string ticker, string name, decimal? price,
         decimal? reference, decimal value, string source, decimal? change, Dictionary<Market, IReadOnlyList<string>> ranks)

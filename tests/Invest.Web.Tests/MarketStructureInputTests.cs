@@ -12,6 +12,36 @@ namespace Invest.Web.Tests;
 
 public sealed class MarketStructureInputTests
 {
+    [Theory]
+    [InlineData("2026-10-14", "2026-10-13", 2, true)]
+    [InlineData("2026-10-13", "2026-10-13", 2, false)]
+    [InlineData("2026-10-14", "2026-10-12", 2, false)]
+    [InlineData("2026-10-14", "2026-10-13", 1, false)]
+    public void 重啟僅續用同日同前交易日已驗證身分不沿用價量(string day, string reference, int schema, bool reusable)
+    {
+        using var doc = JsonDocument.Parse("""
+            {"schemaVersion":SCHEMA,"rulesVersion":"market-structure-v2.1-price-breadth","mode":"intraday",
+             "tradeDate":"DAY","twse":{"weightIdentityReferenceDate":"REFERENCE",
+              "weightGroup":[{"ticker":"2330","changePercent":99},{"ticker":"2454","changePercent":99}]},
+             "tpex":{"weightGroup":[]}}
+            """.Replace("SCHEMA", schema.ToString()).Replace("DAY", day).Replace("REFERENCE", reference));
+        var delivered = doc.RootElement.Deserialize<Invest.Web.Features.MarketStructure.Models.MarketStructureResult>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var ranks = new Dictionary<Market, IReadOnlyList<string>> { [Market.Twse] = [] };
+        MarketStructureQueryService.RetainDailyMembers(ranks, delivered, new(2026, 10, 14), new(2026, 10, 13));
+        Assert.Equal(reusable ? new[] { "2330", "2454" } : [], ranks[Market.Twse]);
+        if (reusable)
+        {
+            // 外部榜單即使換日／重啟後再回不同名單，也不重排已固定的同日身分。
+            ranks[Market.Twse] = ["2317"];
+            MarketStructureQueryService.RetainDailyMembers(ranks, delivered, new(2026, 10, 14), new(2026, 10, 13));
+            Assert.Equal(new[] { "2330", "2454" }, ranks[Market.Twse]);
+            var complete = Enumerable.Range(2000, 20).Select(x => x.ToString()).ToArray();
+            ranks[Market.Twse] = complete;
+            MarketStructureQueryService.RetainDailyMembers(ranks, delivered, new(2026, 10, 14), new(2026, 10, 13));
+            Assert.Equal(complete, ranks[Market.Twse]);
+        }
+    }
+
     [Fact]
     public void 官方名單只讀身分不需要股數欄且不混日期()
     {

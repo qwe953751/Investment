@@ -20643,7 +20643,7 @@ function makeMarketStructureBreadthRow(label, breadth) {
 }
 
 function makeMarketStructureWeightStrip(market, estimated) {
-    if (!market.weightGroup?.length) {
+    if (!Array.isArray(market?.weightGroup)) {
         return null;
     }
 
