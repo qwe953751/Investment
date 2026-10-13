@@ -1158,7 +1158,13 @@ function readinessHeartbeatAgeMs(request) {
   - 沒有改 Tesseract 路徑：它本來就把沒有的今買成／今賣成當 0，與這次的定案一致。
   - 沒有把三張截圖放進 repo：內含帳號與持股，只留在 repo 外的暫存目錄；Golden Set（[§5.8](#ocr-poc)）仍需要可公開的樣本。
 - **部署狀態與待辦**：`8cc0a5bc4` 已推到 `main`；**家裡 Mac 已用該 commit 重建**（[§0.2](#ocr-current)）；**公司 Windows 尚待重建**——它是預設處理機，重建前使用者的上傳仍是舊行為。
-  重建步驟見 [§1.8](#ocr-deploy)，務必用啟動訊息核對版本，`Running` 不代表新版。沒有網站程式變更，publish-only 只是依使用者要求重發。
+  重建步驟見 [§1.8](#ocr-deploy)，務必用啟動訊息核對版本，`Running` 不代表新版。沒有網站程式變更，publish-only 只是依使用者要求重發
+  （run `38400351010` 成功、`headSha` `8cc0a5bc4`，gh-pages 與公開 manifest 皆為 `1791897074`）。
+- **21:08 使用者實測仍是舊行為——已查證是 Windows 未重建，不是修正失效**：readiness 選 Windows，5 件工作都由 Windows 完成，Mac 新版 0 件；
+  唯一被抽中評估的草稿仍是舊版輸出（有今買成的列只有昨日餘額、全綠）。畫面下半段一整段股數空白、底色為 `asset-ai-row-review`，也是同一台 Windows 舊版 AI 回 null
+  （前端合併只補空白不清值，已排除前端）；新版處理那兩張圖是否仍空白**尚未驗證**（待使用者提供截圖）。
+  這暴露的是 [§3.4](#ocr-known-risks) #8 的老問題：readiness 只要 Windows 有回應就選它，而 `ocr_workers.version` 只是組件版本 `1.0.0.0`，看不出 Worker 落後。
+  治本方案（A 回報並顯示 commit／契約版本、B 路由優先新版、C Windows 自動更新）待使用者決定，見 [TODO #15](../TODO.md#todo-15)。
 
 ### 4.16 共同教訓
 
