@@ -646,7 +646,11 @@ jobs:
           else
               dotnet run -c Release --project src/Invest.Web -- alert "台股盤後資料缺口" error \
                   "盤中有交易紀錄的日期缺少完整盤後行情或網站快照；請檢查盤後對帳與 data 分支。" "$RUN_URL"
-              exit 1
+              if [ '${{ inputs.publish-only }}' = 'true' ]; then
+                  echo "::warning::網站純發布完成；既有盤後資料缺口警報仍保留，請由完整行情流程修復。"
+              else
+                  exit 1
+              fi
           fi
 
       - name: 失敗時留下線索

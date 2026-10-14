@@ -23,8 +23,8 @@ public sealed class MarketStructureIntegrationTests
         Assert.Contains("market.displayName", renderer, StringComparison.Ordinal);
         Assert.Contains("market.explanation", renderer, StringComparison.Ordinal);
         Assert.Contains("權值前 20 成交值占比", renderer, StringComparison.Ordinal);
-        Assert.Contains("'權值成交加權漲跌', market.weightGroupPriceChangePercent", renderer, StringComparison.Ordinal);
-        Assert.Contains("badge.textContent = '估算'", renderer, StringComparison.Ordinal);
+        Assert.Contains("'權值權重加權漲跌', market.weightGroupPriceChangePercent", renderer, StringComparison.Ordinal);
+        Assert.Contains("badge.textContent = '漲跌推估'", renderer, StringComparison.Ordinal);
         Assert.Contains("標的漲跌數量", renderer, StringComparison.Ordinal);
         Assert.Contains("stock.adjustedChangePercent", renderer, StringComparison.Ordinal);
         Assert.DoesNotContain("MarketStructureStatusCodes", renderer, StringComparison.Ordinal);

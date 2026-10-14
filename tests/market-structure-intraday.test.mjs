@@ -239,3 +239,18 @@ test('權值身分全缺仍保留20格未知燈號，不用其他股票填補', 
     assert.equal((allText(strip).match(/？/g) ?? []).length, 20);
     assert.equal(strip.children[1].children.length, 20);
 });
+
+
+test('缺官方權重在收合摘要與展開卡片都有警告，保留正常盤勢方向', () => {
+    const context = vm.createContext({ state: { view: 'intraday' }, document: testDocument() });
+    vm.runInContext(slice('function marketStructurePercent(', 'async function fetchIntradayMarketStructure('), context);
+    const market = { dataStatus: 'partial', displayName: '全面上漲', statusCode: 'broad_up',
+        weightDataStatus: 'unavailable', weightDataWarning: '2026-10-14 官方逐日指數權重未取得；不自行計算權重。',
+        weightGroup: [], warnings: [], allStockBreadth: { quotedCount: 100, expectedCount: 100, risingCount: 80, fallingCount: 20 } };
+    const panel = context.renderMarketStructure({ twse: market });
+    assert.match(allText(panel.children[0]), /全面上漲.*官方權重未取得/);
+    assert.match(allText(panel), /不自行計算權重/);
+    assert.match(allText(panel), /全市場/);
+    assert.doesNotMatch(allText(panel), /資料不足/);
+    assert.equal((allText(panel).match(/？/g) ?? []).length, 20);
+});

@@ -11267,3 +11267,23 @@ html {
         gap: 7px 9px;
     }
 }
+
+/* 盤勢與官方權重可用性分開呈現，收合摘要亦保留警告。 */
+.market-structure-weight-warning {
+    color: #8a5300;
+    background: #fff4d6;
+    border: 1px solid #dfbc72;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+
+.market-structure-weights li {
+    grid-template-columns: minmax(90px, 1fr) auto auto auto;
+}
+@media (max-width: 700px) {
+    .market-structure-weights li {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+}

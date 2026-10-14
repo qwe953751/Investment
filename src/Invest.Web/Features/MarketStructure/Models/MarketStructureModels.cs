@@ -19,7 +19,7 @@ public static class MarketStructureStatusCodes
 /// <summary>候選規則集中管理；所有漲跌幅門檻都是百分點。</summary>
 public sealed record MarketStructureRules
 {
-    public string Version { get; init; } = "market-structure-v2.1-price-breadth";
+    public string Version { get; init; } = "market-structure-v3-official-weights";
     public int WeightGroupSize { get; init; } = 20;
     public decimal StockNeutralPct { get; init; } = 0.10m;
     public decimal IndexNeutralPct { get; init; } = 0.10m;
@@ -62,7 +62,8 @@ public sealed record MarketStructureStockInput(
     string? IndustryName,
     string? PriceSource = null,
     int? WeightRank = null,
-    decimal? ChangePercent = null);
+    decimal? ChangePercent = null,
+    decimal? OfficialWeight = null);
 
 public sealed record MarketStructureIndexInput(Market Market, decimal? ChangePercent);
 
@@ -132,7 +133,11 @@ public sealed record MarketStructureMarketResult(
     bool WeightMetricsAreLowerBound = false,
     decimal? WeightPriceLowerBoundPercent = null,
     decimal? WeightPriceUpperBoundPercent = null,
-    DateOnly? WeightIdentityReferenceDate = null);
+    DateOnly? WeightIdentityReferenceDate = null,
+    string WeightDataStatus = "unavailable",
+    string? WeightDataWarning = null,
+    string? WeightSourceUrl = null,
+    string? WeightSourceHash = null);
 
 public sealed record MarketStructureBreadth(
     int ExpectedCount,

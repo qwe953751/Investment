@@ -19,7 +19,7 @@ public static class MarketStructureCalculator
         return new MarketStructureResult(2, rules.Version, Hash(rules), Hash(new
         {
             input.TradeDate, input.CapturedAt, input.Mode, input.RunId, input.IndustryVersion,
-            input.ClassificationNote,
+            input.ClassificationNote, input.IndexConstituentsVerified,
             Sources = input.Sources.OrderBy(x => x.Market).ToArray(),
             Stocks = input.Stocks.OrderBy(x => x.Market).ThenBy(x => x.Ticker, StringComparer.Ordinal).ToArray(),
             Indices = input.Indices.OrderBy(x => x.Market).ToArray()
@@ -46,16 +46,16 @@ public static class MarketStructureCalculator
 
         var index = input.Indices.FirstOrDefault(x => x.Market == market)?.ChangePercent;
         if (index is null) warnings.Add("官方指數漲跌缺值；不判權值主導或指數背離，保留量價／族群判讀。");
-        var weights = stocks.Where(x => x.WeightRank is > 0 && x.WeightRank <= rules.WeightGroupSize)
+        var candidates = stocks.Where(x => x.WeightRank is > 0 && x.WeightRank <= rules.WeightGroupSize)
             .OrderBy(x => x.WeightRank).ToArray();
-        if (weights.Length > rules.WeightGroupSize || weights.Select(x => x.WeightRank).Distinct().Count() != weights.Length)
-        {
-            warnings.Add("權值身分順位重複或超量；保留全市場判讀，不採用這份名單。");
-            weights = [];
-        }
-        var weightComplete = weights.Length == rules.WeightGroupSize
-            && weights.Select(x => x.WeightRank).Distinct().Count() == rules.WeightGroupSize;
-        if (!weightComplete) warnings.Add("該日權值前20身分未齊；不以成交排行替代，只有保守界線仍成立才推估權值方向。");
+        var weightComplete = input.IndexConstituentsVerified && candidates.Length == rules.WeightGroupSize
+            && candidates.Select(x => x.WeightRank).Distinct().Count() == rules.WeightGroupSize
+            && candidates.All(x => x.OfficialWeight is > 0m and <= 1m)
+            && candidates.Sum(x => x.OfficialWeight ?? 0m) <= 1m;
+        // 只有順位、市值榜或部分權重皆不等於完整官方逐日指數權重；不以部分身分推估權值主導。
+        var weights = weightComplete ? candidates : [];
+        var weightWarning = weightComplete ? null : $"{input.TradeDate:yyyy-MM-dd} 官方逐日指數權重未取得或未通過驗證；不自行計算權重，不使用市值／成交排行或其他日期名單替代。權值主導、撐盤／壓盤暫不判讀；保留可確認的族群與廣度。";
+        if (weightWarning is not null) warnings.Add(weightWarning);
         var tickers = weights.Select(x => x.Ticker).ToHashSet(StringComparer.Ordinal);
         var rest = stocks.Where(x => !tickers.Contains(x.Ticker)).ToArray();
         var all = CalculateBreadth(stocks, rules.StockNeutralPct);
@@ -64,7 +64,7 @@ public static class MarketStructureCalculator
         var breadth = other ?? CalculateBreadth(rest, rules.StockNeutralPct);
         var turnover = stocks.Sum(x => Math.Max(0m, x.TradingValue));
         decimal? weightShare = weights.Length > 0 && turnover > 0m ? weights.Sum(x => Math.Max(0m, x.TradingValue)) / turnover : null;
-        var weightChange = WeightedByTurnover(weights);
+        var weightChange = WeightedByOfficialWeight(weights);
         var restChange = weightComplete ? WeightedByTurnover(rest) : null;
         var quoteCoverage = all.QuotedCount / (decimal)Math.Max(1, all.ExpectedCount);
         var industries = CalculateIndustries(stocks, tickers, turnover, rules).ToArray();
@@ -100,24 +100,14 @@ public static class MarketStructureCalculator
         var weightPricesReady = weights.Length > 0 && weights.All(x => x.PriceSource != "missing"
             && (HasAdjustedPrice(x) || x.TradingValue == 0m));
         var knownDirection = CalculateBreadth(weights, rules.StockNeutralPct);
-        var maximumTurnover = weights.Sum(x => Math.Max(0m, x.TradingValue))
-            + rest.OrderByDescending(x => x.TradingValue).Take(unknownWeights).Sum(x => Math.Max(0m, x.TradingValue));
-        var knownNet = weights.Where(HasAdjustedPrice).Sum(x => x.TradingValue * AdjustedChangePercent(x)!.Value);
-        var outsideFlows = rest.Where(HasAdjustedPrice).Select(x => x.TradingValue * AdjustedChangePercent(x)!.Value).ToArray();
-        var minimumTurnover = weights.Sum(x => Math.Max(0m, x.TradingValue));
-        var lowerNet = knownNet + outsideFlows.Where(x => x < 0m).Order().Take(unknownWeights).Sum();
-        var upperNet = knownNet + outsideFlows.Where(x => x > 0m).OrderDescending().Take(unknownWeights).Sum();
-        decimal? lowerPrice = minimumTurnover > 0m ? lowerNet / (lowerNet < 0m ? minimumTurnover : maximumTurnover) : null;
-        decimal? upperPrice = minimumTurnover > 0m ? upperNet / (upperNet > 0m ? minimumTurnover : maximumTurnover) : null;
-        // 整列缺席的成交亦未知，不能把占位0當作已知零成交，進而確證權值成交集中。
-        var pricesCovered = stocks.All(x => x.PriceSource != "missing" && (x.TradingValue <= 0m || HasAdjustedPrice(x)));
-        // 已知成員足以證明「任意剩餘未知成員」也成立時，可保守推估；不猜第18～20名身分。
-        var weightUp = weightPricesReady && pricesCovered && knownDirection.RisingCount >= rules.MinDirectionalWeightCount
-            && lowerPrice > rules.StockNeutralPct && weightShare >= rules.WeightTurnoverShare;
-        var weightDown = weightPricesReady && pricesCovered && knownDirection.FallingCount >= rules.MinDirectionalWeightCount
-            && upperPrice < -rules.StockNeutralPct && weightShare >= rules.WeightTurnoverShare;
+        decimal? lowerPrice = weightChange;
+        decimal? upperPrice = weightChange;
+        // 權值方向按官方权重加權的同價日漲跌判讀；成交集中只作補充，不作唯一閘門。
+        var weightUp = stocks.All(x => x.PriceSource != "missing") && weightComplete && weightPricesReady && knownDirection.RisingCount >= rules.MinDirectionalWeightCount
+            && weightChange > rules.StockNeutralPct;
+        var weightDown = stocks.All(x => x.PriceSource != "missing") && weightComplete && weightPricesReady && knownDirection.FallingCount >= rules.MinDirectionalWeightCount
+            && weightChange < -rules.StockNeutralPct;
         if (weights.Length > 0 && !weightPricesReady) warnings.Add("權值觀察群有價格／基準缺值，保留原名單，不補第21名。");
-        if (!weightComplete && weights.Length > 0) warnings.Add($"已知{weights.Length}/20檔權值身分；成交占比為下限，權值方向以其餘成員最壞界線推估，不猜缺席身分。");
         var upTurnover = industries.Where(x => x.IsRising).Sum(x => x.TradingValue ?? 0m);
         var downTurnover = industries.Where(x => x.IsFalling).Sum(x => x.TradingValue ?? 0m);
         // 沒達全面仍可為局部，避免舊30%～2/3空白區間；兩邊都有參與則方向未明。
@@ -139,17 +129,20 @@ public static class MarketStructureCalculator
             waiting ? [] : issues.Distinct().ToArray(), warnings.Distinct().ToArray(), true,
             index, null, null, null, quoteCoverage, industryCoverage, groupCoverage, priceTurnoverCoverage,
             turnover > 0m ? turnover : null, weightShare, weightShare >= rules.WeightTurnoverTagShare,
-            null, weightChange, restChange, null, null, null, all, weightBreadth, other, upRate, downRate,
-            industries, weights.Select(x => new MarketStructureWeightStock(x.Ticker, x.Name, null,
+            weightComplete ? weights.Sum(x => x.OfficialWeight ?? 0m) : null, weightChange, restChange, null, null, null, all, weightBreadth, other, upRate, downRate,
+            industries, weights.Select(x => new MarketStructureWeightStock(x.Ticker, x.Name, x.OfficialWeight,
                 x.TradingValue > 0m ? x.TradingValue : null, turnover > 0m ? x.TradingValue / turnover : null,
                 AdjustedChangePercent(x), null, x.PriceSource, true)).ToArray(),
             new MarketStructureEvidence(broadUp, broadDown, weightUp, weightDown, localUp, localDown,
                 eligible.Length, upGroups, downGroups,
                 [$"broadStockRate={rules.BroadStockRate}", $"broadGroupRate>{rules.BroadGroupRate}",
-                 $"minDirectionalWeightCount={rules.MinDirectionalWeightCount}", $"weightTurnoverShare={rules.WeightTurnoverShare}",
+                 $"minDirectionalWeightCount={rules.MinDirectionalWeightCount}", "weightDirection=official-weighted-price;turnover=supplement",
                  $"unknownWeightBudget={unknownWeights}" ]), weights.Length, !weightComplete, lowerPrice, upperPrice,
-            weights.Length > 0 ? input.Sources.FirstOrDefault(x => x.Market == market
-                && x.Name.StartsWith("前交易日官方市值排行身分輸入", StringComparison.Ordinal))?.SourceDate : null);
+            weightComplete ? input.TradeDate : null, weightComplete ? "ready" : "unavailable", weightWarning,
+            weightComplete ? input.Sources.FirstOrDefault(x => x.Market == market
+                && x.Name.StartsWith("免費官方逐日指數權重：", StringComparison.Ordinal))?.Name["免費官方逐日指數權重：".Length..] : null,
+            weightComplete ? input.Sources.FirstOrDefault(x => x.Market == market
+                && x.Name.StartsWith("免費官方逐日指數權重：", StringComparison.Ordinal))?.Sha256 : null);
     }
 
     private static string Classify(decimal? index, bool broadUp, bool broadDown, bool weightUp, bool weightDown,
@@ -288,6 +281,14 @@ public static class MarketStructureCalculator
         return (decimal)(directional.Length - invalidated) / groups.Length;
     }
 
+    private static decimal? WeightedByOfficialWeight(IEnumerable<MarketStructureStockInput> stocks)
+    {
+        var rows = stocks.ToArray();
+        if (rows.Length == 0 || rows.Any(x => !HasAdjustedPrice(x) || x.OfficialWeight is not > 0m)) return null;
+        var total = rows.Sum(x => x.OfficialWeight!.Value);
+        return rows.Sum(x => x.OfficialWeight!.Value * AdjustedChangePercent(x)!.Value) / total;
+    }
+
     private static decimal? WeightedByTurnover(IEnumerable<MarketStructureStockInput> stocks)
     {
         var valid = stocks.Where(x => x.TradingValue > 0m && HasAdjustedPrice(x)).ToArray();
@@ -323,8 +324,8 @@ public static class MarketStructureCalculator
     {
         var direction = status switch
         {
-            MarketStructureStatusCodes.WeightLedUp => "指數與權值群量價走強，成交集中於權值，其他股票跟漲有限。",
-            MarketStructureStatusCodes.WeightLedDown => "指數與權值群量價走弱，成交集中於權值，其他股票跌勢有限。",
+            MarketStructureStatusCodes.WeightLedUp => "指數與權值群按官方權重加權走強，其他股票跟漲有限；成交集中度另列。",
+            MarketStructureStatusCodes.WeightLedDown => "指數與權值群按官方權重加權走弱，其他股票跌勢有限；成交集中度另列。",
             MarketStructureStatusCodes.BroadUp => "多數股票與多數族群同向上漲，市場參與面廣。",
             MarketStructureStatusCodes.BroadDown => "多數股票與多數族群同向下跌，市場跌勢擴散。",
             MarketStructureStatusCodes.SectorUp => "部分族群內多檔股票走強，成交參與尚未全面擴散。",

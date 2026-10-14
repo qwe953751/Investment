@@ -20662,10 +20662,10 @@ function makeMarketStructureWeightStrip(market, estimated) {
     labelNote.textContent = market.weightGroup.length < 20 ? `(已知${market.weightGroup.length}/20檔)` : '(標的漲跌)';
     labelCopy.append(label, labelNote);
     heading.append(labelCopy);
-    if (estimated || market.weightGroup.some(stock => stock.isEstimated)) {
+    if (market.weightGroup.length > 0 && (estimated || market.weightGroup.some(stock => stock.isEstimated))) {
         const badge = document.createElement('span');
         badge.className = 'market-structure-estimate-badge';
-        badge.textContent = '估算';
+        badge.textContent = '漲跌推估';
         heading.append(badge);
     }
 
@@ -20721,6 +20721,12 @@ function renderMarketStructure(result, pending = false, message = null, expanded
         status.className = `market-structure-quick-status ${marketStructureStatusTone(market)}`;
         status.textContent = market.dataStatus === 'waiting' ? '等待開盤' : market.displayName ?? '資料不足';
         item.append(name, status);
+        if (market.weightDataStatus === 'unavailable') {
+            const warning = document.createElement('span');
+            warning.className = 'market-structure-weight-warning';
+            warning.textContent = '官方權重未取得';
+            item.append(warning);
+        }
         quickMarkets.append(item);
     }
     if (pending) {
@@ -20791,6 +20797,18 @@ function renderMarketStructure(result, pending = false, message = null, expanded
         coverage.append(coverageLabel, coverageValue);
         cardHeading.append(identity, explanation, coverage);
         card.append(cardHeading);
+        if (market.weightDataWarning) {
+            const warning = document.createElement('p');
+            warning.className = 'market-structure-weight-warning';
+            warning.setAttribute('role', 'status');
+            warning.textContent = market.weightDataWarning;
+            card.append(warning);
+        } else if (market.weightDataStatus === 'ready' && market.weightIdentityReferenceDate) {
+            const source = document.createElement('p');
+            source.className = 'market-structure-note';
+            source.textContent = `官方權重適用日：${market.weightIdentityReferenceDate}；當日固定20檔。`;
+            card.append(source);
+        }
 
         const weightStrip = makeMarketStructureWeightStrip(market, result.isEstimated === true);
         if (weightStrip) {
@@ -20811,7 +20829,7 @@ function renderMarketStructure(result, pending = false, message = null, expanded
             ['權值外上漲比例', market.otherStockBreadth?.risingRate === null || market.otherStockBreadth?.risingRate === undefined
                 ? null
                 : Number(market.otherStockBreadth.risingRate) * 100],
-            [market.weightMetricsAreLowerBound ? '已知權值成交加權漲跌' : '權值成交加權漲跌', market.weightGroupPriceChangePercent]
+            [market.weightMetricsAreLowerBound ? '權值權重加權漲跌（未取得）' : '權值權重加權漲跌', market.weightGroupPriceChangePercent]
         ];
         for (const [label, value] of metricRows) {
             const term = document.createElement('dt');
@@ -20825,7 +20843,7 @@ function renderMarketStructure(result, pending = false, message = null, expanded
         if (market.warnings?.length) {
             const note = document.createElement('p');
             note.className = 'market-structure-note';
-            note.textContent = market.warnings.join(' ');
+            note.textContent = market.warnings.filter(warning => warning !== market.weightDataWarning).join(' ');
             card.append(note);
         }
 
@@ -20846,7 +20864,9 @@ function renderMarketStructure(result, pending = false, message = null, expanded
                 turnover.textContent = stock.tradingValueShare === null || stock.tradingValueShare === undefined
                     ? '成交值 —'
                     : `成交值 ${(Number(stock.tradingValueShare) * 100).toFixed(2)}%`;
-                item.append(identity, change, turnover);
+                const weight = document.createElement('span');
+                weight.textContent = stock.startWeight == null ? '官方權重 —' : `官方權重 ${(Number(stock.startWeight) * 100).toFixed(4)}%`;
+                item.append(identity, weight, change, turnover);
                 list.append(item);
             }
             details.append(list);

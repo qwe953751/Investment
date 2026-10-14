@@ -3,6 +3,20 @@ namespace Invest.Web.Tests;
 public sealed class DailySnapshotWorkflowTests
 {
     [Fact]
+    public void 純發布保留真盤後缺口警報但完整資料流程仍失敗()
+    {
+        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+        var start = workflow.IndexOf("- name: 更新盤後資料缺口警報", StringComparison.Ordinal);
+        var end = workflow.IndexOf("- name: 失敗時留下線索", start, StringComparison.Ordinal);
+        var step = workflow[start..end];
+        Assert.Contains("close-coverage check", step, StringComparison.Ordinal);
+        Assert.Contains("alert \"台股盤後資料缺口\" error", step, StringComparison.Ordinal);
+        Assert.Contains("if [ '${{ inputs.publish-only }}' = 'true' ]; then", step, StringComparison.Ordinal);
+        Assert.Contains("::warning::網站純發布完成", step, StringComparison.Ordinal);
+        Assert.Contains("else\n                  exit 1", step, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 每日快照有收盤後備援且跨日缺口仍會修復()
     {
         var workflow = File.ReadAllText(Path.Combine(

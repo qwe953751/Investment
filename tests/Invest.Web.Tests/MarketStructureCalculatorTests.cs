@@ -87,7 +87,7 @@ public sealed class MarketStructureCalculatorTests
         var stock = MarketStructureCalculator.Calculate(input).Twse.WeightGroup[0];
         Assert.Equal(0m, stock.AdjustedChangePercent);
         Assert.Null(stock.IndexContributionPercent);
-        Assert.Null(stock.StartWeight);
+        Assert.Equal(0.03m, stock.StartWeight);
     }
 
     [Fact]
@@ -177,17 +177,22 @@ public sealed class MarketStructureCalculatorTests
     }
 
     [Fact]
-    public void 部分已知權值只有最壞界線仍成立才推估主導()
+    public void 缺完整官方權重不以部分名單推估權值主導()
     {
         var input = CreateInput("weight-up");
-        input = input with { Stocks = input.Stocks.Select(x => x.WeightRank > 17 ? x with { WeightRank = null } : x).ToArray() };
-        var positive = MarketStructureCalculator.Calculate(input).Twse;
-        Assert.Equal("weight_led_up", positive.StatusCode);
-        Assert.Equal(17, positive.WeightIdentityKnownCount);
-        Assert.True(positive.WeightMetricsAreLowerBound);
-        var dangerousUnknown = input with { Stocks = input.Stocks.Select(x => x.Ticker == "R00"
-            ? x with { Price = 90m, TradingValue = 1_000_000_000m } : x).ToArray() };
-        Assert.False(MarketStructureCalculator.Calculate(dangerousUnknown).Twse.Evidence.WeightUp);
+        foreach (var incomplete in new[] {
+            input with { IndexConstituentsVerified = false },
+            input with { Stocks = input.Stocks.Select(x => x with { OfficialWeight = null }).ToArray() },
+            input with { Stocks = input.Stocks.Select(x => x.WeightRank > 17 ? x with { WeightRank = null } : x).ToArray() }
+        }) {
+            var result = MarketStructureCalculator.Calculate(incomplete).Twse;
+            Assert.False(result.Evidence.WeightUp);
+            Assert.Equal("unavailable", result.WeightDataStatus);
+            Assert.Equal(0, result.WeightIdentityKnownCount);
+            Assert.Empty(result.WeightGroup);
+            Assert.Contains("不自行計算權重", result.WeightDataWarning);
+            Assert.NotEqual("insufficient", result.DataStatus);
+        }
     }
 
     [Fact]
@@ -207,7 +212,7 @@ public sealed class MarketStructureCalculatorTests
         var input = CreateInput("mixed");
         input = input with { Stocks = input.Stocks.Select(x => x with {
             Price = x.Ticker == "W01" ? 100m + direction * 2m : 100m,
-            TradingValue = x.Ticker == "W01" ? 1_000_000_000m : 1_000_000m }).ToArray(),
+            TradingValue = 1_000_000m, OfficialWeight = x.WeightRank is not null ? (x.Ticker == "W01" ? 0.50m : 0.005m) : null }).ToArray(),
             Indices = [new(Market.Twse, direction)] };
         var result = MarketStructureCalculator.Calculate(input).Twse;
         Assert.Equal(expected, result.StatusCode);
@@ -236,9 +241,9 @@ public sealed class MarketStructureCalculatorTests
             }
         var index = scenario is "broad-down" or "weight-down" or "drag" ? -1m : 1m;
         return new(new DateOnly(2026, 10, 13), new DateTimeOffset(2026, 10, 13, 13, 31, 0, TimeSpan.FromHours(8)),
-            "close", [], stocks, [new(Market.Twse, index)]);
+            "close", [], stocks, [new(Market.Twse, index)], IndexConstituentsVerified: true);
     }
 
     private static MarketStructureStockInput Stock(string ticker, string industry, decimal change, decimal turnover, int? rank = null)
-        => new(Market.Twse, ticker, ticker, 100m * (1m + change / 100m), 100m, null, turnover, 0m, industry, industry, WeightRank: rank);
+        => new(Market.Twse, ticker, ticker, 100m * (1m + change / 100m), 100m, null, turnover, 0m, industry, industry, WeightRank: rank, OfficialWeight: rank is not null ? 0.03m : null);
 }
