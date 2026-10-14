@@ -102,3 +102,19 @@ test('ETF鎖定跳轉保留ETF頁及來源時段', () => {
     assert.equal(c.state.etfSearch, '0050');
     assert.equal(c.state.etfSession, 'intraday');
 });
+
+for (const available of [true, false]) {
+    test(`自訂盤中載入入口：${available ? '只有CDN也會載入快照' : '無來源明確停止'}`, async () => {
+        const calls = [];
+        const c = {
+            CUSTOM_INTRADAY_LOCAL_PREVIEW: false, supabase: null,
+            hasIntradaySnapshotSource: () => available,
+            showNotice: message => calls.push('notice'),
+            ensureIntradaySnapshot: async () => { calls.push('snapshot'); return false; }
+        };
+        vm.createContext(c);
+        vm.runInContext('async ' + fn('loadCustomIntraday'), c);
+        await c.loadCustomIntraday();
+        assert.deepEqual(calls, available ? ['snapshot'] : ['notice']);
+    });
+}

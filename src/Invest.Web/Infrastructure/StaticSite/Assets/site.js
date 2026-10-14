@@ -3376,8 +3376,8 @@ function renderCustomSourceOptions() {
     }
 
     note.textContent = isCustomIntradayView()
-        ? supabase === null
-            ? '盤中需要資料庫連線。'
+        ? !hasIntradaySnapshotSource()
+            ? '盤中需要可用的行情來源。'
             : '最新一輪全市場資料；交易日選擇已停用。'
         : '指定交易日的盤後收盤資料；切換盤中後交易日會停用。';
 }
@@ -22852,8 +22852,8 @@ async function loadCustomIntraday(silent = false, force = false) {
         summary = preview.summary;
         lastIntradayLoadedAt = Date.now();
     } else {
-        if (supabase === null) {
-            showNotice('盤中自訂需要資料庫連線。', true);
+        if (!hasIntradaySnapshotSource()) {
+            showNotice('盤中自訂需要可用的行情來源。', true);
             return;
         }
 
