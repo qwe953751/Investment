@@ -2323,7 +2323,7 @@ const state = {
     customSortKey: 'ticker',
     customSortDescending: false,
 
-    // 族群頁預設看最新一輪盤中資料，先聚焦市場當下正在交易的主流方向。
+    // 啟動時由資料標記統一決定各頁籤的盤中／盤後預設。
     topicTab: 'heat',
     topicPeriod: INTRADAY_TOPIC_PERIOD,
     // 熱度排行保留原本列表；泡泡圖是另一種呈現，不改變資料或排行口徑。
@@ -3364,7 +3364,7 @@ function renderCustomSourceOptions() {
         'custom-source-options',
         CUSTOM_DATA_SOURCES.map(source => ({
             ...source,
-            disabled: source.key === 'intraday' && supabase === null
+            disabled: source.key === 'intraday' && !hasIntradaySnapshotSource()
         })),
         state.customSource,
         source => update({ customSource: source, customPage: 1 }));
@@ -3808,9 +3808,17 @@ function currentSettingsRecord() {
     return null;
 }
 
-// 存著的值可能已經不存在了（期間或門檻改版、交易日滾掉、資料庫連線沒了），
-// 所以一個一個驗，驗不過的那一項就留在預設值，不要因為一項壞了整組丟掉。
+// 自訂個股、ETF、族群共用排行的資料交接規則；有效記憶會在之後逐欄覆蓋。
+function applyDefaultDataSessions() {
+    const session = defaultViewForMarkers(settingsMarkers, hasIntradaySnapshotSource());
+    state.customSource = session;
+    state.etfSession = session;
+    state.topicPeriod = session === 'intraday' ? INTRADAY_TOPIC_PERIOD : DEFAULT_PERIOD.daily;
+}
+
+// 記憶逐欄驗證，驗不過就留在共同預設，避免一項壞值影響整組。
 function applyStoredSettings() {
+    applyDefaultDataSessions();
     try {
         localStorage.removeItem(LEGACY_SETTINGS_STORAGE_KEY);
     } catch {
@@ -3858,7 +3866,7 @@ function applyStoredSettings() {
     }
 
     if (CUSTOM_DATA_SOURCES.some(source => source.key === stored.customSource)
-        && (stored.customSource !== 'intraday' || supabase !== null)) {
+        && (stored.customSource !== 'intraday' || hasIntradaySnapshotSource())) {
         state.customSource = stored.customSource;
     }
 
@@ -17501,12 +17509,27 @@ function toLockedRankText(ticker) {
     return rank === undefined ? '未入榜' : `第 ${rank} 名`;
 }
 
-/// 點鎖定的標的，跳到它在排行榜裡的那一列。表格只畫出前 100 名，
-/// 超過 100 名的個股那一列根本不存在，找不到就什麼都不做。
+/// 已顯示的標的直接定位；榜外或被篩掉的標的改到自訂搜尋，保留來源時段與日期。
 function jumpToRankedRow(ticker) {
     const row = document.querySelector(`#table-body tr[data-ticker="${CSS.escape(ticker)}"]`);
 
     if (!row) {
+        const session = state.view === 'intraday' || isCustomIntradayView() || isEtfIntradayView()
+            || isIntradayTopicDataView() ? 'intraday' : 'daily';
+        update({
+            view: state.view === 'etf' ? 'etf' : 'custom',
+            customSource: session,
+            etfSession: session,
+            customSearch: ticker,
+            customSearchDraft: ticker,
+            etfSearch: ticker,
+            etfSearchDraft: ticker,
+            customThreshold: 0,
+            customStatusFilters: { all: true, disposition: false, fullDelivery: false, suspended: false },
+            etfMarket: 'all',
+            customPage: 1,
+            etfPage: 1
+        });
         return;
     }
 
@@ -17573,10 +17596,10 @@ function renderLockRow(focusInput = false) {
         const chip = document.createElement('span');
         chip.className = 'lock-chip';
 
-        // 點代號、名稱、名次這三塊跳到排行榜裡的那一列；超過前 100 名沒有列可跳，點了沒反應。
+        // 點代號、名稱或名次：榜內定位，榜外改到自訂搜尋。
         const jump = document.createElement('span');
         jump.className = 'lock-chip-jump';
-        jump.dataset.hint = '跳到排行榜位置（超過 100 名不會動）';
+        jump.dataset.hint = '跳到標的位置；榜外改至自訂搜尋（沿用盤中／盤後）';
         jump.addEventListener('click', () => jumpToRankedRow(ticker));
 
         const code = document.createElement('span');
