@@ -59,12 +59,12 @@ test('有效手動記憶保留，缺少的欄位採共同預設；CDN-only可恢
 function jumpHarness(view, row = null, extra = {}) {
     const c = {
         state: { view, date: '2026-10-08', ...extra },
-        document: { querySelector: () => row }, CSS: { escape: x => x },
+        document: { querySelector: () => row }, CSS: { escape: x => x }, pendingTableRows: null,
         window: { setTimeout: callback => callback() },
         update(changes) { c.changes = changes; Object.assign(c.state, changes); }
     };
     vm.createContext(c);
-    vm.runInContext(['isCustomIntradayView', 'isEtfIntradayView', 'isIntradayTopicDataView', 'jumpToRankedRow'].map(fn).join('\n'), c);
+    vm.runInContext(['isCustomIntradayView', 'isEtfIntradayView', 'isIntradayTopicDataView', 'flushPendingTableRows', 'jumpToRankedRow'].map(fn).join('\n'), c);
     return c;
 }
 test('第100名仍在表格直接定位、加亮並還原，不更換頁籤', () => {

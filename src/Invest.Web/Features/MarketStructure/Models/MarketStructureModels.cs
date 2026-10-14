@@ -19,7 +19,7 @@ public static class MarketStructureStatusCodes
 /// <summary>候選規則集中管理；所有漲跌幅門檻都是百分點。</summary>
 public sealed record MarketStructureRules
 {
-    public string Version { get; init; } = "market-structure-v3-official-weights";
+    public string Version { get; init; } = "market-structure-v4-index-weights";
     public int WeightGroupSize { get; init; } = 20;
     public decimal StockNeutralPct { get; init; } = 0.10m;
     public decimal IndexNeutralPct { get; init; } = 0.10m;
@@ -46,7 +46,8 @@ public sealed record MarketStructureSource(
     string Sha256);
 
 /// <summary>
-/// 一檔上市／上櫃普通股同輪資料。最終價格／漲跌與畫面共用；WeightRank 僅為外部觀察群身分。
+/// 一檔上市／上櫃普通股同輪資料。最終價格／漲跌與畫面共用；WeightRank／IndexWeight 是開盤前固定的權值前 20
+///（上市：期交所月表推移；上櫃：櫃買官方市值排行），權重是 0～1 的比例。
 /// IssuedShares／RawPreviousClose 保留舊呼叫相容，不用來重建市值或指數。
 /// </summary>
 public sealed record MarketStructureStockInput(
@@ -63,9 +64,20 @@ public sealed record MarketStructureStockInput(
     string? PriceSource = null,
     int? WeightRank = null,
     decimal? ChangePercent = null,
-    decimal? OfficialWeight = null);
+    decimal? IndexWeight = null);
 
 public sealed record MarketStructureIndexInput(Market Market, decimal? ChangePercent);
+
+/// <summary>權值前 20 的來源與說明；沒有這一筆的市場視為權值資料未取得。</summary>
+public sealed record MarketStructureWeightInfo(
+    Market Market,
+    string Method,
+    DateOnly SourceDate,
+    DateOnly? ReferenceDate,
+    bool IsFallbackSource,
+    string SourceUrl,
+    string SourceHash,
+    string Note);
 
 public sealed record MarketStructureInput(
     DateOnly TradeDate,
@@ -75,7 +87,7 @@ public sealed record MarketStructureInput(
     IReadOnlyList<MarketStructureStockInput> Stocks,
     IReadOnlyList<MarketStructureIndexInput> Indices,
     string IndustryVersion = "exchange-industry-current-v1",
-    bool IndexConstituentsVerified = false,
+    IReadOnlyList<MarketStructureWeightInfo>? WeightInfos = null,
     long? RunId = null,
     DateTimeOffset? EvaluatedAt = null,
     string? ClassificationNote = null);
@@ -137,7 +149,11 @@ public sealed record MarketStructureMarketResult(
     string WeightDataStatus = "unavailable",
     string? WeightDataWarning = null,
     string? WeightSourceUrl = null,
-    string? WeightSourceHash = null);
+    string? WeightSourceHash = null,
+    string? WeightMethod = null,
+    DateOnly? WeightSourceDate = null,
+    bool WeightSourceIsFallback = false,
+    string? WeightNote = null);
 
 public sealed record MarketStructureBreadth(
     int ExpectedCount,

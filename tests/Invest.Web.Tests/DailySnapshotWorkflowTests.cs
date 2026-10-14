@@ -278,9 +278,28 @@ public sealed class DailySnapshotWorkflowTests
         // imports-ref 目錄第一次補抓成功之前不存在，git add 會以 pathspec 錯誤中止整步。
         var save = workflow[workflow.IndexOf("- name: 保存行情快取", StringComparison.Ordinal)..];
         Assert.True(
-            save.IndexOf("mkdir -p imports-ref", StringComparison.Ordinal)
-                < save.IndexOf("git add -A imports imports-ref market-calendar.json", StringComparison.Ordinal),
-            "要先確保 imports-ref 目錄存在，再 git add。");
+            save.IndexOf("mkdir -p imports-ref imports-weights imports-shares", StringComparison.Ordinal)
+                < save.IndexOf("git add -A imports imports-ref imports-weights imports-shares market-calendar.json", StringComparison.Ordinal),
+            "要先確保 imports-ref、imports-weights、imports-shares 目錄存在，再 git add。");
+    }
+
+    [Fact]
+    public void 權值前20官方資料每日只補最近幾天且在保存行情快取之前並允許失敗()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+
+        var step = workflow[workflow.IndexOf("- name: 補抓權值前 20 官方資料", StringComparison.Ordinal)..];
+        var header = step[..step.IndexOf("run:", StringComparison.Ordinal)];
+
+        // 月表、發行股數與櫃買排行都寫進 data 分支；publish-only 不改 data，不能跑。
+        Assert.Contains("inputs.publish-only != true", header, StringComparison.Ordinal);
+        Assert.Contains("continue-on-error: true", header, StringComparison.Ordinal);
+        Assert.Contains("-- backfill-index-weights 10", step[..step.IndexOf("\n\n", StringComparison.Ordinal)], StringComparison.Ordinal);
+        Assert.True(
+            workflow.IndexOf("- name: 補抓權值前 20 官方資料", StringComparison.Ordinal)
+                < workflow.IndexOf("- name: 保存行情快取", StringComparison.Ordinal),
+            "補抓權值資料必須排在保存行情快取之前。");
     }
 
     [Fact]

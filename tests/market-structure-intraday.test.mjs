@@ -180,11 +180,26 @@ function allText(node) {
 }
 
 
-test('歷史市場結構依日期取單日檔，不受排行期間與latest日期限制', async () => {
-    const context = vm.createContext({ fetchPeriod: async key => ({ marketStructure: { tradeDate: key.slice(2), twse: { displayName: '全面上漲' } } }) });
-    vm.runInContext(normalize + slice('async function resolveCloseMarketStructure(', 'function marketStructurePercent('), context);
-    assert.equal((await context.resolveCloseMarketStructure({}, '2025/06/03')).tradeDate, '2025-06-03');
-    assert.equal(await context.resolveCloseMarketStructure({ marketStructure: { tradeDate: '2026-10-13' } }, '2025-06-03'), null);
+test('歷史市場結構依日期讀獨立小檔，不再為了它下載整份 1 日排行', async () => {
+    const requested = [];
+    const context = vm.createContext({
+        version: 'v1',
+        fetchJsonWithRetry: async url => {
+            requested.push(url);
+            const date = url.match(/(\d{4}-\d{2}-\d{2})\.json/)[1];
+            return { tradeDate: date === '2025-06-04' ? '2026-10-13' : date, twse: { displayName: '全面上漲' } };
+        },
+        fetchPeriod: async () => { throw new Error('不該為市場結構下載排行檔'); }
+    });
+    vm.runInContext(normalize + slice('const closeMarketStructures = new Map();', 'function marketStructurePercent('), context);
+    assert.equal(context.peekCloseMarketStructure('2025-06-03'), undefined);
+    assert.equal((await context.resolveCloseMarketStructure('2025/06/03')).tradeDate, '2025-06-03');
+    assert.deepEqual(requested, ['data/market-structure/2025-06-03.json?v=v1']);
+    assert.equal(context.peekCloseMarketStructure('2025-06-03').tradeDate, '2025-06-03');
+    await context.resolveCloseMarketStructure('2025-06-03');
+    assert.equal(requested.length, 1);
+    // 檔案內容的交易日不符時不採用。
+    assert.equal(await context.resolveCloseMarketStructure('2025-06-04'), null);
 });
 
 test('資料能力有限仍呈現方向與全市場廣度；等待開盤不顯示來源故障', () => {
@@ -208,27 +223,74 @@ test('盤中schema 2仍校驗同輪與完整hash，未知schema拒絕', async ()
     await assert.rejects(bad.context.fetchIntradayMarketStructure(day, 7, capturedAt), /不一致/);
 });
 
+function closeLoadContext(overrides = {}) {
+    let finish;
+    const calls = { summary: 0, table: 0 };
+    const context = vm.createContext({
+        state: { view: 'daily', date: day, period: 1, comparisonMode: 'range' },
+        current: null, cache: new Map([[`1-${day}`, {}]]), periodLoadErrors: new Map(),
+        fetchPeriod: async () => ({ rows: [], hasSufficientData: true }),
+        rankRows: () => ({ rows: [], count: 0, rankByTicker: new Map() }),
+        resolveCloseMarketStructure: () => new Promise(resolve => { finish = resolve; }),
+        peekCloseMarketStructure: () => undefined,
+        prefetchNeighborCloseDay() {},
+        el: () => ({ hidden: false }),
+        renderSummary() { calls.summary += 1; },
+        renderTable() { calls.table += 1; },
+        renderLockRow() {},
+        showNotice() {}, nameByTicker: new Map(),
+        ...overrides
+    });
+    const start = script.indexOf('    const closeLoadState = JSON.stringify(state);', script.indexOf('async function load()'));
+    const end = script.indexOf('\n}\n', start);
+    vm.runInContext('async function closeLoadForTest() {' + script.slice(start, end) + '\n}', context);
+    return { context, calls, finish: value => finish(value) };
+}
+
+test('盤後排行先畫，市場結構另外載入完成後只補畫摘要', async () => {
+    const { context, calls, finish } = closeLoadContext();
+    const loading = context.closeLoadForTest();
+    await settle();
+    assert.equal(calls.table, 1);
+    assert.equal(calls.summary, 1);
+    assert.equal(context.current.marketStructurePending, true);
+    finish({ tradeDate: day });
+    await loading;
+    assert.equal(context.current.marketStructure.tradeDate, day);
+    assert.equal(context.current.marketStructurePending, false);
+    assert.equal(calls.summary, 2);
+    assert.equal(calls.table, 1);
+});
+
 test('盤後結構載入期間換日或換觀察週期，不讓舊回應覆蓋目前畫面', async () => {
     for (const changed of [{ date: '2026-10-12' }, { period: 5 }, { view: 'intraday' }]) {
-        let finish;
-        const context = vm.createContext({
-            state: { view: 'daily', date: day, period: 1, comparisonMode: 'range' },
-            current: { sentinel: true }, cache: new Map([[`1-${day}`, {}]]),
-            fetchPeriod: async () => ({ rows: [], hasSufficientData: true }),
-            rankRows: () => ({ rows: [], count: 0 }),
-            resolveCloseMarketStructure: () => new Promise(resolve => { finish = resolve; }),
-            showNotice() {}, nameByTicker: new Map()
-        });
-        const start = script.indexOf('    const closeLoadState = JSON.stringify(state);', script.indexOf('async function load()'));
-        const end = script.indexOf("    el('notice').hidden = true;", start);
-        vm.runInContext('async function closeLoadForTest() {' + script.slice(start, end) + '}', context);
+        const { context, calls, finish } = closeLoadContext();
         const loading = context.closeLoadForTest();
         await settle();
+        const shown = context.current;
         Object.assign(context.state, changed);
+        context.current = { sentinel: true };
         finish({ tradeDate: day });
         await loading;
         assert.equal(context.current.sentinel, true);
+        assert.equal(shown.marketStructure, null);
+        assert.equal(calls.summary, 1);
     }
+});
+
+test('單日比較另外下載對應期間的分檔，與排行檔同時開始', async () => {
+    const requested = [];
+    const { context, finish } = closeLoadContext({
+        state: { view: 'daily', date: day, period: 5, comparisonMode: 'single' },
+        fetchPeriod: async key => { requested.push(key); return key.startsWith('single-') ? { periodDays: 5 } : { rows: [], hasSufficientData: true }; },
+        applySingleDayComparison: (data, comparison) => ({ ...data, comparisonPeriod: comparison.periodDays })
+    });
+    const loading = context.closeLoadForTest();
+    await settle();
+    assert.deepEqual(requested, [`1-${day}`, `single-5-${day}`]);
+    assert.equal(context.current.comparisonPeriod, 5);
+    finish(null);
+    await loading;
 });
 
 test('權值身分全缺仍保留20格未知燈號，不用其他股票填補', () => {
@@ -241,16 +303,35 @@ test('權值身分全缺仍保留20格未知燈號，不用其他股票填補', 
 });
 
 
-test('缺官方權重在收合摘要與展開卡片都有警告，保留正常盤勢方向', () => {
+test('缺權值資料在收合摘要與展開卡片都有警告，保留正常盤勢方向', () => {
     const context = vm.createContext({ state: { view: 'intraday' }, document: testDocument() });
     vm.runInContext(slice('function marketStructurePercent(', 'async function fetchIntradayMarketStructure('), context);
     const market = { dataStatus: 'partial', displayName: '全面上漲', statusCode: 'broad_up',
-        weightDataStatus: 'unavailable', weightDataWarning: '2026-10-14 官方逐日指數權重未取得；不自行計算權重。',
+        weightDataStatus: 'unavailable', weightDataWarning: '2026-10-14 權值前20所需的官方資料（期交所月表、證交所發行股數或櫃買市值排行）未取得。',
         weightGroup: [], warnings: [], allStockBreadth: { quotedCount: 100, expectedCount: 100, risingCount: 80, fallingCount: 20 } };
     const panel = context.renderMarketStructure({ twse: market });
-    assert.match(allText(panel.children[0]), /全面上漲.*官方權重未取得/);
-    assert.match(allText(panel), /不自行計算權重/);
+    assert.match(allText(panel.children[0]), /全面上漲.*權值資料未取得/);
+    assert.match(allText(panel), /權值前20所需的官方資料/);
     assert.match(allText(panel), /全市場/);
     assert.doesNotMatch(allText(panel), /資料不足/);
     assert.equal((allText(panel).match(/？/g) ?? []).length, 20);
+});
+
+test('權值名單齊全時顯示來源說明與每檔權重，不顯示未取得警告', () => {
+    const context = vm.createContext({ state: { view: 'daily' }, document: testDocument() });
+    vm.runInContext(slice('function marketStructurePercent(', 'async function fetchIntradayMarketStructure('), context);
+    const weightGroup = Array.from({ length: 20 }, (_, index) => ({
+        ticker: String(2300 + index), name: `測試股${index + 1}`, startWeight: 0.05, adjustedChangePercent: 1
+    }));
+    const market = { dataStatus: 'ready', displayName: '權值主導上漲', statusCode: 'weight_led_up', weightDataStatus: 'ready',
+        weightNote: '權值前20以期交所 2026/09/30 月表官方權重為基準，依 2026/10/14 收盤價與證交所發行股數推移排序。',
+        weightGroup, warnings: [], allStockBreadth: { quotedCount: 100, expectedCount: 100, risingCount: 30, fallingCount: 70 },
+        otherStockBreadth: { risingCount: 20, fallingCount: 60, risingRate: 0.25 } };
+    const panel = context.renderMarketStructure({ twse: market });
+    assert.doesNotMatch(allText(panel.children[0]), /權值資料未取得/);
+    assert.match(allText(panel), /期交所 2026\/09\/30 月表官方權重為基準/);
+    assert.match(allText(panel), /權重 5\.0000%/);
+    assert.equal((allText(panel).match(/？/g) ?? []).length, 0);
+    const cells = findNode(panel, node => node.className === 'market-structure-weight-cells');
+    assert.match(cells.children[0].title, /權重 5\.00%/);
 });

@@ -216,11 +216,23 @@ public sealed class StaticSiteExporter(
         // 重新發佈後版本號一變，網址跟著變，瀏覽器手上的舊檔就自動失效。
         var version = generatedAt.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
 
+        var marketStructureDirectory = Path.Combine(dataDirectory, "market-structure");
+        Directory.CreateDirectory(marketStructureDirectory);
+
         foreach (var date in selectableDates)
         {
             // 這個交易日往回總共有幾天可用，決定了哪些期間算得出來。
             var historyLength = tradingDates.Count(tradingDate => tradingDate <= date);
-            IReadOnlyList<SingleComparisonExport>? singleComparisons = null;
+
+            // 市場結構與單日比較各自一個檔：畫面只在需要時下載，換日不必連同用不到的資料整包抓。
+            if (structureByDate.GetValueOrDefault(date) is { } structure)
+            {
+                await WriteJsonAsync(
+                    Path.Combine(marketStructureDirectory, $"{date:yyyy-MM-dd}.json"),
+                    structure,
+                    cancellationToken);
+                fileCount++;
+            }
 
             foreach (var periodDays in PeriodDayOptions)
             {
@@ -271,18 +283,19 @@ public sealed class StaticSiteExporter(
                             singleResult));
                     }
 
-                    singleComparisons = comparisons;
+                    foreach (var comparison in comparisons)
+                    {
+                        await WriteJsonAsync(
+                            Path.Combine(dataDirectory, $"single-{comparison.PeriodDays}-{date:yyyy-MM-dd}.json"),
+                            comparison,
+                            cancellationToken);
+                        fileCount++;
+                    }
                 }
 
                 await WriteJsonAsync(
                     Path.Combine(dataDirectory, key + ".json"),
-                    ToExport(
-                        key,
-                        periodDays,
-                        historyLength,
-                        result,
-                        periodDays == 1 ? singleComparisons : null,
-                        periodDays == 1 ? structureByDate.GetValueOrDefault(date) : null),
+                    ToExport(key, periodDays, historyLength, result),
                     cancellationToken);
 
                 fileCount++;
@@ -310,8 +323,6 @@ public sealed class StaticSiteExporter(
         if (latestMarketStructure is not null)
         {
             const string relativePath = "data/market-structure/latest.json";
-            var marketStructureDirectory = Path.Combine(dataDirectory, "market-structure");
-            Directory.CreateDirectory(marketStructureDirectory);
             await WriteJsonAsync(
                 Path.Combine(marketStructureDirectory, "latest.json"),
                 latestMarketStructure,
@@ -1158,9 +1169,7 @@ public sealed class StaticSiteExporter(
         string key,
         int periodDays,
         int historyLength,
-        TradingValueRankingResult result,
-        IReadOnlyList<SingleComparisonExport>? singleComparisons = null,
-        MarketStructureResult? structure = null)
+        TradingValueRankingResult result)
     {
         var accelerationDays = periodDays * 2 + TradingValueRankingCalculator.BaselineDays;
         var accelerationAvailable = historyLength >= accelerationDays;
@@ -1184,9 +1193,7 @@ public sealed class StaticSiteExporter(
                 ? RankingFormatter.ToBillionText(result.MarketTotalTradingValue / currentPeriodDays, 0)
                 : "—",
             ToMarketHeatExport(result.MarketHeat),
-            [.. result.Rows.Select(ToExport)],
-            singleComparisons,
-            structure);
+            [.. result.Rows.Select(ToExport)]);
     }
 
     private static SingleComparisonExport ToSingleComparisonExport(
@@ -2456,9 +2463,7 @@ public sealed class StaticSiteExporter(
         string PreviousPeriod,
         string MarketDailyAverage,
         MarketHeatExport? MarketHeat,
-        IReadOnlyList<RowExport> Rows,
-        IReadOnlyList<SingleComparisonExport>? SingleComparisons,
-        MarketStructureResult? MarketStructure);
+        IReadOnlyList<RowExport> Rows);
 
     private sealed record SingleComparisonExport(
         int PeriodDays,

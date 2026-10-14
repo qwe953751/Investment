@@ -177,12 +177,13 @@ public sealed class MarketStructureCalculatorTests
     }
 
     [Fact]
-    public void 缺完整官方權重不以部分名單推估權值主導()
+    public void 缺完整權值名單不以部分名單推估權值主導()
     {
         var input = CreateInput("weight-up");
         foreach (var incomplete in new[] {
-            input with { IndexConstituentsVerified = false },
-            input with { Stocks = input.Stocks.Select(x => x with { OfficialWeight = null }).ToArray() },
+            input with { WeightInfos = null },
+            input with { WeightInfos = [Info(Market.Tpex)] },
+            input with { Stocks = input.Stocks.Select(x => x with { IndexWeight = null }).ToArray() },
             input with { Stocks = input.Stocks.Select(x => x.WeightRank > 17 ? x with { WeightRank = null } : x).ToArray() }
         }) {
             var result = MarketStructureCalculator.Calculate(incomplete).Twse;
@@ -190,9 +191,26 @@ public sealed class MarketStructureCalculatorTests
             Assert.Equal("unavailable", result.WeightDataStatus);
             Assert.Equal(0, result.WeightIdentityKnownCount);
             Assert.Empty(result.WeightGroup);
-            Assert.Contains("不自行計算權重", result.WeightDataWarning);
+            Assert.Contains("權值前20所需的官方資料", result.WeightDataWarning);
+            Assert.Null(result.WeightNote);
             Assert.NotEqual("insufficient", result.DataStatus);
         }
+    }
+
+    [Fact]
+    public void 權值名單完整時帶出來源方法基準日與說明且不降為部分資料()
+    {
+        var result = MarketStructureCalculator.Calculate(CreateInput("weight-up")).Twse;
+        Assert.Equal("ready", result.WeightDataStatus);
+        Assert.Null(result.WeightDataWarning);
+        Assert.Equal(20, result.WeightGroup.Count);
+        Assert.Equal("taifex-monthly-anchor", result.WeightMethod);
+        Assert.Equal(new DateOnly(2026, 9, 30), result.WeightSourceDate);
+        Assert.Equal(new DateOnly(2026, 10, 12), result.WeightIdentityReferenceDate);
+        Assert.False(result.WeightSourceIsFallback);
+        Assert.Contains("期交所 2026/09/30 月表", result.WeightNote);
+        Assert.DoesNotContain(result.Warnings, warning => warning.Contains("權值前20以期交所", StringComparison.Ordinal));
+        Assert.Equal("market-structure-v4-index-weights", MarketStructureCalculator.Calculate(CreateInput("weight-up")).RulesVersion);
     }
 
     [Fact]
@@ -212,7 +230,7 @@ public sealed class MarketStructureCalculatorTests
         var input = CreateInput("mixed");
         input = input with { Stocks = input.Stocks.Select(x => x with {
             Price = x.Ticker == "W01" ? 100m + direction * 2m : 100m,
-            TradingValue = 1_000_000m, OfficialWeight = x.WeightRank is not null ? (x.Ticker == "W01" ? 0.50m : 0.005m) : null }).ToArray(),
+            TradingValue = 1_000_000m, IndexWeight = x.WeightRank is not null ? (x.Ticker == "W01" ? 0.50m : 0.005m) : null }).ToArray(),
             Indices = [new(Market.Twse, direction)] };
         var result = MarketStructureCalculator.Calculate(input).Twse;
         Assert.Equal(expected, result.StatusCode);
@@ -241,9 +259,13 @@ public sealed class MarketStructureCalculatorTests
             }
         var index = scenario is "broad-down" or "weight-down" or "drag" ? -1m : 1m;
         return new(new DateOnly(2026, 10, 13), new DateTimeOffset(2026, 10, 13, 13, 31, 0, TimeSpan.FromHours(8)),
-            "close", [], stocks, [new(Market.Twse, index)], IndexConstituentsVerified: true);
+            "close", [], stocks, [new(Market.Twse, index)], WeightInfos: [Info(Market.Twse)]);
     }
 
+    private static MarketStructureWeightInfo Info(Market market)
+        => new(market, "taifex-monthly-anchor", new DateOnly(2026, 9, 30), new DateOnly(2026, 10, 12), false,
+            "https://www.taifex.com.tw/cht/9/futuresQADetail", new string('a', 64), "權值前20以期交所 2026/09/30 月表官方權重為基準");
+
     private static MarketStructureStockInput Stock(string ticker, string industry, decimal change, decimal turnover, int? rank = null)
-        => new(Market.Twse, ticker, ticker, 100m * (1m + change / 100m), 100m, null, turnover, 0m, industry, industry, WeightRank: rank, OfficialWeight: rank is not null ? 0.03m : null);
+        => new(Market.Twse, ticker, ticker, 100m * (1m + change / 100m), 100m, null, turnover, 0m, industry, industry, WeightRank: rank, IndexWeight: rank is not null ? 0.03m : null);
 }

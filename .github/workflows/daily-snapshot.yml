@@ -388,15 +388,23 @@ jobs:
         continue-on-error: true
         run: dotnet run -c Release --project src/Invest.Web -- backfill-reference 10
 
+      # 權值前 20 的官方原始資料：期交所加權指數月表（月底公布，頁面出現新的一期就存下來，之後的交易日自動改用它）、
+      # 證交所發行股數與櫃買個股市值排行（逐日）。只補還沒保存的日期；跟參考價一樣允許失敗，
+      # 下一輪會再補，網站照樣用已保存的資料發布。整段歷史要補時另跑 backfill-index-weights 400 --archive。
+      - name: 補抓權值前 20 官方資料
+        if: ${{ inputs.publish-only != true }}
+        continue-on-error: true
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-index-weights 10
+
       - name: 保存行情快取
         id: save_quotes
         if: ${{ !cancelled() && inputs.publish-only != true }}
         working-directory: data
         run: |
-          # imports-ref 要等第一次補抓成功才會生出來。目錄還不存在時 git add 會以
-          # pathspec 錯誤整步中止，連帶擋掉上面已經抓好的行情。
-          mkdir -p imports-ref
-          git add -A imports imports-ref market-calendar.json
+          # imports-ref、imports-weights、imports-shares 要等第一次補抓成功才會生出來。目錄還不存在時
+          # git add 會以 pathspec 錯誤整步中止，連帶擋掉上面已經抓好的行情。
+          mkdir -p imports-ref imports-weights imports-shares
+          git add -A imports imports-ref imports-weights imports-shares market-calendar.json
 
           # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
           # 也不要把「刪掉歷史」這件事推上去。

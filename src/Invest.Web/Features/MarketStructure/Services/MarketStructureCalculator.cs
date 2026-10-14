@@ -19,7 +19,8 @@ public static class MarketStructureCalculator
         return new MarketStructureResult(2, rules.Version, Hash(rules), Hash(new
         {
             input.TradeDate, input.CapturedAt, input.Mode, input.RunId, input.IndustryVersion,
-            input.ClassificationNote, input.IndexConstituentsVerified,
+            input.ClassificationNote,
+            WeightInfos = (input.WeightInfos ?? []).OrderBy(x => x.Market).ToArray(),
             Sources = input.Sources.OrderBy(x => x.Market).ToArray(),
             Stocks = input.Stocks.OrderBy(x => x.Market).ThenBy(x => x.Ticker, StringComparer.Ordinal).ToArray(),
             Indices = input.Indices.OrderBy(x => x.Market).ToArray()
@@ -48,13 +49,14 @@ public static class MarketStructureCalculator
         if (index is null) warnings.Add("官方指數漲跌缺值；不判權值主導或指數背離，保留量價／族群判讀。");
         var candidates = stocks.Where(x => x.WeightRank is > 0 && x.WeightRank <= rules.WeightGroupSize)
             .OrderBy(x => x.WeightRank).ToArray();
-        var weightComplete = input.IndexConstituentsVerified && candidates.Length == rules.WeightGroupSize
+        var weightInfo = input.WeightInfos?.FirstOrDefault(x => x.Market == market);
+        var weightComplete = weightInfo is not null && candidates.Length == rules.WeightGroupSize
             && candidates.Select(x => x.WeightRank).Distinct().Count() == rules.WeightGroupSize
-            && candidates.All(x => x.OfficialWeight is > 0m and <= 1m)
-            && candidates.Sum(x => x.OfficialWeight ?? 0m) <= 1m;
-        // 只有順位、市值榜或部分權重皆不等於完整官方逐日指數權重；不以部分身分推估權值主導。
+            && candidates.All(x => x.IndexWeight is > 0m and <= 1m)
+            && candidates.Sum(x => x.IndexWeight ?? 0m) <= 1m;
+        // 名單或權重不完整就不判權值主導；不拿部分名單或成交排行湊數。
         var weights = weightComplete ? candidates : [];
-        var weightWarning = weightComplete ? null : $"{input.TradeDate:yyyy-MM-dd} 官方逐日指數權重未取得或未通過驗證；不自行計算權重，不使用市值／成交排行或其他日期名單替代。權值主導、撐盤／壓盤暫不判讀；保留可確認的族群與廣度。";
+        var weightWarning = weightComplete ? null : $"{input.TradeDate:yyyy-MM-dd} 權值前20所需的官方資料（期交所月表、證交所發行股數或櫃買市值排行）未取得；權值主導、撐盤／壓盤暫不判讀，保留可確認的族群與廣度。";
         if (weightWarning is not null) warnings.Add(weightWarning);
         var tickers = weights.Select(x => x.Ticker).ToHashSet(StringComparer.Ordinal);
         var rest = stocks.Where(x => !tickers.Contains(x.Ticker)).ToArray();
@@ -64,7 +66,7 @@ public static class MarketStructureCalculator
         var breadth = other ?? CalculateBreadth(rest, rules.StockNeutralPct);
         var turnover = stocks.Sum(x => Math.Max(0m, x.TradingValue));
         decimal? weightShare = weights.Length > 0 && turnover > 0m ? weights.Sum(x => Math.Max(0m, x.TradingValue)) / turnover : null;
-        var weightChange = WeightedByOfficialWeight(weights);
+        var weightChange = WeightedByIndexWeight(weights);
         var restChange = weightComplete ? WeightedByTurnover(rest) : null;
         var quoteCoverage = all.QuotedCount / (decimal)Math.Max(1, all.ExpectedCount);
         var industries = CalculateIndustries(stocks, tickers, turnover, rules).ToArray();
@@ -102,7 +104,7 @@ public static class MarketStructureCalculator
         var knownDirection = CalculateBreadth(weights, rules.StockNeutralPct);
         decimal? lowerPrice = weightChange;
         decimal? upperPrice = weightChange;
-        // 權值方向按官方权重加權的同價日漲跌判讀；成交集中只作補充，不作唯一閘門。
+        // 權值方向按權重加權的同價日漲跌判讀；成交集中只作補充，不作唯一閘門。
         var weightUp = stocks.All(x => x.PriceSource != "missing") && weightComplete && weightPricesReady && knownDirection.RisingCount >= rules.MinDirectionalWeightCount
             && weightChange > rules.StockNeutralPct;
         var weightDown = stocks.All(x => x.PriceSource != "missing") && weightComplete && weightPricesReady && knownDirection.FallingCount >= rules.MinDirectionalWeightCount
@@ -129,20 +131,19 @@ public static class MarketStructureCalculator
             waiting ? [] : issues.Distinct().ToArray(), warnings.Distinct().ToArray(), true,
             index, null, null, null, quoteCoverage, industryCoverage, groupCoverage, priceTurnoverCoverage,
             turnover > 0m ? turnover : null, weightShare, weightShare >= rules.WeightTurnoverTagShare,
-            weightComplete ? weights.Sum(x => x.OfficialWeight ?? 0m) : null, weightChange, restChange, null, null, null, all, weightBreadth, other, upRate, downRate,
-            industries, weights.Select(x => new MarketStructureWeightStock(x.Ticker, x.Name, x.OfficialWeight,
+            weightComplete ? weights.Sum(x => x.IndexWeight ?? 0m) : null, weightChange, restChange, null, null, null, all, weightBreadth, other, upRate, downRate,
+            industries, weights.Select(x => new MarketStructureWeightStock(x.Ticker, x.Name, x.IndexWeight,
                 x.TradingValue > 0m ? x.TradingValue : null, turnover > 0m ? x.TradingValue / turnover : null,
                 AdjustedChangePercent(x), null, x.PriceSource, true)).ToArray(),
             new MarketStructureEvidence(broadUp, broadDown, weightUp, weightDown, localUp, localDown,
                 eligible.Length, upGroups, downGroups,
                 [$"broadStockRate={rules.BroadStockRate}", $"broadGroupRate>{rules.BroadGroupRate}",
-                 $"minDirectionalWeightCount={rules.MinDirectionalWeightCount}", "weightDirection=official-weighted-price;turnover=supplement",
+                 $"minDirectionalWeightCount={rules.MinDirectionalWeightCount}", "weightDirection=index-weighted-price;turnover=supplement",
                  $"unknownWeightBudget={unknownWeights}" ]), weights.Length, !weightComplete, lowerPrice, upperPrice,
-            weightComplete ? input.TradeDate : null, weightComplete ? "ready" : "unavailable", weightWarning,
-            weightComplete ? input.Sources.FirstOrDefault(x => x.Market == market
-                && x.Name.StartsWith("免費官方逐日指數權重：", StringComparison.Ordinal))?.Name["免費官方逐日指數權重：".Length..] : null,
-            weightComplete ? input.Sources.FirstOrDefault(x => x.Market == market
-                && x.Name.StartsWith("免費官方逐日指數權重：", StringComparison.Ordinal))?.Sha256 : null);
+            weightComplete ? weightInfo!.ReferenceDate ?? weightInfo.SourceDate : null, weightComplete ? "ready" : "unavailable", weightWarning,
+            weightComplete ? weightInfo!.SourceUrl : null, weightComplete ? weightInfo!.SourceHash : null,
+            weightComplete ? weightInfo!.Method : null, weightComplete ? weightInfo!.SourceDate : null,
+            weightComplete && weightInfo!.IsFallbackSource, weightComplete ? weightInfo!.Note : null);
     }
 
     private static string Classify(decimal? index, bool broadUp, bool broadDown, bool weightUp, bool weightDown,
@@ -281,12 +282,12 @@ public static class MarketStructureCalculator
         return (decimal)(directional.Length - invalidated) / groups.Length;
     }
 
-    private static decimal? WeightedByOfficialWeight(IEnumerable<MarketStructureStockInput> stocks)
+    private static decimal? WeightedByIndexWeight(IEnumerable<MarketStructureStockInput> stocks)
     {
         var rows = stocks.ToArray();
-        if (rows.Length == 0 || rows.Any(x => !HasAdjustedPrice(x) || x.OfficialWeight is not > 0m)) return null;
-        var total = rows.Sum(x => x.OfficialWeight!.Value);
-        return rows.Sum(x => x.OfficialWeight!.Value * AdjustedChangePercent(x)!.Value) / total;
+        if (rows.Length == 0 || rows.Any(x => !HasAdjustedPrice(x) || x.IndexWeight is not > 0m)) return null;
+        var total = rows.Sum(x => x.IndexWeight!.Value);
+        return rows.Sum(x => x.IndexWeight!.Value * AdjustedChangePercent(x)!.Value) / total;
     }
 
     private static decimal? WeightedByTurnover(IEnumerable<MarketStructureStockInput> stocks)
@@ -324,8 +325,8 @@ public static class MarketStructureCalculator
     {
         var direction = status switch
         {
-            MarketStructureStatusCodes.WeightLedUp => "指數與權值群按官方權重加權走強，其他股票跟漲有限；成交集中度另列。",
-            MarketStructureStatusCodes.WeightLedDown => "指數與權值群按官方權重加權走弱，其他股票跌勢有限；成交集中度另列。",
+            MarketStructureStatusCodes.WeightLedUp => "指數與權值群按權重加權走強，其他股票跟漲有限；成交集中度另列。",
+            MarketStructureStatusCodes.WeightLedDown => "指數與權值群按權重加權走弱，其他股票跌勢有限；成交集中度另列。",
             MarketStructureStatusCodes.BroadUp => "多數股票與多數族群同向上漲，市場參與面廣。",
             MarketStructureStatusCodes.BroadDown => "多數股票與多數族群同向下跌，市場跌勢擴散。",
             MarketStructureStatusCodes.SectorUp => "部分族群內多檔股票走強，成交參與尚未全面擴散。",

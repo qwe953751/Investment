@@ -14,6 +14,7 @@ using Invest.Web.Infrastructure.Assets;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.CorporateActions;
 using Invest.Web.Infrastructure.MarketData.ForeignExchange;
+using Invest.Web.Infrastructure.MarketData.IndexWeights;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Overview;
 using Invest.Web.Infrastructure.MarketData.Reference;
@@ -38,6 +39,7 @@ using System.Text.Json.Serialization;
 //   dotnet run --project src/Invest.Web -- backfill-emerging [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- backfill-tdr [交易日數] [起始日期]
 //   dotnet run --project src/Invest.Web -- verify-kline-cache [交易日數] [起始日期]
+//   dotnet run --project src/Invest.Web -- backfill-index-weights [交易日數] [--archive]
 //   dotnet run --project src/Invest.Web -- backfill-us
 //   dotnet run --project src/Invest.Web -- backfill-overview [--markets us,crypto|jp,kr]
 //   dotnet run --project src/Invest.Web -- market-overview-intraday [--markets jp,kr] [--loop]
@@ -65,7 +67,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
+    command is "backfill" or "backfill-bars" or "backfill-index-weights" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "market-structure-intraday-audit" or "market-structure-audit" or "repair-market-indices" or "rebuild-market-structure" or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -128,7 +130,10 @@ builder.Services.AddHttpClient(nameof(YahooScreenerMarketTurnoverClient), Config
         CookieContainer = new System.Net.CookieContainer(),
         UseCookies = true
     });
-builder.Services.AddHttpClient("MarketStructureMembers", client => { ConfigureQuoteClient(client); client.Timeout = TimeSpan.FromSeconds(15); });
+// 權值前 20 的官方原始資料。期交所月表的過去各期要從網頁封存取回，封存網站回應慢，逾時放寬。
+builder.Services.AddHttpClient<TaifexIndexWeightClient>(client => { ConfigureQuoteClient(client); client.Timeout = TimeSpan.FromSeconds(120); });
+builder.Services.AddHttpClient<TwseIssuedSharesClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<TpexMarketCapClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
@@ -173,7 +178,9 @@ builder.Services.AddTransient<MarketTurnoverCollector>();
 builder.Services.AddTransient<MarketTurnoverBackfiller>();
 builder.Services.AddSingleton<TradingValueRankingCalculator>();
 builder.Services.AddSingleton<TradingValueRankingQueryService>();
-builder.Services.AddSingleton<MarketStructureMemberClient>();
+builder.Services.AddSingleton<IndexWeightStore>();
+builder.Services.AddSingleton<IndexWeightService>();
+builder.Services.AddTransient<IndexWeightBackfiller>();
 builder.Services.AddSingleton<MarketStructureQueryService>();
 builder.Services.AddTransient<MarketIndexRepairService>();
 builder.Services.AddTransient<MarketStructureAuditService>();
@@ -269,6 +276,16 @@ if (command is "rebuild-market-structure")
 if (command is "backfill")
 {
     await RunBackfillAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-index-weights")
+{
+    var days = args.Length > 1 && int.TryParse(args[1], out var parsedDays) && parsedDays > 0 ? parsedDays : 10;
+    var report = await app.Services.GetRequiredService<IndexWeightBackfiller>()
+        .RunAsync(days, args.Contains("--archive"), Console.WriteLine);
+    Console.WriteLine($"權值前 20 原始資料：新增 {report.Saved}、略過 {report.Skipped}、失敗 {report.Failed}。");
+    if (report.Failed > 0) Environment.ExitCode = 1;
     return;
 }
 

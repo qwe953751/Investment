@@ -251,7 +251,9 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("id=\"comparison-mode-options\"", html, StringComparison.Ordinal);
         Assert.Contains("const COMPARISON_MODES", script, StringComparison.Ordinal);
         Assert.Contains("comparisonMode: 'range'", script, StringComparison.Ordinal);
-        Assert.Contains("singleComparisons", script, StringComparison.Ordinal);
+        // 單日比較每個期間一份檔，前端與匯出器的檔名要一致；只有切到「單日」才下載。
+        Assert.Contains("`single-${state.period}-${state.date}`", script, StringComparison.Ordinal);
+        Assert.Contains("$\"single-{comparison.PeriodDays}-{date:yyyy-MM-dd}.json\"", exporter, StringComparison.Ordinal);
         Assert.Contains("ComparisonMode.SingleDay", exporter, StringComparison.Ordinal);
     }
 

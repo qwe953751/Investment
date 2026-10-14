@@ -2470,6 +2470,9 @@ function restoreStoredViewPreferences(preferences) {
 
 // 同一個組合切回來時不重打一次 fetch。
 const cache = new Map();
+// 表格先畫第一屏的列數，其餘下一格畫面再補（見 renderTable）。
+const TABLE_FIRST_SCREEN_ROWS = 30;
+let pendingTableRows = null;
 let current = null;
 // 自訂頁的兩個內部資料類型共用這份數量快取，避免切換後按鈕只剩目前檢視的數字。
 let assetTypeCounts = { stock: null, etf: null };
@@ -17511,6 +17514,7 @@ function toLockedRankText(ticker) {
 
 /// 已顯示的標的直接定位；榜外或被篩掉的標的改到自訂搜尋，保留來源時段與日期。
 function jumpToRankedRow(ticker) {
+    flushPendingTableRows();
     const row = document.querySelector(`#table-body tr[data-ticker="${CSS.escape(ticker)}"]`);
 
     if (!row) {
@@ -20316,10 +20320,11 @@ function renderTable() {
 
     const body = el('table-body');
     body.replaceChildren();
+    pendingTableRows = null;
 
     const lockedTickers = new Set(locked);
-
-    for (const row of rowsForCurrentPage()) {
+    const tableColumns = columns();
+    const build = row => {
         const tr = document.createElement('tr');
         tr.dataset.ticker = row.ticker;
 
@@ -20327,14 +20332,56 @@ function renderTable() {
             tr.className = 'locked';
         }
 
-        for (const column of columns()) {
+        for (const column of tableColumns) {
             appendRankingCell(tr, row, column);
         }
 
-        body.append(tr);
+        return tr;
+    };
+
+    // 先畫第一屏，其餘等這一格畫面更新後再補：換日、換頁籤時先看到結果，
+    // 不必等一百列、一千多格全部建好、排版完才有反應。要跳到搜尋結果時一次畫完。
+    const rows = rowsForCurrentPage();
+    const firstScreen = customSearchJumpPending ? rows.length : TABLE_FIRST_SCREEN_ROWS;
+
+    for (const row of rows.slice(0, firstScreen)) {
+        body.append(build(row));
     }
 
     renderPagination();
+
+    if (rows.length > firstScreen) {
+        const pending = { body, rows: rows.slice(firstScreen), build };
+        pendingTableRows = pending;
+        requestAnimationFrame(() => setTimeout(() => {
+            if (pendingTableRows === pending) {
+                flushPendingTableRows();
+            }
+        }, 0));
+        return;
+    }
+
+    refreshKLinePopover();
+    refreshRevenuePopover();
+    jumpToCustomSearchResult();
+}
+
+/// 把還沒補上的表格列一次畫完。點擊鎖定列要在表格裡找那一列，找之前先補完，免得誤判成「不在榜上」。
+function flushPendingTableRows() {
+    const pending = pendingTableRows;
+
+    if (!pending) {
+        return;
+    }
+
+    pendingTableRows = null;
+    const fragment = document.createDocumentFragment();
+
+    for (const row of pending.rows) {
+        fragment.append(pending.build(row));
+    }
+
+    pending.body.append(fragment);
     refreshKLinePopover();
     refreshRevenuePopover();
     jumpToCustomSearchResult();
@@ -20558,10 +20605,11 @@ function renderSummary() {
             ? current.marketStructure
             : null;
     if (structure || state.view === 'intraday' || state.view === 'daily') {
+        const pending = current.marketStructurePending === true;
         summary.append(renderMarketStructure(
             structure,
-            state.view === 'intraday' && current.marketStructurePending === true,
-            state.view === 'daily' && !structure
+            pending,
+            state.view === 'daily' && !structure && !pending
                 ? '這個交易日的市場結構暫時無法讀取，請重新載入。'
                 : current.marketStructureMessage,
             marketStructureExpanded));
@@ -20575,11 +20623,42 @@ function renderSummary() {
     }
 }
 
-async function resolveCloseMarketStructure(data, date) {
+// 每個交易日的盤後市場結構是獨立小檔（約 35 KB）。以前看 5／10／20／60 日時，
+// 要為了它另外下載整份 1 日排行（約 500 KB），而且要等排行下載完才開始。
+const closeMarketStructures = new Map();
+
+function peekCloseMarketStructure(date) {
     const key = normalizeMarketStructureDate(date);
-    const single = data?.marketStructure ? data : await fetchPeriod(`1-${key}`);
-    const result = single?.marketStructure;
-    return normalizeMarketStructureDate(result?.tradeDate) === key ? result : null;
+    const value = closeMarketStructures.get(key);
+    return value instanceof Promise ? undefined : value;
+}
+
+async function resolveCloseMarketStructure(date) {
+    const key = normalizeMarketStructureDate(date);
+
+    if (!key) {
+        return null;
+    }
+
+    if (!closeMarketStructures.has(key)) {
+        const request = fetchJsonWithRetry(
+            `data/market-structure/${key}.json?v=${version}`,
+            {},
+            { timeoutMs: 15_000, retryDelays: [1_000] })
+            .then(result => {
+                const value = normalizeMarketStructureDate(result?.tradeDate) === key ? result : null;
+                closeMarketStructures.set(key, value);
+                return value;
+            })
+            .catch(() => {
+                // 讀不到不記住，下次切回這一天再試。
+                closeMarketStructures.delete(key);
+                return null;
+            });
+        closeMarketStructures.set(key, request);
+    }
+
+    return await closeMarketStructures.get(key);
 }
 
 function marketStructurePercent(value) {
@@ -20699,7 +20778,8 @@ function makeMarketStructureWeightStrip(market, estimated) {
         const cell = document.createElement('span');
         cell.className = `market-structure-weight-cell ${marketStructureTone(change)}`;
         cell.textContent = String(index + 1).padStart(2, '0');
-        const details = `${stock.ticker} ${stock.name}：${marketStructurePercent(change)}`;
+        const weight = stock.startWeight == null ? '' : `（權重 ${(Number(stock.startWeight) * 100).toFixed(2)}%）`;
+        const details = `${stock.ticker} ${stock.name}：${marketStructurePercent(change)}${weight}`;
         cell.title = details;
         cell.setAttribute('aria-label', details);
         cells.append(cell);
@@ -20709,7 +20789,7 @@ function makeMarketStructureWeightStrip(market, estimated) {
         const cell = document.createElement('span');
         cell.className = 'market-structure-weight-cell is-flat';
         cell.textContent = '？';
-        cell.title = '身分未取得；未以其他股票替補';
+        cell.title = '權值資料未取得；未以其他股票替補';
         cell.setAttribute('aria-label', cell.title);
         cells.append(cell);
     }
@@ -20747,7 +20827,7 @@ function renderMarketStructure(result, pending = false, message = null, expanded
         if (market.weightDataStatus === 'unavailable') {
             const warning = document.createElement('span');
             warning.className = 'market-structure-weight-warning';
-            warning.textContent = '官方權重未取得';
+            warning.textContent = '權值資料未取得';
             item.append(warning);
         }
         quickMarkets.append(item);
@@ -20826,10 +20906,11 @@ function renderMarketStructure(result, pending = false, message = null, expanded
             warning.setAttribute('role', 'status');
             warning.textContent = market.weightDataWarning;
             card.append(warning);
-        } else if (market.weightDataStatus === 'ready' && market.weightIdentityReferenceDate) {
+        } else if (market.weightDataStatus === 'ready' && (market.weightNote || market.weightIdentityReferenceDate)) {
+            // 權值前 20 的來源與推移方式由 C# 寫好；舊版結果沒有說明時只列基準日。
             const source = document.createElement('p');
             source.className = 'market-structure-note';
-            source.textContent = `官方權重適用日：${market.weightIdentityReferenceDate}；當日固定20檔。`;
+            source.textContent = market.weightNote ?? `權值名單基準日：${market.weightIdentityReferenceDate}；當日固定20檔。`;
             card.append(source);
         }
 
@@ -20888,7 +20969,7 @@ function renderMarketStructure(result, pending = false, message = null, expanded
                     ? '成交值 —'
                     : `成交值 ${(Number(stock.tradingValueShare) * 100).toFixed(2)}%`;
                 const weight = document.createElement('span');
-                weight.textContent = stock.startWeight == null ? '官方權重 —' : `官方權重 ${(Number(stock.startWeight) * 100).toFixed(4)}%`;
+                weight.textContent = stock.startWeight == null ? '權重 —' : `權重 ${(Number(stock.startWeight) * 100).toFixed(4)}%`;
                 item.append(identity, weight, change, turnover);
                 list.append(item);
             }
@@ -22755,6 +22836,10 @@ function intradayYearToDatePercent(row, market) {
 const periodLoadErrors = new Map();
 
 async function fetchPeriod(key) {
+    // 每份「期間 × 交易日」解析後要好幾 MB；只留最近用過的幾份，
+    // 來回切換很多天時記憶體不會一直長，手機也不會因此越用越卡。
+    const limit = 12;
+
     if (!cache.has(key)) {
         // 帶上快照版本號：同一份快照可以被瀏覽器盡情快取，
         // 重新發佈後版本號一變，網址跟著變，手機上就不會再看到舊資料。
@@ -22768,19 +22853,27 @@ async function fetchPeriod(key) {
             periodLoadErrors.set(key, error);
             return null;
         }
+    } else {
+        // 最近用過的移到最後；淘汰時從最久沒用的開始。
+        const value = cache.get(key);
+        cache.delete(key);
+        cache.set(key, value);
     }
 
-    return cache.get(key);
+    const value = cache.get(key);
+
+    while (cache.size > limit) {
+        cache.delete(cache.keys().next().value);
+    }
+
+    return value;
 }
 
-// 單日比較共用 1 日排行檔裡的精簡比較資料：當天的成交值、成交比與價格欄位
-// 直接沿用該檔案，前期均值、增減率與成交比變化則由 C# 匯出後帶進來。瀏覽器
-// 只做資料組合，不重新實作排行公式。
-function applySingleDayComparison(data) {
-    const comparison = (data.singleComparisons ?? [])
-        .find(item => item.periodDays === state.period);
-
-    if (!comparison) {
+// 單日比較共用 1 日排行檔的當天成交值、成交比與價格欄位；前期均值、增減率與成交比變化
+// 由 C# 匯出成每個期間一份的 single-{期間}-{日期}.json，只有切到「單日」才下載。
+// 瀏覽器只做資料組合，不重新實作排行公式。
+function applySingleDayComparison(data, comparison) {
+    if (!comparison || comparison.periodDays !== state.period) {
         return null;
     }
 
@@ -22942,6 +23035,8 @@ async function loadCustom(silent = false, force = false) {
         showNotice('單日資料載入中…', false);
     }
 
+    // TDR 逐日檔與停牌區間檔跟排行檔同時下載，不必等大檔讀完才開始。
+    const supplement = Promise.all([fetchTdrDaily(state.date), ensureSuspensions()]);
     const data = await fetchPeriod(`1-${state.date}`);
 
     if (!data) {
@@ -22970,7 +23065,7 @@ async function loadCustom(silent = false, force = false) {
 
     // 個股清單 = 排行檔的普通股（上市、上櫃、興櫃）＋ TDR ＋ 當天停止交易的標的。
     // TDR 不進排行，所以另外讀它的逐日檔；停止交易的標的當天沒有行情，要從停牌區間檔補進來（筆記 #84）。
-    const [tdr] = await Promise.all([fetchTdrDaily(state.date), ensureSuspensions()]);
+    const [tdr] = await supplement;
     const tradedRows = [...data.rows, ...tdr.rows.map(toCustomTdrRow)];
     const { allRows, suspendedCount } = withSuspendedRows(tradedRows, suspensionsOn(state.date));
 
@@ -23834,10 +23929,17 @@ async function loadTopics(force = false) {
         state.topicTab = 'edits';
     }
 
+    // 第一次進族群頁時，盤中熱度與 topics.json 同時下載，不必等大檔讀完才開始。
+    let intradayHeat = null;
+
     if (topicData === null && !topicLoading && (topicLoadError === '' || force)) {
         topicLoading = true;
         topicLoadError = '';
         panel.replaceChildren(makeTopicNotice('族群資料載入中…', false));
+
+        if (isIntradayTopicDataView()) {
+            intradayHeat = loadIntradayTopicHeat();
+        }
 
         try {
             topicData = await fetchJsonWithRetry(
@@ -23857,7 +23959,7 @@ async function loadTopics(force = false) {
     renderTopicTabs();
 
     if (isIntradayTopicDataView()) {
-        await loadIntradayTopicHeat();
+        await (intradayHeat ?? loadIntradayTopicHeat());
     }
 
     renderSnapshotNote();
@@ -23950,19 +24052,20 @@ async function loadIntradayTopicHeat() {
         let latest;
 
         if (usingIntradayCdn() && intradayCdn !== null) {
+            // raw 與 topic 是兩個獨立的小指標，同時讀，不必等 raw 讀完才開始讀 topic。
+            // raw 先更新時，topic-latest 可能暫時落後；先保留舊的完整族群資料，等 topic consumer 完成後再換檔。
+            const topicRequest = fetchIntradayTopicCdnSnapshot().catch(error => {
+                // topic CDN 尚未產生、正在傳播或暫時失敗，不影響 raw CDN；下面仍可
+                // 用 Supabase view 救回上一份已完成熱度。
+                console.warn('盤中族群 CDN 讀取失敗，改用資料庫 fallback：', error);
+                return undefined;
+            });
+
             if (!await ensureIntradaySnapshot(true)) {
                 throw new Error('讀不到盤中快照。');
             }
 
-            // raw 與 topic 是兩個獨立的小指標。raw 先更新時，topic-latest 可能暫時
-            // 落後；先保留舊的完整族群資料，等 topic consumer 完成後再換檔。
-            try {
-                latest = await fetchIntradayTopicCdnSnapshot();
-            } catch (error) {
-                // topic CDN 尚未產生、正在傳播或暫時失敗，不影響 raw CDN；下面仍可
-                // 用 Supabase view 救回上一份已完成熱度。
-                console.warn('盤中族群 CDN 讀取失敗，改用資料庫 fallback：', error);
-            }
+            latest = await topicRequest;
         }
 
         if (!latest && supabase !== null) {
@@ -28444,35 +28547,45 @@ async function load() {
 
     const closeLoadState = JSON.stringify(state);
     const structureDate = state.date;
-    const key = state.view === 'daily' && state.comparisonMode === 'single'
+    const singleDay = state.view === 'daily' && state.comparisonMode === 'single';
+    const key = singleDay
         ? `1-${state.date}`
         : `${state.period}-${state.date}`;
+    const singleKey = singleDay ? `single-${state.period}-${state.date}` : null;
 
-    if (!cache.has(key)) {
+    // 市場結構、單日比較與排行同時開始下載；排行先畫，市場結構到了再補上。
+    const structureLoad = resolveCloseMarketStructure(structureDate);
+
+    if (!cache.has(key) || (singleKey && !cache.has(singleKey))) {
         showNotice('行情載入中…', false);
     }
 
-    const loaded = await fetchPeriod(key);
+    const [loaded, comparison] = await Promise.all([
+        fetchPeriod(key),
+        singleKey ? fetchPeriod(singleKey) : null
+    ]);
     if (JSON.stringify(state) !== closeLoadState) return;
 
-    if (!loaded) {
+    const failedKey = !loaded ? key : singleKey && !comparison ? singleKey : null;
+
+    if (failedKey) {
         // 抓不到資料，通常是因為手上這份頁面是舊的：新版改了檔名的組成方式。
-        const error = periodLoadErrors.get(key);
+        const error = periodLoadErrors.get(failedKey);
 
         if (error?.status === 404 && await reloadIfStale()) {
             return;
         }
 
         showNotice(error
-            ? staticJsonLoadErrorMessage(`data/${key}.json`, error)
-            : `讀不到 ${key} 這個組合的資料，請確認目前發布版本包含這個檔案。`, true, () => {
+            ? staticJsonLoadErrorMessage(`data/${failedKey}.json`, error)
+            : `讀不到 ${failedKey} 這個組合的資料，請確認目前發布版本包含這個檔案。`, true, () => {
                 void load().catch(reportLoadFailure);
             });
         return;
     }
 
-    const data = state.view === 'daily' && state.comparisonMode === 'single'
-        ? applySingleDayComparison(loaded)
+    const data = singleDay
+        ? applySingleDayComparison(loaded, comparison)
         : loaded;
 
     if (!data) {
@@ -28493,15 +28606,17 @@ async function load() {
     }
 
     const ranked = rankRows(data);
-    const structure = await resolveCloseMarketStructure(data, structureDate);
-    if (JSON.stringify(state) !== closeLoadState) return;
-    current = {
+    const structure = peekCloseMarketStructure(structureDate);
+    const shown = {
         ...data,
-        marketStructure: structure,
+        marketStructure: structure ?? null,
+        marketStructurePending: structure === undefined,
+        marketStructureMessage: structure === undefined ? '正在讀取這個交易日的市場結構。' : null,
         rows: ranked.rows,
         rankedStockCount: ranked.count,
         rankByTicker: ranked.rankByTicker
     };
+    current = shown;
 
     el('notice').hidden = true;
     el('ranking').hidden = false;
@@ -28509,6 +28624,54 @@ async function load() {
     renderSummary();
     renderTable();
     renderLockRow();
+    prefetchNeighborCloseDay(state.date, [key, singleKey].filter(Boolean));
+
+    if (!shown.marketStructurePending) {
+        return;
+    }
+
+    const resolved = await structureLoad;
+
+    // 等市場結構的期間換了日期、期間或頁籤，就不能把舊日期的結構補到新畫面上。
+    if (JSON.stringify(state) !== closeLoadState || current !== shown) return;
+
+    shown.marketStructure = resolved;
+    shown.marketStructurePending = false;
+    shown.marketStructureMessage = null;
+    renderSummary();
+}
+
+// 閒置時先把前一個交易日的同一份檔案與市場結構抓好，按「‹」時幾乎不用等。
+// 省流量模式不預抓；檔案仍走同一份快取，看過的日子不重複下載。
+function prefetchNeighborCloseDay(date, keys) {
+    if (navigator.connection?.saveData === true) {
+        return;
+    }
+
+    const index = dates.indexOf(date);
+    const previous = index > 0 ? dates[index - 1] : null;
+
+    if (!previous) {
+        return;
+    }
+
+    const run = () => {
+        if (state.date !== date) {
+            return;
+        }
+
+        for (const key of keys) {
+            void fetchPeriod(key.slice(0, key.length - date.length) + previous);
+        }
+
+        void resolveCloseMarketStructure(previous);
+    };
+
+    if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(run, { timeout: 3_000 });
+    } else {
+        setTimeout(run, 1_500);
+    }
 }
 
 function update(changes) {
