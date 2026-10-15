@@ -4454,28 +4454,33 @@ body {
 }
 
 .ranking-table.etf-table {
-    min-width: 900px;
+    min-width: 1080px;
     table-layout: fixed;
 }
 
 .ranking-table.etf-table .col-ticker {
-    width: 16%;
+    width: 11%;
 }
 
 .ranking-table.etf-table .col-name {
-    width: 30%;
+    width: 23%;
 }
 
 .ranking-table.etf-table .col-close {
-    width: 19%;
+    width: 13%;
 }
 
 .ranking-table.etf-table .col-price {
-    width: 21%;
+    width: 18%;
 }
 
 .ranking-table.etf-table .col-tradingValue {
     width: 14%;
+}
+
+.ranking-table.etf-table .col-payout {
+    width: 21%;
+    min-width: 190px;
 }
 
 .ranking-table.etf-table .col-name {
@@ -4488,6 +4493,133 @@ body {
 
 .ranking-table.etf-table .col-tradingValue {
     min-width: 120px;
+}
+
+.etf-payout-cell {
+    padding: 6px 8px !important;
+    white-space: normal !important;
+}
+
+.etf-payout-button {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    min-height: 60px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.etf-payout-button:hover,
+.etf-payout-button[aria-expanded="true"] {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+}
+
+.etf-payout-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.etf-payout-summary,
+.etf-payout-details {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.etf-payout-label {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.etf-payout-date,
+.etf-payout-amount {
+    font-variant-numeric: tabular-nums;
+}
+
+.etf-payout-date {
+    font-weight: 600;
+}
+
+.etf-payout-date.is-empty {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.etf-payout-amount {
+    color: var(--accent);
+    font-size: 13px;
+}
+
+.etf-payout-toggle {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.etf-payout-history-row > td {
+    padding: 0 !important;
+    background: var(--surface-alt);
+    text-align: left;
+    white-space: normal;
+}
+
+.etf-payout-history-panel {
+    padding: 16px 20px 18px;
+}
+
+.etf-payout-history-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.etf-payout-history-heading h3 {
+    margin: 0;
+    font-size: 15px;
+}
+
+.etf-payout-history-status {
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.etf-payout-history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.etf-payout-history-table th,
+.etf-payout-history-table td {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    text-align: center;
+}
+
+.etf-payout-history-table th {
+    background: var(--surface);
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.etf-payout-history-table .etf-payout-history-empty {
+    padding: 18px 12px;
+    color: var(--text-muted);
 }
 
 .pagination {
@@ -5836,7 +5968,7 @@ td.stock-name.stock-name-change-down {
     }
 
     .ranking-table.etf-table {
-        min-width: 780px;
+        min-width: 960px;
     }
 
     .ranking-table th,

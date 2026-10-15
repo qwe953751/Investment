@@ -736,8 +736,12 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("table-layout: fixed", styles, StringComparison.Ordinal);
         Assert.Contains(".ranking-table.custom-table .col-name", styles, StringComparison.Ordinal);
         Assert.Contains(".ranking-table.etf-table .col-name", styles, StringComparison.Ordinal);
+        Assert.Contains(".ranking-table.etf-table .col-payout", styles, StringComparison.Ordinal);
         Assert.Contains("width: 15%", styles, StringComparison.Ordinal);
-        Assert.Contains("width: 30%", styles, StringComparison.Ordinal);
+        Assert.Contains("width: 21%", styles, StringComparison.Ordinal);
+        Assert.Contains("title: '配息資訊'", script, StringComparison.Ordinal);
+        Assert.Contains("function buildEtfPayoutHistoryRow", script, StringComparison.Ordinal);
+        Assert.Contains("state.etfExpandedPayoutTicker", script, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -2134,7 +2134,8 @@ const ETF_COLUMNS = [
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔 ETF 最近三個月的日 K。名稱底色表示日漲跌。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true, klineOptions: { market: '台股', etf: true } }) },
     { key: 'close', title: '收盤價', hint: 'ETF 名冊中最近一個有效交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'price', title: '漲跌幅', hint: '分層顯示日／週／年漲跌幅，全部已還原權息（除息、分割不會被當成下跌）；今年才掛牌的標籤是「掛」，從官方掛牌參考價起算。排序以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange, { weeklyFromListing: row.weeklyFromListing, yearFromListing: row.yearToDateFromListing }) },
-    { key: 'tradingValue', title: '成交值（億）', hint: '所選交易日或盤中最新一輪的 ETF 成交值；盤中還沒有報價的標的顯示 —。', value: row => row.tradingValue, cell: row => ({ text: missing(row.tradingValue) ? '—' : toBillionText(row.tradingValue), cls: 'numeric' }) }
+    { key: 'tradingValue', title: '成交值（億）', hint: '所選交易日或盤中最新一輪的 ETF 成交值；盤中還沒有報價的標的顯示 —。', value: row => row.tradingValue, cell: row => ({ text: missing(row.tradingValue) ? '—' : toBillionText(row.tradingValue), cls: 'numeric' }) },
+    { key: 'payout', title: '配息資訊', hint: '點擊欄位展開或收合年度配息紀錄。配息資料尚未串接時，欄位會顯示空狀態。', sortable: false, cell: () => ({ cls: 'etf-payout-cell', payout: true }) }
 ];
 
 // 自訂頁的盤中欄位沿用同一組個股欄位，只改成即時資料的語意。
@@ -2312,6 +2313,7 @@ const state = {
     etfSearchDraft: '',
     etfSortKey: 'ticker',
     etfSortDescending: false,
+    etfExpandedPayoutTicker: '',
     customStatusFilters: {
         all: true,
         disposition: false,
@@ -20162,7 +20164,7 @@ function appendTickerBadges(parent, badges) {
 // 排行榜與持倉檢視共用同一套儲存格內容：代號市場標記／交易限制、名稱 K 線、族群連結、
 // 日週漲跌、營收彈窗與創高月數都在這裡畫。呼叫端只負責提供資料列與 K 線尾端選項。
 function appendRankingCell(tr, row, column, options = {}) {
-    const { text, cls, lines, kline, klineOptions, marketMark, revenueDetails, topic, tickerBadges } = column.cell(row);
+    const { text, cls, lines, kline, klineOptions, marketMark, revenueDetails, topic, tickerBadges, payout } = column.cell(row);
     const td = document.createElement('td');
     td.className = cls;
     td.classList.add('col-' + column.key);
@@ -20181,6 +20183,45 @@ function appendRankingCell(tr, row, column, options = {}) {
 
         appendTickerBadges(td, tickerBadges);
 
+        tr.append(td);
+        return;
+    }
+
+    if (payout) {
+        const expanded = state.etfExpandedPayoutTicker === row.ticker;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'etf-payout-button';
+        button.setAttribute('aria-expanded', String(expanded));
+        button.setAttribute('aria-controls', `etf-payout-history-${row.ticker}`);
+        button.setAttribute('aria-label', `${row.ticker} ${row.name} 配息資訊與年度紀錄，${expanded ? '收合' : '展開'}`);
+
+        const summary = document.createElement('span');
+        summary.className = 'etf-payout-summary';
+        const label = document.createElement('span');
+        label.className = 'etf-payout-label';
+        label.textContent = '下次發放';
+        const date = document.createElement('span');
+        date.className = 'etf-payout-date is-empty';
+        date.textContent = '資料尚未串接';
+        summary.append(label, date);
+
+        const details = document.createElement('span');
+        details.className = 'etf-payout-details';
+        const amount = document.createElement('span');
+        amount.className = 'etf-payout-amount';
+        amount.textContent = '— / 單位';
+        const toggle = document.createElement('span');
+        toggle.className = 'etf-payout-toggle';
+        toggle.textContent = expanded ? '收合年度紀錄' : '年度紀錄';
+        details.append(amount, toggle);
+
+        button.append(summary, details);
+        button.addEventListener('click', () => {
+            state.etfExpandedPayoutTicker = expanded ? '' : row.ticker;
+            renderTable();
+        });
+        td.append(button);
         tr.append(td);
         return;
     }
@@ -20257,6 +20298,55 @@ function appendRankingCell(tr, row, column, options = {}) {
     tr.append(td);
 }
 
+function buildEtfPayoutHistoryRow(row, columnCount) {
+    const tr = document.createElement('tr');
+    tr.className = 'etf-payout-history-row';
+
+    const td = document.createElement('td');
+    td.colSpan = columnCount;
+    td.id = `etf-payout-history-${row.ticker}`;
+
+    const panel = document.createElement('div');
+    panel.className = 'etf-payout-history-panel';
+
+    const heading = document.createElement('div');
+    heading.className = 'etf-payout-history-heading';
+    const title = document.createElement('h3');
+    title.textContent = '年度紀錄';
+    const status = document.createElement('span');
+    status.className = 'etf-payout-history-status';
+    status.textContent = '資料尚未串接';
+    heading.append(title, status);
+
+    const table = document.createElement('table');
+    table.className = 'etf-payout-history-table';
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+
+    for (const label of ['年度', '除息日', '發放日', '每單位配息']) {
+        const th = document.createElement('th');
+        th.scope = 'col';
+        th.textContent = label;
+        headerRow.append(th);
+    }
+
+    thead.append(headerRow);
+    const tbody = document.createElement('tbody');
+    const emptyRow = document.createElement('tr');
+    const emptyCell = document.createElement('td');
+    emptyCell.colSpan = 4;
+    emptyCell.className = 'etf-payout-history-empty';
+    emptyCell.textContent = '配息資料尚未串接，串接後將顯示歷年除息與發放紀錄。';
+    emptyRow.append(emptyCell);
+    tbody.append(emptyRow);
+    table.append(thead, tbody);
+
+    panel.append(heading, table);
+    td.append(panel);
+    tr.append(td);
+    return tr;
+}
+
 function renderTable() {
     el('data-table').classList.toggle('custom-table', state.view === 'custom');
     el('data-table').classList.toggle('etf-table', state.view === 'etf');
@@ -20328,6 +20418,7 @@ function renderTable() {
     const lockedTickers = new Set(locked);
     const tableColumns = columns();
     const build = row => {
+        const fragment = document.createDocumentFragment();
         const tr = document.createElement('tr');
         tr.dataset.ticker = row.ticker;
 
@@ -20339,7 +20430,13 @@ function renderTable() {
             appendRankingCell(tr, row, column);
         }
 
-        return tr;
+        fragment.append(tr);
+
+        if (state.view === 'etf' && state.etfExpandedPayoutTicker === row.ticker) {
+            fragment.append(buildEtfPayoutHistoryRow(row, tableColumns.length));
+        }
+
+        return fragment;
     };
 
     // 先畫第一屏，其餘等這一格畫面更新後再補：換日、換頁籤時先看到結果，
