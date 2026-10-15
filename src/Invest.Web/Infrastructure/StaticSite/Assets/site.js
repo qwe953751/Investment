@@ -20744,7 +20744,7 @@ function makeMarketStructureBreadthRow(label, breadth) {
     return row;
 }
 
-function makeMarketStructureWeightStrip(market, estimated) {
+function makeMarketStructureWeightStrip(market) {
     if (!Array.isArray(market?.weightGroup)) {
         return null;
     }
@@ -20760,16 +20760,17 @@ function makeMarketStructureWeightStrip(market, estimated) {
     labelCopy.className = 'market-structure-weight-copy';
     const label = document.createElement('strong');
     label.textContent = '權值前 20';
+    const weightNote = market.weightNote || (market.weightIdentityReferenceDate
+        ? `權值名單基準日：${market.weightIdentityReferenceDate}；當日固定20檔。`
+        : null);
+    if (weightNote) {
+        label.dataset.hint = weightNote;
+        label.dataset.hintPublic = 'true';
+    }
     const labelNote = document.createElement('small');
     labelNote.textContent = market.weightGroup.length < 20 ? `(已知${market.weightGroup.length}/20檔)` : '(標的漲跌)';
     labelCopy.append(label, labelNote);
     heading.append(labelCopy);
-    if (market.weightGroup.length > 0 && (estimated || market.weightGroup.some(stock => stock.isEstimated))) {
-        const badge = document.createElement('span');
-        badge.className = 'market-structure-estimate-badge';
-        badge.textContent = '漲跌推估';
-        heading.append(badge);
-    }
 
     const cells = document.createElement('div');
     cells.className = 'market-structure-weight-cells';
@@ -20884,21 +20885,35 @@ function renderMarketStructure(result, pending = false, message = null, expanded
         status.className = 'market-structure-status ' + marketStructureStatusTone(market);
         status.textContent = market.dataStatus === 'waiting' ? '等待開盤' : market.displayName ?? '資料不足';
         identity.append(name, status);
+        const qualityNotes = Array.isArray(market.warnings)
+            ? market.warnings.filter(warning => warning !== market.weightDataWarning).join(' ')
+            : '';
+        if (qualityNotes) {
+            const qualityHint = document.createElement('span');
+            qualityHint.className = 'market-structure-quality-hint';
+            qualityHint.textContent = 'ⓘ';
+            qualityHint.setAttribute('aria-label', '資料口徑與品質說明');
+            qualityHint.dataset.hint = qualityNotes;
+            qualityHint.dataset.hintPublic = 'true';
+            identity.append(qualityHint);
+        }
         const explanation = document.createElement('p');
         explanation.className = 'market-structure-explanation';
-        explanation.textContent = market.explanation
-            ? market.explanation
+        const explanationText = typeof market.explanation === 'string' ? market.explanation.trim() : '';
+        const explanationBreak = explanationText.indexOf('。');
+        explanation.textContent = explanationBreak >= 0
+            ? explanationText.slice(0, explanationBreak + 1)
+            : explanationText;
+        const explanationDetailText = explanationBreak >= 0
+            ? explanationText.slice(explanationBreak + 1).trim()
             : '';
-        const coverage = document.createElement('div');
-        coverage.className = 'market-structure-coverage';
-        const coverageLabel = document.createElement('span');
-        coverageLabel.textContent = '有效報價';
-        const coverageValue = document.createElement('strong');
-        coverageValue.textContent = market.allStockBreadth
-            ? `${marketStructureCount(market.allStockBreadth.quotedCount)}/${marketStructureCount(market.allStockBreadth.expectedCount)}`
-            : '—';
-        coverage.append(coverageLabel, coverageValue);
-        cardHeading.append(identity, explanation, coverage);
+        cardHeading.append(identity, explanation);
+        if (explanationDetailText) {
+            const explanationDetail = document.createElement('p');
+            explanationDetail.className = 'market-structure-explanation-detail';
+            explanationDetail.textContent = explanationDetailText;
+            cardHeading.append(explanationDetail);
+        }
         card.append(cardHeading);
         if (market.weightDataWarning) {
             const warning = document.createElement('p');
@@ -20906,15 +20921,9 @@ function renderMarketStructure(result, pending = false, message = null, expanded
             warning.setAttribute('role', 'status');
             warning.textContent = market.weightDataWarning;
             card.append(warning);
-        } else if (market.weightDataStatus === 'ready' && (market.weightNote || market.weightIdentityReferenceDate)) {
-            // 權值前 20 的來源與推移方式由 C# 寫好；舊版結果沒有說明時只列基準日。
-            const source = document.createElement('p');
-            source.className = 'market-structure-note';
-            source.textContent = market.weightNote ?? `權值名單基準日：${market.weightIdentityReferenceDate}；當日固定20檔。`;
-            card.append(source);
         }
 
-        const weightStrip = makeMarketStructureWeightStrip(market, result.isEstimated === true);
+        const weightStrip = makeMarketStructureWeightStrip(market);
         if (weightStrip) {
             card.append(weightStrip);
         }
@@ -20943,13 +20952,6 @@ function renderMarketStructure(result, pending = false, message = null, expanded
             metrics.append(term, detail);
         }
         card.append(metrics);
-
-        if (market.warnings?.length) {
-            const note = document.createElement('p');
-            note.className = 'market-structure-note';
-            note.textContent = market.warnings.filter(warning => warning !== market.weightDataWarning).join(' ');
-            card.append(note);
-        }
 
         if (market.weightGroup?.length) {
             const details = document.createElement('details');

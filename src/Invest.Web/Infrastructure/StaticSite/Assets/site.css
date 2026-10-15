@@ -11059,7 +11059,7 @@ html {
 
 .market-structure-chart-heading {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(118px, auto);
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
     gap: 8px 12px;
     margin-bottom: 12px;
@@ -11106,34 +11106,24 @@ html {
     margin: 0;
     color: #46556c;
     font-size: 14px;
+    font-weight: 500;
     line-height: 1.45;
     grid-column: 1 / -1;
     grid-row: 2;
 }
 
-.market-structure-explanation:empty {
-    display: none;
-}
-
-.market-structure-coverage {
-    display: grid;
-    grid-template-columns: auto auto;
-    align-items: baseline;
-    justify-self: end;
-    grid-column: 2;
-    grid-row: 1;
-    gap: 5px 10px;
+.market-structure-explanation-detail {
+    min-width: 0;
+    margin: 0;
     color: var(--text-muted);
     font-size: 13px;
-    text-align: right;
-    white-space: nowrap;
+    line-height: 1.4;
+    grid-column: 1 / -1;
+    grid-row: 3;
 }
 
-.market-structure-coverage > strong {
-    color: var(--text);
-    font-size: 15px;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
+.market-structure-explanation:empty {
+    display: none;
 }
 
 .market-structure-weight-row {
@@ -11230,7 +11220,7 @@ html {
     }
 
     .market-structure-chart-heading {
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, 1fr);
         gap: 5px 8px;
     }
 
@@ -11243,9 +11233,9 @@ html {
         grid-row: 2;
     }
 
-    .market-structure-coverage {
-        grid-column: 2;
-        grid-row: 1;
+    .market-structure-explanation-detail {
+        grid-column: 1 / -1;
+        grid-row: 3;
     }
 
     .market-structure-weight-row {
@@ -11286,4 +11276,36 @@ html {
     .market-structure-weights li {
         grid-template-columns: minmax(0, 1fr) auto;
     }
+}
+
+.market-structure-weight-copy > strong[data-hint] {
+    cursor: help;
+    text-decoration: underline dotted #aab4c3;
+    text-underline-offset: 3px;
+}
+
+.monitor-access .market-structure-weight-copy > strong[data-hint] {
+    cursor: inherit;
+    text-decoration: none;
+}
+
+.market-structure-quality-hint {
+    display: inline-grid;
+    flex: 0 0 17px;
+    width: 17px;
+    height: 17px;
+    place-items: center;
+    border: 1px solid #b8c2d1;
+    border-radius: 50%;
+    background: #f7f9fc;
+    color: #69778a;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: help;
+    user-select: none;
+}
+
+.monitor-access .market-structure-quality-hint {
+    cursor: inherit;
 }

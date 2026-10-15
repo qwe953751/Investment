@@ -5,7 +5,8 @@ public sealed class DailySnapshotWorkflowTests
     [Fact]
     public void 純發布保留真盤後缺口警報但完整資料流程仍失敗()
     {
-        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
         var start = workflow.IndexOf("- name: 更新盤後資料缺口警報", StringComparison.Ordinal);
         var end = workflow.IndexOf("- name: 失敗時留下線索", start, StringComparison.Ordinal);
         var step = workflow[start..end];
@@ -287,7 +288,8 @@ public sealed class DailySnapshotWorkflowTests
     public void 權值前20官方資料每日只補最近幾天且在保存行情快取之前並允許失敗()
     {
         var workflow = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
 
         var step = workflow[workflow.IndexOf("- name: 補抓權值前 20 官方資料", StringComparison.Ordinal)..];
         var header = step[..step.IndexOf("run:", StringComparison.Ordinal)];
