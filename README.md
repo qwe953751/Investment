@@ -99,6 +99,7 @@ Google Sheet 是人工維護的主檔，保存 Buy／Stock／48 個族群與既�
 Google Sheet 是主檔：網站有尚未匯出的草稿時按「從 Google Sheet 匯入」，會跳出確認視窗；確定＝以 Google Sheet 原檔覆蓋網站資料並作廢草稿（保留紀錄、不刪除），取消＝保留草稿。每天 18:30 的自動匯入沒有人可確認，遇草稿一律不覆蓋。匯出時新增列 A／D 欄只驗證有套上第 4 列公式（不再誤判為「值有變化」），既有保留列仍不得改動。
 表格欄位可拖曳換位；Buy／Stock／48 個族群勾選可編輯、新增或刪除。刪除按鈕只在編輯時放於 Stock 儲存格內，不另增加「操作」欄；舊版已保存的 `actions` 排序鍵會被忽略。提示訊息與匯入／匯出按鈕同列，匯入／匯出及編輯／返回持倉分組，返回持倉靠右；四個按鈕使用一致樣式。欄位首次排序為降冪，再按同欄切換升冪。`營收創高` 以網站為準：匯入不讀 D 欄、D 欄也不納入快照或 hash；按「匯出到 Google Sheet」時，後端把網站的結果寫進 D 欄——創高＝勾選（V）、未創高＝`X`、尚未公布＝`-`（台北上個月營收，與網站畫面逐案一致）。沒有草稿時按匯出只更新 D 欄，有草稿則與草稿同批寫入；D 的格式與 checkbox 驗證保留，第 1、2 列統計公式自動重算。公告期（每月 1–10 日）尚未公布的標的多，D 欄 `-` 會暫時變多。
 族群欄以 Google Sheet 第 3 列的 developer metadata 對應，避免重複名稱（目前有兩個「導線架」）造成錯欄。
+48 個族群欄順序也雙向同步：匯入後網站跟隨 Google Sheet；網站拖曳調整後，按「匯出到 Google Sheet」會移動 E:AZ 整欄，保留欄位內容、格式、核取方塊驗證與 developer metadata。
 操作表欄位排序第一次點擊先採降冪，再點同一欄切換為升冪；缺值仍固定排在最後。
 `db/058_asset_operation_full_sheet_sync.sql` 建立快照、48 欄定義、同步狀態與受控 RPC；`db/059_asset_operation_sync_write_hardening.sql`
 收回 authenticated 直接寫入，正式變更只能經 Edge Function；`db/060_asset_operation_sync_cron.sql` 預設台北 18:30 自動匯入（需先設定 Vault secret）。

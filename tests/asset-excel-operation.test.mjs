@@ -476,6 +476,82 @@ test('Edge Function 具備 import／草稿／export、Google hash 衝突與 18:3
     assert.match(cronMigration, /net\.http_post/);
 });
 
+test('匯入以試算表族群欄位順序更新網站設定；匯出計畫將整欄移到網站順序', () => {
+    const context = { SHEET_ID: 58931507 };
+    vm.createContext(context);
+    vm.runInContext([
+        edgeFunctionSource('columnOrderWithGroupOrder'),
+        edgeFunctionSource('groupColumnOrderPlan')
+    ].join('\n\n'), context);
+
+    const groups = ['a', 'b', 'c'].map((id, index) => ({
+        id,
+        sheet_column_index: index + 5,
+        display_order: index
+    }));
+    const importedOrder = context.columnOrderWithGroupOrder(
+        ['weight', 'buy', 'group:c', 'stock', 'group:a', 'group:b', 'revenueHigh'],
+        groups);
+    assert.deepEqual(Array.from(importedOrder), [
+        'weight', 'buy', 'group:a', 'stock', 'group:b', 'group:c', 'revenueHigh'
+    ]);
+
+    const plan = context.groupColumnOrderPlan(groups, ['weight', 'group:b', 'group:c', 'group:a']);
+    assert.equal(plan.changed, true);
+    assert.deepEqual(Array.from(plan.groupIds), ['b', 'c', 'a']);
+    assert.deepEqual(JSON.parse(JSON.stringify(plan.requests)), [
+        { moveDimension: {
+            source: { sheetId: 58931507, dimension: 'COLUMNS', startIndex: 5, endIndex: 6 },
+            destinationIndex: 4
+        } },
+        { moveDimension: {
+            source: { sheetId: 58931507, dimension: 'COLUMNS', startIndex: 6, endIndex: 7 },
+            destinationIndex: 5
+        } }
+    ]);
+    assert.deepEqual(Array.from(plan.groups, group => group.sheet_column_index), [5, 6, 7]);
+    assert.throws(() => context.groupColumnOrderPlan(
+        [{ id: 'a', sheet_column_index: 6 }], ['group:a']), /未連續位於 E:AZ/);
+});
+
+test('正式匯入更新族群順序設定並保留其他網站欄位位置', async () => {
+    const groups = ['a', 'b', 'c'].map((id, index) => ({
+        id,
+        label: id.toUpperCase(),
+        sheet_column_index: index + 5,
+        display_order: index
+    }));
+    const writes = [];
+    const context = {
+        targetAccount: async () => {},
+        readSheet: async () => ({ rows: [{ buy: 1 }], groups }),
+        contentHash: async () => 'hash',
+        syncState: async () => ({ status: 'clean', version: 1 }),
+        callReplace: async () => ({ version: 2 }),
+        supabaseRequest: async (_url, options) => {
+            if (options?.method === 'POST') {
+                const body = JSON.parse(options.body);
+                writes.push(body.column_order);
+                return [body];
+            }
+            return [{ column_order: ['weight', 'group:c', 'buy', 'group:a', 'stock', 'revenueHigh', 'group:b'] }];
+        },
+        crypto: { randomUUID: () => 'snapshot' },
+        encodeURIComponent
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        edgeFunctionSource('columnOrderWithGroupOrder'),
+        edgeFunctionSource('persistColumnOrder'),
+        edgeFunctionSource('importAction')
+    ].join('\n\n'), context);
+
+    await context.importAction('account', {}, { cron: true });
+    assert.deepEqual(Array.from(writes[0]), [
+        'weight', 'group:a', 'buy', 'group:b', 'stock', 'revenueHigh', 'group:c'
+    ]);
+});
+
 function googleWriterContext() {
     const requests = [];
     const context = {
@@ -505,6 +581,7 @@ function googleWriterContext() {
     };
     vm.createContext(context);
     vm.runInContext([
+        edgeFunctionSource('groupColumnOrderPlan'),
         edgeFunctionSource('columnLabel'),
         edgeFunctionSource('assertRowsSafeToDelete'),
         edgeFunctionSource('compactionMarkers'),
@@ -552,6 +629,37 @@ test('Google 匯出以整列刪除多出的標的列，且不更新 D 或表頭�
     }));
     assert.ok(context.requests.every(request => !request.updateCells
         || request.updateCells.fields === 'userEnteredValue'));
+});
+
+test('Google 匯出先整欄移動族群，再按目標欄位順序寫回勾選值', async () => {
+    const context = googleWriterContext();
+    const groups = [
+        { id: 'a', sheet_column_index: 5 },
+        { id: 'b', sheet_column_index: 6 },
+        { id: 'c', sheet_column_index: 7 }
+    ];
+    const sheet = {
+        rowCount: 1000,
+        sheetProperties: { gridProperties: { columnCount: 52 } },
+        developerMetadata: [],
+        columns: { fields: { buy: 1, stock: 2 }, groups: [{ index: 4 }] },
+        groups,
+        rawRows: [[], [], [], ['', 1, '2330 台積電', '', true, false, true]]
+    };
+    const plan = context.groupColumnOrderPlan(groups, ['group:b', 'group:c', 'group:a']);
+    await context.writeGoogle(sheet, [
+        { buy: 1, stock: '2330 台積電', group_flags: { a: true, b: false, c: true } }
+    ], { groupOrderPlan: plan });
+
+    const moves = context.requests.filter(request => request.moveDimension);
+    const groupWrite = context.requests.find(request => request.updateCells?.start?.columnIndex === 4);
+    assert.equal(moves.length, 2);
+    assert.ok(context.requests.indexOf(moves[1]) < context.requests.indexOf(groupWrite));
+    assert.deepEqual(JSON.parse(JSON.stringify(groupWrite.updateCells.rows[0].values.slice(0, 3))), [
+        { userEnteredValue: { boolValue: false } },
+        { userEnteredValue: { boolValue: true } },
+        { userEnteredValue: { boolValue: true } }
+    ]);
 });
 
 test('網站清空所有標的時保留第 4 列模板並實體刪除後續標的列', async () => {
@@ -704,7 +812,10 @@ test('Edge Function 儲存欄位順序時會忽略舊 actions 鍵', async () => 
         }
     };
     vm.createContext(context);
-    vm.runInContext(edgeFunctionSource('saveColumnOrderAction'), context);
+    vm.runInContext([
+        edgeFunctionSource('persistColumnOrder'),
+        edgeFunctionSource('saveColumnOrderAction')
+    ].join('\n\n'), context);
 
     await context.saveColumnOrderAction('account-1', {
         columnOrder: ['weight', 'actions', 'stock', 'group:group-a']
@@ -809,6 +920,7 @@ test('新增列的 A 欄只驗證套上第 4 列公式，既有保留列仍不�
     vm.runInContext([
         'function cell(rows, r, c) { return rows[r]?.[c] ?? \'\'; }',
         edgeFunctionSource('columnLabel'),
+        edgeFunctionSource('headerAfterGroupOrder'),
         edgeFunctionSource('assertProtectedSheetStructure')
     ].join('\n'), context);
 
@@ -831,6 +943,22 @@ test('新增列的 A 欄只驗證套上第 4 列公式，既有保留列仍不�
         /保留列第 5 列 A 欄值有變化/);
     // D 欄現在是網站寫入的值，結構驗證不再要求 D 維持公式或不變
     context.assertProtectedSheetStructure(sheet, sheet, before, make(5, '', 'X'), 5, 6);
+
+    const orderedSheet = {
+        frozenRowCount: 3,
+        groups: [
+            { id: 'a', sheet_column_index: 5 },
+            { id: 'b', sheet_column_index: 6 }
+        ]
+    };
+    const beforeMoved = make(5, '');
+    beforeMoved[2][4] = 'A';
+    beforeMoved[2][5] = 'B';
+    const afterMoved = make(5, '');
+    afterMoved[2][4] = 'B';
+    afterMoved[2][5] = 'A';
+    context.assertProtectedSheetStructure(
+        orderedSheet, orderedSheet, beforeMoved, afterMoved, 5, 6, ['b', 'a']);
 });
 
 test('前端匯入遇到草稿先詢問並帶 overwriteDraft；後端 draft_pending 時才補問', async () => {
@@ -876,7 +1004,7 @@ test('前端匯入遇到草稿先詢問並帶 overwriteDraft；後端 draft_pend
 
 test('匯出的新增列驗證起點由 writeGoogle 回報', () => {
     assert.match(edgeFunctionSource('writeGoogle'), /appendedFromRow: targetLastRow >= newRowsStart/);
-    assert.match(edgeFunctionSource('exportAction'), /retainedLastRow, writeResult\.appendedFromRow\)/);
+    assert.match(edgeFunctionSource('exportAction'), /writeResult\.appendedFromRow/);
 });
 
 
@@ -994,7 +1122,7 @@ function revenueRefreshContext({ hashAfter = 'same', rawD = [] } = {}) {
     rawD.forEach((value, index) => { verified.rawRows[sheet.dataRowIndexes[index]] = ['', '', '', value]; });
     let reads = 0;
     const context = {
-        WRITE_ENABLED: true, SHEET_ID: 58931507, SPREADSHEET_ID: 'sheet', encodeURIComponent,
+        WRITE_ENABLED: true, FIRST_DATA_ROW: 4, SHEET_ID: 58931507, SPREADSHEET_ID: 'sheet', encodeURIComponent,
         readSheet: async () => (reads++ === 0 ? sheet : verified),
         revenueHighValues: async () => ({ month: '2026-09', values: [true, 'X', '-'] }),
         contentHash: async rows => (rows === sheet ? 'same' : hashAfter),
@@ -1039,7 +1167,8 @@ test('營收創高回讀不一致只回報不丟錯；寫入期間標的被改�
 
 test('匯出沒有草稿時改走營收創高更新，有草稿仍走完整匯出', () => {
     const exporter = edgeFunctionSource('exportAction');
-    assert.match(exporter, /pending\.length === 0\) return await refreshRevenueHighAction\(\)/);
+    assert.match(exporter, /groupColumnOrderPlanForAccount/);
+    assert.match(exporter, /refreshRevenueHighAction\(sheet, groupOrderPlan\)/);
     assert.match(exporter, /revenueValues: revenue\.values/);
     assert.match(exporter, /revenueHigh: revenueHighSummary\(/);
 });
@@ -1054,6 +1183,7 @@ test('前端匯出按鈕不再要求草稿，沒有草稿時顯示 V／X／- 統
             assetExcelSyncing: false, assetExcelEditing: false, assetExcelNotice: '',
             assetExcelSyncState: { status: 'clean' }, assetExcelAccountId: 'a',
             el: () => null, renderAssetExcelView() {}, loadAssetExcelData: async () => {},
+            assetExcelPersistColumnOrder: async () => {},
             assetExcelSyncAction: async action => { sent.push(action); return response; }
         };
         vm.createContext(context);

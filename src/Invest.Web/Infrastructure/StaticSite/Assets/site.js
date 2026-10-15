@@ -11261,8 +11261,8 @@ async function assetExcelImportLatest() {
         }
         await loadAssetExcelData(assetExcelAccountId);
         assetExcelNotice = result.overwrittenDrafts > 0
-            ? '已用 Google Sheet 原檔覆蓋網站資料，網站草稿已作廢。'
-            : '已匯入 Google Sheet，網站資料已更新；營收創高以網站為準。';
+            ? '已用 Google Sheet 原檔覆蓋網站資料，族群欄位順序已同步，網站草稿已作廢。'
+            : '已匯入 Google Sheet，網站資料與族群欄位順序已更新；營收創高以網站為準。';
     } catch (error) {
         assetExcelNotice = `匯入失敗：${error.message}`;
     } finally {
@@ -11281,19 +11281,22 @@ function assetExcelRevenueHighNotice(summary) {
 
 async function assetExcelExportLatest() {
     if (assetExcelSyncing || assetExcelEditing) return;
-    // 有草稿：草稿與營收創高一起寫入；沒有草稿：只把網站的營收創高（V／X／-）寫進 Google D 欄。
+    // 匯出前先等欄位排序保存完成；後端會同步族群欄位順序，並依草稿狀態寫入資料與營收創高。
     const hasDraft = assetExcelSyncState?.status === 'dirty';
 
     assetExcelSyncing = true;
-    assetExcelNotice = hasDraft ? '正在匯出並驗證 Google Sheet…' : '正在把網站營收創高寫入 Google Sheet…';
+    assetExcelNotice = hasDraft
+        ? '正在匯出並驗證 Google Sheet…'
+        : '正在同步族群欄位順序與營收創高…';
     renderAssetExcelView(el('asset-excel-page'));
     try {
+        await assetExcelPersistColumnOrder();
         const result = await assetExcelSyncAction('export');
         await loadAssetExcelData(assetExcelAccountId);
         const revenueText = assetExcelRevenueHighNotice(result.revenueHigh);
         assetExcelNotice = result.revenueOnly
-            ? `${revenueText || '營收創高已寫入 Google Sheet D 欄'}。`
-            : `匯出成功；Google Sheet 資料列已同步。${revenueText ? `${revenueText}。` : ''}`;
+            ? `Google Sheet 族群欄位順序已與網站一致；${revenueText || '營收創高已寫入 D 欄'}。`
+            : `匯出成功；Google Sheet 資料列與族群欄位順序已同步。${revenueText ? `${revenueText}。` : ''}`;
     } catch (error) {
         assetExcelNotice = error.status === 409
             ? 'Google Sheet 已有較新修改，匯出被停止；請先匯入最新資料。'

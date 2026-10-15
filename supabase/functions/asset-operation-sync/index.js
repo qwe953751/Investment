@@ -81,6 +81,92 @@ async function contentHash(rows) {
     }))));
 }
 
+function columnOrderWithGroupOrder(columnOrder, groups) {
+    const groupKeys = groups
+        .slice()
+        .sort((left, right) => Number(left.sheet_column_index) - Number(right.sheet_column_index))
+        .map(group => `group:${group.id}`);
+    const groupKeySet = new Set(groupKeys);
+    const allowed = new Set(['weight', 'buy', 'stock', 'revenueHigh', ...groupKeys]);
+    const stored = Array.isArray(columnOrder)
+        ? [...new Set(columnOrder.filter(key => allowed.has(key)))]
+        : [];
+    const order = stored.length > 0 ? stored : ['weight', 'buy', 'stock', 'revenueHigh'];
+    let nextGroup = 0;
+    const result = order.map(key => groupKeySet.has(key) ? groupKeys[nextGroup++] : key);
+    while (nextGroup < groupKeys.length) result.push(groupKeys[nextGroup++]);
+    for (const key of ['weight', 'buy', 'stock', 'revenueHigh']) {
+        if (!result.includes(key)) result.push(key);
+    }
+    return result;
+}
+
+function groupColumnOrderPlan(groups, columnOrder) {
+    const currentGroups = groups.slice()
+        .sort((left, right) => Number(left.sheet_column_index) - Number(right.sheet_column_index));
+    const currentIds = currentGroups.map(group => group.id);
+    if (currentGroups.some((group, index) => Number(group.sheet_column_index) !== index + 5)
+        || new Set(currentIds).size !== currentIds.length) {
+        throw new Error('Google Sheet 的 48 個族群 metadata 未連續位於 E:AZ，已停止移動欄位。');
+    }
+
+    const knownIds = new Set(currentIds);
+    const requestedIds = Array.isArray(columnOrder)
+        ? columnOrder
+            .filter(key => typeof key === 'string' && key.startsWith('group:'))
+            .map(key => key.slice(6))
+            .filter(id => knownIds.has(id))
+        : [];
+    const desiredIds = [...new Set([...requestedIds, ...currentIds])];
+    const byId = new Map(currentGroups.map(group => [group.id, group]));
+    const requests = [];
+    const workingIds = [...currentIds];
+    for (let targetIndex = 0; targetIndex < desiredIds.length; targetIndex += 1) {
+        const sourceIndex = workingIds.indexOf(desiredIds[targetIndex]);
+        if (sourceIndex === targetIndex) continue;
+        requests.push({ moveDimension: {
+            source: {
+                sheetId: SHEET_ID,
+                dimension: 'COLUMNS',
+                startIndex: sourceIndex + 4,
+                endIndex: sourceIndex + 5
+            },
+            destinationIndex: targetIndex + 4
+        }});
+        workingIds.splice(sourceIndex, 1);
+        workingIds.splice(targetIndex, 0, desiredIds[targetIndex]);
+    }
+
+    return {
+        changed: requests.length > 0,
+        groupIds: desiredIds,
+        groups: desiredIds.map((id, index) => ({
+            ...byId.get(id),
+            sheet_column_index: index + 5,
+            display_order: index
+        })),
+        requests
+    };
+}
+
+function groupIdsInSheet(groups) {
+    return groups.slice()
+        .sort((left, right) => Number(left.sheet_column_index) - Number(right.sheet_column_index))
+        .map(group => group.id);
+}
+
+function headerAfterGroupOrder(beforeHeader, groups, desiredGroupIds) {
+    const oldIndexById = new Map(groups.map(group => [group.id, Number(group.sheet_column_index) - 1]));
+    const expected = Array.from(
+        { length: LAST_CONTROLLED_COLUMN },
+        (_, index) => beforeHeader[index] ?? '');
+    desiredGroupIds.forEach((id, index) => {
+        const oldIndex = oldIndexById.get(id);
+        if (Number.isInteger(oldIndex)) expected[index + 4] = beforeHeader[oldIndex];
+    });
+    return expected;
+}
+
 async function googleAccessToken() {
     const clientEmail = Deno.env.get('GOOGLE_SHEETS_CLIENT_EMAIL') ?? '';
     const privateKey = Deno.env.get('GOOGLE_SHEETS_PRIVATE_KEY') ?? '';
@@ -652,10 +738,16 @@ async function sheetFormulaValues(endRow) {
     return result.valueRanges?.[0]?.values ?? [];
 }
 
-function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormulas, retainedLastRow, appendedFromRow = retainedLastRow + 1) {
+function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormulas, retainedLastRow, appendedFromRow = retainedLastRow + 1, expectedGroupOrder = null) {
     const beforeHeader = beforeFormulas[2] ?? [];
     const afterHeader = afterFormulas[2] ?? [];
-    if (JSON.stringify(beforeHeader) !== JSON.stringify(afterHeader)) {
+    const expectedHeader = expectedGroupOrder === null
+        ? beforeHeader
+        : headerAfterGroupOrder(beforeHeader, before.groups, expectedGroupOrder);
+    const actualHeader = expectedGroupOrder === null
+        ? afterHeader
+        : Array.from({ length: LAST_CONTROLLED_COLUMN }, (_, index) => afterHeader[index] ?? '');
+    if (JSON.stringify(expectedHeader) !== JSON.stringify(actualHeader)) {
         throw new Error('Google Sheet 寫入後驗證失敗：第 3 列標題有變化。');
     }
     if (before.frozenRowCount !== after.frozenRowCount) {
@@ -700,6 +792,7 @@ function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormu
 async function writeGoogle(sheet, rows, options) {
     options = options ?? {};
     if (!WRITE_ENABLED) throw new Error('Google Sheet 寫入功能尚未啟用。');
+    const groupOrderPlan = options.groupOrderPlan ?? null;
     const startColumn = 1; // B
     const endColumn = LAST_CONTROLLED_COLUMN; // AZ exclusive index 52
     const targetLastRow = FIRST_DATA_ROW - 1 + rows.length;
@@ -708,7 +801,7 @@ async function writeGoogle(sheet, rows, options) {
         return rowHasControlledData(sheet.rawRows, index, sheet.columns)
             ? index + 1 : last;
     }, 3);
-    const requests = [];
+    const requests = [...(groupOrderPlan?.requests ?? [])];
     let deleteRange = null;
     if (targetLastRow > sheet.rowCount) {
         requests.push({ insertDimension: {
@@ -737,7 +830,7 @@ async function writeGoogle(sheet, rows, options) {
         const cells = Array.from({ length: endColumn - 4 }, () => ({
             userEnteredValue: { boolValue: false }
         }));
-        for (const group of sheet.groups) {
+        for (const group of (groupOrderPlan?.groups ?? sheet.groups)) {
             const relative = group.sheet_column_index - 1 - 4;
             if (relative >= 0 && relative < cells.length) {
                 cells[relative] = { userEnteredValue: { boolValue: row.group_flags[group.id] === true } };
@@ -832,8 +925,23 @@ async function writeGoogle(sheet, rows, options) {
         appendedFromRow: targetLastRow >= newRowsStart ? newRowsStart : targetLastRow + 1,
         deletedRows: deleteCount,
         firstDeletedRow: deleteRange ? deleteRange.startIndex + 1 : null,
-        lastDeletedRow: deleteRange ? deleteRange.endIndex : null
+        lastDeletedRow: deleteRange ? deleteRange.endIndex : null,
+        groupOrderChanged: groupOrderPlan?.changed === true
     };
+}
+
+async function persistColumnOrder(accountId, columnOrder) {
+    const result = await supabaseRequest(
+        `/rest/v1/asset_operation_settings?on_conflict=account_id`, {
+            method: 'POST',
+            headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+            body: JSON.stringify({
+                account_id: accountId,
+                column_order: columnOrder,
+                updated_at: new Date().toISOString()
+            })
+        });
+    return result[0] ?? null;
 }
 
 async function saveColumnOrderAction(accountId, body) {
@@ -848,17 +956,22 @@ async function saveColumnOrderAction(accountId, body) {
     for (const group of groups) allowed.add(`group:${group.id}`);
     const columnOrder = [...new Set(body.columnOrder.filter(key => allowed.has(key)))];
     if (columnOrder.length === 0) throw new Error('欄位順序不可為空。');
-    const result = await supabaseRequest(
-        `/rest/v1/asset_operation_settings?on_conflict=account_id`, {
-            method: 'POST',
-            headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-            body: JSON.stringify({
-                account_id: accountId,
-                column_order: columnOrder,
-                updated_at: new Date().toISOString()
-            })
-        });
-    return { settings: result[0] ?? null };
+    const saved = await persistColumnOrder(accountId, columnOrder);
+    return { settings: saved };
+}
+
+async function groupColumnOrderPlanForAccount(sheet, accountId, expectedHash) {
+    const settings = await supabaseRequest(
+        `/rest/v1/asset_operation_settings?select=column_order&account_id=eq.${encodeURIComponent(accountId)}`);
+    const plan = groupColumnOrderPlan(sheet.groups, settings[0]?.column_order);
+    if (!plan.changed) return plan;
+    const currentHash = await contentHash(sheet.rows);
+    if (!expectedHash || expectedHash !== currentHash) {
+        const error = new Error('Google Sheet 尚未匯入或自上次匯入後已修改，請先匯入最新資料再匯出族群順序。');
+        error.status = 409;
+        throw error;
+    }
+    return plan;
 }
 
 async function importAction(accountId, body = null, user = null) {
@@ -884,6 +997,11 @@ async function importAction(accountId, body = null, user = null) {
             headers: { Prefer: 'return=minimal' },
             body: JSON.stringify({ status: 'superseded', completed_at: new Date().toISOString(), error_code: 'overwritten_by_google_import' })
         });
+    }
+    if (sheet.groups.length > 0) {
+        const settings = await supabaseRequest(
+            `/rest/v1/asset_operation_settings?select=column_order&account_id=eq.${encodeURIComponent(accountId)}`);
+        await persistColumnOrder(accountId, columnOrderWithGroupOrder(settings[0]?.column_order, sheet.groups));
     }
     return { ...result, rowCount: sheet.rows.length, hash, overwrittenDrafts: drafts.length };
 }
@@ -928,8 +1046,12 @@ async function exportAction(accountId) {
     const state = await syncState(accountId);
     const pending = await supabaseRequest(
         `/rest/v1/asset_operation_snapshots?select=id,payload,content_hash,base_google_hash,created_at&account_id=eq.${encodeURIComponent(accountId)}&status=eq.pending&order=created_at.desc&limit=1`);
-    // 沒有草稿時，匯出只把網站的營收創高（V／X／-）寫進 D 欄；Buy／Stock／族群與 Google 的其餘內容完全不動。
-    if (pending.length === 0) return await refreshRevenueHighAction();
+    // 沒有草稿時仍同步族群欄位順序與網站的營收創高；不改 Buy／Stock／勾選值或 Supabase 版本。
+    if (pending.length === 0) {
+        const sheet = await readSheet(true);
+        const groupOrderPlan = await groupColumnOrderPlanForAccount(sheet, accountId, state.base_google_hash);
+        return await refreshRevenueHighAction(sheet, groupOrderPlan);
+    }
     if (pending.length !== 1) throw new Error('找不到唯一的網站草稿，請重新載入後再試。');
     const snapshot = pending[0];
     const sheet = await readSheet();
@@ -939,24 +1061,41 @@ async function exportAction(accountId) {
         error.status = 409;
         throw error;
     }
+    const groupOrderPlan = await groupColumnOrderPlanForAccount(
+        sheet, accountId, snapshot.base_google_hash ?? state.base_google_hash);
     const rows = snapshot.payload;
     if (!Array.isArray(rows)) throw new Error('草稿內容格式不合法。');
     const retainedLastRow = Math.max(FIRST_DATA_ROW, FIRST_DATA_ROW - 1 + rows.length);
     // 先取營收再寫：取不到就在任何 Google 寫入之前失敗。
     const revenue = await revenueHighValues(rows.map(row => row.stock_code));
     const formulasBefore = await sheetFormulaValues(retainedLastRow);
-    const writeResult = await writeGoogle(sheet, rows, { markerSnapshotId: snapshot.id, revenueValues: revenue.values });
+    const writeResult = await writeGoogle(sheet, rows, {
+        markerSnapshotId: snapshot.id,
+        revenueValues: revenue.values,
+        groupOrderPlan
+    });
     const verified = await readSheet(true);
     const formulasAfter = await sheetFormulaValues(retainedLastRow);
     const verifiedHash = await contentHash(verified.rows);
     if (verifiedHash !== snapshot.content_hash || verified.rows.length !== rows.length) {
         throw new Error('Google Sheet 寫入後驗證失敗：資料與草稿不一致。請在網站按「從 Google Sheet 匯入」並確認覆蓋，以 Google Sheet 為準重新對帳。');
     }
+    if (groupOrderPlan.changed
+        && JSON.stringify(groupIdsInSheet(verified.groups)) !== JSON.stringify(groupOrderPlan.groupIds)) {
+        throw new Error('Google Sheet 寫入後驗證失敗：族群欄位順序與網站不一致。');
+    }
     const expectedRowCount = sheet.rowCount + Math.max(0, (FIRST_DATA_ROW - 1 + rows.length) - sheet.rowCount) - writeResult.deletedRows;
     if (verified.rowCount !== expectedRowCount) {
         throw new Error('Google Sheet 寫入後驗證失敗：整列新增／刪除筆數與預期不符。');
     }
-    assertProtectedSheetStructure(sheet, verified, formulasBefore, formulasAfter, retainedLastRow, writeResult.appendedFromRow);
+    assertProtectedSheetStructure(
+        sheet,
+        verified,
+        formulasBefore,
+        formulasAfter,
+        retainedLastRow,
+        writeResult.appendedFromRow,
+        groupOrderPlan.changed ? groupOrderPlan.groupIds : null);
     if (!hasCompactionMarker(verified, snapshot.id)) {
         throw new Error('Google Sheet 寫入後驗證失敗：缺少列整理版本標記。');
     }
@@ -964,6 +1103,7 @@ async function exportAction(accountId) {
     const result = await callReplace(accountId, snapshot.id, Number(state.version ?? 0), rows, groups, verifiedHash, verifiedHash, 'active', 'google_export');
     return {
         ...result,
+        groupOrderChanged: groupOrderPlan.changed,
         revenueHigh: revenueHighSummary(revenue.month, revenue.values, verifyRevenueHigh(verified, revenue.values)),
         deletedRows: writeResult.deletedRows,
         deletedRowRange: writeResult.firstDeletedRow === null
@@ -971,14 +1111,21 @@ async function exportAction(accountId) {
     };
 }
 
-async function refreshRevenueHighAction() {
+async function refreshRevenueHighAction(sheet = null, groupOrderPlan = null) {
     if (!WRITE_ENABLED) throw new Error('Google Sheet 寫入功能尚未啟用。');
-    const sheet = await readSheet(true);
+    sheet = sheet ?? await readSheet(true);
     if (sheet.rows.length === 0) throw new Error('Google Sheet 沒有標的，無需更新營收創高。');
     const revenue = await revenueHighValues(sheet.rows.map(row => row.stock_code));
-    const requests = revenueHighRequests(sheet.columns.fields.revenue_high, sheet.rows.map((_, index) => ({
+    const retainedLastRow = Math.max(FIRST_DATA_ROW, FIRST_DATA_ROW - 1 + sheet.rows.length);
+    const formulasBefore = groupOrderPlan?.changed
+        ? await sheetFormulaValues(retainedLastRow)
+        : null;
+    const requests = [
+        ...(groupOrderPlan?.requests ?? []),
+        ...revenueHighRequests(sheet.columns.fields.revenue_high, sheet.rows.map((_, index) => ({
         rowIndex: sheet.dataRowIndexes[index], value: revenue.values[index]
-    })));
+        })))
+    ];
     await googleRequest(`/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}:batchUpdate`, {
         method: 'POST',
         body: JSON.stringify({ requests, includeSpreadsheetInResponse: false })
@@ -988,8 +1135,23 @@ async function refreshRevenueHighAction() {
         || await contentHash(verified.rows) !== await contentHash(sheet.rows)) {
         throw new Error('營收創高寫入期間 Google Sheet 的標的被修改，請重新匯入後再試。');
     }
+    if (groupOrderPlan?.changed) {
+        if (JSON.stringify(groupIdsInSheet(verified.groups)) !== JSON.stringify(groupOrderPlan.groupIds)) {
+            throw new Error('Google Sheet 寫入後驗證失敗：族群欄位順序與網站不一致。');
+        }
+        const formulasAfter = await sheetFormulaValues(retainedLastRow);
+        assertProtectedSheetStructure(
+            sheet,
+            verified,
+            formulasBefore,
+            formulasAfter,
+            retainedLastRow,
+            retainedLastRow + 1,
+            groupOrderPlan.groupIds);
+    }
     return {
         revenueOnly: true,
+        groupOrderChanged: groupOrderPlan?.changed === true,
         rowCount: verified.rows.length,
         revenueHigh: revenueHighSummary(revenue.month, revenue.values, verifyRevenueHigh(verified, revenue.values))
     };
