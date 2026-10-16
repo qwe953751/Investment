@@ -1,0 +1,240 @@
+name: ETF 配息每日檢查
+
+on:
+  workflow_dispatch:
+    inputs:
+      business-date:
+        description: Asia/Taipei 執行日期；過期任務會略過
+        required: true
+        type: string
+      parent-run-id:
+        description: 開盤前自走鏈的來源 run
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: etf-dividends-daily
+  cancel-in-progress: false
+
+jobs:
+  collect-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TZ: Asia/Taipei
+      BUSINESS_DATE: ${{ inputs.business-date }}
+      PARENT_RUN_ID: ${{ inputs.parent-run-id }}
+      ETF_DIVIDENDS_SOURCE_AUTHORIZED: ${{ vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED }}
+
+    steps:
+      - name: 取出程式碼
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: 取出 data 快取
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 確認日期與每日派工閘門
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/etf-dividends.yml/runs?per_page=50" \
+              --jq '[.workflow_runs[] | {id, status, conclusion, created_at, updated_at}]')
+          decision=$(node scripts/etf-dividends-gate.mjs \
+              --at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --business-date "$BUSINESS_DATE" \
+              --authorized "${ETF_DIVIDENDS_SOURCE_AUTHORIZED:-false}" \
+              --exclude-run-id "$GITHUB_RUN_ID" \
+              --runs "$runs")
+          reason=$(echo "$decision" | jq -r '.reason')
+          dispatch=$(echo "$decision" | jq -r '.dispatch')
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "dispatch=$dispatch" >> "$GITHUB_OUTPUT"
+          if [ "$dispatch" != 'true' ]; then
+              echo "每日派工閘門略過：$reason。"
+          else
+              echo "每日派工閘門通過：$reason。"
+          fi
+
+      - name: 收集兩市場配息原文與觀測
+        id: collect
+        if: steps.gate.outputs.dispatch == 'true'
+        env:
+          SUMMARY_FILE: ${{ runner.temp }}/etf-dividends-summary.json
+        run: |
+          set +e
+          dotnet run -c Release --project src/Invest.Web -- etf-dividends collect \
+              --as-of "$BUSINESS_DATE" \
+              --directory "$GITHUB_WORKSPACE/data/imports-etf-dividends" \
+              --summary-file "$SUMMARY_FILE"
+          exit_code=$?
+          set -e
+          if [ ! -s "$SUMMARY_FILE" ]; then
+              echo "收集命令沒有寫出摘要，exit=$exit_code。" >&2
+              exit 1
+          fi
+          status=$(jq -r '.status' "$SUMMARY_FILE")
+          batch=$(jq -r '.batchId // empty' "$SUMMARY_FILE")
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "batch=$batch" >> "$GITHUB_OUTPUT"
+          echo "ETF 配息收集狀態：$status；batchId=$batch。"
+          case "$status:$exit_code" in
+              complete:0|partial:2)
+                  printf '### ETF 配息每日收集\n\n狀態：`%s`\n批次：`%s`\n\n' "$status" "$batch" >> "$GITHUB_STEP_SUMMARY"
+                  jq -r '.markets[]? | "- \(.market)：\(.status)，有效 \(.validRows) 筆、重複 \(.duplicateRows) 筆、衝突 \(.conflictRows) 筆。"' "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+                  ;;
+              blocked-license:2)
+                  echo "來源授權閘門關閉；未發出任何交易所請求。" >&2
+                  echo "### ETF 配息每日收集\n\n狀態：`blocked-license`。來源授權尚未確認，未發出請求。" >> "$GITHUB_STEP_SUMMARY"
+                  ;;
+              superseded:0)
+                  echo "派工日期已過期；不下載、不保存、不發布。"
+                  ;;
+              *)
+                  echo "收集結果與 exit code 不相符：$status / $exit_code。" >&2
+                  exit 1
+                  ;;
+          esac
+
+      - name: 離線驗證本批投影
+        id: projection
+        if: steps.collect.outputs.status == 'complete' || steps.collect.outputs.status == 'partial'
+        env:
+          ETF_DIVIDEND_BATCH: ${{ steps.collect.outputs.batch }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/etf-dividends.json"
+          dotnet run -c Release --project src/Invest.Web -- etf-dividends export \
+              --as-of "$BUSINESS_DATE" \
+              --directory "$GITHUB_WORKSPACE/data/imports-etf-dividends" \
+              --output "$output"
+          hash=$(sha256sum "$output" | cut -d' ' -f1)
+          dotnet run -c Release --project src/Invest.Web -- etf-dividends verify \
+              --input "$output" --as-of "$BUSINESS_DATE" --sha256 "$hash" --batch-id "$ETF_DIVIDEND_BATCH"
+          echo "projection_sha256=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: 只保存 ETF 配息資料到 data branch
+        id: save
+        if: steps.collect.outputs.status == 'complete' || steps.collect.outputs.status == 'partial'
+        working-directory: data
+        run: |
+          set -euo pipefail
+          git add -A imports-etf-dividends
+          deleted=$(git diff --cached --name-only --diff-filter=D -- imports-etf-dividends)
+          if [ -n "$deleted" ]; then
+              echo "配息歷史資料不可刪除；拒絕推送：" >&2
+              echo "$deleted" >&2
+              exit 1
+          fi
+          if git diff --cached --quiet; then
+              echo "committed=false" >> "$GITHUB_OUTPUT"
+              echo "dataSha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              echo "資料已存在，沒有新增或修改檔案。"
+              exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -qm "保存 ETF 配息觀測 $BUSINESS_DATE"
+          for attempt in 1 2 3 4 5; do
+              if git push -q origin data; then
+                  echo "committed=true" >> "$GITHUB_OUTPUT"
+                  git rev-parse HEAD > "$RUNNER_TEMP/etf-dividends-data-sha"
+                  echo "dataSha=$(cat "$RUNNER_TEMP/etf-dividends-data-sha")" >> "$GITHUB_OUTPUT"
+                  break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                  echo "data branch 連續五次推送失敗。" >&2
+                  exit 1
+              fi
+              git fetch origin data
+              git rebase origin/data
+          done
+
+      - name: 觸發配息批次的網站純發布
+        id: publish
+        if: steps.collect.outputs.status == 'complete' || steps.collect.outputs.status == 'partial'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ETF_DIVIDEND_BATCH: ${{ steps.collect.outputs.batch }}
+        run: |
+          set -euo pipefail
+          dispatched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/dispatches" \
+              -f ref=main \
+              -f 'inputs[trading-days]=300' \
+              -f 'inputs[publish-only]=true' \
+              -f "inputs[etf-dividends-as-of-date]=$BUSINESS_DATE" \
+              -f "inputs[etf-dividends-batch]=$ETF_DIVIDEND_BATCH"
+          title="ETF 配息發布 $ETF_DIVIDEND_BATCH"
+          publish_run_id=''
+          for attempt in $(seq 1 30); do
+              runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/runs?event=workflow_dispatch&branch=main&per_page=100")
+              publish_run_id=$(echo "$runs" | jq -r --arg title "$title" --arg since "$dispatched_at" \
+                  '[.workflow_runs[] | select(.display_title == $title and .created_at >= $since)] | sort_by(.created_at) | last | .id // empty')
+              [ -n "$publish_run_id" ] && break
+              sleep 5
+          done
+          if [ -z "$publish_run_id" ]; then
+              echo "找不到名稱為 $title 的純發布 run。" >&2
+              exit 1
+          fi
+          echo "run_id=$publish_run_id" >> "$GITHUB_OUTPUT"
+          echo "publish_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$publish_run_id" >> "$GITHUB_OUTPUT"
+          gh run watch "$publish_run_id" --exit-status --interval 10
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$publish_run_id")
+          head_sha=$(echo "$run" | jq -r '.head_sha')
+          conclusion=$(echo "$run" | jq -r '.conclusion')
+          if [ "$conclusion" != success ] || [ "$head_sha" != "$GITHUB_SHA" ]; then
+              echo "純發布未成功或 headSha 不符：$conclusion / $head_sha。" >&2
+              exit 1
+          fi
+          echo "已完成配息批次對應的純發布：run=$publish_run_id；headSha=$head_sha。"
+
+      - name: 驗證正式網站配息檔與 manifest
+        if: steps.publish.outputs.run_id != ''
+        env:
+          EXPECTED_BATCH: ${{ steps.collect.outputs.batch }}
+          EXPECTED_DATE: ${{ inputs.business-date }}
+          DATA_SHA: ${{ steps.save.outputs.dataSha }}
+          PUBLISH_RUN_ID: ${{ steps.publish.outputs.run_id }}
+          PUBLISH_URL: ${{ steps.publish.outputs.publish_url }}
+        run: |
+          set -euo pipefail
+          nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date +%s)"
+          curl -fsSL "https://frank-invest.github.io/manifest.json?verify=$nonce" -o "$RUNNER_TEMP/manifest.json"
+          descriptor=$(jq -c '.etfDividends' "$RUNNER_TEMP/manifest.json")
+          file=$(echo "$descriptor" | jq -r '.file')
+          expected_hash=$(echo "$descriptor" | jq -r '.sha256')
+          as_of=$(echo "$descriptor" | jq -r '.asOfDate')
+          batch=$(echo "$descriptor" | jq -r '.batchId')
+          if [ "$file" != 'data/etf-dividends.json' ] || [ "$as_of" != "$EXPECTED_DATE" ] || [ "$batch" != "$EXPECTED_BATCH" ]; then
+              echo "公開 manifest 配息日期／批次不符：$as_of / $batch。" >&2
+              exit 1
+          fi
+          curl -fsSL "https://frank-invest.github.io/$file?verify=$nonce" -o "$RUNNER_TEMP/published-etf-dividends.json"
+          actual_hash=$(sha256sum "$RUNNER_TEMP/published-etf-dividends.json" | cut -d' ' -f1)
+          if [ "$actual_hash" != "$expected_hash" ]; then
+              echo "公開 ETF 配息檔 hash 與 manifest 不符：$actual_hash / $expected_hash。" >&2
+              exit 1
+          fi
+          jq -e --arg date "$EXPECTED_DATE" '.schemaVersion == 1 and .rulesVersion == "etf-dividends-v1" and .asOfDate == $date and (.funds | type == "array") and (.markets.twse.status != null) and (.markets.tpex.status != null)' \
+              "$RUNNER_TEMP/published-etf-dividends.json" >/dev/null
+          echo "公開配息檔已驗證：batch=$batch；sha256=$actual_hash；asOfDate=$as_of。"
+          printf '\n收集 run：[%s](%s)\n\ndata commit：\`%s\`\n\n網站純發布 run：[%s](%s)\n\n公開配息檔 SHA256：\`%s\`\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              "$DATA_SHA" "$PUBLISH_RUN_ID" "$PUBLISH_URL" "$actual_hash" >> "$GITHUB_STEP_SUMMARY"

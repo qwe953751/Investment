@@ -5,6 +5,7 @@
 # 快取不放進 main 是因為它每天都在長，塞進原始碼的歷史裡會讓 clone 越來越重。
 
 name: 每日排行快照
+run-name: ${{ inputs.etf-dividends-batch != '' && format('ETF 配息發布 {0}', inputs.etf-dividends-batch) || '每日排行快照' }}
 
 on:
   schedule:
@@ -40,6 +41,16 @@ on:
       etf-backfill-days:
         description: 補抓幾個交易日的 ETF 歷史（0 表示不補；只有 2026-09-01 之前的舊快取需要）
         default: '0'
+      etf-dividends-as-of-date:
+        description: ETF 配息批次參考日期（由配息 workflow 傳入；一般發布留白）
+        type: string
+        required: false
+        default: ''
+      etf-dividends-batch:
+        description: ETF 配息批次識別（由配息 workflow 傳入；一般發布留白）
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -197,6 +208,24 @@ jobs:
       - name: 驗證日 K 快取版本
         if: ${{ inputs.publish-only == true }}
         run: dotnet run -c Release --project src/Invest.Web -- verify-kline-cache "$TRADING_DAYS"
+
+      - name: 驗證 ETF 配息發布批次
+        if: ${{ inputs.etf-dividends-batch != '' }}
+        env:
+          ETF_DIVIDEND_AS_OF_DATE: ${{ inputs.etf-dividends-as-of-date }}
+          ETF_DIVIDEND_BATCH: ${{ inputs.etf-dividends-batch }}
+        run: |
+          if [ -z "$ETF_DIVIDEND_AS_OF_DATE" ]; then
+              echo "有批次識別但缺少參考日期。" >&2
+              exit 1
+          fi
+          projection="$RUNNER_TEMP/etf-dividends.json"
+          dotnet run -c Release --project src/Invest.Web -- etf-dividends export \
+              --as-of "$ETF_DIVIDEND_AS_OF_DATE" \
+              --directory "$GITHUB_WORKSPACE/data/imports-etf-dividends" \
+              --output "$projection"
+          dotnet run -c Release --project src/Invest.Web -- etf-dividends verify \
+              --input "$projection" --as-of "$ETF_DIVIDEND_AS_OF_DATE" --batch-id "$ETF_DIVIDEND_BATCH"
 
       # 給 intraday.yml 純 bash 等待迴圈用的休市日曆快取，不必為了問「今天是不是假日」
       # 讓每個空轉的 hop 都冷啟動 dotnet run。證交所讀不到時會回傳空清單（見

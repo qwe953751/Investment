@@ -4,6 +4,8 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Features.Etfs.Dividends.Models;
+using Invest.Web.Features.Etfs.Dividends.Services;
 using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.StockTopics.Services;
 using Invest.Web.Features.MarketStructure.Models;
@@ -11,6 +13,7 @@ using Invest.Web.Features.MarketStructure.Services;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
+using Invest.Web.Infrastructure.MarketData.EtfDividends;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Overview;
 using Invest.Web.Infrastructure.MarketData.Turnover;
@@ -50,7 +53,8 @@ public sealed class StaticSiteExporter(
     IntradayCurveStore curveStore,
     YahooFinanceDailyQuoteClient turnoverKLineClient,
     ILogger<StaticSiteExporter> logger,
-    IConfiguration configuration)
+    IConfiguration configuration,
+    EtfDividendProjectionService etfDividendProjection)
 {
     /// <summary>
     /// 催化事件頁最多列幾則。六十天的重大訊息篩掉例行公告之後還有一千多則，
@@ -78,6 +82,12 @@ public sealed class StaticSiteExporter(
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
 
         // 不轉義中文。轉義後檔案會膨脹三倍，而且用編輯器打開完全看不懂。
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    private static readonly JsonSerializerOptions EtfDividendJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
@@ -215,6 +225,20 @@ public sealed class StaticSiteExporter(
         // 這份快照的版本號。資料檔、CSS 與 JS 的網址都會帶上它：
         // 重新發佈後版本號一變，網址跟著變，瀏覽器手上的舊檔就自動失效。
         var version = generatedAt.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
+
+        // 配息資料只讀 data branch 的既有觀測，不在網站 export 階段向交易所發請求。
+        // 配息檔獨立於每日行情檔，明確輸出 null 金額供前端區分「待公告」與數值 0。
+        var dividendRoot = Environment.GetEnvironmentVariable("ETF_DIVIDENDS_DIRECTORY");
+        if (string.IsNullOrWhiteSpace(dividendRoot))
+            dividendRoot = Path.Combine("data", "imports-etf-dividends");
+        var dividendStore = new EtfDividendStore(Path.GetFullPath(dividendRoot));
+        var taipeiDate = DateOnly.FromDateTime(generatedAt.DateTime);
+        var dividendPayload = await etfDividendProjection.BuildAsync(dividendStore, taipeiDate, cancellationToken);
+        var dividendBytes = JsonSerializer.SerializeToUtf8Bytes(dividendPayload, EtfDividendJsonOptions);
+        var dividendHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(dividendBytes)).ToLowerInvariant();
+        await File.WriteAllBytesAsync(Path.Combine(dataDirectory, "etf-dividends.json"), dividendBytes, cancellationToken);
+        var dividendManifest = EtfDividendProjectionService.ToManifest(dividendPayload, dividendHash, dividendPayload.BatchId);
+        fileCount++;
 
         var marketStructureDirectory = Path.Combine(dataDirectory, "market-structure");
         Directory.CreateDirectory(marketStructureDirectory);
@@ -360,7 +384,8 @@ public sealed class StaticSiteExporter(
                 [.. alteredTrading],
                 ToCurveExport(turnoverCalibration),
                 ToAccelerationExport(),
-                marketStructureExport),
+                marketStructureExport,
+                dividendManifest),
             cancellationToken);
 
         await WriteMarketOverviewAsync(dataDirectory, cancellationToken);
@@ -2068,7 +2093,8 @@ public sealed class StaticSiteExporter(
             CollectionSchedule.IntradayEnd.ToString("HH:mm", CultureInfo.InvariantCulture),
             (int)CollectionSchedule.IntradayInterval.TotalMinutes,
             CollectionSchedule.DailyRefresh.ToString("HH:mm", CultureInfo.InvariantCulture),
-            CollectionSchedule.EmergingIntradayEnd.ToString("HH:mm", CultureInfo.InvariantCulture));
+            CollectionSchedule.EmergingIntradayEnd.ToString("HH:mm", CultureInfo.InvariantCulture),
+            CollectionSchedule.EtfDividendRefresh.ToString("HH:mm", CultureInfo.InvariantCulture));
 
     /// <summary>
     /// 讀不到（本機沒接 Supabase、樣本天數不足）就退回寫死的實測表，不讓匯出整個中斷——
@@ -2272,7 +2298,10 @@ public sealed class StaticSiteExporter(
         AccelerationExport Acceleration,
 
         // 市場結構只輸出最新單日結果；舊日期沒有 basis 時不以目前名單重算。
-        MarketStructureExport? MarketStructure);
+        MarketStructureExport? MarketStructure,
+
+        // 獨立 ETF 配息檔；以內容 SHA 快取，失敗狀態由各市場分開標示。
+        EtfDividendManifestExport EtfDividends);
 
     private sealed record ThresholdExport(int Key, string Text);
 
@@ -2440,7 +2469,8 @@ public sealed class StaticSiteExporter(
         string IntradayEnd,
         int IntradayIntervalMinutes,
         string DailyRefresh,
-        string EmergingIntradayEnd);
+        string EmergingIntradayEnd,
+        string EtfDividendRefresh);
 
     /// <summary>f(t) 曲線上的一個桶：時刻與該時刻累計成交額通常已經跑掉的比例。</summary>
     private sealed record CurvePointExport(string Time, double Ratio);

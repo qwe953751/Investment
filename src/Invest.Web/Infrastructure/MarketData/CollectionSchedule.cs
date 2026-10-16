@@ -73,6 +73,9 @@ public static class CollectionSchedule
     /// <summary>盤後回補開跑。收盤行情大約下午三點公布，留三小時緩衝。</summary>
     public static readonly TimeOnly DailyRefresh = new(18, 0);
 
+    /// <summary>ETF 配息公告每日檢查時間；由盤中自走鏈派工，休市日也執行。</summary>
+    public static readonly TimeOnly EtfDividendRefresh = new(7, 30);
+
     /// <summary>
     /// 下一輪該在幾點開跑：把時間切成 <see cref="IntradayInterval"/> 的格子，回傳下一格。
     ///

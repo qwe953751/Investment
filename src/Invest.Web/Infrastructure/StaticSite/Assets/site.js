@@ -2701,6 +2701,12 @@ function normalizeMarketStructureDate(value) {
     return typeof value === 'string' ? value.replaceAll('/', '-') : '';
 }
 let version = '';
+let siteManifest = null;
+let etfDividendPayload = null;
+let etfDividendPayloadHash = '';
+let etfDividendPayloadLoading = null;
+let etfDividendPayloadError = '';
+let etfDividendMidnightTimer = null;
 let latestTradingDate = '';
 let marketHeatAnalysisOpen = false;
 const hiddenMarketHeatChartLines = new Set();
@@ -20338,6 +20344,174 @@ function appendTickerBadges(parent, badges) {
     parent.append(container);
 }
 
+function etfDividendTaipeiDate(now = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(now);
+    const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    return `${value.year}-${value.month}-${value.day}`;
+}
+
+function validateEtfDividendPayload(payload, descriptor) {
+    if (!payload || payload.schemaVersion !== 1 || payload.rulesVersion !== 'etf-dividends-v1'
+        || payload.timeZone !== 'Asia/Taipei' || !/^\d{4}-\d{2}-\d{2}$/.test(payload.asOfDate)
+        || !Array.isArray(payload.funds) || !payload.markets?.twse || !payload.markets?.tpex) {
+        throw new Error('配息資料格式不符。');
+    }
+
+    const year = Number(payload.asOfDate.slice(0, 4));
+    if (payload.projectionStart !== `${year}-01-01` || payload.projectionEnd !== `${year + 1}-12-31`
+        || payload.asOfDate !== descriptor.asOfDate
+        || payload.completeCheckDate !== (descriptor.completeCheckDate ?? null)
+        || payload.batchId !== (descriptor.batchId ?? null)) {
+        throw new Error('配息資料涵蓋日期或 manifest 關聯不符。');
+    }
+
+    const states = new Set(['fresh', 'stale', 'unavailable', 'review-required']);
+    for (const key of ['twse', 'tpex']) {
+        const market = payload.markets[key];
+        if (!states.has(market.status) || typeof market.sourceUrl !== 'string'
+            || (market.sourceHash !== null && !/^[0-9a-f]{64}$/.test(market.sourceHash))) {
+            throw new Error(`配息資料的 ${key} 市場狀態不符。`);
+        }
+    }
+
+    const keys = new Set();
+    for (const fund of payload.funds) {
+        const key = `${fund.market}:${fund.ticker}`;
+        if (!['twse', 'tpex'].includes(fund.market) || !/^0[A-Z0-9]{3,5}$/.test(fund.ticker)
+            || keys.has(key) || !states.has(fund.coverageState)
+            || !Array.isArray(fund.events) || !Array.isArray(fund.unresolvedEvents)
+            || !Array.isArray(fund.nextWindows)) {
+            throw new Error('配息資料包含不合法或重複的 ETF 項目。');
+        }
+        keys.add(key);
+        for (const event of [...fund.events, ...fund.unresolvedEvents]) {
+            if (!/^[0-9a-f]{64}$/.test(event.eventId) || !/^[0-9a-f]{64}$/.test(event.sourceHash)
+                || (event.amountPerUnit !== null
+                    && (typeof event.amountPerUnit !== 'string' || !/^-?\d+(?:\.\d+)?$/.test(event.amountPerUnit)))) {
+                throw new Error('配息資料包含不合法的事件或金額。');
+            }
+        }
+        let cursor = payload.projectionStart;
+        const eventIds = new Set(fund.events.map(event => event.eventId));
+        for (const window of fund.nextWindows) {
+            if (window.fromDate !== cursor || !/^\d{4}-\d{2}-\d{2}$/.test(window.throughDate)
+                || window.fromDate > window.throughDate
+                || (window.eventId !== null && !eventIds.has(window.eventId))) {
+                throw new Error('配息資料的下次發放區間不連續。');
+            }
+            cursor = new Date(`${window.throughDate}T00:00:00Z`).toISOString().slice(0, 10);
+            if (window.throughDate !== payload.projectionEnd) {
+                const nextDay = new Date(`${window.throughDate}T00:00:00Z`);
+                nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+                cursor = nextDay.toISOString().slice(0, 10);
+            }
+        }
+        if (fund.nextWindows.length === 0 || fund.nextWindows.at(-1).throughDate !== payload.projectionEnd) {
+            throw new Error('配息資料的下次發放區間未涵蓋投影末日。');
+        }
+    }
+    return payload;
+}
+
+async function ensureEtfDividendPayload(force = false) {
+    const descriptor = siteManifest?.etfDividends;
+    if (!descriptor || descriptor.schemaVersion !== 1 || !/^[0-9a-f]{64}$/.test(descriptor.sha256 ?? '')) {
+        etfDividendPayloadError = '配息資料尚未發布。';
+        return null;
+    }
+    if (!force && etfDividendPayload && etfDividendPayloadHash === descriptor.sha256) return etfDividendPayload;
+    if (etfDividendPayloadLoading) return etfDividendPayloadLoading;
+
+    etfDividendPayloadError = '';
+    etfDividendPayloadLoading = (async () => {
+        const url = `${descriptor.file}?v=${encodeURIComponent(version)}&sha=${descriptor.sha256}`;
+        const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(12_000) });
+        if (!response.ok) throw new Error(`配息資料讀取失敗（HTTP ${response.status}）。`);
+        const bytes = await response.arrayBuffer();
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const actualHash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+        if (actualHash !== descriptor.sha256) throw new Error('配息資料雜湊不符。');
+        const payload = validateEtfDividendPayload(JSON.parse(new TextDecoder().decode(bytes)), descriptor);
+        etfDividendPayload = payload;
+        etfDividendPayloadHash = descriptor.sha256;
+        return payload;
+    })().catch(error => {
+        etfDividendPayloadError = error instanceof Error ? error.message : '配息資料讀取失敗。';
+        etfDividendPayload = null;
+        etfDividendPayloadHash = '';
+        return null;
+    }).finally(() => {
+        etfDividendPayloadLoading = null;
+        if (state.view === 'etf' && rankingCanRender()) renderTable();
+    });
+    return etfDividendPayloadLoading;
+}
+
+function etfDividendMarketForRow(row) {
+    return etfDividendPayload?.markets?.[row.market] ?? null;
+}
+
+function etfDividendFundForRow(row) {
+    return etfDividendPayload?.funds?.find(fund => fund.market === row.market && fund.ticker === row.ticker) ?? null;
+}
+
+function etfDividendStatusText(market, hasFund = false, hasNextEvent = false) {
+    if (etfDividendPayloadLoading) return '載入中';
+    if (etfDividendPayloadError) return '資料未取得';
+    if (etfDividendPayload && etfDividendPayload.asOfDate.slice(0, 4) !== etfDividendTaipeiDate().slice(0, 4)) return '資料範圍待更新';
+    if (!market) return '資料未取得';
+    if (market.status === 'review-required') return hasFund?.events?.length ? '有待核對修訂' : '資料待核對';
+    if (market.status === 'unavailable') return '來源未取得';
+    if (market.status === 'stale' || (market.expiresAt && Date.parse(market.expiresAt) < Date.now())) return '資料已過期';
+    if (hasNextEvent) return '已更新';
+    if (hasFund?.unresolvedEvents?.length) return '發放日待公告';
+    if (hasFund?.events?.length) return '尚無下次公告';
+    return '尚未查得配息公告';
+}
+
+function etfDividendNextEvent(row) {
+    const market = etfDividendMarketForRow(row);
+    const fund = etfDividendFundForRow(row);
+    if (!fund || !Array.isArray(fund.nextWindows)) return { market, fund, event: null };
+    const today = etfDividendTaipeiDate();
+    const window = fund.nextWindows.find(item => item.fromDate <= today && today <= item.throughDate);
+    return { market, fund, event: window?.eventId
+        ? fund.events.find(item => item.eventId === window.eventId) ?? null
+        : null };
+}
+
+function formatEtfDividendDate(value) {
+    if (!value) return '待公告';
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    return match ? `${match[1]}/${match[2]}/${match[3]}` : '待公告';
+}
+
+function scheduleEtfDividendMidnightRefresh() {
+    clearTimeout(etfDividendMidnightTimer);
+    const today = etfDividendTaipeiDate().split('-').map(Number);
+    const nextMidnightUtc = Date.UTC(today[0], today[1] - 1, today[2] + 1) - 8 * 60 * 60 * 1000;
+    etfDividendMidnightTimer = setTimeout(() => {
+        void refreshEtfDividendForPage();
+    }, Math.max(1_000, nextMidnightUtc - Date.now() + 250));
+}
+
+async function refreshEtfDividendForPage() {
+    if (state.view !== 'etf' || document.hidden) return;
+    if (etfDividendPayload && etfDividendTaipeiDate().slice(0, 4) !== etfDividendPayload.asOfDate.slice(0, 4)) {
+        try {
+            const freshManifest = await fetchJsonWithRetry(`manifest.json?etf-refresh=${Date.now()}`, { cache: 'no-store' });
+            if (freshManifest?.etfDividends) siteManifest = freshManifest;
+        } catch {
+            // 保留目前可用資料；payload 的投影年度不符時由資料狀態明確提示。
+        }
+    }
+    await ensureEtfDividendPayload(siteManifest?.etfDividends?.sha256 !== etfDividendPayloadHash);
+    renderTable();
+    scheduleEtfDividendMidnightRefresh();
+}
+
 // 排行榜與持倉檢視共用同一套儲存格內容：代號市場標記／交易限制、名稱 K 線、族群連結、
 // 日週漲跌、營收彈窗與創高月數都在這裡畫。呼叫端只負責提供資料列與 K 線尾端選項。
 function appendRankingCell(tr, row, column, options = {}) {
@@ -20366,12 +20540,15 @@ function appendRankingCell(tr, row, column, options = {}) {
 
     if (payout) {
         const expanded = state.etfExpandedPayoutTicker === row.ticker;
+        const { market, fund, event } = etfDividendNextEvent(row);
+        const statusText = etfDividendStatusText(market, fund, Boolean(event));
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'etf-payout-button';
+        button.dataset.ticker = row.ticker;
         button.setAttribute('aria-expanded', String(expanded));
         button.setAttribute('aria-controls', `etf-payout-history-${row.ticker}`);
-        button.setAttribute('aria-label', `${row.ticker} ${row.name} 配息資訊與年度紀錄，${expanded ? '收合' : '展開'}`);
+        button.setAttribute('aria-label', `${row.ticker} ${row.name} 配息資訊與年度紀錄，${statusText}，${expanded ? '收合' : '展開'}`);
 
         const summary = document.createElement('span');
         summary.className = 'etf-payout-summary';
@@ -20379,24 +20556,31 @@ function appendRankingCell(tr, row, column, options = {}) {
         label.className = 'etf-payout-label';
         label.textContent = '下次發放';
         const date = document.createElement('span');
-        date.className = 'etf-payout-date is-empty';
-        date.textContent = '資料尚未串接';
+        date.className = `etf-payout-date${event ? '' : ' is-empty'}`;
+        date.textContent = event ? formatEtfDividendDate(event.paymentDate) : statusText;
         summary.append(label, date);
 
         const details = document.createElement('span');
         details.className = 'etf-payout-details';
         const amount = document.createElement('span');
         amount.className = 'etf-payout-amount';
-        amount.textContent = '— / 單位';
+        amount.textContent = event
+            ? (event.amountPerUnit === null ? '金額待公告' : `${event.amountPerUnit} 元 / 單位`)
+            : '— / 單位';
+        const stateLabel = document.createElement('span');
+        stateLabel.className = 'etf-payout-state';
+        stateLabel.textContent = statusText === '已更新' ? '' : statusText;
         const toggle = document.createElement('span');
         toggle.className = 'etf-payout-toggle';
         toggle.textContent = expanded ? '收合年度紀錄' : '年度紀錄';
-        details.append(amount, toggle);
+        details.append(amount, stateLabel, toggle);
 
         button.append(summary, details);
         button.addEventListener('click', () => {
             state.etfExpandedPayoutTicker = expanded ? '' : row.ticker;
             renderTable();
+            el('table-body').querySelectorAll('.etf-payout-button')
+                .forEach(item => { if (item.dataset.ticker === row.ticker) item.focus({ preventScroll: true }); });
         });
         td.append(button);
         tr.append(td);
@@ -20488,11 +20672,14 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
 
     const heading = document.createElement('div');
     heading.className = 'etf-payout-history-heading';
+    const { market, fund, event } = etfDividendNextEvent(row);
+    const today = etfDividendTaipeiDate();
+    const year = Number(today.slice(0, 4));
     const title = document.createElement('h3');
-    title.textContent = '年度紀錄';
+    title.textContent = `${year} 年配息紀錄`;
     const status = document.createElement('span');
     status.className = 'etf-payout-history-status';
-    status.textContent = '資料尚未串接';
+    status.textContent = etfDividendStatusText(market, fund, Boolean(event));
     heading.append(title, status);
 
     const table = document.createElement('table');
@@ -20509,16 +20696,59 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
 
     thead.append(headerRow);
     const tbody = document.createElement('tbody');
-    const emptyRow = document.createElement('tr');
-    const emptyCell = document.createElement('td');
-    emptyCell.colSpan = 4;
-    emptyCell.className = 'etf-payout-history-empty';
-    emptyCell.textContent = '配息資料尚未串接，串接後將顯示歷年除息與發放紀錄。';
-    emptyRow.append(emptyCell);
-    tbody.append(emptyRow);
+    const events = (fund?.events ?? []).filter(event => event.paymentYear === year);
+    for (const event of events) {
+        const tr = document.createElement('tr');
+        const cells = [String(event.paymentYear), formatEtfDividendDate(event.exDate),
+            formatEtfDividendDate(event.paymentDate), event.amountPerUnit === null ? '金額待公告' : `${event.amountPerUnit} 元`];
+        for (const value of cells) {
+            const cell = document.createElement('td');
+            cell.textContent = value;
+            tr.append(cell);
+        }
+        tbody.append(tr);
+    }
+    if (events.length === 0) {
+        const emptyRow = document.createElement('tr');
+        const emptyCell = document.createElement('td');
+        emptyCell.colSpan = 4;
+        emptyCell.className = 'etf-payout-history-empty';
+        if (market?.status === 'fresh') {
+            emptyCell.textContent = `${year} 年尚未查得配息公告。`;
+        } else {
+            const statusText = etfDividendPayloadError || etfDividendStatusText(market, fund);
+            emptyCell.textContent = `${statusText}，目前無法確認 ${year} 年度配息公告。`;
+        }
+        emptyRow.append(emptyCell);
+        tbody.append(emptyRow);
+    }
+    const unresolvedCount = fund?.unresolvedEvents?.length ?? 0;
+    if (unresolvedCount > 0) {
+        const unresolvedRow = document.createElement('tr');
+        const unresolvedCell = document.createElement('td');
+        unresolvedCell.colSpan = 4;
+        unresolvedCell.className = 'etf-payout-history-empty';
+        unresolvedCell.textContent = `另有 ${unresolvedCount} 筆事件的發放日待公告。`;
+        unresolvedRow.append(unresolvedCell);
+        tbody.append(unresolvedRow);
+    }
     table.append(thead, tbody);
 
+    const meta = document.createElement('div');
+    meta.className = 'etf-payout-history-meta';
+    const updatedAt = market?.lastSuccessfulCheckAt ? toTaipeiText(market.lastSuccessfulCheckAt) : '';
+    meta.textContent = updatedAt ? `來源檢查：${updatedAt}` : '尚無成功的來源檢查紀錄';
+    const source = document.createElement('a');
+    source.href = market?.sourceUrl ?? (row.market === 'twse'
+        ? 'https://www.twse.com.tw/zh/products/securities/etf/products/div.html'
+        : 'https://info.tpex.org.tw/ETF/zh/dividend-list.html');
+    source.target = '_blank';
+    source.rel = 'noopener noreferrer';
+    source.textContent = row.market === 'twse' ? '證交所來源' : '櫃買中心來源';
+    meta.append(document.createTextNode(' · '), source);
+
     panel.append(heading, table);
+    panel.append(meta);
     td.append(panel);
     tr.append(td);
     return tr;
@@ -20526,6 +20756,12 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
 
 function renderTable() {
     if (!rankingCanRender()) return;
+    if (state.view === 'etf') {
+        if (!etfDividendPayload && !etfDividendPayloadLoading && !etfDividendPayloadError) {
+            void ensureEtfDividendPayload();
+        }
+        scheduleEtfDividendMidnightRefresh();
+    }
     el('data-table').classList.toggle('custom-table', state.view === 'custom');
     el('data-table').classList.toggle('etf-table', state.view === 'etf');
 
@@ -33337,6 +33573,14 @@ async function start() {
     // manifest 一定要拿到最新的一份，否則版本號就失去意義，
     // 所以這支檔案自己不進快取。
     const manifest = await fetchJsonWithRetry('manifest.json', { cache: 'no-store' });
+    siteManifest = manifest;
+
+    const refreshEtfDividendsWhenActive = () => {
+        if (state.view === 'etf' && !document.hidden) void refreshEtfDividendForPage();
+    };
+    window.addEventListener('pageshow', refreshEtfDividendsWhenActive);
+    window.addEventListener('focus', refreshEtfDividendsWhenActive);
+    document.addEventListener('visibilitychange', refreshEtfDividendsWhenActive);
 
     thresholds = manifest.thresholds;
     dates = manifest.dates;

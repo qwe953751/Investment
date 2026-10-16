@@ -138,6 +138,7 @@ jobs:
         id: wait
         env:
           GH_TOKEN: ${{ github.token }}
+          ETF_DIVIDENDS_SOURCE_AUTHORIZED: ${{ vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED }}
         run: |
           # Actions 預設的 shell 是 `bash -e`，errexit 是命令列給的，寫 set -uo pipefail
           # 不會把它關掉。這裡明確關掉：底下大量用「條件不成立就 return」的寫法，
@@ -261,6 +262,53 @@ jobs:
               return 0
           }
 
+          etf_dividends_kicked_date=""
+          maybe_kick_etf_dividends() {
+              local today runs decision should_dispatch reason
+              today=$(date +%F)
+              [ "$etf_dividends_kicked_date" = "$today" ] && return 0
+              [ "$(date +%H%M)" -ge '0730' ] && [ "$(date +%H%M)" -lt '2200' ] || return 0
+
+              runs=$(gh api \
+                  "repos/$GITHUB_REPOSITORY/actions/workflows/etf-dividends.yml/runs?per_page=50" \
+                  --jq '[.workflow_runs[] | {status, conclusion, created_at, updated_at}]' 2>/dev/null)
+              if [ $? -ne 0 ] || [ -z "$runs" ]; then
+                  echo "::warning::查不到今日 ETF 配息 workflow 狀態，稍後再檢查。"
+                  return 0
+              fi
+
+              decision=$(node scripts/etf-dividends-gate.mjs \
+                  --at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                  --business-date "$today" \
+                  --authorized "${ETF_DIVIDENDS_SOURCE_AUTHORIZED:-false}" \
+                  --runs "$runs" 2>/dev/null)
+              if [ $? -ne 0 ] || [ -z "$decision" ]; then
+                  echo "::warning::ETF 配息每日 gate 無法評估，稍後再檢查。"
+                  return 0
+              fi
+              should_dispatch=$(echo "$decision" | jq -r '.dispatch')
+              reason=$(echo "$decision" | jq -r '.reason')
+              if [ "$should_dispatch" != 'true' ]; then
+                  echo "ETF 配息每日 gate：$reason。"
+                  return 0
+              fi
+
+              echo "台北 $(date '+%F %T')：派工 ETF 配息每日檢查（$reason）。"
+              if gh api --method POST \
+                  "repos/$GITHUB_REPOSITORY/actions/workflows/etf-dividends.yml/dispatches" \
+                  -f ref=main \
+                  -f "inputs[business-date]=$today" \
+                  -f "inputs[parent-run-id]=$GITHUB_RUN_ID"; then
+                  etf_dividends_kicked_date="$today"
+              else
+                  echo "::warning::派工 ETF 配息 workflow 失敗，下一次醒來再檢查。"
+              fi
+              return 0
+          }
+
+          # 配息排程只看台北日曆與去重狀態，不看星期／休市日／行情收集模式。
+          maybe_kick_etf_dividends
+
           if in_session; then
               echo "台北 $(date '+%F %T')，現在就在盤中，直接開始收集。"
               echo "collect=true" >> "$GITHUB_OUTPUT"
@@ -312,6 +360,9 @@ jobs:
           # 也才看得出這一棒還活著（日誌每 5 分鐘會多一行）。
           while :; do
               now=$(date +%s)
+
+              # 必須在退場邊界先留一次派工機會，避免剛跨 07:30 就交給下一棒。
+              maybe_kick_etf_dividends
 
               if [ "$now" -ge "$retire" ]; then
                   if [ "$role" = collector ]; then

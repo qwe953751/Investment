@@ -2,6 +2,8 @@ using Invest.Web.Components;
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.Assets.Ocr.Services;
 using Invest.Web.Features.Assets.Services;
+using Invest.Web.Features.Etfs.Dividends.Models;
+using Invest.Web.Features.Etfs.Dividends.Services;
 using Invest.Web.Features.MarketStructure.Services;
 using Invest.Web.Features.Revenue;
 using Invest.Web.Features.StockTopics.Models;
@@ -12,6 +14,7 @@ using Invest.Web.Infrastructure.Database;
 using Invest.Web.Infrastructure.Ai.Cli;
 using Invest.Web.Infrastructure.Assets;
 using Invest.Web.Infrastructure.MarketData;
+using Invest.Web.Infrastructure.MarketData.EtfDividends;
 using Invest.Web.Infrastructure.MarketData.CorporateActions;
 using Invest.Web.Infrastructure.MarketData.ForeignExchange;
 using Invest.Web.Infrastructure.MarketData.IndexWeights;
@@ -68,7 +71,7 @@ using System.Text.Json.Serialization;
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "backfill-index-weights" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
-        or "market-structure-intraday-audit" or "market-structure-audit" or "repair-market-indices" or "rebuild-market-structure" or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet";
+        or "market-structure-intraday-audit" or "market-structure-audit" or "repair-market-indices" or "rebuild-market-structure" or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet" or "etf-dividends";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -89,6 +92,11 @@ builder.Services.AddHttpClient<TwseDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexEmergingDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaiwanEtfCatalogClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<TwseEtfDividendClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<TpexEtfDividendClient>(ConfigureQuoteClient);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<EtfDividendProjectionService>();
+builder.Services.AddTransient<EtfDividendCollector>();
 builder.Services.AddHttpClient<TpexMarketIndexClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseNonRegularTradingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexNonRegularTradingClient>(ConfigureQuoteClient);
@@ -385,6 +393,21 @@ if (command is "export")
     return;
 }
 
+if (command is "etf-dividends")
+{
+    try
+    {
+        await RunEtfDividendCommandAsync(app.Services, args);
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"ETF 配息命令失敗：{exception.Message}");
+        Environment.ExitCode = 1;
+    }
+
+    return;
+}
+
 if (command is "import-asset-operation-sheet")
 {
     await RunAssetOperationSheetImportAsync(app.Services, args);
@@ -589,6 +612,126 @@ static async Task RunExportAsync(IServiceProvider services, string[] args)
     Console.WriteLine(
         $"完成。{report.TradingDayCount} 個交易日、"
         + $"{report.SelectableDateCount} 個可選基準日、{report.FileCount} 個檔案。");
+}
+
+static async Task RunEtfDividendCommandAsync(IServiceProvider services, string[] args)
+{
+    if (args.Length < 2 || args[1] is "--help" or "help")
+    {
+        Console.WriteLine("etf-dividends collect --as-of YYYY-MM-DD --directory ABS --summary-file ABS");
+        Console.WriteLine("etf-dividends export --as-of YYYY-MM-DD --directory ABS --output ABS");
+        Console.WriteLine("etf-dividends verify --input ABS --as-of YYYY-MM-DD [--sha256 HEX] [--batch-id ID]");
+        Console.WriteLine("etf-dividends accept-review --batch-id ID --market twse|tpex --directory ABS --reason TEXT --evidence-url HTTPS");
+        return;
+    }
+
+    static string Option(string[] values, string name)
+    {
+        var index = Array.FindIndex(values, value => string.Equals(value, name, StringComparison.Ordinal));
+        if (index < 0 || index + 1 >= values.Length || values[index + 1].StartsWith("--", StringComparison.Ordinal))
+            throw new ArgumentException($"缺少必要參數 {name}。");
+        return values[index + 1];
+    }
+
+    static string AbsoluteOption(string[] values, string name)
+    {
+        var path = Option(values, name);
+        if (!Path.IsPathFullyQualified(path))
+            throw new ArgumentException($"{name} 必須是絕對路徑。");
+        return Path.GetFullPath(path);
+    }
+
+    static DateOnly AsOf(string[] values)
+    {
+        var value = Option(values, "--as-of");
+        if (!DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+            throw new ArgumentException("--as-of 格式必須是 YYYY-MM-DD。");
+        return date;
+    }
+
+    var subcommand = args[1].ToLowerInvariant();
+    if (subcommand == "collect")
+    {
+        var date = AsOf(args);
+        var root = AbsoluteOption(args, "--directory");
+        var summaryPath = AbsoluteOption(args, "--summary-file");
+        using var scope = services.CreateScope();
+        var collector = scope.ServiceProvider.GetRequiredService<EtfDividendCollector>();
+        var summary = await collector.CollectAsync(date, new EtfDividendStore(root));
+        Directory.CreateDirectory(Path.GetDirectoryName(summaryPath)!);
+        await File.WriteAllTextAsync(summaryPath, JsonSerializer.Serialize(summary,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+        Console.WriteLine($"status={summary.Status}; batchId={summary.BatchId}; markets={summary.Markets.Count}");
+        if (summary.Message is not null) Console.WriteLine(summary.Message);
+        Environment.ExitCode = summary.Status switch { "partial" or "blocked-license" => 2, _ => 0 };
+        return;
+    }
+
+    if (subcommand == "export")
+    {
+        var date = AsOf(args);
+        var root = AbsoluteOption(args, "--directory");
+        var output = AbsoluteOption(args, "--output");
+        var projection = services.GetRequiredService<EtfDividendProjectionService>();
+        var payload = await projection.BuildAsync(new EtfDividendStore(root), date);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+            WriteIndented = true
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(payload, options);
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllBytesAsync(output, bytes);
+        Console.WriteLine($"output={output}; bytes={bytes.Length}; batchId={payload.BatchId ?? "none"}");
+        return;
+    }
+
+    if (subcommand == "verify")
+    {
+        var input = AbsoluteOption(args, "--input");
+        var date = AsOf(args);
+        var bytes = await File.ReadAllBytesAsync(input);
+        var expectedHashIndex = Array.FindIndex(args, value => value == "--sha256");
+        if (expectedHashIndex >= 0)
+        {
+            if (expectedHashIndex + 1 >= args.Length) throw new ArgumentException("--sha256 缺少值。");
+            var actualHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+            if (!string.Equals(actualHash, args[expectedHashIndex + 1], StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("ETF 配息檔 SHA256 與預期值不符。");
+        }
+
+        var expectedBatchIndex = Array.FindIndex(args, value => value == "--batch-id");
+        string? expectedBatchId = null;
+        if (expectedBatchIndex >= 0)
+        {
+            if (expectedBatchIndex + 1 >= args.Length)
+                throw new ArgumentException("--batch-id 缺少值。");
+            expectedBatchId = args[expectedBatchIndex + 1];
+        }
+
+        var payload = JsonSerializer.Deserialize<EtfDividendExport>(bytes,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? throw new InvalidDataException("ETF 配息檔為空或不是有效 JSON。");
+        EtfDividendExportValidator.Validate(payload, date, expectedBatchId);
+
+        Console.WriteLine($"驗證成功：{input}");
+        return;
+    }
+
+    if (subcommand == "accept-review")
+    {
+        var root = AbsoluteOption(args, "--directory");
+        var batchId = Option(args, "--batch-id");
+        var market = Option(args, "--market").ToLowerInvariant();
+        var reason = Option(args, "--reason");
+        if (!Uri.TryCreate(Option(args, "--evidence-url"), UriKind.Absolute, out var evidenceUri))
+            throw new ArgumentException("--evidence-url 必須是 HTTPS 網址。");
+        await new EtfDividendStore(root).WriteDecisionAsync(batchId, market, reason, evidenceUri, CancellationToken.None);
+        Console.WriteLine($"已寫入不可變版本決策：batchId={batchId}; market={market}");
+        return;
+    }
+
+    throw new ArgumentException("未知的 etf-dividends 子命令；請使用 --help 查看用法。");
 }
 
 static async Task RunAssetOperationSheetImportAsync(IServiceProvider services, string[] args)
