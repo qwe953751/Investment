@@ -34,8 +34,8 @@ public sealed class AccelerationCoefficientsSiteJsTests
         Assert.Contains("function shrunkVolumeRatio(current, baseline, marketMedianBaseline)", script, StringComparison.Ordinal);
         Assert.Contains("function currentLiquidityFloor(values)", script, StringComparison.Ordinal);
 
-        var rankRowsStart = script.IndexOf("function rankRows(data) {", StringComparison.Ordinal);
-        var loadIntradayStart = script.IndexOf("async function loadIntraday(", StringComparison.Ordinal);
+        var rankRowsStart = script.IndexOf("function rankRows(data, selection = state) {", StringComparison.Ordinal);
+        var loadIntradayStart = script.IndexOf("async function loadIntradayResult(", StringComparison.Ordinal);
 
         Assert.True(rankRowsStart >= 0, "找不到 rankRows()。");
         Assert.True(loadIntradayStart > rankRowsStart, "找不到 loadIntraday()。");
@@ -52,7 +52,7 @@ public sealed class AccelerationCoefficientsSiteJsTests
         // #10 的原始症狀：盤中排序鍵曾經是絕對成交比變化 row.shareChange，
         // 在數學上等價於用成交值排序。改用倍數之後不該再拿它排序。
         Assert.DoesNotContain(
-            "order(state.mode === 'accel' ? row => row.shareChange : row => row.value)",
+            "order(selection.mode === 'accel' ? row => row.shareChange : row => row.value)",
             script,
             StringComparison.Ordinal);
     }

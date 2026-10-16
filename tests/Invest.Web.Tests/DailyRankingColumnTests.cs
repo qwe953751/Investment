@@ -19,7 +19,7 @@ public sealed class DailyRankingColumnTests
             StringComparison.Ordinal);
 
         // 量比仍是「資金加速」的排序依據，只是不再作為盤後表格欄位顯示。
-        Assert.Contains("state.mode === 'accel'", script, StringComparison.Ordinal);
+        Assert.Contains("selection.mode === 'accel'", script, StringComparison.Ordinal);
         Assert.Contains("row.volumeRatio", script, StringComparison.Ordinal);
 
         var razor = File.ReadAllText(Path.Combine(

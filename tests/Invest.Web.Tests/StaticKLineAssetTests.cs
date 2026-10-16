@@ -252,7 +252,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const COMPARISON_MODES", script, StringComparison.Ordinal);
         Assert.Contains("comparisonMode: 'range'", script, StringComparison.Ordinal);
         // 單日比較每個期間一份檔，前端與匯出器的檔名要一致；只有切到「單日」才下載。
-        Assert.Contains("`single-${state.period}-${state.date}`", script, StringComparison.Ordinal);
+        Assert.Contains("`single-${selection.period}-${selection.date}`", script, StringComparison.Ordinal);
         Assert.Contains("$\"single-{comparison.PeriodDays}-{date:yyyy-MM-dd}.json\"", exporter, StringComparison.Ordinal);
         Assert.Contains("ComparisonMode.SingleDay", exporter, StringComparison.Ordinal);
     }
@@ -661,7 +661,7 @@ public sealed class StaticKLineAssetTests
         var end = script.IndexOf("async function loadCustom(", start, StringComparison.Ordinal);
         var customIntraday = script[start..end];
 
-        Assert.Contains("ensureIntradaySnapshot(silent, force, true)", customIntraday, StringComparison.Ordinal);
+        Assert.Contains("ensureIntradaySnapshot(silent, force, true, context)", customIntraday, StringComparison.Ordinal);
         Assert.Contains("raw.filter(row => !isEtfIntradayRawRow(row))", customIntraday, StringComparison.Ordinal);
         Assert.Contains("totalStockCount: liveRows.length", customIntraday, StringComparison.Ordinal);
         Assert.Contains("rows,", customIntraday, StringComparison.Ordinal);
@@ -1415,7 +1415,7 @@ public sealed class StaticKLineAssetTests
             script,
             StringComparison.Ordinal);
         Assert.Contains(
-            "fetchPeriod(`${state.period}-${referenceDate}`)",
+            "fetchPeriod(`${selection.period}-${referenceDate}`)",
             script,
             StringComparison.Ordinal);
         Assert.DoesNotContain(

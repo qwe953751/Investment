@@ -217,7 +217,8 @@ test('盤中資料庫 fallback 的分頁與摘要也有獨立的有界逾時', (
 function periodHarness() {
     let calls = 0;
     const context = {
-        cache: new Map(),
+        cache: new Map(), rankingResourceKeys: new Set(), rankingJob: null, periodPrefetched: new Set(),
+        periodCacheVersions: new Map(), periodLoading: new Map(), trimPeriodCache() {},
         periodLoadErrors: new Map(),
         version: 'test-version',
         AbortController,
@@ -232,7 +233,7 @@ function periodHarness() {
 
             return {
                 ok: true,
-                json: async () => ({ rows: [{ ticker: '2330' }] })
+                json: async () => ({ key: '1-2026-09-08', rows: [{ ticker: '2330' }] })
             };
         }
     };
@@ -250,7 +251,7 @@ test('期間快照遇到暫時斷線後會自動重試並完成載入', async ()
     const harness = periodHarness();
     const result = await harness.fetchPeriod('1-2026-09-08');
 
-    assert.deepEqual(JSON.parse(JSON.stringify(result)), { rows: [{ ticker: '2330' }] });
+    assert.deepEqual(JSON.parse(JSON.stringify(result)), { key: '1-2026-09-08', rows: [{ ticker: '2330' }] });
     assert.equal(harness.calls(), 2);
 });
 

@@ -396,9 +396,9 @@ const MODES = [
     },
     {
         key: 'accel', text: '資金加速',
-        hint: '依成交值增減率排序，回答「哪些標的的成交值相較前期快速放大」。前期排名本身也是增減率，所以需要 3N 個交易日。',
-        singleDayHint: '依選定日相較前 N 日平均的成交值增減率排序；另需再前 N 日平均作為前期基準。',
-        intradayHint: '依成交比變化排序，回答「今天有哪些標的吸走的資金比過去那段期間更多」。'
+        hint: '依收縮量比排序，並套用當期流動性門檻；前期排名使用前期收縮量比，需要 3N 個交易日。',
+        singleDayHint: '依選定日相較前 N 日平均的收縮量比排序；另需再前 N 日平均作為前期基準。',
+        intradayHint: '依收縮量比排序，比較今日與過去觀察期間的市場成交比，並套用當期流動性門檻。'
     }
 ];
 
@@ -1821,6 +1821,7 @@ async function loadRevenue(force = false) {
 const revenueOf = ticker => revenueByTicker.get(ticker) ?? null;
 
 function renderRevenueForCurrentView() {
+    if (['daily', 'intraday', 'custom', 'etf'].includes(state.view) && !rankingCanRender()) return;
     if (state.view === 'assets') {
         if (ASSET_HOLDINGS_VIEW_ENABLED) {
             renderAssetsDashboard();
@@ -2476,6 +2477,181 @@ const cache = new Map();
 const TABLE_FIRST_SCREEN_ROWS = 30;
 let pendingTableRows = null;
 let current = null;
+
+// Ranking load coordination: selection intent is independent of sort/theme/locks.
+let rankingIntent = 0;
+let rankingIntentKey = '';
+let rankingJob = null;
+let rankingBusy = false;
+let rankingCommitted = null;
+const periodLoading = new Map();
+const periodCacheVersions = new Map();
+const periodPrefetched = new Set();
+let rankingResourceKeys = new Set();
+let committedResourceKeys = new Set();
+let neighborPrefetchSequence = 0;
+let neighborPrefetchRunning = false;
+
+function rankingSelectionKey() {
+    return JSON.stringify([version, typeof marketSwitchProto === 'undefined' ? 'tw' : marketSwitchProto?.market ?? 'tw',
+        ...['view', 'date', 'period', 'comparisonMode', 'mode', 'market', 'threshold',
+            'customSource', 'customThreshold', 'customStatusFilters', 'customSearch',
+            'etfSession', 'etfMarket', 'etfSearch'].map(key => state[key])]);
+}
+
+function syncRankingIntent() {
+    const key = rankingSelectionKey();
+    if (key !== rankingIntentKey) {
+        rankingIntentKey = key;
+        rankingIntent += 1;
+        neighborPrefetchSequence += 1;
+        pendingTableRows = null;
+        rankingResourceKeys = new Set();
+        if (!['daily', 'intraday', 'custom', 'etf'].includes(state.view)) committedResourceKeys = new Set();
+        rankingBusy = true;
+    }
+    return rankingIntent;
+}
+
+function rankingJobIsCurrent(context, checkSource = true) {
+    return context.intent === syncRankingIntent()
+        && rankingJob === context
+        && (!checkSource || context.sourceRevision === null || context.sourceRevision === intradayRawRevision);
+}
+
+function rankingCanRender() {
+    return !rankingBusy && (!rankingCommitted || rankingCommitted.intent === syncRankingIntent());
+}
+
+function rankingSelectionLabel(selection) {
+    const market = { all: '全市場', twse: '上市', tpex: '上櫃', emerging: '興櫃' };
+    const date = selection.date ?? '';
+    if (selection.view === 'etf') {
+        return `ETF ${selection.etfSession === 'intraday' ? '盤中' : '盤後'} ${date}／${market[selection.etfMarket] ?? '全市場'}`
+            + (selection.etfSearch ? `／搜尋 ${selection.etfSearch}` : '');
+    }
+    if (selection.view === 'custom') {
+        const filters = selection.customStatusFilters ?? {};
+        const flags = filters.all ? '全部狀態' : ['disposition', 'fullDelivery', 'suspended']
+            .filter(key => filters[key]).map(key => ({ disposition: '處置', fullDelivery: '全額', suspended: '停牌' })[key]).join('、');
+        return `自訂${selection.customSource === 'intraday' ? '盤中' : '盤後'} ${date}／門檻 ${(selection.customThreshold ?? 0) / 1e8} 億／${flags}`
+            + (selection.customSearch ? `／搜尋 ${selection.customSearch}` : '');
+    }
+    return `${selection.view === 'intraday' ? '盤中' : '盤後'} ${date}／${selection.period ?? 1} 日`
+        + `／${selection.comparisonMode === 'single' && selection.view === 'daily' ? '單日' : '區間'}`
+        + `／${selection.mode === 'accel' ? '資金加速' : '成交熱度'}／${market[selection.market] ?? '全市場'}`
+        + `／門檻 ${(selection.threshold ?? 0) / 1e8} 億`;
+}
+
+function rankingStatus(context, message, failed = false) {
+    if (!rankingJobIsCurrent(context, false)) return;
+    const host = el('ranking-status');
+    if (!host) return;
+    const retained = rankingCommitted?.selection.view === context.selection.view;
+    el('notice').hidden = true;
+    el('ranking').hidden = false;
+    host.hidden = false;
+    host.replaceChildren();
+    const oldLabel = retained ? `目前仍顯示：${rankingSelectionLabel({ ...rankingCommitted.selection, date: current?.tradeDate ?? rankingCommitted.selection.date }) + ' ' + (current?.referencePeriod ?? current?.currentPeriod ?? '')}。` : '';
+    host.textContent = `${failed ? `新選擇尚未載入（${rankingSelectionLabel(context.selection)}）：` : ''}${message} ${oldLabel}`;
+    host.dataset.state = failed ? 'error' : 'loading';
+    if (failed) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = '重試目前選擇';
+        retry.addEventListener('click', () => { void load().catch(reportLoadFailure); });
+        host.append(retry);
+    }
+    el('ranking').setAttribute('aria-busy', String(!failed));
+    const table = el('table-body')?.closest('.table-container');
+    if (table) table.inert = true;
+    el('summary').inert = true;
+    el('lock-row').inert = true;
+    el('pagination').inert = true;
+    if (!retained) {
+        el('summary').replaceChildren();
+        el('table-head').replaceChildren();
+        el('table-body').replaceChildren();
+        el('ranking').querySelector(':scope > .summary-explanation-row')?.remove();
+    }
+}
+
+function rankingNotice(context, message, failed = true) {
+    rankingStatus(context, message, failed);
+}
+
+function prepareRankingCommit(context) {
+    if (!rankingJobIsCurrent(context)) return false;
+    rankingBusy = false;
+    rankingCommitted = { intent: context.intent, selection: context.selection };
+    committedResourceKeys = new Set(context.resources);
+    const host = el('ranking-status');
+    if (host) host.hidden = true;
+    el('ranking').setAttribute('aria-busy', 'false');
+    const table = el('table-body')?.closest('.table-container');
+    if (table) table.inert = false;
+    el('summary').inert = false;
+    el('lock-row').inert = false;
+    el('pagination').inert = false;
+    pendingTableRows = null;
+    return true;
+}
+
+function runRankingJob(kind, force, loader) {
+    const intent = syncRankingIntent();
+    if (rankingJob?.intent === intent && rankingJob.kind === kind && rankingJob.promise) {
+        // A force request during an ordinary load is fulfilled once after that load.
+        if (force && !rankingJob.force) rankingJob.forcePending = true;
+        return rankingJob.promise;
+    }
+    const context = {
+        intent, kind, force, forcePending: false, sourceRevision: null, resources: new Set(),
+        selection: Object.freeze({ ...state, customStatusFilters: Object.freeze({ ...state.customStatusFilters }) })
+    };
+    rankingJob = context;
+    rankingBusy = true;
+    rankingStatus(context, `正在讀取：${rankingSelectionLabel(context.selection)}…`);
+    context.promise = (async () => {
+        do {
+            context.sourceRevision = null;
+            try {
+                await loader(context, context.force);
+            } catch (error) {
+                if (rankingJobIsCurrent(context, false)) {
+                    rankingNotice(context, error?.message ?? '行情載入失敗，請重試。');
+                }
+            }
+            if (!rankingJobIsCurrent(context, false)) return;
+            if (context.forcePending) {
+                context.forcePending = false;
+                context.force = true;
+                continue;
+            }
+            if (context.sourceRevision !== null && context.sourceRevision !== intradayRawRevision) continue;
+            break;
+        } while (true);
+    })().finally(() => {
+        if (rankingJob === context) {
+            context.promise = null;
+            rankingResourceKeys = new Set();
+            trimPeriodCache();
+        }
+    });
+    return context.promise;
+}
+
+function trimPeriodCache() {
+    while (cache.size > 12) {
+        const removable = [...cache.keys()].filter(key => !rankingResourceKeys.has(key) && !committedResourceKeys.has(key));
+        const key = removable.find(key => periodPrefetched.has(key)) ?? removable[0];
+        if (key === undefined) break;
+        cache.delete(key);
+        periodCacheVersions.delete(key);
+        periodPrefetched.delete(key);
+    }
+}
+// End ranking load coordination.
+
 // 自訂頁的兩個內部資料類型共用這份數量快取，避免切換後按鈕只剩目前檢視的數字。
 let assetTypeCounts = { stock: null, etf: null };
 let assetTypeCountLoading = false;
@@ -2519,7 +2695,6 @@ let marketIndices = new Map();
 let marketHeatHistory = [];
 let marketIndexYearStarts = new Map();
 let marketStructureDescriptor = null;
-let marketStructureClose = null;
 let marketStructureRequestSequence = 0;
 let marketStructureRetryTimer = null;
 function normalizeMarketStructureDate(value) {
@@ -2605,6 +2780,7 @@ const el = id => document.getElementById(id);
 
 function renderOptions(containerId, options, selected, onSelect) {
     const container = el(containerId);
+    const focusedText = container.contains(document.activeElement) ? document.activeElement.textContent : null;
     container.replaceChildren();
 
     for (const option of options) {
@@ -2623,6 +2799,7 @@ function renderOptions(containerId, options, selected, onSelect) {
         }
 
         container.append(button);
+        if (focusedText !== null && focusedText === option.text && !button.disabled) button.focus({ preventScroll: true });
     }
 }
 
@@ -17872,8 +18049,8 @@ function currentLiquidityFloor(values) {
 }
 
 // 依市場與門檻篩選，再依模式排名。
-function rankRows(data) {
-    const acceleration = state.mode === 'accel';
+function rankRows(data, selection = state) {
+    const acceleration = selection.mode === 'accel';
     const sortKey = row => (acceleration ? row.volumeRatio : row.value);
     const previousSortKey = row => (acceleration ? row.previousVolumeRatio : row.previousValue);
 
@@ -17885,8 +18062,8 @@ function rankRows(data) {
         : null;
 
     const candidates = data.rows.filter(row =>
-        (state.market === 'all' || row.market === state.market)
-        && row.value >= state.threshold
+        (selection.market === 'all' || row.market === selection.market)
+        && row.value >= selection.threshold
         && (accelerationFloor === null || row.value >= accelerationFloor));
 
     const previousRanks = new Map([...candidates]
@@ -20348,6 +20525,7 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
 }
 
 function renderTable() {
+    if (!rankingCanRender()) return;
     el('data-table').classList.toggle('custom-table', state.view === 'custom');
     el('data-table').classList.toggle('etf-table', state.view === 'etf');
 
@@ -20451,7 +20629,7 @@ function renderTable() {
     renderPagination();
 
     if (rows.length > firstScreen) {
-        const pending = { body, rows: rows.slice(firstScreen), build };
+        const pending = { body, rows: rows.slice(firstScreen), build, owner: current };
         pendingTableRows = pending;
         requestAnimationFrame(() => setTimeout(() => {
             if (pendingTableRows === pending) {
@@ -20470,7 +20648,7 @@ function renderTable() {
 function flushPendingTableRows() {
     const pending = pendingTableRows;
 
-    if (!pending) {
+    if (!pending || !rankingCanRender() || pending.owner !== current) {
         return;
     }
 
@@ -20510,6 +20688,7 @@ function etfLiveCoverageText(liveCount, totalCount) {
 }
 
 function renderSummary() {
+    if (!rankingCanRender()) return;
     // 掛在這裡而不是各個 load*()：摘要重畫的時機就是資料換過的時機，
     // 兩者綁在一起才不會有「資料換了、警告還留在上一輪」的空窗。
     renderStaleBanner();
@@ -21145,12 +21324,13 @@ async function fetchIntradayMarketStructure(tradeDate, runId, capturedAt) {
     }
 }
 
-function refreshIntradayMarketStructure(tradeDate, runId, capturedAt) {
+function refreshIntradayMarketStructure(tradeDate, runId, capturedAt, context = null) {
+    const shown = current;
     clearTimeout(marketStructureRetryTimer);
     marketStructureRetryTimer = null;
     const requestSequence = ++marketStructureRequestSequence;
     current.marketStructure = null;
-    current.marketStructurePending = Boolean(marketStructureDescriptor?.intradayBaseUrl);
+    current.marketStructurePending = Boolean(runId !== null && marketStructureDescriptor?.intradayBaseUrl);
     current.marketStructureMessage = null;
     current.intradayRunId = runId;
     if (!current.marketStructurePending) {
@@ -21160,7 +21340,10 @@ function refreshIntradayMarketStructure(tradeDate, runId, capturedAt) {
     renderSummary();
 
     let attempts = 0;
-    const isCurrentSnapshot = () => state.view === 'intraday'
+    const isCurrentSnapshot = () => current === shown
+        && (!context || rankingJobIsCurrent(context))
+        && (!context || shown.capturedAtIso === capturedAt)
+        && state.view === 'intraday'
         && requestSequence === marketStructureRequestSequence
         && normalizeMarketStructureDate(current?.tradeDate) === normalizeMarketStructureDate(tradeDate)
         && current?.intradayRunId === runId;
@@ -21952,7 +22135,7 @@ function reportLoadFailure(error) {
 
 /// 舊的 index.html / site.js 可能還躺在瀏覽器快取裡（GitHub Pages 給十分鐘）。
 /// 版本號對不上就換一個帶查詢字串的網址重載，一次把 HTML 與 JS 都換成新的。
-async function reloadIfStale() {
+async function reloadIfStale(isCurrent = () => true) {
     let latest;
 
     try {
@@ -21961,7 +22144,7 @@ async function reloadIfStale() {
         return false;
     }
 
-    if (latest.version === version) {
+    if (!isCurrent() || latest.version === version) {
         return false;
     }
 
@@ -22107,6 +22290,8 @@ let intradayRaw = null;
 let intradaySummary = null;
 let intradayRawLoadedAt = 0;
 let intradaySnapshotRunId = null;
+let intradayRawRevision = 0;
+let intradayActualRunId = null;
 let intradayTopicRunId = null;
 const INTRADAY_CHANNEL_NAME = 'frank-invest-intraday-snapshot-v1';
 const INTRADAY_LEASE_KEY = 'frank-invest.intraday-poller.v1';
@@ -22379,6 +22564,8 @@ function applyIntradaySnapshot(document, broadcast = true) {
         return false;
     }
 
+    intradayRawRevision += 1;
+    intradayActualRunId = nextRunId;
     intradayRaw = document.rows;
     intradaySummary = document.summary;
 
@@ -22405,7 +22592,40 @@ function applyIntradaySnapshot(document, broadcast = true) {
     return true;
 }
 
-async function ensureIntradaySnapshot(silent = false, force = false, loadSupportingData = false) {
+let intradaySnapshotLoading = null;
+let intradaySnapshotLoadingForced = false;
+let intradaySnapshotForcePending = false;
+async function ensureIntradaySnapshot(silent = false, force = false, loadSupportingData = false, context = null) {
+    if (intradaySnapshotLoading && force && !intradaySnapshotLoadingForced) intradaySnapshotForcePending = true;
+    if (!intradaySnapshotLoading) {
+        intradaySnapshotLoadingForced = force;
+        const pending = (async () => {
+            let loaded = await ensureIntradaySnapshotResult(true, force, false);
+            if (intradaySnapshotForcePending) {
+                intradaySnapshotForcePending = false;
+                intradaySnapshotLoadingForced = true;
+                loaded = await ensureIntradaySnapshotResult(true, true, false);
+            }
+            return loaded;
+        })();
+        intradaySnapshotLoading = pending;
+        const clear = () => { if (intradaySnapshotLoading === pending) intradaySnapshotLoading = null; };
+        void pending.then(clear, clear);
+    }
+    const loaded = await intradaySnapshotLoading;
+    if (!loaded && !silent) {
+        if (context) rankingNotice(context, '連不上盤中資料，稍後再試。');
+        else if (usesIntradaySnapshot()) showNotice('連不上盤中資料，稍後再試。', true);
+    }
+    if (loaded && loadSupportingData && (!context || rankingJobIsCurrent(context, false))) {
+        void Promise.all([loadMarketFlags(), loadRevenue(force)])
+            .then(() => renderRevenueForCurrentView())
+            .catch(() => { /* Optional supplements cannot replace ranking data. */ });
+    }
+    return loaded;
+}
+
+async function ensureIntradaySnapshotResult(silent, force) {
     // 切回盤中頁時最常見的情況是「幾十秒前才剛看過」。上一輪的原始資料還在手上、
     // 而且還沒到下一輪收集時間的話就直接重畫，不要把表格藏起來換成「載入中…」
     // 再等一次網路來回——使用者說的「切換頁籤時卡很久才跳出內容」就是這個。
@@ -22414,10 +22634,6 @@ async function ensureIntradaySnapshot(silent = false, force = false, loadSupport
         && Date.now() - intradayRawLoadedAt < intradayRefreshMs;
 
     if (!fresh) {
-        if (!silent) {
-            showNotice('盤中行情載入中…', false);
-        }
-
         try {
             let loadedFromCdn = false;
 
@@ -22463,22 +22679,10 @@ async function ensureIntradaySnapshot(silent = false, force = false, loadSupport
             }
 
         } catch {
-            // 靜默更新失敗就讓畫面停在上一輪的數字，總比把整張表換成錯誤訊息好。
-            if (!silent) {
-                showNotice('連不上盤中資料，稍後再試。', true);
-            }
-
+            // Source failures are reported by the caller that still owns the view.
             return;
         }
 
-    }
-
-    if (loadSupportingData) {
-        // 這兩項不是盤中 CDN 的內容：交易限制與營收延續原本的 Supabase 流程，
-        // 也只在盤中排行／自訂盤中真正需要它們時才讀。它們不能擋住核心快照與表格。
-        void Promise.all([loadMarketFlags(), loadRevenue(force)])
-            .then(() => renderRevenueForCurrentView())
-            .catch(reportLoadFailure);
     }
 
     return true;
@@ -22582,16 +22786,23 @@ function intradayTradingVolume(price, turnover) {
         : null;
 }
 
-async function loadIntraday(silent = false, force = false) {
-    if (!await ensureIntradaySnapshot(silent, force, true)) {
+function loadIntraday(silent = false, force = false) {
+    return runRankingJob('intraday', force, (context, forced) => loadIntradayResult(context, silent, forced));
+}
+
+async function loadIntradayResult(context, silent, force) {
+    const selection = context.selection;
+    if (!await ensureIntradaySnapshot(silent, force, true, context)) {
         return;
     }
 
+    if (!rankingJobIsCurrent(context, false)) return;
+    context.sourceRevision = intradayRawRevision;
     const raw = intradayRaw;
     const summary = intradaySummary;
 
     if (raw === null || raw.length === 0 || summary === null) {
-        showNotice(
+        rankingNotice(context,
             '今天還沒有盤中資料。'
             + (schedule === null ? '' : `收集器在交易日 ${schedule.intradayStart} 開始。`),
             true);
@@ -22606,7 +22817,6 @@ async function loadIntraday(silent = false, force = false) {
         summary,
         true);
 
-    nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
 
     // 分母是全市場，不隨市場篩選改變——與盤後那一欄同一個定義，兩邊的比例才對得起來。
     const marketTotal = rows.reduce((total, row) => total + row.value, 0);
@@ -22614,6 +22824,7 @@ async function loadIntraday(silent = false, force = false) {
 
     if (marketHeat) {
         marketHeat.previousDays = await loadMarketHeatHistory(summary.trade_date);
+        if (!rankingJobIsCurrent(context)) return;
     }
 
     // 對照日必須嚴格早於盤中快照的交易日。
@@ -22621,13 +22832,14 @@ async function loadIntraday(silent = false, force = false) {
     // 若仍固定取 dates 最後一天，就會把快照自己的收盤資料拿來當對照，整欄變成跟自己比。
     const referenceDate = dates.filter(date => date < summary.trade_date).at(-1);
     const reference = referenceDate
-        ? await fetchPeriod(`${state.period}-${referenceDate}`)
+        ? await fetchPeriod(`${selection.period}-${referenceDate}`)
         : null;
+    if (!rankingJobIsCurrent(context)) return;
     const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
     applyKnownEmergingMarkets(rows, referenceByTicker);
 
-    if (state.mode === 'accel' && referenceByTicker.size === 0) {
-        showNotice(`讀不到過去 ${state.period} 個交易日的對照資料，資金加速排不出來，請改用成交熱度。`, true);
+    if (selection.mode === 'accel' && referenceByTicker.size === 0) {
+        rankingNotice(context, `讀不到過去 ${selection.period} 個交易日的對照資料，資金加速排不出來，請改用成交熱度。`, true);
         return;
     }
 
@@ -22655,13 +22867,13 @@ async function loadIntraday(silent = false, force = false) {
 
     // 資金加速專用的當期流動性門檻：盤中原本沒套用任何成交門檻，鳥量股的成交比
     // 稍微放大就是好幾十倍，靠雜訊就能衝進榜單——跟盤後同一套 currentLiquidityFloor 規則。
-    const accelerationFloor = state.mode === 'accel'
+    const accelerationFloor = selection.mode === 'accel'
         ? currentLiquidityFloor(rows.filter(isCalibrationMarketRow).map(row => row.value))
         : null;
 
     const candidates = rows.filter(row =>
-        (state.market === 'all' || row.market === state.market)
-        && row.value >= state.threshold
+        (selection.market === 'all' || row.market === selection.market)
+        && row.value >= selection.threshold
         && (accelerationFloor === null || row.value >= accelerationFloor));
     const marketTurnovers = {
         twse: rows.filter(row => row.market === 'twse')
@@ -22674,7 +22886,7 @@ async function loadIntraday(silent = false, force = false) {
     // 早盤也不會失真；用倍數而不是百分點差，才不會被大型股用絕對量體主導排序
     // （筆記 #10）。唯一定義處在 AccelerationRules.ShrunkRatio，係數讀 manifest。
     const ranked = [...candidates].sort(
-        order(state.mode === 'accel' ? row => row.volumeRatio : row => row.value));
+        order(selection.mode === 'accel' ? row => row.volumeRatio : row => row.value));
 
     // 盤中的「前期排名」是同一批候選在對照期間裡的名次——盤後拿前一段期間比，
     // 盤中就拿過去那段期間比。兩份名次都在同一個候選集合上算，
@@ -22686,7 +22898,7 @@ async function loadIntraday(silent = false, force = false) {
     // 資金加速模式直接借用對照日當天匯出的 volumeRatio——那是對照日自己一輪
     // 已經算好的收縮量比（伺服器端一律計算、不受匯出模式影響），不必在這裡
     // 重算一次「比例的比例」。
-    const pastSortKey = state.mode === 'accel'
+    const pastSortKey = selection.mode === 'accel'
         ? row => referenceByTicker.get(row.ticker)?.volumeRatio ?? null
         : row => referenceByTicker.get(row.ticker)?.value ?? null;
 
@@ -22694,6 +22906,8 @@ async function loadIntraday(silent = false, force = false) {
         .sort(order(pastSortKey))
         .map((row, index) => [row.ticker, index + 1]));
 
+    if (!prepareRankingCommit(context)) return;
+    nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
     current = {
         tradeDate: summary.trade_date,
         capturedAt: toTaipeiText(summary.captured_at),
@@ -22727,7 +22941,7 @@ async function loadIntraday(silent = false, force = false) {
             // 一律當作「算不出前期名次」，跟盤後 rankRows()／C# 端同一套規則。
             const previousRank = previousRanks.get(row.ticker);
             const comparable = !missing(pastSortKey(row))
-                && (state.mode !== 'accel' || !accelerationCoefficients
+                && (selection.mode !== 'accel' || !accelerationCoefficients
                     || previousRank <= accelerationCoefficients.maxPreviousRankForDisplay);
 
             return {
@@ -22742,7 +22956,7 @@ async function loadIntraday(silent = false, force = false) {
     el('notice').hidden = true;
     el('ranking').hidden = false;
 
-    refreshIntradayMarketStructure(summary.trade_date, intradaySnapshotRunId, summary.captured_at);
+    refreshIntradayMarketStructure(summary.trade_date, intradayActualRunId, summary.captured_at, context);
 
     renderSummary();
     renderTable();
@@ -22937,45 +23151,53 @@ function intradayYearToDatePercent(row, market) {
 // 讀不到就回 null，兩邊各自決定怎麼處理。
 const periodLoadErrors = new Map();
 
-async function fetchPeriod(key) {
-    // 每份「期間 × 交易日」解析後要好幾 MB；只留最近用過的幾份，
-    // 來回切換很多天時記憶體不會一直長，手機也不會因此越用越卡。
-    const limit = 12;
-
-    if (!cache.has(key)) {
-        // 帶上快照版本號：同一份快照可以被瀏覽器盡情快取，
-        // 重新發佈後版本號一變，網址跟著變，手機上就不會再看到舊資料。
-        try {
-            cache.set(key, await fetchJsonWithRetry(
-                `data/${key}.json?v=${version}`,
-                {},
-                { timeoutMs: 30_000, retryDelays: [1_000] }));
-            periodLoadErrors.delete(key);
-        } catch (error) {
-            periodLoadErrors.set(key, error);
-            return null;
-        }
-    } else {
-        // 最近用過的移到最後；淘汰時從最久沒用的開始。
-        const value = cache.get(key);
+async function fetchPeriod(key, background = false) {
+    const resourceId = `${version}:${key}`;
+    if (!background) {
+        rankingResourceKeys.add(key);
+        rankingJob?.resources.add(key);
+        periodPrefetched.delete(key);
+    }
+    if (cache.has(key) && periodCacheVersions.get(key) === version) {
+        const data = cache.get(key);
         cache.delete(key);
-        cache.set(key, value);
+        cache.set(key, data);
+        return data;
     }
-
-    const value = cache.get(key);
-
-    while (cache.size > limit) {
-        cache.delete(cache.keys().next().value);
-    }
-
-    return value;
+    if (periodLoading.has(resourceId)) return periodLoading.get(resourceId);
+    const requestedVersion = version;
+    const promise = Promise.resolve().then(async () => {
+        try {
+            const data = await fetchJsonWithRetry(`data/${key}.json?v=${requestedVersion}`, {},
+                { timeoutMs: 30_000, retryDelays: [1_000] });
+            const valid = Array.isArray(data?.rows) && (key.startsWith('single-')
+                ? data.periodDays === Number(key.split('-')[1])
+                : data.key === key);
+            if (!valid) throw new Error(`行情來源不符：${key}`);
+            if (version === requestedVersion) {
+                cache.set(key, data);
+                periodCacheVersions.set(key, requestedVersion);
+                if (background && !rankingResourceKeys.has(key)) periodPrefetched.add(key);
+                periodLoadErrors.delete(key);
+                trimPeriodCache();
+            }
+            return data;
+        } catch (error) {
+            if (version === requestedVersion) periodLoadErrors.set(key, error);
+            return null;
+        } finally {
+            if (periodLoading.get(resourceId) === promise) periodLoading.delete(resourceId);
+        }
+    });
+    periodLoading.set(resourceId, promise);
+    return promise;
 }
 
 // 單日比較共用 1 日排行檔的當天成交值、成交比與價格欄位；前期均值、增減率與成交比變化
 // 由 C# 匯出成每個期間一份的 single-{期間}-{日期}.json，只有切到「單日」才下載。
 // 瀏覽器只做資料組合，不重新實作排行公式。
-function applySingleDayComparison(data, comparison) {
-    if (!comparison || comparison.periodDays !== state.period) {
+function applySingleDayComparison(data, comparison, selection = state) {
+    if (!comparison || comparison.periodDays !== selection.period) {
         return null;
     }
 
@@ -23031,15 +23253,21 @@ async function buildLocalCustomIntradayPreview() {
     };
 }
 
-async function loadCustomIntraday(silent = false, force = false) {
+function loadCustomIntraday(silent = false, force = false) {
+    return runRankingJob('custom-intraday', force, (context, forced) => loadCustomIntradayResult(context, silent, forced));
+}
+
+async function loadCustomIntradayResult(context, silent, force) {
+    const selection = context.selection;
     let raw;
     let summary;
 
     if (CUSTOM_INTRADAY_LOCAL_PREVIEW) {
         const preview = await buildLocalCustomIntradayPreview();
 
+        if (!rankingJobIsCurrent(context, false)) return;
         if (!preview) {
-            showNotice(`讀不到 ${state.date} 的本機樣本，請先產生靜態網站。`, true);
+            rankingNotice(context, `讀不到 ${selection.date} 的本機樣本，請先產生靜態網站。`, true);
             return;
         }
 
@@ -23048,20 +23276,22 @@ async function loadCustomIntraday(silent = false, force = false) {
         lastIntradayLoadedAt = Date.now();
     } else {
         if (!hasIntradaySnapshotSource()) {
-            showNotice('盤中自訂需要可用的行情來源。', true);
+            rankingNotice(context, '盤中自訂需要可用的行情來源。', true);
             return;
         }
 
-        if (!await ensureIntradaySnapshot(silent, force, true)) {
+        if (!await ensureIntradaySnapshot(silent, force, true, context)) {
             return;
         }
 
+        if (!rankingJobIsCurrent(context, false)) return;
+        context.sourceRevision = intradayRawRevision;
         raw = intradayRaw;
         summary = intradaySummary;
     }
 
     if (raw === null || raw.length === 0 || summary === null) {
-        showNotice(
+        rankingNotice(context,
             '今天還沒有盤中資料。'
             + (schedule === null ? '' : `收集器在交易日 ${schedule.intradayStart} 開始。`),
             true);
@@ -23079,6 +23309,7 @@ async function loadCustomIntraday(silent = false, force = false) {
         const reference = referenceDate
             ? await fetchPeriod(`1-${referenceDate}`)
             : null;
+        if (!rankingJobIsCurrent(context)) return;
         applyKnownEmergingMarkets(
             liveRows,
             new Map((reference?.rows ?? []).map(row => [row.ticker, row])));
@@ -23090,10 +23321,11 @@ async function loadCustomIntraday(silent = false, force = false) {
         liveRows,
         intradaySuspended === null ? [] : [...intradaySuspended.values()]);
 
+    if (!prepareRankingCommit(context)) return;
     nameByTicker = new Map(allRows.map(row => [row.ticker, row.name]));
 
     const rows = allRows.filter(row =>
-        (row.suspension !== undefined || row.value >= state.customThreshold)
+        (row.suspension !== undefined || row.value >= selection.customThreshold)
         && customStatusMatches(row.ticker, row)
         && customSearchMatches(row));
     const marketTotal = liveRows.reduce((total, row) => total + row.value, 0);
@@ -23131,26 +23363,32 @@ async function loadCustom(silent = false, force = false) {
         return;
     }
 
-    const key = `1-${state.date}`;
+    return runRankingJob('custom-daily', force, context => loadCustomDailyResult(context, silent));
+}
+
+async function loadCustomDailyResult(context, silent) {
+    const selection = context.selection;
+    const key = `1-${selection.date}`;
 
     if (!cache.has(key) && !silent) {
-        showNotice('單日資料載入中…', false);
+        rankingNotice(context, '單日資料載入中…', false);
     }
 
     // TDR 逐日檔與停牌區間檔跟排行檔同時下載，不必等大檔讀完才開始。
-    const supplement = Promise.all([fetchTdrDaily(state.date), ensureSuspensions()]);
-    const data = await fetchPeriod(`1-${state.date}`);
+    const supplement = Promise.all([fetchTdrDaily(selection.date), ensureSuspensions()]);
+    const data = await fetchPeriod(`1-${selection.date}`);
 
+    if (!rankingJobIsCurrent(context)) return;
     if (!data) {
         const error = periodLoadErrors.get(key);
 
-        if (error?.status === 404 && await reloadIfStale()) {
+        if (error?.status === 404 && await reloadIfStale(() => rankingJobIsCurrent(context))) {
             return;
         }
 
-        showNotice(error
+        rankingNotice(context, error
             ? staticJsonLoadErrorMessage(`data/${key}.json`, error)
-            : `讀不到 ${state.date} 的單日資料，請確認目前發布版本包含這個檔案。`, true, () => {
+            : `讀不到 ${selection.date} 的單日資料，請確認目前發布版本包含這個檔案。`, true, () => {
                 void loadCustom(false, true).catch(reportLoadFailure);
             });
         return;
@@ -23161,21 +23399,23 @@ async function loadCustom(silent = false, force = false) {
 
     if (!data.hasSufficientData) {
         nameByTicker = new Map(data.rows.map(row => [row.ticker, row.name]));
-        showNotice(data.message ?? '資料不足。', true);
+        rankingNotice(context, data.message ?? '資料不足。', true);
         return;
     }
 
     // 個股清單 = 排行檔的普通股（上市、上櫃、興櫃）＋ TDR ＋ 當天停止交易的標的。
     // TDR 不進排行，所以另外讀它的逐日檔；停止交易的標的當天沒有行情，要從停牌區間檔補進來（筆記 #84）。
     const [tdr] = await supplement;
+    if (!rankingJobIsCurrent(context)) return;
     const tradedRows = [...data.rows, ...tdr.rows.map(toCustomTdrRow)];
-    const { allRows, suspendedCount } = withSuspendedRows(tradedRows, suspensionsOn(state.date));
+    const { allRows, suspendedCount } = withSuspendedRows(tradedRows, suspensionsOn(selection.date));
 
+    if (!prepareRankingCommit(context)) return;
     nameByTicker = new Map(allRows.map(row => [row.ticker, row.name]));
 
     // 停止交易的列成交值是 0，不受成交值下限限制——否則下限一設就搜尋不到它們。
     const rows = allRows.filter(row =>
-        (row.suspension !== undefined || row.value >= state.customThreshold)
+        (row.suspension !== undefined || row.value >= selection.customThreshold)
         && customStatusMatches(row.ticker, row)
         && customSearchMatches(row));
     current = {
@@ -23462,8 +23702,8 @@ function localEtfRows(session, tradeDate) {
     });
 }
 
-function renderEtfRows(allRows, session, tradeDate, capturedAtIso = '', liveEtfCount = null) {
-    if (state.view !== 'etf') {
+function renderEtfRows(allRows, session, tradeDate, capturedAtIso = '', liveEtfCount = null, context = null) {
+    if ((context && !prepareRankingCommit(context)) || state.view !== 'etf') {
         return;
     }
 
@@ -23500,43 +23740,50 @@ function renderEtfRows(allRows, session, tradeDate, capturedAtIso = '', liveEtfC
     renderTable();
 }
 
-async function loadEtfDaily(force = false) {
+function loadEtfDaily(force = false) {
+    return runRankingJob('etf-daily', force, (context, forced) => loadEtfDailyResult(context, forced));
+}
+
+async function loadEtfDailyResult(context, force) {
+    const selection = context.selection;
     if (ETF_LOCAL_PREVIEW) {
         renderEtfRows(
-            localEtfRows('daily', state.date),
+            localEtfRows('daily', selection.date),
             'daily',
-            state.date || ETF_LOCAL_PREVIEW_TRADE_DATE);
+            selection.date || ETF_LOCAL_PREVIEW_TRADE_DATE, '', null, context);
         return;
     }
 
     if (!force) {
-        showNotice('ETF 盤後資料載入中…', false);
+        rankingNotice(context, 'ETF 盤後資料載入中…', false);
     }
 
     let data;
 
     try {
-        data = await fetchEtfDaily(state.date, force);
+        data = await fetchEtfDaily(selection.date, force);
     } catch (error) {
-        if (state.view !== 'etf') {
+        if (!rankingJobIsCurrent(context)) return;
+        if (!rankingJobIsCurrent(context)) {
             return;
         }
 
-        if (error?.status === 404 && await reloadIfStale()) {
+        if (error?.status === 404 && await reloadIfStale(() => rankingJobIsCurrent(context))) {
             return;
         }
 
         const message = error?.status === 404
-            ? `ETF 尚未匯出 ${state.date} 的盤後資料；請先完成 ETF 行情回補，再重新產生靜態網站。`
-            : staticJsonLoadErrorMessage(`data/etf/${state.date}.json`, error);
-        showNotice(message, true, () => {
+            ? `ETF 尚未匯出 ${selection.date} 的盤後資料；請先完成 ETF 行情回補，再重新產生靜態網站。`
+            : staticJsonLoadErrorMessage(`data/etf/${selection.date}.json`, error);
+        rankingNotice(context, message, true, () => {
             void loadEtf(true).catch(reportLoadFailure);
         });
         return;
     }
 
+    if (!rankingJobIsCurrent(context)) return;
     if (data === null || data.rows.length === 0) {
-        showNotice(`ETF ${state.date} 沒有可顯示的盤後資料，請確認 data branch 已完成 ETF 行情回補。`, true, () => {
+        rankingNotice(context, `ETF ${selection.date} 沒有可顯示的盤後資料，請確認 data branch 已完成 ETF 行情回補。`, true, () => {
             void loadEtf(true).catch(reportLoadFailure);
         });
         return;
@@ -23544,12 +23791,13 @@ async function loadEtfDaily(force = false) {
 
     // 當天停止交易的 ETF（極少見：分割、反分割的停止買賣期間）在當天的日行情裡沒有列，要從停牌區間檔補進來。
     await ensureSuspensions();
-    const tradeDate = data.tradeDate || state.date;
+    if (!rankingJobIsCurrent(context)) return;
+    const tradeDate = data.tradeDate || selection.date;
 
     renderEtfRows(
-        withSuspendedEtfRows(data.rows, suspensionsOn(state.date), tradeDate),
+        withSuspendedEtfRows(data.rows, suspensionsOn(selection.date), tradeDate),
         'daily',
-        tradeDate);
+        tradeDate, '', null, context);
 }
 
 // 停止交易的 ETF 轉成 ETF 表格的列（筆記 #84）：價格是停牌前最後收盤，日漲跌留白，成交值沒有。
@@ -23634,7 +23882,12 @@ function buildEtfIntradayRows(catalog, liveRows, tradeDate, suspended = null) {
     });
 }
 
-async function loadEtfIntraday(silent = false, force = false) {
+function loadEtfIntraday(silent = false, force = false) {
+    return runRankingJob('etf-intraday', force, (context, forced) => loadEtfIntradayResult(context, silent, forced));
+}
+
+async function loadEtfIntradayResult(context, silent, force) {
+    const selection = context.selection;
     if (ETF_LOCAL_PREVIEW) {
         const capturedAtIso = `${ETF_LOCAL_PREVIEW_TRADE_DATE}T10:16:00+08:00`;
         lastIntradayLoadedAt = Date.now();
@@ -23643,24 +23896,26 @@ async function loadEtfIntraday(silent = false, force = false) {
             'intraday',
             ETF_LOCAL_PREVIEW_TRADE_DATE,
             capturedAtIso,
-            ETF_LOCAL_PREVIEW_ROWS.length);
+            ETF_LOCAL_PREVIEW_ROWS.length, context);
         return;
     }
 
     if (supabase === null && intradayCdn === null) {
-        showNotice('ETF 盤中需要盤中資料來源；目前這份網站沒有資料庫或 CDN 連線。', true);
+        rankingNotice(context, 'ETF 盤中需要盤中資料來源；目前這份網站沒有資料庫或 CDN 連線。', true);
         return;
     }
 
-    if (!await ensureIntradaySnapshot(silent, force, false)) {
+    if (!await ensureIntradaySnapshot(silent, force, false, context)) {
         return;
     }
 
+    if (!rankingJobIsCurrent(context, false)) return;
+    context.sourceRevision = intradayRawRevision;
     const raw = intradayRaw;
     const summary = intradaySummary;
 
     if (raw === null || raw.length === 0 || summary === null) {
-        showNotice('今天還沒有 ETF 盤中資料，請等收集器寫入第一輪。', true);
+        rankingNotice(context, '今天還沒有 ETF 盤中資料，請等收集器寫入第一輪。', true);
         return;
     }
 
@@ -23669,7 +23924,8 @@ async function loadEtfIntraday(silent = false, force = false) {
     try {
         catalog = await loadEtfCatalog(force);
     } catch (error) {
-        showNotice(error?.status === 404
+        if (!rankingJobIsCurrent(context)) return;
+        rankingNotice(context, error?.status === 404
             ? 'ETF 名冊尚未匯出；請先重新產生靜態網站。'
             : staticJsonLoadErrorMessage('data/asset-catalog.json', error), true, () => {
                 void loadEtf(true).catch(reportLoadFailure);
@@ -23677,13 +23933,14 @@ async function loadEtfIntraday(silent = false, force = false) {
         return;
     }
 
+    if (!rankingJobIsCurrent(context)) return;
     const liveRows = mapIntradayRows(
         raw.filter(isEtfIntradayRawRow),
         summary);
     const rows = buildEtfIntradayRows(catalog, liveRows, summary.trade_date, intradaySuspended);
 
     lastIntradayLoadedAt = Date.now();
-    renderEtfRows(rows, 'intraday', summary.trade_date, summary.captured_at, liveRows.length);
+    renderEtfRows(rows, 'intraday', summary.trade_date, summary.captured_at, liveRows.length, context);
 }
 
 async function loadEtf(force = false) {
@@ -28566,6 +28823,7 @@ function makeTopicPendingList(title, lines) {
 }
 
 async function load() {
+    syncRankingIntent();
     // 族群欄跟從哪一頁進站無關：任何非筆記頁籤都需要它，在這裡統一背景補載一次。
     // ensureAttributions() 自己會判斷「已經載過」「正在載」「剛失敗要冷卻」，這裡不用重複判斷。
     if (state.view !== 'notes') {
@@ -28647,26 +28905,30 @@ async function load() {
         return;
     }
 
-    const closeLoadState = JSON.stringify(state);
-    const structureDate = state.date;
-    const singleDay = state.view === 'daily' && state.comparisonMode === 'single';
+    return runRankingJob('daily', false, loadCloseRanking);
+}
+
+async function loadCloseRanking(context) {
+    const selection = context.selection;
+    const structureDate = selection.date;
+    const singleDay = selection.view === 'daily' && selection.comparisonMode === 'single';
     const key = singleDay
-        ? `1-${state.date}`
-        : `${state.period}-${state.date}`;
-    const singleKey = singleDay ? `single-${state.period}-${state.date}` : null;
+        ? `1-${selection.date}`
+        : `${selection.period}-${selection.date}`;
+    const singleKey = singleDay ? `single-${selection.period}-${selection.date}` : null;
 
     // 市場結構、單日比較與排行同時開始下載；排行先畫，市場結構到了再補上。
     const structureLoad = resolveCloseMarketStructure(structureDate);
 
     if (!cache.has(key) || (singleKey && !cache.has(singleKey))) {
-        showNotice('行情載入中…', false);
+        rankingNotice(context, '行情載入中…', false);
     }
 
     const [loaded, comparison] = await Promise.all([
         fetchPeriod(key),
         singleKey ? fetchPeriod(singleKey) : null
     ]);
-    if (JSON.stringify(state) !== closeLoadState) return;
+    if (!rankingJobIsCurrent(context)) return;
 
     const failedKey = !loaded ? key : singleKey && !comparison ? singleKey : null;
 
@@ -28674,11 +28936,12 @@ async function load() {
         // 抓不到資料，通常是因為手上這份頁面是舊的：新版改了檔名的組成方式。
         const error = periodLoadErrors.get(failedKey);
 
-        if (error?.status === 404 && await reloadIfStale()) {
+        if (error?.status === 404 && await reloadIfStale(() => rankingJobIsCurrent(context))) {
             return;
         }
 
-        showNotice(error
+        if (!rankingJobIsCurrent(context)) return;
+        rankingNotice(context, error
             ? staticJsonLoadErrorMessage(`data/${failedKey}.json`, error)
             : `讀不到 ${failedKey} 這個組合的資料，請確認目前發布版本包含這個檔案。`, true, () => {
                 void load().catch(reportLoadFailure);
@@ -28687,27 +28950,26 @@ async function load() {
     }
 
     const data = singleDay
-        ? applySingleDayComparison(loaded, comparison)
+        ? applySingleDayComparison(loaded, comparison, selection)
         : loaded;
 
     if (!data) {
-        showNotice('這份網站資料尚未包含單日比較，請重新產生一次靜態網站。', true);
+        rankingNotice(context, '這份網站資料尚未包含單日比較，請重新產生一次靜態網站。', true);
         return;
     }
 
-    nameByTicker = new Map(data.rows.map(row => [row.ticker, row.name]));
 
     if (!data.hasSufficientData) {
-        showNotice(data.message ?? '資料不足。', true);
+        rankingNotice(context, data.message ?? '資料不足。', true);
         return;
     }
 
-    if (state.mode === 'accel' && !data.hasAccelerationData) {
-        showNotice(data.accelerationMessage ?? '資料不足。', true);
+    if (selection.mode === 'accel' && !data.hasAccelerationData) {
+        rankingNotice(context, data.accelerationMessage ?? '資料不足。', true);
         return;
     }
 
-    const ranked = rankRows(data);
+    const ranked = rankRows(data, selection);
     const structure = peekCloseMarketStructure(structureDate);
     const shown = {
         ...data,
@@ -28718,6 +28980,8 @@ async function load() {
         rankedStockCount: ranked.count,
         rankByTicker: ranked.rankByTicker
     };
+    if (!prepareRankingCommit(context)) return;
+    nameByTicker = new Map(data.rows.map(row => [row.ticker, row.name]));
     current = shown;
 
     el('notice').hidden = true;
@@ -28726,54 +28990,51 @@ async function load() {
     renderSummary();
     renderTable();
     renderLockRow();
-    prefetchNeighborCloseDay(state.date, [key, singleKey].filter(Boolean));
+    prefetchNeighborCloseDay(selection.date, [key, singleKey].filter(Boolean));
 
     if (!shown.marketStructurePending) {
         return;
     }
 
-    const resolved = await structureLoad;
-
-    // 等市場結構的期間換了日期、期間或頁籤，就不能把舊日期的結構補到新畫面上。
-    if (JSON.stringify(state) !== closeLoadState || current !== shown) return;
-
-    shown.marketStructure = resolved;
-    shown.marketStructurePending = false;
-    shown.marketStructureMessage = null;
-    renderSummary();
+    void structureLoad.then(resolved => {
+        if (!rankingJobIsCurrent(context) || current !== shown) return;
+        shown.marketStructure = resolved;
+        shown.marketStructurePending = false;
+        shown.marketStructureMessage = resolved ? null : '這個交易日的市場結構暫時無法載入。';
+        renderSummary();
+    });
 }
 
 // 閒置時先把前一個交易日的同一份檔案與市場結構抓好，按「‹」時幾乎不用等。
 // 省流量模式不預抓；檔案仍走同一份快取，看過的日子不重複下載。
 function prefetchNeighborCloseDay(date, keys) {
-    if (navigator.connection?.saveData === true) {
-        return;
-    }
-
-    const index = dates.indexOf(date);
-    const previous = index > 0 ? dates[index - 1] : null;
-
-    if (!previous) {
-        return;
-    }
-
-    const run = () => {
-        if (state.date !== date) {
+    const intent = syncRankingIntent();
+    const sequence = ++neighborPrefetchSequence;
+    const previous = dates[dates.indexOf(date) - 1];
+    if (!previous) return;
+    const eligible = () => sequence === neighborPrefetchSequence
+        && intent === syncRankingIntent() && state.view === 'daily'
+        && document.visibilityState !== 'hidden' && navigator.connection?.saveData !== true;
+    const run = async () => {
+        if (!eligible() || neighborPrefetchRunning) return;
+        if (rankingJob?.promise || rankingBusy) {
+            setTimeout(() => { void run(); }, 100);
             return;
         }
-
-        for (const key of keys) {
-            void fetchPeriod(key.slice(0, key.length - date.length) + previous);
+        neighborPrefetchRunning = true;
+        try {
+            for (const key of keys) {
+                if (!eligible() || rankingJob?.promise || rankingBusy) return;
+                await fetchPeriod(key.slice(0, -date.length) + previous, true);
+            }
+            if (eligible() && !rankingJob?.promise && !rankingBusy) await resolveCloseMarketStructure(previous);
+        } finally {
+            neighborPrefetchRunning = false;
+            trimPeriodCache();
         }
-
-        void resolveCloseMarketStructure(previous);
     };
-
-    if (typeof requestIdleCallback === 'function') {
-        requestIdleCallback(run, { timeout: 3_000 });
-    } else {
-        setTimeout(run, 1_500);
-    }
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { void run(); }, { timeout: 3_000 });
+    else setTimeout(() => { void run(); }, 1_500);
 }
 
 function update(changes) {
@@ -28822,6 +29083,7 @@ function update(changes) {
     }
 
     Object.assign(state, changes);
+    syncRankingIntent();
 
     if (!usesIntradaySnapshot()) {
         releaseIntradayPollingLease();
@@ -32973,6 +33235,7 @@ function initMarketSwitch() {
     bar.after(panel);
 
     const render = () => {
+        syncRankingIntent();
         if (!mspVisibleMarkets().some(market => market.key === proto.market)) {
             proto.market = 'tw';
         }
@@ -33082,21 +33345,8 @@ async function start() {
     marketIndexYearStarts = new Map((manifest.marketIndexYearStarts ?? [])
         .map(entry => [String(entry.year), entry]));
     marketStructureDescriptor = manifest.marketStructure ?? null;
-    marketStructureClose = null;
-    if (marketStructureDescriptor?.closeFile
-        && normalizeMarketStructureDate(marketStructureDescriptor.tradeDate)
-            === normalizeMarketStructureDate(manifest.latestTradingDate)) {
-        try {
-            marketStructureClose = await fetchJsonWithRetry(
-                `${marketStructureDescriptor.closeFile}?v=${encodeURIComponent(manifest.version)}`);
-            if (normalizeMarketStructureDate(marketStructureClose?.tradeDate)
-                !== normalizeMarketStructureDate(marketStructureDescriptor.tradeDate)) {
-                marketStructureClose = null;
-            }
-        } catch (error) {
-            console.warn('盤後市場結構載入失敗：', error?.message ?? error);
-        }
-    }
+    // The daily loader requests the dated structure in parallel with ranking rows.
+    // Do not await the optional card here: first controls/rows must not wait for it.
     version = manifest.version;
     latestTradingDate = manifest.latestTradingDate;
     schedule = manifest.schedule ?? null;

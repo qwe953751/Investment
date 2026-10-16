@@ -33,7 +33,7 @@ function functionSource(name) {
 
 function applySnapshot() {
     const context = {
-        intradayRaw: null,
+        intradayRaw: null, intradayRawRevision: 0, intradayActualRunId: null,
         intradaySummary: null,
         intradaySnapshotRunId: null,
         intradaySnapshotTopicHeat: null,
@@ -86,4 +86,17 @@ test('已知 CDN 版本後，較舊的資料庫 fallback 也不得覆蓋目前�
     assert.equal(context.intradaySnapshotRunId, 3);
     assert.equal(context.intradaySummary.captured_at, '2026-09-07T01:04:00Z');
     assert.equal(context.intradayRaw[0].turnover, 300);
+});
+
+test('DB fallback保留拒倒退水位但實際run為null；revision只在接受時增加', () => {
+    const { context, apply } = applySnapshot();
+    apply(snapshot(3, '2026-09-07T01:04:00Z', 300));
+    assert.equal(context.intradayActualRunId, 3);
+    apply(snapshot(null, '2026-09-07T01:06:00Z', 400));
+    assert.equal(context.intradayActualRunId, null);
+    assert.equal(context.intradaySnapshotRunId, 3);
+    assert.equal(context.intradayRawRevision, 2);
+    apply(snapshot(2, '2026-09-07T01:02:00Z', 200));
+    assert.equal(context.intradayRawRevision, 2);
+    assert.equal(context.intradayRaw[0].turnover, 400);
 });

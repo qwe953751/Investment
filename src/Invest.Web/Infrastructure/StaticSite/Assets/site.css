@@ -11441,3 +11441,9 @@ html {
 .monitor-access .market-structure-quality-hint {
     cursor: inherit;
 }
+
+/* Ranking switches retain their layout and keep selection controls available. */
+.ranking-status { padding: .75rem 1rem; margin: .5rem 0; border: 1px solid var(--border); border-radius: .5rem; }
+.ranking-status[data-state="error"] { border-color: #b7791f; }
+.ranking-status button { margin-inline-start: .75rem; }
+#ranking[aria-busy="true"] .table-container { min-height: 18rem; opacity: .65; }

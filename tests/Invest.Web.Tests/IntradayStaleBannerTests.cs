@@ -48,7 +48,9 @@ public sealed class IntradayStaleBannerTests
         Assert.True(call >= 0, "renderSummary() 裡沒有呼叫 renderStaleBanner()");
 
         // 「第一行」而不是「某個分支裡」：夾在 if 裡就會有走不到的路徑。
-        var nextIf = script.IndexOf("if (", summary, StringComparison.Ordinal);
+        // The sole early guard retains the previous committed DOM while a new selection loads.
+        Assert.Contains("if (!rankingCanRender()) return;", script[summary..call], StringComparison.Ordinal);
+        var nextIf = script.IndexOf("if (", call, StringComparison.Ordinal);
         Assert.True(call < nextIf, "renderStaleBanner() 被關進 renderSummary() 的某個分支裡了");
     }
 

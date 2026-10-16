@@ -1,3 +1,4 @@
+import { fn as rankingFn } from './helpers/ranking-harness.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
@@ -144,7 +145,8 @@ test('樣版 B 保留說明、有效報價、20 個權值燈號與權值群外�
         && node.children.some(child => child.textContent === '權值群外'));
     assert.equal(cells.children.length, 20);
     assert.match(allText(card), /權值群外多數股票與多數產業同向下跌，市場跌勢擴散。/);
-    assert.match(allText(card), /有效報價1,083\/1,083/);
+    assert.match(allText(card), /有效報價 1,083\/1,083/);
+    assert.equal(findNode(card, node => node.className === 'market-structure-quote-count'), null);
     assert.match(allText(card), /標的漲跌/);
     assert.match(allText(breadthLabel), /標的漲跌數量/);
     assert.match(allText(card), /漲 209/);
@@ -158,7 +160,7 @@ function testDocument() {
                 tag,
                 children: [],
                 attributes: {},
-                style: {},
+                style: {}, dataset: {},
                 append(...nodes) { this.children.push(...nodes); },
                 setAttribute(name, value) { this.attributes[name] = value; }
             };
@@ -241,9 +243,11 @@ function closeLoadContext(overrides = {}) {
         showNotice() {}, nameByTicker: new Map(),
         ...overrides
     });
-    const start = script.indexOf('    const closeLoadState = JSON.stringify(state);', script.indexOf('async function load()'));
-    const end = script.indexOf('\n}\n', start);
-    vm.runInContext('async function closeLoadForTest() {' + script.slice(start, end) + '\n}', context);
+    context.rankingJobIsCurrent = job => JSON.stringify(context.state) === job.key;
+    context.prepareRankingCommit = () => true;
+    context.rankingNotice = () => {};
+    vm.runInContext(rankingFn('loadCloseRanking'), context);
+    context.closeLoadForTest = () => context.loadCloseRanking({ selection: { ...context.state }, key: JSON.stringify(context.state) });
     return { context, calls, finish: value => finish(value) };
 }
 
@@ -256,6 +260,7 @@ test('盤後排行先畫，市場結構另外載入完成後只補畫摘要', as
     assert.equal(context.current.marketStructurePending, true);
     finish({ tradeDate: day });
     await loading;
+    await settle();
     assert.equal(context.current.marketStructure.tradeDate, day);
     assert.equal(context.current.marketStructurePending, false);
     assert.equal(calls.summary, 2);
@@ -329,7 +334,7 @@ test('權值名單齊全時顯示來源說明與每檔權重，不顯示未取�
         otherStockBreadth: { risingCount: 20, fallingCount: 60, risingRate: 0.25 } };
     const panel = context.renderMarketStructure({ twse: market });
     assert.doesNotMatch(allText(panel.children[0]), /權值資料未取得/);
-    assert.match(allText(panel), /期交所 2026\/09\/30 月表官方權重為基準/);
+    assert.ok(findNode(panel, node => /期交所 2026\/09\/30 月表官方權重為基準/.test(node.dataset?.hint ?? '')));
     assert.match(allText(panel), /權重 5\.0000%/);
     assert.equal((allText(panel).match(/？/g) ?? []).length, 0);
     const cells = findNode(panel, node => node.className === 'market-structure-weight-cells');

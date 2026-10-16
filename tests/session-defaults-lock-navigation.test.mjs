@@ -1,3 +1,4 @@
+import { fn as rankingFn } from './helpers/ranking-harness.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
@@ -109,11 +110,12 @@ for (const available of [true, false]) {
         const c = {
             CUSTOM_INTRADAY_LOCAL_PREVIEW: false, supabase: null,
             hasIntradaySnapshotSource: () => available,
-            showNotice: message => calls.push('notice'),
+            rankingNotice: () => calls.push('notice'),
+            runRankingJob: (_kind, _force, loader) => loader({ selection: {} }, false),
             ensureIntradaySnapshot: async () => { calls.push('snapshot'); return false; }
         };
         vm.createContext(c);
-        vm.runInContext('async ' + fn('loadCustomIntraday'), c);
+        vm.runInContext(rankingFn('loadCustomIntraday') + '\n' + rankingFn('loadCustomIntradayResult'), c);
         await c.loadCustomIntraday();
         assert.deepEqual(calls, available ? ['snapshot'] : ['notice']);
     });

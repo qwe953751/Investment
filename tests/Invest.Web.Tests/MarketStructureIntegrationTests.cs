@@ -41,8 +41,8 @@ public sealed class MarketStructureIntegrationTests
 
         Assert.Contains("function normalizeMarketStructureDate(value)", script, StringComparison.Ordinal);
         Assert.Contains("value.replaceAll('/', '-')", script, StringComparison.Ordinal);
-        Assert.Contains("normalizeMarketStructureDate(marketStructureDescriptor.tradeDate)", script, StringComparison.Ordinal);
-        Assert.Contains("normalizeMarketStructureDate(manifest.latestTradingDate)", script, StringComparison.Ordinal);
+        Assert.Contains("normalizeMarketStructureDate(result?.tradeDate)", script, StringComparison.Ordinal);
+        Assert.Contains("normalizeMarketStructureDate(result?.tradeDate) === key", script, StringComparison.Ordinal);
         Assert.Contains("normalizeMarketStructureDate(date)", script, StringComparison.Ordinal);
         Assert.Contains("resolveCloseMarketStructure(structureDate)", script, StringComparison.Ordinal);
     }
