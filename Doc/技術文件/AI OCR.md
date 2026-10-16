@@ -1,8 +1,9 @@
 # AI OCR
 
-> 最後整理：2026-10-13（公司 Windows Worker 依 [§3.5.9](#ocr-probe-rollout) 階段 W 重建並以 `ocr_workers` 核對；`db/062` 與 `ocr-jobs` v24 仍是 2026-10-11 核對的內容；
-> 同日新增 [§4.15](#ocr-incident-1013-quantity-columns)「昨日餘額／今買成／今賣成」三欄股數修正，晚上再加上 **AI OCR Worker 版本警告（v2）**——
-> **程式已在 `main`（`be8069d6f`）、家裡 Mac 已是 v2，公司 Windows 尚待重建**）
+> 最後整理：2026-10-16（新增 [§4.16](#ocr-incident-1016-agent-switch)：Agent 改成「沒成功就換」，Worker 升到 **v3**——
+> **程式已在 `main`（`7af16f563`）、家裡 Mac 已是 v3，公司 Windows 尚待重建，且兩台目前都沒有已登入的 Claude CLI（換到 Claude 的前提）**；
+> 2026-10-13：公司 Windows Worker 依 [§3.5.9](#ocr-probe-rollout) 階段 W 重建並以 `ocr_workers` 核對；`db/062` 與 `ocr-jobs` v24 仍是 2026-10-11 核對的內容；
+> 同日新增 [§4.15](#ocr-incident-1013-quantity-columns)「昨日餘額／今買成／今賣成」三欄股數修正與 AI OCR Worker 版本警告（v2））
 >
 > 這是 D+ AI OCR 的**唯一技術文件**。2026-10-10 已把原本分開的三份文件合併進來：
 >
@@ -64,6 +65,14 @@ readiness／submit／status 的失敗情境只用「假 Supabase 跑真正的 Ed
 （`AI OCR v2 · …`），網站在上傳前決定交給哪台時就比對，負責的 Worker 比網站要求的舊就顯示黃色警告。改了 Worker 端 AI OCR 程式一律升版（[§1.8](#ocr-deploy)），
 所以以後「Windows 沒重建」會直接寫在畫面上，不再沉默。
 
+**2026-10-16 凌晨 Codex 額度用完，Claude 卻一次都沒被呼叫，整批直接走 Tesseract（[§4.16](#ocr-incident-1016-agent-switch)）**：Codex 的 `--json` 模式把錯誤只寫在 stdout 的 JSON 事件，
+分類器看不到，被判成一般失敗；Router 當時只有「額度不足、登入失效、找不到 CLI」才換 Agent，一般失敗直接結束，而且走的是**不接力**的 `ai_invalid_output`——
+Claude 沒被試、Mac 也沒收到。現在 Router **只看結果**：沒拿到可用的辨識結果（不論原因，含 CLI 說成功但輸出不是 JSON 物件）就換下一個 Agent，
+兩個都沒成功才丟例外讓 Worker 走既有的接力（Windows → Mac → Tesseract）；背景評估（10% 抽樣）只用主要 Agent。
+這是 **Worker 程式（v3，`7af16f563`）**：家裡 Mac 已重建，**公司 Windows 尚待重建**。
+**換到 Claude 的前提是 Claude CLI 已登入——兩台目前都沒有**（Windows 最後紀錄是未登入、Mac 沒裝獨立版），在登入前 Codex 額度用完仍會整批走 Tesseract。
+2026-10-16 晚上實測 Mac 的 Codex 額度確實用完：`You’ve hit your usage limit … try again at Oct 17th, 2026 2:25 AM`（第一次抓到真實的額度錯誤文字）。
+
 ### 0.2 元件部署狀態
 
 | 元件 | 目前狀態 | 依據 |
@@ -72,21 +81,25 @@ readiness／submit／status 的失敗情境只用「假 Supabase 跑真正的 Ed
 | `db/055_ocr_stall_guard.sql` | ✅ 2026-09-14 已套用；它守衛的 `ocr_stall_to_fallback` 已被 `db/062` 移除 | 同上 |
 | `db/062_ocr_worker_probe.sql` | ✅ 2026-10-11 已套用。套用前在正式資料庫單一交易內連 migration 一起執行並跑完 31 項斷言，確認 rollback 無痕跡 | 版本紀錄 2026-10-11 |
 | `ocr-jobs` Edge Function | ✅ v24（2026-10-11），`verify_jwt=false`，未帶 JWT 回 401 | Management API 核對 |
-| 前端 `site.js` | ✅ 2026-10-13 publish-only run `38409067142`（head `be8069d6f`）發布：上傳前比對負責那台的 AI OCR 版本，舊版顯示黃色警告；readiness 期間仍顯示「確認 Windows／Mac 是否在線…」與每台的詢問結果（2026-10-11 run `38140004887` 起） | gh-pages 與公開 manifest `1791899888` |
-| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功。**🔴 2026-10-13 起落後：要依 [§1.8](#ocr-deploy) 重建到 `be8069d6f` 或之後（AI OCR v2：三欄股數＋回報版本），啟動訊息要含「AI OCR v2」；在那之前網站上傳時會對它顯示舊版警告** | [§3.5.9](#ocr-probe-rollout)、[§4.15](#ocr-incident-1013-quantity-columns) |
-| 家裡 Mac Worker | ✅ 2026-10-11 以 `ea373ea56` 發布並由 LaunchAgent 常駐；啟動訊息含「在線詢問：指名回應」與「Worker 發布版本」；`probe_protocol=1`、心跳週期 1800 秒；已用合成圖片走完整條 Codex 辨識。**2026-10-13 20:49 以 `8cc0a5bc4` 重建（三欄股數），21:55 再以 `be8069d6f` 重建為 AI OCR v2**（`PUBLISHED_COMMIT`＝`be8069d6f`，啟動訊息含「AI OCR v2」與「Worker 發布版本：be8069d6f」，launchd running、新版啟動後 error log 無新增） | [§4.14](#ocr-incident-1011-probe)、[§4.15](#ocr-incident-1013-quantity-columns) |
+| 前端 `site.js` | ✅ 2026-10-16 publish-only run `38922361264`（head `7af16f563`）發布：網站要求的 AI OCR 版本升到 v3，舊版警告文字不再只舉「今買成」；2026-10-13 run `38409067142` 起上傳前比對負責那台的 AI OCR 版本，舊版顯示黃色警告；readiness 期間仍顯示「確認 Windows／Mac 是否在線…」與每台的詢問結果（2026-10-11 run `38140004887` 起） | gh-pages 與公開 manifest `1792163823` |
+| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功。**🔴 落後：要依 [§1.8](#ocr-deploy) 重建到 `7af16f563` 或之後（AI OCR v3：Agent 沒成功就換＋三欄股數＋回報版本），啟動訊息要含「AI OCR v3」；在那之前網站上傳時會對它顯示舊版警告，Codex 失敗時也不會換 Claude** | [§3.5.9](#ocr-probe-rollout)、[§4.15](#ocr-incident-1013-quantity-columns) |
+| 家裡 Mac Worker | ✅ 2026-10-11 以 `ea373ea56` 發布並由 LaunchAgent 常駐；啟動訊息含「在線詢問：指名回應」與「Worker 發布版本」；`probe_protocol=1`、心跳週期 1800 秒；已用合成圖片走完整條 Codex 辨識。**2026-10-13 20:49 以 `8cc0a5bc4` 重建（三欄股數），21:55 再以 `be8069d6f` 重建為 AI OCR v2**（`PUBLISHED_COMMIT`＝`be8069d6f`，啟動訊息含「AI OCR v2」與「Worker 發布版本：be8069d6f」，launchd running、新版啟動後 error log 無新增）；**2026-10-16 23:15 再以 `7af16f563` 重建為 AI OCR v3**（`PUBLISHED_COMMIT`＝`7af16f563`，啟動訊息含「AI OCR v3」、「在線詢問：指名回應」、「Worker 發布版本：7af16f563」與「Claude CLI 路徑：未找到（Claude 備援目前不可用）」，launchd running、新版啟動後 error log 無新增） | [§4.14](#ocr-incident-1011-probe)、[§4.15](#ocr-incident-1013-quantity-columns) |
 | AI 三欄股數（昨日餘額／今買成／今賣成） | 🟡 程式與測試已在 `main`（`8cc0a5bc4`）；Mac 已重建；**公司 Windows 待重建**。使用者 21:08 那批 5 張截圖（38 檔）以新版本機端到端重跑 38/38 正確；正式驗收待 Windows 重建後重新上傳（見 [§3.2](#ocr-pending-acceptance) #10） | [§4.15](#ocr-incident-1013-quantity-columns) |
-| AI OCR Worker 版本警告（v2） | 🟡 程式在 `main`（`be8069d6f`）；Mac 已回報 v2；網站發布見上方「前端 `site.js`」列；**公司 Windows 重建前，交給它的上傳會被警告**（預期行為） | [§1.5](#ocr-architecture)、[§1.8](#ocr-deploy)、[§4.15](#ocr-incident-1013-quantity-columns) |
-| Claude CLI | 🟡 公司 Windows 已安裝 `2.1.263` 但未登入；Mac 沒有安裝。目前實際只有 Codex 單 Agent，沒有 Agent 故障切換 | §4.3 |
-| 自動化測試 | ✅ 2026-10-13 `be8069d6f`：`Invest.Web.Tests` 887/887、Node 268/268；其中 OCR 驗證器 22 項（三欄股數新增 18 項，還原舊版檢查程式時 10 項轉紅）、Worker 版本 3 項（含程式指紋）、前端版本警告 6 項。2026-10-11 Edge Function 假 Supabase 行為測試 28 項仍在 Node 內 | — |
+| AI OCR Worker 版本警告 | 🟡 v2 起（`be8069d6f`）；2026-10-16 升到 v3（`7af16f563`，網站要求 v3）；Mac 已回報 v3；**公司 Windows 重建前，交給它的上傳會被警告**（預期行為） | [§1.5](#ocr-architecture)、[§1.8](#ocr-deploy)、[§4.15](#ocr-incident-1013-quantity-columns)、[§4.16](#ocr-incident-1016-agent-switch) |
+| Claude CLI | 🔴 **這是 v3 換 Agent 真正生效的前提**：公司 Windows 已安裝 `2.1.263`，最後紀錄是未登入（目前狀態未確認；Worker 用的 `--restricted`／`--permission-prompts` 等參數在 2.1.263 是否存在未驗證，建議先 `claude update`）；Mac 沒有安裝獨立版（Claude App 內建的 CLI 單獨執行是 `Not logged in`），啟動腳本已支援 `~/.local/bin/claude`（v3）。兩台登入前，Codex 額度用完仍會整批走 Tesseract；Claude 真正辨識一張圖從未驗證過 | [§4.3](#ocr-incident-0907-agent-order)、[§4.16](#ocr-incident-1016-agent-switch) |
+| Agent 切換：沒成功就換（v3） | 🟡 程式與測試在 `main`（`7af16f563`）；家裡 Mac 已重建；**公司 Windows 待重建**。真實 Codex／Claude CLI 在 Mac 端到端驗證過「失敗時換 Agent」與「全部失敗判定接力」；**Claude 真正辨識一張圖仍未驗證**（沒有已登入的 Claude） | [§4.16](#ocr-incident-1016-agent-switch) |
+| 自動化測試 | ✅ 2026-10-16 `7af16f563`：`Invest.Web.Tests` 971/971、Node 345/345（0 警告）；其中換 Agent 的 Router 測試與用 CLI 實際輸出形狀的回歸測試（`OcrAgentQuotaRouterTests`、`OcrAgentSwitchOnCliOutputTests`）還原舊 Router 時 20 項轉紅，Mac 啟動腳本改用 bash 實際執行驗證。OCR 驗證器 22 項（三欄股數新增 18 項）、Worker 版本 3 項（含程式指紋）、前端版本警告 6 項；2026-10-11 Edge Function 假 Supabase 行為測試 28 項仍在 Node 內 | — |
 
 ### 0.3 尚待處理（詳見 [§3](#ocr-acceptance)）
 
-0. 🔴 **公司 Windows Worker 重建到 `be8069d6f` 或之後**（[§1.8](#ocr-deploy) Windows 正確順序）：它是預設處理機，重建前三欄股數修正對使用者不生效，網站上傳時也會顯示舊版警告。
-   重建後啟動訊息要含「AI OCR v2」；再請使用者重新上傳那 5 張截圖確認股數、且不再出現警告（見 [§3.2](#ocr-pending-acceptance) #10、#11）。
-1. **正式驗收 P1～P10**（[§3.5.10](#ocr-probe-acceptance)）：需要最高權限帳號上傳，AI agent 無法代為登入。P1 在資料庫與 Worker log 端的條件
+0. 🔴 **公司 Windows Worker 重建到 `7af16f563` 或之後**（[§1.8](#ocr-deploy) Windows 正確順序）：它是預設處理機，重建前三欄股數修正與 Agent 切換都不生效，網站上傳時也會顯示舊版警告。
+   重建後啟動訊息要含「AI OCR v3」；再請使用者重新上傳那 5 張截圖確認股數、且不再出現警告（見 [§3.2](#ocr-pending-acceptance) #10、#11）。
+1. 🔴 **在公司 Windows 與家裡 Mac 登入 Claude CLI**（只有使用者能做，OAuth 要在瀏覽器完成）：這是 v3 換 Agent 真正生效的前提。
+   Windows 先 `claude --version`、`claude auth status --text`，視需要 `claude update` 與 `claude auth login`；Mac 先用官方安裝器裝獨立版再 `claude auth login`（步驟見 [TODO #15](../TODO.md#todo-15)）。
+   登入後在 Codex 額度用完的時段上傳驗收（[§3.2](#ocr-pending-acceptance) #12），並先用合成截圖實測 Claude 能辨識（[§3.2](#ocr-pending-acceptance) #6，從未驗證過）。
+2. **正式驗收 P1～P10**（[§3.5.10](#ocr-probe-acceptance)）：需要最高權限帳號上傳，AI agent 無法代為登入。P1 在資料庫與 Worker log 端的條件
    已由 10-12 22:15、22:20 兩次真實上傳滿足（手機畫面文字待使用者確認）；P2～P10 未執行。
-2. 7 張手機截圖確認三槽同時工作（驗證 09-22 的 409 修正）、Golden Set、Windows 鎖屏／重開機／斷網復原、Claude 登入後的雙 Agent。
+3. 7 張手機截圖確認三槽同時工作（驗證 09-22 的 409 修正）、Golden Set、Windows 鎖屏／重開機／斷網復原、Claude 登入後的雙 Agent。
 
 ---
 
@@ -115,7 +128,7 @@ Windows 與 Mac 都收到 Broadcast，但 ocr_claim_job() 依平台分流（不�
    ▼
 常駐三槽之一 claim → 下載圖片 → Agent Router 先試 Codex
    │ 成功 → action=complete 回寫 succeeded（終態只送一次；409 lease_lost 丟棄結果、槽繼續服務）
-   │ 額度不足／未登入 → 換 Claude 試一次
+   │ 沒成功（不論原因）→ 換 Claude 試一次
    │ 兩個都不行 → action=relay
    ▼
 relay（Windows 呼叫時）：Edge 先指名問 Mac（最多 5 次）
@@ -372,12 +385,15 @@ win-x64 runtime pack 在目前網路下可用（公司網路連不到 nuget.org 
 > 發布到 Application Support 後 Worker 只依賴那份輸出與 Keychain，行為與 Windows 的自包含 EXE 一致：改了 Worker 程式就必須重新執行安裝腳本才會生效；
 > 也不會再因為重啟時 `dotnet run` 從編輯到一半的工作目錄重新建置而壞掉。終端機手動診斷仍可用 `scripts/run-ocr-worker-macos.sh --once`（從原始碼執行）。
 
-Mac 驗收（不是只看 `launchctl` 的 running）：`~/Library/Logs/Invest/ocr-worker.log` 要有「Codex CLI 路徑」「Worker 發布版本：<commit>」與含
+Mac 驗收（不是只看 `launchctl` 的 running）：`~/Library/Logs/Invest/ocr-worker.log` 要有「Codex CLI 路徑」「Claude CLI 路徑」（找不到時印「未找到（Claude 備援目前不可用）」）「Worker 發布版本：<commit>」與含
 「AI OCR v{目前版本}」「在線詢問：指名回應」的啟動訊息；`~/Library/Logs/Invest/ocr-worker.error.log` 不應有 `Operation not permitted`。
 同一個 repo 資料夾有別的 session 在改檔時，從乾淨的 git worktree 執行安裝腳本（腳本以自己所在位置推算 repo 根目錄），才不會把別人的半成品編進 Worker。
 Mac 前置條件：Keychain 有 `invest-ocr-worker`（account `ocr-worker@investment.local`）、.NET 10、Codex CLI 已登入。ChatGPT App 內建的 Codex 已搬到
 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`（啟動腳本兩個位置都會找；舊位置 `Resources/codex` 已不存在）。
 launchd 的 PATH 只有 `/usr/bin:/bin:/usr/sbin:/sbin`，啟動腳本會補上 `/opt/homebrew/bin` 等位置才找得到 `dotnet`。
+Claude CLI（備援 Agent，2026-10-16 起）：Claude Code 官方安裝器把 `claude` 放在 `~/.local/bin`，啟動腳本把這個位置加進 PATH；找得到就釘住 `OCR_CLAUDE_PATH` 並印出路徑，
+找不到就不設定（Worker 改依名稱 `claude` 在 PATH 尋找），所以**之後才安裝並登入不必重啟 Worker**，最慢在下一次心跳探測（30 分鐘）看見，要立刻生效就 `launchctl kickstart -k gui/$(id -u)/com.invest.ocr-worker`。
+Claude App 內建的 CLI 路徑含版本號與雜湊（App 更新會換掉），不採用。
 
 ---
 
@@ -525,12 +541,13 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 | 3 | 流量回歸 | 一批 6 張用 `function_edge_logs`（目前讀不到）或 Dashboard 的 invocation 數比對；待機一週不高於改版前一週 |
 | 4 | acknowledge 回歸 | 每張圖只能 1 次（`2e466dbb` 宣稱修掉「一秒內 100 多次」，但當時之後沒有工作跑起來，log 無法證明） |
 | 5 | 強制取消 | 上傳 → 立刻取消 → 幾秒內再上傳；畫面不彈回掃描中、新批次完整走 AI |
-| 6 | 雙 Agent | Claude 登入後：真實截圖確認 Claude 能透過 Read 讀圖、`structured_output` 符合 Schema；`OCR_CODEX_PATH` 指向不存在路徑時自動切 Claude |
+| 6 | 雙 Agent | Claude 登入後：真實截圖確認 Claude 能透過 Read 讀圖、`structured_output` 符合 Schema（**從 2026-09-07 起一直沒有真實驗證過**）；Codex 失敗（例如 `OCR_CODEX_PATH` 指向不存在路徑，或額度用完）時自動換 Claude（v3：Router 與真實 CLI 輸出形狀已有自動化測試，真實 Claude 辨識仍待驗收） |
 | 7 | Windows 長期情境 | 關閉所有可見終端機、鎖屏、重開機後登入、斷網復線、撤銷 Codex 登入、額度耗盡 |
 | 8 | Golden Set | 見 [§5.8](#ocr-poc)：危險假陽性 0、完整正確列 ≥95%、召回率 ≥95%、整張正確率 ≥90% |
-| 9 | 自動化測試 | `Invest.Web.Tests` 與 Node 測試全綠（2026-10-13：884／262） |
+| 9 | 自動化測試 | `Invest.Web.Tests` 與 Node 測試全綠（2026-10-16：971／345） |
 | 10 | 三欄股數（[§4.15](#ocr-incident-1013-quantity-columns)） | **公司 Windows 重建後**，使用者用「投資成本／昨日餘額／今買成／今賣成」版型的截圖重新上傳：有今買成的列，股數＝昨日餘額＋今買成（不是只有昨日餘額）；成本為 0 的列標黃；被裁切的今賣成欄不造成整批黃色。三張原截圖的預期值見 §4.15 的驗證段 |
-| 11 | Worker 版本警告（[§1.5](#ocr-architecture)） | 公司 Windows 重建前上傳：辨識中與校對畫面上方出現「⚠ AI OCR 已更新到 v2，但這批交給的 Windows Worker 還是更新前的 v1…」；重建到 v2 後再上傳：不再出現警告，且啟動訊息含「AI OCR v2」 |
+| 11 | Worker 版本警告（[§1.5](#ocr-architecture)） | 公司 Windows 重建前上傳：辨識中與校對畫面上方出現「⚠ AI OCR 已更新到 v3，但這批交給的 Windows Worker 還是更新前的 v1…」；重建到 v3 後再上傳：不再出現警告，且啟動訊息含「AI OCR v3」 |
+| 12 | Agent 切換（[§4.16](#ocr-incident-1016-agent-switch)） | **兩台 Worker 都是 v3 且至少一台 Claude 已登入後**，在 Codex 額度用完的時段（或暫時把 `OCR_CODEX_PATH` 指向不存在路徑後重啟）上傳：Worker log 的「單次 AI」那行是 `agent=Claude fallback=True`，畫面是 AI 草稿而不是 Tesseract；再讓兩個 Agent 都不可用，確認先接力到另一台、都不行才走 Tesseract |
 
 <a id="ocr-not-implemented"></a>
 
@@ -569,7 +586,7 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
    `Realtime 連線失敗：The SSL connection could not be established`、`pong 失敗`、`D+ OCR Worker 啟動失敗`（啟動時第一個 heartbeat 送不出去，程序以失敗結束），
    LaunchAgent 的 `KeepAlive` 在 `ThrottleInterval`（30 秒）後自動重啟，網路恢復後重新登入、回報 pong，不需要人工處理。
 5. **AI 已開始辨識後才取消**：Worker 要等 CLI 跑完、下一次回報才發現租約失效，仍會消耗該次額度。
-6. **只有 Codex 單 Agent**：Claude 未登入前沒有 Agent 故障切換，Codex 額度用完就整批走 Tesseract。
+6. **換 Agent 的前提是 Claude 已登入**：v3 起 Codex 失敗（額度、登入、逾時或任何原因）會換 Claude（[§4.16](#ocr-incident-1016-agent-switch)），但兩台目前都沒有已登入的 Claude CLI，所以 Codex 額度用完仍會整批走 Tesseract；Claude 辨識真實截圖也從未驗證過。
 7. **三條並行是否撞 Codex 訂閱速率限制**：使用者要求直接上 3 並行時已知但未驗證；實測若出現 429 再依證據處理。
 8. **重建 Worker 仍是手動步驟，但已不再沉默**：Mac 與 Windows 一樣，改了 Worker 程式必須手動重建，不會跟著網站發布。2026-10-13 的三欄股數修正
    （[§4.15](#ocr-incident-1013-quantity-columns)）就因此對使用者無效、畫面毫無徵兆；同日加上版本警告後，只要依 [§1.8](#ocr-deploy) 升版，交給未重建 Worker 的上傳都會在畫面上警告。
@@ -875,6 +892,7 @@ Claude CLI 並修好雙 Agent 接線。
    另外誤用 `--tools Read`（應為 `--allowedTools "Read"`），缺 `--permission-mode dontAsk`。
 4. `AgentQuotaRouter` 只有 `AuthenticationRequired`／`Unavailable` 會換 Agent；`InvalidOutput`／
    `TransientFailure`／`Fatal` 直接讓 Pass 失敗。**刻意維持**，符合「流量／權限不足才換」的原始描述。
+   （**2026-10-16 起已改**：換不換 Agent 只看結果，沒成功就換，見 [§4.16](#ocr-incident-1016-agent-switch)——這裡的「刻意維持」正是 2026-10-16 事故的成因之一。）
 
 修法：預設改 `Codex`；Windows launcher 釘選 `OCR_AGENT_PRIMARY=codex` 並補路徑；分類器改成
 `exitCode==0 且 output 非空` 一律先判 `Success`，錯誤判斷只掃 stderr 與 stdout 中非 JSON 的行，裸數字改用
@@ -1191,7 +1209,63 @@ function readinessHeartbeatAgeMs(request) {
   - 部署：家裡 Mac 21:55 以 `be8069d6f` 重建，啟動訊息含「AI OCR v2」；網站 publish-only run `38409067142` 成功（gh-pages 與公開 manifest `1791899888`，
     公開 `site.js` 已含版本常數，正式網站上以實際部署的函式確認舊版會警告、v2 不警告）；**公司 Windows 待重建到 v2**，在那之前交給它的上傳會顯示警告。
 
-### 4.16 共同教訓
+<a id="ocr-incident-1016-agent-switch"></a>
+
+### 4.16 2026-10-16 Codex 額度用完，Claude 一次都沒被呼叫，整批直接走 Tesseract（Worker v3）
+
+- **現象**：使用者凌晨（約 10/16 00:00）上傳台股庫存；公司 Windows 與家裡 Mac 都開機、連網，Codex 與 Claude 都開著。畫面顯示「AI D+ 25%」後立刻改跑 Tesseract。
+  當時 Codex 流量已爆、不能用，使用者預期會改跑 Claude，結果沒有。
+- **根因（已用正式程式碼與真實 CLI 重現）**：
+  1. Codex CLI 在 `--json` 模式下，錯誤**只寫在 stdout 的 JSON 事件**（`{"type":"error",…}`、`{"type":"turn.failed",…}`），stderr 只有一行 `Reading additional input from stdin...`。
+     2026-09-07 為了避免辨識結果的數字（股數 429、總成本 14290）被誤判成額度錯誤，分類器判斷失敗原因時刻意跳過所有 JSON 行（[§4.3](#ocr-incident-0907-agent-order)），
+     於是額度訊息完全沒被看到，結果分類成 `Fatal / cli_failure`。
+  2. `AgentQuotaRouter` 當時只有「額度不足、登入失效、找不到 CLI」才換下一個 Agent，`Fatal` 直接回傳；驗證器因此丟 `ai_agent_fatal`，
+     Worker 回寫 `fallback_required / ai_invalid_output`——這條路**不呼叫接力**，Mac 收不到，瀏覽器直接跑 Tesseract。
+  3. 額度冷卻也沒被記下，所以後面每一張圖都重複同樣的流程。
+  4. 單元測試把錯誤文字放在 stderr，與 CLI 實際輸出形狀不同，所以測試全綠卻抓不到。
+- **證據**：
+  - 2026-10-16 晚上在 Mac 以 Worker 的完整參數直接跑 Codex CLI `0.162`（`gpt-5.6-luna`、max、priority，stdin 設為空）：exit 1、4 秒，stdout 依序是
+    `thread.started`、`turn.started`、`error`、`turn.failed`，訊息為「You’ve hit your usage limit. Upgrade to Pro (…), visit … or try again at Oct 17th, 2026 2:25 AM.」，
+    stderr 只有 stdin 提示。**這是第一次抓到真實的 Codex 額度錯誤文字**（事故當下沒有保留），也代表 Mac 的 Codex 到 10/17 02:25 前都是額度用完。
+  - 用正式程式碼重現（自 Windows 重建版 `a4a795acd` 起，分類器與 Router 都沒有變動，所以結果同樣適用 Windows）：額度訊息放在 stdout JSON → 分類成 `Fatal`；
+    Router 只呼叫 Codex 1 次、Claude 0 次；驗證器 `ai_agent_fatal`。對照組：若分類成額度不足，Claude 會被呼叫並成功。
+  - Claude Code `2.1.299` 以 Worker 的參數執行、尚未登入：exit 1，錯誤同樣只在 stdout 的 JSON（`is_error:true`、`result:"Not logged in · Please run /login"`），stderr 為空；
+    Worker 用到的 `--restricted`、`--allowedTools`、`--permission-mode`、`--permission-prompts`、`--no-session-persistence`、`--output-format`、`--json-schema`、`--effort` 在 `--help` 都存在。
+  - Mac 當時是醒著的：`pmset -g log` 顯示 10/15 21:59:42 完整喚醒（顯示器開啟、接上電源）後，到 10/16 09:56:44 闔上螢幕（Clamshell Sleep）之間沒有任何系統睡眠事件，
+    與使用者說的「Mac 開機＆連網」一致。Mac 當時的限制是只有 Codex（同樣額度用完）、沒有可用的 Claude CLI。
+  - **未驗證**：Windows 當晚的實況（Claude 是否已登入、實際走了哪條路）。需要 Windows 的 `logs\ocr-worker-*.out.log` 或資料庫紀錄才能確認；
+    畫面上的備援說明若是「AI 結果未通過格式驗證」，就是上述路徑。
+- **使用者的決定**：不做「讓分類器讀懂 CLI 的錯誤事件」（CLI 文字會改版、模式一換錯誤就換地方，換 Agent 的決定不該依賴它），
+  改成**只看結果**，並用自動測試驗證換 Agent 的決定，不產生給人讀的步驟文件；背景評估只用主要 Agent；Mac 也要能用 Claude。
+- **修正（v3，commit `7af16f563`）**：
+  - Router：沒拿到可用的辨識結果就換下一個 Agent——額度不足、登入失效、找不到 CLI、逾時、一般失敗、CLI 說成功但輸出不是 JSON 物件（含 Codex `--json` 事件串流、空白、純文字、截斷）一律如此。
+    兩個都沒成功丟 `OcrNoAvailableAgentException`，Worker 照既有流程接力（Windows → Mac → Tesseract）；兩個都是明確額度不足才丟 `OcrAllAgentsQuotaExhaustedException`。
+    使用者取消時直接停止，不換 Agent。
+  - 只有額度不足會記冷卻；其餘失敗不記（不一定會持續，下一張圖仍先試主要 Agent）。**代價**：Codex 額度用完期間，每張圖多花約 4 秒先試 Codex 再換 Claude——只浪費時間，不浪費額度。
+  - 背景評估（10% 抽樣 Low）新增 `OcrAgentRequest.PrimaryAgentOnly`：只用主要 Agent，失敗只記錄；使用者看到的 Max 辨識不受影響。
+  - Mac 啟動腳本：PATH 補 `~/.local/bin`；找得到 `claude` 就釘住 `OCR_CLAUDE_PATH` 並印出，找不到就印「未找到（Claude 備援目前不可用）」且不設定，之後才安裝並登入不必重啟（見 [§1.8](#ocr-deploy)）。
+  - 升版 v3（`OcrWorkerVersion`、`site.js`、版本指紋測試）；網站舊版警告文字不再只舉「今買成」一個例子。
+- **驗證**：
+  - 自動化測試：Router 各種失敗狀態都換 Agent、輸出不是 JSON 物件、兩者都失敗丟接力例外、冷卻規則、背景評估、取消；`OcrAgentSwitchOnCliOutputTests` 把兩個 CLI 實際會吐出的輸出形狀
+    （Codex 0.162、Claude 2.1.299 實測；Codex 額度事件的格式同實測，訊息文字為模擬）原封不動交給真正的分類器與 Router；Mac 啟動腳本用 bash 實際執行。
+    **還原舊 Router 時新測試 20 項轉紅**，包含用真實 Codex 輸出重現這次事故的那一項。`Invest.Web.Tests` 971/971、Node 345/345、0 警告。
+  - 真實 CLI 端到端（Mac，乾淨環境模擬 LaunchAgent）：① 真實 Codex 失敗（模型名稱不存在）→ 4.6 秒內換到 Claude（假的成功）；② 真實 Codex 失敗＋真實 Claude（未登入）失敗 → 判定 `NoAvailableAgent`（Worker 會接力）；
+    ③ 正式設定的真實 Codex 辨識合成截圖 → 5.0 秒內失敗（同時段直接跑確認是額度用完），Claude 未登入也失敗 → 判定 `NoAvailableAgent`。
+  - **未驗證**：Claude 真的辨識一張圖——`--restricted` ＋ Read 讀圖 ＋ `structured_output` 符合 Schema 這條路從 2026-09-07 起一直沒有真實驗證過（[§3.2](#ocr-pending-acceptance) #6）。
+    Codex 額度恢復前也無法再驗證「Codex 成功時不換 Agent」的真實路徑，這一項只靠自動化測試。
+    另外，LaunchAgent（無畫面）能否讀到使用者在終端機登入 Claude 後存進 Keychain 的憑證（可能被 Keychain 提示擋住），登入後要用乾淨環境確認 `claude auth status`。
+- **發現但沒處理**：Codex 在 stdin 是不關閉的管線時，會一直等到 EOF 才開始（`Reading additional input from stdin...`；實測 25 秒仍無任何輸出，測試程式曾因此卡到 4 分鐘逾時、exit 137）。
+  LaunchAgent 與 Windows 排程的 stdin 是空的，所以正式 Worker 不受影響；在 AI agent 的工具 shell 裡手動跑 Worker 或 `ocr-poc` 才可能碰到。
+  根治是在 `CodexCliRunner` 開 `RedirectStandardInput` 並立刻關閉，已列入 [TODO #15](../TODO.md#todo-15)。
+- **刻意沒有做**：
+  - 讓分類器讀懂 CLI 的 JSON 錯誤事件（使用者否決，見上）。現在已有真實的額度訊息，日後若要做成本很低：好處是能記額度冷卻、pong 立刻回報 `QuotaAvailable=false`，省掉每張圖約 4 秒。
+  - Worker log 印出每個 Agent 的失敗原因、前端備援說明分開「額度不足」與「失敗」（使用者先不做）。目前兩個都失敗時畫面顯示的是「沒有已登入且有額度的 AI Agent」。
+- **已知限制**：每個 Agent 最長 4 分鐘；Windows 兩個都逾時約 8 分鐘（租約 10 分鐘），但網站 9 分鐘的時限從第一次看到 `leased` 起算，接力到 Mac 時可能只剩約 1 分鐘，網站會先回退 Tesseract。
+  只有連續逾時才會遇到，額度或登入失敗通常幾秒就結束。
+- **部署**：`7af16f563` 已推到 `main`；家裡 Mac 23:15 重建（啟動訊息含「AI OCR v3」、「Worker 發布版本：7af16f563」）；網站 publish-only run `38922361264` 發布（版本常數與警告文字）；
+  **公司 Windows 待重建**，兩台都要有已登入的 Claude 才算完成（[§0.3](#ocr-current)）。
+
+### 4.17 共同教訓
 
 1. **看不見的狀態最危險**：EXE 版本、readiness 判定原因、槽數量、log 編碼——每次事故都是因為畫面或 log
    看不出真正狀態。新功能要讓「為什麼走 Tesseract」直接顯示在畫面或 log（現在連每台機器的詢問結果都會顯示）。
@@ -1206,6 +1280,10 @@ function readinessHeartbeatAgeMs(request) {
 9. **綠色標記只代表「格式合理」，不代表「抄對欄位」**：驗證器能擋的是看不懂、負數、小數與明顯矛盾；抄錯欄只能靠契約設計（給每個欄位一個位置）與端到端用真實截圖驗證。
 10. **部署狀態要讓使用者在畫面上看得到**：同樣的「Worker 沒重建」在 09-11 與 10-13 各發生一次，兩次都靠使用者發現結果不對才查出來。
     現在 Worker 回報版本、網站上傳前比對；升版由測試指紋強制，不靠人記得。
+11. **換 Agent 的決定不要依賴解析 CLI 的錯誤文字**（2026-10-16）：CLI 的輸出格式會變，模式一換（`--json`）錯誤就換了地方；Router 只看「有沒有拿到可用結果」，
+    文字分類只用來記額度冷卻這類優化。測試也要用 CLI 實際會吐出的輸出形狀，不要自己假造 stderr——假造的輸入會讓測試全綠、事故照發生。
+12. **備援的前提要和備援本身一起驗收**（2026-10-16）：Claude 這條備援從 09-07 起「程式有、帳號沒登入、真實辨識沒跑過」，直到用上才發現連登入都沒有。
+    「某條路徑存在」不等於「某條路徑可用」，驗收清單要寫出登入、安裝、真實辨識三個條件。
 
 ---
 
@@ -1286,11 +1364,13 @@ Validator 維持單一份。2026-06-15 起 `claude -p`／Agent SDK 的訂閱用�
 ### 5.6 Agent Router 與例外契約
 
 - `OCR_AGENT_PRIMARY=claude|codex` 決定第一優先（預設 `codex`，見 [§4.3](#ocr-incident-0907-agent-order)），另一個自動成為備援。
-- A 可用 → 執行；成功即採用；明確額度不足 → 標記 `quota_exhausted` 立即執行 B；B 也額度不足 →
-  `OcrAllAgentsQuotaExhaustedException`。
+- A 可用 → 執行；成功即採用。**成功＝CLI 正常結束且輸出是一份 JSON 物件**（空白、純文字、截斷、Codex `--json` 的事件串流都不算）。
+  **沒成功就換 B，不論原因**（2026-10-16 起，[§4.16](#ocr-incident-1016-agent-switch)；之前只有額度、登入、找不到 CLI 才換，一般失敗直接結束，造成 2026-10-16 事故）。
+  明確額度不足會標記冷卻時間，其餘失敗不記。B 也沒成功丟 `OcrNoAvailableAgentException`（Worker 走接力）；兩個都是明確額度不足才丟 `OcrAllAgentsQuotaExhaustedException`。
 - CLI 結果分類：`Success`、`QuotaExhausted`、`AuthenticationRequired`、`TransientFailure`、`InvalidOutput`、
-  `Unavailable`、`Fatal`。未安裝或登入過期可嘗試另一個 Agent，兩者都不可用丟 `OcrNoAvailableAgentException`，
-  不能偽裝成額度不足。timeout、網路、無效 JSON 目前不做盲目 fallback。
+  `Unavailable`、`Fatal`。**分類只用來記額度冷卻與錯誤碼，不再決定換不換 Agent**：CLI 在 `--json` 模式把錯誤寫在 stdout 的 JSON 事件裡，
+  分類器刻意不掃 JSON 行（避免辨識結果的數字被誤判成額度或認證錯誤），所以看不到那段文字。
+  背景評估（Low）用 `OcrAgentRequest.PrimaryAgentOnly` 只跑主要 Agent，失敗只記錄。
 - Router 不直接呼叫 Tesseract（Router 在 Worker，Tesseract 在瀏覽器）；工作邊界把已知不可用例外轉成
   `fallback_required`（`all_agents_quota_exhausted` 等），未知程式錯誤不靜默轉成正常備援。
 - 每個 Agent 狀態：`available`、`quota_exhausted`、`authentication_required`、`unavailable`；額度訊息有可信重設時間
