@@ -34,7 +34,8 @@ public sealed record OcrAgentRequest(
     string? OutputPath = null,
     TimeSpan? Timeout = null,
     string? ReasoningEffort = null,
-    string? ServiceTier = null)
+    string? ServiceTier = null,
+    bool PrimaryAgentOnly = false)
 {
     public TimeSpan EffectiveTimeout => Timeout ?? TimeSpan.FromMinutes(2);
 }

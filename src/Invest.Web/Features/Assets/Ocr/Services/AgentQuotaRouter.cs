@@ -1,11 +1,16 @@
 using Invest.Web.Infrastructure.Ai.Cli;
 using System.Collections.Concurrent;
+using System.Text.Json;
 
 namespace Invest.Web.Features.Assets.Ocr.Services;
 
 /// <summary>
 /// 每一張圖片的唯一 Agent 選擇點。
-/// 額度不足才觸發另一個 Agent；兩者都不足時丟專用例外。
+/// 換不換 Agent 只看結果：沒有拿到可用的辨識結果就換下一個，不靠解析 CLI 的錯誤文字判斷原因。
+/// 2026-10-16 事故：Codex 額度用完時，錯誤只出現在 `--json` 輸出的 JSON 事件裡，分類器看不到，
+/// 被判成一般失敗；舊規則（只有額度、登入、找不到 CLI 才換）因此一次都沒試 Claude，也沒有接力給另一台，
+/// 整批直接走 Tesseract。額度不足仍會記冷卻時間，其餘失敗不記。
+/// 所有 Agent 都沒成功時丟例外，由 Worker 走接力（Windows → Mac → Tesseract）。
 /// </summary>
 public sealed class AgentQuotaRouter
 {
@@ -37,7 +42,7 @@ public sealed class AgentQuotaRouter
     {
         var now = _options.EffectiveTimeProvider.GetUtcNow();
         var reasons = new Dictionary<OcrAgentKind, string>();
-        var order = GetOrder(pass).ToArray();
+        var order = GetOrder(request).ToArray();
         var allQuotaExhausted = true;
 
         for (var index = 0; index < order.Length; index++)
@@ -68,37 +73,33 @@ public sealed class AgentQuotaRouter
                     ? _options.ServiceTierFor(agent)
                     : request.ServiceTier
             };
-            var result = await runner.RunAsync(routedRequest, cancellationToken);
-            switch (result.Status)
+            var result = RequireUsableOutput(await runner.RunAsync(routedRequest, cancellationToken));
+            if (result.Status == OcrAgentRunStatus.Success)
             {
-                case OcrAgentRunStatus.Success:
-                    _quotaBlockedUntil.TryRemove(agent, out _);
-                    return new(
-                        pass,
-                        agent,
-                        result,
-                        index > 0,
-                        routedRequest.Model,
-                        routedRequest.ReasoningEffort,
-                        routedRequest.ServiceTier);
-
-                case OcrAgentRunStatus.QuotaExhausted:
-                    var retryAfter = result.QuotaResetAt
-                        ?? now.Add(_options.EffectiveQuotaCooldown);
-                    _quotaBlockedUntil[agent] = retryAfter;
-                    reasons[agent] = result.ErrorCode ?? "quota_exhausted";
-                    continue;
-
-                case OcrAgentRunStatus.AuthenticationRequired:
-                case OcrAgentRunStatus.Unavailable:
-                    allQuotaExhausted = false;
-                    reasons[agent] = result.ErrorCode ?? result.Status.ToString();
-                    continue;
-
-                default:
-                    allQuotaExhausted = false;
-                    return new(pass, agent, result, index > 0);
+                _quotaBlockedUntil.TryRemove(agent, out _);
+                return new(
+                    pass,
+                    agent,
+                    result,
+                    index > 0,
+                    routedRequest.Model,
+                    routedRequest.ReasoningEffort,
+                    routedRequest.ServiceTier);
             }
+
+            if (result.Status == OcrAgentRunStatus.QuotaExhausted)
+            {
+                var retryAfter = result.QuotaResetAt
+                    ?? now.Add(_options.EffectiveQuotaCooldown);
+                _quotaBlockedUntil[agent] = retryAfter;
+                reasons[agent] = result.ErrorCode ?? "quota_exhausted";
+                continue;
+            }
+
+            // 其餘（登入失效、找不到 CLI、逾時、一般失敗、輸出無法使用…）一律當作這個 Agent 這次沒做出結果，
+            // 換下一個；不記冷卻，因為這些不一定會持續，下一張圖仍然先試主要 Agent。
+            allQuotaExhausted = false;
+            reasons[agent] = result.ErrorCode ?? result.Status.ToString();
         }
 
         if (allQuotaExhausted && order.All(agent => reasons.ContainsKey(agent)))
@@ -118,8 +119,41 @@ public sealed class AgentQuotaRouter
         throw new OcrNoAvailableAgentException(pass, reasons);
     }
 
-    private IEnumerable<OcrAgentKind> GetOrder(OcrPassKind pass)
+    /// <summary>
+    /// CLI 說成功，輸出卻不是一份 JSON 物件（空白、純文字、Codex `--json` 的事件串流…）等於沒有辨識結果，
+    /// 改記為輸出無法使用，讓呼叫端照一般失敗換下一個 Agent。
+    /// </summary>
+    private static OcrAgentRunResult RequireUsableOutput(OcrAgentRunResult result)
+        => result.Status == OcrAgentRunStatus.Success && !IsJsonObject(result.Output)
+            ? result with { Status = OcrAgentRunStatus.InvalidOutput, ErrorCode = "invalid_json" }
+            : result;
+
+    private static bool IsJsonObject(string? output)
     {
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(output);
+            return document.RootElement.ValueKind == JsonValueKind.Object;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private IEnumerable<OcrAgentKind> GetOrder(OcrAgentRequest request)
+    {
+        // 背景評估（10% 抽樣的 Low）只用主要 Agent：它失敗只記錄，不為了評估去花另一個 Agent 的額度。
+        if (request.PrimaryAgentOnly)
+        {
+            return [_options.PrimaryAgent];
+        }
+
         var other = _options.PrimaryAgent == OcrAgentKind.Claude
             ? OcrAgentKind.Codex
             : OcrAgentKind.Claude;

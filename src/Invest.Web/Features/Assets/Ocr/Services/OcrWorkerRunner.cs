@@ -495,7 +495,7 @@ public sealed class OcrWorkerRunner(
             await api.DownloadAsync(evaluation.DownloadUrl, imagePath, cancellationToken);
             await File.WriteAllTextAsync(schemaPath, OcrRecognitionContract.Schema, cancellationToken);
 
-            var request = CreateRequest(imagePath, schemaPath, directory.FullName, evaluation.Market, "low");
+            var request = CreateEvaluationRequest(imagePath, schemaPath, directory.FullName, evaluation.Market);
             var recognizer = new AiOcrOrchestrator(router, new InMemoryOcrPassCheckpointStore());
             var result = await recognizer.RecognizeAsync(request, cancellationToken);
             var draft = validator.Validate(result);
@@ -572,7 +572,16 @@ public sealed class OcrWorkerRunner(
             + $"output={usage?.OutputTokens ?? 0} reasoning={usage?.ReasoningOutputTokens ?? 0}");
     }
 
-    private static OcrAgentRequest CreateRequest(
+    // 背景評估（Low）只用主要 Agent：失敗就記錄失敗，不換 Agent，避免為了抽樣評估去花另一個訂閱的額度。
+    // 使用者看到的 Max 辨識不受影響，仍然是「沒成功就換」。internal 讓測試能確認這個設定沒被改掉。
+    internal static OcrAgentRequest CreateEvaluationRequest(
+        string imagePath,
+        string schemaPath,
+        string workingDirectory,
+        string market)
+        => CreateRequest(imagePath, schemaPath, workingDirectory, market, "low") with { PrimaryAgentOnly = true };
+
+    internal static OcrAgentRequest CreateRequest(
         string imagePath,
         string schemaPath,
         string workingDirectory,

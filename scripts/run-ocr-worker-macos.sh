@@ -19,6 +19,8 @@ fi
 # launchd（LaunchAgent）啟動時的 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，找不到 Homebrew 或官方安裝的 dotnet；
 # 補上常見安裝位置（互動式終端機本來就有，重複加入無害）。
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/share/dotnet:${PATH}"
+# Claude Code 官方安裝器把 claude 放在 ~/.local/bin（launchd 的 PATH 沒有這個位置）。
+export PATH="${HOME}/.local/bin:${PATH}"
 
 dotnet_version="$(dotnet --version)"
 if [[ "${dotnet_version}" != 10.* ]]; then
@@ -49,7 +51,18 @@ if [[ -z "${OCR_CODEX_PATH:-}" ]]; then
 fi
 export OCR_CODEX_PATH
 
+# Claude CLI 是備援 Agent（Codex 失敗時換它）。找得到就釘住絕對路徑，讓心跳探測與實際執行用同一個檔案；
+# 找不到就不設定，Worker 會用名稱 claude 依 PATH 尋找，所以之後才安裝並登入也不必重啟 Worker，
+# 最慢在下一次心跳探測（30 分鐘）看見；要立刻生效就重載 LaunchAgent。
+if [[ -z "${OCR_CLAUDE_PATH:-}" ]] && command -v claude >/dev/null 2>&1; then
+    OCR_CLAUDE_PATH="$(command -v claude)"
+fi
+if [[ -n "${OCR_CLAUDE_PATH:-}" ]]; then
+    export OCR_CLAUDE_PATH
+fi
+
 printf 'Codex CLI 路徑：%s\n' "${OCR_CODEX_PATH}"
+printf 'Claude CLI 路徑：%s\n' "${OCR_CLAUDE_PATH:-未找到（Claude 備援目前不可用）}"
 printf 'Max reasoning effort：%s\n' "${OCR_MAX_REASONING_EFFORT}"
 
 # INVEST_OCR_WORKER_APP_DIR 有值＝LaunchAgent 執行已發布的輸出（見 publish-ocr-worker-macos.sh）；

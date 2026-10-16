@@ -11,8 +11,11 @@ namespace Invest.Web.Features.Assets.Ocr.Services;
 /// </summary>
 public static class OcrWorkerVersion
 {
-    /// <summary>1＝2026-10-13 之前（沒有回報版本）；2＝昨日餘額／今買成／今賣成三欄股數＋回報版本。</summary>
-    public const int Current = 2;
+    /// <summary>
+    /// 1＝2026-10-13 之前（沒有回報版本）；2＝昨日餘額／今買成／今賣成三欄股數＋回報版本；
+    /// 3＝2026-10-16 Agent 改成「沒成功就換」（Codex 失敗改跑 Claude、全部失敗才接力給另一台），背景評估只用主要 Agent。
+    /// </summary>
+    public const int Current = 3;
 
     public static string Label => $"AI OCR v{Current}";
 

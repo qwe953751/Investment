@@ -57,6 +57,92 @@ public sealed class OcrMacWorkerScriptTests
         Assert.Contains("security find-generic-password -w", run, StringComparison.Ordinal);
     }
 
+    // 2026-10-16：Codex 失敗時要換 Claude，但 Mac 的啟動腳本從來沒有找 Claude CLI，備援等於不存在。
+    // 這裡真的用 bash 跑啟動腳本（假的 security 與 HOME），確認官方安裝器放在 ~/.local/bin 的 claude 會被找到並釘住路徑。
+    [Fact]
+    public void 啟動腳本找得到家目錄local_bin的Claude並釘住絕對路徑()
+    {
+        // 需要 bash；公司 Windows 開發機略過，GitHub Actions 的 Linux 會執行。
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var dotnetDirectory = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            .Split(Path.PathSeparator)
+            .FirstOrDefault(directory => directory.Length > 0 && File.Exists(Path.Combine(directory, "dotnet")));
+        if (dotnetDirectory is null)
+        {
+            return;
+        }
+
+        var root = Directory.CreateTempSubdirectory("invest-mac-script-test-");
+        try
+        {
+            var home = Path.Combine(root.FullName, "home");
+            var localBin = Path.Combine(home, ".local", "bin");
+            var stubs = Path.Combine(root.FullName, "stubs");
+            var appDirectory = Path.Combine(root.FullName, "install", "app");
+            Directory.CreateDirectory(localBin);
+            Directory.CreateDirectory(stubs);
+            Directory.CreateDirectory(appDirectory);
+            WriteExecutable(Path.Combine(localBin, "claude"), "#!/bin/sh\nexit 0\n");
+            WriteExecutable(Path.Combine(stubs, "security"), "#!/bin/sh\necho stub-password\n");
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo("bash")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                UseShellExecute = false
+            };
+            startInfo.ArgumentList.Add(Path.Combine(FindRepositoryRoot(), "scripts", "run-ocr-worker-macos.sh"));
+            // 不繼承開發機的環境，免得真實的 OCR_CLAUDE_PATH 或 claude 讓測試結果不穩定。
+            startInfo.Environment.Clear();
+            startInfo.Environment["HOME"] = home;
+            startInfo.Environment["PATH"] = string.Join(Path.PathSeparator, stubs, dotnetDirectory, "/usr/bin", "/bin");
+            startInfo.Environment["DOTNET_NOLOGO"] = "1";
+            startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+            startInfo.Environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
+            // 指向不存在的發布輸出：腳本最後的 exec dotnet 會立刻失敗，不會真的啟動 Worker。
+            startInfo.Environment["INVEST_OCR_WORKER_APP_DIR"] = appDirectory;
+
+            using var process = System.Diagnostics.Process.Start(startInfo)!;
+            var stdout = process.StandardOutput.ReadToEnd();
+            process.StandardError.ReadToEnd();
+            Assert.True(process.WaitForExit(60_000), "啟動腳本沒有在 60 秒內結束。");
+
+            Assert.Contains(
+                $"Claude CLI 路徑：{Path.Combine(localBin, "claude")}",
+                stdout,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void 啟動腳本找不到Claude時照實印出而不是設定假路徑()
+    {
+        var run = ReadNormalized("scripts", "run-ocr-worker-macos.sh");
+
+        // ~/.local/bin 是官方安裝器的位置，launchd 的 PATH 沒有；找不到時不設定，Worker 會依名稱 claude 尋找。
+        Assert.Contains("export PATH=\"${HOME}/.local/bin:${PATH}\"", run, StringComparison.Ordinal);
+        Assert.Contains("if [[ -z \"${OCR_CLAUDE_PATH:-}\" ]] && command -v claude >/dev/null 2>&1; then", run, StringComparison.Ordinal);
+        Assert.Contains("未找到（Claude 備援目前不可用）", run, StringComparison.Ordinal);
+    }
+
+    private static void WriteExecutable(string path, string content)
+    {
+        File.WriteAllText(path, content);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     private static string ReadNormalized(params string[] relativePathSegments)
         => File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. relativePathSegments]))
             .ReplaceLineEndings("\n");
