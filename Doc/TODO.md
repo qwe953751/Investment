@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔴 **2026-10-16 Agent 改成「沒成功就換」（Worker v3，`7af16f563`）已在 `main`、Mac 已是 v3，公司 Windows 待重建到 v3；兩台都要登入 Claude CLI（換到 Claude 的前提，使用者才能做）**。🔴 2026-10-13 AI 漏掉「今買成」的修正與 Worker 版本警告已在 `main`（重建前使用者上傳仍是舊行為，網站會顯示舊版警告）。🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布）；**兩台 Worker 都已重建為新版**（家裡 Mac 10-11、公司 Windows 10-12，10-13 `ocr_workers` 核對通過）；P1～P10 正式驗收待使用者實測（P1 已有新版 Windows 的真實紀錄）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔴 **2026-10-16 Agent 改成「沒成功就換」（Worker v3，`7af16f563`）已在 `main`，Mac 與公司 Windows 都已重建為 v3；兩台都要登入 Claude CLI（換到 Claude 的前提，使用者才能做）**。🟡 2026-10-13 AI 漏掉「今買成」的修正與 Worker 版本警告：兩台都已重建（Windows 10-16 23:52），待使用者重新上傳 5 張截圖驗收。🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布）；**兩台 Worker 都已重建為新版**（家裡 Mac 10-11、公司 Windows 10-12，10-13 `ocr_workers` 核對通過）；P1～P10 正式驗收待使用者實測（P1 已有新版 Windows 的真實紀錄）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 2026-09-23 日韓盤中快照保留、日期選擇器隱藏與排行節流已由 commit `e0bf561b` 發布；.NET 549/549、Node 146/146 通過。線上 KR 已更新至 9/23 14:05；JP 仍指向 9/14。9/15 起舊 workflow 因 KIS 金鑰缺失失敗，9/19 改 Yahoo、9/22 修 Storage bucket 判定；JP 9/21～23 休市，待 9/24 開市驗收新快照。其餘市場切換產品議題仍見下方 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [日韓成交排行來源日期檢查過嚴，09/22 起韓股每輪都失敗](#todo-18) | 🟡 工項 A～E 已實作完成，.NET 556/556、Node 148/148 通過；待 09-28（日韓同為交易日）驗收 |
@@ -1350,15 +1350,15 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-### 🔴 2026-10-16：Agent 改成「沒成功就換」（Worker v3）已在 `main`、家裡 Mac 已是 v3；公司 Windows 待重建，兩台都要登入 Claude CLI
+### 🔴 2026-10-16：Agent 改成「沒成功就換」（Worker v3）已在 `main`，家裡 Mac 與公司 Windows 都已重建為 v3；兩台都要登入 Claude CLI
 
 凌晨 Codex 額度用完時，Claude 一次都沒被呼叫，整批直接走 Tesseract。根因與證據見 [AI OCR §4.16](技術文件/AI%20OCR.md#ocr-incident-1016-agent-switch)：
 Codex 的 `--json` 模式把錯誤只寫在 stdout 的 JSON 事件、分類器看不到；Router 只有額度／登入／找不到 CLI 才換 Agent；那條失敗路徑又不接力。
 修正（`7af16f563`）：Router 只看結果，沒拿到可用的辨識結果就換下一個 Agent，兩個都沒成功才走既有接力；背景評估只用主要 Agent；Mac 啟動腳本找得到 `~/.local/bin/claude`。
-Mac 已重建（23:15，啟動訊息含「AI OCR v3」）；網站已發布 v3 版本常數（run `38922361264`）。
+Mac 已重建（23:15，啟動訊息含「AI OCR v3」）；公司 Windows 已重建（23:52，`logs\ocr-worker-20261016-235219.out.log` 第 1 行含「AI OCR v3」與「在線詢問：指名回應」）；網站已發布 v3 版本常數（run `38922361264`）。
 
 **待辦（依序）**：
-1. 🔴 **重建公司 Windows Worker 到 v3**（`git pull --ff-only origin main` 要含 `7af16f563`；其餘順序同下方 2026-10-13 的步驟 1，啟動訊息要含「**AI OCR v3**」）。重建前網站上傳會顯示舊版警告，Codex 失敗也不會換 Claude。
+1. ✅ **公司 Windows Worker 已重建為 v3**（2026-10-16 23:52，用 [AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy) 的一段式 PowerShell：自動找到 repo `D:\frank_chiang\Perforce\AIagent\SharedProject\Investment`、快轉 `3f39ebae8..0cd731862`、發布 51.6 秒、啟動記錄第 1 行含「AI OCR v3」）。尚未核對：只有一個程序、EXE ProductVersion、`ocr_workers` 的 v3 platform。
 2. 🔴 **登入 Claude CLI（只有使用者能做，OAuth 要在瀏覽器完成）**——沒有這一步，Codex 額度用完仍會整批走 Tesseract：
    - **公司 Windows**（PowerShell，任何位置）：`claude --version`、`claude auth status --text`。顯示 `Not logged in` 就 `claude auth login`（瀏覽器完成登入後再跑一次 `claude auth status --text` 應顯示已登入）。
      Worker 用到 `--restricted`、`--permission-prompts` 等參數，2026-09-07 裝的 `2.1.263` 是否有未驗證，建議先 `claude update`，再執行
@@ -1377,7 +1377,7 @@ Mac 已重建（23:15，啟動訊息含「AI OCR v3」）；網站已發布 v3 �
    - `CodexCliRunner` 開 `RedirectStandardInput` 並立刻關閉：Codex 在 stdin 是不關閉的管線時會一直等到 EOF 才開始（實測 25 秒無輸出）；LaunchAgent／Windows 排程的 stdin 是空的所以正式 Worker 不受影響。
 7. 🟡 **已知限制**：每個 Agent 最長 4 分鐘；Windows 兩個都逾時約 8 分鐘，接力到 Mac 時網站 9 分鐘的時限可能只剩約 1 分鐘而先回退 Tesseract（只有連續逾時才會遇到）。
 
-### 🔴 2026-10-13：AI 漏掉「今買成」的修正與 Worker 版本警告（AI OCR v2）已在 `main`、家裡 Mac 已是 v2，公司 Windows 待重建
+### 🟡 2026-10-13：AI 漏掉「今買成」的修正與 Worker 版本警告（AI OCR v2）已在 `main`；兩台都已重建（Windows 於 10-16 23:52 直接重建到 v3），待使用者重新上傳驗收
 
 券商把股數拆成「昨日餘額／今買成／今賣成」三欄時，AI 路徑只抄了昨日餘額，當天買進的股數被漏掉（投資成本卻已含今天買進），而且仍是綠色「AI 已辨識」。
 舊版同一張真實截圖重跑實測重現；修正後 AI 逐欄照抄三欄、C# 驗證器計算昨日＋今買－今賣，24 檔逐檔核對 0 檔不一致。
@@ -1393,7 +1393,7 @@ Mac 已重建（23:15，啟動訊息含「AI OCR v3」）；網站已發布 v3 �
 不改 Edge、不改資料庫。家裡 Mac 21:55 已重建為 v2。
 
 **待辦（依序）**：
-1. 🔴 **重建公司 Windows Worker 到 v2 以上（現在應直接重建到 v3，見上方 2026-10-16）**（它是預設處理機；沒重建前三欄股數修正不生效，網站上傳時會顯示舊版警告）。**若稍早已依 `8cc0a5bc4` 重建過，仍要再做一次**——那一版還沒有版本回報，網站會把它當 v1。
+1. ✅ **公司 Windows Worker 已於 2026-10-16 23:52 直接重建到 v3（見上方）；以下是當時列的步驟，保留供日後參考**（它是預設處理機；沒重建前三欄股數修正不生效，網站上傳時會顯示舊版警告）。**若稍早已依 `8cc0a5bc4` 重建過，仍要再做一次**——那一版還沒有版本回報，網站會把它當 v1。
    步驟照 [AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy)
    Windows 正確順序：`git pull --ff-only origin main`（要含 `be8069d6f`；現在要含 `7af16f563`）→ `Disable-ScheduledTask`＋`Stop-ScheduledTask "Invest D+ OCR Worker"`
    （排程每 2 分鐘會補啟動，只 Stop 不 Disable 可能在發布期間把舊 EXE 又拉起來而鎖檔；確認沒有殘留 `Invest.Web` 程序）→
