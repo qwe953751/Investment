@@ -224,6 +224,18 @@ let assetExcelGroupColumns = [];
 let assetExcelSyncState = null;
 let assetExcelSyncing = false;
 let assetExcelDraggingColumn = null;
+let assetExcelSettingsRevision = 0;
+let assetExcelPendingSnapshotId = null;
+let assetExcelActiveOperation = null;
+let assetExcelReadStale = false;
+let assetExcelReadGeneration = 0;
+let assetExcelOperationEpoch = 0;
+let assetExcelOrderDesiredGeneration = 0;
+let assetExcelOrderPersistedGeneration = 0;
+let assetExcelOrderPersistPromise = null;
+let assetExcelOrderPersistError = null;
+let assetExcelUnknownOperationId = null;
+let assetExcelPendingOperationRequest = null;
 let assetExcelSortKey = null;
 let assetExcelSortDescending = false;
 
@@ -10568,32 +10580,267 @@ function assetExcelSyncUrl() {
     return `${supabase.url}/functions/v1/asset-operation-sync`;
 }
 
-async function assetExcelSyncAction(action, body = {}, retryAuthentication = true) {
+async function assetExcelSyncAction(action, body = null, retryAuthentication = true) {
+    body = body ?? {};
     if (authAccessToken === null && !await refreshAuthAccessToken()) {
         throw new Error('登入已失效，請重新登入最高權限帳號。');
     }
 
-    const response = await fetch(assetExcelSyncUrl(), {
-        method: 'POST',
-        headers: {
-            apikey: supabase.anonKey,
-            Authorization: `Bearer ${authAccessToken}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ action, accountId: assetExcelAccountId, ...body }),
-        cache: 'no-store'
-    });
-    const payload = await response.json().catch(() => ({}));
+    let response;
+    try {
+        response = await fetch(assetExcelSyncUrl(), {
+            method: 'POST',
+            headers: {
+                apikey: supabase.anonKey,
+                Authorization: `Bearer ${authAccessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ action, accountId: assetExcelAccountId, ...body }),
+            cache: 'no-store'
+        });
+    } catch (error) {
+        error.code = error.code ?? 'network_error';
+        error.operationId = body.operationId ?? null;
+        error.resultUnknown = Boolean(body.operationId);
+        throw error;
+    }
+    const raw = await response.text();
+    let payload;
+    try {
+        payload = raw ? JSON.parse(raw) : null;
+    } catch {
+        payload = null;
+    }
     if (response.status === 401 && retryAuthentication && await refreshAuthAccessToken()) {
         return assetExcelSyncAction(action, body, false);
+    }
+    if (!payload || typeof payload !== 'object') {
+        const error = new Error(`同步服務回應格式不完整（HTTP ${response.status}）。`);
+        error.status = response.status;
+        error.code = 'invalid_sync_response';
+        error.operationId = body.operationId ?? null;
+        error.resultUnknown = Boolean(body.operationId);
+        throw error;
     }
     if (!response.ok) {
         const error = new Error(payload.message ?? `同步失敗（HTTP ${response.status}）。`);
         error.status = response.status;
         error.code = payload.code;
+        error.operationId = body.operationId ?? null;
+        error.action = payload.action ?? action;
+        error.stage = payload.stage ?? null;
+        error.googleWriteState = payload.googleWriteState ?? null;
+        error.resultUnknown = Boolean(body.operationId)
+            && (['unknown', 'confirmed'].includes(payload.googleWriteState)
+                || payload.code === 'reconcile_required');
+        throw error;
+    }
+    if (payload.ok !== true) {
+        const error = new Error('同步服務未確認操作結果。');
+        error.status = response.status;
+        error.code = 'invalid_sync_response';
+        error.operationId = body.operationId ?? null;
+        error.resultUnknown = Boolean(body.operationId);
         throw error;
     }
     return payload;
+}
+
+function assetExcelV2OperationBody(extra = null) {
+    extra = extra ?? {};
+    return {
+        protocolVersion: 2,
+        operationId: crypto.randomUUID(),
+        expectedVersion: Number(assetExcelSyncState?.version ?? 0),
+        expectedSettingsRevision: Number(assetExcelSettingsRevision ?? 0),
+        expectedPendingSnapshotId: assetExcelPendingSnapshotId ?? null,
+        ...extra
+    };
+}
+
+function assetExcelOperationPendingError(operationId, message = '同步結果尚未確認。') {
+    const error = new Error(message);
+    error.code = 'result_unknown';
+    error.operationId = operationId;
+    error.resultUnknown = true;
+    return error;
+}
+
+function assetExcelRequireOperationResult(result, operationId, action) {
+    if (!result || result.protocolVersion !== 2
+        || result.operationId !== operationId || result.action !== action) {
+        const error = assetExcelOperationPendingError(operationId, '同步回應缺少正確的契約版本或操作編號。');
+        error.code = 'invalid_sync_response';
+        throw error;
+    }
+    return result;
+}
+
+function assetExcelTerminalOperationError(operation) {
+    const error = new Error(operation.errorMessage || '同步操作已結束，請重新載入最新資料後再操作。');
+    error.code = operation.errorCode || 'sync_failed';
+    error.operationId = operation.operationId;
+    error.resultUnknown = false;
+    error.terminalOperation = true;
+    return error;
+}
+
+async function assetExcelOperationStatus(operationId) {
+    return assetExcelSyncAction('operation-status', { operationId });
+}
+
+async function assetExcelReconcileOperation(operationId) {
+    return assetExcelSyncAction('reconcile', { operationId });
+}
+
+function assetExcelMarkOperationUnknown(operationId, action) {
+    assetExcelUnknownOperationId = operationId;
+    assetExcelActiveOperation = {
+        operationId,
+        action,
+        status: 'reconcile_required',
+        googleWriteState: 'unknown'
+    };
+}
+
+async function assetExcelResolveOperation(operationId, action, requestBody = null) {
+    let status;
+    try {
+        status = await assetExcelOperationStatus(operationId);
+    } catch (error) {
+        if (error.code === 'operation_not_found' && requestBody) {
+            // The begin transaction never committed. Reusing the exact request ID and
+            // payload is safe; an already accepted request is fenced by the same ID.
+            const retried = assetExcelRequireOperationResult(
+                await assetExcelSyncAction(action, requestBody), operationId, action);
+            if (retried.outcome === 'succeeded') return retried;
+            throw assetExcelOperationPendingError(operationId, '同步請求已重新受理，正在確認操作狀態。');
+        }
+        throw error;
+    }
+    let operation = status.operation ?? status;
+    if (operation.operationId !== operationId) {
+        throw assetExcelOperationPendingError(operationId, '同步狀態回應與本次操作編號不符。');
+    }
+    if (operation.status === 'succeeded') {
+        return assetExcelRequireOperationResult(operation.result, operationId, action);
+    }
+    if (operation.status === 'failed' || operation.status === 'conflict') {
+        throw assetExcelTerminalOperationError(operation);
+    }
+    if (operation.status === 'reconcile_required'
+        || ['unknown', 'confirmed'].includes(operation.googleWriteState)) {
+        const reconciled = await assetExcelReconcileOperation(operationId);
+        operation = reconciled.operation ?? reconciled;
+        if (operation.operationId !== operationId) {
+            throw assetExcelOperationPendingError(operationId, '對帳回應與本次操作編號不符。');
+        }
+        if (operation.status === 'succeeded' || operation.outcome === 'succeeded') {
+            return assetExcelRequireOperationResult(
+                operation.result ?? reconciled.result ?? reconciled, operationId, action);
+        }
+    }
+    if (operation.result?.outcome === 'succeeded') {
+        return assetExcelRequireOperationResult(operation.result, operationId, action);
+    }
+    if (operation.status === 'failed' || operation.status === 'conflict') {
+        throw assetExcelTerminalOperationError(operation);
+    }
+    throw assetExcelOperationPendingError(operationId, '同步仍在處理或等待對帳；請稍後再確認。');
+}
+
+async function assetExcelRunSyncOperation(action, extra = null) {
+    extra = extra ?? {};
+    const requestBody = assetExcelV2OperationBody(extra);
+    const operationId = requestBody.operationId;
+    assetExcelPendingOperationRequest = { action, body: requestBody };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+            const result = assetExcelRequireOperationResult(
+                await assetExcelSyncAction(action, requestBody), operationId, action);
+            if (result.outcome === 'pending' || result.status === 'running'
+                || result.status === 'reconcile_required' || result.httpStatus === 202) {
+                return await assetExcelResolveOperation(operationId, action, requestBody);
+            }
+            if (result.outcome === 'succeeded') {
+                assetExcelPendingOperationRequest = null;
+                assetExcelUnknownOperationId = null;
+                assetExcelActiveOperation = null;
+                return result;
+            }
+            if (result.result?.outcome === 'succeeded') {
+                const nestedResult = assetExcelRequireOperationResult(result.result, operationId, action);
+                assetExcelPendingOperationRequest = null;
+                assetExcelUnknownOperationId = null;
+                assetExcelActiveOperation = null;
+                return nestedResult;
+            }
+            throw assetExcelOperationPendingError(operationId);
+        } catch (error) {
+            if (!error.resultUnknown && error.code !== 'network_error'
+                && error.code !== 'invalid_sync_response') throw error;
+            try {
+                const resolved = await assetExcelResolveOperation(operationId, action, requestBody);
+                assetExcelPendingOperationRequest = null;
+                assetExcelUnknownOperationId = null;
+                assetExcelActiveOperation = null;
+                return resolved;
+            } catch (statusError) {
+                if (statusError.terminalOperation) {
+                    assetExcelPendingOperationRequest = null;
+                    assetExcelUnknownOperationId = null;
+                    assetExcelActiveOperation = null;
+                    throw statusError;
+                }
+                if (statusError.code === 'operation_not_found' && attempt === 0) continue;
+                assetExcelMarkOperationUnknown(operationId, action);
+                throw assetExcelOperationPendingError(operationId,
+                    '同步請求已送出但回應未完整；系統不會重送寫入，請確認同步狀態。');
+            }
+        }
+    }
+    assetExcelMarkOperationUnknown(operationId, action);
+    throw assetExcelOperationPendingError(operationId);
+}
+
+async function assetExcelResolvePendingOperation() {
+    const pending = assetExcelPendingOperationRequest;
+    if (!assetExcelUnknownOperationId || !pending) return;
+    assetExcelSyncing = true;
+    assetExcelNotice = '正在確認同步狀態…';
+    renderAssetExcelView(el('asset-excel-page'));
+    try {
+        const result = await assetExcelResolveOperation(
+            assetExcelUnknownOperationId, pending.action, pending.body);
+        assetExcelUnknownOperationId = null;
+        assetExcelPendingOperationRequest = null;
+        assetExcelActiveOperation = null;
+        assetExcelNotice = {
+            import: '匯入已完成。',
+            export: '匯出已完成。',
+            'save-draft': '網站草稿已保存。',
+            'save-column-order': '欄位排序已保存。'
+        }[pending.action] ?? '同步操作已完成。';
+        try {
+            await loadAssetExcelData(assetExcelAccountId);
+        } catch {
+            assetExcelReadStale = true;
+            assetExcelNotice += '畫面更新失敗，請重新載入資料。';
+        }
+    } catch (error) {
+        if (error.terminalOperation) {
+            assetExcelUnknownOperationId = null;
+            assetExcelPendingOperationRequest = null;
+            assetExcelActiveOperation = null;
+            assetExcelNotice = `同步操作已結束：${error.message}`;
+            return;
+        }
+        assetExcelMarkOperationUnknown(assetExcelUnknownOperationId, pending.action);
+        assetExcelNotice = `同步結果仍待確認：${error.message}`;
+    } finally {
+        assetExcelSyncing = false;
+        renderAssetExcelView(el('asset-excel-page'));
+    }
 }
 
 function assetExcelTargetAccount() {
@@ -10718,41 +10965,104 @@ async function loadAssetExcelData(accountId) {
         throw new Error('請先登入最高權限帳號，再開啟 Frank／台股操作 Excel。');
     }
 
-    const accountQuery = `&account_id=eq.${encodeURIComponent(accountId)}`;
-    const [rows, settings, groups, syncState] = await Promise.all([
-        fetchAuthenticatedAllRows(
-            ASSET_OPERATION_ROWS_TABLE,
-            'id,account_id,buy,stock,stock_code,stock_name,group_flags,cpo,pcb,asic,cooling,passive,other,memory,abf,power,hinge,pmic,testing,leadframe,bbu,sort_order,updated_at',
-            `${accountQuery}&order=sort_order.asc,id.asc`),
-        fetchAuthenticatedAllRows(
-            ASSET_OPERATION_SETTINGS_TABLE,
-            'account_id,column_order,updated_at',
-            accountQuery),
-        fetchAuthenticatedAllRows(
-            'asset_operation_group_columns',
-            'id,account_id,label,metadata_key,sheet_column_index,display_order,active,legacy_key,updated_at',
-            `${accountQuery}&active=eq.true&order=display_order.asc,id.asc`),
-        fetchAuthenticatedAllRows(
-            'asset_operation_sync_state',
-            'account_id,version,active_snapshot_id,base_google_hash,last_google_hash,status,last_checked_at,last_imported_at,last_exported_at,last_error_code,last_error_message,updated_at',
-            accountQuery)
-    ]);
+    if (assetExcelAccountId !== accountId) {
+        assetExcelOperationEpoch += 1;
+        assetExcelOrderDesiredGeneration = 0;
+        assetExcelOrderPersistedGeneration = 0;
+        assetExcelOrderPersistPromise = null;
+        assetExcelOrderPersistError = null;
+        assetExcelUnknownOperationId = null;
+        assetExcelPendingOperationRequest = null;
+        assetExcelActiveOperation = null;
+    }
+    const epoch = assetExcelOperationEpoch;
+    const readGeneration = ++assetExcelReadGeneration;
+    assetExcelReadStale = true;
+    const payload = await assetExcelSyncAction('read-state', { accountId });
+    const state = payload.state ?? payload;
+    if (epoch !== assetExcelOperationEpoch || readGeneration !== assetExcelReadGeneration) return;
+    if (!Array.isArray(state.rows) || !Array.isArray(state.groups)
+        || !state.settings || !state.syncState) {
+        throw new Error('操作表一致性讀取回傳格式不完整。');
+    }
 
     assetExcelAccountId = accountId;
-    assetExcelInstallGroupColumns(groups);
-    assetExcelRows = rows.map(assetExcelOperationRowFromDb);
-    assetExcelColumnKeys = assetExcelColumnKeysFrom(settings[0]?.column_order);
-    assetExcelSyncState = syncState[0] ?? null;
+    assetExcelInstallGroupColumns(state.groups);
+    assetExcelRows = state.rows.map(assetExcelOperationRowFromDb);
+    assetExcelColumnKeys = assetExcelColumnKeysFrom(state.settings.column_order);
+    assetExcelSyncState = state.syncState;
+    assetExcelSettingsRevision = Number(state.settings.settings_revision ?? 0);
+    assetExcelPendingSnapshotId = state.pending?.id ?? null;
+    assetExcelActiveOperation = state.activeOperation ?? null;
+    assetExcelReadStale = false;
+    assetExcelOrderDesiredGeneration = 0;
+    assetExcelOrderPersistedGeneration = 0;
+    assetExcelOrderPersistError = null;
+    if (assetExcelActiveOperation?.operationId) {
+        assetExcelUnknownOperationId = assetExcelActiveOperation.operationId;
+        if (!assetExcelPendingOperationRequest) {
+            assetExcelPendingOperationRequest = {
+                action: assetExcelActiveOperation.action,
+                body: { operationId: assetExcelActiveOperation.operationId }
+            };
+        }
+    } else if (!assetExcelUnknownOperationId) {
+        assetExcelPendingOperationRequest = null;
+    }
 }
 
 async function assetExcelPersistColumnOrder() {
     if (ASSET_EXCEL_LOCAL_PREVIEW || assetExcelAccountId === '') {
         return;
     }
+    const requiredGeneration = assetExcelOrderDesiredGeneration;
+    if (assetExcelOrderPersistError) throw assetExcelOrderPersistError;
+    if (assetExcelOrderPersistedGeneration >= requiredGeneration) return;
+    if (assetExcelOrderPersistPromise === null) {
+        const promiseEpoch = assetExcelOperationEpoch;
+        const promiseAccount = assetExcelAccountId;
+        const persistencePromise = (async () => {
+            while (assetExcelOrderPersistedGeneration < assetExcelOrderDesiredGeneration) {
+                const generation = assetExcelOrderDesiredGeneration;
+                const accountId = assetExcelAccountId;
+                const epoch = assetExcelOperationEpoch;
+                const columnOrder = assetExcelColumnKeysFrom(assetExcelColumnKeys);
+                const result = await assetExcelRunSyncOperation('save-column-order', { columnOrder });
+                if (epoch !== assetExcelOperationEpoch || accountId !== assetExcelAccountId) return;
+                assetExcelSettingsRevision = Number(result.settingsRevision ?? assetExcelSettingsRevision);
+                assetExcelOrderPersistedGeneration = generation;
+            }
+        })().catch(error => {
+            if (promiseEpoch === assetExcelOperationEpoch && promiseAccount === assetExcelAccountId) {
+                assetExcelOrderPersistError = error;
+            }
+            throw error;
+        }).finally(() => {
+            if (assetExcelOrderPersistPromise === persistencePromise) {
+                assetExcelOrderPersistPromise = null;
+            }
+        });
+        assetExcelOrderPersistPromise = persistencePromise;
+    }
+    await assetExcelOrderPersistPromise;
+    if (assetExcelOrderPersistedGeneration < requiredGeneration) {
+        await assetExcelPersistColumnOrder();
+    }
+}
 
-    await assetExcelSyncAction('save-column-order', {
-        columnOrder: assetExcelColumnKeysFrom(assetExcelColumnKeys)
-    });
+async function assetExcelFlushColumnOrder() {
+    if (ASSET_EXCEL_LOCAL_PREVIEW) return;
+    const requiredGeneration = assetExcelOrderDesiredGeneration;
+    await assetExcelPersistColumnOrder();
+    if (assetExcelOrderPersistedGeneration < requiredGeneration) {
+        throw new Error('欄位順序尚未保存完成，請重新載入資料後再同步。');
+    }
+    return assetExcelSettingsRevision;
+}
+
+function assetExcelQueueColumnOrder() {
+    assetExcelOrderDesiredGeneration += 1;
+    return assetExcelPersistColumnOrder();
 }
 
 function assetExcelPreviewRows() {
@@ -10833,6 +11143,7 @@ function assetExcelColumnList() {
 }
 
 function assetExcelMoveColumn(sourceKey, targetKey) {
+    if (assetExcelSyncing || assetExcelEditing || assetExcelReadStale || assetExcelActiveOperation) return;
     if (sourceKey === targetKey) {
         return;
     }
@@ -10860,10 +11171,13 @@ function assetExcelMoveColumn(sourceKey, targetKey) {
         assetExcelNotice = '欄位順序已更新；本機預覽會保留這個順序。';
     } else {
         assetExcelNotice = '欄位順序已更新；正在保存正式資料設定。';
-        void assetExcelPersistColumnOrder().then(() => {
+        const epoch = assetExcelOperationEpoch;
+        void assetExcelQueueColumnOrder().then(() => {
+            if (epoch !== assetExcelOperationEpoch || assetExcelSyncing) return;
             assetExcelNotice = '欄位順序已更新，已保存到正式資料庫。';
             renderAssetExcelView(el('asset-excel-page'));
         }).catch(error => {
+            if (epoch !== assetExcelOperationEpoch || assetExcelSyncing) return;
             assetExcelNotice = `欄位順序保存失敗：${error.message}`;
             renderAssetExcelView(el('asset-excel-page'));
         });
@@ -11286,7 +11600,8 @@ function makeAssetExcelTable() {
         const cell = document.createElement('th');
         cell.className = 'asset-excel-header-cell';
         cell.scope = 'col';
-        cell.draggable = true;
+        cell.draggable = !assetExcelSyncing && !assetExcelSaving && !assetExcelReadStale
+            && !assetExcelActiveOperation;
         cell.dataset.column = column.key;
         cell.title = assetExcelColumnSortable(column)
             ? '拖曳欄名以移動欄位；點擊排序圖示先降冪、再次點擊升冪。'
@@ -11309,6 +11624,10 @@ function makeAssetExcelTable() {
         }
 
         cell.addEventListener('dragstart', event => {
+            if (assetExcelSyncing || assetExcelSaving || assetExcelReadStale || assetExcelActiveOperation) {
+                event.preventDefault();
+                return;
+            }
             assetExcelDraggingColumn = column.key;
             cell.classList.add('is-dragging');
             event.dataTransfer?.setData('text/plain', column.key);
@@ -11317,6 +11636,7 @@ function makeAssetExcelTable() {
             }
         });
         cell.addEventListener('dragover', event => {
+            if (assetExcelSyncing || assetExcelSaving || assetExcelReadStale || assetExcelActiveOperation) return;
             event.preventDefault();
             cell.classList.add('is-drop-target');
             if (event.dataTransfer) {
@@ -11327,6 +11647,7 @@ function makeAssetExcelTable() {
         cell.addEventListener('drop', event => {
             event.preventDefault();
             cell.classList.remove('is-drop-target');
+            if (assetExcelSyncing || assetExcelSaving || assetExcelReadStale || assetExcelActiveOperation) return;
             const sourceKey = assetExcelDraggingColumn
                 ?? event.dataTransfer?.getData('text/plain');
             assetExcelMoveColumn(sourceKey, column.key);
@@ -11394,17 +11715,20 @@ async function assetExcelApplyChanges() {
             return;
         }
         assetExcelValidateRows(rows);
-        await assetExcelSyncAction('save-draft', {
+        await assetExcelFlushColumnOrder();
+        const saved = await assetExcelRunSyncOperation('save-draft', {
             expectedVersion: Number(assetExcelSyncState?.version ?? 0),
             rows,
-            groups: [],
+            columnOrder: assetExcelColumnKeysFrom(assetExcelColumnKeys),
             allowEmpty: rows.length === 0
         });
         assetExcelSyncState = {
             ...(assetExcelSyncState ?? {}),
             status: 'dirty',
-            version: Number(assetExcelSyncState?.version ?? 0) + 1
+            version: Number(saved.version ?? Number(assetExcelSyncState?.version ?? 0) + 1)
         };
+        assetExcelSettingsRevision = Number(saved.settingsRevision ?? assetExcelSettingsRevision);
+        assetExcelPendingSnapshotId = saved.snapshotId ?? assetExcelPendingSnapshotId;
         assetExcelEditing = false;
         assetExcelEditingSnapshot = null;
         assetExcelNotice = '已儲存網站草稿；尚未匯出 Google Sheet。';
@@ -11421,7 +11745,7 @@ const ASSET_EXCEL_OVERWRITE_DRAFT_PROMPT =
     + '確定：以 Google Sheet 為準，網站草稿作廢。\n取消：保留草稿，不匯入。';
 
 async function assetExcelImportLatest() {
-    if (assetExcelSyncing || assetExcelEditing) return;
+    if (assetExcelSyncing || assetExcelEditing || assetExcelReadStale || assetExcelActiveOperation) return;
     // 本頁已知有草稿就先問；若草稿是別台裝置留下、本頁不知道，後端回 draft_pending 時再問。
     let overwriteDraft = false;
     if (assetExcelSyncState?.status === 'dirty') {
@@ -11432,24 +11756,36 @@ async function assetExcelImportLatest() {
     assetExcelSyncing = true;
     assetExcelNotice = '正在從 Google Sheet 匯入…';
     renderAssetExcelView(el('asset-excel-page'));
+    let result = null;
     try {
-        let result;
+        await assetExcelFlushColumnOrder();
         try {
-            result = await assetExcelSyncAction('import', overwriteDraft ? { overwriteDraft: true } : {});
+            result = await assetExcelRunSyncOperation('import', overwriteDraft ? { overwriteDraft: true } : {});
         } catch (error) {
             if (overwriteDraft || error.code !== 'draft_pending') throw error;
+            await loadAssetExcelData(assetExcelAccountId);
             if (!window.confirm(ASSET_EXCEL_OVERWRITE_DRAFT_PROMPT)) {
                 assetExcelNotice = '已取消匯入，網站草稿保留。';
                 return;
             }
-            result = await assetExcelSyncAction('import', { overwriteDraft: true });
+            result = await assetExcelRunSyncOperation('import', { overwriteDraft: true });
         }
-        await loadAssetExcelData(assetExcelAccountId);
         assetExcelNotice = result.overwrittenDrafts > 0
             ? '已用 Google Sheet 原檔覆蓋網站資料，族群欄位順序已同步，網站草稿已作廢。'
             : '已匯入 Google Sheet，網站資料與族群欄位順序已更新；營收創高以網站為準。';
+        try {
+            await loadAssetExcelData(assetExcelAccountId);
+        } catch (error) {
+            assetExcelReadStale = true;
+            assetExcelNotice = `匯入成功，但畫面更新失敗：${error.message}。請重新載入資料。`;
+        }
     } catch (error) {
-        assetExcelNotice = `匯入失敗：${error.message}`;
+        if (error.resultUnknown || error.code === 'result_unknown') {
+            assetExcelMarkOperationUnknown(error.operationId, 'import');
+            assetExcelNotice = `同步結果確認中：${error.message}`;
+        } else {
+            assetExcelNotice = `匯入失敗：${error.message}`;
+        }
     } finally {
         assetExcelSyncing = false;
         renderAssetExcelView(el('asset-excel-page'));
@@ -11464,8 +11800,28 @@ function assetExcelRevenueHighNotice(summary) {
     return `營收創高（${summary.month}）已依網站寫入 D 欄：V ${summary.high}／X ${summary.notHigh}／- ${summary.notPublished}${mismatch}`;
 }
 
+async function assetExcelReloadOperationData() {
+    if (assetExcelSyncing) return;
+    assetExcelSyncing = true;
+    assetExcelNotice = '正在重新載入操作表資料…';
+    renderAssetExcelView(el('asset-excel-page'));
+    try {
+        await loadAssetExcelData(assetExcelAccountId);
+        assetExcelNotice = assetExcelActiveOperation
+            ? '資料已更新；仍有同步操作等待確認。'
+            : '已重新載入伺服器資料與欄位設定。';
+    } catch (error) {
+        assetExcelReadStale = true;
+        assetExcelNotice = `重新載入失敗：${error.message}`;
+    } finally {
+        assetExcelSyncing = false;
+        renderAssetExcelView(el('asset-excel-page'));
+    }
+}
+
 async function assetExcelExportLatest() {
-    if (assetExcelSyncing || assetExcelEditing) return;
+    if (assetExcelSyncing || assetExcelEditing || assetExcelReadStale || assetExcelActiveOperation
+        || assetExcelOrderPersistError) return;
     // 匯出前先等欄位排序保存完成；後端會同步族群欄位順序，並依草稿狀態寫入資料與營收創高。
     const hasDraft = assetExcelSyncState?.status === 'dirty';
 
@@ -11475,17 +11831,27 @@ async function assetExcelExportLatest() {
         : '正在同步族群欄位順序與營收創高…';
     renderAssetExcelView(el('asset-excel-page'));
     try {
-        await assetExcelPersistColumnOrder();
-        const result = await assetExcelSyncAction('export');
-        await loadAssetExcelData(assetExcelAccountId);
+        await assetExcelFlushColumnOrder();
+        const result = await assetExcelRunSyncOperation('export');
         const revenueText = assetExcelRevenueHighNotice(result.revenueHigh);
         assetExcelNotice = result.revenueOnly
             ? `Google Sheet 族群欄位順序已與網站一致；${revenueText || '營收創高已寫入 D 欄'}。`
             : `匯出成功；Google Sheet 資料列與族群欄位順序已同步。${revenueText ? `${revenueText}。` : ''}`;
+        try {
+            await loadAssetExcelData(assetExcelAccountId);
+        } catch (error) {
+            assetExcelReadStale = true;
+            assetExcelNotice = `匯出成功，但畫面更新失敗：${error.message}。請重新載入資料。`;
+        }
     } catch (error) {
-        assetExcelNotice = error.status === 409
-            ? 'Google Sheet 已有較新修改，匯出被停止；請先匯入最新資料。'
-            : `匯出失敗：${error.message}`;
+        if (error.resultUnknown || error.code === 'result_unknown') {
+            assetExcelMarkOperationUnknown(error.operationId, 'export');
+            assetExcelNotice = `同步結果確認中：${error.message}`;
+        } else if (error.code === 'google_data_conflict' || error.code === 'google_structure_conflict') {
+            assetExcelNotice = `${error.message} 請先匯入最新資料。`;
+        } else {
+            assetExcelNotice = `匯出失敗：${error.message}`;
+        }
     } finally {
         assetExcelSyncing = false;
         renderAssetExcelView(el('asset-excel-page'));
@@ -11511,8 +11877,10 @@ function makeAssetExcelView() {
     const exportButton = assetExcelButton('匯出到 Google Sheet', 'asset-excel-primary-button', () => {
         void assetExcelExportLatest();
     });
-    exportButton.disabled = assetExcelSyncing || assetExcelEditing;
-    importButton.disabled = assetExcelSyncing || assetExcelEditing;
+    exportButton.disabled = assetExcelSyncing || assetExcelEditing || assetExcelReadStale
+        || Boolean(assetExcelActiveOperation) || Boolean(assetExcelOrderPersistError);
+    importButton.disabled = assetExcelSyncing || assetExcelEditing || assetExcelReadStale
+        || Boolean(assetExcelActiveOperation) || Boolean(assetExcelOrderPersistError);
     syncActions.append(importButton, exportButton);
 
     const navigationActions = document.createElement('div');
@@ -11542,11 +11910,23 @@ function makeAssetExcelView() {
                 renderAssetExcelView(el('asset-excel-page'));
             }));
     } else {
-        editActions.append(assetExcelButton('編輯', 'asset-excel-primary-button', () => {
+        const editButton = assetExcelButton('編輯', 'asset-excel-primary-button', () => {
             assetExcelEditingSnapshot = assetExcelCloneRows(assetExcelPreviewRows());
             assetExcelEditing = true;
             assetExcelNotice = '';
             renderAssetExcelView(el('asset-excel-page'));
+        });
+        editButton.disabled = assetExcelSyncing || assetExcelReadStale || Boolean(assetExcelActiveOperation);
+        editActions.append(editButton);
+    }
+    if (assetExcelUnknownOperationId) {
+        navigationActions.append(assetExcelButton('確認同步狀態', 'asset-excel-secondary-button', () => {
+            void assetExcelResolvePendingOperation();
+        }));
+    }
+    if (assetExcelReadStale || assetExcelOrderPersistError) {
+        navigationActions.append(assetExcelButton('重新載入資料', 'asset-excel-secondary-button', () => {
+            void assetExcelReloadOperationData();
         }));
     }
     const backButton = assetExcelButton('返回持倉', 'asset-excel-secondary-button', () => {

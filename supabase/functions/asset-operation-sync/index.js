@@ -16,6 +16,9 @@ const WRITE_ENABLED = Deno.env.get('ASSET_OPERATION_WRITE_ENABLED') === 'true';
 const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const METADATA_PREFIX = 'invest.asset-operation';
 const COMPACTION_MARKER_PREFIX = 'compacted-snapshot:';
+const OPERATION_MARKER_KEY = 'invest.asset-operation-operation';
+const OPERATION_PROTOCOL_VERSION = 2;
+const GOOGLE_FINGERPRINT_VERSION = 1;
 const FIRST_DATA_ROW = 4;
 const LAST_CONTROLLED_COLUMN = 52; // AZ, 1-based
 
@@ -32,8 +35,57 @@ function json(body, status = 200) {
     });
 }
 
-function fail(message, status = 400, code = 'bad_request') {
-    return json({ ok: false, code, message }, status);
+function fail(message, status = 400, code = 'bad_request', details = {}) {
+    return json({ ok: false, code, message, ...details }, status);
+}
+
+function safeErrorMessage(message) {
+    return String(message ?? '同步失敗。')
+        .replace(/https?:\/\/[^\s"']+/gi, '[外部服務]')
+        .replace(/Bearer\s+[^\s"']+/gi, 'Bearer [redacted]')
+        .replace(/(private[_ -]?key|access[_ -]?token|service[_ -]?role)[^,;\s]*/gi, '[redacted]')
+        .slice(0, 500);
+}
+
+function codeForMessage(message) {
+    const value = String(message ?? '');
+    const known = [
+        'settings_conflict', 'data_version_conflict', 'google_data_conflict',
+        'google_structure_conflict', 'draft_pending', 'sync_in_progress',
+        'baseline_required', 'verification_failed', 'reconcile_required',
+        'client_upgrade_required', 'idempotency_key_reused', 'result_unknown',
+        'operation_not_found', 'invalid_column_order', 'invalid_pending_snapshot'
+    ];
+    return known.find(code => value.includes(code)) ?? null;
+}
+
+function statusForCode(code, fallback = 500) {
+    if (code === 'client_upgrade_required') return 426;
+    if (code === 'sync_in_progress') return 202;
+    if (['settings_conflict', 'data_version_conflict', 'google_data_conflict',
+        'google_structure_conflict', 'draft_pending', 'baseline_required'].includes(code)) return 409;
+    if (code === 'idempotency_key_reused') return 422;
+    if (code === 'operation_not_found') return 404;
+    if (code === 'invalid_column_order' || code === 'invalid_pending_snapshot') return 422;
+    return fallback;
+}
+
+function logOperation(event) {
+    const safe = {
+        operationId: event.operationId ?? null,
+        action: event.action ?? null,
+        stage: event.stage ?? null,
+        status: event.status ?? null,
+        code: event.code ?? null,
+        durationMs: event.durationMs ?? null,
+        version: event.version ?? null,
+        settingsRevision: event.settingsRevision ?? null,
+        rowCount: event.rowCount ?? null,
+        groupOrderChanged: event.groupOrderChanged ?? null,
+        deletedRows: event.deletedRows ?? null,
+        googleWriteState: event.googleWriteState ?? 'not_started'
+    };
+    console.info(JSON.stringify({ type: 'asset_operation_sync', ...safe }));
 }
 
 function base64Url(bytes) {
@@ -112,12 +164,17 @@ function groupColumnOrderPlan(groups, columnOrder) {
 
     const knownIds = new Set(currentIds);
     const requestedIds = Array.isArray(columnOrder)
-        ? columnOrder
-            .filter(key => typeof key === 'string' && key.startsWith('group:'))
+        ? columnOrder.filter(key => typeof key === 'string' && key.startsWith('group:'))
             .map(key => key.slice(6))
-            .filter(id => knownIds.has(id))
         : [];
-    const desiredIds = [...new Set([...requestedIds, ...currentIds])];
+    if (requestedIds.length !== 48 || new Set(requestedIds).size !== 48
+        || requestedIds.some(id => !knownIds.has(id))) {
+        const error = new Error('網站族群欄位排序缺漏或含未知 ID，請重新載入後再匯出。');
+        error.code = 'invalid_column_order';
+        error.status = 422;
+        throw error;
+    }
+    const desiredIds = requestedIds;
     const byId = new Map(currentGroups.map(group => [group.id, group]));
     const requests = [];
     const workingIds = [...currentIds];
@@ -153,6 +210,28 @@ function groupIdsInSheet(groups) {
     return groups.slice()
         .sort((left, right) => Number(left.sheet_column_index) - Number(right.sheet_column_index))
         .map(group => group.id);
+}
+
+async function googleStructureHash(sheet) {
+    const header = sheet.rawRows?.[2] ?? [];
+    const groups = [...sheet.groups]
+        .sort((left, right) => Number(left.sheet_column_index) - Number(right.sheet_column_index))
+        .map(group => ({
+            id: String(group.id),
+            columnIndex: Number(group.sheet_column_index),
+            header: String(header[Number(group.sheet_column_index) - 1] ?? '')
+        }));
+    const fixed = Object.entries(sheet.columns.fields)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, zeroBasedIndex]) => ({ key, columnIndex: Number(zeroBasedIndex) + 1 }));
+    return sha256(stable({ version: GOOGLE_FINGERPRINT_VERSION, fixed, groups }));
+}
+
+function operationMarkerValue(sheet) {
+    return (sheet?.developerMetadata ?? [])
+        .map(item => item.developerMetadata)
+        .find(entry => entry?.metadataKey === OPERATION_MARKER_KEY
+            && entry?.location?.sheetId === SHEET_ID)?.metadataValue ?? null;
 }
 
 function headerAfterGroupOrder(beforeHeader, groups, desiredGroupIds) {
@@ -211,22 +290,50 @@ async function googleAccessToken() {
 }
 
 async function googleRequest(path, options = {}) {
+    const { onRequestStart, ...fetchOptions } = options;
     const token = await googleAccessToken();
-    const response = await fetch(`https://sheets.googleapis.com/v4${path}`, {
-        ...options,
-        headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            ...(options.headers ?? {})
-        }
-    });
+    let response;
+    try {
+        await onRequestStart?.();
+        response = await fetch(`https://sheets.googleapis.com/v4${path}`, {
+            ...fetchOptions,
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                ...(fetchOptions.headers ?? {})
+            }
+        });
+    } catch (error) {
+        if (typeof onRequestStart === 'function') error.googleRequestStarted = true;
+        throw error;
+    }
     const text = await response.text();
     let payload = null;
     try { payload = text ? JSON.parse(text) : null; } catch { payload = { raw: text }; }
     if (!response.ok) {
-        throw new Error(`Google Sheets HTTP ${response.status}: ${googleErrorDetail(text, payload)}`);
+        const error = new Error(`Google Sheets HTTP ${response.status}: ${safeErrorMessage(googleErrorDetail(text, payload))}`);
+        error.status = response.status;
+        error.googleRequestStarted = typeof onRequestStart === 'function';
+        error.retryAfterMs = Math.max(0, Number(response.headers.get('retry-after')) * 1000 || 0);
+        throw error;
     }
     return payload;
+}
+
+async function googleReadRequest(path, options = {}) {
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+            return await googleRequest(path, options);
+        } catch (error) {
+            lastError = error;
+            const retryable = error.status === 429 || error.status >= 500 || error.status === undefined;
+            if (!retryable || attempt === 2) break;
+            const delay = Math.max(error.retryAfterMs ?? 0, 200 * (2 ** attempt));
+            await new Promise(resolve => setTimeout(resolve, Math.min(delay, 2000)));
+        }
+    }
+    throw lastError;
 }
 
 function googleErrorDetail(text, payload) {
@@ -256,9 +363,133 @@ async function supabaseRequest(path, options = {}) {
     if (!response.ok) {
         const error = new Error(`Supabase HTTP ${response.status}: ${payload?.message ?? text}`);
         error.status = response.status;
+        error.pgCode = payload?.code;
+        error.code = codeForMessage(payload?.message) ?? codeForMessage(text);
+        error.status = statusForCode(error.code, response.status);
         throw error;
     }
     return payload;
+}
+
+async function rpc(functionName, parameters) {
+    return await supabaseRequest(`/rest/v1/rpc/${encodeURIComponent(functionName)}`, {
+        method: 'POST',
+        body: JSON.stringify(parameters)
+    });
+}
+
+function rpcObject(value) {
+    return Array.isArray(value) ? value[0] ?? null : value;
+}
+
+function isUuid(value) {
+    return typeof value === 'string'
+        && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function requireProtocolV2(body, action) {
+    if (Number(body.protocolVersion) !== OPERATION_PROTOCOL_VERSION
+        || !isUuid(body.operationId)
+        || !Number.isInteger(Number(body.expectedVersion))
+        || !Number.isInteger(Number(body.expectedSettingsRevision))
+        || !Object.hasOwn(body, 'expectedPendingSnapshotId')) {
+        const error = new Error(`此頁面版本過舊或缺少同步版本資訊，請重新載入後再${action === 'import' ? '匯入' : '匯出'}。`);
+        error.status = 426;
+        error.code = 'client_upgrade_required';
+        throw error;
+    }
+    if (body.expectedPendingSnapshotId !== null && !isUuid(body.expectedPendingSnapshotId)) {
+        const error = new Error('草稿版本資訊不合法，請重新載入資料。');
+        error.status = 400;
+        error.code = 'invalid_pending_snapshot';
+        throw error;
+    }
+}
+
+async function readStateV2(accountId) {
+    const value = rpcObject(await rpc('asset_operation_read_state_v2', { p_account_id: accountId }));
+    if (!value || !Array.isArray(value.rows) || !Array.isArray(value.groups)
+        || !value.settings || !value.syncState) {
+        throw new Error('操作表一致性讀取回傳格式不完整。');
+    }
+    return value;
+}
+
+async function beginOperation(accountId, action, body, user) {
+    requireProtocolV2(body, action);
+    if (action === 'export' && (!Array.isArray(body.columnOrder)
+        || body.columnOrder.some(key => typeof key !== 'string'))) {
+        const error = new Error('欄位排序格式不合法，請重新載入資料。');
+        error.code = 'invalid_column_order';
+        throw error;
+    }
+    const input = action === 'import'
+        ? { overwriteDraft: body.overwriteDraft === true }
+        : { columnOrder: body.columnOrder };
+    const identity = {
+        action,
+        accountId,
+        protocolVersion: OPERATION_PROTOCOL_VERSION,
+        expectedVersion: Number(body.expectedVersion),
+        expectedSettingsRevision: Number(body.expectedSettingsRevision),
+        expectedPendingSnapshotId: body.expectedPendingSnapshotId,
+        input
+    };
+    const requestHash = await sha256(stable(identity));
+    const result = rpcObject(await rpc('asset_operation_begin_v2', {
+        p_operation_id: body.operationId,
+        p_account_id: accountId,
+        p_action: action,
+        p_protocol_version: OPERATION_PROTOCOL_VERSION,
+        p_actor_kind: user.cron ? 'cron' : 'admin',
+        p_actor_id: user.id,
+        p_request_hash: requestHash,
+        p_expected_version: Number(body.expectedVersion),
+        p_expected_settings_revision: Number(body.expectedSettingsRevision),
+        p_expected_pending_snapshot_id: body.expectedPendingSnapshotId,
+        p_input_json: input
+    }));
+    if (!result?.operationId || !result.status) throw new Error('同步操作未成功建立。');
+    return { ...result, requestHash };
+}
+
+async function setOperationStage(accountId, operationId, stage, googleWriteState,
+    expectedDataHash = null, expectedStructureHash = null, finalize = {}) {
+    return rpcObject(await rpc('asset_operation_set_stage_v2', {
+        p_operation_id: operationId,
+        p_account_id: accountId,
+        p_stage: stage,
+        p_google_write_state: googleWriteState,
+        p_expected_after_data_hash: expectedDataHash,
+        p_expected_after_structure_hash: expectedStructureHash,
+        p_finalize_json: finalize
+    }));
+}
+
+async function failOperation(accountId, operationId, error, googleWriteState = 'not_started') {
+    const code = error.code ?? codeForMessage(error.message) ?? (Number(error.status) === 409 ? 'conflict' : 'sync_failed');
+    const state = googleWriteState === 'unknown' || googleWriteState === 'confirmed'
+        ? 'reconcile_required'
+        : Number(error.status) === 409 ? 'conflict' : 'failed';
+    try {
+        return rpcObject(await rpc('asset_operation_fail_v2', {
+            p_operation_id: operationId,
+            p_account_id: accountId,
+            p_status: state,
+            p_code: code,
+            p_message: safeErrorMessage(error.message),
+            p_google_write_state: googleWriteState
+        }));
+    } catch {
+        return null;
+    }
+}
+
+async function getOperation(accountId, operationId) {
+    return rpcObject(await rpc('asset_operation_get_operation_v2', {
+        p_account_id: accountId,
+        p_operation_id: operationId
+    }));
 }
 
 async function authenticatedUser(request) {
@@ -318,7 +549,7 @@ async function callReplace(accountId, snapshotId, version, rows, groups, baseHas
 }
 
 async function developerMetadata() {
-    const result = await googleRequest(
+    const result = await googleReadRequest(
         `/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}/developerMetadata:search`, {
             method: 'POST',
             body: JSON.stringify({
@@ -326,6 +557,29 @@ async function developerMetadata() {
             })
         });
     return result.matchedDeveloperMetadata ?? [];
+}
+
+async function operationMetadata() {
+    const result = await googleReadRequest(
+        `/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}/developerMetadata:search`, {
+            method: 'POST',
+            body: JSON.stringify({
+                dataFilters: [{ developerMetadataLookup: { metadataKey: OPERATION_MARKER_KEY } }]
+            })
+        });
+    return result.matchedDeveloperMetadata ?? [];
+}
+
+function metadataSignature(metadata) {
+    return stable((metadata ?? []).map(item => {
+        const entry = item.developerMetadata ?? {};
+        return {
+            metadataId: Number(entry.metadataId),
+            metadataKey: entry.metadataKey ?? '',
+            metadataValue: entry.metadataValue ?? '',
+            location: entry.location ?? null
+        };
+    }).sort((left, right) => left.metadataId - right.metadataId));
 }
 
 function metadataColumns(metadata) {
@@ -384,26 +638,31 @@ function metadataIsEmpty(columns) {
 // 管理者另外呼叫一個沒有 UI 入口的 bootstrap action，導致設定齊全仍無法匯入。
 // 只有完全沒有本同步 metadata 時才建立；任一既有欄位或族群都交回 readSheet
 // 做完整性驗證，避免把半成品／人工 metadata 覆蓋掉。
-async function ensureOperationMetadata() {
+async function ensureOperationMetadata(operationContext = null) {
     const metadata = await developerMetadata();
     const existing = metadataColumns(metadata);
     if (!metadataIsEmpty(existing) || metadata.length > 0) return metadata;
 
+    if (operationContext?.skipBootstrap) {
+        throwConflict('reconcile_required', '欄位 metadata 尚未完成；請維持同步鎖並由管理者檢查試算表。');
+    }
+
     try {
-        await bootstrapMetadata(metadata);
+        await bootstrapMetadata(metadata, operationContext);
     } catch (error) {
         // 同時由手動匯入與排程觸發時，另一個請求可能已先建立完成。重新讀取後
         // 若 metadata 已出現，沿用它；否則保留真正的 Google API 錯誤。
         const refreshed = await developerMetadata();
         if (metadataIsEmpty(metadataColumns(refreshed)) && refreshed.length === 0) throw error;
+        if (operationContext?.onBootstrapComplete) await operationContext.onBootstrapComplete();
         return refreshed;
     }
-
+    if (operationContext?.onBootstrapComplete) await operationContext.onBootstrapComplete();
     return await developerMetadata();
 }
 
 async function sheetValues() {
-    return await googleRequest(
+    return await googleReadRequest(
         `/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}/values:batchGet?ranges=${encodeURIComponent(`${SHEET_NAME}!A1:AZ1000`)}&majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`);
 }
 
@@ -533,13 +792,22 @@ function stockParts(value) {
     return { stock, stock_code: match[1], stock_name: match[2].trim() };
 }
 
-async function readSheet(allowEmpty = false) {
+async function readSheet(allowEmpty = false, operationContext = null) {
     if (!SPREADSHEET_ID || !Number.isInteger(SHEET_ID)) throw new Error('Google Sheet 設定不完整。');
-    const metadata = await ensureOperationMetadata();
+    const metadata = await ensureOperationMetadata(operationContext);
+    const beforeMarkerMetadata = await operationMetadata();
     const [valuesResult, spreadsheet] = await Promise.all([
         sheetValues(),
-        googleRequest(`/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount,frozenRowCount)))`)
+        googleReadRequest(`/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount,frozenRowCount)))`)
     ]);
+    const [metadataAfter, markerMetadataAfter] = await Promise.all([developerMetadata(), operationMetadata()]);
+    if (metadataSignature(metadata) !== metadataSignature(metadataAfter)
+        || metadataSignature(beforeMarkerMetadata) !== metadataSignature(markerMetadataAfter)) {
+        const error = new Error('讀取操作表期間欄位 metadata 有變動，已停止使用混合版本資料；請重新載入後再試。');
+        error.status = 409;
+        error.code = 'google_structure_conflict';
+        throw error;
+    }
     const columns = metadataColumns(metadata);
     for (const field of ['buy', 'stock', 'revenue_high']) {
         if (!Number.isInteger(columns.fields[field])) throw new Error(`缺少欄位 metadata：${field}。`);
@@ -548,7 +816,7 @@ async function readSheet(allowEmpty = false) {
 
     const rows = valuesResult.valueRanges?.[0]?.values ?? [];
     const header = rows[2] ?? [];
-    for (const group of columns.groups) group.label = String(header[group.index] ?? '').trim();
+    for (const group of columns.groups) group.label = String(header[group.index] ?? '');
     const groupPayload = columns.groups.map((group, index) => ({
         id: group.id,
         label: group.label,
@@ -599,11 +867,11 @@ async function readSheet(allowEmpty = false) {
         rowCount: Number(gridProperties.rowCount ?? 1000),
         frozenRowCount: Number(gridProperties.frozenRowCount ?? 0),
         sheetProperties,
-        developerMetadata: metadata
+        developerMetadata: [...metadata, ...beforeMarkerMetadata]
     };
 }
 
-async function bootstrapMetadata(existingMetadata = null) {
+async function bootstrapMetadata(existingMetadata = null, operationContext = null) {
     const existing = metadataColumns(existingMetadata ?? await developerMetadata());
     if (Object.keys(existing.fields).length || existing.groups.length) {
         throw new Error('已存在操作表 metadata；為避免產生重複識別碼，請先人工檢查。');
@@ -634,26 +902,36 @@ async function bootstrapMetadata(existingMetadata = null) {
             }
         });
     }
+    if (operationContext?.operationId) {
+        const markerMetadata = await operationMetadata();
+        requests.push(...operationMarkerRequests({ developerMetadata: markerMetadata }, operationContext.operationId));
+    }
     await googleRequest(`/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}:batchUpdate`, {
         method: 'POST',
-        body: JSON.stringify({ requests })
+        body: JSON.stringify({ requests }),
+        onRequestStart: operationContext?.onRequestStart
     });
     return { created: requests.length };
 }
 
-async function repairMetadata() {
+async function repairMetadata(operationContext = null) {
     const metadata = await developerMetadata();
     const duplicates = duplicateMetadataIds(metadata);
-    if (duplicates.length > 0) {
+    if (duplicates.length > 0 || operationContext?.operationId) {
+        const requests = duplicates.map(metadataId => ({
+            deleteDeveloperMetadata: {
+                dataFilter: { developerMetadataLookup: { metadataId } }
+            }
+        }));
+        if (operationContext?.operationId) {
+            requests.push(...operationMarkerRequests({
+                developerMetadata: await operationMetadata()
+            }, operationContext.operationId));
+        }
         await googleRequest(`/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}:batchUpdate`, {
             method: 'POST',
-            body: JSON.stringify({
-                requests: duplicates.map(metadataId => ({
-                    deleteDeveloperMetadata: {
-                        dataFilter: { developerMetadataLookup: { metadataId } }
-                    }
-                }))
-            })
+            body: JSON.stringify({ requests }),
+            onRequestStart: operationContext?.onRequestStart
         });
     }
     const columns = metadataColumns(await developerMetadata());
@@ -693,7 +971,7 @@ async function assertRowsSafeToDelete(sheet, startIndex, endIndex) {
     } else {
         params.set('fields', 'sheets(properties(sheetId),merges)');
     }
-    const result = await googleRequest(
+    const result = await googleReadRequest(
         `/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}?${params.toString()}`);
     const targetSheet = (result.sheets ?? []).find(item => item.properties?.sheetId === SHEET_ID);
     if (!targetSheet) throw new Error('整列刪除前安全檢查失敗：找不到目標分頁。');
@@ -732,10 +1010,97 @@ function hasCompactionMarker(sheet, snapshotId) {
         item.developerMetadata.metadataValue === `${COMPACTION_MARKER_PREFIX}${snapshotId}`);
 }
 
+function operationMarkerRequests(sheet, operationId) {
+    const existing = (sheet.developerMetadata ?? [])
+        .map(item => item.developerMetadata)
+        .filter(entry => entry?.metadataKey === OPERATION_MARKER_KEY
+            && entry?.location?.sheetId === SHEET_ID
+            && Number.isInteger(Number(entry.metadataId)));
+    return [
+        ...existing.map(entry => ({ deleteDeveloperMetadata: {
+            dataFilter: { developerMetadataLookup: { metadataId: Number(entry.metadataId) } }
+        }})),
+        { createDeveloperMetadata: {
+            developerMetadata: {
+                metadataKey: OPERATION_MARKER_KEY,
+                metadataValue: String(operationId),
+                visibility: 'DOCUMENT',
+                location: { sheetId: SHEET_ID }
+            }
+        }}
+    ];
+}
+
 async function sheetFormulaValues(endRow) {
-    const result = await googleRequest(
+    const result = await googleReadRequest(
         `/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}/values:batchGet?ranges=${encodeURIComponent(`${SHEET_NAME}!A1:AZ${Math.max(endRow, FIRST_DATA_ROW)}`)}&majorDimension=ROWS&valueRenderOption=FORMULA`);
     return result.valueRanges?.[0]?.values ?? [];
+}
+
+function protectedColumnIdentity(sheet, zeroBasedColumn) {
+    const fixed = Object.entries(sheet?.columns?.fields ?? {})
+        .find(([, index]) => Number(index) === zeroBasedColumn);
+    if (fixed) return `field:${fixed[0]}`;
+    const group = (sheet?.groups ?? []).find(item => Number(item.sheet_column_index) - 1 === zeroBasedColumn);
+    if (group) return `group:${group.id}`;
+    return `column:${columnLabel(zeroBasedColumn + 1)}`;
+}
+
+function formulaColumnNumber(label) {
+    let result = 0;
+    for (const character of label) result = result * 26 + character.charCodeAt(0) - 64;
+    return result;
+}
+
+function canonicalProtectedFormula(formula, sheet, formulaRow, removedRows = 0, removedAfterRow = Number.POSITIVE_INFINITY) {
+    const normalizeReferences = segment => segment.replace(
+        /(?<![A-Za-z0-9_.])(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_]*))!(\$?[A-Z]{1,3}\$?\d+|\$?[A-Z]{1,3}|\$?\d+)|(?<![A-Za-z0-9_.])(\$?[A-Z]{1,3}\$?\d+|\$?[A-Z]{1,3}|\$?\d+)(?![A-Za-z0-9_.])/g,
+        (token, quotedSheet, namedSheet, qualifiedAddress, plainAddress, offset, source) => {
+            const address = qualifiedAddress ?? plainAddress;
+            const addressOffset = offset + token.lastIndexOf(address);
+            const previous = source[addressOffset - 1] ?? '';
+            const next = source[addressOffset + address.length] ?? '';
+            const columnOnly = /^\$?[A-Z]{1,3}$/.test(address);
+            const rowOnly = /^\$?\d+$/.test(address);
+            const qualified = qualifiedAddress !== undefined;
+            if ((columnOnly || rowOnly) && previous !== ':' && next !== ':') return token;
+            if (!qualified && /\$?[A-Z]{1,3}\$?\d+$/.test(address) && next === '(') return token;
+
+            const sheetName = quotedSheet?.replace(/''/g, "'") ?? namedSheet ?? '';
+            const targetSheetName = typeof SHEET_NAME === 'string' ? SHEET_NAME : '';
+            const sameSheet = !sheetName || (targetSheetName !== ''
+                && sheetName.toLocaleLowerCase() === targetSheetName.toLocaleLowerCase());
+            let column = 'all';
+            let row = 'all';
+            const cellReference = address.match(/^(\$?)([A-Z]{1,3})(\$?)(\d+)$/);
+            if (cellReference) {
+                const zeroBasedColumn = formulaColumnNumber(cellReference[2]) - 1;
+                column = sameSheet
+                    ? protectedColumnIdentity(sheet, zeroBasedColumn)
+                    : `column:${cellReference[2]}`;
+                const sourceRow = Number(cellReference[4]);
+                const rowNumber = sourceRow > removedAfterRow ? sourceRow - removedRows : sourceRow;
+                row = cellReference[3] ? `$${rowNumber}` : `relative:${rowNumber - formulaRow}`;
+            } else if (columnOnly) {
+                const letters = address.replace('$', '');
+                const zeroBasedColumn = formulaColumnNumber(letters) - 1;
+                column = sameSheet
+                    ? protectedColumnIdentity(sheet, zeroBasedColumn)
+                    : `column:${letters}`;
+                column = `${address.startsWith('$') ? '$' : ''}${column}`;
+            } else if (rowOnly) {
+                const sourceRow = Number(address.replace('$', ''));
+                const rowNumber = sourceRow > removedAfterRow ? sourceRow - removedRows : sourceRow;
+                row = address.startsWith('$') ? `$${rowNumber}` : `relative:${rowNumber - formulaRow}`;
+            }
+            const sheetToken = sheetName && !sameSheet ? `sheet:${sheetName.toLocaleLowerCase()}!` : '';
+            const columnAbsolute = cellReference?.[1] ? '$' : '';
+            return `⟦${sheetToken}${columnAbsolute}${column};${row}⟧`;
+        });
+
+    return String(formula ?? '').split(/("(?:[^"]|"")*")/g)
+        .map((part, index) => index % 2 === 1 ? part : normalizeReferences(part))
+        .join('');
 }
 
 function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormulas, retainedLastRow, appendedFromRow = retainedLastRow + 1, expectedGroupOrder = null) {
@@ -754,15 +1119,35 @@ function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormu
         throw new Error('Google Sheet 寫入後驗證失敗：凍結列設定有變化。');
     }
 
-    for (let rowIndex = 0; rowIndex < 2; rowIndex += 1) {
-        for (let columnIndex = 0; columnIndex < LAST_CONTROLLED_COLUMN; columnIndex += 1) {
-            const previous = cell(beforeFormulas, rowIndex, columnIndex);
-            const current = cell(afterFormulas, rowIndex, columnIndex);
-            if (typeof previous === 'string' && previous.startsWith('=')
-                && !(typeof current === 'string' && current.startsWith('='))) {
-                throw new Error(`Google Sheet 寫入後驗證失敗：第 ${rowIndex + 1} 列公式消失。`);
+    const removedRows = Math.max(0, before.rawRows?.length - after.rawRows?.length || 0);
+    const formulaSignatures = (sheet, formulas, rowAdjustment = null) => {
+        const result = new Map();
+        for (let rowIndex = 0; rowIndex < 2; rowIndex += 1) {
+            for (let columnIndex = 0; columnIndex < LAST_CONTROLLED_COLUMN; columnIndex += 1) {
+                const formula = cell(formulas, rowIndex, columnIndex);
+                if (typeof formula !== 'string' || !formula.startsWith('=')) continue;
+                const owner = `${rowIndex + 1}|${protectedColumnIdentity(sheet, columnIndex)}`;
+                result.set(owner, canonicalProtectedFormula(formula, sheet, rowIndex + 1,
+                    rowAdjustment?.removedRows ?? 0, rowAdjustment?.afterRow ?? Number.POSITIVE_INFINITY));
             }
         }
+        for (let rowIndex = FIRST_DATA_ROW - 1; rowIndex < retainedLastRow; rowIndex += 1) {
+            const formula = cell(formulas, rowIndex, 0);
+            if (rowIndex + 1 >= appendedFromRow || typeof formula !== 'string' || !formula.startsWith('=')) continue;
+            const owner = `${rowIndex + 1}|${protectedColumnIdentity(sheet, 0)}`;
+            result.set(owner, canonicalProtectedFormula(formula, sheet, rowIndex + 1,
+                rowAdjustment?.removedRows ?? 0, rowAdjustment?.afterRow ?? Number.POSITIVE_INFINITY));
+        }
+        return result;
+    };
+    const formulasBefore = formulaSignatures(before, beforeFormulas, {
+        removedRows,
+        afterRow: retainedLastRow
+    });
+    const formulasAfter = formulaSignatures(after, afterFormulas);
+    if (formulasBefore.size !== formulasAfter.size
+        || [...formulasBefore].some(([owner, formula]) => formulasAfter.get(owner) !== formula)) {
+        throw new Error('Google Sheet 寫入後驗證失敗：受保護公式的欄位身份或參照語意有變化。');
     }
 
     for (let rowIndex = FIRST_DATA_ROW - 1; rowIndex < retainedLastRow; rowIndex += 1) {
@@ -771,16 +1156,20 @@ function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormu
                 const template = cell(beforeFormulas, FIRST_DATA_ROW - 1, columnIndex);
                 const current = cell(afterFormulas, rowIndex, columnIndex);
                 if (typeof template === 'string' && template.startsWith('=')
-                    && !(typeof current === 'string' && current.startsWith('='))) {
-                    throw new Error(`Google Sheet 寫入後驗證失敗：新增列第 ${rowIndex + 1} 列 ${columnLabel(columnIndex + 1)} 欄沒有套上第 4 列公式。`);
+                    && (!(typeof current === 'string' && current.startsWith('='))
+                        || canonicalProtectedFormula(template, before, FIRST_DATA_ROW)
+                            !== canonicalProtectedFormula(current, after, rowIndex + 1))) {
+                    throw new Error(`Google Sheet 寫入後驗證失敗：新增列第 ${rowIndex + 1} 列 ${columnLabel(columnIndex + 1)} 欄沒有套上符合欄位參照的第 4 列公式。`);
                 }
                 continue;
             }
             const previous = cell(beforeFormulas, rowIndex, columnIndex);
             const current = cell(afterFormulas, rowIndex, columnIndex);
             if (typeof previous === 'string' && previous.startsWith('=')) {
-                if (!(typeof current === 'string' && current.startsWith('='))) {
-                    throw new Error(`Google Sheet 寫入後驗證失敗：第 ${rowIndex + 1} 列 ${columnLabel(columnIndex + 1)} 欄公式消失。`);
+                if (!(typeof current === 'string' && current.startsWith('='))
+                    || canonicalProtectedFormula(previous, before, rowIndex + 1, removedRows, retainedLastRow)
+                        !== canonicalProtectedFormula(current, after, rowIndex + 1)) {
+                    throw new Error(`Google Sheet 寫入後驗證失敗：第 ${rowIndex + 1} 列 ${columnLabel(columnIndex + 1)} 欄公式的參照語意有變化。`);
                 }
             } else if (previous !== current) {
                 throw new Error(`Google Sheet 寫入後驗證失敗：保留列第 ${rowIndex + 1} 列 ${columnLabel(columnIndex + 1)} 欄值有變化。`);
@@ -801,7 +1190,10 @@ async function writeGoogle(sheet, rows, options) {
         return rowHasControlledData(sheet.rawRows, index, sheet.columns)
             ? index + 1 : last;
     }, 3);
-    const requests = [...(groupOrderPlan?.requests ?? [])];
+    const requests = [
+        ...(groupOrderPlan?.requests ?? []),
+        ...(options.operationId ? operationMarkerRequests(sheet, options.operationId) : [])
+    ];
     let deleteRange = null;
     if (targetLastRow > sheet.rowCount) {
         requests.push({ insertDimension: {
@@ -918,7 +1310,8 @@ async function writeGoogle(sheet, rows, options) {
     if (requests.length > 0) {
         await googleRequest(`/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}:batchUpdate`, {
             method: 'POST',
-            body: JSON.stringify({ requests, includeSpreadsheetInResponse: false })
+            body: JSON.stringify({ requests, includeSpreadsheetInResponse: false }),
+            onRequestStart: options.onRequestStart
         });
     }
     return {
@@ -930,205 +1323,357 @@ async function writeGoogle(sheet, rows, options) {
     };
 }
 
-async function persistColumnOrder(accountId, columnOrder) {
-    const result = await supabaseRequest(
-        `/rest/v1/asset_operation_settings?on_conflict=account_id`, {
-            method: 'POST',
-            headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-            body: JSON.stringify({
-                account_id: accountId,
-                column_order: columnOrder,
-                updated_at: new Date().toISOString()
-            })
-        });
-    return result[0] ?? null;
-}
-
-async function saveColumnOrderAction(accountId, body) {
+async function saveColumnOrderAction(accountId, body, user) {
     await targetAccount(accountId);
-    if (!Array.isArray(body.columnOrder)
-        || body.columnOrder.some(key => typeof key !== 'string')) {
-        throw new Error('欄位順序格式不合法。');
-    }
-    const groups = await supabaseRequest(
-        `/rest/v1/asset_operation_group_columns?select=id&account_id=eq.${encodeURIComponent(accountId)}&active=eq.true`);
-    const allowed = new Set(['weight', 'buy', 'stock', 'revenueHigh']);
-    for (const group of groups) allowed.add(`group:${group.id}`);
-    const columnOrder = [...new Set(body.columnOrder.filter(key => allowed.has(key)))];
-    if (columnOrder.length === 0) throw new Error('欄位順序不可為空。');
-    const saved = await persistColumnOrder(accountId, columnOrder);
-    return { settings: saved };
-}
-
-async function groupColumnOrderPlanForAccount(sheet, accountId, expectedHash) {
-    const settings = await supabaseRequest(
-        `/rest/v1/asset_operation_settings?select=column_order&account_id=eq.${encodeURIComponent(accountId)}`);
-    const plan = groupColumnOrderPlan(sheet.groups, settings[0]?.column_order);
-    if (!plan.changed) return plan;
-    const currentHash = await contentHash(sheet.rows);
-    if (!expectedHash || expectedHash !== currentHash) {
-        const error = new Error('Google Sheet 尚未匯入或自上次匯入後已修改，請先匯入最新資料再匯出族群順序。');
-        error.status = 409;
+    requireProtocolV2(body, 'save-column-order');
+    if (!Array.isArray(body.columnOrder) || body.columnOrder.some(key => typeof key !== 'string')) {
+        const error = new Error('欄位排序格式不合法。');
+        error.code = 'invalid_column_order';
+        error.status = 422;
         throw error;
     }
-    return plan;
-}
-
-async function importAction(accountId, body = null, user = null) {
-    await targetAccount(accountId);
-    const sheet = await readSheet();
-    const hash = await contentHash(sheet.rows);
-    const state = await syncState(accountId);
-    const overwrite = body?.overwriteDraft === true && user?.cron === false;
-    // Google Sheet 是主檔：只有管理者在網站明確確認，才可作廢草稿並以 Google 為準；排程匯入沒有人可確認，永遠不覆蓋草稿。
-    if (state.status === 'dirty' && !overwrite) {
-        const error = new Error('網站有尚未匯出的草稿；要以 Google Sheet 原檔覆蓋，請在網站按匯入並確認。');
-        error.status = 409;
-        error.code = 'draft_pending';
-        throw error;
-    }
-    const drafts = overwrite
-        ? await supabaseRequest(`/rest/v1/asset_operation_snapshots?select=id&account_id=eq.${encodeURIComponent(accountId)}&status=eq.pending`)
-        : [];
-    const result = await callReplace(accountId, crypto.randomUUID(), Number(state.version ?? 0), sheet.rows, sheet.groups, hash, hash, 'active', 'google_import');
-    if (drafts.length > 0) {
-        await supabaseRequest(`/rest/v1/asset_operation_snapshots?account_id=eq.${encodeURIComponent(accountId)}&status=eq.pending&id=in.(${drafts.map(item => item.id).join(',')})`, {
-            method: 'PATCH',
-            headers: { Prefer: 'return=minimal' },
-            body: JSON.stringify({ status: 'superseded', completed_at: new Date().toISOString(), error_code: 'overwritten_by_google_import' })
-        });
-    }
-    if (sheet.groups.length > 0) {
-        const settings = await supabaseRequest(
-            `/rest/v1/asset_operation_settings?select=column_order&account_id=eq.${encodeURIComponent(accountId)}`);
-        await persistColumnOrder(accountId, columnOrderWithGroupOrder(settings[0]?.column_order, sheet.groups));
-    }
-    return { ...result, rowCount: sheet.rows.length, hash, overwrittenDrafts: drafts.length };
+    const requestHash = await sha256(stable({
+        action: 'save-column-order', accountId,
+        expectedVersion: Number(body.expectedVersion),
+        expectedSettingsRevision: Number(body.expectedSettingsRevision),
+        columnOrder: body.columnOrder
+    }));
+    return rpcObject(await rpc('asset_operation_save_column_order_v2', {
+        p_operation_id: body.operationId,
+        p_account_id: accountId,
+        p_actor_id: user.id,
+        p_request_hash: requestHash,
+        p_expected_version: Number(body.expectedVersion),
+        p_expected_settings_revision: Number(body.expectedSettingsRevision),
+        p_column_order: body.columnOrder
+    }));
 }
 
 async function draftAction(accountId, body, user) {
     await targetAccount(accountId);
-    if (!Array.isArray(body.rows)
-        || (body.rows.length === 0 && body.allowEmpty !== true)) {
+    if (user.cron) throw Object.assign(new Error('排程不得建立網站草稿。'), { status: 403, code: 'forbidden' });
+    requireProtocolV2(body, 'save-draft');
+    if (!Array.isArray(body.rows) || (body.rows.length === 0 && body.allowEmpty !== true)) {
         throw new Error('草稿至少要有一筆標的；若要清空整張操作表，請由網站確認後再試。');
     }
-    const state = await syncState(accountId);
-    if (body.expectedVersion !== undefined && Number(body.expectedVersion) !== Number(state.version ?? 0)) {
-        const error = new Error('網站資料版本已改變，請重新載入。');
-        error.status = 409;
-        throw error;
-    }
+    const state = await readStateV2(accountId);
     const normalized = body.rows.map((row, index) => {
         const parsed = stockParts(row.stock);
         const buy = Number(row.buy);
         if (!Number.isInteger(buy) || buy < 0) throw new Error(`第 ${index + 1} 列 Buy 不合法。`);
-        return { buy, ...parsed, group_flags: row.group_flags ?? {}, sort_order: index };
+        const groupFlags = {};
+        for (const group of state.groups) groupFlags[group.id] = row.group_flags?.[group.id] === true;
+        return { buy, ...parsed, group_flags: groupFlags, sort_order: index };
     });
     const hash = await contentHash(normalized);
-    const groups = Array.isArray(body.groups) && body.groups.length > 0
-        ? body.groups
-        : await supabaseRequest(
-            `/rest/v1/asset_operation_group_columns?select=id,label,metadata_key,sheet_column_index,display_order,active,legacy_key&account_id=eq.${encodeURIComponent(accountId)}&active=eq.true&order=display_order.asc,id.asc`);
-    return await callReplace(
-        accountId,
-        crypto.randomUUID(),
-        Number(state.version ?? 0),
-        normalized,
-        groups,
-        state.base_google_hash,
-        hash,
-        'pending',
-        'web_draft');
+    const identity = {
+        action: 'save-draft', accountId,
+        expectedVersion: Number(body.expectedVersion),
+        expectedSettingsRevision: Number(body.expectedSettingsRevision),
+        rows: normalized,
+        columnOrder: body.columnOrder
+    };
+    const requestHash = await sha256(stable(identity));
+    return rpcObject(await rpc('asset_operation_save_draft_v2', {
+        p_operation_id: body.operationId,
+        p_account_id: accountId,
+        p_actor_id: user.id,
+        p_request_hash: requestHash,
+        p_expected_version: Number(body.expectedVersion),
+        p_expected_settings_revision: Number(body.expectedSettingsRevision),
+        p_snapshot_id: crypto.randomUUID(),
+        p_rows: normalized,
+        p_group_columns: state.groups,
+        p_column_order: body.columnOrder,
+        p_content_hash: hash
+    }));
 }
 
-async function exportAction(accountId) {
-    await targetAccount(accountId);
-    const state = await syncState(accountId);
-    const pending = await supabaseRequest(
-        `/rest/v1/asset_operation_snapshots?select=id,payload,content_hash,base_google_hash,created_at&account_id=eq.${encodeURIComponent(accountId)}&status=eq.pending&order=created_at.desc&limit=1`);
-    // 沒有草稿時仍同步族群欄位順序與網站的營收創高；不改 Buy／Stock／勾選值或 Supabase 版本。
-    if (pending.length === 0) {
-        const sheet = await readSheet(true);
-        const groupOrderPlan = await groupColumnOrderPlanForAccount(sheet, accountId, state.base_google_hash);
-        return await refreshRevenueHighAction(sheet, groupOrderPlan);
-    }
-    if (pending.length !== 1) throw new Error('找不到唯一的網站草稿，請重新載入後再試。');
-    const snapshot = pending[0];
-    const sheet = await readSheet();
-    const currentHash = await contentHash(sheet.rows);
-    if (snapshot.base_google_hash && snapshot.base_google_hash !== currentHash) {
-        const error = new Error('Google Sheet 在上次匯入後已被修改，請先匯入最新資料。');
-        error.status = 409;
-        throw error;
-    }
-    const groupOrderPlan = await groupColumnOrderPlanForAccount(
-        sheet, accountId, snapshot.base_google_hash ?? state.base_google_hash);
-    const rows = snapshot.payload;
-    if (!Array.isArray(rows)) throw new Error('草稿內容格式不合法。');
-    const retainedLastRow = Math.max(FIRST_DATA_ROW, FIRST_DATA_ROW - 1 + rows.length);
-    // 先取營收再寫：取不到就在任何 Google 寫入之前失敗。
-    const revenue = await revenueHighValues(rows.map(row => row.stock_code));
-    const formulasBefore = await sheetFormulaValues(retainedLastRow);
-    const writeResult = await writeGoogle(sheet, rows, {
-        markerSnapshotId: snapshot.id,
-        revenueValues: revenue.values,
-        groupOrderPlan
-    });
-    const verified = await readSheet(true);
-    const formulasAfter = await sheetFormulaValues(retainedLastRow);
-    const verifiedHash = await contentHash(verified.rows);
-    if (verifiedHash !== snapshot.content_hash || verified.rows.length !== rows.length) {
-        throw new Error('Google Sheet 寫入後驗證失敗：資料與草稿不一致。請在網站按「從 Google Sheet 匯入」並確認覆蓋，以 Google Sheet 為準重新對帳。');
-    }
-    if (groupOrderPlan.changed
-        && JSON.stringify(groupIdsInSheet(verified.groups)) !== JSON.stringify(groupOrderPlan.groupIds)) {
-        throw new Error('Google Sheet 寫入後驗證失敗：族群欄位順序與網站不一致。');
-    }
-    const expectedRowCount = sheet.rowCount + Math.max(0, (FIRST_DATA_ROW - 1 + rows.length) - sheet.rowCount) - writeResult.deletedRows;
-    if (verified.rowCount !== expectedRowCount) {
-        throw new Error('Google Sheet 寫入後驗證失敗：整列新增／刪除筆數與預期不符。');
-    }
-    assertProtectedSheetStructure(
-        sheet,
-        verified,
-        formulasBefore,
-        formulasAfter,
-        retainedLastRow,
-        writeResult.appendedFromRow,
-        groupOrderPlan.changed ? groupOrderPlan.groupIds : null);
-    if (!hasCompactionMarker(verified, snapshot.id)) {
-        throw new Error('Google Sheet 寫入後驗證失敗：缺少列整理版本標記。');
-    }
-    const groups = verified.groups;
-    const result = await callReplace(accountId, snapshot.id, Number(state.version ?? 0), rows, groups, verifiedHash, verifiedHash, 'active', 'google_export');
+function operationAccepted(operation) {
     return {
-        ...result,
-        groupOrderChanged: groupOrderPlan.changed,
-        revenueHigh: revenueHighSummary(revenue.month, revenue.values, verifyRevenueHigh(verified, revenue.values)),
-        deletedRows: writeResult.deletedRows,
-        deletedRowRange: writeResult.firstDeletedRow === null
-            ? null : { first: writeResult.firstDeletedRow, last: writeResult.lastDeletedRow }
+        ok: true,
+        protocolVersion: OPERATION_PROTOCOL_VERSION,
+        operationId: operation.operationId,
+        outcome: operation.status === 'succeeded' ? 'succeeded' : 'pending',
+        status: operation.status,
+        stage: operation.stage,
+        googleWriteState: operation.googleWriteState,
+        result: operation.result ?? null
     };
 }
 
-async function refreshRevenueHighAction(sheet = null, groupOrderPlan = null) {
+async function importAction(accountId, body, user, allowBootstrapResume = false) {
+    await targetAccount(accountId);
+    const operation = await beginOperation(accountId, 'import', body, user);
+    if (operation.status === 'succeeded') return operation.result;
+    const resumeBootstrap = allowBootstrapResume && operation.existing
+        && ['running', 'reconcile_required'].includes(operation.status)
+        && ['google-metadata-bootstrap', 'google-metadata-bootstrap-confirmed'].includes(operation.stage);
+    if (operation.existing && !resumeBootstrap) return operationAccepted(operation);
+
+    let bootstrapWriteStarted = false;
+    let bootstrapConfirmed = false;
+    try {
+        let operationContext = null;
+        if (resumeBootstrap) {
+            const [metadata, marker] = await Promise.all([developerMetadata(), operationMetadata()]);
+            const columns = metadataColumns(metadata);
+            if (operationMarkerValue({ developerMetadata: marker }) !== body.operationId
+                || !Number.isInteger(columns.fields.buy)
+                || !Number.isInteger(columns.fields.stock)
+                || !Number.isInteger(columns.fields.revenue_high)
+                || columns.groups.length !== 48) {
+                return operationAccepted(operation);
+            }
+            await setOperationStage(accountId, body.operationId, 'google-metadata-bootstrap-confirmed', 'not_started');
+            operationContext = { skipBootstrap: true };
+        } else {
+            operationContext = {
+                operationId: body.operationId,
+                onRequestStart: async () => {
+                    await setOperationStage(accountId, body.operationId, 'google-metadata-bootstrap', 'unknown');
+                    bootstrapWriteStarted = true;
+                },
+                onBootstrapComplete: async () => {
+                    await setOperationStage(accountId, body.operationId, 'google-metadata-bootstrap-confirmed', 'not_started');
+                    bootstrapConfirmed = true;
+                }
+            };
+        }
+        const sheet = await readSheet(false, operationContext);
+        const hash = await contentHash(sheet.rows);
+        const structureHash = await googleStructureHash(sheet);
+        const state = await readStateV2(accountId);
+        const overwrite = body.overwriteDraft === true && !user.cron;
+        const drafts = overwrite
+            ? await supabaseRequest(`/rest/v1/asset_operation_snapshots?select=id&account_id=eq.${encodeURIComponent(accountId)}&status=eq.pending`)
+            : [];
+        const columnOrder = columnOrderWithGroupOrder(state.settings.column_order, sheet.groups);
+        return rpcObject(await rpc('asset_operation_commit_import_v2', {
+            p_operation_id: body.operationId,
+            p_account_id: accountId,
+            p_snapshot_id: crypto.randomUUID(),
+            p_rows: sheet.rows,
+            p_group_columns: sheet.groups,
+            p_column_order: columnOrder,
+            p_data_hash: hash,
+            p_structure_hash: structureHash,
+            p_overwritten_drafts: drafts.length
+        }));
+    } catch (error) {
+        const existing = await getOperation(accountId, body.operationId).catch(() => null);
+        if (existing?.status === 'succeeded') return existing.result;
+        const googleWriteState = bootstrapWriteStarted && !bootstrapConfirmed ? 'unknown' : 'not_started';
+        await failOperation(accountId, body.operationId, error, googleWriteState);
+        error.operationId = body.operationId;
+        error.action = 'import';
+        error.stage = existing?.stage ?? 'import-failed';
+        error.googleWriteState = googleWriteState;
+        error.resultUnknown = googleWriteState === 'unknown';
+        throw error;
+    }
+}
+
+function throwConflict(code, message) {
+    const error = new Error(message);
+    error.status = 409;
+    error.code = code;
+    throw error;
+}
+
+async function exportAction(accountId, body, user) {
+    await targetAccount(accountId);
+    const startedAt = Date.now();
+    const operation = await beginOperation(accountId, 'export', body, user);
+    if (operation.status === 'succeeded') return operation.result;
+    if (operation.existing) return operationAccepted(operation);
+
+    let googleWriteStarted = false;
+    try {
+        const state = await readStateV2(accountId);
+        const snapshotId = state.pending?.id ?? null;
+        let snapshot = null;
+        if (snapshotId) {
+            const snapshots = await supabaseRequest(
+                `/rest/v1/asset_operation_snapshots?select=id,payload,content_hash,base_google_hash,row_count&account_id=eq.${encodeURIComponent(accountId)}&id=eq.${encodeURIComponent(snapshotId)}&status=eq.pending&limit=1`);
+            snapshot = snapshots[0] ?? null;
+            if (!snapshot) throwConflict('data_version_conflict', '網站草稿版本已改變，請重新載入。');
+        }
+        const sheet = await readSheet(true);
+        const currentHash = await contentHash(sheet.rows);
+        const currentStructureHash = await googleStructureHash(sheet);
+        const sync = state.syncState;
+        if (!sync.base_google_hash || !sync.base_google_structure_hash) {
+            throwConflict('baseline_required', '請先匯入一次，建立欄位同步基準。');
+        }
+        if (sync.base_google_hash !== currentHash) {
+            throwConflict('google_data_conflict', 'Google Sheet 資料自上次匯入後已變動，請先匯入最新資料。');
+        }
+        if (sync.base_google_structure_hash !== currentStructureHash) {
+            throwConflict('google_structure_conflict', 'Google Sheet 欄位位置或標題自上次匯入後已變動，請先匯入最新資料。');
+        }
+
+        const groupOrderPlan = groupColumnOrderPlan(sheet.groups, body.columnOrder);
+        const rows = snapshot ? snapshot.payload : sheet.rows;
+        if (!Array.isArray(rows)) throw new Error('草稿內容格式不合法。');
+        if (!snapshot && rows.length === 0) throw new Error('Google Sheet 沒有標的，無需更新營收創高。');
+        const expectedDataHash = snapshot?.content_hash ?? currentHash;
+        const targetHeader = headerAfterGroupOrder(sheet.rawRows[2] ?? [], sheet.groups, groupOrderPlan.groupIds);
+        const targetRawRows = [...sheet.rawRows];
+        targetRawRows[2] = targetHeader;
+        const targetGroups = groupOrderPlan.groups.map(group => ({ ...group, label: targetHeader[group.sheet_column_index - 1] ?? '' }));
+        const plannedStructureHash = await googleStructureHash({
+            ...sheet, groups: targetGroups, rawRows: targetRawRows
+        });
+        const retainedLastRow = Math.max(FIRST_DATA_ROW, FIRST_DATA_ROW - 1 + rows.length);
+        const revenue = await revenueHighValues(rows.map(row => row.stock_code));
+        const formulasBefore = snapshot ? await sheetFormulaValues(retainedLastRow) : null;
+        const resultSummary = snapshot
+            ? { rowCount: rows.length, groupOrderChanged: groupOrderPlan.changed }
+            : { rowCount: sheet.rows.length, revenueOnly: true, groupOrderChanged: groupOrderPlan.changed };
+        const finalize = {
+            snapshotId,
+            columnOrder: body.columnOrder,
+            groups: targetGroups,
+            dataHash: expectedDataHash,
+            structureHash: plannedStructureHash,
+            result: resultSummary
+        };
+        await setOperationStage(accountId, body.operationId, 'preflight-complete', 'not_started',
+            expectedDataHash, plannedStructureHash, finalize);
+
+        const onRequestStart = async () => {
+            await setOperationStage(accountId, body.operationId, 'google-write-dispatched', 'unknown',
+                expectedDataHash, plannedStructureHash, finalize);
+            googleWriteStarted = true;
+        };
+        let writeResult;
+        if (snapshot) {
+            writeResult = await writeGoogle(sheet, rows, {
+                operationId: body.operationId,
+                onRequestStart,
+                markerSnapshotId: snapshot.id,
+                revenueValues: revenue.values,
+                groupOrderPlan
+            });
+        } else {
+            writeResult = await refreshRevenueHighAction(sheet, groupOrderPlan, {
+                operationId: body.operationId,
+                onRequestStart,
+                revenue
+            });
+        }
+        await setOperationStage(accountId, body.operationId, 'google-write-confirmed', 'confirmed',
+            expectedDataHash, plannedStructureHash, finalize);
+
+        const verified = await readSheet(true);
+        const verifiedHash = await contentHash(verified.rows);
+        const verifiedStructureHash = await googleStructureHash(verified);
+        if (verifiedHash !== expectedDataHash || verifiedStructureHash !== plannedStructureHash) {
+            const error = new Error('Google 寫入後的資料或欄位結構與預期不同；同步已暫停等待對帳。');
+            error.status = 409;
+            error.code = 'verification_failed';
+            throw error;
+        }
+        if (operationMarkerValue(verified) !== body.operationId) {
+            const error = new Error('Google 寫入後找不到本次操作標記；同步已暫停等待對帳。');
+            error.status = 409;
+            error.code = 'reconcile_required';
+            throw error;
+        }
+        if (snapshot) {
+            const formulasAfter = await sheetFormulaValues(retainedLastRow);
+            const expectedRowCount = sheet.rowCount
+                + Math.max(0, (FIRST_DATA_ROW - 1 + rows.length) - sheet.rowCount)
+                - writeResult.deletedRows;
+            if (verified.rows.length !== rows.length || verified.rowCount !== expectedRowCount) {
+                const error = new Error('Google 寫入後列數與草稿不一致；同步已暫停等待對帳。');
+                error.status = 409;
+                error.code = 'verification_failed';
+                throw error;
+            }
+            assertProtectedSheetStructure(
+                sheet, verified, formulasBefore, formulasAfter, retainedLastRow,
+                writeResult.appendedFromRow, groupOrderPlan.groupIds);
+            if (!hasCompactionMarker(verified, snapshot.id)) {
+                const error = new Error('Google 寫入後缺少列整理標記；同步已暫停等待對帳。');
+                error.status = 409;
+                error.code = 'verification_failed';
+                throw error;
+            }
+        }
+        const revenueHigh = revenueHighSummary(revenue.month, revenue.values, verifyRevenueHigh(verified, revenue.values));
+        const finalData = {
+            ...finalize,
+            result: {
+                rowCount: verified.rows.length,
+                revenueOnly: !snapshot,
+                groupOrderChanged: groupOrderPlan.changed,
+                revenueHigh,
+                deletedRows: writeResult.deletedRows ?? 0,
+                deletedRowRange: writeResult.firstDeletedRow === null || writeResult.firstDeletedRow === undefined
+                    ? null : { first: writeResult.firstDeletedRow, last: writeResult.lastDeletedRow }
+            }
+        };
+        await setOperationStage(accountId, body.operationId, 'verification-complete', 'confirmed',
+            verifiedHash, verifiedStructureHash, finalData);
+        const result = await rpc('asset_operation_commit_export_v2', {
+            p_operation_id: body.operationId,
+            p_account_id: accountId,
+            p_snapshot_id: snapshotId,
+            p_rows: rows,
+            p_group_columns: verified.groups,
+            p_column_order: body.columnOrder,
+            p_data_hash: verifiedHash,
+            p_structure_hash: verifiedStructureHash,
+            p_result: finalData.result
+        });
+        const finalized = rpcObject(result);
+        logOperation({ operationId: body.operationId, action: 'export', stage: 'finalized', status: 'succeeded',
+            durationMs: Date.now() - startedAt, rowCount: verified.rows.length,
+            settingsRevision: finalized.settingsRevision, groupOrderChanged: groupOrderPlan.changed,
+            deletedRows: writeResult.deletedRows ?? 0, googleWriteState: 'confirmed' });
+        return finalized;
+    } catch (error) {
+        const existing = await getOperation(accountId, body.operationId).catch(() => null);
+        if (existing?.status === 'succeeded') return existing.result;
+        const knownRejected = Number(error.status) >= 400 && Number(error.status) < 500
+            && error.googleRequestStarted === true;
+        const state = googleWriteStarted && !knownRejected ? 'confirmed' : 'not_started';
+        await failOperation(accountId, body.operationId, error, state);
+        error.operationId = body.operationId;
+        error.action = 'export';
+        error.stage = existing?.stage ?? (state === 'confirmed' ? 'google-verification-required' : 'export-failed');
+        error.googleWriteState = state;
+        error.resultUnknown = state === 'unknown' || state === 'confirmed';
+        throw error;
+    }
+}
+
+async function refreshRevenueHighAction(sheet = null, groupOrderPlan = null, operationContext = null) {
+    operationContext = operationContext ?? {};
     if (!WRITE_ENABLED) throw new Error('Google Sheet 寫入功能尚未啟用。');
     sheet = sheet ?? await readSheet(true);
     if (sheet.rows.length === 0) throw new Error('Google Sheet 沒有標的，無需更新營收創高。');
-    const revenue = await revenueHighValues(sheet.rows.map(row => row.stock_code));
+    const revenue = operationContext.revenue
+        ?? await revenueHighValues(sheet.rows.map(row => row.stock_code));
     const retainedLastRow = Math.max(FIRST_DATA_ROW, FIRST_DATA_ROW - 1 + sheet.rows.length);
     const formulasBefore = groupOrderPlan?.changed
         ? await sheetFormulaValues(retainedLastRow)
         : null;
     const requests = [
         ...(groupOrderPlan?.requests ?? []),
+        ...(operationContext.operationId
+            ? operationMarkerRequests(sheet, operationContext.operationId)
+            : []),
         ...revenueHighRequests(sheet.columns.fields.revenue_high, sheet.rows.map((_, index) => ({
         rowIndex: sheet.dataRowIndexes[index], value: revenue.values[index]
         })))
     ];
     await googleRequest(`/spreadsheets/${encodeURIComponent(SPREADSHEET_ID)}:batchUpdate`, {
         method: 'POST',
-        body: JSON.stringify({ requests, includeSpreadsheetInResponse: false })
+        body: JSON.stringify({ requests, includeSpreadsheetInResponse: false }),
+        onRequestStart: operationContext.onRequestStart
     });
     const verified = await readSheet(true);
     if (verified.rows.length !== sheet.rows.length
@@ -1157,7 +1702,7 @@ async function refreshRevenueHighAction(sheet = null, groupOrderPlan = null) {
     };
 }
 
-async function repairStaleTrailingRowsAction(accountId) {
+async function repairStaleTrailingRowsAction(accountId, operationContext = null) {
     await targetAccount(accountId);
     const state = await syncState(accountId);
     if (state.status !== 'clean' || !state.active_snapshot_id) {
@@ -1202,9 +1747,23 @@ async function repairStaleTrailingRowsAction(accountId) {
 
     const retainedLastRow = Math.max(FIRST_DATA_ROW, FIRST_DATA_ROW - 1 + activeCount);
     const formulasBefore = await sheetFormulaValues(retainedLastRow);
+    const currentStructureHash = await googleStructureHash(sheet);
+    const finalize = {
+        dataHash: active.content_hash,
+        structureHash: currentStructureHash,
+        expectedRowCount: sheet.rowCount - trailingRows,
+        activeSnapshotId: active.id,
+        deletedRows: trailingRows
+    };
+    if (operationContext?.operationId) {
+        await setOperationStage(accountId, operationContext.operationId, 'repair-preflight-complete', 'not_started',
+            active.content_hash, currentStructureHash, finalize);
+    }
     const writeResult = await writeGoogle(sheet, active.payload, {
         legacyTrailingRows: trailingRows,
-        markerSnapshotId: active.id
+        markerSnapshotId: active.id,
+        operationId: operationContext?.operationId,
+        onRequestStart: operationContext?.onRequestStart
     });
     if (writeResult.deletedRows !== trailingRows) {
         throw new Error('舊尾列整理失敗：實際刪除列數與快照差異不符。');
@@ -1213,7 +1772,14 @@ async function repairStaleTrailingRowsAction(accountId) {
     const verified = await readSheet(true);
     const formulasAfter = await sheetFormulaValues(retainedLastRow);
     const verifiedHash = await contentHash(verified.rows);
-    if (verifiedHash !== active.content_hash || verified.rows.length !== activeCount) {
+    const verifiedStructureHash = await googleStructureHash(verified);
+    if (operationContext?.operationId && operationMarkerValue(verified) !== operationContext.operationId) {
+        throw Object.assign(new Error('舊尾列整理後找不到本次操作標記；同步已暫停等待對帳。'), {
+            status: 409, code: 'reconcile_required'
+        });
+    }
+    if (verifiedHash !== active.content_hash || verifiedStructureHash !== currentStructureHash
+        || verified.rows.length !== activeCount) {
         throw new Error('舊尾列整理後資料驗證失敗；請勿重試匯出，需人工對帳。');
     }
     if (verified.rowCount !== sheet.rowCount - trailingRows) {
@@ -1224,18 +1790,220 @@ async function repairStaleTrailingRowsAction(accountId) {
         throw new Error('舊尾列整理後驗證失敗：缺少列整理版本標記。');
     }
 
-    return {
+    const result = {
         repaired: true,
         deletedRows: writeResult.deletedRows,
         deletedRowRange: { first: writeResult.firstDeletedRow, last: writeResult.lastDeletedRow },
         rowCount: verified.rows.length
     };
+    if (operationContext?.operationId) {
+        await setOperationStage(accountId, operationContext.operationId, 'verification-complete', 'confirmed',
+            verifiedHash, verifiedStructureHash, { ...finalize, result });
+    }
+    return result;
 }
 
 async function statusAction(accountId) {
     await targetAccount(accountId);
-    const state = await syncState(accountId);
-    return { state };
+    return await readStateV2(accountId);
+}
+
+async function cronProtocolBody(action, accountId, body, user) {
+    if (!user.cron || Number(body.protocolVersion) === OPERATION_PROTOCOL_VERSION) return body;
+    if (!['import', 'repair-stale-tail'].includes(action)) {
+        throw Object.assign(new Error('排程呼叫不支援此操作。'), { status: 403, code: 'forbidden' });
+    }
+    const state = await readStateV2(accountId);
+    return {
+        ...body,
+        protocolVersion: OPERATION_PROTOCOL_VERSION,
+        operationId: crypto.randomUUID(),
+        expectedVersion: Number(state.syncState.version ?? 0),
+        expectedSettingsRevision: Number(state.settings.settings_revision ?? 0),
+        expectedPendingSnapshotId: state.pending?.id ?? null
+    };
+}
+
+async function maintenanceAction(accountId, action, body, user) {
+    if (action === 'repair-stale-tail' && !user.cron) {
+        throw Object.assign(new Error('舊尾列整理只允許由受保護的維運呼叫。'), { status: 403, code: 'forbidden' });
+    }
+    await targetAccount(accountId);
+    const operation = await beginOperation(accountId, action, body, user);
+    if (operation.status === 'succeeded') return operation.result;
+    if (operation.existing) return operationAccepted(operation);
+
+    let googleWriteStarted = false;
+    const onRequestStart = async () => {
+        await setOperationStage(accountId, body.operationId, `${action}-google-write`, 'unknown');
+        googleWriteStarted = true;
+    };
+    try {
+        await setOperationStage(accountId, body.operationId, 'maintenance-preflight', 'not_started');
+        let result;
+        if (action === 'bootstrap-metadata') {
+            result = await bootstrapMetadata(null, { operationId: body.operationId, onRequestStart });
+        } else if (action === 'repair-metadata') {
+            result = await repairMetadata({ operationId: body.operationId, onRequestStart });
+        } else if (action === 'repair-stale-tail') {
+            result = await repairStaleTrailingRowsAction(accountId, {
+                operationId: body.operationId,
+                onRequestStart
+            });
+        } else {
+            throw Object.assign(new Error('不支援的維護操作。'), { status: 400, code: 'bad_request' });
+        }
+        if (googleWriteStarted) {
+            const marker = await operationMetadata();
+            if (operationMarkerValue({ developerMetadata: marker }) !== body.operationId) {
+                throw Object.assign(new Error('維護操作缺少 Google operation marker，需人工對帳。'), {
+                    status: 409, code: 'reconcile_required'
+                });
+            }
+        }
+        const verification = {
+            result,
+            action,
+            ...(action === 'repair-stale-tail' ? {} : { metadataVerified: googleWriteStarted })
+        };
+        await setOperationStage(accountId, body.operationId, 'verification-complete',
+            googleWriteStarted ? 'confirmed' : 'not_started',
+            null, null, verification);
+        return rpcObject(await rpc('asset_operation_complete_maintenance_v2', {
+            p_operation_id: body.operationId,
+            p_account_id: accountId,
+            p_result: result
+        }));
+    } catch (error) {
+        const existing = await getOperation(accountId, body.operationId).catch(() => null);
+        if (existing?.status === 'succeeded') return existing.result;
+        const knownRejected = Number(error.status) >= 400 && Number(error.status) < 500
+            && error.googleRequestStarted === true;
+        const state = googleWriteStarted && !knownRejected ? 'confirmed' : 'not_started';
+        await failOperation(accountId, body.operationId, error, state);
+        error.operationId = body.operationId;
+        error.action = action;
+        error.stage = existing?.stage ?? (state === 'confirmed' ? 'maintenance-verification-required' : 'maintenance-failed');
+        error.googleWriteState = state;
+        error.resultUnknown = state === 'unknown' || state === 'confirmed';
+        throw error;
+    }
+}
+
+async function reconcileAction(accountId, body, user) {
+    await targetAccount(accountId);
+    if (!isUuid(body.operationId)) {
+        throw Object.assign(new Error('缺少合法的 operation ID。'), { status: 400, code: 'operation_not_found' });
+    }
+    let operation = await getOperation(accountId, body.operationId);
+    if (!operation) throw Object.assign(new Error('找不到這筆同步操作。'), { status: 404, code: 'operation_not_found' });
+    if (operation.status === 'succeeded' || ['failed', 'conflict'].includes(operation.status)) {
+        return { operation, result: operation.result ?? null };
+    }
+
+    if (operation.action === 'import'
+        && ['google-metadata-bootstrap', 'google-metadata-bootstrap-confirmed'].includes(operation.stage)) {
+        const [metadata, marker] = await Promise.all([developerMetadata(), operationMetadata()]);
+        const columns = metadataColumns(metadata);
+        const metadataReady = Number.isInteger(columns.fields.buy)
+            && Number.isInteger(columns.fields.stock)
+            && Number.isInteger(columns.fields.revenue_high)
+            && columns.groups.length === 48;
+        if (metadataReady && operationMarkerValue({ developerMetadata: marker }) === body.operationId) {
+            const importBody = {
+                protocolVersion: OPERATION_PROTOCOL_VERSION,
+                operationId: body.operationId,
+                expectedVersion: Number(operation.expectedVersion),
+                expectedSettingsRevision: Number(operation.expectedSettingsRevision),
+                expectedPendingSnapshotId: operation.expectedPendingSnapshotId ?? null,
+                overwriteDraft: operation.input?.overwriteDraft === true
+            };
+            const result = await importAction(accountId, importBody, user, true);
+            return { operation: await getOperation(accountId, body.operationId), result };
+        }
+        return { operation, outcome: 'pending', reconcileRequired: true };
+    }
+
+    if (!['unknown', 'confirmed'].includes(operation.googleWriteState)) {
+        return { operation, outcome: 'pending' };
+    }
+    const sheet = await readSheet(true, { skipBootstrap: true });
+    if (operationMarkerValue(sheet) !== body.operationId) {
+        return { operation, outcome: 'pending', reconcileRequired: true };
+    }
+
+    if (operation.action === 'export') {
+        // Finalize only after the original handler recorded its full post-write checks.
+        // Earlier stages lack the protected-formula/row-delete verification evidence.
+        if (operation.stage !== 'verification-complete') {
+            return { operation, outcome: 'pending', reconcileRequired: true };
+        }
+        const dataHash = await contentHash(sheet.rows);
+        const structureHash = await googleStructureHash(sheet);
+        if (dataHash !== operation.expectedAfterDataHash
+            || structureHash !== operation.expectedAfterStructureHash) {
+            return { operation, outcome: 'pending', reconcileRequired: true, code: 'verification_failed' };
+        }
+        const finalize = operation.finalize ?? {};
+        const snapshotId = finalize.snapshotId ?? null;
+        let rows = sheet.rows;
+        if (snapshotId) {
+            const snapshots = await supabaseRequest(
+                `/rest/v1/asset_operation_snapshots?select=payload,content_hash&account_id=eq.${encodeURIComponent(accountId)}&id=eq.${encodeURIComponent(snapshotId)}&status=eq.pending&limit=1`);
+            if (snapshots.length !== 1 || snapshots[0].content_hash !== dataHash) {
+                return { operation, outcome: 'pending', reconcileRequired: true };
+            }
+            rows = snapshots[0].payload;
+        }
+        const result = rpcObject(await rpc('asset_operation_commit_export_v2', {
+            p_operation_id: body.operationId,
+            p_account_id: accountId,
+            p_snapshot_id: snapshotId,
+            p_rows: rows,
+            p_group_columns: sheet.groups,
+            p_column_order: finalize.columnOrder,
+            p_data_hash: dataHash,
+            p_structure_hash: structureHash,
+            p_result: finalize.result ?? {}
+        }));
+        return { operation: await getOperation(accountId, body.operationId), result };
+    }
+
+    if (operation.action === 'repair-stale-tail' && operation.stage === 'verification-complete') {
+        const finalize = operation.finalize ?? {};
+        const dataHash = await contentHash(sheet.rows);
+        const structureHash = await googleStructureHash(sheet);
+        if (operationMarkerValue(sheet) !== body.operationId
+            || dataHash !== operation.expectedAfterDataHash
+            || structureHash !== operation.expectedAfterStructureHash
+            || sheet.rowCount !== Number(finalize.expectedRowCount)
+            || !hasCompactionMarker(sheet, finalize.activeSnapshotId)) {
+            return { operation, outcome: 'pending', reconcileRequired: true };
+        }
+        const result = rpcObject(await rpc('asset_operation_complete_maintenance_v2', {
+            p_operation_id: body.operationId,
+            p_account_id: accountId,
+            p_result: finalize.result ?? {}
+        }));
+        return { operation: await getOperation(accountId, body.operationId), result };
+    }
+
+    if (['bootstrap-metadata', 'repair-metadata'].includes(operation.action)
+        && operation.stage === 'verification-complete') {
+        const metadata = await developerMetadata();
+        const columns = metadataColumns(metadata);
+        if (!Number.isInteger(columns.fields.buy) || !Number.isInteger(columns.fields.stock)
+            || !Number.isInteger(columns.fields.revenue_high) || columns.groups.length !== 48) {
+            return { operation, outcome: 'pending', reconcileRequired: true };
+        }
+        const result = rpcObject(await rpc('asset_operation_complete_maintenance_v2', {
+            p_operation_id: body.operationId,
+            p_account_id: accountId,
+            p_result: operation.finalize?.result ?? {}
+        }));
+        return { operation: await getOperation(accountId, body.operationId), result };
+    }
+    return { operation, outcome: 'pending', reconcileRequired: true };
 }
 
 Deno.serve(async request => {
@@ -1245,21 +2013,53 @@ Deno.serve(async request => {
         const body = request.method === 'GET' ? {} : await request.json();
         const action = body.action ?? new URL(request.url).searchParams.get('action') ?? 'status';
         const accountId = body.accountId ?? new URL(request.url).searchParams.get('accountId');
-        if (action === 'bootstrap-metadata') return json({ ok: true, ...(await bootstrapMetadata()) });
-        if (action === 'repair-metadata') return json({ ok: true, ...(await repairMetadata()) });
         if (!accountId) return fail('缺少 accountId。', 400, 'missing_account');
-        if (action === 'import') return json({ ok: true, action, ...(await importAction(accountId, body, user)) });
-        if (action === 'save-draft') return json({ ok: true, action, ...(await draftAction(accountId, body, user)) });
-        if (action === 'save-column-order') return json({ ok: true, action, ...(await saveColumnOrderAction(accountId, body)) });
-        if (action === 'export') return json({ ok: true, action, ...(await exportAction(accountId)) });
-        if (action === 'repair-stale-tail') {
-            if (!user.cron) return fail('舊尾列整理只允許由受保護的維運呼叫。', 403, 'forbidden');
-            return json({ ok: true, action, ...(await repairStaleTrailingRowsAction(accountId)) });
+        if (action === 'read-state') return json({ ok: true, action, state: await statusAction(accountId) });
+        if (action === 'import') {
+            const operationBody = await cronProtocolBody(action, accountId, body, user);
+            const result = await importAction(accountId, operationBody, user);
+            return json({ ok: true, action, ...result }, result.outcome === 'pending' ? 202 : 200);
         }
-        if (action === 'status') return json({ ok: true, action, ...(await statusAction(accountId)) });
+        if (action === 'save-draft') return json({ ok: true, action, ...(await draftAction(accountId, body, user)) });
+        if (action === 'save-column-order') return json({ ok: true, action, ...(await saveColumnOrderAction(accountId, body, user)) });
+        if (action === 'export') {
+            const result = await exportAction(accountId, body, user);
+            return json({ ok: true, action, ...result }, result.outcome === 'pending' ? 202 : 200);
+        }
+        if (['bootstrap-metadata', 'repair-metadata', 'repair-stale-tail'].includes(action)) {
+            const operationBody = await cronProtocolBody(action, accountId, body, user);
+            const result = await maintenanceAction(accountId, action, operationBody, user);
+            return json({ ok: true, action, ...result }, result.outcome === 'pending' ? 202 : 200);
+        }
+        if (action === 'operation-status') {
+            const operation = await getOperation(accountId, body.operationId);
+            if (!operation) throw Object.assign(new Error('找不到這筆同步操作。'), { status: 404, code: 'operation_not_found' });
+            return json({ ok: true, action, operation }, operation.status === 'running' || operation.status === 'reconcile_required' ? 202 : 200);
+        }
+        if (action === 'reconcile') {
+            const result = await reconcileAction(accountId, body, user);
+            return json({ ok: true, action, ...result }, result.outcome === 'pending' ? 202 : 200);
+        }
+        if (action === 'status') return json({ ok: true, action, state: await statusAction(accountId) });
         return fail(`不支援的 action：${action}`);
     } catch (error) {
-        const status = Number(error?.status) || (String(error?.message ?? '').includes('登入') ? 401 : 500);
-        return fail(error?.message ?? '同步失敗。', status, error?.code ?? (status === 409 ? 'conflict' : 'sync_failed'));
+        const code = error?.code ?? codeForMessage(error?.message) ?? 'sync_failed';
+        const fallback = String(error?.message ?? '').includes('登入') ? 401 : 500;
+        const status = Number(error?.status) || statusForCode(code, fallback);
+        if (error?.operationId) logOperation({
+            operationId: error.operationId,
+            action: error.action ?? 'sync',
+            stage: error.stage ?? 'error',
+            status: 'failed-or-unknown',
+            code,
+            googleWriteState: error.googleWriteState ?? 'not_started'
+        });
+        return fail(safeErrorMessage(error?.message ?? '同步失敗。'), status, code, {
+            operationId: error?.operationId ?? null,
+            action: error?.action ?? null,
+            stage: error?.stage ?? null,
+            googleWriteState: error?.googleWriteState ?? null,
+            resultUnknown: error?.resultUnknown === true
+        });
     }
 });

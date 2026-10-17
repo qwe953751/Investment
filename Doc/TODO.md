@@ -37,7 +37,7 @@
 | 23 | [台股操作表「營收創高」改以網站為準並寫回 Google D 欄](#todo-23) | 🟡 已實作，待你實按匯出驗收 |
 | 24 | [全部台股統一還原權息＋資產頁報價統一（筆記 #81、#82）](#todo-24) | 🟡 2026-10-10 已實作並發布；待 10/12 盤中與盤後實測驗收，成交量柱換算等你選樣板 |
 | 25 | [停止交易（停牌）的標的特別顯示「停」並用停牌前價格（筆記 #84）](#todo-25) | 🟡 2026-10-13 已實作、發布並通過盤中實測（收集器判出 8 檔、尾段凍結正常）；待 10/15（川飛、友勁停牌第一天）與 10/19（六檔恢復買賣）驗收 |
-| 26 | [台股操作表的 48 個族群欄順序雙向同步（筆記 #88）](#todo-26) | 🟡 已推送、部署並發布；待正式 Google Sheet 驗收 |
+| 26 | [台股操作表的 48 個族群欄順序雙向同步（筆記 #88）](#todo-26) | 🟡 可靠性修復已部署；待網站發布與正式 Google Sheet 驗收 |
 | 27 | [筆記 #89：下一交易日盤中與實體裝置驗收](#todo-27) | 🟡 已發布；待下一交易日實盤／實機確認 |
 | 28 | [ETF 配息資料正式串接（筆記 #87）](#todo-28) | 🟡 實作與驗證完成，待本次 commit／純發布；來源授權及首次有效排程仍待驗收 |
 
@@ -2415,20 +2415,23 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：程式與同步規格已完成；.NET 10.0.302 Release 930/930、Node 24.19.0 目標測試 39/39 通過。`main` commit `332b711e3` 已推送，`asset-operation-sync` v25 ACTIVE，publish-only run 38708338392 成功；公開版本 1792054815 已核對。正式 Google Sheet 匯入／拖曳／匯出驗收仍待最高權限登入者完成。**
+**狀態：可靠性修復程式已完成本機驗證；Supabase migration `063`、`064` 已套用，`asset-operation-sync` v26 ACTIVE。Node 操作表 44/44、全 Node 351/351、.NET 10.0.302 Release 984/984 通過。網站純發布與公開檔案核對待本次 `main` push 後完成；正式 Google Sheet 匯入／拖曳／匯出驗收仍待最高權限登入者完成。歷史 HTTP 500 的精確 throw 點因當時日誌不完整，仍未證實。**
 
 ### 已討論與實作
 
 - Google Sheet 匯入後，網站的 48 個族群欄相對順序跟隨 Sheet 的 E:AZ；網站其他欄位的既有位置保留。
 - 網站拖曳欄位後，按「匯出到 Google Sheet」會先等待排序設定保存，再以 Sheets `moveDimension` 移動 E:AZ 整欄，讓標題、勾選值、格式、checkbox 驗證與 developer metadata 一起移動。
 - 有草稿時，族群順序與 B:C、D、E:AZ 資料在同一個批次更新；沒有草稿時，族群順序與 D 欄營收創高在同一個批次更新。移動前檢查資料 hash，移動後驗證資料 hash、族群 ID 順序與標題；資料版本衝突會停止匯出。
-- 沿用既有 `asset_operation_settings.column_order` 與 `asset_operation_group_columns.display_order`，不新增 migration；讀寫仍經現有同步 Edge Function。
+- `settings_revision`、Google 結構 hash、operation journal、RLS 與原子 v2 RPC 由 `063_asset_operation_sync_reliability.sql` 建立；`064_asset_operation_sync_policy_initplan.sql` 將新操作表管理者 JWT 檢查調整為 init-plan。所有新寫入仍經原同步 Edge Function，未向 anon／authenticated 開放 RPC 寫入。
+- 前端串列化排序保存、等待指定世代完成、同步結果與畫面重讀分開處理；寫入結果未知時查原 operation ID，不重送 Google batch。Edge v26 在匯入／匯出前後核對資料與結構版本，操作標記及唯讀對帳保留未知狀態。
+- 公式檢查按欄位 UUID 與正規化 A1 參照語意比較；合法整欄移動及公式因尾列刪除而調整可通過，公式消失或指向錯欄會停止。
 - 實作與替代方案取捨見 [台股操作表雙向同步實作規格](技術文件/台股操作表雙向同步實作規格.md)。
 
 ### 待完成
 
-- 驗證已通過：.NET 10.0.302 Release 930/930、Node 24.19.0 操作表測試 39/39、Edge Function／`site.js`／測試檔語法檢查及 `git diff --check`。
-- 本次未直接寫入正式 Google Sheet；待最高權限登入者以「匯入 → 拖曳一個族群欄 → 匯出 → 再匯入」驗證兩邊順序、勾選值、標題、公式／格式與 checkbox 驗證。
+- 本機驗證已通過：操作表 Node 44/44、全 Node 351/351、.NET 10.0.302 Release 984/984、JS syntax 與 `git diff --check`。DB schema、RPC 權限及 RLS 已用 Supabase 唯讀查核；Security advisor 沒有本次新增告警，Performance advisor 不再列出新操作表政策的 auth init-plan。新操作表尚無流量，因此其 recent-operation index 被列為 unused index，保留供預期查詢使用。
+- 沒有可用的本機 PostgreSQL／Docker 測試環境，故 B01–B15 中真交易回滾、多連線競爭與故障注入尚未跑；正式 Google Sheet 寫入及副本端到端也未執行。網站 publish-only 與公開 manifest／site.js 驗證待 push 後完成。
+- 待最高權限登入者以「匯入 → 拖曳一個族群欄 → 匯出 → 再匯入」驗證兩邊順序、勾選值、標題、公式／格式與 checkbox 驗證。
 
 
 <a id="todo-27"></a>
