@@ -61,12 +61,12 @@ function shellStep(name) {
 }
 
 test('run titles and both run-list consumers preserve the completion protocol', () => {
-    assert.match(files.collection, /run-name: "ETF 配息 v2 \|/);
+    assert.match(files.collection, /run-name: "ETF 配息 v3 \|/);
     for (const workflow of [files.collection, files.intraday]) {
         assert.match(workflow, /\{[^}]*display_title[^}]*conclusion[^}]*\}/);
     }
     assert.match(files.collection, /id: verify_publication/);
-    assert.match(files.collection, /確認配息完整完成\n        if: \$\{\{ !cancelled\(\) \}\}/);
+    assert.match(files.collection, /確認來源收集及發布完成\n        if: \$\{\{ !cancelled\(\) \}\}/);
     assert.match(files.collection, /PUBLICATION_OUTCOME: \$\{\{ steps\.verify_publication\.outcome \}\}/);
 });
 
@@ -77,6 +77,9 @@ test('mandatory completion rejects blocked, partial, skipped publication and inc
         const valid = { asOfDate: '2026-10-18', completeCheckDate: '2026-10-18', markets: { twse: fresh, tpex: fresh } };
         const cases = [
             ['complete', 'success', valid, true],
+            ['complete', 'success', { ...valid, completeCheckDate: null, sourceCheckDate: valid.asOfDate,
+                markets: { twse: { ...fresh, coverage: { scope: 'limited' } }, tpex: { ...fresh, coverage: { scope: 'limited' } } } }, true],
+            ['complete', 'success', { ...valid, completeCheckDate: null, sourceCheckDate: valid.asOfDate }, false],
             ['blocked-license', 'skipped', valid, false],
             ['partial', 'success', valid, false],
             ['', 'skipped', valid, false],
@@ -90,7 +93,7 @@ test('mandatory completion rejects blocked, partial, skipped publication and inc
         ];
         for (const [status, outcome, payload, expected] of cases) {
             await writeFile(join(directory, 'published-etf-dividends.json'), JSON.stringify(payload));
-            const result = spawnSync('bash', ['-c', shellStep('確認配息完整完成')], {
+            const result = spawnSync('bash', ['-c', shellStep('確認來源收集及發布完成')], {
                 encoding: 'utf8', env: { ...process.env, COLLECTION_STATUS: status, PUBLICATION_OUTCOME: outcome,
                     BUSINESS_DATE: valid.asOfDate, RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: join(directory, 'summary') }
             });

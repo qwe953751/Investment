@@ -31,7 +31,8 @@ public sealed record EtfDividendMarketObservation(
     int ConflictRows,
     int UnresolvedRows,
     string[] Diagnostics,
-    IReadOnlyList<EtfDividendEvent> Events);
+    IReadOnlyList<EtfDividendEvent> Events,
+    EtfDividendCoverage? Coverage = null);
 
 public sealed record EtfDividendObservation(
     int SchemaVersion,
@@ -82,7 +83,8 @@ public sealed record EtfDividendMarketExport(
     string? SourceHash,
     string SourceUrl,
     string QueryStart,
-    string QueryEnd);
+    string QueryEnd,
+    EtfDividendCoverage? Coverage = null);
 
 public sealed record EtfDividendExport(
     int SchemaVersion,
@@ -95,7 +97,8 @@ public sealed record EtfDividendExport(
     string ProjectionStart,
     string ProjectionEnd,
     IReadOnlyDictionary<string, EtfDividendMarketExport> Markets,
-    IReadOnlyList<EtfDividendFundExport> Funds);
+    IReadOnlyList<EtfDividendFundExport> Funds,
+    string? SourceCheckDate = null);
 
 public sealed record EtfDividendManifestExport(
     int SchemaVersion,
@@ -136,3 +139,10 @@ public sealed record EtfDividendDecision(
     DateTimeOffset DecidedAt,
     string Reason,
     string EvidenceUrl);
+
+public sealed record EtfDividendSourceArtifact(string Url, string DatasetUrl, string Sha256, string File);
+
+public sealed record EtfDividendCoverage(
+    string Scope,
+    string Note,
+    IReadOnlyList<EtfDividendSourceArtifact> Sources);

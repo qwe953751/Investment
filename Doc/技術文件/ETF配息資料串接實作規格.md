@@ -2,7 +2,7 @@
 
 日期：2026-10-15。用途：交給其他模型拆工、實作與驗收。
 
-**狀態：實作、測試、commit／push 與首次網站純發布已完成；正式來源授權尚未確認，production source gate 維持關閉，未收集或公開真實配息資料。發布 run、公開資產與本機預覽證據見第 16 節及[版本紀錄](../版本紀錄.md)筆記 #87。**
+**現況（2026-10-18 更新）：預設改接政府開放資料，解除「沒有官網配息授權就完全沒有來源」的阻塞。開放來源與有限範圍契約見 3.5；原 3.1～3.4 與第 16 節保留原始方案及歷史驗證，不代表現在仍完全停收。完整年度與未來發放日需求尚未由開放資料滿足。**
 需求規劃基準：main `3f39ebae8825284ef0fa2ae05af9fc20086dd257`；實際實作與發布證據以本文第 16 節及版本紀錄為準。
 本文件保留原始需求、來源調查、契約與驗收計畫，並在第 16 節記錄已落地範圍、已驗證結果及授權後待辦。
 
@@ -98,6 +98,28 @@ stkNo=&startDate=20250101&endDate=20271231&lang=zh-tw
 [證交所使用條款](https://www.twse.com.tw/zh/terms/use.html)對自動下載／轉載設有限制。
 正式自動收集／公開展示前，記錄適用授權確認結果；需額外付費或對外申請／聯絡時由使用者決定，
 不得依本文件逕自寄信或購買。本機設計、固定 fixture 與可審查實作可先完成。
+
+### 3.5 目前預設來源：政府開放資料（優先於原始方案）
+
+使用者要求解除來源阻塞後，採取可實際接收且授權明確的替代來源；不代替交易所宣告同意，也不把舊授權變數直接設 true。
+
+| 來源 | 資料集與用途 | 限制 |
+|---|---|---|
+| `https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL` | [89748](https://data.gov.tw/dataset/89748)，上市除息預告 | 近期滾動資料，無發放日 |
+| `https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost` | [11634](https://data.gov.tw/dataset/11634)，上櫃除息預告 | 近期滾動資料，金額「尚未公告」轉 null，無發放日 |
+| `https://openapi.twse.com.tw/v1/opendata/t187ap47_L` | [157399](https://data.gov.tw/dataset/157399)，基金統編 → 上市代號 | 精確鍵，不以名稱模糊比對或把連結基金當 ETF |
+| 公會 `160547投信投顧公會境內基金配息資料.csv` | [160547](https://data.gov.tw/dataset/160547)，發放日／每單位金額 | 本次實測只有 2026/08 除息；尚不能精確對應的上櫃紀錄不混入 |
+
+以上資料集標示政府資料開放授權條款第1版，利用不須另行取得書面授權；明示提供機關、資料集及[授權](https://data.gov.tw/license)。沿用既有 TaiwanEtfCatalogClient 官方名冊過濾，不擴大本輪到其他行情來源。
+
+- `ETF_DIVIDENDS_SOURCE_MODE` 預設 `open-data`；只有顯式設 `exchange` 才走 3.1／3.2，並仍須授權變數為 true。
+- 每來源原始 bytes 保存在 `objects/open-data/{sha256}.json/.csv`；市場 sourceHash 指向列出 URL、資料集、hash、檔案路徑的不可變 envelope。事件 sourceHash 指向實際資料原文，sourceRowReference 保留來源列號。
+- `coverage.scope=limited`、note、sources 必須輸出與展示；查詢／投影 horizon 不是來源實際涵蓋期間。資料取得成功可 fresh，但不可宣稱整年查無公告或下次發放不存在。
+- `sourceCheckDate` 表示兩市場本日開放來源檢查成功；`completeCheckDate` 僅完整來源成功批次填寫，有限來源不得填入。
+- 未提供發放日的真實預告列在 unresolvedEvents 並顯示除息日、已知金額及「待公告」；不推估發放日。announcementYear 在開放預告中以除息年度作儲存分組，不宣稱是來源提供的公告年度；UI 年度仍依發放年，未定日列依除息年展示。
+- 近期預告正常滾出時保留既有觀測；null 金額更新為已知值可採用，既有非空金額或日期改動須待核對。原始事件與資料分支紀錄均不可刪。
+- 每日 gate v3 run-name 帶業務日與 open-data／exchange-enabled／blocked-license；舊版／其他模式不計本模式完成或額度。人工 run-now 只跳時段，仍核對日期、鎖與上限。
+- 終態核驗要求收集 complete、發布及公開核驗成功、兩市場 fresh／成功時間／hash；open-data 分支須同日 sourceCheckDate 與兩市場 limited，exchange 分支維持同日 completeCheckDate。此綠燈代表本模式來源流程完成，不代表完整年度原始需求全部完成。
 
 ## 4. 業務口徑
 
@@ -303,6 +325,8 @@ intraday.yml 等待步驟會跳過週末／休市，放在 collect=true 後面�
 不用 intraday-daemon／daily-snapshot 的鎖，不回呼 intraday 形成遞迴。
 每日正常成功一批，失敗最多自動 3 個 run；queued/in_progress 及發布中均視為已有工作。
 重試次數同時查 workflow runs，避免 data push 失敗沒有狀態時每五分鐘無限重跑。
+
+以下為舊 v2 契約；目前 v3 來源模式與 sourceCheckDate 以 3.5 為準。
 
 每日完成契約（v2）：run-name 固定帶 `ETF 配息 v2 | business-date | enabled/blocked-license`，
 兩個 gate 的 workflow API 查詢都保留 display_title。只有同業務日期的 v2 enabled success

@@ -295,6 +295,8 @@ public sealed class EtfDividendPipelineTests
         await store.WriteDecisionAsync(observation.BatchId, "twse", "已核對官方公告與原始版本一致",
             new Uri("https://www.twse.com.tw/zh/products/securities/etf/products/div.html"), CancellationToken.None);
 
+        var previousMode = Environment.GetEnvironmentVariable(EtfDividendCollector.SourceModeVariable);
+        Environment.SetEnvironmentVariable(EtfDividendCollector.SourceModeVariable, "exchange");
         var previousAuthorization = Environment.GetEnvironmentVariable(EtfDividendCollector.AuthorizationVariable);
         Environment.SetEnvironmentVariable(EtfDividendCollector.AuthorizationVariable, "false");
         try
@@ -317,6 +319,35 @@ public sealed class EtfDividendPipelineTests
         finally
         {
             Environment.SetEnvironmentVariable(EtfDividendCollector.AuthorizationVariable, previousAuthorization);
+            Environment.SetEnvironmentVariable(EtfDividendCollector.SourceModeVariable, previousMode);
+        }
+    }
+
+    [Fact]
+    public async Task 官網模式不得把開放資料觀測當作已授權的同日完整來源()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new EtfDividendStore(directory.Path);
+        var now = new DateTimeOffset(2026, 10, 16, 4, 0, 0, TimeSpan.Zero);
+        var observation = Observation(now, [], []);
+        observation = observation with { Markets = observation.Markets.Select(item => item with
+            { Coverage = new EtfDividendCoverage("limited", "部分資料", []) }).ToArray() };
+        await store.SaveObservationAsync(observation, default);
+        var oldMode = Environment.GetEnvironmentVariable(EtfDividendCollector.SourceModeVariable);
+        var oldAuthorization = Environment.GetEnvironmentVariable(EtfDividendCollector.AuthorizationVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(EtfDividendCollector.SourceModeVariable, "exchange");
+            Environment.SetEnvironmentVariable(EtfDividendCollector.AuthorizationVariable, "false");
+            using var http = new HttpClient(new StubHandler((_, _) => throw new InvalidOperationException("must not request")));
+            var collector = new EtfDividendCollector(new(http), new(http),
+                new(http, NullLogger<TaiwanEtfCatalogClient>.Instance), new FixedTimeProvider(now));
+            Assert.Equal("blocked-license", (await collector.CollectAsync(new DateOnly(2026, 10, 16), store)).Status);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(EtfDividendCollector.SourceModeVariable, oldMode);
+            Environment.SetEnvironmentVariable(EtfDividendCollector.AuthorizationVariable, oldAuthorization);
         }
     }
 

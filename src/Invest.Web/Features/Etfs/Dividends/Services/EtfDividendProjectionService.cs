@@ -63,7 +63,8 @@ public sealed class EtfDividendProjectionService(TimeProvider timeProvider)
                 acceptedMarket.SourceHash,
                 acceptedMarket.SourceUrl,
                 acceptedMarket.QueryStart,
-                acceptedMarket.QueryEnd);
+                acceptedMarket.QueryEnd,
+                acceptedMarket.Coverage);
         }
 
         var acceptedEvents = accepted.Values.Where(item => item.Accepted)
@@ -87,7 +88,7 @@ public sealed class EtfDividendProjectionService(TimeProvider timeProvider)
             .Where(item => item.Markets.Count == 2
                 && item.Markets.Select(value => value.Market).Order(StringComparer.Ordinal)
                     .SequenceEqual(new[] { "tpex", "twse" }, StringComparer.Ordinal)
-                && item.Markets.All(value => value.HttpValidated && IsAccepted(item, value)))
+                && item.Markets.All(value => value.HttpValidated && IsAccepted(item, value) && value.Coverage is null))
             .OrderByDescending(item => item.CompletedAt).FirstOrDefault();
         var completeDate = completeObservation?.RequestedBusinessDate;
         var latestBatchId = observations.OrderByDescending(item => item.CompletedAt).FirstOrDefault()?.BatchId;
@@ -95,7 +96,11 @@ public sealed class EtfDividendProjectionService(TimeProvider timeProvider)
         return new EtfDividendExport(1, RulesVersion, generatedAt,
             asOfDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             "Asia/Taipei", completeDate, latestBatchId, projectionStart.ToString("yyyy-MM-dd"), projectionEnd.ToString("yyyy-MM-dd"),
-            marketExports, funds);
+            marketExports, funds,
+            observations.Where(item => item.Markets.Count == 2
+                && item.Markets.Select(value => value.Market).Order(StringComparer.Ordinal).SequenceEqual(new[] { "tpex", "twse" })
+                && item.Markets.All(value => value.HttpValidated && IsAccepted(item, value)))
+                .OrderByDescending(item => item.CompletedAt).FirstOrDefault()?.RequestedBusinessDate);
     }
 
     public static EtfDividendManifestExport ToManifest(EtfDividendExport payload, string hash, string? batchId)

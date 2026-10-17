@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { decideEtfDividendDispatch } from '../scripts/etf-dividends-gate.mjs';
+import { decideEtfDividendDispatch as decide } from '../scripts/etf-dividends-gate.mjs';
+
+const decideEtfDividendDispatch = options => decide({ sourceMode: 'exchange', ...options });
 
 const date = '2026-10-18'; // Sunday: the daily refresh must not depend on trading days.
-const enabled = `ETF 配息 v2 | ${date} | enabled`;
-const blocked = `ETF 配息 v2 | ${date} | blocked-license`;
+const enabled = `ETF 配息 v3 | ${date} | exchange-enabled`;
+const blocked = `ETF 配息 v3 | ${date} | blocked-license`;
 
 test('07:29 Taipei does not dispatch, even on a holiday', () => {
     const result = decideEtfDividendDispatch({
@@ -111,7 +113,21 @@ test('legacy green and blocked runs cannot consume enabled retries or suppress s
 test('a successful versioned run for another business date is not completion', () => {
     assert.equal(decideEtfDividendDispatch({
         at: '2026-10-18T00:00:00Z', businessDate: date, authorized: true,
-        runs: [{ display_title: 'ETF 配息 v2 | 2026-10-17 | enabled',
+        runs: [{ display_title: 'ETF 配息 v3 | 2026-10-17 | exchange-enabled',
             conclusion: 'success', created_at: '2026-10-17T23:45:00Z' }]
     }).dispatch, true);
+});
+
+test('open data dispatches without private-source authorization and ignores the blocked exchange run', () => {
+    const common = { at: '2026-10-18T00:00:00Z', businessDate: date, authorized: false };
+    assert.equal(decide({ ...common, runs: [{ display_title: blocked, conclusion: 'failure', created_at: '2026-10-17T23:59:00Z' }] }).dispatch, true);
+    assert.equal(decide({ ...common, runs: [{ display_title: `ETF 配息 v3 | ${date} | open-data`, conclusion: 'success', created_at: '2026-10-17T23:59:00Z' }] }).reason, 'already-completed');
+    assert.equal(decide({ ...common, runs: [{ display_title: `ETF 配息 v3 | ${date} | open-data`, conclusion: 'failure', created_at: '2026-10-17T23:55:00Z' }] }).reason, 'retry-cooldown');
+});
+
+test('explicit manual validation can run outside the window but still enforces date and daily locks', () => {
+    const common = { at: '2026-10-17T20:00:00Z', businessDate: date, allowOutsideWindow: true };
+    assert.equal(decide(common).dispatch, true);
+    assert.equal(decide({ ...common, businessDate: '2026-10-17' }).reason, 'superseded');
+    assert.equal(decide({ ...common, runs: [{ status: 'in_progress', created_at: '2026-10-17T19:00:00Z' }] }).reason, 'already-running');
 });

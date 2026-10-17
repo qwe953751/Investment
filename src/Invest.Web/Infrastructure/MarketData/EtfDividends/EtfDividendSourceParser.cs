@@ -109,7 +109,7 @@ internal static partial class EtfDividendSourceParser
         return Deduplicate(bytes, result, valid, diagnostics);
     }
 
-    private static EtfDividendSourceResponse Deduplicate(
+    internal static EtfDividendSourceResponse Deduplicate(
         byte[] raw,
         List<EtfDividendEvent> rows,
         int valid,
@@ -142,7 +142,7 @@ internal static partial class EtfDividendSourceParser
             duplicateCount, diagnostics.Count(x => x.StartsWith("conflict:", StringComparison.Ordinal)));
     }
 
-    private static EtfDividendEvent? ToEvent(
+    internal static EtfDividendEvent? ToEvent(
         string market,
         string tickerText,
         string name,
@@ -195,6 +195,8 @@ internal static partial class EtfDividendSourceParser
             catch (ArgumentOutOfRangeException) { date = default; return false; }
         }
 
+        if (value.Length == 7 && value.All(char.IsAsciiDigit))
+            value = $"{value[..3]}/{value[3..5]}/{value[5..]}";
         var numericRoc = RocNumericDateRegex().Match(value);
         if (numericRoc.Success
             && int.TryParse(numericRoc.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var numericYear)

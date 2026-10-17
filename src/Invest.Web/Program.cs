@@ -94,6 +94,7 @@ builder.Services.AddHttpClient<TpexEmergingDailyQuoteClient>(ConfigureQuoteClien
 builder.Services.AddHttpClient<TaiwanEtfCatalogClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseEtfDividendClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexEtfDividendClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<EtfDividendOpenDataClient>(ConfigureQuoteClient);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<EtfDividendProjectionService>();
 builder.Services.AddTransient<EtfDividendCollector>();

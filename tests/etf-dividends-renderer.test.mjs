@@ -185,3 +185,18 @@ test('production renderer labels a previous payment as having no upcoming paymen
     assert.match(button.textContent, /尚無下次公告/);
     assert.doesNotMatch(button.textContent, /已更新/);
 });
+
+test('limited open data shows real unresolved amounts, scope and attribution without claiming an annual calendar', async () => {
+    const data = payload({ events: [], unresolvedEvents: [event({ paymentDate: null, paymentYear: null, exDate: '2026-10-20', amount: '0.1250' })] });
+    data.completeCheckDate = null;
+    data.markets.twse.coverage = { scope: 'limited', note: '近期除息預告，未含發放日。', sources: [{ datasetUrl: 'https://data.gov.tw/dataset/89748' }] };
+    const renderer = await createRenderer(data);
+    const history = renderer.buildEtfPayoutHistoryRow(row, 6);
+    assert.match(history.textContent, /部分公告/);
+    assert.match(history.textContent, /0\.1250 元/);
+    assert.match(history.textContent, /2026\/10\/20/);
+    assert.match(history.textContent, /近期除息預告/);
+    assert.match(history.textContent, /政府資料開放授權條款第1版/);
+    assert.doesNotMatch(history.textContent, /2026 年尚未查得配息公告/);
+    assert.ok(find(history, element => element.href === 'https://data.gov.tw/dataset/89748'));
+});

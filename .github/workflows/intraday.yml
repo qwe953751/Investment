@@ -138,6 +138,7 @@ jobs:
         id: wait
         env:
           GH_TOKEN: ${{ github.token }}
+          ETF_DIVIDENDS_SOURCE_MODE: ${{ vars.ETF_DIVIDENDS_SOURCE_MODE || 'open-data' }}
           ETF_DIVIDENDS_SOURCE_AUTHORIZED: ${{ vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED }}
         run: |
           # Actions 預設的 shell 是 `bash -e`，errexit 是命令列給的，寫 set -uo pipefail
@@ -281,6 +282,7 @@ jobs:
                   --at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                   --business-date "$today" \
                   --authorized "${ETF_DIVIDENDS_SOURCE_AUTHORIZED:-false}" \
+                  --source-mode "${ETF_DIVIDENDS_SOURCE_MODE:-open-data}" \
                   --runs "$runs" 2>/dev/null)
               if [ $? -ne 0 ] || [ -z "$decision" ]; then
                   echo "::warning::ETF 配息每日 gate 無法評估，稍後再檢查。"

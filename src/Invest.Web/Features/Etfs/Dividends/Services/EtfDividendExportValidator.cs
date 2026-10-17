@@ -29,6 +29,8 @@ public static partial class EtfDividendExportValidator
         if (payload.CompleteCheckDate is { } completeDate
             && ParseDate(completeDate, "completeCheckDate") > asOf)
             throw new InvalidDataException("ETF 配息 completeCheckDate 不可晚於 asOfDate。");
+        if (payload.SourceCheckDate is { } sourceDate && ParseDate(sourceDate, "sourceCheckDate") > asOf)
+            throw new InvalidDataException("來源檢查日不可晚於投影日。");
         if (expectedBatchId is not null && payload.BatchId != expectedBatchId)
             throw new InvalidDataException("ETF 配息檔 batchId 與本次收集批次不符。");
 
@@ -47,6 +49,15 @@ public static partial class EtfDividendExportValidator
                 || ParseDate(market.QueryEnd, $"markets.{key}.queryEnd").ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) != queryEnd
                 || (market.SourceHash is not null && !Sha256Regex().IsMatch(market.SourceHash)))
                 throw new InvalidDataException($"ETF 配息市場 {key} 欄位或涵蓋日期不合法。");
+
+            if (market.Coverage is { } coverage && (coverage.Scope != "limited"
+                || string.IsNullOrWhiteSpace(coverage.Note) || coverage.Sources is null
+                || market.Status == "fresh" && coverage.Sources.Count == 0
+                || coverage.Sources.Any(source => !Sha256Regex().IsMatch(source.Sha256)
+                    || source.File != $"objects/open-data/{source.Sha256}.json" && source.File != $"objects/open-data/{source.Sha256}.csv"
+                    || !Uri.TryCreate(source.DatasetUrl, UriKind.Absolute, out var dataset)
+                    || dataset.Scheme != "https" || dataset.Host != "data.gov.tw")))
+                throw new InvalidDataException("開放資料必須標示有限涵蓋範圍與可追溯原文。");
 
             if ((market.LastSuccessfulCheckAt is null) != (market.ExpiresAt is null)
                 || (market.LastSuccessfulCheckAt is { } checkedAt

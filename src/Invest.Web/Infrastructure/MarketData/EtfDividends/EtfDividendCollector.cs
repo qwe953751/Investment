@@ -9,8 +9,11 @@ public sealed class EtfDividendCollector(
     TwseEtfDividendClient twse,
     TpexEtfDividendClient tpex,
     TaiwanEtfCatalogClient catalogClient,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    EtfDividendOpenDataClient? openData = null)
 {
+    public const string SourceModeVariable = "ETF_DIVIDENDS_SOURCE_MODE";
+    public static string SourceMode => Environment.GetEnvironmentVariable(SourceModeVariable) ?? "open-data";
     public const string AuthorizationVariable = "ETF_DIVIDENDS_SOURCE_AUTHORIZED";
     private static readonly TimeZoneInfo Taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
 
@@ -28,7 +31,13 @@ public sealed class EtfDividendCollector(
             return new("superseded", batchId, asOfDate.ToString("yyyy-MM-dd"), false, [],
                 "business-date is not the current Asia/Taipei date; no source request was made.");
 
-        var history = await store.ReadObservationsAsync(cancellationToken);
+        if (SourceMode == "open-data")
+            return await (openData ?? throw new InvalidOperationException("Open data client is not configured."))
+                .CollectAsync(asOfDate, batchId, store, timeProvider, cancellationToken);
+        if (SourceMode != "exchange") throw new InvalidOperationException("ETF_DIVIDENDS_SOURCE_MODE must be open-data or exchange.");
+
+        var history = (await store.ReadObservationsAsync(cancellationToken))
+            .Where(item => item.Markets.All(market => market.Coverage is null)).ToArray();
         var decisions = await store.ReadDecisionsAsync(cancellationToken);
         static bool HasBothMarkets(EtfDividendObservation observation)
             => observation.Markets.Count == 2

@@ -21010,6 +21010,7 @@ function etfDividendStatusText(market, hasFund = false, hasNextEvent = false) {
     if (market.status === 'review-required') return hasFund?.events?.length ? '有待核對修訂' : '資料待核對';
     if (market.status === 'unavailable') return '來源未取得';
     if (market.status === 'stale' || (market.expiresAt && Date.parse(market.expiresAt) < Date.now())) return '資料已過期';
+    if (market.coverage?.scope === 'limited') return '部分公告';
     if (hasNextEvent) return '已更新';
     if (hasFund?.unresolvedEvents?.length) return '發放日待公告';
     if (hasFund?.events?.length) return '尚無下次公告';
@@ -21243,10 +21244,13 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
 
     thead.append(headerRow);
     const tbody = document.createElement('tbody');
-    const events = (fund?.events ?? []).filter(event => event.paymentYear === year);
+    const events = [
+        ...(fund?.events ?? []).filter(event => event.paymentYear === year),
+        ...(fund?.unresolvedEvents ?? []).filter(event => event.exDate?.startsWith(`${year}-`))
+    ];
     for (const event of events) {
         const tr = document.createElement('tr');
-        const cells = [String(event.paymentYear), formatEtfDividendDate(event.exDate),
+        const cells = [String(event.paymentYear ?? year), formatEtfDividendDate(event.exDate),
             formatEtfDividendDate(event.paymentDate), event.amountPerUnit === null ? '金額待公告' : `${event.amountPerUnit} 元`];
         for (const value of cells) {
             const cell = document.createElement('td');
@@ -21260,7 +21264,9 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
         const emptyCell = document.createElement('td');
         emptyCell.colSpan = 4;
         emptyCell.className = 'etf-payout-history-empty';
-        if (market?.status === 'fresh') {
+        if (market?.coverage?.scope === 'limited') {
+            emptyCell.textContent = '目前開放資料未涵蓋這檔 ETF 的發放紀錄，無法確認完整年度公告。';
+        } else if (market?.status === 'fresh') {
             emptyCell.textContent = `${year} 年尚未查得配息公告。`;
         } else {
             const statusText = etfDividendPayloadError || etfDividendStatusText(market, fund);
@@ -21292,7 +21298,31 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
     source.target = '_blank';
     source.rel = 'noopener noreferrer';
     source.textContent = row.market === 'twse' ? '證交所來源' : '櫃買中心來源';
+    if (market?.coverage?.scope === 'limited') {
+        source.textContent = '官方開放資料';
+        meta.append(document.createTextNode(` · ${market.coverage.note}`));
+    }
     meta.append(document.createTextNode(' · '), source);
+    for (const artifact of market?.coverage?.sources ?? []) {
+        const attribution = document.createElement('a');
+        attribution.href = artifact.datasetUrl;
+        attribution.target = '_blank';
+        attribution.rel = 'noopener noreferrer';
+        const datasetNames = {
+            '89748': '上市股票除權除息預告表', '11634': '上櫃股票除權除息預告表',
+            '157399': '基金基本資料彙總表', '160547': '投信投顧公會境內基金配息資料'
+        };
+        attribution.textContent = `金融監督管理委員會證券期貨局 ${year} ${datasetNames[artifact.datasetUrl.split('/').at(-1)] ?? '開放資料'}`;
+        meta.append(document.createTextNode(' · '), attribution);
+    }
+    if (market?.coverage?.scope === 'limited') {
+        const license = document.createElement('a');
+        license.href = 'https://data.gov.tw/license';
+        license.target = '_blank';
+        license.rel = 'noopener noreferrer';
+        license.textContent = '政府資料開放授權條款第1版';
+        meta.append(document.createTextNode(' · '), license);
+    }
 
     panel.append(heading, table);
     panel.append(meta);

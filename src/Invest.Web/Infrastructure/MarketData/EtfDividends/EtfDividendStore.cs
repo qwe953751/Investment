@@ -18,10 +18,10 @@ public sealed class EtfDividendStore
 
     public string RootDirectory => _root;
 
-    public async Task<string> SaveRawObjectAsync(string market, byte[] bytes, CancellationToken cancellationToken)
+    public async Task<string> SaveRawObjectAsync(string market, byte[] bytes, CancellationToken cancellationToken, string extension = "json")
     {
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-        var path = Path.Combine(_root, "objects", market, hash + ".json");
+        var path = Path.Combine(_root, "objects", market, hash + "." + (extension == "csv" ? "csv" : "json"));
         await WriteImmutableAsync(path, bytes, cancellationToken);
         return hash;
     }
