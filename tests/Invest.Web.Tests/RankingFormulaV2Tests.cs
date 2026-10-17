@@ -21,6 +21,24 @@ public sealed class RankingFormulaV2Tests
     private static RankingQuery Query(int days = 1, DateOnly? end = null) => new()
     { PeriodDays = days, EndDate = end, MinimumAverageDailyTradingValue = 0, TopCount = int.MaxValue };
 
+    [Theory]
+    [InlineData(20, false, false)]
+    [InlineData(21, true, false)]
+    [InlineData(22, true, true)]
+    public void ExportSeparatesCurrentTwentyDayBaselineFromPriorComparisonAvailability(
+        int count, bool currentAvailable, bool comparisonAvailable)
+    {
+        var result = new TradingValueRankingCalculator().Calculate(
+            Data(Enumerable.Range(0, count).Select(i => Day(i, Quote("2330", 100 + i))).ToArray()), Query());
+        var export = typeof(Invest.Web.Infrastructure.StaticSite.StaticSiteExporter)
+            .GetMethod("ToExport", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static,
+                [typeof(string), typeof(int), typeof(int), typeof(TradingValueRankingResult)])!
+            .Invoke(null, ["test", 1, count, result]);
+        var json = JsonSerializer.SerializeToElement(export);
+        Assert.Equal(currentAvailable, json.GetProperty("HasCurrentAccelerationData").GetBoolean());
+        Assert.Equal(comparisonAvailable, json.GetProperty("HasAccelerationData").GetBoolean());
+    }
+
     [Fact]
     public void HistoricalIdentityAndKindAreAsOfDAndAddingFutureRowsCannotChangeThePast()
     {

@@ -2,6 +2,39 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { harness, deferred, settle } from './helpers/ranking-harness.mjs';
 const loaders = ['loadIntraday', 'loadIntradayResult'];
+test('single day preserves current ranking when long comparison is unavailable and clears all old prior fields', () => {
+    const h = harness();
+    const base = { hasSufficientData: true, hasCurrentAccelerationData: true, currentPeriod: 'D', currentLiquidityFloor: 5,
+        rows: [{ ticker: '2330', value: 100, volumeRatio: 2, accelerationSortOrder: 1,
+            previousValue: 50, rate: 1, shareChange: .2, previousVolumeRatio: 3, previousAccelerationSortOrder: 2 }] };
+    const result = h.context.applySingleDayComparison(base,
+        { periodDays: 60, hasSufficientData: false, hasAccelerationData: false, currentLiquidityFloor: null, rows: [] }, { period: 60 });
+    assert.equal(result.hasSufficientData, true);
+    assert.equal(result.hasCurrentAccelerationData, true);
+    assert.equal(result.currentPeriod, 'D');
+    assert.equal(result.currentLiquidityFloor, 5);
+    assert.equal(result.comparisonReady, false);
+    assert.equal(result.rows[0].volumeRatio, 2);
+    assert.equal(result.rows[0].accelerationSortOrder, 1);
+    for (const field of ['previousValue', 'rate', 'shareChange', 'previousVolumeRatio', 'previousAccelerationSortOrder'])
+        assert.equal(result.rows[0][field], null, field);
+    assert.equal(h.context.rankRows(result, { mode: 'accel', market: 'all', threshold: 0 }).rows[0].rankChange, null);
+});
+test('single day missing optional comparison scores never leak one-day values or replace current scores', () => {
+    const h = harness();
+    for (const available of [true, false]) {
+        const result = h.context.applySingleDayComparison({ rows: [{ ticker: '2330', volumeRatio: 2,
+            accelerationSortOrder: 1, previousVolumeRatio: 3, previousAccelerationSortOrder: 2, rate: 9 }] },
+            { periodDays: 20, hasSufficientData: true, hasAccelerationData: available,
+                rows: [{ ticker: '2330', volumeRatio: null, previousValue: 100, shareChange: .1 }] }, { period: 20 });
+        assert.equal(result.rows[0].volumeRatio, 2);
+        assert.equal(result.rows[0].previousValue, 100);
+        assert.equal(result.rows[0].shareChange, .1);
+        assert.equal(result.rows[0].previousVolumeRatio, null);
+        assert.equal(result.rows[0].previousAccelerationSortOrder, null);
+        assert.equal(result.rows[0].rate, null);
+    }
+});
 function projection() {
     const tickers = ['2330', '3008'];
     return { schemaVersion: 1, rankingRulesVersion: 'ranking-v2', runId: 7,

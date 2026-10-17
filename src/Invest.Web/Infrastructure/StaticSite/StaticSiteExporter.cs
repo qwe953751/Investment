@@ -1218,7 +1218,8 @@ public sealed class StaticSiteExporter(
                 ? RankingFormatter.ToBillionText(result.MarketTotalTradingValue / currentPeriodDays, 0)
                 : "—",
             ToMarketHeatExport(result.MarketHeat),
-            [.. result.Rows.Select(ToExport)], RankingSortOrders.RulesVersion, result.CurrentLiquidityFloor);
+            [.. result.Rows.Select(ToExport)], RankingSortOrders.RulesVersion, result.CurrentLiquidityFloor,
+            result.Rows.Any(row => row.VolumeRatio is not null));
     }
 
     private static SingleComparisonExport ToSingleComparisonExport(
@@ -2485,7 +2486,8 @@ public sealed class StaticSiteExporter(
         string PreviousPeriod,
         string MarketDailyAverage,
         MarketHeatExport? MarketHeat,
-        IReadOnlyList<RowExport> Rows, string RankingRulesVersion, decimal? CurrentLiquidityFloor);
+        IReadOnlyList<RowExport> Rows, string RankingRulesVersion, decimal? CurrentLiquidityFloor,
+        bool HasCurrentAccelerationData);
 
     private sealed record SingleComparisonExport(
         int PeriodDays,

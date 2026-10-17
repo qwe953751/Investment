@@ -23944,18 +23944,26 @@ function applySingleDayComparison(data, comparison, selection = state) {
 
     return {
         ...data,
-        hasSufficientData: comparison.hasSufficientData,
+        hasSufficientData: data.hasSufficientData,
         rankingRulesVersion: comparison.rankingRulesVersion ?? data.rankingRulesVersion,
-        currentLiquidityFloor: comparison.currentLiquidityFloor ?? data.currentLiquidityFloor,
-        message: comparison.message,
+        currentLiquidityFloor: data.currentLiquidityFloor,
+        message: data.message,
+        comparisonReady: comparison.hasSufficientData,
         hasAccelerationData: comparison.hasAccelerationData,
         accelerationMessage: comparison.accelerationMessage,
-        currentPeriod: comparison.currentPeriod,
-        previousPeriod: comparison.previousPeriod,
-        rows: data.rows.map(row => ({
-            ...row,
-            ...(comparisonByTicker.get(row.ticker) ?? {})
-        }))
+        currentPeriod: data.currentPeriod,
+        previousPeriod: comparison.hasSufficientData ? comparison.previousPeriod : `前 ${selection.period} 個交易日`,
+        rows: data.rows.map(row => {
+            const previous = comparison.hasSufficientData ? comparisonByTicker.get(row.ticker) : null;
+            return {
+                ...row,
+                previousValue: previous?.previousValue ?? null,
+                rate: previous?.rate ?? null,
+                shareChange: previous?.shareChange ?? null,
+                previousVolumeRatio: comparison.hasAccelerationData ? previous?.previousVolumeRatio ?? null : null,
+                previousAccelerationSortOrder: comparison.hasAccelerationData ? previous?.previousAccelerationSortOrder ?? null : null
+            };
+        })
     };
 }
 
@@ -29704,7 +29712,7 @@ async function loadCloseRanking(context) {
         return;
     }
 
-    if (selection.mode === 'accel' && !data.hasAccelerationData) {
+    if (selection.mode === 'accel' && !(data.hasCurrentAccelerationData ?? data.hasAccelerationData)) {
         rankingNotice(context, data.accelerationMessage ?? '資料不足。', true);
         return;
     }
