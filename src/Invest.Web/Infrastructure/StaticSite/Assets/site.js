@@ -11832,7 +11832,8 @@ async function assetExcelExportLatest() {
     renderAssetExcelView(el('asset-excel-page'));
     try {
         await assetExcelFlushColumnOrder();
-        const result = await assetExcelRunSyncOperation('export');
+        const columnOrder = assetExcelColumnKeysFrom(assetExcelColumnKeys);
+        const result = await assetExcelRunSyncOperation('export', { columnOrder });
         const revenueText = assetExcelRevenueHighNotice(result.revenueHigh);
         assetExcelNotice = result.revenueOnly
             ? `Google Sheet 族群欄位順序已與網站一致；${revenueText || '營收創高已寫入 D 欄'}。`

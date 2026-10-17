@@ -1194,6 +1194,7 @@ test('R2 匯出完成後畫面讀取失敗，不得再次呼叫 Google 寫入', 
         assetExcelOrderPersistError: null,
         assetExcelSyncState: { status: 'clean', version: 3, settings_revision: 4 },
         assetExcelAccountId: 'account-1',
+        ASSET_EXCEL_PREVIEW_COLUMNS: columns, assetExcelColumnKeys: null,
         el: () => null, renderAssetExcelView() {},
         assetExcelPersistColumnOrder: async () => {},
         assetExcelSyncAction: async (action, body) => {
@@ -1209,6 +1210,7 @@ test('R2 匯出完成後畫面讀取失敗，不得再次呼叫 Google 寫入', 
     };
     vm.createContext(context);
     vm.runInContext([
+        functionSource('assetExcelColumnKeysFrom'),
         functionSource('assetExcelRevenueHighNotice'),
         functionSource('assetExcelExportLatest')
     ].join('\n\n'), context);
@@ -1527,12 +1529,14 @@ test('前端匯出按鈕不再要求草稿，沒有草稿時顯示 V／X／- 統
             assetExcelSyncState: { status: 'clean' }, assetExcelAccountId: 'a',
             assetExcelReadStale: false, assetExcelActiveOperation: null,
             assetExcelOrderPersistError: null,
+            ASSET_EXCEL_PREVIEW_COLUMNS: columns, assetExcelColumnKeys: null,
             el: () => null, renderAssetExcelView() {}, loadAssetExcelData: async () => {},
             assetExcelFlushColumnOrder: async () => {},
             assetExcelRunSyncOperation: async action => { sent.push(action); return response; }
         };
         vm.createContext(context);
         vm.runInContext([
+            functionSource('assetExcelColumnKeysFrom'),
             functionSource('assetExcelRevenueHighNotice'),
             functionSource('assetExcelExportLatest')
         ].join('\n'), context);
