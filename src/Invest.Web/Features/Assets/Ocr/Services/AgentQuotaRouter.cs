@@ -92,14 +92,14 @@ public sealed class AgentQuotaRouter
                 var retryAfter = result.QuotaResetAt
                     ?? now.Add(_options.EffectiveQuotaCooldown);
                 _quotaBlockedUntil[agent] = retryAfter;
-                reasons[agent] = result.ErrorCode ?? "quota_exhausted";
+                reasons[agent] = DescribeFailure(result, "quota_exhausted");
                 continue;
             }
 
             // 其餘（登入失效、找不到 CLI、逾時、一般失敗、輸出無法使用…）一律當作這個 Agent 這次沒做出結果，
             // 換下一個；不記冷卻，因為這些不一定會持續，下一張圖仍然先試主要 Agent。
             allQuotaExhausted = false;
-            reasons[agent] = result.ErrorCode ?? result.Status.ToString();
+            reasons[agent] = DescribeFailure(result, result.Status.ToString());
         }
 
         if (allQuotaExhausted && order.All(agent => reasons.ContainsKey(agent)))
@@ -117,6 +117,25 @@ public sealed class AgentQuotaRouter
         }
 
         throw new OcrNoAvailableAgentException(pass, reasons);
+    }
+
+    /// <summary>
+    /// 失敗原因 = 錯誤碼，有診斷訊息時再接上第一行（最多 160 字）。2026-10-17 Claude 因 Schema 被 CLI 拒絕而每次都失敗，
+    /// 但原因只有 `empty_output` 一個詞，要把 CLI 包進轉接腳本才看得到 stderr。診斷訊息已由分類器脫敏（API 金鑰遮蔽）。
+    /// 只用在例外的原因文字（`ocr-poc` 會印出），不參與任何路由判斷。
+    /// </summary>
+    private static string DescribeFailure(OcrAgentRunResult result, string fallbackCode)
+    {
+        var code = result.ErrorCode ?? fallbackCode;
+        var firstLine = result.Diagnostic?
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(firstLine))
+        {
+            return code;
+        }
+
+        return $"{code}: {(firstLine.Length <= 160 ? firstLine : firstLine[..160])}";
     }
 
     /// <summary>

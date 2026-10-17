@@ -13,8 +13,8 @@ public sealed class OcrWorkerVersionTests
 {
     // 目前版本對應的 Worker 端 AI OCR 程式指紋。不可只改指紋：指紋與版本必須一起改，
     // 否則網站不會發現兩台 Worker 還在跑舊程式。
-    private const int RecordedVersion = 3;
-    private const string RecordedFingerprint = "8f9f340a8e3028a2526796939a5d38f0af9ddc686ac1e766dc3bd57d0fce3380";
+    private const int RecordedVersion = 4;
+    private const string RecordedFingerprint = "77acd122feec8e13b82f613dd57b69d317642e684782fe1a36fcf2cd8622592f";
 
     [Fact]
     public void 網站要求的AI_OCR版本與Worker相同()

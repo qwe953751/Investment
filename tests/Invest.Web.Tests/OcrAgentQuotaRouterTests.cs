@@ -139,6 +139,38 @@ public sealed class OcrAgentQuotaRouterTests
         Assert.Equal(2, claude.Requests.Count);
     }
 
+    // 2026-10-17：Claude 因 Schema 被 CLI 拒絕而每次都失敗，原因卻只有 `empty_output` 一個詞，要用轉接腳本才看得到 stderr。
+    // 失敗原因現在接上診斷訊息的第一行（`ocr-poc` 會印出），不參與任何路由判斷。
+    [Fact]
+    public async Task 失敗原因附上診斷訊息的第一行且最多160字()
+    {
+        var longLine = new string('甲', 300);
+        var claude = new FakeRunner(OcrAgentKind.Claude, Result(OcrAgentKind.Claude, OcrAgentRunStatus.InvalidOutput, "empty_output", diagnostic: "Error: --json-schema is not a valid JSON Schema\n第二行不該出現"));
+        var codex = new FakeRunner(OcrAgentKind.Codex, Result(OcrAgentKind.Codex, OcrAgentRunStatus.Fatal, "cli_failure", diagnostic: longLine));
+
+        var exception = await Assert.ThrowsAsync<OcrNoAvailableAgentException>(
+            () => CreateRouter(OcrAgentKind.Claude, claude, codex).RunPassAsync(OcrPassKind.Extraction, Request));
+
+        Assert.Equal("empty_output: Error: --json-schema is not a valid JSON Schema", exception.Reasons[OcrAgentKind.Claude]);
+        Assert.Equal("cli_failure: " + new string('甲', 160), exception.Reasons[OcrAgentKind.Codex]);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   \n  ")]
+    public async Task 沒有診斷訊息時失敗原因維持只有錯誤碼(string? diagnostic)
+    {
+        var claude = new FakeRunner(OcrAgentKind.Claude, Result(OcrAgentKind.Claude, OcrAgentRunStatus.Fatal, "cli_failure", diagnostic: diagnostic));
+        var codex = new FakeRunner(OcrAgentKind.Codex, Result(OcrAgentKind.Codex, OcrAgentRunStatus.Fatal));
+
+        var exception = await Assert.ThrowsAsync<OcrNoAvailableAgentException>(
+            () => CreateRouter(OcrAgentKind.Claude, claude, codex).RunPassAsync(OcrPassKind.Extraction, Request));
+
+        Assert.Equal("cli_failure", exception.Reasons[OcrAgentKind.Claude]);
+        Assert.Equal("Fatal", exception.Reasons[OcrAgentKind.Codex]);
+    }
+
     [Fact]
     public async Task 背景評估只用主要Agent失敗時不去花另一個Agent的額度()
     {
@@ -217,8 +249,8 @@ public sealed class OcrAgentQuotaRouterTests
     private static AgentQuotaRouter CreateRouter(OcrAgentKind primary, TimeSpan cooldown, params IAgentCliRunner[] runners)
         => new(runners, new OcrAgentRouterOptions(PrimaryAgent: primary, QuotaCooldown: cooldown, TimeProvider: TimeProvider.System, ClaudeModel: "claude-test", CodexModel: "codex-test"));
 
-    private static OcrAgentRunResult Result(OcrAgentKind agent, OcrAgentRunStatus status, string? errorCode = null, string? output = null)
-        => new(agent, status, output, errorCode, null, status == OcrAgentRunStatus.Success ? 0 : 1, TimeSpan.FromMilliseconds(1));
+    private static OcrAgentRunResult Result(OcrAgentKind agent, OcrAgentRunStatus status, string? errorCode = null, string? output = null, string? diagnostic = null)
+        => new(agent, status, output, errorCode, diagnostic, status == OcrAgentRunStatus.Success ? 0 : 1, TimeSpan.FromMilliseconds(1));
 
     private sealed class ThrowingRunner(OcrAgentKind agent, Exception exception) : IAgentCliRunner
     {

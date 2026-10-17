@@ -13,9 +13,10 @@ public static class OcrWorkerVersion
 {
     /// <summary>
     /// 1＝2026-10-13 之前（沒有回報版本）；2＝昨日餘額／今買成／今賣成三欄股數＋回報版本；
-    /// 3＝2026-10-16 Agent 改成「沒成功就換」（Codex 失敗改跑 Claude、全部失敗才接力給另一台），背景評估只用主要 Agent。
+    /// 3＝2026-10-16 Agent 改成「沒成功就換」（Codex 失敗改跑 Claude、全部失敗才接力給另一台），背景評估只用主要 Agent；
+    /// 4＝2026-10-17 修正送給 Claude 的 Schema（移除被 CLI 拒絕的 `$schema`），Claude 備援才真正能用，失敗原因附上診斷訊息。
     /// </summary>
-    public const int Current = 3;
+    public const int Current = 4;
 
     public static string Label => $"AI OCR v{Current}";
 

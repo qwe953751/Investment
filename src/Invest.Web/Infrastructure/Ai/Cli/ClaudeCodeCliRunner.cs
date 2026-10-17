@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Invest.Web.Infrastructure.Ai.Cli;
 
@@ -67,7 +68,7 @@ public sealed class ClaudeCodeCliRunner(
             "--output-format",
             "json",
             "--json-schema",
-            schema
+            PrepareSchema(schema)
         };
 
         if (!string.IsNullOrWhiteSpace(request.Model))
@@ -86,6 +87,32 @@ public sealed class ClaudeCodeCliRunner(
         arguments.Add(BuildPrompt(request.ImagePath, request.Prompt));
 
         return arguments;
+    }
+
+    /// <summary>
+    /// Claude CLI 的 `--json-schema` 驗證器不認得 2020-12：Schema 頂層的 `$schema` 指向
+    /// `https://json-schema.org/draft/2020-12/schema` 時，CLI 在呼叫模型之前就拒絕（exit 1、stdout 空白、
+    /// stderr 為 `Error: --json-schema is not a valid JSON Schema: no schema with key or ref "…/2020-12/schema"`），
+    /// 與登入狀態無關。2026-10-17 以 CLI 2.1.295 與 2.1.299 實測：移除 `$schema` 後驗證通過。
+    /// 這個錯誤讓 Claude 備援從 2026-09-07 起從來沒有成功過，直到登入後才發現。
+    /// `$schema` 只是宣告用的中繼資訊，拿掉不影響任何驗證規則，所以只在送給 Claude 時移除；
+    /// Codex 的 `--output-schema` 仍用原樣（正常運作中，不動它）。沒有 `$schema` 的 Schema 原樣傳入。
+    /// </summary>
+    internal static string PrepareSchema(string schema)
+    {
+        try
+        {
+            if (JsonNode.Parse(schema) is JsonObject root && root.Remove("$schema"))
+            {
+                return root.ToJsonString();
+            }
+        }
+        catch (JsonException)
+        {
+            // 不是合法 JSON 就原樣交給 CLI，由 CLI 回報錯誤；不在這裡吞掉真正的 Schema 問題。
+        }
+
+        return schema;
     }
 
     /// <summary>

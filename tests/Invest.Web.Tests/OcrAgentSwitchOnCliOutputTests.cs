@@ -33,11 +33,18 @@ public sealed class OcrAgentSwitchOnCliOutputTests
 
     private const string CodexStdinHint = "Reading additional input from stdin...";
 
-    // Claude Code 2.1.299（Mac，2026-10-16 實測）以 Worker 的參數執行、尚未登入：exit code 1，錯誤在 stdout 的 JSON，stderr 為空。
+    // Claude Code 2.1.299（Mac，2026-10-16 實測）尚未登入：exit code 1，錯誤在 stdout 的 JSON，stderr 為空。
+    // 注意：這是用最小 Schema（{"type":"object",...}）直接執行的輸出。當時 Worker 實際傳入的 Schema 開頭有 "$schema"（2020-12），
+    // CLI 在檢查登入之前就拒絕了（見下方 ClaudeInvalidSchemaStderr），這個輸出要到 v4 修掉 `$schema` 之後才會是 Worker 的真實情形。
     // 節錄自實測輸出，保留判斷會用到的欄位。
     private const string ClaudeNotLoggedInStdout = """
         {"type":"result","subtype":"success","is_error":true,"api_error_status":null,"result":"Not logged in · Please run /login","terminal_reason":"api_error","num_turns":1,"total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0},"modelUsage":{}}
         """;
+
+    // Claude Code 2.1.295／2.1.299（Mac，2026-10-17 實測）收到 Worker 的真實 Schema（頂層有 "$schema": ".../2020-12/schema"）：
+    // 在呼叫模型之前就拒絕，exit code 1、stdout 完全空白、錯誤只在 stderr，與登入狀態無關。Claude 備援因此從 2026-09-07 起從沒成功過。
+    private const string ClaudeInvalidSchemaStderr =
+        "Error: --json-schema is not a valid JSON Schema: no schema with key or ref \"https://json-schema.org/draft/2020-12/schema\"";
 
     // Claude 的結構化輸出重試用盡：exit code 0，但沒有 structured_output。
     private const string ClaudeNoStructuredOutputStdout = """
@@ -106,6 +113,33 @@ public sealed class OcrAgentSwitchOnCliOutputTests
 
         Assert.NotEqual(OcrAgentRunStatus.Success, claude.LastResult!.Status);
         Assert.Equal(OcrAgentKind.Codex, execution.Agent);
+    }
+
+    [Fact]
+    public async Task Claude因Schema被CLI拒絕時視為失敗並改跑Codex()
+    {
+        var claude = new ReplayRunner(OcrAgentKind.Claude, exitCode: 1, stdout: "", ClaudeInvalidSchemaStderr);
+        var codex = new ReplayRunner(OcrAgentKind.Codex, exitCode: 0, CodexSuccessOutput);
+
+        var execution = await CreateRouter(claude, codex, primary: OcrAgentKind.Claude)
+            .RunPassAsync(OcrPassKind.Extraction, Request);
+
+        Assert.NotEqual(OcrAgentRunStatus.Success, claude.LastResult!.Status);
+        Assert.Contains("not a valid JSON Schema", claude.LastResult.Diagnostic, StringComparison.Ordinal);
+        Assert.Equal(OcrAgentKind.Codex, execution.Agent);
+    }
+
+    [Fact]
+    public async Task Codex額度用完且Claude的Schema被拒絕時例外的原因帶出真正的診斷訊息()
+    {
+        var codex = new ReplayRunner(OcrAgentKind.Codex, exitCode: 1, CodexQuotaStdout, CodexStdinHint);
+        var claude = new ReplayRunner(OcrAgentKind.Claude, exitCode: 1, stdout: "", ClaudeInvalidSchemaStderr);
+
+        var exception = await Assert.ThrowsAsync<OcrNoAvailableAgentException>(
+            () => CreateRouter(codex, claude).RunPassAsync(OcrPassKind.Extraction, Request));
+
+        // 診斷訊息讓 `ocr-poc` 一眼看出 Claude 不是「沒登入」而是 Schema 被拒絕。
+        Assert.StartsWith("empty_output: Error: --json-schema is not a valid JSON Schema", exception.Reasons[OcrAgentKind.Claude], StringComparison.Ordinal);
     }
 
     [Fact]
