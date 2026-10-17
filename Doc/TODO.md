@@ -37,7 +37,7 @@
 | 23 | [台股操作表「營收創高」改以網站為準並寫回 Google D 欄](#todo-23) | 🟡 已實作，待你實按匯出驗收 |
 | 24 | [全部台股統一還原權息＋資產頁報價統一（筆記 #81、#82）](#todo-24) | 🟡 2026-10-10 已實作並發布；待 10/12 盤中與盤後實測驗收，成交量柱換算等你選樣板 |
 | 25 | [停止交易（停牌）的標的特別顯示「停」並用停牌前價格（筆記 #84）](#todo-25) | 🟡 2026-10-13 已實作、發布並通過盤中實測（收集器判出 8 檔、尾段凍結正常）；待 10/15（川飛、友勁停牌第一天）與 10/19（六檔恢復買賣）驗收 |
-| 26 | [台股操作表的 48 個族群欄順序雙向同步（筆記 #88）](#todo-26) | 🟡 匯出欄序漏傳已修復並通過接口測試；待本次發布及正式 Google Sheet 驗收 |
+| 26 | [台股操作表的 48 個族群欄順序雙向同步（筆記 #88）](#todo-26) | 🟡 匯出欄序漏傳已修復並發布；待隔離整合測試與正式 Google Sheet 驗收 |
 | 27 | [筆記 #89：排行公式與歷史取樣修復驗收](#todo-27) | 🟡 全部工項已實作並通過回歸；待本次發布與實盤／實機 |
 | 28 | [ETF 配息資料正式串接（筆記 #87）](#todo-28) | 🟡 實作、測試、commit／push 與網站純發布已完成；來源授權及首次真實排程仍待驗收 |
 
@@ -2435,7 +2435,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：v2 DB／Edge 已部署，但使用者實測發現前端匯出漏傳必填 columnOrder；直接匯出及移欄後匯出均在 Google API 前回 422。已補上 flush 後的 52 欄快照與最新 revision；操作表與接口 51/51、全 Node 357/357、.NET 10.0.302 Release 984/984 通過，待本次 commit／push／publish-only。Edge 維持 v26、無 migration。正式 Google Sheet、副本 E2E 及隔離 PostgreSQL 交易驗收仍未完成；2026-10-15 歷史 HTTP 500 精確原因仍未證實。**
+**狀態：v2 DB／Edge 已部署，但使用者實測發現前端匯出漏傳必填 columnOrder；直接匯出及移欄後匯出均在 Google API 前回 422。已補上 flush 後的 52 欄快照與最新 revision；操作表與接口 51/51、全 Node 357/357、.NET 10.0.302 Release 984/984 通過；程式 commit `ea684b151` 已推送，[publish-only run 39009705942](https://github.com/qwe953751/Investment/actions/runs/39009705942) success，公開版本 `1792218315` 與 JS SHA256 核對通過。Edge 維持 v26、無 migration。正式 Google Sheet、副本 E2E 及隔離 PostgreSQL 交易驗收仍未完成；2026-10-15 歷史 HTTP 500 精確原因仍未證實。**
 
 ### 已討論與實作
 
@@ -2450,7 +2450,7 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 ### 待完成
 
 - 本機驗證已通過：操作表與接口 Node 51/51、全 Node 357/357、.NET 10.0.302 Release 984/984、JS syntax 與 `git diff --check`。DB schema、RPC 權限及 RLS 已用 Supabase 唯讀查核；Security advisor 沒有本次新增告警，Performance advisor 不再列出新操作表政策的 auth init-plan。新操作表尚無流量，因此其 recent-operation index 被列為 unused index，保留供預期查詢使用。
-- 沒有可用的本機 PostgreSQL／Docker 測試環境，故 B01–B15 中真交易回滾、多連線競爭與故障注入尚未跑；正式 Google Sheet 寫入及副本端到端也未執行。v2 初版的網站 publish-only 與公開檔案核對已完成；本次欄序漏傳補正待發布。
+- 沒有可用的本機 PostgreSQL／Docker 測試環境，故 B01–B15 中真交易回滾、多連線競爭與故障注入尚未跑；正式 Google Sheet 寫入及副本端到端也未執行。v2 初版的網站 publish-only 與公開檔案核對已完成；本次欄序漏傳補正也已發布並通過公開 manifest／JS 核對。
 - 待最高權限登入者以「匯入 → 拖曳一個族群欄 → 匯出 → 再匯入」驗證兩邊順序、勾選值、標題、公式／格式與 checkbox 驗證。
 
 
