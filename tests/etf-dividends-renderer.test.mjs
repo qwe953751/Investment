@@ -196,6 +196,10 @@ test('limited open data shows real unresolved amounts, scope and attribution wit
     assert.match(history.textContent, /0\.1250 元/);
     assert.match(history.textContent, /2026\/10\/20/);
     assert.match(history.textContent, /近期除息預告/);
+    assert.match(history.textContent, /來源未提供發放日，未列入發放年度/);
+    const preview = collect(history, element => element.tagName === 'tr').find(element => element.children.length === 4 && element.textContent.includes('0.1250 元'));
+    assert.equal(preview.children[0].textContent, '未定');
+    assert.equal(preview.children[2].textContent, '來源未提供');
     assert.match(history.textContent, /政府資料開放授權條款第1版/);
     assert.doesNotMatch(history.textContent, /2026 年尚未查得配息公告/);
     assert.ok(find(history, element => element.href === 'https://data.gov.tw/dataset/89748'));

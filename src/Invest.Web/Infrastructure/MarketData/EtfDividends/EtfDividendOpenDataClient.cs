@@ -173,7 +173,7 @@ public sealed class EtfDividendOpenDataClient(HttpClient httpClient, TaiwanEtfCa
             if (!taxMap.TryGetValue(Cell("基金統編"), out var ticker) || Cell("配息幣別") != "TWD") continue;
             var date = Cell("除息日");
             var item = EtfDividendSourceParser.ToEvent("twse", ticker, Cell("基金名稱"), Year(date), date,
-                Cell("配息基準日"), Cell("收益分配發放日"), Cell("每單位分派金額"), hash, rowNumber)
+                "", Cell("收益分配發放日"), Cell("每單位分派金額"), hash, rowNumber)
                 ?? throw new InvalidDataException("公會 ETF 配息包含無效日期或金額。");
             output.Add(item);
             dates.Add(item.ExDate!.Value.ToString("yyyy/MM", CultureInfo.InvariantCulture));

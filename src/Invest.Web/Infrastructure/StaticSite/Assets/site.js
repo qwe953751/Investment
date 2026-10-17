@@ -21244,13 +21244,10 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
 
     thead.append(headerRow);
     const tbody = document.createElement('tbody');
-    const events = [
-        ...(fund?.events ?? []).filter(event => event.paymentYear === year),
-        ...(fund?.unresolvedEvents ?? []).filter(event => event.exDate?.startsWith(`${year}-`))
-    ];
+    const events = (fund?.events ?? []).filter(event => event.paymentYear === year);
     for (const event of events) {
         const tr = document.createElement('tr');
-        const cells = [String(event.paymentYear ?? year), formatEtfDividendDate(event.exDate),
+        const cells = [String(event.paymentYear), formatEtfDividendDate(event.exDate),
             formatEtfDividendDate(event.paymentDate), event.amountPerUnit === null ? '金額待公告' : `${event.amountPerUnit} 元`];
         for (const value of cells) {
             const cell = document.createElement('td');
@@ -21281,9 +21278,22 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
         const unresolvedCell = document.createElement('td');
         unresolvedCell.colSpan = 4;
         unresolvedCell.className = 'etf-payout-history-empty';
-        unresolvedCell.textContent = `另有 ${unresolvedCount} 筆事件的發放日待公告。`;
+        const limited = market?.coverage?.scope === 'limited';
+        unresolvedCell.textContent = limited
+            ? `另有 ${unresolvedCount} 筆除息預告，來源未提供發放日，未列入發放年度。`
+            : `另有 ${unresolvedCount} 筆事件的發放日待公告，未列入發放年度。`;
         unresolvedRow.append(unresolvedCell);
         tbody.append(unresolvedRow);
+        for (const event of fund.unresolvedEvents) {
+            const previewRow = document.createElement('tr');
+            for (const value of ['未定', formatEtfDividendDate(event.exDate), limited ? '來源未提供' : '待公告',
+                event.amountPerUnit === null ? '金額待公告' : `${event.amountPerUnit} 元`]) {
+                const cell = document.createElement('td');
+                cell.textContent = value;
+                previewRow.append(cell);
+            }
+            tbody.append(previewRow);
+        }
     }
     table.append(thead, tbody);
 

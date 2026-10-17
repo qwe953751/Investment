@@ -115,8 +115,9 @@ stkNo=&startDate=20250101&endDate=20271231&lang=zh-tw
 - `ETF_DIVIDENDS_SOURCE_MODE` 預設 `open-data`；只有顯式設 `exchange` 才走 3.1／3.2，並仍須授權變數為 true。
 - 每來源原始 bytes 保存在 `objects/open-data/{sha256}.json/.csv`；市場 sourceHash 指向列出 URL、資料集、hash、檔案路徑的不可變 envelope。事件 sourceHash 指向實際資料原文，sourceRowReference 保留來源列號。
 - `coverage.scope=limited`、note、sources 必須輸出與展示；查詢／投影 horizon 不是來源實際涵蓋期間。資料取得成功可 fresh，但不可宣稱整年查無公告或下次發放不存在。
+- 公會「配息基準日」與官網「收益分配基準日」語意尚未確認一致，原文保留，但 open-data 的正規化／輸出 recordDate 留 null；不因欄名相近而混用。既存開放觀測的該欄也不輸出為官網基準日。
 - `sourceCheckDate` 表示兩市場本日開放來源檢查成功；`completeCheckDate` 僅完整來源成功批次填寫，有限來源不得填入。
-- 未提供發放日的真實預告列在 unresolvedEvents 並顯示除息日、已知金額及「待公告」；不推估發放日。announcementYear 在開放預告中以除息年度作儲存分組，不宣稱是來源提供的公告年度；UI 年度仍依發放年，未定日列依除息年展示。
+- 未提供發放日的真實預告列在 unresolvedEvents 並顯示除息日、已知金額及「待公告」；不推估發放日。announcementYear 在開放預告中以除息年度作儲存分組，不宣稱是來源提供的公告年度；UI 年度仍依發放年；未定日預告另列，年度顯示「未定」，不可依除息年冒充發放年度。開放來源缺日顯示「來源未提供」，不推論官方尚未公告。
 - 近期預告正常滾出時保留既有觀測；null 金額更新為已知值可採用，既有非空金額或日期改動須待核對。原始事件與資料分支紀錄均不可刪。
 - 每日 gate v3 run-name 帶業務日與 open-data／exchange-enabled／blocked-license；舊版／其他模式不計本模式完成或額度。人工 run-now 只跳時段，仍核對日期、鎖與上限。
 - 終態核驗要求收集 complete、發布及公開核驗成功、兩市場 fresh／成功時間／hash；open-data 分支須同日 sourceCheckDate 與兩市場 limited，exchange 分支維持同日 completeCheckDate。此綠燈代表本模式來源流程完成，不代表完整年度原始需求全部完成。

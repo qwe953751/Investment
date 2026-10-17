@@ -68,7 +68,8 @@ public sealed class EtfDividendProjectionService(TimeProvider timeProvider)
         }
 
         var acceptedEvents = accepted.Values.Where(item => item.Accepted)
-            .SelectMany(item => item.Events).ToArray();
+            .SelectMany(item => item.Events.Select(value => item.Coverage?.Scope == "limited"
+                ? value with { RecordDate = null } : value)).ToArray();
         var funds = acceptedEvents.GroupBy(item => (item.Market, item.Ticker))
             .OrderBy(group => group.Key.Market, StringComparer.Ordinal)
             .ThenBy(group => group.Key.Ticker, StringComparer.Ordinal)

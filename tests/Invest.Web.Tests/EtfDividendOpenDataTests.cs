@@ -34,11 +34,31 @@ public sealed class EtfDividendOpenDataTests
         Assert.Equal("2026-10-18", projection.SourceCheckDate);
         var fund = Assert.Single(projection.Funds, item => item.Ticker == "0050");
         Assert.Equal("0.125", Assert.Single(fund.Events).AmountPerUnit);
+        Assert.Null(fund.Events.Single().RecordDate);
         Assert.Single(fund.UnresolvedEvents);
         Assert.Equal("0", Assert.Single(projection.Funds, item => item.Ticker == "00679B").UnresolvedEvents.Single().AmountPerUnit);
         var requests = fixture.Requests;
         Assert.Equal(result.BatchId, (await fixture.Collect()).BatchId);
         Assert.Equal(requests, fixture.Requests);
+    }
+
+    [Fact]
+    public async Task 舊開放觀測的公會配息基準日不輸出為官網收益分配基準日()
+    {
+        using var fixture = new Fixture();
+        await fixture.Collect();
+        var old = Assert.Single(await fixture.Store.ReadObservationsAsync(default));
+        await fixture.Store.SaveObservationAsync(old with
+        {
+            BatchId = "legacy-open-observation",
+            CompletedAt = old.CompletedAt.AddSeconds(1),
+            Markets = old.Markets.Select(market => market with
+            {
+                Events = market.Events.Select(item => item with { RecordDate = new DateOnly(2026, 8, 17) }).ToArray()
+            }).ToArray()
+        }, default);
+        var projected = await new EtfDividendProjectionService(fixture.Clock).BuildAsync(fixture.Store, fixture.Date);
+        Assert.All(projected.Funds.SelectMany(fund => fund.Events), item => Assert.Null(item.RecordDate));
     }
 
     [Fact]
