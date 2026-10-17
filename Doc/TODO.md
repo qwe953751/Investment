@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔴 **2026-10-17 晚上：Windows 的 Claude 已登入並跑完，但結果被當成 Big5 讀壞，已修成 Worker v5（`52803d7b4`）：Mac 已是 v5，公司 Windows 待重建到 v5 後再驗證一次 Claude**。🟡 同日早上 v4（`9ebf6fe50`）修了 Claude 的 Schema。🟡 2026-10-16 Agent 改成「沒成功就換」（v3）。🟡 2026-10-13 AI 漏掉「今買成」的修正與 Worker 版本警告：兩台都已重建（Windows 10-16 23:52），待使用者重新上傳 5 張截圖驗收。🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布）；**兩台 Worker 都已重建為新版**（家裡 Mac 10-11、公司 Windows 10-12，10-13 `ocr_workers` 核對通過）；P1～P10 正式驗收待使用者實測（P1 已有新版 Windows 的真實紀錄）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | ✅ **2026-10-17 晚上：Claude 備援在公司 Windows 實測成功（Worker v5，兩台都是 v5）**；🔴 剩 Codex 額度用完時的正式上傳驗收。🟡 同日早上 v4（`9ebf6fe50`）修了 Claude 的 Schema。🟡 2026-10-16 Agent 改成「沒成功就換」（v3）。🟡 2026-10-13 AI 漏掉「今買成」的修正與 Worker 版本警告：兩台都已重建（Windows 10-16 23:52），待使用者重新上傳 5 張截圖驗收。🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布）；**兩台 Worker 都已重建為新版**（家裡 Mac 10-11、公司 Windows 10-12，10-13 `ocr_workers` 核對通過）；P1～P10 正式驗收待使用者實測（P1 已有新版 Windows 的真實紀錄）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 2026-09-23 日韓盤中快照保留、日期選擇器隱藏與排行節流已由 commit `e0bf561b` 發布；.NET 549/549、Node 146/146 通過。線上 KR 已更新至 9/23 14:05；JP 仍指向 9/14。9/15 起舊 workflow 因 KIS 金鑰缺失失敗，9/19 改 Yahoo、9/22 修 Storage bucket 判定；JP 9/21～23 休市，待 9/24 開市驗收新快照。其餘市場切換產品議題仍見下方 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [日韓成交排行來源日期檢查過嚴，09/22 起韓股每輪都失敗](#todo-18) | 🟡 工項 A～E 已實作完成，.NET 556/556、Node 148/148 通過；待 09-28（日韓同為交易日）驗收 |
@@ -1350,17 +1350,18 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-### 🔴 2026-10-17 晚上：Windows 的 Claude 結果被當成 Big5 讀壞，已修成 Worker v5；家裡 Mac 已是 v5，公司 Windows 待重建到 v5
+### ✅ 2026-10-17 晚上：Windows 的 Claude 結果被當成 Big5 讀壞，已修成 Worker v5；兩台都是 v5，Claude 備援實測成功
 
 使用者在 Windows（v4）跑「驗證 Claude 備援」：Claude Pro 已登入、CLI `2.1.302`、四個旗標都有，Claude 也真的跑完了，結果卻是 `invalid_json`。
 原因是 .NET 在 Windows 預設用主控台字碼頁（950／Big5）解讀 CLI 的輸出；v5（`52803d7b4`）固定以 UTF-8 解讀。詳見 [AI OCR §4.18](技術文件/AI%20OCR.md#ocr-incident-1017-windows-encoding)。
 
 **待辦（依序）**：
-1. 🔴 **重建公司 Windows Worker 到 v5**：[AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy) 的一段式 PowerShell，最後一行要含「**AI OCR v5**」。
-2. 🔴 **再跑一次「驗證 Claude 備援」**（同一段，[AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy)）：登入與旗標已確認，這次會直接進入真實辨識；預期 `實際使用的 Agent：Claude；是否為備援：False；狀態：Success` 與四列正確。
-3. 🔴 通過後做 [AI OCR §3.2](技術文件/AI%20OCR.md#ocr-pending-acceptance) #12 的正式驗收（Codex 額度用完時上傳，log 的「單次 AI」是 `agent=Claude fallback=True`）。
+1. ✅ **公司 Windows Worker 已重建為 v5**（第一次 `git pull` 撞到同一秒的 git 更新而在動排程前停下；一段式改為重試 3 次後重跑成功）。
+2. ✅ **「驗證 Claude 備援」成功**：`實際使用的 Agent：Claude；是否為備援：False；狀態：Success；耗時：00:00:20.2549071`，四列（2330 台積電 1,000 620,000／2317 鴻海 2,000 190,000／0050 元大台灣50 3,000 540,000／2454 聯發科 500 430,000）代號、名稱、股數、成本全對。
+3. 🔴 [AI OCR §3.2](技術文件/AI%20OCR.md#ocr-pending-acceptance) #12 的正式驗收（下次 Codex 額度用完時上傳，Windows Worker log 的「單次 AI」是 `agent=Claude fallback=True`）。
+4. 🟡 Mac 若也要 Claude：使用者安裝獨立版並登入（步驟見下方 2026-10-17 小節的第 5 點）；Windows 的 Claude 已能接手，Mac 的 Claude 只在 Windows 兩個 Agent 都失敗時才會用到。
 
-### 🔴 2026-10-17：Claude 備援即使登入也不會成功（Schema 被 CLI 拒絕），已修成 Worker v4；家裡 Mac 與公司 Windows 都已是 v4，待驗證 Claude
+### ✅ 2026-10-17：Claude 備援即使登入也不會成功（Schema 被 CLI 拒絕），已修成 Worker v4（後續 v5 與實測成功見上方）
 
 使用者回報「Windows 電腦 Claude 已經是打開狀態」；我在請他再跑指令之前先用 Mac 走一遍 Worker 的實際流程，發現 Worker 傳給 `claude --json-schema` 的 Schema 頂層有 `$schema`（2020-12），
 Claude CLI（2.1.295、2.1.299）在檢查登入之前就拒絕，**與登入無關**——Claude 備援自 2026-09-07 起從來沒成功過（我 10-16 說「前提只有登入」不完整）。根因、證據與取捨見 [AI OCR §4.17](技術文件/AI%20OCR.md#ocr-incident-1017-claude-schema)。
@@ -1378,7 +1379,7 @@ v4（`9ebf6fe50`）：只在送給 Claude 時移除 `$schema`（Codex 不動）�
 5. 🟡 Mac 要用 Claude 時：`curl -fsSL https://claude.ai/install.sh | bash`（裝到 `~/.local/bin/claude`，不要用 Claude App 內建的 CLI）→ `~/.local/bin/claude auth login` → `launchctl kickstart -k gui/$(id -u)/com.invest.ocr-worker`。
 6. 🟡 **可選（使用者未決定）**：把 Claude 的 `is_error:true` 的 `result` 與 Codex 的 `turn.failed` 訊息寫進診斷欄位——不影響換 Agent，只讓 Claude 回 stdout JSON 錯誤時原因不再只是 `cli_failure`；`CodexCliRunner` 關閉 stdin。
 
-### 🔴 2026-10-16：Agent 改成「沒成功就換」（Worker v3）已在 `main`，家裡 Mac 與公司 Windows 都已重建為 v3；兩台都要登入 Claude CLI
+### ✅ 2026-10-16：Agent 改成「沒成功就換」（Worker v3）已在 `main`，家裡 Mac 與公司 Windows 都已重建為 v3；兩台都要登入 Claude CLI
 
 > **2026-10-17 更正**：下面的待辦假設「登入就能用 Claude」，不完整——v3 的 Claude 路徑即使登入也會因 Schema 被拒絕而失敗，要先重建到 v4，見上方 2026-10-17。
 
