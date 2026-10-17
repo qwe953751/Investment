@@ -34,12 +34,14 @@ public sealed class TradingValueRankingResult
     public DateOnly? PreviousPeriodEnd { get; init; }
 
     /// <summary>
-    /// 本期全市場總成交值，單位為元。不受市場篩選影響，一律是上市＋上櫃。
+    /// 本期全市場總成交值，單位為元。不受市場篩選影響，一律是上市＋上櫃＋興櫃普通股。
     /// </summary>
     public decimal MarketTotalTradingValue { get; init; }
 
+    public decimal? CurrentLiquidityFloor { get; init; }
+
     /// <summary>
-    /// 所選基準日的市場熱絡程度。與排行門檻無關，分母固定是上市＋上櫃全市場。
+    /// 所選基準日的市場熱絡程度。與排行門檻無關，分母固定是上市＋上櫃＋興櫃普通股。
     /// </summary>
     public MarketHeatMetrics? MarketHeat { get; init; }
 
@@ -66,10 +68,10 @@ public sealed class TradingValueRankingResult
     {
         var reason = comparisonMode == RankingComparisonMode.SingleDay
             ? mode == RankingMode.CapitalAcceleration
-                ? $"（選定交易日單日、前 {periodDays} 日平均與再前 {periodDays} 日平均）"
+                ? $"（選定交易日、前 {periodDays} 日平均與前期之前 20 日基準）"
                 : $"（選定交易日單日與前 {periodDays} 日平均）"
             : mode == RankingMode.CapitalAcceleration
-                ? $"（資金加速模式的前期排名本身也是增減率，需要 {periodDays} 日 × 3 段期間）"
+                ? $"（本期 {periodDays} 日、前期 {periodDays} 日與前期之前 20 日基準）"
                 : $"（本期 {periodDays} 日與前期 {periodDays} 日）";
 
         return new TradingValueRankingResult

@@ -7,6 +7,7 @@ using Invest.Web.Features.MarketStructure.Models;
 using Invest.Web.Features.MarketStructure.Services;
 using Invest.Web.Features.StockTopics.Models;
 using Invest.Web.Features.TradingValueRanking.Models;
+using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Microsoft.Extensions.Configuration;
@@ -430,6 +431,69 @@ public sealed class IntradaySnapshotPublisherTests
                 Assert.Equal(7, (await publisher.TryLoadLatestMarketStructureAsync())!.RunId);
         }
         finally { Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, priorSecret); }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task 排行重建不覆寫raw且拒絕跨輪或錯誤來源hash(bool advanced, bool wrongHash)
+    {
+        var priorSecret = Environment.GetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable);
+        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, "test-secret");
+        try
+        {
+            var time = new DateTimeOffset(2026, 10, 16, 5, 35, 0, TimeSpan.Zero);
+            var snapshot = new IntradaySnapshot { TradeDate = new DateOnly(2026, 10, 16),
+                Quotes = [Quote(Market.Twse, "2330", "台積電", 100), Quote(Market.Emerging, "2938", "床的世界", 20)] };
+            var calls = 0;
+            var uploads = new Dictionary<string, byte[]>();
+            var hash = new string('a', 64);
+            var publisher = CreatePublisher(new CapturingHandler([], request =>
+            {
+                if (request.RequestUri!.ToString().Contains("/latest.json?", StringComparison.Ordinal))
+                {
+                    var run = advanced && ++calls > 1 ? 8 : 7;
+                    return Respond(HttpStatusCode.OK, JsonSerializer.Serialize(new
+                    { schemaVersion = 1, runId = run, tradeDate = "2026-10-16", capturedAt = time,
+                      file = $"intraday-20261016-1335-run{run}.json", rowCount = 2, sha256 = hash }));
+                }
+                if (request.Method == HttpMethod.Post && !request.RequestUri!.AbsolutePath.Contains("/list/"))
+                    uploads[Path.GetFileName(request.RequestUri!.AbsolutePath)] = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                return Respond(HttpStatusCode.OK, "[]");
+            }));
+            var raw = new PublishedIntradaySnapshot(7, snapshot.TradeDate, time, snapshot,
+                wrongHash ? new string('b', 64) : hash);
+            var ranking = new IntradayRankingProjection([]).Calculate(snapshot, time);
+            var published = await publisher.PublishRankingAsync(raw, ranking);
+            Assert.Equal(!advanced && !wrongHash, published);
+            Assert.DoesNotContain(uploads.Keys, name => name == "latest.json" || name.StartsWith("intraday-2026"));
+            if (advanced || wrongHash) Assert.DoesNotContain("ranking-latest.json", uploads.Keys);
+            else
+            {
+                using var pointer = JsonDocument.Parse(uploads["ranking-latest.json"]);
+                var body = uploads[pointer.RootElement.GetProperty("file").GetString()!];
+                Assert.Equal(pointer.RootElement.GetProperty("sha256").GetString(),
+                    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(body)).ToLowerInvariant());
+                Assert.Equal(hash, pointer.RootElement.GetProperty("rawSha256").GetString());
+                Assert.Equal(7, JsonDocument.Parse(body).RootElement.GetProperty("runId").GetInt64());
+            }
+        }
+        finally { Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, priorSecret); }
+    }
+
+    [Fact]
+    public void 排行重建保留同輪興櫃且尾段恢復仍預設排除興櫃()
+    {
+        var date = new DateOnly(2026, 10, 16);
+        var snapshot = new IntradaySnapshot { TradeDate = date,
+            Quotes = [Quote(Market.Twse, "2330", "台積電", 100), Quote(Market.Emerging, "2938", "床的世界", 20)] };
+        var document = JsonSerializer.Deserialize<IntradaySnapshotPublisher.SnapshotDocument>(
+            IntradaySnapshotPublisher.SerializeSnapshot(7, snapshot, DateTimeOffset.UtcNow), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.Single(IntradaySnapshotPublisher.FromDocument(document, date).Quotes);
+        var complete = IntradaySnapshotPublisher.FromDocument(document, date, includeEmerging: true);
+        Assert.Equal(2, complete.Quotes.Count);
+        Assert.Equal(Market.Emerging, complete.Quotes.Single(row => row.Ticker == "2938").Market);
     }
 
     private static IntradaySnapshotPublisher CreatePublisher(CapturingHandler handler)

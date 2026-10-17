@@ -238,8 +238,9 @@ test('資金加速的全市場中位數與流動性門檻只看上市櫃，不�
     assert.equal(isCalibrationMarketRow({ market: 'tpex' }), true);
     assert.equal(isCalibrationMarketRow({ market: 'emerging' }), false);
 
-    // 盤後門檻、盤中門檻與盤中收縮常數的中位數三處都要先篩掉興櫃。
+    // 舊契約的門檻仍排除興櫃，新盤中直接用 C# 投影，無第二套 JS 基準。
     assert.match(siteScript, /currentLiquidityFloor\(data\.rows\.filter\(isCalibrationMarketRow\)\.map/);
-    assert.match(siteScript, /currentLiquidityFloor\(rows\.filter\(isCalibrationMarketRow\)\.map/);
-    assert.match(siteScript, /referenceByTicker\.values\(\)\]\s*\.filter\(isCalibrationMarketRow\)/);
+    assert.match(siteScript, /currentLiquidityFloor: projection\?\.currentLiquidityFloor/);
+    const loader = siteScript.slice(siteScript.indexOf('async function loadIntradayResult('), siteScript.indexOf('// intraday_latest 的欄位'));
+    assert.doesNotMatch(loader, /shrunkVolumeRatio\(/);
 });

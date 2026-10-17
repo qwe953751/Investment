@@ -1218,7 +1218,7 @@ public sealed class StaticSiteExporter(
                 ? RankingFormatter.ToBillionText(result.MarketTotalTradingValue / currentPeriodDays, 0)
                 : "—",
             ToMarketHeatExport(result.MarketHeat),
-            [.. result.Rows.Select(ToExport)]);
+            [.. result.Rows.Select(ToExport)], RankingSortOrders.RulesVersion, result.CurrentLiquidityFloor);
     }
 
     private static SingleComparisonExport ToSingleComparisonExport(
@@ -1252,7 +1252,8 @@ public sealed class StaticSiteExporter(
                 Round(row.TradingValueChangeRate),
                 RoundRatio(row.VolumeRatio),
                 RoundRatio(row.PreviousVolumeRatio),
-                RoundSignificant(row.MarketShareChange)))]);
+                RoundSignificant(row.MarketShareChange), row.PreviousAccelerationSortOrder))],
+            RankingSortOrders.RulesVersion, result.CurrentLiquidityFloor);
     }
 
     private static MarketHeatExport? ToMarketHeatExport(MarketHeatMetrics? heat)
@@ -1346,7 +1347,7 @@ public sealed class StaticSiteExporter(
         Round(row.DailyPriceChangeRate),
         Round(row.WeeklyPriceChangeRate),
         row.WeeklyBaselineClosePrice,
-        row.ClosePrice);
+        row.ClosePrice, row.AccelerationSortOrder, row.PreviousAccelerationSortOrder, row.CloseDate, row.CarriedClose);
 
     /// <summary>
     /// 比率算出來會帶著 28 位小數，整包 JSON 因此膨脹一倍。
@@ -1357,11 +1358,11 @@ public sealed class StaticSiteExporter(
     private static decimal? Round(decimal? value) => value is { } number ? Round(number) : null;
 
     /// <summary>
-    /// 量比是「幾倍」等級的數字（多半落在 0.1 ~ 20），四位小數已經遠超過排序與顯示需要，
+    /// 量比是「幾倍」等級的數字（多半落在 0.1 ~ 20），四位小數只供顯示；排序另用 C# decimal 序位，
     /// 而且比八位小數短一半——一份檔案有近兩千列，每個位數都要乘上兩千。
     /// </summary>
     private static decimal? RoundRatio(decimal? value)
-        => value is { } number ? Math.Round(number, 4) : null;
+        => RankingNumericPrecision.Ratio(value);
 
     /// <summary>
     /// 市佔率是萬分之一等級的小數，固定八位小數只剩兩三位有效數字，
@@ -1369,16 +1370,7 @@ public sealed class StaticSiteExporter(
     /// 改用有效位數，小數字保留精度，大數字也不會變長。
     /// </summary>
     private static decimal RoundSignificant(decimal value, int significantDigits = 8)
-    {
-        if (value == 0m)
-        {
-            return 0m;
-        }
-
-        var magnitude = (int)Math.Floor(Math.Log10((double)Math.Abs(value)));
-
-        return Math.Round(value, Math.Clamp(significantDigits - 1 - magnitude, 0, 28));
-    }
+        => RankingNumericPrecision.Significant(value, significantDigits);
 
     /// <summary>
     /// 門檻按鈕的文字。單位就是表格上那一欄「平均每日成交值」，
@@ -2301,7 +2293,7 @@ public sealed class StaticSiteExporter(
         MarketStructureExport? MarketStructure,
 
         // 獨立 ETF 配息檔；以內容 SHA 快取，失敗狀態由各市場分開標示。
-        EtfDividendManifestExport EtfDividends);
+        EtfDividendManifestExport EtfDividends, string RankingRulesVersion = RankingSortOrders.RulesVersion);
 
     private sealed record ThresholdExport(int Key, string Text);
 
@@ -2493,7 +2485,7 @@ public sealed class StaticSiteExporter(
         string PreviousPeriod,
         string MarketDailyAverage,
         MarketHeatExport? MarketHeat,
-        IReadOnlyList<RowExport> Rows);
+        IReadOnlyList<RowExport> Rows, string RankingRulesVersion, decimal? CurrentLiquidityFloor);
 
     private sealed record SingleComparisonExport(
         int PeriodDays,
@@ -2503,7 +2495,7 @@ public sealed class StaticSiteExporter(
         string? AccelerationMessage,
         string CurrentPeriod,
         string PreviousPeriod,
-        IReadOnlyList<SingleRowExport> Rows);
+        IReadOnlyList<SingleRowExport> Rows, string RankingRulesVersion, decimal? CurrentLiquidityFloor);
 
     private sealed record SingleRowExport(
         string Ticker,
@@ -2511,7 +2503,7 @@ public sealed class StaticSiteExporter(
         decimal? Rate,
         decimal? VolumeRatio,
         decimal? PreviousVolumeRatio,
-        decimal ShareChange);
+        decimal ShareChange, int PreviousAccelerationSortOrder);
 
     private sealed record MarketHeatExport(
         string TradingDate,
@@ -2549,7 +2541,8 @@ public sealed class StaticSiteExporter(
         decimal? PriceChange,
         decimal? WeeklyPriceChange,
         decimal? WeeklyBaselineClose,
-        decimal? Close);
+        decimal? Close, int AccelerationSortOrder, int PreviousAccelerationSortOrder,
+        DateOnly? CloseDate, bool CarriedClose);
 
     /// <summary>
     /// 重大訊息。資料在 Supabase 的 material_events，由每日排程累積。

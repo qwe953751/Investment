@@ -27,7 +27,7 @@ public sealed class AccelerationCoefficientsSiteJsTests
     }
 
     [Fact]
-    public void rankRows與loadIntraday共用同一組收縮量比與門檻函式()
+    public void 盤中消費CSharp投影而盤後使用精確排序序位()
     {
         var script = ReadAsset("site.js");
 
@@ -45,9 +45,10 @@ public sealed class AccelerationCoefficientsSiteJsTests
         Assert.Contains("accelerationCoefficients.maxPreviousRankForDisplay", rankRowsBody, StringComparison.Ordinal);
 
         var loadIntradayBody = script[loadIntradayStart..];
-        Assert.Contains("shrunkVolumeRatio(", loadIntradayBody, StringComparison.Ordinal);
-        Assert.Contains("currentLiquidityFloor(", loadIntradayBody, StringComparison.Ordinal);
-        Assert.Contains("accelerationCoefficients.maxPreviousRankForDisplay", loadIntradayBody, StringComparison.Ordinal);
+        Assert.Contains("const projection = intradayRanking", loadIntradayBody, StringComparison.Ordinal);
+        Assert.Contains("projection?.currentLiquidityFloor", loadIntradayBody, StringComparison.Ordinal);
+        Assert.Contains("rankRows(", loadIntradayBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("shrunkVolumeRatio(", loadIntradayBody, StringComparison.Ordinal);
 
         // #10 的原始症狀：盤中排序鍵曾經是絕對成交比變化 row.shareChange，
         // 在數學上等價於用成交值排序。改用倍數之後不該再拿它排序。

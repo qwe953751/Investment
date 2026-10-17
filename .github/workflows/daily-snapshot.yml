@@ -571,6 +571,13 @@ jobs:
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
         run: dotnet run -c Release --project src/Invest.Web -- rebuild-market-structure
 
+      - name: 更新既有盤中排行（同價同輪，不補行情）
+        if: ${{ !cancelled() && steps.export_site.outcome == 'success' }}
+        env:
+          Logging__LogLevel__Default: Warning
+          SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
+        run: dotnet run -c Release --project src/Invest.Web -- rebuild-intraday-ranking
+
       - name: 驗證網站盤後日期
         id: verify_manifest
         if: ${{ !cancelled() && inputs.publish-only != true }}

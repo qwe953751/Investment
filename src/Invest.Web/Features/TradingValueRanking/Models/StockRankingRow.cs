@@ -23,6 +23,14 @@ public sealed class StockRankingRow
 
     public required string Ticker { get; init; }
 
+    public int AccelerationSortOrder { get; internal set; }
+
+    public int PreviousAccelerationSortOrder { get; internal set; }
+
+    public DateOnly? CloseDate { get; init; }
+
+    public bool CarriedClose { get; init; }
+
     public required string Name { get; init; }
 
     public required Market Market { get; init; }
@@ -41,13 +49,13 @@ public sealed class StockRankingRow
 
     /// <summary>
     /// 前期自己的增減率，也就是「前期 vs 再前一期」。
-    /// 資金加速模式的前期排名就是照這個數字排出來的。再前一期的資料不足時為 null。
+    /// 此欄僅供增減率呈現；資金加速前期排名使用前期收縮量比。
     /// </summary>
     public decimal? PreviousTradingValueChangeRate { get; init; }
 
     /// <summary>
     /// 本期之前 20 個交易日的中位數日成交值，也就是「這檔股票平常一天成交多少」。
-    /// 量比的分母。回看不滿 20 天、或停牌超過一半期間時為 null。
+    /// 量比的分母。全市場回看不足 20 天、或個股補零後中位數不為正時為 null；個股 null 由收縮規則按 0 處理。
     /// </summary>
     public decimal? BaselineDailyTradingValue { get; init; }
 
@@ -77,7 +85,7 @@ public sealed class StockRankingRow
         PreviousAverageDailyTradingValue, PreviousBaselineDailyTradingValue, PreviousMarketMedianBaseline);
 
     /// <summary>
-    /// 本期成交值佔全市場（上市＋上櫃）的比例。
+    /// 本期成交值佔上市＋上櫃＋興櫃普通股全市場的比例。
     /// </summary>
     public required decimal MarketShare { get; init; }
 
@@ -106,7 +114,7 @@ public sealed class StockRankingRow
     public decimal? WeeklyBaselineClosePrice { get; init; }
 
     /// <summary>
-    /// 期間最後一個有成交的收盤價。
+    /// 觀察日收盤；當日缺價時沿用此前最後有效收盤，來源見 CloseDate／CarriedClose。
     /// </summary>
     public decimal? ClosePrice { get; init; }
 

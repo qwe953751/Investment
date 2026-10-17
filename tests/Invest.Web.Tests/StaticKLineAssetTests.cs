@@ -1415,7 +1415,7 @@ public sealed class StaticKLineAssetTests
             script,
             StringComparison.Ordinal);
         Assert.Contains(
-            "fetchPeriod(`${selection.period}-${referenceDate}`)",
+            "`${selection.period}-${referenceDate}`",
             script,
             StringComparison.Ordinal);
         Assert.DoesNotContain(

@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.MarketStructure.Models;
+using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Features.StockTopics.Models;
 
 namespace Invest.Web.Infrastructure.MarketData.Intraday;
@@ -33,6 +34,7 @@ public sealed class IntradaySnapshotPublisher(
     private static readonly Regex SnapshotFileName = new(
         "^intraday-\\d{8}-\\d{4}-run\\d+\\.json$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex RankingSnapshotFileName = new("^intraday-ranking-\\d{8}-run\\d+-[a-f0-9]{12}\\.json$", RegexOptions.Compiled);
     private static readonly Regex TopicSnapshotFileName = new(
         "^intraday-topic-\\d{8}-\\d{4}-run\\d+\\.json$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -264,7 +266,7 @@ public sealed class IntradaySnapshotPublisher(
     /// <summary>讀取帶有 CDN run id 與時間的最新原始快照，供市場結構 consumer 啟動恢復。</summary>
     public async Task<PublishedIntradaySnapshot?> TryLoadLatestPublishedSnapshotAsync(
         DateOnly expectedTradeDate,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool includeEmerging = false)
     {
         var settings = ReadSettings();
         if (settings is null)
@@ -291,7 +293,8 @@ public sealed class IntradaySnapshotPublisher(
         if (document is null
             || document.RunId != pointer.RunId
             || document.TradeDate != pointer.TradeDate
-            || document.RowCount != pointer.RowCount)
+            || document.RowCount != pointer.RowCount
+            || document.CapturedAt != pointer.CapturedAt)
         {
             throw new InvalidDataException("盤中 CDN latest 指標與原始快照內容不一致。");
         }
@@ -300,7 +303,7 @@ public sealed class IntradaySnapshotPublisher(
             pointer.RunId,
             expectedTradeDate,
             pointer.CapturedAt,
-            FromDocument(document, expectedTradeDate));
+            FromDocument(document, expectedTradeDate, includeEmerging), pointer.Sha256);
     }
 
     /// <summary>讀同日已發布的結構配送內容；只供續用可驗證成員身分，行情不可沿用。</summary>
@@ -425,16 +428,46 @@ public sealed class IntradaySnapshotPublisher(
         return new IntradayMarketStructurePublishResult(true, fileName);
     }
 
+    /// <summary>休市發布時從保存的真實 raw 重算；不覆寫 raw，也不寫行情資料庫。</summary>
+    public async Task<bool> PublishRankingAsync(PublishedIntradaySnapshot raw, IntradayRankingDocument ranking,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = ReadSettings();
+        if (settings is null) return false;
+        var pointer = await ReadRawLatestAsync(settings, cancellationToken);
+        bool Matches(LatestDocument? latest) => latest is not null && latest.RunId == raw.RunId
+            && latest.TradeDate == raw.TradeDate.ToString("yyyy-MM-dd") && latest.CapturedAt == raw.CapturedAt
+            && raw.SourceSha256 is not null && latest.Sha256 == raw.SourceSha256;
+        if (!Matches(pointer) || ranking.TradeDate != raw.TradeDate || ranking.CapturedAt != raw.CapturedAt)
+            return false;
+        var document = ranking with { RunId = raw.RunId };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(document, JsonOptions);
+        var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var file = $"intraday-ranking-{raw.TradeDate:yyyyMMdd}-run{raw.RunId}-{hash[..12]}.json";
+        await UploadAsync(settings, file, bytes, 31_536_000, true, cancellationToken);
+        if (!Matches(await ReadRawLatestAsync(settings, cancellationToken))) return false;
+        var latest = new { schemaVersion = 1, runId = raw.RunId, tradeDate = raw.TradeDate,
+            capturedAt = raw.CapturedAt, file, sha256 = hash, rawSha256 = raw.SourceSha256,
+            rankingRulesVersion = RankingSortOrders.RulesVersion };
+        await UploadAsync(settings, "ranking-latest.json", JsonSerializer.SerializeToUtf8Bytes(latest, JsonOptions),
+            10, false, cancellationToken);
+        try { await PruneExpiredSnapshotsAsync(settings, file, settings.RetainedSnapshotCount,
+            RankingSnapshotFileName, "盤中排行計算清理", cancellationToken); }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        { logger.LogWarning("盤中排行已發布，過期檔清理稍後重試：{Type}", exception.GetType().Name); }
+        return true;
+    }
+
     /// <summary>把快照文件還原成報價；興櫃一律不收，由尾段收集器每輪重新讀。</summary>
-    internal static IntradaySnapshot FromDocument(SnapshotDocument document, DateOnly tradeDate)
+    internal static IntradaySnapshot FromDocument(SnapshotDocument document, DateOnly tradeDate, bool includeEmerging = false)
     {
         var quotes = document.Rows
-            .Where(row => !string.Equals(row.Market, "EMERGING", StringComparison.OrdinalIgnoreCase))
+            .Where(row => includeEmerging || !string.Equals(row.Market, "EMERGING", StringComparison.OrdinalIgnoreCase))
             .Select(row => new IntradayQuote
             {
                 Market = string.Equals(row.Market, "TWSE", StringComparison.OrdinalIgnoreCase)
                     ? Market.Twse
-                    : Market.Tpex,
+                    : string.Equals(row.Market, "EMERGING", StringComparison.OrdinalIgnoreCase) ? Market.Emerging : Market.Tpex,
                 Ticker = row.Symbol,
                 Name = row.Name,
                 Kind = row.Kind switch
@@ -1115,7 +1148,8 @@ public sealed class IntradaySnapshotPublisher(
             summary,
             rows,
             exportedTopicHeat,
-            suspended);
+            suspended,
+            snapshot.Ranking is { } ranking ? ranking with { RunId = runId } : null);
     }
 
     private sealed record PublisherSettings(string SupabaseUrl, string Bucket, string Secret, int RetainedSnapshotCount);
@@ -1129,7 +1163,8 @@ public sealed class IntradaySnapshotPublisher(
         IReadOnlyDictionary<string, object?> Summary,
         IReadOnlyList<SnapshotRow> Rows,
         SnapshotTopicHeat? TopicHeat,
-        IReadOnlyList<SnapshotSuspended>? Suspended = null);
+        IReadOnlyList<SnapshotSuspended>? Suspended = null,
+        IntradayRankingDocument? Ranking = null);
 
     /// <summary>
     /// 這一輪確定停止交易（停牌）的標的與停牌前最後收盤（筆記 #84）。<b>欄位不存在代表這一輪沒有判斷</b>，
@@ -1234,7 +1269,7 @@ public sealed record PublishedIntradaySnapshot(
     long RunId,
     DateOnly TradeDate,
     DateTimeOffset CapturedAt,
-    IntradaySnapshot Snapshot);
+    IntradaySnapshot Snapshot, string? SourceSha256 = null);
 
 public sealed record IntradayMarketStructurePublishResult(bool Published, string? File)
 {

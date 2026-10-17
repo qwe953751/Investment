@@ -71,7 +71,7 @@ using System.Text.Json.Serialization;
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
     command is "backfill" or "backfill-bars" or "backfill-index-weights" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
-        or "market-structure-intraday-audit" or "market-structure-audit" or "repair-market-indices" or "rebuild-market-structure" or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet" or "etf-dividends";
+        or "market-structure-intraday-audit" or "market-structure-audit" or "repair-market-indices" or "rebuild-market-structure" or "rebuild-intraday-ranking" or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet" or "etf-dividends";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
 
@@ -261,6 +261,25 @@ if (command is "market-structure-audit")
     }
     return;
 }
+if (command is "rebuild-intraday-ranking")
+{
+    if (!IntradaySnapshotPublisher.IsPublishingConfigured(app.Configuration))
+        throw new InvalidOperationException("缺少既有盤中 Storage 發布設定，停止，不使用假值。");
+    var publisher = app.Services.GetRequiredService<IntradaySnapshotPublisher>();
+    var store = app.Services.GetRequiredService<DailyQuoteStore>();
+    var history = await store.LoadAllAsync();
+    var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTimeOffset.UtcNow, "Asia/Taipei").DateTime);
+    var raw = await publisher.TryLoadLatestPublishedSnapshotAsync(today, includeEmerging: true);
+    if (raw is null && history.Count > 0)
+        raw = await publisher.TryLoadLatestPublishedSnapshotAsync(history[^1].TradingDate, includeEmerging: true);
+    if (raw is null) { Console.WriteLine("沒有適用的真實盤中快照，等待下一輪。"); return; }
+    var ranking = new IntradayRankingProjection(history).Calculate(raw.Snapshot, raw.CapturedAt);
+    if (!await publisher.PublishRankingAsync(raw, ranking))
+        throw new InvalidOperationException("盤中 raw 已改變或排行未發布，不能視為成功。");
+    Console.WriteLine($"已重建盤中排行 {raw.TradeDate:yyyy-MM-dd} run {raw.RunId}，{ranking.Rows.Count} 檔；{RankingSortOrders.RulesVersion}。");
+    return;
+}
+
 if (command is "rebuild-market-structure")
 {
     if (!IntradaySnapshotPublisher.IsPublishingConfigured(app.Configuration))
@@ -935,6 +954,7 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     // 市場熱絡只用前收、成交值與指數，與權息還原無關。不能經由排行榜資料集載入，
     // 否則 TPEx 除權息來源暫時失敗會讓一整場即時報價根本無法開始收集。
     var historySnapshots = await dailyQuoteStore.LoadAllAsync(cts.Token);
+    var rankingProjection = new IntradayRankingProjection(historySnapshots);
     var historicalDataSet = ToMarketHeatHistory(historySnapshots, null);
 
     // 盤中的基準價、週與今年以來漲跌、今天的還原倍數：和盤後同一套規則（見 IntradayAdjustment）。
@@ -1482,6 +1502,16 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                         MarketHeat = CalculateIntradayMarketHeat(
                             historicalDataSet, snapshot, capturedAt, turnoverCalibration)
                     };
+
+                    try
+                    {
+                        snapshot = snapshot with { Ranking = rankingProjection.Calculate(snapshot, capturedAt) };
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        // 排行基準不可用仍發布 raw，下一輪自動再準備；絕不退回前端的 share 版公式。
+                        Console.WriteLine($"盤中排行投影暫未完成：{exception.GetType().Name}");
+                    }
 
                     // 尾段不寫全市場成交額曲線：那條曲線是用來校準「某個時刻通常已跑掉幾成」的，
                     // 收盤後的點會把 13:35 之後的比例灌成一堆 1.0。

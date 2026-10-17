@@ -36,8 +36,16 @@ public sealed class TradingValueRankingCalculator
     private IReadOnlyDictionary<string, ListingReference> _listingsByTicker
         = new Dictionary<string, ListingReference>();
     private Dictionary<string, Stock> _stocksByTicker = [];
+    private StockIdentityIndex? _identities;
 
     public TradingValueRankingResult Calculate(MarketDataSet dataSet, RankingQuery query)
+        => Calculate(dataSet, query, false);
+
+    internal TradingValueRankingResult PrepareSingleDayComparison(MarketDataSet dataSet, int days, DateOnly date)
+        => Calculate(dataSet, new RankingQuery { PeriodDays = days, EndDate = date,
+            ComparisonMode = RankingComparisonMode.SingleDay, MinimumAverageDailyTradingValue = 0, TopCount = int.MaxValue }, true);
+
+    private TradingValueRankingResult Calculate(MarketDataSet dataSet, RankingQuery query, bool preparing)
     {
         var periodDays = query.PeriodDays;
         ArgumentOutOfRangeException.ThrowIfLessThan(periodDays, 1);
@@ -67,6 +75,7 @@ public sealed class TradingValueRankingCalculator
                 query.ComparisonMode);
         }
 
+        var stocksByTicker = _identities?.Through(dates[^1]) ?? _stocksByTicker;
         var current = dates[^currentPeriodDays..];
         var previous = dates[^(currentPeriodDays + periodDays)..^currentPeriodDays];
         // 再前一期只在資金加速模式才影響排序，但成交熱度模式也一併算出來：
@@ -75,7 +84,7 @@ public sealed class TradingValueRankingCalculator
             ? dates[^(currentPeriodDays + periodDays * 2)..^(currentPeriodDays + periodDays)]
             : [];
 
-        var currentStats = Aggregate(_byTicker, _adjustmentsByTicker, current);
+        var currentStats = Aggregate(_byTicker, _adjustmentsByTicker, current, preparing);
         var previousStats = Aggregate(_byTicker, _adjustmentsByTicker, previous);
         var priorStats = prior.Length > 0
             ? Aggregate(_byTicker, _adjustmentsByTicker, prior)
@@ -94,36 +103,33 @@ public sealed class TradingValueRankingCalculator
         // 成交額中位數 0.012 億，上市櫃是 0.099 億——併進來整體中位數會掉約 30%，
         // 門檻與 k 跟著一起掉 30%，等於默默改了一組已經校準過的參數。
         // 興櫃的個股仍用同一個絕對門檻與 k 去比，只是不參與「中位數」的計算。
-        var marketMedianBaseline = Median(CalibrationValues(baselines));
-        var previousMarketMedianBaseline = Median(CalibrationValues(previousBaselines));
+        var marketMedianBaseline = Median(CalibrationValues(baselines, stocksByTicker));
+        var previousMarketMedianBaseline = Median(CalibrationValues(previousBaselines, stocksByTicker));
 
         // 資金加速專用的當期流動性門檻（筆記 #10，唯一定義處在 AccelerationRules）：
         // 本期成交值低於「全市場本期中位數」的這個比例就直接排除。門檻刻意用「當期」
         // 而不是「過去」——過去的規則會誤殺「平常沒量、今天爆量」的個股，
         // 那恰恰是資金加速要抓的東西。
-        var currentLiquidityFloor = query.Mode == RankingMode.CapitalAcceleration
-            ? Median(CalibrationValues(currentStats.ToDictionary(
-                    pair => pair.Key,
-                    pair => pair.Value.AverageDailyTradingValue)))
-                * AccelerationRules.CurrentLiquidityFloorRatio
-            : (decimal?)null;
+        var currentLiquidityFloor = Median(CalibrationValues(currentStats.ToDictionary(
+                pair => pair.Key, pair => pair.Value.AverageDailyTradingValue), stocksByTicker))
+            * AccelerationRules.CurrentLiquidityFloorRatio;
 
         // 分母一律是上市＋上櫃＋興櫃普通股，不隨市場篩選改變，否則不同篩選下的「市場成交比」無法互相比較。
         // ETF、TDR 與美股雖保留在資料集供持倉／搜尋／日 K 使用，也不能污染這個分母：
         // ETF 是投資組合、TDR 不是台灣公司，兩者的成交額都不是資金流向個股的證據。
         var marketTotal = currentStats
-            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock, MarketFilter.All))
+            .Where(pair => stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock, MarketFilter.All))
             .Sum(pair => pair.Value.TotalTradingValue);
         var previousMarketTotal = previousStats
-            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock, MarketFilter.All))
+            .Where(pair => stocksByTicker.TryGetValue(pair.Key, out var stock) && MatchesMarket(stock, MarketFilter.All))
             .Sum(pair => pair.Value.TotalTradingValue);
-        var marketHeat = GetMarketHeat(dataSet, current[^1]);
+        var marketHeat = preparing ? null : GetMarketHeat(dataSet, current[^1]);
 
         var candidates = new List<Candidate>();
 
         foreach (var (ticker, stats) in currentStats)
         {
-            if (!_stocksByTicker.TryGetValue(ticker, out var stock))
+            if (!stocksByTicker.TryGetValue(ticker, out var stock))
             {
                 continue;
             }
@@ -142,7 +148,7 @@ public sealed class TradingValueRankingCalculator
 
             // 當期成交值低於當期流動性門檻就直接排除——本期成交值一定算得出來，
             // 不像過去的基準門檻還要考慮「基準算不出來就不篩」的情況。
-            if (currentLiquidityFloor is { } floor && stats.AverageDailyTradingValue < floor)
+            if (query.Mode == RankingMode.CapitalAcceleration && stats.AverageDailyTradingValue < currentLiquidityFloor)
             {
                 continue;
             }
@@ -176,7 +182,7 @@ public sealed class TradingValueRankingCalculator
             {
                 // 期間內有交易、但終點那天停牌或沒成交的標的：現價沿用最後收盤、日漲跌留白，
                 // 週漲跌照終點所在的週算（筆記 #84）；終點當天有收盤的標的結果完全不變。
-                var price = PricePerformanceCalculator.Calculate(
+                var price = preparing ? new PricePerformance(null, null, null, null, null) : PricePerformanceCalculator.Calculate(
                     _byTicker[candidate.Stock.Ticker],
                     _adjustmentsByTicker.GetValueOrDefault(candidate.Stock.Ticker, []),
                     current[^1],
@@ -216,12 +222,14 @@ public sealed class TradingValueRankingCalculator
                     DailyPriceChangeRate = price.DailyChangeRate,
                     WeeklyPriceChangeRate = price.WeeklyChangeRate,
                     WeeklyBaselineClosePrice = price.WeeklyBaselineClose,
-                    ClosePrice = candidate.Current.EndClose,
+                    ClosePrice = price.Close,
+                    CloseDate = price.CloseDate,
+                    CarriedClose = price.Carried,
                     ActiveTradingDayCount = candidate.Current.ActiveDayCount
                 };
             })
-            .Take(query.TopCount)
             .ToArray();
+        RankingSortOrders.Assign(rows);
 
         return new TradingValueRankingResult
         {
@@ -234,9 +242,10 @@ public sealed class TradingValueRankingCalculator
             PreviousPeriodStart = previous[0],
             PreviousPeriodEnd = previous[^1],
             MarketTotalTradingValue = marketTotal,
+            CurrentLiquidityFloor = currentLiquidityFloor,
             MarketHeat = marketHeat,
             RankedStockCount = candidates.Count,
-            Rows = rows,
+            Rows = rows.Take(query.TopCount).ToArray(),
             RankByTicker = ranked
                 .Select((candidate, index) => (candidate.Stock.Ticker, Rank: index + 1))
                 .ToDictionary(entry => entry.Ticker, entry => entry.Rank)
@@ -264,9 +273,11 @@ public sealed class TradingValueRankingCalculator
             }
 
             _stocksByTicker = dataSet.Stocks.ToDictionary(stock => stock.Ticker);
+            _identities = dataSet.IdentityHistory.Count > 0 ? new StockIdentityIndex(dataSet.IdentityHistory) : null;
             var rankingTrading = dataSet.DailyTrading
-                .Where(trading => _stocksByTicker.TryGetValue(trading.Ticker, out var stock)
-                    && stock.Kind == StockKind.CommonStock)
+                .Where(trading => (trading.SourceKind
+                    ?? _identities?.At(trading.Ticker, trading.TradingDate)?.Kind
+                    ?? (_identities is null ? _stocksByTicker.GetValueOrDefault(trading.Ticker)?.Kind : null)) == StockKind.CommonStock)
                 .ToArray();
 
             _allDates = rankingTrading
@@ -285,8 +296,7 @@ public sealed class TradingValueRankingCalculator
             _adjustmentsByTicker = dataSet.PriceAdjustments
                 .Where(item => item.PreviousClose > 0m
                     && item.ReferencePrice > 0m
-                    && _stocksByTicker.TryGetValue(item.Ticker, out var stock)
-                    && stock.Kind == StockKind.CommonStock)
+                    && _byTicker.ContainsKey(item.Ticker))
                 .GroupBy(item => item.Ticker)
                 .ToDictionary(
                     group => group.Key,
@@ -330,7 +340,12 @@ public sealed class TradingValueRankingCalculator
                 return cached;
             }
 
-            var result = MarketHeatCalculator.Calculate(dataSet, date);
+            // 熱絡摘要也必須使用同一個歷史身分，不能被未來種類／名單改掉。
+            var stocks = _identities?.Through(date) ?? _stocksByTicker;
+            var trading = _byTicker.Where(pair => stocks.TryGetValue(pair.Key, out var stock)
+                    && stock.Kind == StockKind.CommonStock)
+                .SelectMany(pair => pair.Value).ToArray();
+            var result = MarketHeatCalculator.Calculate(trading, dataSet.MarketIndices, date);
             _heatCache[date] = result;
 
             return result;
@@ -436,7 +451,7 @@ public sealed class TradingValueRankingCalculator
     /// 與資金加速模式的當期流動性門檻——見 <see cref="Calculate"/> 裡的
     /// <c>marketMedianBaseline</c> 與 <c>currentLiquidityFloor</c>。
     /// </summary>
-    private static decimal Median(IReadOnlyCollection<decimal> values)
+    internal static decimal Median(IReadOnlyCollection<decimal> values)
     {
         if (values.Count == 0)
         {
@@ -471,10 +486,10 @@ public sealed class TradingValueRankingCalculator
     /// <summary>
     /// 算「全市場中位數」要納入的數值：只取上市與上櫃的個股，見 <see cref="Calculate"/> 的說明。
     /// </summary>
-    private decimal[] CalibrationValues(IReadOnlyDictionary<string, decimal> valuesByTicker)
+    private static decimal[] CalibrationValues(IReadOnlyDictionary<string, decimal> valuesByTicker, IReadOnlyDictionary<string, Stock> stocksByTicker)
         => [.. valuesByTicker
-            .Where(pair => _stocksByTicker.TryGetValue(pair.Key, out var stock)
-                && stock.Market is Market.Twse or Market.Tpex)
+            .Where(pair => stocksByTicker.TryGetValue(pair.Key, out var stock)
+                && stock.Kind == StockKind.CommonStock && stock.Market is Market.Twse or Market.Tpex)
             .Select(pair => pair.Value)];
 
     private static bool MatchesMarket(Stock stock, MarketFilter filter)
@@ -493,7 +508,7 @@ public sealed class TradingValueRankingCalculator
     private static Dictionary<string, PeriodStats> Aggregate(
         Dictionary<string, DailyStockTrading[]> byTicker,
         Dictionary<string, IReadOnlyList<StockPriceAdjustment>> adjustmentsByTicker,
-        DateOnly[] window)
+        DateOnly[] window, bool includeEmpty = false)
     {
         var start = window[0];
         var end = window[^1];
@@ -545,7 +560,7 @@ public sealed class TradingValueRankingCalculator
                 }
             }
 
-            if (total == 0m && activeDays == 0 && endClose is null)
+            if (!includeEmpty && total == 0m && activeDays == 0 && endClose is null)
             {
                 continue;
             }

@@ -408,9 +408,9 @@ const MODES = [
     },
     {
         key: 'accel', text: '資金加速',
-        hint: '依收縮量比排序，並套用當期流動性門檻；前期排名使用前期收縮量比，需要 3N 個交易日。',
-        singleDayHint: '依選定日相較前 N 日平均的收縮量比排序；另需再前 N 日平均作為前期基準。',
-        intradayHint: '依收縮量比排序，比較今日與過去觀察期間的市場成交比，並套用當期流動性門檻。'
+        hint: '依本期日均額相對本期之前固定 20 日中位數的收縮量比排序；完整前期比較需 2N＋20 個交易日。',
+        singleDayHint: '選定日成交額相對之前固定 20 日中位數；N 只控制前期比較，完整比較需 1＋N＋20 個交易日。',
+        intradayHint: '依今日累計額相對之前固定 20 日中位數的收縮量比排序；N 控制前期比較，並套用當期流動性門檻。'
     }
 ];
 
@@ -2048,12 +2048,10 @@ function topicColumnText(ticker) {
 // 但營收那兩欄只在這裡有：它們是瀏覽器直接跟 Supabase 拿的，
 // 而 Razor 那頁是本機開發用的檢視，沒有接這條線。
 // 量比就是資金加速的排序依據，所以這段話要能獨立解釋整個模式在做什麼。
-const VOLUME_RATIO_HINT = '本期平均每日成交值 ÷ 這檔股票平常一天的成交值。'
-    + '「平常」取本期之前 20 個交易日的中位數——固定 20 天，不隨上面選的觀察期間改變，'
-    + '因為分母問的是「這檔股票平常多熱鬧」，那是一個該保持穩定的東西。'
-    + '用中位數而不是平均，單日爆量才不會把之後一整個月的基準墊高。'
-    + '3.00 倍代表本期成交值是平常的三倍。回看不滿 20 個交易日、'
-    + '或停牌超過一半期間的個股算不出來，顯示 — 並排在最後。';
+const VOLUME_RATIO_HINT = '量比＝（本期成交值＋k）÷（本期之前20個交易日個股成交值中位數＋k）。'
+    + 'k 為上市櫃普通股正值基準中位數的 0.25 倍，用來收縮極小基準的雜訊。'
+    + '區間使用日均額，單日使用當日額；盤中使用同輪累計額，不是全日預估額。'
+    + '個股缺基準時按 0 收縮，只有全市場基準不足才留空。';
 
 const COLUMNS = [
     { key: 'rank', title: '排名', hint: '依目前排行模式排序後的名次。成交熱度看本期平均每日成交值，資金加速看量比。', ascending: true, value: row => row.rank, cell: row => ({ text: row.rank, cls: 'rank' }) },
@@ -2066,7 +2064,7 @@ const COLUMNS = [
     { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃＋興櫃全體普通股（不含 ETF 與 TDR），不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '本期市場成交比 − 前期市場成交比，單位是百分點。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
     { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。點擊排序仍以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
-    { key: 'close', title: '收盤價', hint: '期間最後一個交易日的收盤價。興櫃沒有收盤價，顯示的是當日日均價（成交量加權平均價）。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
+    { key: 'close', title: '收盤價', hint: '觀察日的收盤價；當日缺價時沿用此前最後有效價，日漲跌留空。興櫃顯示日均價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) }
 ];
@@ -2516,6 +2514,7 @@ function syncRankingIntent() {
     if (key !== rankingIntentKey) {
         rankingIntentKey = key;
         rankingIntent += 1;
+        cancelIntradayComparisonRetry();
         neighborPrefetchSequence += 1;
         pendingTableRows = null;
         rankingResourceKeys = new Set();
@@ -2609,7 +2608,7 @@ function prepareRankingCommit(context) {
     return true;
 }
 
-function runRankingJob(kind, force, loader) {
+function runRankingJob(kind, force, loader, background = false) {
     const intent = syncRankingIntent();
     if (rankingJob?.intent === intent && rankingJob.kind === kind && rankingJob.promise) {
         // A force request during an ordinary load is fulfilled once after that load.
@@ -2617,12 +2616,14 @@ function runRankingJob(kind, force, loader) {
         return rankingJob.promise;
     }
     const context = {
-        intent, kind, force, forcePending: false, sourceRevision: null, resources: new Set(),
+        intent, kind, force, background, forcePending: false, sourceRevision: null, resources: new Set(),
         selection: Object.freeze({ ...state, customStatusFilters: Object.freeze({ ...state.customStatusFilters }) })
     };
     rankingJob = context;
-    rankingBusy = true;
-    rankingStatus(context, `正在讀取：${rankingSelectionLabel(context.selection)}…`);
+    if (!background) {
+        rankingBusy = true;
+        rankingStatus(context, `正在讀取：${rankingSelectionLabel(context.selection)}…`);
+    }
     context.promise = (async () => {
         do {
             context.sourceRevision = null;
@@ -2662,6 +2663,157 @@ function trimPeriodCache() {
         periodPrefetched.delete(key);
     }
 }
+// A comparison may be pending while the foreground table is already usable.
+let intradayRanking = null;
+let intradayComparisonRetry = null;
+
+function cancelIntradayComparisonRetry() {
+    if (intradayComparisonRetry?.timer) clearTimeout(intradayComparisonRetry.timer);
+    intradayComparisonRetry = null;
+}
+
+function comparisonRetryIsCurrent(retry) {
+    return intradayComparisonRetry === retry && retry.intent === rankingIntent
+        && retry.key === rankingSelectionKey() && retry.revision === intradayRawRevision
+        && state.view === 'intraday';
+}
+
+function scheduleIntradayComparisonRetry(context, kind = 'period') {
+    if (context.intent !== syncRankingIntent() || context.sourceRevision !== intradayRawRevision) return;
+    // DB-only snapshots have no C# projection. Their normal source polling remains active;
+    // never turn a comparison retry into repeated full DB downloads.
+    if (kind === 'latest' && (typeof intradayCdn === 'undefined' || intradayCdn === null)) return;
+    const key = rankingSelectionKey();
+    let retry = intradayComparisonRetry;
+    if (!retry || retry.key !== key || retry.revision !== intradayRawRevision) {
+        cancelIntradayComparisonRetry();
+        retry = { intent: context.intent, key, revision: intradayRawRevision, kind, attempt: 0,
+            timer: null, running: false, needed: true };
+        intradayComparisonRetry = retry;
+    }
+    retry.needed = true;
+    armIntradayComparisonRetry(retry);
+}
+
+function armIntradayComparisonRetry(retry, immediate = false) {
+    if (!comparisonRetryIsCurrent(retry) || retry.timer || retry.running
+        || document.hidden || navigator.onLine === false) return;
+    const delay = immediate ? 0 : [1000, 3000, 10000, 30000, 60000][Math.min(retry.attempt, 4)];
+    retry.timer = setTimeout(async () => {
+        retry.timer = null;
+        if (!comparisonRetryIsCurrent(retry) || document.hidden || navigator.onLine === false) return;
+        retry.running = true;
+        retry.needed = false;
+        retry.attempt++;
+        try {
+            if (retry.kind === 'latest') {
+                const next = await fetchIntradayCdnSnapshot();
+                if (!comparisonRetryIsCurrent(retry)) return;
+                if (next) applyIntradaySnapshot(next);
+            }
+            if (retry.intent !== syncRankingIntent() || retry.key !== rankingSelectionKey()) return;
+            await loadIntraday(true, false, true);
+        } catch {
+            retry.needed = true;
+        } finally {
+            retry.running = false;
+            if (comparisonRetryIsCurrent(retry) && retry.needed) armIntradayComparisonRetry(retry);
+        }
+    }, delay * (immediate ? 1 : 0.95 + Math.random() * 0.1));
+}
+
+function resumeIntradayComparisonRetry() {
+    const retry = intradayComparisonRetry;
+    if (!retry) return;
+    if (retry.timer) clearTimeout(retry.timer);
+    retry.timer = null;
+    if (!comparisonRetryIsCurrent(retry)) { cancelIntradayComparisonRetry(); return; }
+    armIntradayComparisonRetry(retry, true);
+}
+
+function normalizeIntradayRanking(document) {
+    const ranking = document?.ranking;
+    if (ranking?.schemaVersion !== 1 || ranking.rankingRulesVersion !== 'ranking-v2'
+        || !Number.isInteger(ranking.runId) || !Array.isArray(document.rows)
+        || typeof ranking.hasAccelerationData !== 'boolean'
+        || ranking.runId !== document.runId || ranking.tradeDate !== document.summary?.trade_date
+        || ranking.capturedAt !== document.summary?.captured_at
+        || !Array.isArray(ranking.rows) || !Number.isFinite(ranking.currentLiquidityFloor)
+        || ranking.currentLiquidityFloor < 0 || !ranking.comparisons) return null;
+    const raw = new Map(document.rows.filter(isRankedIntradayRawRow)
+        .map(row => [String(row.symbol).trim().toUpperCase(), row]));
+    const unique = new Set();
+    const orders = new Set();
+    const ratioValid = value => value === null || value === undefined || (Number.isFinite(value) && value >= 0);
+    if (ranking.rows.length !== raw.size || ranking.rows.some(row => {
+        if (!row || typeof row !== 'object' || !raw.has(row.ticker) || unique.has(row.ticker) || !Number.isFinite(row.value)
+            || row.value !== Number(raw.get(row.ticker).turnover) || !Number.isFinite(row.share)
+            || row.share < 0 || row.share > 1 || !ratioValid(row.volumeRatio)
+            || !Number.isInteger(row.accelerationSortOrder) || row.accelerationSortOrder < 1
+            || orders.has(row.accelerationSortOrder)) return true;
+        unique.add(row.ticker); orders.add(row.accelerationSortOrder); return false;
+    })) return null;
+    const comparisons = {};
+    for (const [period, comparison] of Object.entries(ranking.comparisons)) {
+        if (![1, 5, 10, 20, 60].includes(Number(period)) || !Array.isArray(comparison?.rows)
+            || typeof comparison.hasSufficientData !== 'boolean' || typeof comparison.hasAccelerationData !== 'boolean'
+            || comparison.rows.length !== raw.size
+            || (comparison.hasSufficientData && (!/^\d{4}-\d{2}-\d{2}$/.test(comparison.previousPeriodStart ?? '')
+                || !/^\d{4}-\d{2}-\d{2}$/.test(comparison.previousPeriodEnd ?? '')
+                || comparison.previousPeriodEnd >= ranking.tradeDate
+                || comparison.previousPeriodStart > comparison.previousPeriodEnd))) continue;
+        const tickers = new Set(); const priorOrders = new Set();
+        if (comparison.rows.some(row => {
+            if (!row || typeof row !== 'object' || !raw.has(row.ticker) || tickers.has(row.ticker) || !Number.isFinite(row.previousValue)
+                || row.previousValue < 0 || !Number.isFinite(row.previousShare)
+                || !ratioValid(row.previousVolumeRatio)
+                || (row.shareChange !== undefined && row.shareChange !== null && !Number.isFinite(row.shareChange))
+                || !Number.isInteger(row.previousAccelerationSortOrder) || row.previousAccelerationSortOrder < 1
+                || priorOrders.has(row.previousAccelerationSortOrder)) return true;
+            tickers.add(row.ticker); priorOrders.add(row.previousAccelerationSortOrder); return false;
+        })) continue;
+        comparisons[period] = comparison;
+    }
+    return { ...ranking, comparisons };
+}
+
+let intradayRawSourceHash = null;
+let intradayRankingLoading = null;
+
+async function fetchIntradayRankingProjection(context) {
+    if (typeof intradayCdn === 'undefined' || intradayCdn === null || !Number.isInteger(intradayActualRunId)) return false;
+    const revision = intradayRawRevision;
+    if (intradayRankingLoading?.revision === revision) return intradayRankingLoading.promise;
+    const job = { revision, promise: null };
+    intradayRankingLoading = job;
+    const runId = intradayActualRunId, summary = intradaySummary, raw = intradayRaw, rawHash = intradayRawSourceHash;
+    job.promise = (async () => {
+        try {
+            const pointer = await fetchJsonAttempt(intradayCdnUrl('ranking-latest.json'), { cache: 'no-store' }, 10000);
+            if (pointer?.schemaVersion !== 1 || pointer.rankingRulesVersion !== 'ranking-v2'
+                || pointer.runId !== runId || pointer.tradeDate !== summary.trade_date
+                || pointer.capturedAt !== summary.captured_at || !/^[a-f0-9]{64}$/.test(pointer.sha256 ?? '')
+                || !/^[a-f0-9]{64}$/.test(pointer.rawSha256 ?? '')
+                || (rawHash && pointer.rawSha256 !== rawHash)
+                || !/^intraday-ranking-\d{8}-run\d+-[a-f0-9]{12}\.json$/.test(pointer.file ?? '')) return false;
+            const response = await fetch(intradayCdnUrl(pointer.file), { cache: 'force-cache', signal: AbortSignal.timeout(15000) });
+            if (!response.ok) return false;
+            const bytes = await response.arrayBuffer();
+            const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+                .map(value => value.toString(16).padStart(2, '0')).join('');
+            if (hash !== pointer.sha256) return false;
+            const ranking = normalizeIntradayRanking({ runId, rows: raw, summary,
+                ranking: JSON.parse(new TextDecoder().decode(bytes)) });
+            if (!ranking || !ranking.comparisons[context.selection.period]
+                || revision !== intradayRawRevision || !rankingJobIsCurrent(context)) return false;
+            intradayRanking = ranking;
+            return true;
+        } catch { return false; }
+        finally { if (intradayRankingLoading === job) intradayRankingLoading = null; }
+    })();
+    return job.promise;
+}
+
 // End ranking load coordination.
 
 // 自訂頁的兩個內部資料類型共用這份數量快取，避免切換後按鈕只剩目前檢視的數字。
@@ -18438,18 +18590,24 @@ function currentLiquidityFloor(values) {
 // 依市場與門檻篩選，再依模式排名。
 function rankRows(data, selection = state) {
     const acceleration = selection.mode === 'accel';
-    const sortKey = row => (acceleration ? row.volumeRatio : row.value);
-    const previousSortKey = row => (acceleration ? row.previousVolumeRatio : row.previousValue);
+    const precise = data.rankingRulesVersion === 'ranking-v2';
+    const sortKey = row => acceleration
+        ? precise ? (missing(row.volumeRatio) || !Number.isInteger(row.accelerationSortOrder) ? null : -row.accelerationSortOrder) : row.volumeRatio
+        : row.value;
+    const previousSortKey = row => acceleration
+        ? precise ? (missing(row.previousVolumeRatio) || !Number.isInteger(row.previousAccelerationSortOrder) ? null : -row.previousAccelerationSortOrder) : row.previousVolumeRatio
+        : row.previousValue;
 
     // 資金加速專用的當期流動性門檻：篩掉當期成交值不到「全市場當期中位數 60%」的股票，
     // 量比稍微放大就是好幾十倍，會把排行榜洗成一片沒人在意的殭屍股。用全市場
     // （不受下面的市場、門檻篩選影響）算中位數，跟 C# 的 currentLiquidityFloor 一致。
     const accelerationFloor = acceleration
-        ? currentLiquidityFloor(data.rows.filter(isCalibrationMarketRow).map(row => row.value))
+        ? precise ? data.currentLiquidityFloor
+            : currentLiquidityFloor(data.rows.filter(isCalibrationMarketRow).map(row => row.value))
         : null;
 
     const candidates = data.rows.filter(row =>
-        (selection.market === 'all' || row.market === selection.market)
+        row.eligible !== false && (selection.market === 'all' || row.market === selection.market)
         && row.value >= selection.threshold
         && (accelerationFloor === null || row.value >= accelerationFloor));
 
@@ -18492,6 +18650,12 @@ function sortedRows(rows) {
     }
 
     const copy = [...rows];
+    if (state.sortKey === 'volumeRatio' && rows.every(row => Number.isInteger(row.accelerationSortOrder))) {
+        return copy.sort((a, b) => {
+            const unavailable = Number(missing(a.volumeRatio)) - Number(missing(b.volumeRatio));
+            return unavailable || (state.sortDescending ? 1 : -1) * (a.accelerationSortOrder - b.accelerationSortOrder);
+        });
+    }
 
     // 代號、名稱、市場是文字，走另一條排序路徑。
     if (column.text) {
@@ -20900,6 +21064,8 @@ function appendRankingCell(tr, row, column, options = {}) {
     const td = document.createElement('td');
     td.className = cls;
     td.classList.add('col-' + column.key);
+    if (column.key === 'close' && row.carriedClose && row.closeDate)
+        td.dataset.hint = `沿用 ${row.closeDate.replaceAll('-', '/')} 的最後有效價格；當日無價格變動，日漲跌留空。`;
 
     // 交易限制移到代號右側，讓名稱儲存格可以安全使用漲跌底色。
     if (tickerBadges !== undefined) {
@@ -21237,7 +21403,16 @@ function renderTable() {
     // 先畫第一屏，其餘等這一格畫面更新後再補：換日、換頁籤時先看到結果，
     // 不必等一百列、一千多格全部建好、排版完才有反應。要跳到搜尋結果時一次畫完。
     const rows = rowsForCurrentPage();
-    const firstScreen = customSearchJumpPending ? rows.length : TABLE_FIRST_SCREEN_ROWS;
+    if (state.view === 'intraday' && current?.accelerationPending && rows.length === 0) {
+        const pending = document.createElement('tr');
+        const message = document.createElement('td');
+        message.colSpan = tableColumns.length;
+        message.setAttribute('role', 'status');
+        message.textContent = '資料準備中…';
+        pending.append(message);
+        body.append(pending);
+    }
+    const firstScreen = customSearchJumpPending || current?.preserveTablePosition ? rows.length : TABLE_FIRST_SCREEN_ROWS;
 
     for (const row of rows.slice(0, firstScreen)) {
         body.append(build(row));
@@ -23116,7 +23291,7 @@ async function fetchIntradayCdnSnapshot() {
         { cache: 'force-cache' },
         15_000);
     validateIntradayCdnSnapshot(pointer, document);
-    return document;
+    return { ...document, sourceSha256: pointer.sha256 };
 }
 
 async function fetchIntradayTopicCdnSnapshot() {
@@ -23185,6 +23360,8 @@ function applyIntradaySnapshot(document, broadcast = true) {
     intradayActualRunId = nextRunId;
     intradayRaw = document.rows;
     intradaySummary = document.summary;
+    intradayRanking = normalizeIntradayRanking(document);
+    intradayRawSourceHash = document.sourceSha256 ?? null;
 
     // 停止交易（停牌）的名單跟著同一輪快照走；舊快照與資料庫備援沒有這個欄位（null＝沒有判斷）。
     intradaySuspended = normalizeIntradaySuspended(document.suspended);
@@ -23403,183 +23580,127 @@ function intradayTradingVolume(price, turnover) {
         : null;
 }
 
-function loadIntraday(silent = false, force = false) {
-    return runRankingJob('intraday', force, (context, forced) => loadIntradayResult(context, silent, forced));
+function loadIntraday(silent = false, force = false, background = silent) {
+    return runRankingJob('intraday', force, (context, forced) => loadIntradayResult(context, silent, forced), background);
 }
 
 async function loadIntradayResult(context, silent, force) {
     const selection = context.selection;
-    if (!await ensureIntradaySnapshot(silent, force, true, context)) {
-        return;
-    }
-
+    if (!await ensureIntradaySnapshot(silent, force, true, context)) return;
     if (!rankingJobIsCurrent(context, false)) return;
     context.sourceRevision = intradayRawRevision;
     const raw = intradayRaw;
     const summary = intradaySummary;
-
     if (raw === null || raw.length === 0 || summary === null) {
-        rankingNotice(context,
-            '今天還沒有盤中資料。'
-            + (schedule === null ? '' : `收集器在交易日 ${schedule.intradayStart} 開始。`),
-            true);
+        rankingNotice(context, '今天還沒有盤中資料。', true);
         return;
     }
-
-    // change_percent 存的是百分比（-0.39 就是 -0.39%），
-    // 顯示用的函式吃的是比率，這裡除掉一次，兩種檢視才會是同一套格式。
-    const progress = sessionProgress(summary.captured_at);
-    const rows = mapIntradayRows(
-        raw.filter(isRankedIntradayRawRow),
-        summary,
-        true);
-
-
-    // 分母是全市場，不隨市場篩選改變——與盤後那一欄同一個定義，兩邊的比例才對得起來。
+    const rows = mapIntradayRows(raw.filter(isRankedIntradayRawRow), summary, true);
+    const projection = intradayRanking;
+    const projected = new Map((projection?.rows ?? []).map(row => [row.ticker, row]));
+    const comparison = projection?.comparisons?.[selection.period];
+    const compared = new Map((comparison?.rows ?? []).map(row => [row.ticker, row]));
     const marketTotal = rows.reduce((total, row) => total + row.value, 0);
+    const referenceDate = dates.filter(date => date < summary.trade_date).at(-1);
+    const referenceKey = referenceDate ? `${selection.period}-${referenceDate}` : null;
+    let reference = referenceKey && periodCacheVersions.get(referenceKey) === version ? cache.get(referenceKey) : null;
     const marketHeat = readIntradayMarketHeat(summary);
 
-    if (marketHeat) {
-        marketHeat.previousDays = await loadMarketHeatHistory(summary.trade_date);
-        if (!rankingJobIsCurrent(context)) return;
-    }
-
-    // 對照日必須嚴格早於盤中快照的交易日。
-    // 正常交易日的快照日期是今天，這會自然取到昨天；休市日的快照仍停在上一個交易日，
-    // 若仍固定取 dates 最後一天，就會把快照自己的收盤資料拿來當對照，整欄變成跟自己比。
-    const referenceDate = dates.filter(date => date < summary.trade_date).at(-1);
-    const reference = referenceDate
-        ? await fetchPeriod(`${selection.period}-${referenceDate}`)
-        : null;
-    if (!rankingJobIsCurrent(context)) return;
-    const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
-    applyKnownEmergingMarkets(rows, referenceByTicker);
-
-    if (selection.mode === 'accel' && referenceByTicker.size === 0) {
-        rankingNotice(context, `讀不到過去 ${selection.period} 個交易日的對照資料，資金加速排不出來，請改用成交熱度。`, true);
-        return;
-    }
-
-    for (const row of rows) {
-        const past = referenceByTicker.get(row.ticker);
-
-        // 週漲跌已由收集器算進快照（mapIntradayRows），這裡只算成交比的變化。
-        row.share = marketTotal > 0 ? row.value / marketTotal : null;
-        row.shareChange = past && !missing(row.share) ? row.share - past.share : null;
-    }
-
-    // 資金加速的分子分母都是「市場成交比」，跟盤後用 AverageDailyTradingValue
-    // 同一個尺度換成 share 而已；marketMedianShare 是對照期全市場的成交比中位數，
-    // 對應 C# 的 marketMedianBaseline（唯一定義處是 AccelerationRules.ShrunkRatio）。
-    const marketMedianShare = median([...referenceByTicker.values()]
-        .filter(isCalibrationMarketRow)
-        .map(pastRow => pastRow.share)
-        .filter(value => !missing(value))
-        .sort((a, b) => a - b));
-
-    for (const row of rows) {
-        const past = referenceByTicker.get(row.ticker);
-        row.volumeRatio = shrunkVolumeRatio(row.share, past?.share, marketMedianShare);
-    }
-
-    // 資金加速專用的當期流動性門檻：盤中原本沒套用任何成交門檻，鳥量股的成交比
-    // 稍微放大就是好幾十倍，靠雜訊就能衝進榜單——跟盤後同一套 currentLiquidityFloor 規則。
-    const accelerationFloor = selection.mode === 'accel'
-        ? currentLiquidityFloor(rows.filter(isCalibrationMarketRow).map(row => row.value))
-        : null;
-
-    const candidates = rows.filter(row =>
-        (selection.market === 'all' || row.market === selection.market)
-        && row.value >= selection.threshold
-        && (accelerationFloor === null || row.value >= accelerationFloor));
-    const marketTurnovers = {
-        twse: rows.filter(row => row.market === 'twse')
-            .reduce((total, row) => total + row.value, 0),
-        tpex: rows.filter(row => row.market === 'tpex')
-            .reduce((total, row) => total + row.value, 0)
-    };
-
-    // 資金加速看的是收縮量比，不是絕對成交比變化、也不是預估值：分子分母同一輪，
-    // 早盤也不會失真；用倍數而不是百分點差，才不會被大型股用絕對量體主導排序
-    // （筆記 #10）。唯一定義處在 AccelerationRules.ShrunkRatio，係數讀 manifest。
-    const ranked = [...candidates].sort(
-        order(selection.mode === 'accel' ? row => row.volumeRatio : row => row.value));
-
-    // 盤中的「前期排名」是同一批候選在對照期間裡的名次——盤後拿前一段期間比，
-    // 盤中就拿過去那段期間比。兩份名次都在同一個候選集合上算，
-    // 名次差才純粹是順序變動，不會混進「有些股票只出現在其中一邊」的雜訊。
-    //
-    // 名次是相對的，所以「今天只走了半天」不影響：半天的量排出來的順序，
-    // 跟整天的平均排出來的順序可以直接比，和市場成交比是同一個道理。
-    //
-    // 資金加速模式直接借用對照日當天匯出的 volumeRatio——那是對照日自己一輪
-    // 已經算好的收縮量比（伺服器端一律計算、不受匯出模式影響），不必在這裡
-    // 重算一次「比例的比例」。
-    const pastSortKey = selection.mode === 'accel'
-        ? row => referenceByTicker.get(row.ticker)?.volumeRatio ?? null
-        : row => referenceByTicker.get(row.ticker)?.value ?? null;
-
-    const previousRanks = new Map([...candidates]
-        .sort(order(pastSortKey))
-        .map((row, index) => [row.ticker, index + 1]));
-
-    if (!prepareRankingCommit(context)) return;
-    nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
-    current = {
-        tradeDate: summary.trade_date,
-        capturedAt: toTaipeiText(summary.captured_at),
-        capturedAtIso: summary.captured_at,
-        progress,
-        marketTotal,
-        marketHeat,
-        marketIndices: {
-            twseIndex: missing(summary.twse_index) ? null : Number(summary.twse_index),
-            twseChangePercent: missing(summary.twse_change_percent) ? null : Number(summary.twse_change_percent),
-            twseYearToDateChangePercent: intradayYearToDatePercent(summary, 'twse'),
-            twseOpenPrice: missing(summary.twse_index_open) ? null : Number(summary.twse_index_open),
-            twseHighPrice: missing(summary.twse_index_high) ? null : Number(summary.twse_index_high),
-            twseLowPrice: missing(summary.twse_index_low) ? null : Number(summary.twse_index_low),
-            tpexIndex: missing(summary.tpex_index) ? null : Number(summary.tpex_index),
-            tpexChangePercent: missing(summary.tpex_change_percent) ? null : Number(summary.tpex_change_percent),
-            tpexYearToDateChangePercent: intradayYearToDatePercent(summary, 'tpex'),
-            tpexOpenPrice: missing(summary.tpex_index_open) ? null : Number(summary.tpex_index_open),
-            tpexHighPrice: missing(summary.tpex_index_high) ? null : Number(summary.tpex_index_high),
-            tpexLowPrice: missing(summary.tpex_index_low) ? null : Number(summary.tpex_index_low)
-        },
-        marketTurnovers,
-        referencePeriod: reference?.currentPeriod ?? '資料不足',
-        rankedStockCount: candidates.length,
-        rows: ranked.slice(0, TOP_COUNT).map((row, index) => {
-            const rank = index + 1;
-
-            // 對照期間裡查無此股（新上市、或那段期間完全沒成交）就沒有前期名次可言，
-            // 顯示「—」比給一個假的名次誠實。資金加速模式另外限制：候選有上千檔，
-            // 前期名次超過 maxPreviousRankForDisplay 只是雜訊帶裡的隨機數，
-            // 一律當作「算不出前期名次」，跟盤後 rankRows()／C# 端同一套規則。
-            const previousRank = previousRanks.get(row.ticker);
-            const comparable = !missing(pastSortKey(row))
-                && (selection.mode !== 'accel' || !accelerationCoefficients
-                    || previousRank <= accelerationCoefficients.maxPreviousRankForDisplay);
-
+    // A C# projection already includes all five comparisons. Legacy heat may use a
+    // static reference, but no legacy snapshot is allowed to fabricate acceleration.
+    const commit = () => {
+        if (!rankingJobIsCurrent(context)) return false;
+        const preserveTablePosition = context.background || current?.rankingSignature === rankingSelectionKey();
+        const referenceByTicker = new Map((reference?.rows ?? []).map(row => [row.ticker, row]));
+        const enriched = rows.map(row => {
+            const now = projected.get(row.ticker);
+            const past = compared.get(row.ticker);
+            const legacy = referenceByTicker.get(row.ticker);
             return {
                 ...row,
-                rank,
-                rankChange: comparable ? previousRank - rank : null
+                eligible: now?.eligible ?? true,
+                share: now?.share ?? (marketTotal > 0 ? row.value / marketTotal : null),
+                volumeRatio: now?.volumeRatio ?? null,
+                accelerationSortOrder: now?.accelerationSortOrder ?? null,
+                previousValue: projection ? (comparison?.hasSufficientData ? past?.previousValue ?? null : null) : legacy?.value ?? null,
+                previousVolumeRatio: comparison?.hasAccelerationData ? past?.previousVolumeRatio ?? null : null,
+                previousAccelerationSortOrder: comparison?.hasAccelerationData ? past?.previousAccelerationSortOrder ?? null : null,
+                shareChange: projection ? (comparison?.hasSufficientData ? past?.shareChange ?? null : null)
+                    : legacy && marketTotal > 0 ? row.value / marketTotal - legacy.share : null
             };
-        }),
-        rankByTicker: new Map(ranked.map((row, index) => [row.ticker, index + 1]))
+        });
+        const canAccelerate = projection?.hasAccelerationData === true;
+        const ranked = selection.mode === 'accel' && !canAccelerate
+            ? { count: 0, rows: [], rankByTicker: new Map() }
+            : rankRows({ rows: enriched, rankingRulesVersion: 'ranking-v2',
+                currentLiquidityFloor: projection?.currentLiquidityFloor ?? 0 }, selection);
+        if (selection.mode === 'accel' && !canAccelerate
+            && current?.rankingSignature === rankingSelectionKey() && current?.rows?.length > 0) {
+            if (!prepareRankingCommit(context)) return false;
+            renderSummary(); renderTable(); renderLockRow();
+            return true; // retain the last valid ranking and its truthful capturedAt
+        }
+        if (!prepareRankingCommit(context)) return false;
+        nameByTicker = new Map(rows.map(row => [row.ticker, row.name]));
+        current = {
+            tradeDate: summary.trade_date, capturedAt: toTaipeiText(summary.captured_at),
+            capturedAtIso: summary.captured_at, progress: sessionProgress(summary.captured_at),
+            marketTotal, marketHeat, rankingRulesVersion: 'ranking-v2', rankingSignature: rankingSelectionKey(),
+            accelerationPending: selection.mode === 'accel' && !canAccelerate, preserveTablePosition,
+            comparisonReady: comparison ? comparison.hasSufficientData : !!reference?.hasSufficientData,
+            marketIndices: Object.fromEntries(['twse', 'tpex'].flatMap(market => [
+                [`${market}Index`, missing(summary[`${market}_index`]) ? null : Number(summary[`${market}_index`])],
+                [`${market}ChangePercent`, missing(summary[`${market}_change_percent`]) ? null : Number(summary[`${market}_change_percent`])],
+                [`${market}YearToDateChangePercent`, intradayYearToDatePercent(summary, market)],
+                ...['open', 'high', 'low'].map(field => [`${market}${field[0].toUpperCase() + field.slice(1)}Price`,
+                    missing(summary[`${market}_index_${field}`]) ? null : Number(summary[`${market}_index_${field}`])])])),
+            marketTurnovers: Object.fromEntries(['twse', 'tpex'].map(market => [market,
+                rows.filter(row => row.market === market).reduce((total, row) => total + row.value, 0)])),
+            referencePeriod: comparison?.hasSufficientData
+                ? `${comparison.previousPeriodStart.replaceAll('-', '/')} ~ ${comparison.previousPeriodEnd.replaceAll('-', '/')}`
+                : reference?.currentPeriod ?? `前 ${selection.period} 個交易日`,
+            rankedStockCount: ranked.count, rows: ranked.rows, rankByTicker: ranked.rankByTicker
+        };
+        el('notice').hidden = true;
+        el('ranking').hidden = false;
+        refreshIntradayMarketStructure(summary.trade_date, intradayActualRunId, summary.captured_at, context);
+        renderSummary(); renderTable(); renderLockRow();
+        return true;
     };
-
-    el('notice').hidden = true;
-    el('ranking').hidden = false;
-
-    refreshIntradayMarketStructure(summary.trade_date, intradayActualRunId, summary.captured_at, context);
-
-    renderSummary();
-    renderTable();
-    renderLockRow();
+    if (!commit()) return;
+    // Nonessential market heat history must not delay today's ranking.
+    if (marketHeat) {
+        const owner = current;
+        void loadMarketHeatHistory(summary.trade_date).then(history => {
+            if (current !== owner || !rankingJobIsCurrent(context)) return;
+            marketHeat.previousDays = history;
+            renderSummary();
+        }).catch(() => {});
+    }
+    if ((!projection || !comparison) && await fetchIntradayRankingProjection(context)) {
+        if (rankingJobIsCurrent(context)) return loadIntradayResult(context, true, false);
+        return;
+    }
+    if (!rankingJobIsCurrent(context)) return;
+    if (projection) {
+        if (!comparison) scheduleIntradayComparisonRetry(context, 'latest');
+        else cancelIntradayComparisonRetry(); // genuine history insufficiency is not a fetch failure
+        return;
+    }
+    if (selection.mode === 'accel') {
+        scheduleIntradayComparisonRetry(context, 'latest');
+        return;
+    }
+    if (!referenceKey) return;
+    // The visible foreground was committed before waiting for the reference.
+    if (!reference) {
+        try { reference = await fetchPeriod(referenceKey); } catch { reference = null; }
+        if (!rankingJobIsCurrent(context)) return;
+        if (reference) commit();
+    }
+    if (reference) cancelIntradayComparisonRetry();
+    else scheduleIntradayComparisonRetry(context);
 }
-
 // intraday_latest 的欄位分成兩種：
 //
 //   1. 每檔各自不同的報價（symbol、price、turnover…）——兩千列都要。
@@ -23824,6 +23945,8 @@ function applySingleDayComparison(data, comparison, selection = state) {
     return {
         ...data,
         hasSufficientData: comparison.hasSufficientData,
+        rankingRulesVersion: comparison.rankingRulesVersion ?? data.rankingRulesVersion,
+        currentLiquidityFloor: comparison.currentLiquidityFloor ?? data.currentLiquidityFloor,
         message: comparison.message,
         hasAccelerationData: comparison.hasAccelerationData,
         accelerationMessage: comparison.accelerationMessage,
@@ -33953,6 +34076,8 @@ async function start() {
 
     // manifest 一定要拿到最新的一份，否則版本號就失去意義，
     // 所以這支檔案自己不進快取。
+    for (const name of ['online', 'focus', 'pageshow']) window.addEventListener(name, resumeIntradayComparisonRetry);
+    document.addEventListener('visibilitychange', resumeIntradayComparisonRetry);
     const manifest = await fetchJsonWithRetry('manifest.json', { cache: 'no-store' });
     siteManifest = manifest;
 

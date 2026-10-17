@@ -682,6 +682,8 @@ public sealed record IntradaySnapshot
 {
     public required DateOnly TradeDate { get; init; }
 
+    public Invest.Web.Features.TradingValueRanking.Services.IntradayRankingDocument? Ranking { get; init; }
+
     public required IReadOnlyList<IntradayQuote> Quotes { get; init; }
 
     public IReadOnlyList<MarketIndexQuote> MarketIndices { get; init; } = [];

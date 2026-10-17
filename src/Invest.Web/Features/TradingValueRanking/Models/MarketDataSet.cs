@@ -13,6 +13,8 @@ public sealed class MarketDataSet
 {
     public required IReadOnlyList<Stock> Stocks { get; init; }
 
+    public IReadOnlyList<StockIdentity> IdentityHistory { get; init; } = [];
+
     /// <summary>
     /// 成交值計算與日 K 共用的逐日行情；日 K 需要的開高低收也保留在每列。
     /// </summary>

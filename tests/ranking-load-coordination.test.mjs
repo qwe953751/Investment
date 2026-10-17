@@ -8,7 +8,7 @@ function reference(period) {
         Object.freeze({ ticker: '3008', share: period === 1 ? .7 : .2, value: 70, volumeRatio: 2 })
     ]) });
 }
-for (const mode of ['heat', 'accel']) {
+for (const mode of ['heat']) {
     test(`R1 ${mode}: 1日慢回不得蓋掉20日`, async () => {
         const slow = deferred();
         const h = harness({ fetchPeriod: key => key.startsWith('1-') ? slow.promise : Promise.resolve(reference(20)) }, loaders);
@@ -43,14 +43,14 @@ if (!process.env.RANKING_SCRIPT) {
         const shown = h.context.current;
         first.resolve(reference(1)); await old;
         assert.equal(h.context.current, shown);
-        assert.equal(h.calls.table, 2);
+        assert.equal(h.calls.table, 5);
     });
     test('R4 五期間亂序完成，R5 模式市場門檻同時改，最新選擇勝出', async () => {
         const requests = new Map();
         const h = harness({ fetchPeriod: key => { const d = deferred(); if (!requests.has(key)) requests.set(key, []); requests.get(key).push(d); return d.promise; } }, loaders);
         const jobs = [];
         for (const period of [1, 5, 10, 20, 60]) { h.change({ period }); jobs.push(h.context.loadIntraday()); await settle(); }
-        h.change({ mode: 'accel', market: 'tpex', threshold: 300 }); jobs.push(h.context.loadIntraday()); await settle();
+        h.change({ mode: 'heat', market: 'tpex', threshold: 300 }); jobs.push(h.context.loadIntraday()); await settle();
         // Same-key coalescence is tested separately; loader jobs may share external I/O.
         requests.get('60-2026-10-14').at(-1).resolve(reference(60));
         await jobs.at(-1);
@@ -68,7 +68,7 @@ if (!process.env.RANKING_SCRIPT) {
         d.resolve(reference(1)); await loading;
         assert.equal(h.context.current.marketTotal, 100);
         assert.equal(h.context.current.rows[0].name, 'new');
-        assert.equal(h.calls.table, 1);
+        assert.equal(h.calls.table, 3);
         assert.equal(requests, 2); // real fetchPeriod joins/caches the shared resource (C1).
     });
     test('R7 重複喚醒合併，force要求追加一次，不使工作餓死', async () => {
@@ -80,46 +80,50 @@ if (!process.env.RANKING_SCRIPT) {
         assert.equal(first, joined);
         d.resolve(true); await first;
         assert.deepEqual(forces, [false, true]);
-        assert.equal(h.calls.table, 2);
+        assert.equal(h.calls.table, 4);
     });
     for (const target of ['daily', 'custom', 'etf', 'topics', 'notes', 'assets']) {
         test(`R8 盤中離開到${target}，舊成功與錯誤均無提交資格`, async () => {
             for (const failure of [false, true]) {
                 const d = deferred(); const h = harness({ fetchPeriod: () => d.promise }, loaders);
                 const old = h.context.loadIntraday(); await settle();
+                const beforeLeaving = h.calls.table;
                 h.change({ view: target }); h.context.current = { sentinel: target };
                 const names = h.context.nameByTicker;
                 if (failure) d.reject(Error('late')); else d.resolve(reference(1));
                 await old;
                 assert.equal(h.context.current.sentinel, target); assert.equal(h.context.nameByTicker, names);
-                assert.equal(h.calls.table, 0);
+                assert.equal(h.calls.table, beforeLeaving);
             }
         });
     }
-    test('R10 假日對照日嚴格早於快照日，R11 正確期間收縮量比排序', async () => {
+    test('R10 舊快照熱度的假日對照日嚴格早於快照日', async () => {
         const requests = [];
         const h = harness({ fetchPeriod: async key => { requests.push(key); return reference(20); } }, loaders);
-        h.context.intradaySummary.trade_date = '2026-10-14'; h.change({ period: 20, mode: 'accel' });
+        h.context.intradaySummary.trade_date = '2026-10-14'; h.change({ period: 20, mode: 'heat' });
         await h.context.loadIntraday();
         assert.deepEqual(requests, ['20-2026-10-13']);
-        assert.equal(h.context.current.rows[0].ticker, '3008');
-        const a = h.context.current.rows.find(row => row.ticker === '2330');
-        assert.equal(a.volumeRatio, (.6 + .25 * .5) / (.8 + .25 * .5));
+        assert.equal(h.context.current.rows[0].ticker, '2330');
+        assert.equal(h.context.current.rows[0].volumeRatio, null);
     });
-    test('U1/U2 等待與失敗保留來源標示及控制項，沒有舊結果時不冒充', async () => {
-        const h = harness({}, loaders);
+    test('U1/U2 熱度先完成，對照失敗無手動重試且背景補齊', async () => {
+        const timers = new Map(); let nextId = 0;
+        const h = harness({ setTimeout: fn => { timers.set(++nextId, fn); return nextId; }, clearTimeout: id => timers.delete(id) }, loaders);
         await h.context.loadIntraday();
-        const old = h.context.current;
         const d = deferred(); h.context.fetchPeriod = () => d.promise;
         h.change({ period: 20 }); const job = h.context.loadIntraday(); await settle();
         assert.equal(h.nodes.get('ranking').hidden, false);
-        assert.equal(h.nodes.get('summary').inert, true);
-        assert.match(h.nodes.get('ranking-status').textContent, /目前仍顯示.*1 日.*1-2026-10-14/);
+        assert.equal(h.nodes.get('summary').inert, false);
+        assert.equal(h.nodes.get('ranking-status').hidden, true);
+        assert.equal(h.context.current.rows[0].shareChange, null);
         d.reject(Error('offline')); await job;
-        assert.equal(h.context.current, old);
-        assert.equal(h.nodes.get('ranking-status').dataset.state, 'error');
-        assert.equal(h.nodes.get('ranking-status').children[0].textContent, '重試目前選擇');
+        assert.equal(h.nodes.get('ranking-status').hidden, true);
         assert.equal(h.nodes.get('ranking').attributes['aria-busy'], 'false');
+        assert.equal(timers.size, 1);
+        h.context.fetchPeriod = async () => reference(20);
+        const [id, retry] = timers.entries().next().value; timers.delete(id); await retry();
+        assert.equal(h.context.current.referencePeriod, 'reference-20');
+        assert.equal(timers.size, 0);
     });
     test('U3 延後列與背景補畫撤銷；排序與外觀不撤銷正確工作', async () => {
         const h = harness({}, [...loaders, 'rankingCanRender', 'flushPendingTableRows']);
@@ -210,7 +214,7 @@ test('R6/C1 真實盤中loader＋共用fetchPeriod：廣播新raw後只下載一
     h.context.renderReceivedIntradaySnapshot();
     d.resolve(reference(1)); await loading;
     assert.equal(downloads, 1); assert.equal(h.context.current.marketTotal, 999);
-    assert.equal(h.calls.table, 1);
+    assert.equal(h.calls.table, 2);
 });
 
 test('R9/U4 DB fallback無實際run時，真實結構loader不借舊水位取別輪', async () => {

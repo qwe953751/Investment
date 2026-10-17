@@ -10,6 +10,9 @@ public sealed class DailyStockTrading
 
     public required string Ticker { get; init; }
 
+    /// <summary>當日原始行情的種類；舊的靜態測試資料可留空。</summary>
+    public StockKind? SourceKind { get; init; }
+
     public decimal? OpenPrice { get; init; }
 
     public decimal? HighPrice { get; init; }

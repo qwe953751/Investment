@@ -178,13 +178,14 @@ public sealed class TradingValueRankingQueryService(
     /// 把逐日快照攤平成計算器要的形狀。
     /// snapshots 已依日期遞增排序，所以同一檔股票的名稱會被後面的日期覆蓋，最終取到最新名稱。
     /// </summary>
-    private static MarketDataSet ToDataSet(
+    internal static MarketDataSet ToDataSet(
         IReadOnlyList<DailyQuoteSnapshot> snapshots,
         PriceAdjustmentTable adjustmentTable,
         IReadOnlyList<ReferenceAction> actions)
     {
         var stocks = new Dictionary<string, Stock>();
         var trading = new List<DailyStockTrading>();
+        var identities = new List<StockIdentity>();
         var marketIndices = new List<DailyMarketIndex>(snapshots.Count);
 
         foreach (var snapshot in snapshots)
@@ -197,7 +198,7 @@ public sealed class TradingValueRankingQueryService(
 
             foreach (var quote in snapshot.Quotes)
             {
-                stocks[quote.Ticker] = new Stock
+                var stock = new Stock
                 {
                     Market = quote.Market,
                     Ticker = quote.Ticker,
@@ -206,10 +207,20 @@ public sealed class TradingValueRankingQueryService(
                     IsActive = true
                 };
 
+                if (!stocks.TryGetValue(quote.Ticker, out var prior)
+                    || prior.Market != stock.Market || prior.Name != stock.Name || prior.Kind != stock.Kind)
+                {
+                    if (identities.LastOrDefault(item => item.Stock.Ticker == quote.Ticker)?.EffectiveDate == snapshot.TradingDate)
+                        throw new InvalidDataException($"同日股票身分衝突：{quote.Ticker} {snapshot.TradingDate}");
+                    identities.Add(new StockIdentity(snapshot.TradingDate, stock));
+                }
+                stocks[quote.Ticker] = stock;
+
                 trading.Add(new DailyStockTrading
                 {
                     TradingDate = snapshot.TradingDate,
                     Ticker = quote.Ticker,
+                    SourceKind = quote.Kind,
                     OpenPrice = quote.OpenPrice,
                     HighPrice = quote.HighPrice,
                     LowPrice = quote.LowPrice,
@@ -224,6 +235,7 @@ public sealed class TradingValueRankingQueryService(
         return new MarketDataSet
         {
             Stocks = [.. stocks.Values],
+            IdentityHistory = identities,
             DailyTrading = trading,
             MarketIndices = marketIndices,
             PriceAdjustments = adjustmentTable.Adjustments,

@@ -33,7 +33,7 @@ function functionSource(name) {
 
 function applySnapshot() {
     const context = {
-        intradayRaw: null, intradayRawRevision: 0, intradayActualRunId: null,
+        intradayRawSourceHash: null, intradayRanking: null, intradayRaw: null, intradayRawRevision: 0, intradayActualRunId: null,
         intradaySummary: null,
         intradaySnapshotRunId: null,
         intradaySnapshotTopicHeat: null,
@@ -49,6 +49,7 @@ function applySnapshot() {
         "const missing = value => value === null || value === undefined || value === '';",
         functionSource('normalizeSuspensionKind'),
         functionSource('normalizeIntradaySuspended'),
+        functionSource('normalizeIntradayRanking'),
         functionSource('applyIntradaySnapshot')
     ].join('\n\n'), context);
 
