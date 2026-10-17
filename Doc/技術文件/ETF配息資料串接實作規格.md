@@ -122,6 +122,8 @@ stkNo=&startDate=20250101&endDate=20271231&lang=zh-tw
 - 每日 gate v3 run-name 帶業務日與 open-data／exchange-enabled／blocked-license；舊版／其他模式不計本模式完成或額度。人工 run-now 只跳時段，仍核對日期、鎖與上限。
 - 終態核驗要求收集 complete、發布及公開核驗成功、兩市場 fresh／成功時間／hash；open-data 分支須同日 sourceCheckDate 與兩市場 limited，exchange 分支維持同日 completeCheckDate。此綠燈代表本模式來源流程完成，不代表完整年度原始需求全部完成。
 
+- 發布時以絕對 ETF_DIVIDENDS_DIRECTORY 指向 checkout。export step 必須驗真正發布配息檔及 manifest 日期／批次／hash，不能用暫存投影成功代替；公開核驗最多 30 次、間隔 10 秒，容忍 CDN 延遲但最終仍須完全一致。
+
 ## 4. 業務口徑
 
 | 項目 | 規則 |

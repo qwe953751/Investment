@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { readFile, mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 
 const paths = {
     intraday: new URL('../.github/workflows/intraday.yml', import.meta.url),
@@ -111,4 +112,75 @@ test('blocked-license summary is literal markdown and does not execute backticks
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /狀態：`blocked-license`/);
     assert.doesNotMatch(result.stderr, /command not found/);
+});
+
+
+test('site export reads the checked-out dividend directory and verifies the published artifact before either deployment', () => {
+    const step = files.publication.split('      - name: 輸出靜態網站\n')[1].split('      - name: 更新既有盤中市場結構')[0];
+    assert.match(step, /ETF_DIVIDENDS_DIRECTORY: \$\{\{ github.workspace \}\}\/data\/imports-etf-dividends/);
+    assert.match(step, /payload="\$GITHUB_WORKSPACE\/publish\/site\/data\/etf-dividends.json"/);
+    assert.match(step, /args\+=\(--batch-id "\$ETF_DIVIDEND_BATCH"\)/);
+    assert.match(step, /etf-dividends verify "\$\{args\[@\]\}"/);
+    assert.match(step, /\.etfDividends.batchId == \$payload\[0\].batchId/);
+    const deployments = files.publication.split('      - name: 發佈到').slice(1);
+    assert.equal(deployments.length, 2);
+    for (const deployment of deployments) assert.match(deployment, /steps.export_site.outcome == 'success'/);
+});
+
+test('public verification retries stale CDN data but rejects hash mismatches and wrong payload batches', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'etf-publication-'));
+    try {
+        await writeFile(join(directory, 'curl'), `#!/bin/bash
+set -euo pipefail
+count=$(cat "$FIXTURE_DIR/count")
+count=$((count + 1))
+echo "$count" > "$FIXTURE_DIR/count"
+url=''
+out=''
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        https://*) url="$1"; shift ;;
+        -o) out="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+if [[ "$url" == *manifest.json* ]]; then
+    if [ "$FIXTURE_MODE" = stale ] || { [ "$FIXTURE_MODE" = delayed ] && [ "$count" -eq 1 ]; }; then
+        cp "$FIXTURE_DIR/stale.json" "$out"
+    else cp "$FIXTURE_DIR/ready.json" "$out"; fi
+else cp "$FIXTURE_DIR/payload.json" "$out"; fi
+`);
+        await writeFile(join(directory, 'sleep'), '#!/bin/bash\nexit 0\n'.replaceAll('\\n', '\n'));
+        await chmod(join(directory, 'curl'), 0o700);
+        await chmod(join(directory, 'sleep'), 0o700);
+        const fresh = { status: 'fresh' };
+        const valid = { schemaVersion: 1, rulesVersion: 'etf-dividends-v1', asOfDate: '2026-10-18',
+            batchId: 'production-batch', funds: [], markets: { twse: fresh, tpex: fresh } };
+        await writeFile(join(directory, 'stale.json'), JSON.stringify({ etfDividends: { asOfDate: '2026-10-17' } }));
+        for (const [mode, wrongBatch, corrupt, expected] of [
+            ['delayed', false, false, true], ['stale', false, false, false],
+            ['ready', false, true, false], ['ready', true, false, false]
+        ]) {
+            const payload = JSON.stringify({ ...valid, batchId: wrongBatch ? 'another-batch' : valid.batchId });
+            await writeFile(join(directory, 'payload.json'), payload);
+            await writeFile(join(directory, 'count'), '0');
+            await writeFile(join(directory, 'ready.json'), JSON.stringify({ etfDividends: {
+                file: 'data/etf-dividends.json', asOfDate: valid.asOfDate, batchId: valid.batchId,
+                sha256: corrupt ? '0'.repeat(64) : createHash('sha256').update(payload).digest('hex')
+            } }));
+            const result = spawnSync('bash', ['-c', shellStep('驗證正式網站配息檔與 manifest')], {
+                encoding: 'utf8', env: { ...process.env, PATH: `${directory}:${process.env.PATH}`,
+                    FIXTURE_DIR: directory, FIXTURE_MODE: mode, EXPECTED_DATE: valid.asOfDate,
+                    EXPECTED_BATCH: valid.batchId, RUNNER_TEMP: directory, GITHUB_RUN_ID: '123',
+                    GITHUB_RUN_ATTEMPT: '1', GITHUB_SERVER_URL: 'https://github.com', DATA_SHA: 'abc',
+                    GITHUB_REPOSITORY: 'example/repo', PUBLISH_RUN_ID: '456', PUBLISH_URL: 'https://github.com/example',
+                    GITHUB_STEP_SUMMARY: join(directory, 'summary') }
+            });
+            assert.equal(result.status === 0, expected, `${mode}/${wrongBatch}/${corrupt}: ${result.stderr}`);
+            if (expected) {
+                assert.match(result.stdout, /1\/30/);
+                assert.equal((await readFile(join(directory, 'count'), 'utf8')).trim(), '3');
+            } else assert.match(result.stderr, /拒絕宣告完成/);
+        }
+    } finally { await rm(directory, { recursive: true, force: true }); }
 });

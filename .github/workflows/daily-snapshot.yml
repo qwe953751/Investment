@@ -562,7 +562,28 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           # 只用來判斷 manifest 能否啟用已備妥的盤中 CDN；絕不寫入靜態輸出。
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
-        run: dotnet run -c Release --project src/Invest.Web -- export "$GITHUB_WORKSPACE/publish/site"
+          # dotnet run 的工作目錄是 Web Project；必須指向 checkout 的絕對路徑。
+          ETF_DIVIDENDS_DIRECTORY: ${{ github.workspace }}/data/imports-etf-dividends
+          ETF_DIVIDEND_AS_OF_DATE: ${{ inputs.etf-dividends-as-of-date }}
+          ETF_DIVIDEND_BATCH: ${{ inputs.etf-dividends-batch }}
+        run: |
+          set -euo pipefail
+          dotnet run -c Release --project src/Invest.Web -- export "$GITHUB_WORKSPACE/publish/site"
+          # 驗真正要發布的檔案，不能只驗收集階段的暫存投影。
+          manifest="$GITHUB_WORKSPACE/publish/site/manifest.json"
+          payload="$GITHUB_WORKSPACE/publish/site/data/etf-dividends.json"
+          as_of=$(jq -r '.etfDividends.asOfDate' "$manifest")
+          expected_hash=$(jq -r '.etfDividends.sha256' "$manifest")
+          args=(--input "$payload" --as-of "${ETF_DIVIDEND_AS_OF_DATE:-$as_of}" --sha256 "$expected_hash")
+          if [ -n "$ETF_DIVIDEND_BATCH" ]; then
+              args+=(--batch-id "$ETF_DIVIDEND_BATCH")
+          fi
+          dotnet run -c Release --project src/Invest.Web -- etf-dividends verify "${args[@]}"
+          jq -e --slurpfile payload "$payload" '
+              .etfDividends.file == "data/etf-dividends.json" and
+              .etfDividends.asOfDate == $payload[0].asOfDate and
+              .etfDividends.batchId == $payload[0].batchId
+          ' "$manifest" >/dev/null
 
       - name: 更新既有盤中市場結構（同價同輪，不補行情）
         if: ${{ !cancelled() && steps.export_site.outcome == 'success' }}

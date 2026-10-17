@@ -2493,6 +2493,8 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 - 每日流程 v3 區分 open-data／exchange-enabled／blocked-license；開放來源檢查日 sourceCheckDate 與完整年度來源檢查日 completeCheckDate 分開。保留同日冪等、部分市場重試與三次上限。
 - 完整規格見 [ETF 配息資料串接實作規格](技術文件/ETF配息資料串接實作規格.md)。
 
+正式部署補強：全站 export 明確讀 checkout 的絕對配息目錄；同一 export step 驗要發布的檔案與 manifest，公開核驗有界重試。首輪空檔發布不得算來源驗收完成。
+
 ### 尚待完成
 
 - 補齊可正式使用的完整年度／跨年與未來發放日來源；目前開放資料只提供近期預告及公會部分月份，不可把 sourceCheckDate 當完整年度涵蓋證明。

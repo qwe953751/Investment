@@ -226,26 +226,38 @@ jobs:
           PUBLISH_URL: ${{ steps.publish.outputs.publish_url }}
         run: |
           set -euo pipefail
-          nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date +%s)"
-          curl -fsSL "https://frank-invest.github.io/manifest.json?verify=$nonce" -o "$RUNNER_TEMP/manifest.json"
-          descriptor=$(jq -c '.etfDividends' "$RUNNER_TEMP/manifest.json")
-          file=$(echo "$descriptor" | jq -r '.file')
-          expected_hash=$(echo "$descriptor" | jq -r '.sha256')
-          as_of=$(echo "$descriptor" | jq -r '.asOfDate')
-          batch=$(echo "$descriptor" | jq -r '.batchId')
-          if [ "$file" != 'data/etf-dividends.json' ] || [ "$as_of" != "$EXPECTED_DATE" ] || [ "$batch" != "$EXPECTED_BATCH" ]; then
-              echo "公開 manifest 配息日期／批次不符：$as_of / $batch。" >&2
+          verified=false
+          for attempt in $(seq 1 30); do
+              nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date +%s)-$attempt"
+              if curl --connect-timeout 10 --max-time 30 -fsSL "https://frank-invest.github.io/manifest.json?verify=$nonce" -o "$RUNNER_TEMP/manifest.json" &&
+                 jq -e --arg date "$EXPECTED_DATE" --arg batch "$EXPECTED_BATCH" '
+                     .etfDividends.file == "data/etf-dividends.json" and
+                     .etfDividends.asOfDate == $date and .etfDividends.batchId == $batch and
+                     (.etfDividends.sha256 | type == "string" and test("^[a-fA-F0-9]{64}$"))
+                 ' "$RUNNER_TEMP/manifest.json" >/dev/null; then
+                  expected_hash=$(jq -r '.etfDividends.sha256' "$RUNNER_TEMP/manifest.json")
+                  if curl --connect-timeout 10 --max-time 30 -fsSL "https://frank-invest.github.io/data/etf-dividends.json?verify=$nonce" -o "$RUNNER_TEMP/published-etf-dividends.json"; then
+                      actual_hash=$(sha256sum "$RUNNER_TEMP/published-etf-dividends.json" | cut -d' ' -f1)
+                      if [ "$actual_hash" = "$expected_hash" ] && jq -e --arg date "$EXPECTED_DATE" --arg batch "$EXPECTED_BATCH" '
+                          .schemaVersion == 1 and .rulesVersion == "etf-dividends-v1" and
+                          .asOfDate == $date and .batchId == $batch and (.funds | type == "array") and
+                          (.markets.twse.status != null) and (.markets.tpex.status != null)
+                      ' "$RUNNER_TEMP/published-etf-dividends.json" >/dev/null; then
+                          verified=true
+                          break
+                      fi
+                  fi
+              fi
+              echo "公開配息檔尚未與本批一致，等待 Pages／CDN 更新：$attempt/30。"
+              [ "$attempt" -eq 30 ] || sleep 10
+          done
+          if [ "$verified" != true ]; then
+              echo "公開 ETF 配息檔的日期／批次／SHA256 在重試上限內仍未一致，拒絕宣告完成。" >&2
               exit 1
           fi
-          curl -fsSL "https://frank-invest.github.io/$file?verify=$nonce" -o "$RUNNER_TEMP/published-etf-dividends.json"
-          actual_hash=$(sha256sum "$RUNNER_TEMP/published-etf-dividends.json" | cut -d' ' -f1)
-          if [ "$actual_hash" != "$expected_hash" ]; then
-              echo "公開 ETF 配息檔 hash 與 manifest 不符：$actual_hash / $expected_hash。" >&2
-              exit 1
-          fi
-          jq -e --arg date "$EXPECTED_DATE" '.schemaVersion == 1 and .rulesVersion == "etf-dividends-v1" and .asOfDate == $date and (.funds | type == "array") and (.markets.twse.status != null) and (.markets.tpex.status != null)' \
-              "$RUNNER_TEMP/published-etf-dividends.json" >/dev/null
-          echo "公開配息檔已驗證：batch=$batch；sha256=$actual_hash；asOfDate=$as_of。"
+          batch="$EXPECTED_BATCH"
+          as_of="$EXPECTED_DATE"
+          printf '公開配息檔已驗證：batch=%s；sha256=%s；asOfDate=%s。\n' "$batch" "$actual_hash" "$as_of"
           printf '\n收集 run：[%s](%s)\n\ndata commit：\`%s\`\n\n網站純發布 run：[%s](%s)\n\n公開配息檔 SHA256：\`%s\`\n' \
               "$GITHUB_RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
               "$DATA_SHA" "$PUBLISH_RUN_ID" "$PUBLISH_URL" "$actual_hash" >> "$GITHUB_STEP_SUMMARY"
