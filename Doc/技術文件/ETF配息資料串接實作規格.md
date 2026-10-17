@@ -117,12 +117,14 @@ stkNo=&startDate=20250101&endDate=20271231&lang=zh-tw
 - `coverage.scope=limited`、note、sources 必須輸出與展示；查詢／投影 horizon 不是來源實際涵蓋期間。資料取得成功可 fresh，但不可宣稱整年查無公告或下次發放不存在。
 - 公會「配息基準日」與官網「收益分配基準日」語意尚未確認一致，原文保留，但 open-data 的正規化／輸出 recordDate 留 null；不因欄名相近而混用。既存開放觀測的該欄也不輸出為官網基準日。
 - `sourceCheckDate` 表示兩市場本日開放來源檢查成功；`completeCheckDate` 僅完整來源成功批次填寫，有限來源不得填入。
-- 未提供發放日的真實預告列在 unresolvedEvents 並顯示除息日、已知金額及「待公告」；不推估發放日。announcementYear 在開放預告中以除息年度作儲存分組，不宣稱是來源提供的公告年度；UI 年度仍依發放年；未定日預告另列，年度顯示「未定」，不可依除息年冒充發放年度。開放來源缺日顯示「來源未提供」，不推論官方尚未公告。
+- 未提供發放日的真實預告列在 unresolvedEvents 並顯示除息日、已知金額及「來源未提供」；不推估發放日。announcementYear 在開放預告中以除息年度作儲存分組，不宣稱是來源提供的公告年度；UI 年度仍依發放年；未定日預告另列，年度顯示「未定」，不可依除息年冒充發放年度。開放來源缺日顯示「來源未提供」，不推論官方尚未公告。
 - 近期預告正常滾出時保留既有觀測；null 金額更新為已知值可採用，既有非空金額或日期改動須待核對。原始事件與資料分支紀錄均不可刪。
 - 每日 gate v3 run-name 帶業務日與 open-data／exchange-enabled／blocked-license；舊版／其他模式不計本模式完成或額度。人工 run-now 只跳時段，仍核對日期、鎖與上限。
 - 終態核驗要求收集 complete、發布及公開核驗成功、兩市場 fresh／成功時間／hash；open-data 分支須同日 sourceCheckDate 與兩市場 limited，exchange 分支維持同日 completeCheckDate。此綠燈代表本模式來源流程完成，不代表完整年度原始需求全部完成。
 
 - 發布時以絕對 ETF_DIVIDENDS_DIRECTORY 指向 checkout。export step 必須驗真正發布配息檔及 manifest 日期／批次／hash，不能用暫存投影成功代替；公開核驗最多 30 次、間隔 10 秒，容忍 CDN 延遲但最終仍須完全一致。
+
+**2026-10-18 正式驗收（有限來源）**：程式 `978f6133c`、[完整流程39067191250 attempt 2](https://github.com/qwe953751/Investment/actions/runs/39067191250) 與[純發布39068123217](https://github.com/qwe953751/Investment/actions/runs/39068123217) 均已完成，run success、headSha 相符；[Pages39070189999](https://github.com/frank-invest/frank-invest.github.io/actions/runs/39070189999) success。Pages／公開 manifest 同版 `1792270592`，批次 `39065451633-1-28300a054ddb45dfb807d98b91d1df30`、data `d1f3581a9`；公開配息 JSON SHA256 `41004e469cac0387edccb01fcc75acef1200ee334dd860ede2407ebaeeb86862`。120 檔／139 筆（40 有發放日、99 未定），TWSE／TPEX fresh、成功時間／來源 hash 可追溯，sourceCheckDate=2026-10-18、completeCheckDate=null，139 筆原文及公開事件逐列核對通過。正式 00690／00734B／0050 畫面通過；.NET 1011/1011、Node 377/377。這完成有限來源的接收與發布，仍未滿足完整年度及下一次發放要求；後續見 TODO #28。
 
 ## 4. 業務口徑
 
