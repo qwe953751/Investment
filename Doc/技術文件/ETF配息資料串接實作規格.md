@@ -2,7 +2,7 @@
 
 日期：2026-10-15。用途：交給其他模型拆工、實作與驗收。
 
-**狀態：實作已完成；程式與網站純發布後，正式來源授權尚未確認，production source gate 維持關閉，未收集或公開真實配息資料。**
+**狀態：實作、測試、commit／push 與首次網站純發布已完成；正式來源授權尚未確認，production source gate 維持關閉，未收集或公開真實配息資料。發布 run、公開資產與本機預覽證據見第 16 節及[版本紀錄](../版本紀錄.md)筆記 #87。**
 需求規劃基準：main `3f39ebae8825284ef0fa2ae05af9fc20086dd257`；實際實作與發布證據以本文第 16 節及版本紀錄為準。
 本文件保留原始需求、來源調查、契約與驗收計畫，並在第 16 節記錄已落地範圍、已驗證結果及授權後待辦。
 
@@ -463,4 +463,6 @@ GitHub 官方文件確認 GITHUB_TOKEN 的 workflow_dispatch 是可建立新 run
 - 07:30 台北時間開盤前派工與盤中 Actions 自走鏈分開；週末／休市日仍派工，active/success/失敗冷卻閘門避免重複，派工失敗不影響行情接力。獨立 workflow 只更新 ETF 配息 data 路徑並觸發 `publish-only=true`，不寫一般行情、Supabase 或 migration。
 - `ETF_DIVIDENDS_SOURCE_AUTHORIZED` 未設定時 workflow 只記錄 `blocked-license`，不發官方 HTTP request；此 gate 是為符合證交所使用條款而選的較安全方案。較簡單的「每日無條件抓取」會違反未確認授權前不可自動下載／公開展示的限制，因此未採用。
 
-**目前未完成且需明確區分：**尚未取得／記錄證交所適用同意，也未執行任何正式來源請求、資料 branch 寫入或真實兩市場收集；首次授權後的開盤前與休市日實排仍待觀察。純發布的 JSON 會表達 unavailable，不代表官方查無公告。
+**正式資料仍待授權與實排驗收：**尚未取得／記錄證交所適用同意，也未執行正式來源請求、data branch 寫入或真實兩市場收集。純發布成功不代表資料收集成功；目前公開 JSON 對兩市場明確標示 `unavailable`，不代表官方查無公告。使用者取得授權後，才設定 `ETF_DIVIDENDS_SOURCE_AUTHORIZED=true`，並觀察首個開盤前／休市日批次及公開檔核驗。
+
+2026-10-17 首次純發布成功：[run 38991671763](https://github.com/qwe953751/Investment/actions/runs/38991671763)，head `3bb49913c`；Pages ref `e9c6025a0080ee333ba77f7cfc86388f48fb3060`，manifest `1792201181`，最新交易日 `2026/10/16`。公開配息 JSON SHA256 `bbb306437529c06aff5093cb7cb434b708ddc778c9a139c1fee1be389ad9040d`，TWSE／TPEX 均 unavailable、基金 0 筆。公開 `site.js`／`site.css` 與該發布 head 的 SHA256 分別為 `1237f6be56ef72f8943fdf76b8c6a82a0f4f264cc0bea5141874f5e0f8154663`／`34d3aa97752efde06708fc8203224f5de9c1f52351d3bf96a38392a178c9bb00`。本機版面預覽 `http://127.0.0.1:8768/?preview=etf-v1` 使用合成資料，且以醒目提示標明不是真實配息。
