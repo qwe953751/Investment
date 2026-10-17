@@ -39,14 +39,22 @@ export function decideEtfDividendDispatch({
     if (todayRuns.some(run => run.status === 'queued' || run.status === 'in_progress')) {
         return { dispatch: false, reason: 'already-running', businessDate: local.date };
     }
-    if (todayRuns.some(run => run.conclusion === 'success')) {
+    // Only v2 enabled runs enforce the mandatory collection + public verification check.
+    // Legacy green runs and blocked-license records do not prove daily completion.
+    const title = mode => `ETF 配息 v2 | ${businessDate} | ${mode}`;
+    const enabledRuns = todayRuns.filter(run => run.display_title === title('enabled'));
+    if (enabledRuns.some(run => run.conclusion === 'success')) {
         return { dispatch: false, reason: 'already-completed', businessDate: local.date };
     }
-    if (todayRuns.length >= maxRuns) {
+    if (!authorized && todayRuns.some(run => run.display_title === title('blocked-license'))) {
+        return { dispatch: false, reason: 'license-gate-recorded', businessDate: local.date };
+    }
+    const attempts = authorized ? enabledRuns : [];
+    if (attempts.length >= maxRuns) {
         return { dispatch: false, reason: 'retry-limit', businessDate: local.date };
     }
 
-    const latest = todayRuns
+    const latest = attempts
         .slice()
         .sort((left, right) => Date.parse(right.updated_at ?? right.updatedAt ?? right.created_at)
             - Date.parse(left.updated_at ?? left.updatedAt ?? left.created_at))[0];
@@ -60,7 +68,7 @@ export function decideEtfDividendDispatch({
         reason: authorized ? 'scheduled' : 'license-gate-closed',
         businessDate: local.date,
         authorized: Boolean(authorized),
-        attempt: todayRuns.length + 1
+        attempt: attempts.length + 1
     };
 }
 

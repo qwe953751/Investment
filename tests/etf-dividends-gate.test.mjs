@@ -3,6 +3,8 @@ import test from 'node:test';
 import { decideEtfDividendDispatch } from '../scripts/etf-dividends-gate.mjs';
 
 const date = '2026-10-18'; // Sunday: the daily refresh must not depend on trading days.
+const enabled = `ETF 配息 v2 | ${date} | enabled`;
+const blocked = `ETF 配息 v2 | ${date} | blocked-license`;
 
 test('07:29 Taipei does not dispatch, even on a holiday', () => {
     const result = decideEtfDividendDispatch({
@@ -44,7 +46,7 @@ test('an active or successful daily run prevents duplicate dispatch', () => {
     }).reason, 'already-running');
     assert.equal(decideEtfDividendDispatch({
         ...common,
-        runs: [{ status: 'completed', conclusion: 'success', created_at: '2026-10-17T23:45:00Z' }]
+        runs: [{ status: 'completed', conclusion: 'success', display_title: enabled, created_at: '2026-10-17T23:45:00Z' }]
     }).reason, 'already-completed');
 });
 
@@ -67,18 +69,18 @@ test('failed attempts use a 15 minute cooldown and stop after three runs', () =>
     const common = { at: '2026-10-18T00:00:00Z', businessDate: date, authorized: true };
     assert.equal(decideEtfDividendDispatch({
         ...common,
-        runs: [{ status: 'completed', conclusion: 'failure', created_at: '2026-10-17T23:50:00Z', updated_at: '2026-10-17T23:55:00Z' }]
+        runs: [{ status: 'completed', conclusion: 'failure', display_title: enabled, created_at: '2026-10-17T23:50:00Z', updated_at: '2026-10-17T23:55:00Z' }]
     }).reason, 'retry-cooldown');
     assert.equal(decideEtfDividendDispatch({
         ...common,
         runs: [0, 1, 2].map(index => ({
-            status: 'completed', conclusion: 'failure',
+            status: 'completed', conclusion: 'failure', display_title: enabled,
             created_at: `2026-10-17T23:${20 + index}:00Z`, updated_at: `2026-10-17T23:${30 + index}:00Z`
         }))
     }).reason, 'retry-limit');
     assert.equal(decideEtfDividendDispatch({
         ...common,
-        runs: [{ status: 'completed', conclusion: 'failure', created_at: '2026-10-17T23:30:00Z', updated_at: '2026-10-17T23:35:00Z' }]
+        runs: [{ status: 'completed', conclusion: 'failure', display_title: enabled, created_at: '2026-10-17T23:30:00Z', updated_at: '2026-10-17T23:35:00Z' }]
     }).dispatch, true);
 });
 
@@ -89,4 +91,27 @@ test('the closed source-authorization gate is still recorded once for the day', 
     assert.equal(result.dispatch, true);
     assert.equal(result.reason, 'license-gate-closed');
     assert.equal(result.authorized, false);
+});
+
+test('legacy green and blocked runs cannot consume enabled retries or suppress same-day authorization', () => {
+    const runs = [undefined, blocked, blocked, blocked].map(display_title => ({
+        display_title, status: 'completed', conclusion: 'success',
+        created_at: '2026-10-17T23:45:00Z', updated_at: '2026-10-17T23:59:00Z'
+    }));
+    const result = decideEtfDividendDispatch({
+        at: '2026-10-18T00:00:00Z', businessDate: date, authorized: true, runs
+    });
+    assert.equal(result.dispatch, true);
+    assert.equal(result.attempt, 1);
+    assert.equal(decideEtfDividendDispatch({
+        at: '2026-10-18T00:00:00Z', businessDate: date, authorized: false, runs
+    }).reason, 'license-gate-recorded');
+});
+
+test('a successful versioned run for another business date is not completion', () => {
+    assert.equal(decideEtfDividendDispatch({
+        at: '2026-10-18T00:00:00Z', businessDate: date, authorized: true,
+        runs: [{ display_title: 'ETF 配息 v2 | 2026-10-17 | enabled',
+            conclusion: 'success', created_at: '2026-10-17T23:45:00Z' }]
+    }).dispatch, true);
 });

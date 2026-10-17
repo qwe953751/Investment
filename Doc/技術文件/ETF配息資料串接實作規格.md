@@ -304,6 +304,13 @@ intraday.yml 等待步驟會跳過週末／休市，放在 collect=true 後面�
 每日正常成功一批，失敗最多自動 3 個 run；queued/in_progress 及發布中均視為已有工作。
 重試次數同時查 workflow runs，避免 data push 失敗沒有狀態時每五分鐘無限重跑。
 
+每日完成契約（v2）：run-name 固定帶 `ETF 配息 v2 | business-date | enabled/blocked-license`，
+兩個 gate 的 workflow API 查詢都保留 display_title。只有同業務日期的 v2 enabled success
+可視為完成；舊版綠燈沒有完整驗證保證，不可沿用為完成證據。
+授權關閉每天記錄一次 blocked-license，整體 run 應失敗而非成功；
+同日改為已授權後，blocked-license／舊版歷史不計入完成、冷卻或三次 enabled 重試額度。
+所有版本 queued/in_progress 仍阻擋並行，目標 workflow 排除自己的 run。
+
 階段必須可觀察：
 
 1. gate：確認當日、已完成、執行中、重試上限。
@@ -313,6 +320,11 @@ intraday.yml 等待步驟會跳過週末／休市，放在 collect=true 後面�
 5. request-publish：明確 dispatch daily-snapshot.yml，ref=main、publish-only=true、trading-days=300。
 6. verify-publication：核對特定發布 run、Pages、公開 manifest／配息 hash／asOfDate／batchId，
    再以兩市場結果與 completeCheckDate 判定完整或部分成功。
+7. completion：即使前段失敗或略過，只要未取消都執行。必須 collect=complete、
+   verify-publication=success，公開 asOfDate／completeCheckDate 均等於本次業務日，
+   TWSE／TPEX 都 fresh、有成功時間與 64 位來源 hash 才能綠燈。
+   partial 可保留與發布可用資料，但整體仍失敗以保留有界重試；blocked-license、
+   superseded、gate 略過或未核驗公開檔都不能冒充完整完成。
 
 收集階段 timeout 預設 15 分鐘；發布驗證另給有界等待，可分 job，不以長等待導致重抓來源。
 沿用 GITHUB_TOKEN，短流程精確給 contents:write／actions:write；不新增 PAT 或 DB 權限。

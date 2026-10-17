@@ -271,7 +271,7 @@ jobs:
 
               runs=$(gh api \
                   "repos/$GITHUB_REPOSITORY/actions/workflows/etf-dividends.yml/runs?per_page=50" \
-                  --jq '[.workflow_runs[] | {status, conclusion, created_at, updated_at}]' 2>/dev/null)
+                  --jq '[.workflow_runs[] | {display_title, status, conclusion, created_at, updated_at}]' 2>/dev/null)
               if [ $? -ne 0 ] || [ -z "$runs" ]; then
                   echo "::warning::查不到今日 ETF 配息 workflow 狀態，稍後再檢查。"
                   return 0

@@ -1,4 +1,5 @@
 name: ETF 配息每日檢查
+run-name: "ETF 配息 v2 | ${{ inputs.business-date }} | ${{ (vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED == 'true' || vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED == '1') && 'enabled' || 'blocked-license' }}"
 
 on:
   workflow_dispatch:
@@ -54,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/etf-dividends.yml/runs?per_page=50" \
-              --jq '[.workflow_runs[] | {id, status, conclusion, created_at, updated_at}]')
+              --jq '[.workflow_runs[] | {id, display_title, status, conclusion, created_at, updated_at}]')
           decision=$(node scripts/etf-dividends-gate.mjs \
               --at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --business-date "$BUSINESS_DATE" \
@@ -100,7 +101,7 @@ jobs:
                   ;;
               blocked-license:2)
                   echo "來源授權閘門關閉；未發出任何交易所請求。" >&2
-                  echo "### ETF 配息每日收集\n\n狀態：`blocked-license`。來源授權尚未確認，未發出請求。" >> "$GITHUB_STEP_SUMMARY"
+                  printf '### ETF 配息每日收集\n\n狀態：`blocked-license`。來源授權尚未確認，未發出請求。\n' >> "$GITHUB_STEP_SUMMARY"
                   ;;
               superseded:0)
                   echo "派工日期已過期；不下載、不保存、不發布。"
@@ -206,6 +207,7 @@ jobs:
           echo "已完成配息批次對應的純發布：run=$publish_run_id；headSha=$head_sha。"
 
       - name: 驗證正式網站配息檔與 manifest
+        id: verify_publication
         if: steps.publish.outputs.run_id != ''
         env:
           EXPECTED_BATCH: ${{ steps.collect.outputs.batch }}
@@ -238,3 +240,23 @@ jobs:
           printf '\n收集 run：[%s](%s)\n\ndata commit：\`%s\`\n\n網站純發布 run：[%s](%s)\n\n公開配息檔 SHA256：\`%s\`\n' \
               "$GITHUB_RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
               "$DATA_SHA" "$PUBLISH_RUN_ID" "$PUBLISH_URL" "$actual_hash" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 確認配息完整完成
+        if: ${{ !cancelled() }}
+        env:
+          COLLECTION_STATUS: ${{ steps.collect.outputs.status }}
+          PUBLICATION_OUTCOME: ${{ steps.verify_publication.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$COLLECTION_STATUS" != complete ] || [ "$PUBLICATION_OUTCOME" != success ]; then
+              printf '::error::配息尚未完整完成：收集=%s；公開核驗=%s。\n' "$COLLECTION_STATUS" "$PUBLICATION_OUTCOME"
+              exit 1
+          fi
+          jq -e --arg date "$BUSINESS_DATE" '
+              .asOfDate == $date and .completeCheckDate == $date and
+              ([.markets.twse, .markets.tpex] | all(
+                  .status == "fresh" and
+                  (.lastSuccessfulCheckAt | type == "string") and
+                  (.sourceHash | type == "string" and test("^[a-fA-F0-9]{64}$"))))
+          ' "$RUNNER_TEMP/published-etf-dividends.json" >/dev/null
+          printf '\n雙市場收集、發布與公開資料完整核驗通過。\n' >> "$GITHUB_STEP_SUMMARY"

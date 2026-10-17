@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 const paths = {
@@ -47,4 +50,62 @@ test('the linked daily snapshot validates the requested batch and keeps ordinary
     assert.match(files.publication, /inputs\.etf-dividends-batch != ''/);
     assert.match(files.publication, /--batch-id "\$ETF_DIVIDEND_BATCH"/);
     assert.match(files.publication, /publish-only:\n[\s\S]{0,300}default: true/);
+});
+
+function shellStep(name) {
+    const step = files.collection.split(`      - name: ${name}\n`)[1]?.split('\n      - name:')[0];
+    assert.ok(step, `missing step ${name}`);
+    const block = step.split('        run: |\n')[1];
+    assert.ok(block);
+    return block.split('\n').map(line => line.startsWith('          ') ? line.slice(10) : line).join('\n');
+}
+
+test('run titles and both run-list consumers preserve the completion protocol', () => {
+    assert.match(files.collection, /run-name: "ETF 配息 v2 \|/);
+    for (const workflow of [files.collection, files.intraday]) {
+        assert.match(workflow, /\{[^}]*display_title[^}]*conclusion[^}]*\}/);
+    }
+    assert.match(files.collection, /id: verify_publication/);
+    assert.match(files.collection, /確認配息完整完成\n        if: \$\{\{ !cancelled\(\) \}\}/);
+    assert.match(files.collection, /PUBLICATION_OUTCOME: \$\{\{ steps\.verify_publication\.outcome \}\}/);
+});
+
+test('mandatory completion rejects blocked, partial, skipped publication and incomplete public evidence', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'etf-completion-'));
+    try {
+        const fresh = { status: 'fresh', lastSuccessfulCheckAt: '2026-10-18T00:00:00Z', sourceHash: 'a'.repeat(64) };
+        const valid = { asOfDate: '2026-10-18', completeCheckDate: '2026-10-18', markets: { twse: fresh, tpex: fresh } };
+        const cases = [
+            ['complete', 'success', valid, true],
+            ['blocked-license', 'skipped', valid, false],
+            ['partial', 'success', valid, false],
+            ['', 'skipped', valid, false],
+            ['complete', 'skipped', valid, false],
+            ['complete', 'failure', valid, false],
+            ['complete', 'success', { ...valid, completeCheckDate: '2026-10-17' }, false],
+            ['complete', 'success', { ...valid, markets: { twse: fresh } }, false],
+            ['complete', 'success', { ...valid, markets: { twse: fresh, tpex: { ...fresh, status: 'stale' } } }, false],
+            ['complete', 'success', { ...valid, markets: { twse: fresh, tpex: { ...fresh, sourceHash: null } } }, false],
+            ['complete', 'success', { ...valid, markets: { twse: fresh, tpex: { ...fresh, lastSuccessfulCheckAt: null } } }, false]
+        ];
+        for (const [status, outcome, payload, expected] of cases) {
+            await writeFile(join(directory, 'published-etf-dividends.json'), JSON.stringify(payload));
+            const result = spawnSync('bash', ['-c', shellStep('確認配息完整完成')], {
+                encoding: 'utf8', env: { ...process.env, COLLECTION_STATUS: status, PUBLICATION_OUTCOME: outcome,
+                    BUSINESS_DATE: valid.asOfDate, RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: join(directory, 'summary') }
+            });
+            assert.equal(result.status === 0, expected, `${status}/${outcome}: ${result.stderr}`);
+        }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('blocked-license summary is literal markdown and does not execute backticks', () => {
+    const block = shellStep('收集兩市場配息原文與觀測');
+    const branch = block.split('blocked-license:2)')[1].split(';;')[0];
+    const result = spawnSync('bash', ['-c', branch], {
+        encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: '/dev/stdout' }
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /狀態：`blocked-license`/);
+    assert.doesNotMatch(result.stderr, /command not found/);
 });
