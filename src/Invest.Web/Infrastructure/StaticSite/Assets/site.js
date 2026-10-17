@@ -13488,7 +13488,7 @@ const ASSET_AI_OCR_CONCURRENCY = 3;
 // AI OCR Worker 的版本，必須和 C# OcrWorkerVersion.Current 相同（OcrWorkerVersionTests 會比對）。
 // Worker 是常駐在各台機器上的程式，不會跟著網站發布更新；改了 Worker 端 AI OCR 就兩邊一起 +1，
 // 上傳時若負責的 Worker 比這個舊，畫面直接警告（2026-10-13：公司 Windows 沒重建卻毫無徵兆）。
-const ASSET_AI_OCR_WORKER_VERSION = 4;
+const ASSET_AI_OCR_WORKER_VERSION = 5;
 const ASSET_AI_PENDING_JOBS_KEY = 'invest.assetAiOcrJobs.v1';
 
 function assetAiOcrPollDelayMs(queuedAt, status) {

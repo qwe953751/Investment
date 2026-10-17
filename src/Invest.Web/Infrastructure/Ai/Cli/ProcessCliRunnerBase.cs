@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 
 namespace Invest.Web.Infrastructure.Ai.Cli;
@@ -15,6 +16,8 @@ public abstract class ProcessCliRunnerBase(
 
     protected TimeProvider TimeProvider { get; } = timeProvider ?? System.TimeProvider.System;
 
+    private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: false);
+
     public abstract Task<OcrAgentRunResult> RunAsync(
         OcrAgentRequest request,
         CancellationToken cancellationToken = default);
@@ -25,6 +28,13 @@ public abstract class ProcessCliRunnerBase(
         CancellationToken cancellationToken)
     {
         RemoveApiKeyEnvironmentVariables(startInfo);
+        // Codex 與 Claude CLI 寫到管線的一律是 UTF-8。沒指定時，Windows 的 .NET 會用主控台字碼頁解讀
+        // （繁中 Windows 是 950／Big5），中文被讀壞，連帶吃掉 JSON 的引號與反斜線。2026-10-17 在公司 Windows
+        // 驗證 Claude 時實際發生：Claude 已登入且正常結束，結果卻是 `invalid_json: '\' is an invalid start of a property name`。
+        // Codex 沒事是因為它的結果從 `-o` 寫出的 UTF-8 檔案讀，不經 stdout。正式 Worker 啟動時會把主控台設成 UTF-8，
+        // 但沒有主控台時那一步會失敗，所以不能依賴；`ocr-poc` 在一般 PowerShell 視窗執行時則一定會中。
+        startInfo.StandardOutputEncoding = Utf8;
+        startInfo.StandardErrorEncoding = Utf8;
 
         using var process = new Process
         {
