@@ -26,7 +26,7 @@
 | 12 | [新聞熱度目前在量「節點多大」而不是「題材多熱」，要基準線才修得掉](#todo-12) | 🟡 等資料 |
 | 13 | [GitHub 排程事件晚到 6～13 小時，自動收集與每日快照都可能整天沒跑](#todo-13) | 🟡 自走鏈與 502 快速接手已修，待下一交易日驗收 |
 | 14 | [Supabase 流量超額，9/27 起適用 Fair Use Policy](#todo-14) | 🟡 筆記 #61 已把整期用量歸因完畢；8/25 尖峰與 OCR Worker 兩個成因都已止血，等 09-15 新週期實測 |
-| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔴 **2026-10-17 發現 Claude 備援即使登入也不會成功（送給 CLI 的 Schema 被拒絕），已修成 Worker v4（`9ebf6fe50`）：Mac 已是 v4，公司 Windows 待重建到 v4，之後兩台都要登入 Claude CLI 並驗證**。🟡 2026-10-16 Agent 改成「沒成功就換」（v3）。🟡 2026-10-13 AI 漏掉「今買成」的修正與 Worker 版本警告：兩台都已重建（Windows 10-16 23:52），待使用者重新上傳 5 張截圖驗收。🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布）；**兩台 Worker 都已重建為新版**（家裡 Mac 10-11、公司 Windows 10-12，10-13 `ocr_workers` 核對通過）；P1～P10 正式驗收待使用者實測（P1 已有新版 Windows 的真實紀錄）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
+| 15 | [D+ AI OCR：名稱反查、效能、進度、常駐與實機驗收](#todo-15) | 🔴 **2026-10-17 發現 Claude 備援即使登入也不會成功（送給 CLI 的 Schema 被拒絕），已修成 Worker v4（`9ebf6fe50`）：Mac 與公司 Windows 都已是 v4（10-17 09:55／14:22），接著要登入 Claude CLI 並驗證**。🟡 2026-10-16 Agent 改成「沒成功就換」（v3）。🟡 2026-10-13 AI 漏掉「今買成」的修正與 Worker 版本警告：兩台都已重建（Windows 10-16 23:52），待使用者重新上傳 5 張截圖驗收。🟡 2026-10-11 在線確認重構已實作並部署：改為指名詢問 Windows→Mac（`db/062`、`ocr-jobs` v24、前端已發布）；**兩台 Worker 都已重建為新版**（家裡 Mac 10-11、公司 Windows 10-12，10-13 `ocr_workers` 核對通過）；P1～P10 正式驗收待使用者實測（P1 已有新版 Windows 的真實紀錄）。詳見 [AI OCR.md](技術文件/AI%20OCR.md) |
 | 16 | [市場切換（台股／美股／日股／韓股／加密貨幣；日韓最高權限入口）](#todo-16) | 🟡 2026-09-23 日韓盤中快照保留、日期選擇器隱藏與排行節流已由 commit `e0bf561b` 發布；.NET 549/549、Node 146/146 通過。線上 KR 已更新至 9/23 14:05；JP 仍指向 9/14。9/15 起舊 workflow 因 KIS 金鑰缺失失敗，9/19 改 Yahoo、9/22 修 Storage bucket 判定；JP 9/21～23 休市，待 9/24 開市驗收新快照。其餘市場切換產品議題仍見下方 |
 | 17 | [盤中族群非同步追蹤與 topic CDN](#todo-17) | 🟡 已完成並發布；下一交易日持續觀察盤中輪次 |
 | 18 | [日韓成交排行來源日期檢查過嚴，09/22 起韓股每輪都失敗](#todo-18) | 🟡 工項 A～E 已實作完成，.NET 556/556、Node 148/148 通過；待 09-28（日韓同為交易日）驗收 |
@@ -1350,15 +1350,15 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-### 🔴 2026-10-17：Claude 備援即使登入也不會成功（Schema 被 CLI 拒絕），已修成 Worker v4；家裡 Mac 已是 v4，公司 Windows 待重建到 v4
+### 🔴 2026-10-17：Claude 備援即使登入也不會成功（Schema 被 CLI 拒絕），已修成 Worker v4；家裡 Mac 與公司 Windows 都已是 v4，待驗證 Claude
 
 使用者回報「Windows 電腦 Claude 已經是打開狀態」；我在請他再跑指令之前先用 Mac 走一遍 Worker 的實際流程，發現 Worker 傳給 `claude --json-schema` 的 Schema 頂層有 `$schema`（2020-12），
 Claude CLI（2.1.295、2.1.299）在檢查登入之前就拒絕，**與登入無關**——Claude 備援自 2026-09-07 起從來沒成功過（我 10-16 說「前提只有登入」不完整）。根因、證據與取捨見 [AI OCR §4.17](技術文件/AI%20OCR.md#ocr-incident-1017-claude-schema)。
 v4（`9ebf6fe50`）：只在送給 Claude 時移除 `$schema`（Codex 不動）、失敗原因附上診斷訊息第一行。Mac 已重建（09:55，啟動訊息含「AI OCR v4」）；網站的 v4 版本常數已發布（網站 publish-only run `38993024420`（head `ed4727839`，包含 `9ebf6fe50`）；我自己觸發的 `38992767637` 在排隊時被 GitHub 取消——另一個 session 在 4 分鐘後推了 `ed4727839`（台股操作表同步可靠性）並觸發較新的 run，同一併發群組只保留最新的排隊 run，v4 版本常數由較新的 run 一併發布）。
 
 **待辦（依序）**：
-1. 🔴 **重建公司 Windows Worker 到 v4**：用 [AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy) 的一段式 PowerShell（一般 PowerShell、任何目錄；自動找 repo、`git pull` 失敗即停、`try/finally` 保證排程重啟）。
-   預期最後一行的啟動記錄含「**AI OCR v4**」。重建前網站上傳會顯示舊版警告、Claude 備援無效。
+1. ✅ **公司 Windows Worker 已重建為 v4**（2026-10-17 14:22，[AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy) 的一段式 PowerShell；快轉 `0cd731862..50804d7de`、發布 47.3 秒，
+   `logs\ocr-worker-20261017-142211.out.log` 第 1 行含「AI OCR v4」與「在線詢問：指名回應」）。
 2. 🔴 **驗證 Claude 備援**：重建後貼 [AI OCR §1.8](技術文件/AI%20OCR.md#ocr-deploy) 的「驗證 Claude 備援」。它先用 Worker 會用的那支 `claude` 檢查登入（`auth status --text` 結束碼 0 才算，**Claude 視窗開著不算**）與旗標；
    未登入就停下並提示 `claude auth login`（OAuth 在瀏覽器完成，只有使用者能做）；已登入才畫一張假資料的圖，用 `ocr-poc` 只用 Claude 辨識，預期 `實際使用的 Agent：Claude；是否為備援：False；狀態：Success` 與四列全對。
    這段 PowerShell **沒在 PowerShell 上實測過**；出錯時請貼出整段輸出。會用掉一次 Claude 額度（一張圖）。

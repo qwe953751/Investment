@@ -1,7 +1,7 @@
 # AI OCR
 
 > 最後整理：2026-10-17（新增 [§4.17](#ocr-incident-1017-claude-schema)：**Claude 備援自 2026-09-07 起從來沒成功過**——送給 Claude CLI 的 Schema 被 CLI 拒絕，與登入無關，Worker 升到 **v4** 修正——
-> **程式已在 `main`（`9ebf6fe50`）、家裡 Mac 已是 v4，公司 Windows 仍是 v3、待重建到 v4；兩台也都還沒有確認可用的 Claude 登入**；
+> **程式已在 `main`（`9ebf6fe50`）、家裡 Mac（10-17 09:55）與公司 Windows（10-17 14:22）都已是 v4；兩台都還沒有確認可用的 Claude 登入**；
 > 2026-10-16：[§4.16](#ocr-incident-1016-agent-switch) Agent 改成「沒成功就換」（v3）；
 > 2026-10-13：公司 Windows Worker 依 [§3.5.9](#ocr-probe-rollout) 階段 W 重建並以 `ocr_workers` 核對；`db/062` 與 `ocr-jobs` v24 仍是 2026-10-11 核對的內容；
 > 同日新增 [§4.15](#ocr-incident-1013-quantity-columns)「昨日餘額／今買成／今賣成」三欄股數修正與 AI OCR Worker 版本警告（v2））
@@ -79,7 +79,7 @@ Claude 沒被試、Mac 也沒收到。現在 Router **只看結果**：沒拿到
 stderr `Error: --json-schema is not a valid JSON Schema: no schema with key or ref "…/2020-12/schema"`。Claude Code 2.1.295 與 2.1.299 實測相同，**與登入無關**；
 移除 `$schema` 後驗證通過，錯誤才變成預期的「Not logged in」。所以 **Claude 備援自 2026-09-07 起從來沒有成功過**，v3 的「Codex 失敗改跑 Claude」即使登入也無法生效。
 10-16 的驗證沒抓到，是因為當時把失敗原因推測成「未登入」（那次直接跑 CLI 用的是最小 Schema，才看到 Not logged in）。
-**v4 修正**：只在送給 Claude 時移除 `$schema`（Codex 不動）、失敗原因附上診斷訊息第一行。家裡 Mac 已是 v4；**公司 Windows 待重建到 v4**；
+**v4 修正**：只在送給 Claude 時移除 `$schema`（Codex 不動）、失敗原因附上診斷訊息第一行。家裡 Mac（09:55）與公司 Windows（14:22）都已重建為 v4；
 **Claude 真正辨識一張圖仍未驗證**（要登入後跑 [§1.8](#ocr-deploy) 的「驗證 Claude 備援」）。使用者 10-17 表示 Windows 的 Claude 已是開啟狀態——
 視窗／App 開著不等於 Worker 用的 CLI 已登入（Mac 實測：Claude App 開著且已登入，內建 CLI 單獨執行仍是 `Not logged in`），以 `claude auth status --text` 結束碼 0 為準。
 
@@ -92,18 +92,18 @@ stderr `Error: --json-schema is not a valid JSON Schema: no schema with key or r
 | `db/062_ocr_worker_probe.sql` | ✅ 2026-10-11 已套用。套用前在正式資料庫單一交易內連 migration 一起執行並跑完 31 項斷言，確認 rollback 無痕跡 | 版本紀錄 2026-10-11 |
 | `ocr-jobs` Edge Function | ✅ v24（2026-10-11），`verify_jwt=false`，未帶 JWT 回 401 | Management API 核對 |
 | 前端 `site.js` | ✅ 2026-10-17 網站 publish-only run `38993024420`（head `ed4727839`，包含 `9ebf6fe50`）；我自己觸發的 `38992767637` 在排隊時被 GitHub 取消——另一個 session 在 4 分鐘後推了 `ed4727839`（台股操作表同步可靠性）並觸發較新的 run，同一併發群組只保留最新的排隊 run，v4 版本常數由較新的 run 一併發布：網站要求的 AI OCR 版本升到 v4，舊版警告文字改為「Codex 失敗時無法改用 Claude」；2026-10-16 run `38922361264` 升到 v3；2026-10-13 run `38409067142` 起上傳前比對負責那台的 AI OCR 版本，舊版顯示黃色警告；readiness 期間仍顯示「確認 Windows／Mac 是否在線…」與每台的詢問結果（2026-10-11 run `38140004887` 起） | gh-pages 與公開 manifest `1792202364` |
-| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功。**2026-10-16 23:52 再以 `0cd731862`（Worker 程式與 `7af16f563` 相同）重建為 AI OCR v3**（[§1.8](#ocr-deploy) 的一段式 PowerShell：`git pull --ff-only` 快轉 `3f39ebae8..0cd731862`、發布 win-x64 建置 51.6 秒，新啟動記錄 `logs\ocr-worker-20261016-235219.out.log` 第 1 行含「AI OCR v3」與「在線詢問：指名回應」）；**尚未核對**：只有一個程序、EXE ProductVersion、`ocr_workers` 的 v3 platform。**🔴 2026-10-17 起落後一版：要重建到 v4（`9ebf6fe50`）才有可用的 Claude 備援**（[§1.8](#ocr-deploy) 一段式 PowerShell）；v3 以前送出的 Schema 會被 Claude CLI 拒絕 | [§3.5.9](#ocr-probe-rollout)、[§4.15](#ocr-incident-1013-quantity-columns) |
+| 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功。**2026-10-16 23:52 再以 `0cd731862`（Worker 程式與 `7af16f563` 相同）重建為 AI OCR v3**（[§1.8](#ocr-deploy) 的一段式 PowerShell：`git pull --ff-only` 快轉 `3f39ebae8..0cd731862`、發布 win-x64 建置 51.6 秒，新啟動記錄 `logs\ocr-worker-20261016-235219.out.log` 第 1 行含「AI OCR v3」與「在線詢問：指名回應」）；**尚未核對**：只有一個程序、EXE ProductVersion、`ocr_workers` 的 v3 platform。**2026-10-17 14:22 以 `50804d7de`（Worker 程式與 `9ebf6fe50` 相同）重建為 AI OCR v4（[§1.8](#ocr-deploy) 的一段式 PowerShell：`git pull --ff-only` 快轉 `0cd731862..50804d7de`、發布 win-x64 建置 47.3 秒，新啟動記錄 `logs\ocr-worker-20261017-142211.out.log` 第 1 行含「AI OCR v4」與「在線詢問：指名回應」）**；Claude 備援還需要該台的 Claude CLI 已登入並通過「驗證 Claude 備援」 | [§3.5.9](#ocr-probe-rollout)、[§4.15](#ocr-incident-1013-quantity-columns) |
 | 家裡 Mac Worker | ✅ 2026-10-11 以 `ea373ea56` 發布並由 LaunchAgent 常駐；啟動訊息含「在線詢問：指名回應」與「Worker 發布版本」；`probe_protocol=1`、心跳週期 1800 秒；已用合成圖片走完整條 Codex 辨識。**2026-10-13 20:49 以 `8cc0a5bc4` 重建（三欄股數），21:55 再以 `be8069d6f` 重建為 AI OCR v2**（`PUBLISHED_COMMIT`＝`be8069d6f`，啟動訊息含「AI OCR v2」與「Worker 發布版本：be8069d6f」，launchd running、新版啟動後 error log 無新增）；**2026-10-16 23:15 再以 `7af16f563` 重建為 AI OCR v3**（`PUBLISHED_COMMIT`＝`7af16f563`，啟動訊息含「AI OCR v3」、「在線詢問：指名回應」、「Worker 發布版本：7af16f563」與「Claude CLI 路徑：未找到（Claude 備援目前不可用）」，launchd running、新版啟動後 error log 無新增）；**2026-10-17 09:55 再以 `9ebf6fe50` 重建為 AI OCR v4**（`PUBLISHED_COMMIT`＝`9ebf6fe50`，啟動訊息含「AI OCR v4」「在線詢問：指名回應」「Worker 發布版本：9ebf6fe50」與「Claude CLI 路徑：未找到（Claude 備援目前不可用）」，launchd running（PID 49067），新版啟動後 error log 無新增） | [§4.14](#ocr-incident-1011-probe)、[§4.15](#ocr-incident-1013-quantity-columns) |
 | AI 三欄股數（昨日餘額／今買成／今賣成） | 🟡 程式與測試已在 `main`（`8cc0a5bc4`）；Mac 與公司 Windows（10-16 23:52）都已重建。使用者 21:08 那批 5 張截圖（38 檔）以新版本機端到端重跑 38/38 正確；**正式驗收待使用者重新上傳那 5 張**（見 [§3.2](#ocr-pending-acceptance) #10） | [§4.15](#ocr-incident-1013-quantity-columns) |
-| AI OCR Worker 版本警告 | 🟡 v2 起（`be8069d6f`）；v3（`7af16f563`）；2026-10-17 升到 v4（`9ebf6fe50`，網站要求 v4）；Mac 已是 v4；**公司 Windows 重建到 v4 之前，交給它的上傳會顯示黃色警告**（預期行為） | [§1.5](#ocr-architecture)、[§1.8](#ocr-deploy)、[§4.15](#ocr-incident-1013-quantity-columns)、[§4.16](#ocr-incident-1016-agent-switch)、[§4.17](#ocr-incident-1017-claude-schema) |
+| AI OCR Worker 版本警告 | 🟡 v2 起（`be8069d6f`）；v3（`7af16f563`）；2026-10-17 升到 v4（`9ebf6fe50`，網站要求 v4）；Mac 與公司 Windows 都已是 v4，現在不會警告；日後哪一台又落後才會警告（預期行為） | [§1.5](#ocr-architecture)、[§1.8](#ocr-deploy)、[§4.15](#ocr-incident-1013-quantity-columns)、[§4.16](#ocr-incident-1016-agent-switch)、[§4.17](#ocr-incident-1017-claude-schema) |
 | Claude CLI | 🔴 **要同時滿足三件事，Claude 備援才會生效**：① Worker 為 **v4**（v3 以前送出的 Schema 被 CLI 拒絕，登入也沒用，[§4.17](#ocr-incident-1017-claude-schema)）；② 該台的 Claude CLI **已登入**（`claude auth status --text` 結束碼 0 才算；Claude App／桌面版開著不算——Mac 實測 App 開著且已登入，內建 CLI 單獨執行仍是 `Not logged in`）；③ Worker 用的旗標（`--restricted`、`--permission-prompts`、`--effort` 等）該版本 CLI 都有。公司 Windows 已安裝 `2.1.263`（使用者 10-17 表示 Claude 已開啟，但未用指令確認登入；旗標與是否同樣拒絕 `$schema` 未驗證）；Mac 沒有安裝獨立版，啟動腳本已支援 `~/.local/bin/claude`。**Claude 真正辨識一張圖從未驗證過**（Schema 修好後仍需登入才能驗證 `Read` 讀圖、`structured_output`、模型 `claude-sonnet-5`） | [§4.3](#ocr-incident-0907-agent-order)、[§4.16](#ocr-incident-1016-agent-switch)、[§4.17](#ocr-incident-1017-claude-schema) |
-| Agent 切換：沒成功就換（v3）＋Claude Schema 修正（v4） | 🟡 程式與測試在 `main`（v3 `7af16f563`、v4 `9ebf6fe50`）；家裡 Mac 已是 v4、公司 Windows 待重建到 v4。真實 Codex CLI 在 Mac 端到端驗證過：額度恢復後 12 秒辨識合成截圖四列全對、不換 Agent（10-17 09:5x）；失敗時換 Agent 與全部失敗判定接力（10-16）；真實 Claude CLI（未登入）驗證過 v4 送出的 Schema 通過驗證、失敗點為 `Not logged in`；**Claude 真正辨識一張圖仍未驗證**（沒有已登入的 Claude） | [§4.16](#ocr-incident-1016-agent-switch)、[§4.17](#ocr-incident-1017-claude-schema) |
+| Agent 切換：沒成功就換（v3）＋Claude Schema 修正（v4） | 🟡 程式與測試在 `main`（v3 `7af16f563`、v4 `9ebf6fe50`）；家裡 Mac 與公司 Windows 都已是 v4。真實 Codex CLI 在 Mac 端到端驗證過：額度恢復後 12 秒辨識合成截圖四列全對、不換 Agent（10-17 09:5x）；失敗時換 Agent 與全部失敗判定接力（10-16）；真實 Claude CLI（未登入）驗證過 v4 送出的 Schema 通過驗證、失敗點為 `Not logged in`；**Claude 真正辨識一張圖仍未驗證**（沒有已登入的 Claude） | [§4.16](#ocr-incident-1016-agent-switch)、[§4.17](#ocr-incident-1017-claude-schema) |
 | 自動化測試 | ✅ 2026-10-17 `9ebf6fe50`：`Invest.Web.Tests` 984/984、Node 345/345（0 警告）；v4 新增的 Claude Schema 準備與診斷訊息測試還原兩處修正時 3 項轉紅；2026-10-16 `7af16f563`（971／345）其中換 Agent 的 Router 測試與用 CLI 實際輸出形狀的回歸測試（`OcrAgentQuotaRouterTests`、`OcrAgentSwitchOnCliOutputTests`）還原舊 Router 時 20 項轉紅，Mac 啟動腳本改用 bash 實際執行驗證。OCR 驗證器 22 項（三欄股數新增 18 項）、Worker 版本 3 項（含程式指紋）、前端版本警告 6 項；2026-10-11 Edge Function 假 Supabase 行為測試 28 項仍在 Node 內 | — |
 
 ### 0.3 尚待處理（詳見 [§3](#ocr-acceptance)）
 
-0. 🔴 **公司 Windows Worker 重建到 v4（`9ebf6fe50` 或之後）**（[§1.8](#ocr-deploy) 一段式 PowerShell）：v3 以前送給 Claude 的 Schema 會被 CLI 拒絕，Claude 備援無效；網站上傳也會顯示舊版警告。
-   （Windows 已於 10-16 23:52 重建為 v3，那一版的三欄股數修正有效，仍待使用者重新上傳那 5 張截圖確認股數與警告；並補核對單一程序、EXE ProductVersion 與 `ocr_workers`。）
+0. ✅ **公司 Windows Worker 已重建為 v4**（2026-10-17 14:22，[§1.8](#ocr-deploy) 一段式 PowerShell，啟動記錄第 1 行含「AI OCR v4」）。
+   還剩：使用者重新上傳那 5 張截圖確認三欄股數與警告；補核對單一程序、EXE ProductVersion 與 `ocr_workers`。
 1. 🔴 **Windows 的 Claude CLI 登入並驗證**（登入只有使用者能做，OAuth 要在瀏覽器完成）：重建到 v4 後跑 [§1.8](#ocr-deploy) 的「驗證 Claude 備援」——
    它先檢查 `claude auth status --text` 結束碼，通過才用 Claude 單獨辨識一張假資料的圖，預期 `實際使用的 Agent：Claude；是否為備援：False；狀態：Success` 與四列正確。
    Mac 之後要用 Claude 時再用官方安裝器裝獨立版再 `claude auth login`（步驟見 [TODO #15](../TODO.md#todo-15)）。通過後在 Codex 額度用完的時段上傳驗收（[§3.2](#ocr-pending-acceptance) #12）。
@@ -1445,7 +1445,7 @@ function readinessHeartbeatAgeMs(request) {
   Windows 的登入狀態；LaunchAgent 能否讀到終端機登入存進 Keychain 的憑證。這些都需要登入後跑 [§1.8](#ocr-deploy) 的「驗證 Claude 備援」。
 - **刻意沒有做**：讀 CLI 的 JSON 錯誤事件來產生診斷訊息（使用者 10-16 否決過「讓分類器讀 CLI 錯誤事件」；這裡的診斷只用 stderr）。代價：Claude 若回的是 stdout 的 JSON 錯誤（例如 Not logged in、模型不可用），原因只會是 `cli_failure`，
   不知道細節。若要補，是把 `is_error:true` 的 `result` 與 Codex 的 `turn.failed` 訊息寫進診斷欄位——不影響換 Agent 的決定，仍待使用者決定。
-- **部署**：`9ebf6fe50` 已推到 `main`；家裡 Mac 09:55 重建為 v4；網站 publish-only run `38993024420`（head `ed4727839`，包含 `9ebf6fe50`）；我自己觸發的 `38992767637` 在排隊時被 GitHub 取消——另一個 session 在 4 分鐘後推了 `ed4727839`（台股操作表同步可靠性）並觸發較新的 run，同一併發群組只保留最新的排隊 run，v4 版本常數由較新的 run 一併發布；**公司 Windows 待重建到 v4**（[§1.8](#ocr-deploy) 一段式 PowerShell），之後跑「驗證 Claude 備援」。
+- **部署**：`9ebf6fe50` 已推到 `main`；家裡 Mac 09:55 重建為 v4；網站 publish-only run `38993024420`（head `ed4727839`，包含 `9ebf6fe50`）；我自己觸發的 `38992767637` 在排隊時被 GitHub 取消——另一個 session 在 4 分鐘後推了 `ed4727839`（台股操作表同步可靠性）並觸發較新的 run，同一併發群組只保留最新的排隊 run，v4 版本常數由較新的 run 一併發布；公司 Windows 2026-10-17 14:22 以 `50804d7de`（Worker 程式與 `9ebf6fe50` 相同）重建為 AI OCR v4（[§1.8](#ocr-deploy) 的一段式 PowerShell：`git pull --ff-only` 快轉 `0cd731862..50804d7de`、發布 win-x64 建置 47.3 秒，新啟動記錄 `logs\ocr-worker-20261017-142211.out.log` 第 1 行含「AI OCR v4」與「在線詢問：指名回應」）；下一步是在 Windows 跑「驗證 Claude 備援」。
 
 ### 4.18 共同教訓
 
