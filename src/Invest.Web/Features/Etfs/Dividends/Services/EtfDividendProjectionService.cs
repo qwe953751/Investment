@@ -41,7 +41,7 @@ public sealed class EtfDividendProjectionService(TimeProvider timeProvider)
                 .FirstOrDefault();
             accepted[market] = acceptedPair.Market is null
                 ? Unavailable(market, asOfDate)
-                : acceptedPair.Market with { Status = "fresh", Accepted = true };
+                : acceptedPair.Market with { Status = acceptedPair.Market.Accepted ? acceptedPair.Market.Status : "fresh", Accepted = true };
         }
 
         var marketExports = new Dictionary<string, EtfDividendMarketExport>(StringComparer.Ordinal);
@@ -50,7 +50,7 @@ public sealed class EtfDividendProjectionService(TimeProvider timeProvider)
             var acceptedMarket = accepted[market];
             var latestMarket = latest[market];
             var latestAccepted = latestMarket is { } latestValue && IsAccepted(latestValue.Observation, latestValue.Market);
-            var status = acceptedMarket.Accepted ? "fresh" : "unavailable";
+            var status = acceptedMarket.Accepted ? acceptedMarket.Status : "unavailable";
             if (latestMarket is { Market.Status: "review-required" } && !latestAccepted) status = "review-required";
             else if (latestMarket is { } && !latestAccepted && acceptedMarket.Accepted) status = "stale";
             else if (acceptedMarket.Accepted && acceptedMarket.LastSuccessfulCheckAt is { } checkedAt
@@ -70,19 +70,31 @@ public sealed class EtfDividendProjectionService(TimeProvider timeProvider)
         var acceptedEvents = accepted.Values.Where(item => item.Accepted)
             .SelectMany(item => item.Events.Select(value => item.Coverage?.Scope == "limited"
                 ? value with { RecordDate = null } : value)).ToArray();
-        var funds = acceptedEvents.GroupBy(item => (item.Market, item.Ticker))
-            .OrderBy(group => group.Key.Market, StringComparer.Ordinal)
-            .ThenBy(group => group.Key.Ticker, StringComparer.Ordinal)
-            .Select(group =>
+        var eventsByFund = acceptedEvents.GroupBy(item => (item.Market, item.Ticker))
+            .ToDictionary(group => group.Key, group => group.ToArray());
+        var catalogKeys = latest.Where(pair => pair.Value is not null)
+            .SelectMany(pair => (pair.Value!.Value.Market.CatalogTickers ?? [])
+                .Select(ticker => (Market: pair.Key, Ticker: ticker)));
+        var funds = eventsByFund.Keys.Concat(catalogKeys).Distinct()
+            .OrderBy(key => key.Market, StringComparer.Ordinal)
+            .ThenBy(key => key.Ticker, StringComparer.Ordinal)
+            .Select(key =>
             {
-                var events = group.Where(item => item.PaymentDate is not null)
+                var items = eventsByFund.GetValueOrDefault(key) ?? [];
+                var events = items.Where(item => item.PaymentDate is not null)
                     .OrderBy(item => item.PaymentDate).ThenBy(item => item.ExDate)
                     .Select(ToWire).ToArray();
-                var unresolved = group.Where(item => item.PaymentDate is null)
+                var unresolved = items.Where(item => item.PaymentDate is null)
                     .OrderBy(item => item.ExDate).Select(ToWire).ToArray();
-                return new EtfDividendFundExport(group.Key.Market, group.Key.Ticker,
-                    marketExports[group.Key.Market].Status, events, unresolved,
-                    BuildWindows(group.Where(item => item.PaymentDate is not null).ToArray(), projectionStart, projectionEnd));
+                var knownPayments = items.Count(item => item.PaymentDate?.Year == asOfDate.Year);
+                var limited = marketExports[key.Market].Coverage?.Scope == "limited";
+                var availability = new EtfDividendFundAvailability(
+                    items.Length > 0 ? "records-known" : "not-observed", asOfDate.Year, knownPayments, unresolved.Length,
+                    limited ? $"已取得 {knownPayments} 筆今年發放紀錄、{unresolved.Length} 筆未定日預告；今年完整性與下一次發放仍未確認。"
+                        : items.Length > 0 ? "顯示目前已取得的公告。" : "目前尚未取得這檔 ETF 的配息紀錄，不能推論為不配息。");
+                return new EtfDividendFundExport(key.Market, key.Ticker,
+                    marketExports[key.Market].Status, events, unresolved,
+                    BuildWindows(items.Where(item => item.PaymentDate is not null).ToArray(), projectionStart, projectionEnd), availability);
             }).ToArray();
 
         var completeObservation = observations
@@ -100,7 +112,7 @@ public sealed class EtfDividendProjectionService(TimeProvider timeProvider)
             marketExports, funds,
             observations.Where(item => item.Markets.Count == 2
                 && item.Markets.Select(value => value.Market).Order(StringComparer.Ordinal).SequenceEqual(new[] { "tpex", "twse" })
-                && item.Markets.All(value => value.HttpValidated && IsAccepted(item, value)))
+                && item.Markets.All(value => value.HttpValidated && IsAccepted(item, value) && value.Status == "fresh"))
                 .OrderByDescending(item => item.CompletedAt).FirstOrDefault()?.RequestedBusinessDate);
     }
 
@@ -112,7 +124,8 @@ public sealed class EtfDividendProjectionService(TimeProvider timeProvider)
             item.PaymentDate?.Year,
             FormatDate(item.ExDate), FormatDate(item.RecordDate), FormatDate(item.PaymentDate),
             item.AmountPerUnit?.ToString("0.#############################", CultureInfo.InvariantCulture),
-            item.Currency, item.SourceObjectSha256);
+            item.Currency, item.SourceObjectSha256,
+            (item.SupportingSourceHashes ?? []).Append(item.SourceObjectSha256).Distinct(StringComparer.Ordinal).ToArray());
 
     private static IReadOnlyList<EtfDividendNextWindow> BuildWindows(
         IReadOnlyList<EtfDividendEvent> events,

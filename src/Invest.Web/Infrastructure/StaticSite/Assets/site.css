@@ -4582,6 +4582,13 @@ body {
     padding: 16px 20px 18px;
 }
 
+.etf-payout-availability {
+    margin: 0 0 12px;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
 .etf-payout-history-heading {
     display: flex;
     align-items: center;

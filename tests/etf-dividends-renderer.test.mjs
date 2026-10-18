@@ -52,12 +52,12 @@ function collect(node, predicate, result = []) {
     return result;
 }
 
-async function createRenderer(payload, error = '') {
+async function createRenderer(payload, error = '', extra = {}) {
     const source = await readFile(SOURCE_PATH, 'utf8');
     const start = source.indexOf('function etfDividendTaipeiDate(');
     const end = source.indexOf('\nfunction renderTable()', start);
     assert.ok(start >= 0 && end > start, 'expected the production ETF payout renderer block');
-    const code = `${source.slice(start, end)}\nglobalThis.renderers = { appendRankingCell, buildEtfPayoutHistoryRow };`;
+    const code = `${source.slice(start, end)}\nglobalThis.renderers = { appendRankingCell, buildEtfPayoutHistoryRow, ensureEtfDividendPayload };`;
     const context = vm.createContext({
         Date: FixedDate,
         Intl,
@@ -74,7 +74,8 @@ async function createRenderer(payload, error = '') {
         renderTable() {},
         el() { return { querySelectorAll: () => [] }; },
         clearTimeout() {},
-        setTimeout() {}
+        setTimeout() {},
+        ...extra
     });
     vm.runInContext(code, context, { filename: 'production-etf-payout-renderer.js' });
     return context.renderers;
@@ -118,6 +119,45 @@ function payload({ status = 'fresh', events = [event()], unresolvedEvents = [], 
 
 const row = { ticker: '00713', name: '元大台灣高息低波', market: 'twse' };
 const payoutColumn = { key: 'payout', cell: () => ({ cls: 'etf-payout-cell', payout: true }) };
+
+test('refresh failure preserves the last verified payload', async () => {
+    const data = payload();
+    const renderer = await createRenderer(data, '', {
+        siteManifest: { etfDividends: { schemaVersion: 1, sha256: 'b'.repeat(64), file: 'data/etf-dividends.json' } },
+        etfDividendPayloadHash: 'a'.repeat(64), version: 1,
+        AbortSignal: { timeout: () => null }, fetch: async () => { throw new Error('network unavailable'); },
+        rankingCanRender: () => false
+    });
+    assert.equal(await renderer.ensureEtfDividendPayload(true), data);
+    const tr = new Element('tr');
+    renderer.appendRankingCell(tr, row, payoutColumn);
+    assert.match(tr.textContent, /2026\/10\/20/);
+    assert.match(tr.textContent, /已知資料・更新失敗/);
+});
+
+test('known payments outside the current year are retained in a separately labelled group', async () => {
+    const data = payload({ events: [event({ paymentDate: '2027-01-12', paymentYear: 2027 })] });
+    const renderer = await createRenderer(data);
+    const history = renderer.buildEtfPayoutHistoryRow(row, 6);
+    assert.match(history.textContent, /其他已取得發放紀錄/);
+    assert.match(history.textContent, /2027\/01\/12/);
+});
+
+test('known past payments and undated preview amounts remain visible in the collapsed cell', async () => {
+    const past = payload({ events: [event({ paymentDate: '2026-09-11', amount: '0.28' })],
+        windows: [{ fromDate: '2026-01-01', throughDate: '2027-12-31', eventId: null }] });
+    past.markets.twse.coverage = { scope: 'limited', note: '8 月除息資料', sources: [] };
+    const pastCell = await renderCell(past);
+    assert.match(pastCell.button.textContent, /最近已知發放2026\/09\/11/);
+    assert.match(pastCell.button.textContent, /0\.28 元 \/ 單位/);
+    assert.doesNotMatch(pastCell.button.textContent, /下次發放2026\/09\/11/);
+    const preview = payload({ events: [], unresolvedEvents: [event({ paymentDate: null, exDate: '2026-10-19', amount: '0.16' })],
+        windows: [{ fromDate: '2026-01-01', throughDate: '2027-12-31', eventId: null }] });
+    preview.markets.twse.coverage = past.markets.twse.coverage;
+    const previewCell = await renderCell(preview);
+    assert.match(previewCell.button.textContent, /已知除息預告2026\/10\/19/);
+    assert.match(previewCell.button.textContent, /0\.16 元 \/ 單位/);
+});
 
 async function renderCell(data, error = '') {
     const renderer = await createRenderer(data, error);

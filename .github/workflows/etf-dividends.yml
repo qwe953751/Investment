@@ -1,5 +1,5 @@
 name: ETF 配息每日檢查
-run-name: "ETF 配息 v3 | ${{ inputs.business-date }} | ${{ (vars.ETF_DIVIDENDS_SOURCE_MODE != 'exchange') && 'open-data' || ((vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED == 'true' || vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED == '1') && 'exchange-enabled' || 'blocked-license') }}"
+run-name: "ETF 配息 v4 | ${{ inputs.business-date }} | ${{ (vars.ETF_DIVIDENDS_SOURCE_MODE != 'exchange') && 'open-data' || ((vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED == 'true' || vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED == '1') && 'exchange-enabled' || 'blocked-license') }}"
 
 on:
   workflow_dispatch:
@@ -61,8 +61,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/etf-dividends.yml/runs?per_page=50" \
-              --jq '[.workflow_runs[] | {id, display_title, status, conclusion, created_at, updated_at}]')
+          runs=$(node scripts/etf-dividends-runs.mjs --repository "$GITHUB_REPOSITORY" --business-date "$BUSINESS_DATE")
           decision=$(node scripts/etf-dividends-gate.mjs \
               --at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --business-date "$BUSINESS_DATE" \
@@ -263,7 +262,7 @@ jobs:
               "$DATA_SHA" "$PUBLISH_RUN_ID" "$PUBLISH_URL" "$actual_hash" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 確認來源收集及發布完成
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.gate.outputs.dispatch == 'true' }}
         env:
           COLLECTION_STATUS: ${{ steps.collect.outputs.status }}
           PUBLICATION_OUTCOME: ${{ steps.verify_publication.outcome }}

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { decideEtfDividendDispatch as decide } from '../scripts/etf-dividends-gate.mjs';
+import { withCompletionEvidence } from '../scripts/etf-dividends-runs.mjs';
 
 const decideEtfDividendDispatch = options => decide({ sourceMode: 'exchange', ...options });
 
 const date = '2026-10-18'; // Sunday: the daily refresh must not depend on trading days.
-const enabled = `ETF 配息 v3 | ${date} | exchange-enabled`;
-const blocked = `ETF 配息 v3 | ${date} | blocked-license`;
+const enabled = `ETF 配息 v4 | ${date} | exchange-enabled`;
+const blocked = `ETF 配息 v4 | ${date} | blocked-license`;
 
 test('07:29 Taipei does not dispatch, even on a holiday', () => {
     const result = decideEtfDividendDispatch({
@@ -48,7 +49,7 @@ test('an active or successful daily run prevents duplicate dispatch', () => {
     }).reason, 'already-running');
     assert.equal(decideEtfDividendDispatch({
         ...common,
-        runs: [{ status: 'completed', conclusion: 'success', display_title: enabled, created_at: '2026-10-17T23:45:00Z' }]
+        runs: [{ status: 'completed', conclusion: 'success', publication_verified: true, display_title: enabled, created_at: '2026-10-17T23:45:00Z' }]
     }).reason, 'already-completed');
 });
 
@@ -113,7 +114,7 @@ test('legacy green and blocked runs cannot consume enabled retries or suppress s
 test('a successful versioned run for another business date is not completion', () => {
     assert.equal(decideEtfDividendDispatch({
         at: '2026-10-18T00:00:00Z', businessDate: date, authorized: true,
-        runs: [{ display_title: 'ETF 配息 v3 | 2026-10-17 | exchange-enabled',
+        runs: [{ display_title: 'ETF 配息 v4 | 2026-10-17 | exchange-enabled',
             conclusion: 'success', created_at: '2026-10-17T23:45:00Z' }]
     }).dispatch, true);
 });
@@ -121,8 +122,8 @@ test('a successful versioned run for another business date is not completion', (
 test('open data dispatches without private-source authorization and ignores the blocked exchange run', () => {
     const common = { at: '2026-10-18T00:00:00Z', businessDate: date, authorized: false };
     assert.equal(decide({ ...common, runs: [{ display_title: blocked, conclusion: 'failure', created_at: '2026-10-17T23:59:00Z' }] }).dispatch, true);
-    assert.equal(decide({ ...common, runs: [{ display_title: `ETF 配息 v3 | ${date} | open-data`, conclusion: 'success', created_at: '2026-10-17T23:59:00Z' }] }).reason, 'already-completed');
-    assert.equal(decide({ ...common, runs: [{ display_title: `ETF 配息 v3 | ${date} | open-data`, conclusion: 'failure', created_at: '2026-10-17T23:55:00Z' }] }).reason, 'retry-cooldown');
+    assert.equal(decide({ ...common, runs: [{ display_title: `ETF 配息 v4 | ${date} | open-data`, publication_verified: true, conclusion: 'success', created_at: '2026-10-17T23:59:00Z' }] }).reason, 'already-completed');
+    assert.equal(decide({ ...common, runs: [{ display_title: `ETF 配息 v4 | ${date} | open-data`, conclusion: 'failure', created_at: '2026-10-17T23:55:00Z' }] }).reason, 'retry-cooldown');
 });
 
 test('explicit manual validation can run outside the window but still enforces date and daily locks', () => {
@@ -130,4 +131,33 @@ test('explicit manual validation can run outside the window but still enforces d
     assert.equal(decide(common).dispatch, true);
     assert.equal(decide({ ...common, businessDate: '2026-10-17' }).reason, 'superseded');
     assert.equal(decide({ ...common, runs: [{ status: 'in_progress', created_at: '2026-10-17T19:00:00Z' }] }).reason, 'already-running');
+});
+
+test('a green gate-only run cannot suppress a real collection or consume the retry budget', () => {
+    const runs = withCompletionEvidence([1, 2, 3].map(id => ({ id,
+        display_title: `ETF 配息 v4 | ${date} | open-data`, status: 'completed', conclusion: 'success',
+        created_at: '2026-10-17T23:59:00Z'
+    })), date, () => ({ jobs: [{ steps: [
+        { name: '收集兩市場配息原文與觀測', conclusion: 'skipped' },
+        { name: '驗證正式網站配息檔與 manifest', conclusion: 'skipped' },
+        { name: '確認來源收集及發布完成', conclusion: 'skipped' }
+    ] }] }));
+    const result = decide({ at: '2026-10-18T00:00:00Z', businessDate: date, runs });
+    assert.equal(result.dispatch, true);
+    assert.equal(result.attempt, 1);
+});
+
+test('completion evidence requires actual public verification and the terminal check', () => {
+    const run = { id: 1, display_title: `ETF 配息 v4 | ${date} | open-data`, status: 'completed',
+        conclusion: 'success', created_at: '2026-10-17T23:45:00Z' };
+    const steps = [
+        { name: '收集兩市場配息原文與觀測', conclusion: 'success' },
+        { name: '驗證正式網站配息檔與 manifest', conclusion: 'success' },
+        { name: '確認來源收集及發布完成', conclusion: 'success' }
+    ];
+    const verified = withCompletionEvidence([run], date, () => ({ jobs: [{ steps }] }));
+    assert.equal(decide({ at: '2026-10-18T00:00:00Z', businessDate: date, runs: verified }).reason, 'already-completed');
+    steps[2].conclusion = 'skipped';
+    const skipped = withCompletionEvidence([run], date, () => ({ jobs: [{ steps }] }));
+    assert.notEqual(decide({ at: '2026-10-18T00:00:00Z', businessDate: date, runs: skipped }).reason, 'already-completed');
 });

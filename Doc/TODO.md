@@ -2483,19 +2483,21 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**狀態：** 已改為預設 open-data，不再因尚未授權官網配息端點而完全不收資料。串接上市／上櫃開放除息預告、上市基金統編對照與公會配息 CSV；原文與 hash 保存 data，前端顯示「部分公告」與實際來源。原始完整年度、跨年及下次發放需求維持，但開放預告無發放日、公會目前只有部分月份，故不冒充完整驗收。正式完整流程 [39067191250 attempt 2](https://github.com/qwe953751/Investment/actions/runs/39067191250) 與純發布 [39068123217](https://github.com/qwe953751/Investment/actions/runs/39068123217) 均 success；Pages／公開 manifest 同版 `1792270592`，120 檔／139 筆事件、日期／批次／SHA256 及來源原文已核對，兩市場 fresh，sourceCheckDate=2026-10-18、completeCheckDate=null。正式 00690／00734B／0050 畫面已驗收；細節見版本紀錄最新 #87。
+**狀態（2026-10-19）：** 使用者確認範圍只取「自訂 → ETF」全部標的，維持今年全部發放＋已公告下次發放，不擴大全歷史。已實作公會 43476 的基金／級別識別碼與 ISIN 精確對應雙市場、逐檔已知資料與缺口、列表顯示最近已知發放／除息預告、局部來源失敗仍先發布與前端失敗保留已知資料。v4 gate 核對實際收集／公開驗證步驟，正常略過不算成功收集或重試額度。其他月份逐筆開放資料仍未找到可確認入口，見規格 3.6；不能以不定期更新推論資料不可用。本輪正式發布與證據待驗證，前次發布證據保留版本紀錄。
 
 ### 已定案
 
 - 保留已發布的配息欄與列下年度明細，不再製作樣板。
 - 跨年查詢、按發放年度歸類；未公告金額為 null，成功查無不等於不配息。
 - 同日重跑冪等；部分失敗保留各市場最後成功資料；日期修訂／事件消失須留核對紀錄。
-- 每日流程 v3 區分 open-data／exchange-enabled／blocked-license；開放來源檢查日 sourceCheckDate 與完整年度來源檢查日 completeCheckDate 分開。保留同日冪等、部分市場重試與三次上限。
+- 每日流程 v4 區分 open-data／exchange-enabled／blocked-license；開放來源檢查日 sourceCheckDate 與完整年度來源檢查日 completeCheckDate 分開。保留同日冪等、部分市場重試與三次上限。
 - 完整規格見 [ETF 配息資料串接實作規格](技術文件/ETF配息資料串接實作規格.md)。
 
 正式部署補強：全站 export 明確讀 checkout 的絕對配息目錄；同一 export step 驗要發布的檔案與 manifest，公開核驗有界重試。首輪空檔發布不得算來源驗收完成。
 
 ### 尚待完成
+
+- 完成本輪實收、測試、push 與正式發布核驗，將實際來源筆數、run、批次與公開 SHA256 補回三份狀態文件。
 
 - 補齊可正式使用的完整年度／跨年與未來發放日來源；目前開放資料只提供近期預告及公會部分月份，不可把 sourceCheckDate 當完整年度涵蓋證明。
 - 若啟用完整官網配息來源，需另外確認適用條件，再設定 `ETF_DIVIDENDS_SOURCE_MODE=exchange` 及 `ETF_DIVIDENDS_SOURCE_AUTHORIZED=true`；目前不開啟這兩個設定，也不宣稱取得交易所同意。

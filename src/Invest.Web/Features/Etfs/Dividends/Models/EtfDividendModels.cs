@@ -12,7 +12,8 @@ public sealed record EtfDividendEvent(
     decimal? AmountPerUnit,
     string Currency,
     string SourceObjectSha256,
-    int SourceRowReference);
+    int SourceRowReference,
+    IReadOnlyList<string>? SupportingSourceHashes = null);
 
 public sealed record EtfDividendMarketObservation(
     string Market,
@@ -32,7 +33,8 @@ public sealed record EtfDividendMarketObservation(
     int UnresolvedRows,
     string[] Diagnostics,
     IReadOnlyList<EtfDividendEvent> Events,
-    EtfDividendCoverage? Coverage = null);
+    EtfDividendCoverage? Coverage = null,
+    IReadOnlyList<string>? CatalogTickers = null);
 
 public sealed record EtfDividendObservation(
     int SchemaVersion,
@@ -61,7 +63,8 @@ public sealed record EtfDividendWireEvent(
     string? PaymentDate,
     string? AmountPerUnit,
     string Currency,
-    string SourceHash);
+    string SourceHash,
+    IReadOnlyList<string>? SourceHashes = null);
 
 public sealed record EtfDividendNextWindow(
     string FromDate,
@@ -74,7 +77,15 @@ public sealed record EtfDividendFundExport(
     string CoverageState,
     IReadOnlyList<EtfDividendWireEvent> Events,
     IReadOnlyList<EtfDividendWireEvent> UnresolvedEvents,
-    IReadOnlyList<EtfDividendNextWindow> NextWindows);
+    IReadOnlyList<EtfDividendNextWindow> NextWindows,
+    EtfDividendFundAvailability? Availability = null);
+
+public sealed record EtfDividendFundAvailability(
+    string State,
+    int PaymentYear,
+    int KnownPayments,
+    int UndatedAnnouncements,
+    string Note);
 
 public sealed record EtfDividendMarketExport(
     string Status,
@@ -140,9 +151,12 @@ public sealed record EtfDividendDecision(
     string Reason,
     string EvidenceUrl);
 
-public sealed record EtfDividendSourceArtifact(string Url, string DatasetUrl, string Sha256, string File);
+public sealed record EtfDividendSourceArtifact(string Url, string DatasetUrl, string Sha256, string File,
+    string? DataPeriod = null, DateTimeOffset? CheckedAt = null);
 
 public sealed record EtfDividendCoverage(
     string Scope,
     string Note,
-    IReadOnlyList<EtfDividendSourceArtifact> Sources);
+    IReadOnlyList<EtfDividendSourceArtifact> Sources,
+    string? ContractVersion = null,
+    IReadOnlyList<string>? MissingSources = null);

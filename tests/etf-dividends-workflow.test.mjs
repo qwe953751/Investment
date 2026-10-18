@@ -62,12 +62,12 @@ function shellStep(name) {
 }
 
 test('run titles and both run-list consumers preserve the completion protocol', () => {
-    assert.match(files.collection, /run-name: "ETF 配息 v3 \|/);
+    assert.match(files.collection, /run-name: "ETF 配息 v4 \|/);
     for (const workflow of [files.collection, files.intraday]) {
-        assert.match(workflow, /\{[^}]*display_title[^}]*conclusion[^}]*\}/);
+        assert.match(workflow, /node scripts\/etf-dividends-runs\.mjs/);
     }
     assert.match(files.collection, /id: verify_publication/);
-    assert.match(files.collection, /確認來源收集及發布完成\n        if: \$\{\{ !cancelled\(\) \}\}/);
+    assert.match(files.collection, /確認來源收集及發布完成\n        if: \$\{\{ !cancelled\(\) && steps\.gate\.outputs\.dispatch == 'true' \}\}/);
     assert.match(files.collection, /PUBLICATION_OUTCOME: \$\{\{ steps\.verify_publication\.outcome \}\}/);
 });
 

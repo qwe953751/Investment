@@ -270,9 +270,8 @@ jobs:
               [ "$etf_dividends_kicked_date" = "$today" ] && return 0
               [ "$(date +%H%M)" -ge '0730' ] && [ "$(date +%H%M)" -lt '2200' ] || return 0
 
-              runs=$(gh api \
-                  "repos/$GITHUB_REPOSITORY/actions/workflows/etf-dividends.yml/runs?per_page=50" \
-                  --jq '[.workflow_runs[] | {display_title, status, conclusion, created_at, updated_at}]' 2>/dev/null)
+              runs=$(node scripts/etf-dividends-runs.mjs \
+                  --repository "$GITHUB_REPOSITORY" --business-date "$today" 2>/dev/null)
               if [ $? -ne 0 ] || [ -z "$runs" ]; then
                   echo "::warning::查不到今日 ETF 配息 workflow 狀態，稍後再檢查。"
                   return 0

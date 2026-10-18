@@ -78,6 +78,13 @@ public static partial class EtfDividendExportValidator
                 throw new InvalidDataException("ETF 配息 funds 存在重複、不合法或缺少的欄位。");
 
             var eventIds = new HashSet<string>(StringComparer.Ordinal);
+            if (fund.Availability is { } availability && (availability.State is not ("records-known" or "not-observed")
+                || availability.PaymentYear != asOf.Year
+                || availability.KnownPayments != fund.Events.Count(item => item.PaymentYear == asOf.Year)
+                || availability.UndatedAnnouncements != fund.UnresolvedEvents.Count
+                || (availability.State == "not-observed") != (fund.Events.Count + fund.UnresolvedEvents.Count == 0)
+                || string.IsNullOrWhiteSpace(availability.Note)))
+                throw new InvalidDataException("ETF 逐檔已知紀錄與資料缺口統計不一致。");
             foreach (var item in fund.Events)
             {
                 ValidateEvent(item, fund.Market, fund.Ticker, paymentDateRequired: true);
@@ -114,7 +121,9 @@ public static partial class EtfDividendExportValidator
     private static void ValidateEvent(EtfDividendWireEvent item, string market, string ticker, bool paymentDateRequired)
     {
         if (item is null || item.AnnouncementYear <= 0 || item.Currency != "TWD"
-            || !Sha256Regex().IsMatch(item.EventId) || !Sha256Regex().IsMatch(item.SourceHash))
+            || !Sha256Regex().IsMatch(item.EventId) || !Sha256Regex().IsMatch(item.SourceHash)
+            || item.SourceHashes is { } hashes && (!hashes.Contains(item.SourceHash)
+                || hashes.Any(hash => !Sha256Regex().IsMatch(hash))))
             throw new InvalidDataException("ETF 配息事件識別、年度、幣別或來源 hash 不合法。");
         var exDate = ParseDate(item.ExDate ?? string.Empty, "events.exDate");
         if (item.RecordDate is not null) _ = ParseDate(item.RecordDate, "events.recordDate");

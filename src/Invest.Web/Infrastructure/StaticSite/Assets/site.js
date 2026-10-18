@@ -20984,9 +20984,8 @@ async function ensureEtfDividendPayload(force = false) {
         return payload;
     })().catch(error => {
         etfDividendPayloadError = error instanceof Error ? error.message : '配息資料讀取失敗。';
-        etfDividendPayload = null;
-        etfDividendPayloadHash = '';
-        return null;
+        // 已通過 hash／schema 驗證的舊資料繼續呈現，錯誤狀態另行提示。
+        return etfDividendPayload;
     }).finally(() => {
         etfDividendPayloadLoading = null;
         if (state.view === 'etf' && rankingCanRender()) renderTable();
@@ -21004,7 +21003,7 @@ function etfDividendFundForRow(row) {
 
 function etfDividendStatusText(market, hasFund = false, hasNextEvent = false) {
     if (etfDividendPayloadLoading) return '載入中';
-    if (etfDividendPayloadError) return '資料未取得';
+    if (etfDividendPayloadError) return etfDividendPayload ? '已知資料・更新失敗' : '資料未取得';
     if (etfDividendPayload && etfDividendPayload.asOfDate.slice(0, 4) !== etfDividendTaipeiDate().slice(0, 4)) return '資料範圍待更新';
     if (!market) return '資料未取得';
     if (market.status === 'review-required') return hasFund?.events?.length ? '有待核對修訂' : '資料待核對';
@@ -21102,25 +21101,28 @@ function appendRankingCell(tr, row, column, options = {}) {
         summary.className = 'etf-payout-summary';
         const label = document.createElement('span');
         label.className = 'etf-payout-label';
-        label.textContent = '下次發放';
+        const hasKnownPayment = !event && (fund?.events?.length ?? 0) > 0;
+        const hasPreview = !event && !hasKnownPayment && (fund?.unresolvedEvents?.length ?? 0) > 0;
+        const known = event ?? (hasKnownPayment ? fund.events.at(-1) : hasPreview ? fund.unresolvedEvents.at(-1) : null);
+        label.textContent = event ? '下次發放' : hasKnownPayment ? '最近已知發放' : hasPreview ? '已知除息預告' : '配息資料';
         const date = document.createElement('span');
         date.className = `etf-payout-date${event ? '' : ' is-empty'}`;
-        date.textContent = event ? formatEtfDividendDate(event.paymentDate) : statusText;
+        date.textContent = known ? formatEtfDividendDate(hasPreview ? known.exDate : known.paymentDate) : statusText;
         summary.append(label, date);
 
         const details = document.createElement('span');
         details.className = 'etf-payout-details';
         const amount = document.createElement('span');
         amount.className = 'etf-payout-amount';
-        amount.textContent = event
-            ? (event.amountPerUnit === null ? '金額待公告' : `${event.amountPerUnit} 元 / 單位`)
+        amount.textContent = known
+            ? (known.amountPerUnit === null ? '金額待公告' : `${known.amountPerUnit} 元 / 單位`)
             : '— / 單位';
         const stateLabel = document.createElement('span');
         stateLabel.className = 'etf-payout-state';
         stateLabel.textContent = statusText === '已更新' ? '' : statusText;
         const toggle = document.createElement('span');
         toggle.className = 'etf-payout-toggle';
-        toggle.textContent = expanded ? '收合年度紀錄' : '年度紀錄';
+        toggle.textContent = expanded ? '收合已知紀錄' : '已知配息紀錄';
         details.append(amount, stateLabel, toggle);
 
         button.append(summary, details);
@@ -21229,6 +21231,10 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
     status.className = 'etf-payout-history-status';
     status.textContent = etfDividendStatusText(market, fund, Boolean(event));
     heading.append(title, status);
+    const availability = document.createElement('p');
+    availability.className = 'etf-payout-availability';
+    availability.textContent = fund?.availability?.note
+        ?? (market?.coverage?.scope === 'limited' ? '先顯示目前已取得的資料；今年完整性與下一次發放仍未確認。' : '');
 
     const table = document.createElement('table');
     table.className = 'etf-payout-history-table';
@@ -21255,6 +21261,26 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
             tr.append(cell);
         }
         tbody.append(tr);
+    }
+    const otherPayments = (fund?.events ?? []).filter(event => event.paymentYear !== year);
+    if (otherPayments.length > 0) {
+        const groupRow = document.createElement('tr');
+        const groupCell = document.createElement('td');
+        groupCell.colSpan = 4;
+        groupCell.className = 'etf-payout-history-empty';
+        groupCell.textContent = '其他已取得發放紀錄';
+        groupRow.append(groupCell);
+        tbody.append(groupRow);
+        for (const payment of otherPayments) {
+            const paymentRow = document.createElement('tr');
+            for (const value of [String(payment.paymentYear), formatEtfDividendDate(payment.exDate),
+                formatEtfDividendDate(payment.paymentDate), payment.amountPerUnit === null ? '金額待公告' : `${payment.amountPerUnit} 元`]) {
+                const cell = document.createElement('td');
+                cell.textContent = value;
+                paymentRow.append(cell);
+            }
+            tbody.append(paymentRow);
+        }
     }
     if (events.length === 0) {
         const emptyRow = document.createElement('tr');
@@ -21320,10 +21346,12 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
         attribution.rel = 'noopener noreferrer';
         const datasetNames = {
             '89748': '上市股票除權除息預告表', '11634': '上櫃股票除權除息預告表',
-            '157399': '基金基本資料彙總表', '160547': '投信投顧公會境內基金配息資料'
+            '157399': '基金基本資料彙總表', '160547': '投信投顧公會境內基金配息資料',
+            '43476': '投信投顧公會境內基金基本資料'
         };
         attribution.textContent = `金融監督管理委員會證券期貨局 ${year} ${datasetNames[artifact.datasetUrl.split('/').at(-1)] ?? '開放資料'}`;
         meta.append(document.createTextNode(' · '), attribution);
+        if (artifact.dataPeriod) meta.append(document.createTextNode(`（${artifact.dataPeriod}）`));
     }
     if (market?.coverage?.scope === 'limited') {
         const license = document.createElement('a');
@@ -21334,7 +21362,7 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
         meta.append(document.createTextNode(' · '), license);
     }
 
-    panel.append(heading, table);
+    panel.append(heading, availability, table);
     panel.append(meta);
     td.append(panel);
     tr.append(td);
