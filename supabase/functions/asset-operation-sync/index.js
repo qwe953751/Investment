@@ -241,7 +241,7 @@ function headerAfterGroupOrder(beforeHeader, groups, desiredGroupIds) {
         (_, index) => beforeHeader[index] ?? '');
     desiredGroupIds.forEach((id, index) => {
         const oldIndex = oldIndexById.get(id);
-        if (Number.isInteger(oldIndex)) expected[index + 4] = beforeHeader[oldIndex];
+        if (Number.isInteger(oldIndex)) expected[index + 4] = beforeHeader[oldIndex] ?? '';
     });
     return expected;
 }
@@ -1109,10 +1109,17 @@ function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormu
     const expectedHeader = expectedGroupOrder === null
         ? beforeHeader
         : headerAfterGroupOrder(beforeHeader, before.groups, expectedGroupOrder);
-    const actualHeader = expectedGroupOrder === null
-        ? afterHeader
-        : Array.from({ length: LAST_CONTROLLED_COLUMN }, (_, index) => afterHeader[index] ?? '');
-    if (JSON.stringify(expectedHeader) !== JSON.stringify(actualHeader)) {
+    const headerMatches = Array.from({ length: LAST_CONTROLLED_COLUMN }, (_, index) => {
+        const previous = expectedHeader[index] ?? '';
+        const current = afterHeader[index] ?? '';
+        if (typeof previous === 'string' && previous.startsWith('=')) {
+            return typeof current === 'string' && current.startsWith('=')
+                && canonicalProtectedFormula(previous, before, 3)
+                    === canonicalProtectedFormula(current, after, 3);
+        }
+        return previous === current;
+    }).every(Boolean);
+    if (!headerMatches) {
         throw new Error('Google Sheet 寫入後驗證失敗：第 3 列標題有變化。');
     }
     if (before.frozenRowCount !== after.frozenRowCount) {
@@ -1176,6 +1183,40 @@ function assertProtectedSheetStructure(before, after, beforeFormulas, afterFormu
             }
         }
     }
+}
+
+function exportVerificationEvidence(sheet, formulas, retainedLastRow) {
+    return {
+        version: 1,
+        retainedLastRow,
+        rowCount: sheet.rowCount,
+        rawRowCount: sheet.rawRows.length,
+        frozenRowCount: sheet.frozenRowCount,
+        columns: { fields: sheet.columns.fields },
+        groups: sheet.groups.map(group => ({ id: group.id, sheet_column_index: group.sheet_column_index })),
+        // Only protected cells; omit stock names, quantities and checkbox values.
+        formulas: formulas.slice(0, retainedLastRow).map((row, index) =>
+            index < 3 ? row.slice(0, LAST_CONTROLLED_COLUMN) : [row[0] ?? ''])
+    };
+}
+
+async function verifyRevenueOnlyRecovery(sheet, finalize) {
+    const evidence = finalize.verification;
+    if (finalize.snapshotId || evidence?.version !== 1 || !Array.isArray(evidence.formulas)
+        || !Array.isArray(finalize.revenue?.values)) return false;
+    if (sheet.rowCount !== evidence.rowCount || sheet.rows.length !== finalize.result.rowCount) return false;
+    const before = { ...evidence, rawRows: Array.from({ length: evidence.rawRowCount }, () => []) };
+    assertProtectedSheetStructure(before, sheet, evidence.formulas,
+        await sheetFormulaValues(evidence.retainedLastRow), evidence.retainedLastRow,
+        evidence.retainedLastRow + 1, groupIdsInSheet(finalize.groups));
+    finalize.result = {
+        ...finalize.result,
+        deletedRows: 0,
+        deletedRowRange: null,
+        revenueHigh: revenueHighSummary(finalize.revenue.month, finalize.revenue.values,
+            verifyRevenueHigh(sheet, finalize.revenue.values))
+    };
+    return true;
 }
 
 async function writeGoogle(sheet, rows, options) {
@@ -1527,7 +1568,7 @@ async function exportAction(accountId, body, user) {
         });
         const retainedLastRow = Math.max(FIRST_DATA_ROW, FIRST_DATA_ROW - 1 + rows.length);
         const revenue = await revenueHighValues(rows.map(row => row.stock_code));
-        const formulasBefore = snapshot ? await sheetFormulaValues(retainedLastRow) : null;
+        const formulasBefore = await sheetFormulaValues(retainedLastRow);
         const resultSummary = snapshot
             ? { rowCount: rows.length, groupOrderChanged: groupOrderPlan.changed }
             : { rowCount: sheet.rows.length, revenueOnly: true, groupOrderChanged: groupOrderPlan.changed };
@@ -1537,6 +1578,8 @@ async function exportAction(accountId, body, user) {
             groups: targetGroups,
             dataHash: expectedDataHash,
             structureHash: plannedStructureHash,
+            verification: exportVerificationEvidence(sheet, formulasBefore, retainedLastRow),
+            revenue: { month: revenue.month, values: revenue.values },
             result: resultSummary
         };
         await setOperationStage(accountId, body.operationId, 'preflight-complete', 'not_started',
@@ -1560,7 +1603,8 @@ async function exportAction(accountId, body, user) {
             writeResult = await refreshRevenueHighAction(sheet, groupOrderPlan, {
                 operationId: body.operationId,
                 onRequestStart,
-                revenue
+                revenue,
+                formulasBefore
             });
         }
         await setOperationStage(accountId, body.operationId, 'google-write-confirmed', 'confirmed',
@@ -1639,7 +1683,9 @@ async function exportAction(accountId, body, user) {
         if (existing?.status === 'succeeded') return existing.result;
         const knownRejected = Number(error.status) >= 400 && Number(error.status) < 500
             && error.googleRequestStarted === true;
-        const state = googleWriteStarted && !knownRejected ? 'confirmed' : 'not_started';
+        const state = googleWriteStarted && !knownRejected
+            ? existing?.googleWriteState === 'confirmed' ? 'confirmed' : 'unknown'
+            : 'not_started';
         await failOperation(accountId, body.operationId, error, state);
         error.operationId = body.operationId;
         error.action = 'export';
@@ -1659,7 +1705,7 @@ async function refreshRevenueHighAction(sheet = null, groupOrderPlan = null, ope
         ?? await revenueHighValues(sheet.rows.map(row => row.stock_code));
     const retainedLastRow = Math.max(FIRST_DATA_ROW, FIRST_DATA_ROW - 1 + sheet.rows.length);
     const formulasBefore = groupOrderPlan?.changed
-        ? await sheetFormulaValues(retainedLastRow)
+        ? operationContext.formulasBefore ?? await sheetFormulaValues(retainedLastRow)
         : null;
     const requests = [
         ...(groupOrderPlan?.requests ?? []),
@@ -1933,11 +1979,6 @@ async function reconcileAction(accountId, body, user) {
     }
 
     if (operation.action === 'export') {
-        // Finalize only after the original handler recorded its full post-write checks.
-        // Earlier stages lack the protected-formula/row-delete verification evidence.
-        if (operation.stage !== 'verification-complete') {
-            return { operation, outcome: 'pending', reconcileRequired: true };
-        }
         const dataHash = await contentHash(sheet.rows);
         const structureHash = await googleStructureHash(sheet);
         if (dataHash !== operation.expectedAfterDataHash
@@ -1945,6 +1986,16 @@ async function reconcileAction(accountId, body, user) {
             return { operation, outcome: 'pending', reconcileRequired: true, code: 'verification_failed' };
         }
         const finalize = operation.finalize ?? {};
+        if (operation.stage !== 'verification-complete') {
+            // No batch replay. Old operations and draft exports without complete
+            // evidence stay locked for an explicit Google-source recovery.
+            if (!await verifyRevenueOnlyRecovery(sheet, finalize)) {
+                return { operation, outcome: 'pending', reconcileRequired: true,
+                    message: '此操作無法依保存證據完成驗證，需由維運核對 Google 主檔後復原；重複確認不會解除同步鎖。' };
+            }
+            await setOperationStage(accountId, body.operationId, 'verification-complete', 'confirmed',
+                dataHash, structureHash, finalize);
+        }
         const snapshotId = finalize.snapshotId ?? null;
         let rows = sheet.rows;
         if (snapshotId) {

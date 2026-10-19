@@ -10891,6 +10891,9 @@ async function assetExcelResolveOperation(operationId, action, requestBody = nul
             return assetExcelRequireOperationResult(
                 operation.result ?? reconciled.result ?? reconciled, operationId, action);
         }
+        if (reconciled.reconcileRequired && reconciled.message) {
+            throw assetExcelOperationPendingError(operationId, reconciled.message);
+        }
     }
     if (operation.result?.outcome === 'succeeded') {
         return assetExcelRequireOperationResult(operation.result, operationId, action);

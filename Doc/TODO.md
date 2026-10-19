@@ -2448,6 +2448,8 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 **狀態：v2 DB／Edge 已部署，但使用者實測發現前端匯出漏傳必填 columnOrder；直接匯出及移欄後匯出均在 Google API 前回 422。已補上 flush 後的 52 欄快照與最新 revision；操作表與接口 51/51、全 Node 357/357、.NET 10.0.302 Release 984/984 通過；程式 commit `ea684b151` 已推送，[publish-only run 39009705942](https://github.com/qwe953751/Investment/actions/runs/39009705942) success，公開版本 `1792218315` 與 JS SHA256 核對通過。Edge 維持 v26、無 migration。正式 Google Sheet、副本 E2E 及隔離 PostgreSQL 交易驗收仍未完成；2026-10-15 歷史 HTTP 500 精確原因仍未證實。**
 
+筆記 #91 後續（2026-10-20）：A3 公式合法移欄被當成表頭修改、以及對帳永久 pending 已修復；Edge v27 已部署。原正式阻塞經 Google 36 筆／48 欄與 marker、資料／結構 hash 核對，以單一交易保留舊操作並從 Google 重建基準（版本 60、clean、作用中操作 0），未寫入 Google。新增無草稿匯出寫入前保護證據與唯讀重驗；操作表 61/61、完整 Node 393/393、.NET 1009/1009 通過。本輪網站發布與正式新匯出待完成，舊版「Edge 維持 v26」僅為 10/17 歷史狀態。副本 E2E／隔離 PostgreSQL 競爭驗收仍待；詳見版本紀錄最新 #91。
+
 ### 已討論與實作
 
 - Google Sheet 匯入後，網站的 48 個族群欄相對順序跟隨 Sheet 的 E:AZ；網站其他欄位的既有位置保留。

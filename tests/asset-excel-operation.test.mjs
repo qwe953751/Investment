@@ -1027,6 +1027,14 @@ test('移動族群欄時依 UUID 驗證公式，合法參照調整可通過、�
     afterFormulas[2][5] = 'A';
 
     context.assertProtectedSheetStructure(before, after, beforeFormulas, afterFormulas, 5, 6, ['b', 'a']);
+    // 正式操作表 A3 是加總公式，Google 移欄時會合法改寫它的參照。
+    beforeFormulas[2][0] = '=SUM(E1:EZ1)';
+    afterFormulas[2][0] = '=SUM(F1:EZ1)';
+    context.assertProtectedSheetStructure(before, after, beforeFormulas, afterFormulas, 5, 6, ['b', 'a']);
+    afterFormulas[2][0] = '=SUM(F1:EZ1)+1';
+    assert.throws(() => context.assertProtectedSheetStructure(
+        before, after, beforeFormulas, afterFormulas, 5, 6, ['b', 'a']), /第 3 列/);
+    afterFormulas[2][0] = '=SUM(F1:EZ1)';
     afterFormulas[0][4] = '=SUM(E4:E5)+1';
     assert.throws(() => context.assertProtectedSheetStructure(
         before, after, beforeFormulas, afterFormulas, 5, 6, ['b', 'a']),
