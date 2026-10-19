@@ -20897,8 +20897,10 @@ function etfDividendTaipeiDate(now = new Date()) {
     return `${value.year}-${value.month}-${value.day}`;
 }
 
+// 公開檔 v2 是精簡位置陣列：events／undated 每筆 [除息日, 發放日, 每單位金額]，next 每段 [起日, 迄日, events 索引]。
+// 這裡驗證後還原成畫面函式使用的物件；畫面不需要知道傳輸格式，C# 仍是日期區間與排序的唯一來源。
 function validateEtfDividendPayload(payload, descriptor) {
-    if (!payload || payload.schemaVersion !== 1 || payload.rulesVersion !== 'etf-dividends-v1'
+    if (!payload || payload.schemaVersion !== 2 || payload.rulesVersion !== 'etf-dividends-v2'
         || payload.timeZone !== 'Asia/Taipei' || !/^\d{4}-\d{2}-\d{2}$/.test(payload.asOfDate)
         || !Array.isArray(payload.funds) || !payload.markets?.twse || !payload.markets?.tpex) {
         throw new Error('配息資料格式不符。');
@@ -20921,48 +20923,69 @@ function validateEtfDividendPayload(payload, descriptor) {
         }
     }
 
+    const isDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const isAmount = value => value === null || (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value));
+    const triple = (value, message) => {
+        if (!Array.isArray(value) || value.length !== 3) throw new Error(message);
+        return value;
+    };
+    const nextDay = value => {
+        const date = new Date(`${value}T00:00:00Z`);
+        date.setUTCDate(date.getUTCDate() + 1);
+        return date.toISOString().slice(0, 10);
+    };
+
     const keys = new Set();
-    for (const fund of payload.funds) {
-        const key = `${fund.market}:${fund.ticker}`;
-        if (!['twse', 'tpex'].includes(fund.market) || !/^0[A-Z0-9]{3,5}$/.test(fund.ticker)
-            || keys.has(key) || !states.has(fund.coverageState)
-            || !Array.isArray(fund.events) || !Array.isArray(fund.unresolvedEvents)
-            || !Array.isArray(fund.nextWindows)) {
+    const funds = payload.funds.map(fund => {
+        const key = `${fund?.market}:${fund?.ticker}`;
+        if (!['twse', 'tpex'].includes(fund?.market) || !/^0[A-Z0-9]{3,5}$/.test(fund.ticker) || keys.has(key)
+            || !Array.isArray(fund.events) || !Array.isArray(fund.undated) || !Array.isArray(fund.next)) {
             throw new Error('配息資料包含不合法或重複的 ETF 項目。');
         }
         keys.add(key);
-        for (const event of [...fund.events, ...fund.unresolvedEvents]) {
-            if (!/^[0-9a-f]{64}$/.test(event.eventId) || !/^[0-9a-f]{64}$/.test(event.sourceHash)
-                || (event.amountPerUnit !== null
-                    && (typeof event.amountPerUnit !== 'string' || !/^-?\d+(?:\.\d+)?$/.test(event.amountPerUnit)))) {
+
+        const events = fund.events.map((item, index) => {
+            const [exDate, paymentDate, amountPerUnit] = triple(item, '配息資料包含不合法的事件或金額。');
+            if (!isDate(exDate) || !isDate(paymentDate) || paymentDate < exDate || !isAmount(amountPerUnit)) {
                 throw new Error('配息資料包含不合法的事件或金額。');
             }
-        }
+            return { eventId: `e${index}`, exDate, paymentDate, paymentYear: Number(paymentDate.slice(0, 4)), amountPerUnit };
+        });
+        const unresolvedEvents = fund.undated.map((item, index) => {
+            const [exDate, paymentDate, amountPerUnit] = triple(item, '配息資料包含不合法的事件或金額。');
+            if (!isDate(exDate) || paymentDate !== null || !isAmount(amountPerUnit)) {
+                throw new Error('配息資料包含不合法的事件或金額。');
+            }
+            return { eventId: `u${index}`, exDate, paymentDate: null, paymentYear: null, amountPerUnit };
+        });
+
         let cursor = payload.projectionStart;
-        const eventIds = new Set(fund.events.map(event => event.eventId));
-        for (const window of fund.nextWindows) {
-            if (window.fromDate !== cursor || !/^\d{4}-\d{2}-\d{2}$/.test(window.throughDate)
-                || window.fromDate > window.throughDate
-                || (window.eventId !== null && !eventIds.has(window.eventId))) {
+        const nextWindows = fund.next.map((item, position) => {
+            const [fromDate, throughDate, index] = triple(item, '配息資料的下次發放區間不連續。');
+            const event = index === null ? null : events[index];
+            if (fromDate !== cursor || !isDate(throughDate) || fromDate > throughDate || throughDate > payload.projectionEnd
+                || (index !== null && (!Number.isInteger(index) || event?.paymentDate !== throughDate))
+                || (index === null && position !== fund.next.length - 1)) {
                 throw new Error('配息資料的下次發放區間不連續。');
             }
-            cursor = new Date(`${window.throughDate}T00:00:00Z`).toISOString().slice(0, 10);
-            if (window.throughDate !== payload.projectionEnd) {
-                const nextDay = new Date(`${window.throughDate}T00:00:00Z`);
-                nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-                cursor = nextDay.toISOString().slice(0, 10);
-            }
-        }
-        if (fund.nextWindows.length === 0 || fund.nextWindows.at(-1).throughDate !== payload.projectionEnd) {
+            cursor = throughDate === payload.projectionEnd ? throughDate : nextDay(throughDate);
+            return { fromDate, throughDate, eventId: event?.eventId ?? null };
+        });
+        if (nextWindows.length === 0 || nextWindows.at(-1).throughDate !== payload.projectionEnd) {
             throw new Error('配息資料的下次發放區間未涵蓋投影末日。');
         }
-    }
-    return payload;
+
+        return {
+            market: fund.market, ticker: fund.ticker, coverageState: payload.markets[fund.market].status,
+            events, unresolvedEvents, nextWindows
+        };
+    });
+    return { ...payload, funds };
 }
 
 async function ensureEtfDividendPayload(force = false) {
     const descriptor = siteManifest?.etfDividends;
-    if (!descriptor || descriptor.schemaVersion !== 1 || !/^[0-9a-f]{64}$/.test(descriptor.sha256 ?? '')) {
+    if (!descriptor || descriptor.schemaVersion !== 2 || !/^[0-9a-f]{64}$/.test(descriptor.sha256 ?? '')) {
         etfDividendPayloadError = '配息資料尚未發布。';
         return null;
     }

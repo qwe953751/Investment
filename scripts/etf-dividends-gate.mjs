@@ -19,8 +19,6 @@ function taipeiParts(value) {
 export function decideEtfDividendDispatch({
     at,
     businessDate,
-    authorized = false,
-    sourceMode = 'open-data',
     allowOutsideWindow = false,
     runs = [],
     excludeRunId = null,
@@ -41,18 +39,14 @@ export function decideEtfDividendDispatch({
     if (todayRuns.some(run => run.status === 'queued' || run.status === 'in_progress')) {
         return { dispatch: false, reason: 'already-running', businessDate: local.date };
     }
-    // Only v4 runs include both markets' SITCA distributions and the per-fund coverage contract.
-    // Legacy green runs and blocked-license records do not prove daily completion.
-    const title = mode => `ETF 配息 v4 | ${businessDate} | ${mode}`;
-    const enabledRuns = todayRuns.filter(run => run.display_title === title(sourceMode === 'open-data' ? 'open-data' : 'exchange-enabled'));
-    if (enabledRuns.some(run => run.conclusion === 'success' && run.publication_verified === true)) {
+    // v5 collects the official exchange lists with full history. Older v4 open-data or
+    // blocked-license runs do not prove today's v5 completion and do not use its retry budget.
+    const title = `ETF 配息 v5 | ${businessDate} | exchange`;
+    const currentRuns = todayRuns.filter(run => run.display_title === title);
+    if (currentRuns.some(run => run.conclusion === 'success' && run.publication_verified === true)) {
         return { dispatch: false, reason: 'already-completed', businessDate: local.date };
     }
-    if (sourceMode === 'exchange' && !authorized && todayRuns.some(run => run.display_title === title('blocked-license'))) {
-        return { dispatch: false, reason: 'license-gate-recorded', businessDate: local.date };
-    }
-    const sourceEnabled = sourceMode === 'open-data' || authorized;
-    const attempts = sourceEnabled ? enabledRuns.filter(run => run.collection_attempted !== false) : [];
+    const attempts = currentRuns.filter(run => run.collection_attempted !== false);
     if (attempts.length >= maxRuns) {
         return { dispatch: false, reason: 'retry-limit', businessDate: local.date };
     }
@@ -68,9 +62,8 @@ export function decideEtfDividendDispatch({
 
     return {
         dispatch: true,
-        reason: sourceEnabled ? 'scheduled' : 'license-gate-closed',
+        reason: 'scheduled',
         businessDate: local.date,
-        authorized: Boolean(authorized),
         attempt: attempts.length + 1
     };
 }
@@ -85,9 +78,7 @@ if (process.argv[1]?.endsWith('etf-dividends-gate.mjs')) {
     const result = decideEtfDividendDispatch({
         at: argument('--at', new Date().toISOString()),
         businessDate: argument('--business-date', ''),
-        authorized: ['true', '1'].includes(String(argument('--authorized', 'false')).toLowerCase()),
         runs,
-        sourceMode: argument('--source-mode', 'open-data'),
         allowOutsideWindow: argument('--allow-outside-window', 'false') === 'true',
         excludeRunId: argument('--exclude-run-id')
     });

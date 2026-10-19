@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.RegularExpressions;
 using Invest.Web.Features.Etfs.Dividends.Models;
 
@@ -14,7 +12,8 @@ public static partial class EtfDividendExportValidator
     public static void Validate(EtfDividendExport payload, DateOnly expectedAsOfDate, string? expectedBatchId = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        if (payload.SchemaVersion != 1 || payload.RulesVersion != EtfDividendProjectionService.RulesVersion
+        if (payload.SchemaVersion != EtfDividendProjectionService.SchemaVersion
+            || payload.RulesVersion != EtfDividendProjectionService.RulesVersion
             || payload.TimeZone != "Asia/Taipei" || payload.GeneratedAt == default
             || payload.GeneratedAt.Offset != TimeSpan.Zero)
             throw new InvalidDataException("ETF 配息投影版本、時區或產生時間不合法。");
@@ -29,8 +28,6 @@ public static partial class EtfDividendExportValidator
         if (payload.CompleteCheckDate is { } completeDate
             && ParseDate(completeDate, "completeCheckDate") > asOf)
             throw new InvalidDataException("ETF 配息 completeCheckDate 不可晚於 asOfDate。");
-        if (payload.SourceCheckDate is { } sourceDate && ParseDate(sourceDate, "sourceCheckDate") > asOf)
-            throw new InvalidDataException("來源檢查日不可晚於投影日。");
         if (expectedBatchId is not null && payload.BatchId != expectedBatchId)
             throw new InvalidDataException("ETF 配息檔 batchId 與本次收集批次不符。");
 
@@ -38,32 +35,23 @@ public static partial class EtfDividendExportValidator
                 .SequenceEqual(new[] { "tpex", "twse" }, StringComparer.Ordinal))
             throw new InvalidDataException("ETF 配息投影必須且只能包含 twse、tpex 兩市場。");
 
-        var queryStart = new DateOnly(asOf.Year - 1, 1, 1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var queryEnd = new DateOnly(asOf.Year + 1, 12, 31).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         foreach (var (key, market) in payload.Markets)
         {
             if (market is null || !MarketStatuses.Contains(market.Status)
                 || !Uri.TryCreate(market.SourceUrl, UriKind.Absolute, out var sourceUrl)
                 || sourceUrl.Scheme != Uri.UriSchemeHttps
-                || ParseDate(market.QueryStart, $"markets.{key}.queryStart").ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) != queryStart
-                || ParseDate(market.QueryEnd, $"markets.{key}.queryEnd").ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) != queryEnd
-                || (market.SourceHash is not null && !Sha256Regex().IsMatch(market.SourceHash)))
+                || (market.SourceHash is not null && !Sha256Regex().IsMatch(market.SourceHash))
+                || (market.CoverageStart is null) != (market.CoverageEnd is null)
+                || (market.CoverageStart is not null
+                    && ParseDate(market.CoverageStart, $"markets.{key}.coverageStart") > ParseDate(market.CoverageEnd!, $"markets.{key}.coverageEnd")))
                 throw new InvalidDataException($"ETF 配息市場 {key} 欄位或涵蓋日期不合法。");
-
-            if (market.Coverage is { } coverage && (coverage.Scope != "limited"
-                || string.IsNullOrWhiteSpace(coverage.Note) || coverage.Sources is null
-                || market.Status == "fresh" && coverage.Sources.Count == 0
-                || coverage.Sources.Any(source => !Sha256Regex().IsMatch(source.Sha256)
-                    || source.File != $"objects/open-data/{source.Sha256}.json" && source.File != $"objects/open-data/{source.Sha256}.csv"
-                    || !Uri.TryCreate(source.DatasetUrl, UriKind.Absolute, out var dataset)
-                    || dataset.Scheme != "https" || dataset.Host != "data.gov.tw")))
-                throw new InvalidDataException("開放資料必須標示有限涵蓋範圍與可追溯原文。");
 
             if ((market.LastSuccessfulCheckAt is null) != (market.ExpiresAt is null)
                 || (market.LastSuccessfulCheckAt is { } checkedAt
                     && (checkedAt.Offset != TimeSpan.Zero || market.ExpiresAt is not { Offset: var expiresOffset }
-                        || expiresOffset != TimeSpan.Zero || market.ExpiresAt != checkedAt.AddHours(36)))
-                || (market.Status == "fresh" && (market.SourceHash is null || market.LastSuccessfulCheckAt is null)))
+                        || expiresOffset != TimeSpan.Zero || market.ExpiresAt != checkedAt.Add(EtfDividendProjectionService.FreshFor)))
+                || (market.Status == "fresh" && (market.SourceHash is null || market.LastSuccessfulCheckAt is null
+                    || market.CoverageStart is null)))
                 throw new InvalidDataException($"ETF 配息市場 {key} 的來源時間或新鮮度欄位不一致。");
         }
 
@@ -71,76 +59,66 @@ public static partial class EtfDividendExportValidator
         var fundKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var fund in payload.Funds)
         {
-            if (fund is null || !payload.Markets.TryGetValue(fund.Market, out var market)
+            if (fund is null || !payload.Markets.ContainsKey(fund.Market)
                 || !TickerRegex().IsMatch(fund.Ticker) || !fundKeys.Add($"{fund.Market}:{fund.Ticker}")
-                || fund.CoverageState != market.Status || fund.Events is null
-                || fund.UnresolvedEvents is null || fund.NextWindows is null)
+                || fund.Events is null || fund.Undated is null || fund.Next is null)
                 throw new InvalidDataException("ETF 配息 funds 存在重複、不合法或缺少的欄位。");
 
-            var eventIds = new HashSet<string>(StringComparer.Ordinal);
-            if (fund.Availability is { } availability && (availability.State is not ("records-known" or "not-observed")
-                || availability.PaymentYear != asOf.Year
-                || availability.KnownPayments != fund.Events.Count(item => item.PaymentYear == asOf.Year)
-                || availability.UndatedAnnouncements != fund.UnresolvedEvents.Count
-                || (availability.State == "not-observed") != (fund.Events.Count + fund.UnresolvedEvents.Count == 0)
-                || string.IsNullOrWhiteSpace(availability.Note)))
-                throw new InvalidDataException("ETF 逐檔已知紀錄與資料缺口統計不一致。");
+            var exDates = new HashSet<DateOnly>();
+            (DateOnly Payment, DateOnly ExDate)? previous = null;
             foreach (var item in fund.Events)
             {
-                ValidateEvent(item, fund.Market, fund.Ticker, paymentDateRequired: true);
-                if (item.PaymentYear != ParseDate(item.PaymentDate!, "events.paymentDate").Year
-                    || !eventIds.Add(item.EventId))
-                    throw new InvalidDataException("ETF 配息 events 年度或 eventId 不合法／重複。");
+                var (exDate, payment) = ValidateEvent(item, paymentDateRequired: true);
+                var current = (payment!.Value, exDate);
+                if (!exDates.Add(exDate) || previous is { } last && current.CompareTo(last) < 0)
+                    throw new InvalidDataException($"ETF {fund.Ticker} 配息事件重複或未依發放日排序。");
+                previous = current;
             }
-            foreach (var item in fund.UnresolvedEvents)
+
+            foreach (var item in fund.Undated)
             {
-                ValidateEvent(item, fund.Market, fund.Ticker, paymentDateRequired: false);
-                if (item.PaymentDate is not null || item.PaymentYear is not null || !eventIds.Add(item.EventId))
-                    throw new InvalidDataException("ETF 配息 unresolvedEvents 必須沒有發放日且 eventId 唯一。");
+                var (exDate, _) = ValidateEvent(item, paymentDateRequired: false);
+                if (!exDates.Add(exDate))
+                    throw new InvalidDataException($"ETF {fund.Ticker} 未定發放日事件與其他事件重複。");
             }
 
             var cursor = start;
-            foreach (var window in fund.NextWindows)
+            for (var index = 0; index < fund.Next.Count; index++)
             {
-                if (window is null || ParseDate(window.FromDate, "nextWindows.fromDate") != cursor)
-                    throw new InvalidDataException("ETF 配息 nextWindows 存在空隙、重疊或日期錯誤。");
-                var through = ParseDate(window.ThroughDate, "nextWindows.throughDate");
-                if (through < cursor || (window.EventId is not null
-                    && (!fund.Events.Any(item => item.EventId == window.EventId
-                        && item.PaymentDate == window.ThroughDate))))
-                    throw new InvalidDataException("ETF 配息 nextWindows 的區間或事件關聯不合法。");
+                var window = fund.Next[index];
+                if (window is null || ParseDate(window.FromDate, "next.fromDate") != cursor)
+                    throw new InvalidDataException("ETF 配息下次發放區間存在空隙、重疊或日期錯誤。");
+                var through = ParseDate(window.ThroughDate, "next.throughDate");
+                if (through < cursor || through > end
+                    || window.EventIndex is { } eventIndex
+                        && (eventIndex < 0 || eventIndex >= fund.Events.Count
+                            || fund.Events[eventIndex].PaymentDate != window.ThroughDate)
+                    || window.EventIndex is null && index != fund.Next.Count - 1)
+                    throw new InvalidDataException("ETF 配息下次發放區間的日期或事件關聯不合法。");
+                if (through == end && index != fund.Next.Count - 1)
+                    throw new InvalidDataException("ETF 配息下次發放區間不可在投影末日後繼續。");
                 cursor = through == end ? end : through.AddDays(1);
-                if (through == end && !ReferenceEquals(window, fund.NextWindows[^1]))
-                    throw new InvalidDataException("ETF 配息 nextWindows 不可在投影末日後繼續。");
             }
-            if (fund.NextWindows.Count == 0 || ParseDate(fund.NextWindows[^1].ThroughDate, "nextWindows.throughDate") != end)
-                throw new InvalidDataException("ETF 配息 nextWindows 必須完整涵蓋投影區間。");
+
+            if (fund.Next.Count == 0 || ParseDate(fund.Next[^1].ThroughDate, "next.throughDate") != end)
+                throw new InvalidDataException("ETF 配息下次發放區間必須完整涵蓋投影區間。");
         }
     }
 
-    private static void ValidateEvent(EtfDividendWireEvent item, string market, string ticker, bool paymentDateRequired)
+    private static (DateOnly ExDate, DateOnly? PaymentDate) ValidateEvent(EtfDividendCompactEvent item, bool paymentDateRequired)
     {
-        if (item is null || item.AnnouncementYear <= 0 || item.Currency != "TWD"
-            || !Sha256Regex().IsMatch(item.EventId) || !Sha256Regex().IsMatch(item.SourceHash)
-            || item.SourceHashes is { } hashes && (!hashes.Contains(item.SourceHash)
-                || hashes.Any(hash => !Sha256Regex().IsMatch(hash))))
-            throw new InvalidDataException("ETF 配息事件識別、年度、幣別或來源 hash 不合法。");
-        var exDate = ParseDate(item.ExDate ?? string.Empty, "events.exDate");
-        if (item.RecordDate is not null) _ = ParseDate(item.RecordDate, "events.recordDate");
+        if (item is null) throw new InvalidDataException("ETF 配息事件不可為 null。");
+        var exDate = ParseDate(item.ExDate, "events.exDate");
         if (paymentDateRequired != (item.PaymentDate is not null))
-            throw new InvalidDataException("ETF 配息事件 paymentDate 缺少或不應存在。");
-        var paymentDate = item.PaymentDate is null ? "?" : ParseDate(item.PaymentDate, "events.paymentDate")
-            .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var eventKey = $"{market}|{ticker}|{exDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}|{paymentDate}";
-        var expectedEventId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(eventKey))).ToLowerInvariant();
-        if (item.EventId != expectedEventId)
-            throw new InvalidDataException("ETF 配息 eventId 與正規化事件鍵不符。");
+            throw new InvalidDataException("ETF 配息事件發放日缺少或不應存在。");
+        DateOnly? payment = item.PaymentDate is null ? null : ParseDate(item.PaymentDate, "events.paymentDate");
+        if (payment < exDate)
+            throw new InvalidDataException("ETF 配息發放日不可早於除息日。");
         if (item.AmountPerUnit is not null
             && (!AmountRegex().IsMatch(item.AmountPerUnit)
-                || !decimal.TryParse(item.AmountPerUnit, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
-                    CultureInfo.InvariantCulture, out var amount)
-                || amount < 0))
+                || !decimal.TryParse(item.AmountPerUnit, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out _)))
             throw new InvalidDataException("ETF 配息金額必須是非負十進位字串或 null。");
+        return (exDate, payment);
     }
 
     private static DateOnly ParseDate(string value, string field)
@@ -157,6 +135,6 @@ public static partial class EtfDividendExportValidator
     [GeneratedRegex("^0[A-Z0-9]{3,5}$", RegexOptions.CultureInvariant)]
     private static partial Regex TickerRegex();
 
-    [GeneratedRegex("^-?\\d+(?:\\.\\d+)?$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^\\d+(?:\\.\\d+)?$", RegexOptions.CultureInvariant)]
     private static partial Regex AmountRegex();
 }

@@ -94,7 +94,6 @@ builder.Services.AddHttpClient<TpexEmergingDailyQuoteClient>(ConfigureQuoteClien
 builder.Services.AddHttpClient<TaiwanEtfCatalogClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TwseEtfDividendClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexEtfDividendClient>(ConfigureQuoteClient);
-builder.Services.AddHttpClient<EtfDividendOpenDataClient>(ConfigureQuoteClient);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<EtfDividendProjectionService>();
 builder.Services.AddTransient<EtfDividendCollector>();
@@ -683,7 +682,7 @@ static async Task RunEtfDividendCommandAsync(IServiceProvider services, string[]
             new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
         Console.WriteLine($"status={summary.Status}; batchId={summary.BatchId}; markets={summary.Markets.Count}");
         if (summary.Message is not null) Console.WriteLine(summary.Message);
-        Environment.ExitCode = summary.Status switch { "partial" or "blocked-license" => 2, _ => 0 };
+        Environment.ExitCode = summary.Status == "partial" ? 2 : 0;
         return;
     }
 

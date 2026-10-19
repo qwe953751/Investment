@@ -34,7 +34,9 @@ test('the collection workflow is dispatch-only, separately locked, and scoped to
     assert.match(files.collection, /business-date:/);
     assert.match(files.intraday, /inputs\[business-date\]=\$today/);
     assert.match(files.collection, /--exclude-run-id "\$GITHUB_RUN_ID"/);
-    assert.match(files.collection, /ETF_DIVIDENDS_SOURCE_AUTHORIZED/);
+    for (const workflow of [files.collection, files.intraday]) {
+        assert.doesNotMatch(workflow, /ETF_DIVIDENDS_SOURCE_AUTHORIZED|ETF_DIVIDENDS_SOURCE_MODE|--authorized|--source-mode/);
+    }
     assert.match(files.collection, /git add -A imports-etf-dividends/);
     assert.match(files.collection, /--diff-filter=D -- imports-etf-dividends/);
     assert.match(files.collection, /dataSha=\$\(git rev-parse HEAD\)/);
@@ -62,7 +64,7 @@ function shellStep(name) {
 }
 
 test('run titles and both run-list consumers preserve the completion protocol', () => {
-    assert.match(files.collection, /run-name: "ETF 配息 v4 \|/);
+    assert.match(files.collection, /run-name: "ETF 配息 v5 \| \$\{\{ inputs\.business-date \}\} \| exchange"/);
     for (const workflow of [files.collection, files.intraday]) {
         assert.match(workflow, /node scripts\/etf-dividends-runs\.mjs/);
     }
@@ -79,7 +81,7 @@ test('mandatory completion rejects blocked, partial, skipped publication and inc
         const cases = [
             ['complete', 'success', valid, true],
             ['complete', 'success', { ...valid, completeCheckDate: null, sourceCheckDate: valid.asOfDate,
-                markets: { twse: { ...fresh, coverage: { scope: 'limited' } }, tpex: { ...fresh, coverage: { scope: 'limited' } } } }, true],
+                markets: { twse: { ...fresh, coverage: { scope: 'limited' } }, tpex: { ...fresh, coverage: { scope: 'limited' } } } }, false],
             ['complete', 'success', { ...valid, completeCheckDate: null, sourceCheckDate: valid.asOfDate }, false],
             ['blocked-license', 'skipped', valid, false],
             ['partial', 'success', valid, false],
@@ -103,15 +105,25 @@ test('mandatory completion rejects blocked, partial, skipped publication and inc
     } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test('blocked-license summary is literal markdown and does not execute backticks', () => {
-    const block = shellStep('收集兩市場配息原文與觀測');
-    const branch = block.split('blocked-license:2)')[1].split(';;')[0];
-    const result = spawnSync('bash', ['-c', branch], {
-        encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: '/dev/stdout' }
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /狀態：`blocked-license`/);
-    assert.doesNotMatch(result.stderr, /command not found/);
+test('collection summary is literal markdown with query range and isolated-row counts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'etf-summary-'));
+    try {
+        const summary = join(directory, 'summary.json');
+        await writeFile(summary, JSON.stringify({ status: 'complete', batchId: 'b-1', markets: [
+            { market: 'twse', status: 'fresh', queryStart: '2000-01-01', queryEnd: '2027-12-31', validRows: 1642,
+                duplicateRows: 9, conflictRows: 0, invalidRows: 1 }
+        ] }));
+        const block = shellStep('收集兩市場配息原文與觀測');
+        const branch = block.split('complete:0|partial:2)')[1].split(';;')[0];
+        const result = spawnSync('bash', ['-c', branch], {
+            encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: '/dev/stdout', SUMMARY_FILE: summary,
+                status: 'complete', batch: 'b-1' }
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /狀態：`complete`/);
+        assert.match(result.stdout, /twse：fresh，查詢 2000-01-01～2027-12-31，有效 1642 筆、重複 9 筆、衝突 0 筆、無效 1 筆。/);
+        assert.doesNotMatch(result.stderr, /command not found/);
+    } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 
@@ -154,7 +166,7 @@ else cp "$FIXTURE_DIR/payload.json" "$out"; fi
         await chmod(join(directory, 'curl'), 0o700);
         await chmod(join(directory, 'sleep'), 0o700);
         const fresh = { status: 'fresh' };
-        const valid = { schemaVersion: 1, rulesVersion: 'etf-dividends-v1', asOfDate: '2026-10-18',
+        const valid = { schemaVersion: 2, rulesVersion: 'etf-dividends-v2', asOfDate: '2026-10-18',
             batchId: 'production-batch', funds: [], markets: { twse: fresh, tpex: fresh } };
         await writeFile(join(directory, 'stale.json'), JSON.stringify({ etfDividends: { asOfDate: '2026-10-17' } }));
         for (const [mode, wrongBatch, corrupt, expected] of [

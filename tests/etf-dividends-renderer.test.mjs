@@ -57,7 +57,7 @@ async function createRenderer(payload, error = '', extra = {}) {
     const start = source.indexOf('function etfDividendTaipeiDate(');
     const end = source.indexOf('\nfunction renderTable()', start);
     assert.ok(start >= 0 && end > start, 'expected the production ETF payout renderer block');
-    const code = `${source.slice(start, end)}\nglobalThis.renderers = { appendRankingCell, buildEtfPayoutHistoryRow, ensureEtfDividendPayload };`;
+    const code = `${source.slice(start, end)}\nglobalThis.renderers = { appendRankingCell, buildEtfPayoutHistoryRow, ensureEtfDividendPayload, validateEtfDividendPayload };`;
     const context = vm.createContext({
         Date: FixedDate,
         Intl,
@@ -123,7 +123,7 @@ const payoutColumn = { key: 'payout', cell: () => ({ cls: 'etf-payout-cell', pay
 test('refresh failure preserves the last verified payload', async () => {
     const data = payload();
     const renderer = await createRenderer(data, '', {
-        siteManifest: { etfDividends: { schemaVersion: 1, sha256: 'b'.repeat(64), file: 'data/etf-dividends.json' } },
+        siteManifest: { etfDividends: { schemaVersion: 2, sha256: 'b'.repeat(64), file: 'data/etf-dividends.json' } },
         etfDividendPayloadHash: 'a'.repeat(64), version: 1,
         AbortSignal: { timeout: () => null }, fetch: async () => { throw new Error('network unavailable'); },
         rankingCanRender: () => false
@@ -243,4 +243,102 @@ test('limited open data shows real unresolved amounts, scope and attribution wit
     assert.match(history.textContent, /政府資料開放授權條款第1版/);
     assert.doesNotMatch(history.textContent, /2026 年尚未查得配息公告/);
     assert.ok(find(history, element => element.href === 'https://data.gov.tw/dataset/89748'));
+});
+
+function compactPayload(overrides = {}) {
+    return {
+        schemaVersion: 2,
+        rulesVersion: 'etf-dividends-v2',
+        generatedAt: FIXED_NOW,
+        asOfDate: '2026-10-16',
+        timeZone: 'Asia/Taipei',
+        completeCheckDate: '2026-10-16',
+        batchId: 'fixture',
+        projectionStart: '2026-01-01',
+        projectionEnd: '2027-12-31',
+        markets: {
+            twse: { status: 'fresh', lastSuccessfulCheckAt: FIXED_NOW, expiresAt: '2026-10-17T16:00:00.000Z',
+                sourceHash: 'f'.repeat(64), sourceUrl: 'https://www.twse.com.tw/rwd/zh/ETF/etfDiv',
+                coverageStart: '2000-01-01', coverageEnd: '2027-12-31' },
+            tpex: { status: 'fresh', lastSuccessfulCheckAt: FIXED_NOW, expiresAt: '2026-10-17T16:00:00.000Z',
+                sourceHash: 'e'.repeat(64), sourceUrl: 'https://info.tpex.org.tw/api/etfExDiv',
+                coverageStart: '2000-01-01', coverageEnd: '2027-12-31' }
+        },
+        funds: [{
+            market: 'twse', ticker: '00713',
+            events: [
+                ['2024-12-17', '2025-01-13', '1.4'],
+                ['2025-09-19', '2025-10-15', '0.78'],
+                ['2025-12-19', '2026-01-12', '0.78'],
+                ['2026-09-21', '2026-10-13', '1.25'],
+                ['2026-12-18', '2027-01-12', null]
+            ],
+            undated: [],
+            next: [['2026-01-01', '2026-01-12', 2], ['2026-01-13', '2026-10-13', 3], ['2026-10-14', '2027-01-12', 4],
+                ['2027-01-13', '2027-12-31', null]]
+        }],
+        ...overrides
+    };
+}
+
+const descriptorFor = data => ({ asOfDate: data.asOfDate, completeCheckDate: data.completeCheckDate, batchId: data.batchId });
+
+test('the v2 compact payload decodes into the renderer shape and shows every past year', async () => {
+    const decoder = await createRenderer(null);
+    const raw = compactPayload();
+    const decoded = decoder.validateEtfDividendPayload(raw, descriptorFor(raw));
+    const fund = decoded.funds[0];
+    assert.equal(fund.events.length, 5);
+    assert.deepEqual({ ...fund.events[2] }, { eventId: 'e2', exDate: '2025-12-19', paymentDate: '2026-01-12', paymentYear: 2026, amountPerUnit: '0.78' });
+    assert.equal(fund.nextWindows[2].eventId, 'e4');
+    assert.equal(fund.nextWindows.at(-1).eventId, null);
+    assert.equal(fund.coverageState, 'fresh');
+
+    const renderer = await createRenderer(decoded);
+    const { button } = await renderCell(decoded);
+    assert.match(button.textContent, /下次發放2027\/01\/12/);
+    assert.match(button.textContent, /金額待公告/);
+    const history = renderer.buildEtfPayoutHistoryRow(row, 6);
+    assert.match(history.textContent, /2026 年配息紀錄/);
+    assert.match(history.textContent, /其他已取得發放紀錄/);
+    const cells = collect(history, item => item.tagName === 'td').map(cell => cell.textContent);
+    for (const expected of ['2025/01/13', '2025/10/15', '2026/01/12', '2026/10/13', '2027/01/12', '1.4 元', '0.78 元', '1.25 元']) {
+        assert.ok(cells.includes(expected), `missing ${expected}`);
+    }
+});
+
+test('the v2 decoder rejects malformed tuples, broken windows and duplicate funds instead of showing partial data', async () => {
+    const decoder = await createRenderer(null);
+    const reject = (mutate, pattern) => {
+        const raw = compactPayload();
+        const descriptor = descriptorFor(raw);
+        mutate(raw);
+        assert.throws(() => decoder.validateEtfDividendPayload(raw, descriptor), pattern);
+    };
+    reject(raw => { raw.schemaVersion = 1; }, /格式不符/);
+    reject(raw => { raw.funds[0].events[0] = ['2024-12-17', '2025-01-13']; }, /不合法的事件/);
+    reject(raw => { raw.funds[0].events[0][2] = '-1'; }, /不合法的事件/);
+    reject(raw => { raw.funds[0].events[0][1] = '2024-12-01'; }, /不合法的事件/);
+    reject(raw => { raw.funds[0].undated = [['2026-10-20', '2026-11-01', '0.1']]; }, /不合法的事件/);
+    reject(raw => { raw.funds[0].next[1][2] = 1; }, /不連續/);
+    reject(raw => { raw.funds[0].next[1][0] = '2026-01-14'; }, /不連續/);
+    reject(raw => { raw.funds[0].next.pop(); }, /未涵蓋投影末日/);
+    reject(raw => { raw.funds.push({ ...raw.funds[0] }); }, /重複/);
+    reject(raw => { raw.batchId = 'other'; }, /manifest 關聯不符/);
+});
+
+test('loading verifies the published bytes against the manifest hash before decoding', async () => {
+    const raw = compactPayload();
+    const bytes = new TextEncoder().encode(JSON.stringify(raw));
+    const digest = Buffer.from(await crypto.subtle.digest('SHA-256', bytes)).toString('hex');
+    const descriptor = { schemaVersion: 2, file: 'data/etf-dividends.json', sha256: digest, ...descriptorFor(raw) };
+    const extra = hash => ({
+        siteManifest: { etfDividends: { ...descriptor, sha256: hash } }, etfDividendPayloadHash: '', version: 1,
+        AbortSignal: { timeout: () => null }, crypto, TextDecoder, rankingCanRender: () => false,
+        fetch: async () => ({ ok: true, status: 200, arrayBuffer: async () => bytes.buffer.slice(0) })
+    });
+    const loaded = await (await createRenderer(null, '', extra(digest))).ensureEtfDividendPayload(true);
+    assert.equal(loaded.funds[0].events.length, 5);
+    const rejected = await (await createRenderer(null, '', extra('0'.repeat(64)))).ensureEtfDividendPayload(true);
+    assert.equal(rejected, null);
 });

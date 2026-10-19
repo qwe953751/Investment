@@ -7,18 +7,41 @@ using Invest.Web.Features.Etfs.Dividends.Models;
 
 namespace Invest.Web.Infrastructure.MarketData.EtfDividends;
 
+/// <summary>
+/// 解析證交所／櫃買官網的 ETF 收益分配清單。問題資料只隔離那一筆，不讓整個市場失效：
+/// 2026-10-19 實測全歷史裡，櫃買保留了已被正式公告取代的空金額佔位列（00931B、00772B、00773B），
+/// 也有一筆除息日寫成民國 190 年（00764B，應為 109 年）。
+/// </summary>
 internal static partial class EtfDividendSourceParser
 {
+    /// <summary>解析與去重規則版本；改規則要升版，觀測會記下當時用哪一版。</summary>
+    public const string Version = "etf-dividends-parser-v2";
+
     private const string TwseUrl = "https://www.twse.com.tw/rwd/zh/ETF/etfDiv";
     private const string TpexUrl = "https://info.tpex.org.tw/api/etfExDiv";
 
+    /// <summary>實測 2005～2026 全部 4,700 多筆，除息到發放最長 49 天；超過這個上限視為來源打錯字。</summary>
+    private const int MaxPaymentLagDays = 120;
+
+    private const int MaxDiagnostics = 200;
+
     public static string SourceUrl(string market) => market == "twse" ? TwseUrl : TpexUrl;
+
+    public static EtfDividendSourceResponse Parse(string market, byte[] bytes, string sourceHash)
+        => market switch
+        {
+            "twse" => ParseTwse(bytes, sourceHash),
+            "tpex" => ParseTpex(bytes, sourceHash),
+            _ => throw new ArgumentException("市場只能是 twse 或 tpex。", nameof(market))
+        };
 
     public static EtfDividendSourceResponse ParseTwse(byte[] bytes, string sourceHash)
     {
         using var document = JsonDocument.Parse(bytes);
         var root = document.RootElement;
-        if (!root.TryGetProperty("status", out var status)
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("status", out var status)
+            || status.ValueKind != JsonValueKind.String
             || status.GetString() != "ok"
             || !root.TryGetProperty("fields", out var fieldsElement)
             || fieldsElement.ValueKind != JsonValueKind.Array
@@ -40,38 +63,34 @@ internal static partial class EtfDividendSourceParser
 
         var result = new List<EtfDividendEvent>();
         var diagnostics = new List<string>();
-        var valid = 0;
+        var invalid = 0;
         var rowNumber = 0;
         foreach (var row in rowsElement.EnumerateArray())
         {
             rowNumber++;
-            if (row.ValueKind != JsonValueKind.Array)
+            EtfDividendEvent? item = null;
+            if (row.ValueKind == JsonValueKind.Array)
             {
-                diagnostics.Add($"row-{rowNumber}:not-array");
-                continue;
+                var cells = row.EnumerateArray().Select(Cell).ToArray();
+                if (cells.Length == fields.Length)
+                {
+                    item = ToEvent("twse", cells[indexes["ticker"]], cells[indexes["name"]],
+                        cells[indexes["year"]], cells[indexes["exDate"]], cells[indexes["recordDate"]],
+                        cells[indexes["paymentDate"]], cells[indexes["amount"]], sourceHash, rowNumber);
+                }
             }
 
-            var cells = row.EnumerateArray().Select(Cell).ToArray();
-            if (cells.Length != fields.Length)
-            {
-                diagnostics.Add($"row-{rowNumber}:field-count-mismatch");
-                continue;
-            }
-
-            var item = ToEvent("twse", cells[indexes["ticker"]], cells[indexes["name"]],
-                cells[indexes["year"]], cells[indexes["exDate"]], cells[indexes["recordDate"]],
-                cells[indexes["paymentDate"]], cells[indexes["amount"]], sourceHash, rowNumber);
             if (item is null)
             {
-                diagnostics.Add($"row-{rowNumber}:invalid-required-field");
+                invalid++;
+                AddDiagnostic(diagnostics, $"invalid-row:{rowNumber}");
                 continue;
             }
 
-            valid++;
             result.Add(item);
         }
 
-        return Deduplicate(bytes, result, valid, diagnostics);
+        return Normalize(bytes, result, invalid, diagnostics);
     }
 
     public static EtfDividendSourceResponse ParseTpex(byte[] bytes, string sourceHash)
@@ -82,64 +101,71 @@ internal static partial class EtfDividendSourceParser
 
         var result = new List<EtfDividendEvent>();
         var diagnostics = new List<string>();
-        var valid = 0;
+        var invalid = 0;
         var rowNumber = 0;
         foreach (var row in document.RootElement.EnumerateArray())
         {
             rowNumber++;
-            if (row.ValueKind != JsonValueKind.Object)
-            {
-                diagnostics.Add($"row-{rowNumber}:not-object");
-                continue;
-            }
-
-            var item = ToEvent("tpex", Property(row, "stockNo"), Property(row, "stockName"),
-                Property(row, "year"), Property(row, "divDate"), Property(row, "inBaseDate"),
-                Property(row, "inDate"), Property(row, "amount"), sourceHash, rowNumber);
+            var item = row.ValueKind == JsonValueKind.Object
+                ? ToEvent("tpex", Property(row, "stockNo"), Property(row, "stockName"),
+                    Property(row, "year"), Property(row, "divDate"), Property(row, "inBaseDate"),
+                    Property(row, "inDate"), Property(row, "amount"), sourceHash, rowNumber)
+                : null;
             if (item is null)
             {
-                diagnostics.Add($"row-{rowNumber}:invalid-required-field");
+                invalid++;
+                AddDiagnostic(diagnostics, $"invalid-row:{rowNumber}");
                 continue;
             }
 
-            valid++;
             result.Add(item);
         }
 
-        return Deduplicate(bytes, result, valid, diagnostics);
+        return Normalize(bytes, result, invalid, diagnostics);
     }
 
-    internal static EtfDividendSourceResponse Deduplicate(
+    /// <summary>
+    /// 同一檔 ETF 同一個除息日只會有一次配息。同組有已公告金額時，空金額列是被取代的佔位列；
+    /// 剩下的列發放日與金額一致就合併，不一致才是真衝突——只排除這一筆並留下診斷。
+    /// </summary>
+    internal static EtfDividendSourceResponse Normalize(
         byte[] raw,
         List<EtfDividendEvent> rows,
-        int valid,
+        int invalid,
         List<string> diagnostics)
     {
         var output = new List<EtfDividendEvent>();
         var duplicateCount = 0;
-        foreach (var group in rows.GroupBy(EventKey, StringComparer.Ordinal))
+        var conflictCount = 0;
+        foreach (var group in rows.GroupBy(item => (item.Market, item.Ticker, item.ExDate)))
         {
-            var amounts = group.Where(x => x.AmountPerUnit.HasValue)
-                .Select(x => x.AmountPerUnit!.Value).Distinct().ToArray();
-            var recordDates = group.Select(x => x.RecordDate).Distinct().ToArray();
-            if (amounts.Length > 1 || recordDates.Length > 1)
+            var items = group.ToList();
+            var announced = items.Where(item => item.AmountPerUnit.HasValue).ToList();
+            var candidates = announced.Count > 0 ? announced : items;
+            if (candidates.Select(item => (item.PaymentDate, item.AmountPerUnit)).Distinct().Count() > 1)
             {
-                diagnostics.Add("conflict:" + ShortHash(group.Key));
+                conflictCount++;
+                AddDiagnostic(diagnostics, $"conflict:{group.Key.Ticker}:{Format(group.Key.ExDate)}");
                 continue;
             }
 
-            var first = group.First();
-            if (group.Count() > 1) duplicateCount += group.Count() - 1;
-            var selected = group.FirstOrDefault(x => x.AmountPerUnit.HasValue) ?? first;
-            output.Add(selected with
-            {
-                SourceRowReference = first.SourceRowReference,
-                EventId = EventId(group.Key)
-            });
+            if (candidates.Count < items.Count)
+                AddDiagnostic(diagnostics, $"superseded-placeholder:{group.Key.Ticker}:{Format(group.Key.ExDate)}");
+            duplicateCount += items.Count - 1;
+            var selected = candidates.FirstOrDefault(item => item.RecordDate is not null) ?? candidates[0];
+            output.Add(selected);
         }
 
-        return new EtfDividendSourceResponse(raw, 200, output, valid, diagnostics.ToArray(),
-            duplicateCount, diagnostics.Count(x => x.StartsWith("conflict:", StringComparison.Ordinal)));
+        if (output.Count == 0)
+            throw new InvalidDataException("官方回應沒有任何可用的 ETF 配息事件，不能當成成功的查詢。");
+
+        output.Sort((left, right) =>
+        {
+            var ticker = string.CompareOrdinal(left.Ticker, right.Ticker);
+            return ticker != 0 ? ticker : left.ExDate.CompareTo(right.ExDate);
+        });
+        return new EtfDividendSourceResponse(raw, 200, output, output.Count, diagnostics.ToArray(),
+            duplicateCount, conflictCount, invalid);
     }
 
     internal static EtfDividendEvent? ToEvent(
@@ -163,23 +189,30 @@ internal static partial class EtfDividendSourceParser
             return null;
 
         var announcementYear = ParseYear(yearText);
-        if (announcementYear <= 0)
+        if (announcementYear <= 0 || Math.Abs(exDate.Year - announcementYear) > 1)
+            return null;
+        if (paymentDate is { } payment && (payment < exDate || payment > exDate.AddDays(MaxPaymentLagDays)))
+            return null;
+        if (amount < 0)
             return null;
 
-        var key = EventKey(market, ticker, exDate, paymentDate);
-        return new EtfDividendEvent(EventId(key), market, ticker, name.Trim(), announcementYear,
-            exDate, recordDate, paymentDate, amount, "TWD", sourceHash, rowReference);
+        return new EtfDividendEvent(EventId(market, ticker, exDate, paymentDate), market, ticker, name.Trim(),
+            announcementYear, exDate, recordDate, paymentDate, amount, "TWD", sourceHash, rowReference);
     }
 
-    private static string EventKey(EtfDividendEvent item)
-        => EventKey(item.Market, item.Ticker, item.ExDate, item.PaymentDate);
+    internal static string EventId(string market, string ticker, DateOnly exDate, DateOnly? paymentDate)
+    {
+        var key = string.Join('|', market, ticker, Format(exDate), paymentDate is { } value ? Format(value) : "?");
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant();
+    }
 
-    private static string EventKey(string market, string ticker, DateOnly? exDate, DateOnly? paymentDate)
-        => string.Join('|', market, ticker, exDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "?",
-            paymentDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "?");
+    private static string Format(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
-    private static string EventId(string key) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant();
-    private static string ShortHash(string value) => EventId(value)[..12];
+    private static void AddDiagnostic(List<string> diagnostics, string value)
+    {
+        if (diagnostics.Count < MaxDiagnostics) diagnostics.Add(value);
+        else if (diagnostics.Count == MaxDiagnostics) diagnostics.Add("diagnostics-truncated");
+    }
 
     private static bool TryDate(string text, out DateOnly date)
     {

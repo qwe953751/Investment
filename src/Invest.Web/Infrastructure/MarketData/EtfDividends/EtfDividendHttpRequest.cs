@@ -6,7 +6,8 @@ namespace Invest.Web.Infrastructure.MarketData.EtfDividends;
 internal static class EtfDividendHttpRequest
 {
     private const int MaxAttempts = 3;
-    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(25);
+    // 首次回補是全歷史一次請求（櫃買約 4.2MB，實測 2～6 秒），留足餘裕；每日窗口只有三個公告年度。
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan MaxRetryAfterWait = TimeSpan.FromSeconds(60);
 
     public static async Task<byte[]> SendAsync(
@@ -45,12 +46,18 @@ internal static class EtfDividendHttpRequest
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                lastError = new TimeoutException("ETF 配息來源單次請求超過 25 秒。");
+                lastError = new TimeoutException("ETF 配息來源單次請求超過 60 秒。");
                 if (attempt == MaxAttempts) throw lastError;
                 await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
             }
             catch (HttpRequestException exception) when (exception.StatusCode is null && attempt < MaxAttempts)
             {
+                lastError = exception;
+                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+            }
+            catch (IOException exception) when (attempt < MaxAttempts)
+            {
+                // 2026-10-19 實測：櫃買全歷史回應傳到 311KB 就被對方關閉連線，重試即完整。
                 lastError = exception;
                 await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
             }

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 // A green workflow that skipped the gate is not evidence of a published collection.
 export function withCompletionEvidence(runs, businessDate, jobsForRun) {
     return runs.map(run => {
-        if (run.status !== 'completed' || !run.display_title?.startsWith(`ETF 配息 v4 | ${businessDate} |`)) return run;
+        if (run.status !== 'completed' || !run.display_title?.startsWith(`ETF 配息 v5 | ${businessDate} |`)) return run;
         const steps = jobsForRun(run.id).jobs.flatMap(job => job.steps ?? []);
         const outcome = name => steps.find(step => step.name === name)?.conclusion;
         return { ...run,

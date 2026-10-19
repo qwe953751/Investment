@@ -1,9 +1,15 @@
+using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Invest.Web.Features.Etfs.Dividends.Models;
 
 namespace Invest.Web.Infrastructure.MarketData.EtfDividends;
 
+/// <summary>
+/// data branch 的 <c>imports-etf-dividends/</c>。原文與觀測都只增不改：
+/// 原文以未壓縮內容的 SHA256 命名、gzip 保存（每日窗口約 2.8MB，壓縮後約 155KB）；
+/// 觀測只記錄檢查結果與原文 hash，事件在投影時從原文重新解析，不在每天的觀測裡重複保存。
+/// </summary>
 public sealed class EtfDividendStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -18,18 +24,38 @@ public sealed class EtfDividendStore
 
     public string RootDirectory => _root;
 
-    public async Task<string> SaveRawObjectAsync(string market, byte[] bytes, CancellationToken cancellationToken, string extension = "json")
+    public async Task<string> SaveRawObjectAsync(string market, byte[] bytes, CancellationToken cancellationToken)
     {
-        var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-        var path = Path.Combine(_root, "objects", market, hash + "." + (extension == "csv" ? "csv" : "json"));
-        await WriteImmutableAsync(path, bytes, cancellationToken);
+        ValidateMarket(market);
+        var hash = Hash(bytes);
+        using var compressed = new MemoryStream();
+        await using (var gzip = new GZipStream(compressed, CompressionLevel.SmallestSize, leaveOpen: true))
+            await gzip.WriteAsync(bytes, cancellationToken);
+        await WriteImmutableAsync(RawPath(market, hash), compressed.ToArray(), cancellationToken);
         return hash;
+    }
+
+    /// <summary>讀回原文並核對 SHA256；找不到或內容不符都視為沒有可用原文。</summary>
+    public async Task<byte[]?> ReadRawObjectAsync(string market, string hash, CancellationToken cancellationToken)
+    {
+        ValidateMarket(market);
+        var path = RawPath(market, hash);
+        if (!File.Exists(path)) return null;
+
+        await using var file = File.OpenRead(path);
+        await using var gzip = new GZipStream(file, CompressionMode.Decompress);
+        using var bytes = new MemoryStream();
+        await gzip.CopyToAsync(bytes, cancellationToken);
+        var raw = bytes.ToArray();
+        return Hash(raw) == hash ? raw : null;
     }
 
     public async Task<string> SaveObservationAsync(
         EtfDividendObservation observation,
         CancellationToken cancellationToken)
     {
+        if (observation.SchemaVersion != EtfDividendObservation.CurrentSchemaVersion)
+            throw new ArgumentException("只能寫入目前版本的配息觀測。", nameof(observation));
         var directory = Path.Combine(_root, "observations", observation.RequestedBusinessDate);
         Directory.CreateDirectory(directory);
         var safeBatchId = string.Concat(observation.BatchId.Select(character =>
@@ -39,6 +65,7 @@ public sealed class EtfDividendStore
         return path;
     }
 
+    /// <summary>只讀目前版本；退役的開放資料觀測（v1）留在原處當歷史紀錄，不再參與投影。</summary>
     public async Task<IReadOnlyList<EtfDividendObservation>> ReadObservationsAsync(CancellationToken cancellationToken)
     {
         var directory = Path.Combine(_root, "observations");
@@ -50,10 +77,17 @@ public sealed class EtfDividendStore
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                await using var stream = File.OpenRead(path);
-                var observation = await JsonSerializer.DeserializeAsync<EtfDividendObservation>(stream, JsonOptions, cancellationToken);
-                if (observation is not null && observation.SchemaVersion == 1)
-                    observations.Add(observation);
+                var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+                using (var document = JsonDocument.Parse(bytes))
+                {
+                    if (!document.RootElement.TryGetProperty("schemaVersion", out var version)
+                        || version.ValueKind != JsonValueKind.Number
+                        || version.GetInt32() != EtfDividendObservation.CurrentSchemaVersion)
+                        continue;
+                }
+
+                var observation = JsonSerializer.Deserialize<EtfDividendObservation>(bytes, JsonOptions);
+                if (observation?.Markets is not null) observations.Add(observation);
             }
             catch (JsonException)
             {
@@ -88,22 +122,9 @@ public sealed class EtfDividendStore
         return decisions;
     }
 
-    public async Task<EtfDividendObservation?> LatestSuccessfulObservationAsync(
-        string market,
-        CancellationToken cancellationToken)
-        => (await ReadObservationsAsync(cancellationToken))
-            .Where(observation => observation.Markets.Any(item => item.Market == market && item.HttpValidated && item.Accepted))
-            .OrderByDescending(observation => observation.CompletedAt)
-            .FirstOrDefault();
-
-    public async Task<EtfDividendObservation?> ObservationForDateAsync(
-        DateOnly date,
-        CancellationToken cancellationToken)
-        => (await ReadObservationsAsync(cancellationToken))
-            .Where(observation => observation.RequestedBusinessDate == date.ToString("yyyy-MM-dd"))
-            .OrderByDescending(observation => observation.CompletedAt)
-            .FirstOrDefault();
-
+    /// <summary>
+    /// 人工確認一份被筆數守門擋下（疑似截斷）的真實原文。只能確認已通過來源契約的 review-required 版本。
+    /// </summary>
     public async Task WriteDecisionAsync(
         string observationId,
         string market,
@@ -111,8 +132,7 @@ public sealed class EtfDividendStore
         Uri evidenceUri,
         CancellationToken cancellationToken)
     {
-        if (market is not ("twse" or "tpex"))
-            throw new ArgumentException("市場只能是 twse 或 tpex。", nameof(market));
+        ValidateMarket(market);
         if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length < 12)
             throw new ArgumentException("版本確認原因至少需要 12 個字元。", nameof(reason));
         if (evidenceUri.Scheme != Uri.UriSchemeHttps)
@@ -133,6 +153,16 @@ public sealed class EtfDividendStore
             DateTimeOffset.UtcNow, reason.Trim(), evidenceUri.AbsoluteUri);
         var path = Path.Combine(_root, "decisions", id + ".json");
         await WriteImmutableAsync(path, JsonSerializer.SerializeToUtf8Bytes(decision, JsonOptions), cancellationToken);
+    }
+
+    private string RawPath(string market, string hash) => Path.Combine(_root, "objects", market, hash + ".json.gz");
+
+    private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static void ValidateMarket(string market)
+    {
+        if (market is not ("twse" or "tpex"))
+            throw new ArgumentException("市場只能是 twse 或 tpex。", nameof(market));
     }
 
     private static async Task WriteImmutableAsync(string path, byte[] bytes, CancellationToken cancellationToken)

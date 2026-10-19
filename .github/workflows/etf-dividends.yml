@@ -1,5 +1,7 @@
 name: ETF 配息每日檢查
-run-name: "ETF 配息 v4 | ${{ inputs.business-date }} | ${{ (vars.ETF_DIVIDENDS_SOURCE_MODE != 'exchange') && 'open-data' || ((vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED == 'true' || vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED == '1') && 'exchange-enabled' || 'blocked-license') }}"
+# v5：證交所／櫃買官網收益分配清單（2026-10-20 起唯一來源），首次回補全歷史、之後每日查去年～明年。
+# 舊版 v4（開放資料／授權閘門）同日綠燈不算 v5 完成。
+run-name: "ETF 配息 v5 | ${{ inputs.business-date }} | exchange"
 
 on:
   workflow_dispatch:
@@ -9,7 +11,7 @@ on:
         required: true
         type: string
       run-now:
-        description: 人工立即驗收；只略過派工時段，仍驗當日、去重、來源模式與重試上限
+        description: 人工立即驗收；只略過派工時段，仍驗當日、去重與重試上限
         required: false
         type: boolean
         default: false
@@ -35,8 +37,6 @@ jobs:
       BUSINESS_DATE: ${{ inputs.business-date }}
       RUN_NOW: ${{ inputs.run-now }}
       PARENT_RUN_ID: ${{ inputs.parent-run-id }}
-      ETF_DIVIDENDS_SOURCE_MODE: ${{ vars.ETF_DIVIDENDS_SOURCE_MODE || 'open-data' }}
-      ETF_DIVIDENDS_SOURCE_AUTHORIZED: ${{ vars.ETF_DIVIDENDS_SOURCE_AUTHORIZED }}
 
     steps:
       - name: 取出程式碼
@@ -65,8 +65,6 @@ jobs:
           decision=$(node scripts/etf-dividends-gate.mjs \
               --at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --business-date "$BUSINESS_DATE" \
-              --authorized "${ETF_DIVIDENDS_SOURCE_AUTHORIZED:-false}" \
-              --source-mode "${ETF_DIVIDENDS_SOURCE_MODE:-open-data}" \
               --allow-outside-window "$RUN_NOW" \
               --exclude-run-id "$GITHUB_RUN_ID" \
               --runs "$runs")
@@ -105,11 +103,7 @@ jobs:
           case "$status:$exit_code" in
               complete:0|partial:2)
                   printf '### ETF 配息每日收集\n\n狀態：`%s`\n批次：`%s`\n\n' "$status" "$batch" >> "$GITHUB_STEP_SUMMARY"
-                  jq -r '.markets[]? | "- \(.market)：\(.status)，有效 \(.validRows) 筆、重複 \(.duplicateRows) 筆、衝突 \(.conflictRows) 筆。"' "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
-                  ;;
-              blocked-license:2)
-                  echo "來源授權閘門關閉；未發出任何交易所請求。" >&2
-                  printf '### ETF 配息每日收集\n\n狀態：`blocked-license`。來源授權尚未確認，未發出請求。\n' >> "$GITHUB_STEP_SUMMARY"
+                  jq -r '.markets[]? | "- \(.market)：\(.status)，查詢 \(.queryStart)～\(.queryEnd)，有效 \(.validRows) 筆、重複 \(.duplicateRows) 筆、衝突 \(.conflictRows) 筆、無效 \(.invalidRows) 筆。"' "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
                   ;;
               superseded:0)
                   echo "派工日期已過期；不下載、不保存、不發布。"
@@ -238,7 +232,7 @@ jobs:
                   if curl --connect-timeout 10 --max-time 30 -fsSL "https://frank-invest.github.io/data/etf-dividends.json?verify=$nonce" -o "$RUNNER_TEMP/published-etf-dividends.json"; then
                       actual_hash=$(sha256sum "$RUNNER_TEMP/published-etf-dividends.json" | cut -d' ' -f1)
                       if [ "$actual_hash" = "$expected_hash" ] && jq -e --arg date "$EXPECTED_DATE" --arg batch "$EXPECTED_BATCH" '
-                          .schemaVersion == 1 and .rulesVersion == "etf-dividends-v1" and
+                          .schemaVersion == 2 and .rulesVersion == "etf-dividends-v2" and
                           .asOfDate == $date and .batchId == $batch and (.funds | type == "array") and
                           (.markets.twse.status != null) and (.markets.tpex.status != null)
                       ' "$RUNNER_TEMP/published-etf-dividends.json" >/dev/null; then
@@ -273,12 +267,10 @@ jobs:
               exit 1
           fi
           jq -e --arg date "$BUSINESS_DATE" '
-              .asOfDate == $date and
-              ((.completeCheckDate == $date) or
-               (.sourceCheckDate == $date and ([.markets.twse, .markets.tpex] | all(.coverage.scope == "limited")) )) and
+              .asOfDate == $date and .completeCheckDate == $date and
               ([.markets.twse, .markets.tpex] | all(
                   .status == "fresh" and
                   (.lastSuccessfulCheckAt | type == "string") and
                   (.sourceHash | type == "string" and test("^[a-fA-F0-9]{64}$"))))
           ' "$RUNNER_TEMP/published-etf-dividends.json" >/dev/null
-          printf '\n雙市場來源收集、發布與公開資料核驗通過；資料涵蓋範圍依 coverage 說明。\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '\n雙市場官網配息收集、發布與公開資料核驗通過。\n' >> "$GITHUB_STEP_SUMMARY"
