@@ -2496,5 +2496,5 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 ### 尚待完成
 
-- 推送後跑第一次正式收集（首次回補）與 publish-only，核對 data commit、公開 manifest／配息檔 SHA256 與正式畫面。
+- 首次正式收集已寫入 data `ced0f8439`、純發布已更新 gh-pages（manifest `1792424186`，配息檔 SHA256 一致）；待 GitHub Pages 事故恢復、公開網址部署後，用無痕視窗核對公開檔與正式畫面。
 - 觀察下一次 07:30 開盤前／休市日自動批次確實只查去年～明年並通過終態核驗；人工 run-now 只略過派工時段，不能取代排程驗收。

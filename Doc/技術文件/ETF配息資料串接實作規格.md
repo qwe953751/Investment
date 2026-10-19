@@ -185,7 +185,7 @@ stkNo=&startDate=20250101&endDate=20271231&lang=zh-tw
  "next":[["2026-01-01","2026-02-11",0],["2026-02-12","2027-12-31",null]]}
 ~~~
 
-events 依發放日、除息日排序；undated 是尚未公告發放日的事件；next 是 C# 算好的「下次發放」區間，`[起日, 迄日, events 索引或 null]`，從當年 1/1 連續涵蓋到次年 12/31。eventId、recordDate 與原文 hash 不放進網站。completeCheckDate 為兩市場同一批次都已接受的最近業務日；sourceCheckDate 已移除。實測全名冊 362 檔（229 檔有紀錄）、4,524 筆，精簡 JSON 約 170KB、gzip 約 25～35KB，比舊版 186 筆的 231KB 還小。
+events 依發放日、除息日排序；undated 是尚未公告發放日的事件；next 是 C# 算好的「下次發放」區間，`[起日, 迄日, events 索引或 null]`，從當年 1/1 連續涵蓋到次年 12/31。eventId、recordDate 與原文 hash 不放進網站。completeCheckDate 為兩市場同一批次都已接受的最近業務日；sourceCheckDate 已移除。實測全名冊 362 檔（229 檔有紀錄）、4,524 筆；正式發布的精簡 JSON 為 229,710 bytes（gzip 29,185 bytes），筆數是舊版 186 筆的 24 倍，檔案大小與舊版 231KB 相當。
 
 **前端**：`validateEtfDividendPayload` 驗證 v2 後還原成畫面函式既有的物件形狀（events／unresolvedEvents／nextWindows），畫面函式不變；當年紀錄列在「YYYY 年配息紀錄」，其餘年度在「其他已取得發放紀錄」依發放日排列。
 

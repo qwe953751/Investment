@@ -31,7 +31,9 @@ concurrency:
 jobs:
   collect-and-publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 正常約 27 分鐘（收集 2 分＋純發布 job 約 23 分＋公開核驗）。2026-10-19 晚間 GitHub 在純發布 job
+    # 完成後隔了 23 分鐘才把 run 標成完成，45 分鐘上限在等待時被逾時取消；留足餘裕避免誤判失敗、重複發布。
+    timeout-minutes: 90
     env:
       TZ: Asia/Taipei
       BUSINESS_DATE: ${{ inputs.business-date }}
