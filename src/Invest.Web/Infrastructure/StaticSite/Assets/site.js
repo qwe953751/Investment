@@ -10472,9 +10472,11 @@ function makeAssetValueTrendCard(rows, options) {
     const selectedDate = selectionItem('選定的交易日期');
     const selectedTotal = selectionItem('總資產');
     const selectedChange = selectionItem('與前一斷點');
-    const selectedPercent = selectedChange.value;
     const selectedAmount = document.createElement('small');
     selectedChange.item.append(selectedAmount);
+    const selectedCurrentChange = selectionItem('與現在資產');
+    const selectedCurrentAmount = document.createElement('small');
+    selectedCurrentChange.item.append(selectedCurrentAmount);
     heading.append(selection);
 
     const crosshairToggle = assetButton(
@@ -10517,7 +10519,8 @@ function makeAssetValueTrendCard(rows, options) {
         role: 'img',
         'aria-label': `資產變化折線圖（${selectedPeriod}），共 ${visibleRows.length} 個日期`
     });
-    svg.append(svgElement('title', {}, `資產變化（${selectedPeriod}）：${assetCurrency(visibleRows.at(-1).value)}`));
+    const chartTitle = svgElement('title', {}, assetTrendTooltipText(visibleRows.at(-1)));
+    svg.append(chartTitle);
 
     for (let index = 0; index < 3; index += 1) {
         const ratio = index / 2;
@@ -10583,20 +10586,27 @@ function makeAssetValueTrendCard(rows, options) {
     });
     svg.append(hitArea);
 
+    const updateChange = (item, percent, amount, change) => {
+        percent.textContent = assetTrendPercentText(change.percent);
+        amount.textContent = change.delta === null
+            ? '—'
+            : change.delta === 0 ? assetCurrency(0) : assetSignedCurrency(change.delta);
+        item.classList.remove('is-up', 'is-down', 'is-neutral');
+        item.classList.add(`is-${change.tone}`);
+    };
+
     const updateSelection = index => {
         const selectedIndex = Math.max(0, Math.min(visibleRows.length - 1, index));
         const row = visibleRows[selectedIndex];
         const previous = selectedIndex > 0 ? visibleRows[selectedIndex - 1] : null;
-        const change = assetTrendChangeMeta(row.value, previous?.value);
+        const previousChange = assetTrendChangeMeta(row.value, previous?.value);
+        const currentChange = assetTrendChangeMeta(row.value, options.currentValue);
 
         selectedDate.value.textContent = row.date.replaceAll('-', '/');
         selectedTotal.value.textContent = assetCurrency(row.value);
-        selectedPercent.textContent = assetTrendPercentText(change.percent);
-        selectedAmount.textContent = change.delta === null
-            ? '—'
-            : change.delta === 0 ? assetCurrency(0) : assetSignedCurrency(change.delta);
-        selectedChange.item.classList.remove('is-up', 'is-down', 'is-neutral');
-        selectedChange.item.classList.add(`is-${change.tone}`);
+        chartTitle.textContent = assetTrendTooltipText(row);
+        updateChange(selectedChange.item, selectedChange.value, selectedAmount, previousChange);
+        updateChange(selectedCurrentChange.item, selectedCurrentChange.value, selectedCurrentAmount, currentChange);
 
         const pointX = x(selectedIndex);
         const pointY = y(row.value);
@@ -10671,10 +10681,12 @@ function makeAssetValueTrendCard(rows, options) {
 }
 
 function makeAssetValueTrend(owner, summary) {
+    const currentValue = summary.incomplete ? null : summary.totalValue;
     return makeAssetValueTrendCard(
-        assetValueTrendRows(owner.id, summary.incomplete ? null : summary.totalValue),
+        assetValueTrendRows(owner.id, currentValue),
         {
             periodKey: `owner:${owner.id}`,
+            currentValue,
             available: assetValueSnapshotsAvailable,
             unavailableHint: '資產歷史尚未啟用，請先由管理者套用 db/035_asset_value_snapshots.sql。',
             emptyHint: '等所有帳戶都有行情與匯率後，系統會從當天開始每天保存一個資產總值。'
@@ -10701,10 +10713,12 @@ function assetAccountValueTrendRows(accountId, currentTotal) {
 }
 
 function makeAssetAccountValueTrend(view) {
+    const currentValue = view.incomplete ? null : view.twdTotalValue;
     return makeAssetValueTrendCard(
-        assetAccountValueTrendRows(view.id, view.incomplete ? null : view.twdTotalValue),
+        assetAccountValueTrendRows(view.id, currentValue),
         {
             periodKey: `account:${view.id}`,
+            currentValue,
             available: assetAccountValueSnapshotsAvailable,
             unavailableHint: '這個帳戶的資產歷史尚未啟用，請先由管理者套用 db/037_asset_account_value_snapshots.sql。',
             emptyHint: '等這個帳戶有完整行情與匯率後，系統會從當天開始每天保存一個資產總值。'

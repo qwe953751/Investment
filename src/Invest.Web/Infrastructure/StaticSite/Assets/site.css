@@ -1651,9 +1651,9 @@ body {
 
 .asset-value-trend-selection {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     justify-self: center;
-    width: min(100%, 620px);
+    width: min(100%, 820px);
     min-width: 0;
     overflow: hidden;
     border: 1px solid var(--border);
@@ -5630,6 +5630,7 @@ td.stock-name.stock-name-change-down {
         grid-row: 2;
         justify-self: stretch;
         width: 100%;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .asset-value-trend-crosshair {
