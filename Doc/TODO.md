@@ -184,8 +184,8 @@ Node 回歸測試已加入「公開 query 不帶 JWT」「Excel allowlist」「4
 ### 尚未討論／待驗收
 
 - **既有資料表的 RLS 尚未收權限**：`notes`／`topic_edits`／資產相關表（含持倉、出入金與每日快照）仍是 anon
-  可讀可寫；本次另外新增 `private_notes`，以 Frank 的固定 Auth 身分、資料列 owner 與 RLS 限制存取，
-  不會改變或取代舊表的權限。未來若要收回舊表匿名權限，仍須另行規劃並驗收（見 `db/029_permission_accounts.sql`
+  可讀可寫；本次另外新增 `private_notes` 與非公開 `private-note-images` bucket，以 Frank 的固定 Auth
+  身分、資料列 owner 與 Storage RLS 限制私人筆記及附件存取，不會改變或取代舊表的權限。未來若要收回舊表匿名權限，仍須另行規劃並驗收（見 `db/029_permission_accounts.sql`
   檔頭與 `015_notes.sql` 的既定順序）。
 - `db/029_permission_accounts.sql` 內容含明碼密碼（`crypt(...)` 的字面參數），
   repo 是公開的，已加進 `.gitignore` 排除、永遠不進版控；套用方式記錄在

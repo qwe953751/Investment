@@ -860,6 +860,7 @@ public sealed class StaticKLineAssetTests
         var script = ReadAsset("site.js");
         var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "065_private_notes.sql"));
         var hardening = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "066_private_notes_access_hardening.sql"));
+        var imageMigration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "067_private_note_images.sql"));
         var privateLayoutStart = html.IndexOf("id=\"private-notes-layout\"", StringComparison.Ordinal);
         var privateLayoutEnd = html.IndexOf("<section class=\"asset-excel-page\"", privateLayoutStart, StringComparison.Ordinal);
 
@@ -882,7 +883,10 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("layout.hidden = true", clearState, StringComparison.Ordinal);
         Assert.Contains("input.value = ''", clearState, StringComparison.Ordinal);
         Assert.Contains("'private_notes'", script, StringComparison.Ordinal);
-        Assert.Contains("function savePrivateNoteRemote(note)", script, StringComparison.Ordinal);
+        Assert.Contains("id=\"private-notes-images\"", privateLayout, StringComparison.Ordinal);
+        Assert.Contains("const PRIVATE_NOTE_IMAGES_BUCKET = 'private-note-images'", script, StringComparison.Ordinal);
+        Assert.Contains("async function savePrivateNoteRemote(note, isNew = note.id === null)", script, StringComparison.Ordinal);
+        Assert.Contains("attachments: normalizePrivateNoteAttachments(note.attachments)", script, StringComparison.Ordinal);
         Assert.Contains("create policy \"frank_private_notes_only\"", migration, StringComparison.Ordinal);
         Assert.Contains("alter table public.private_notes enable row level security", migration, StringComparison.Ordinal);
         Assert.Contains("grant select, insert, update, delete on table public.private_notes to authenticated", migration, StringComparison.Ordinal);
@@ -890,6 +894,10 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("(select auth.jwt() ->> 'email') = 'admin@investment.local'", migration, StringComparison.Ordinal);
         Assert.Contains("from public, anon, authenticated, invest_writer, service_role", hardening, StringComparison.Ordinal);
         Assert.Contains("((select auth.jwt()) ->> 'email') = 'admin@investment.local'", hardening, StringComparison.Ordinal);
+        Assert.Contains("public = false", imageMigration, StringComparison.Ordinal);
+        Assert.Contains("create policy \"frank private note images read\"", imageMigration, StringComparison.Ordinal);
+        Assert.Contains("create policy \"frank private note images upload\"", imageMigration, StringComparison.Ordinal);
+        Assert.Contains("create policy \"frank private note images delete\"", imageMigration, StringComparison.Ordinal);
     }
 
     [Fact]

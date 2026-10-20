@@ -2182,6 +2182,7 @@ const VIEW_PREFERENCE_VIEWS = ['daily', 'intraday', 'custom', 'etf'];
 
 const NOTES_TABLE = 'notes';
 const PRIVATE_NOTES_TABLE = 'private_notes';
+const PRIVATE_NOTE_IMAGES_BUCKET = 'private-note-images';
 const NOTE_CATEGORIES = [
     { key: 'all', text: '全部' },
     { key: '功能', text: '功能' },
@@ -2305,8 +2306,11 @@ let privateNotesSearch = '';
 let privateNotesSelectedId = null;
 let privateNotesDraft = null;
 let privateNotesFeedback = '';
+let privateNotesImagesStatus = '';
 let privateNotesSaving = false;
 let privateNotesControlsWired = false;
+const privateNoteImageObjectUrls = new Map();
+const privateNoteImageLoads = new Map();
 
 function defaultViewPreferences() {
     return {
@@ -4488,7 +4492,7 @@ async function loadPrivateNotes() {
 
     const rows = await fetchAuthenticatedAllRows(
         PRIVATE_NOTES_TABLE,
-        'id,title,content,updated_at',
+        'id,title,content,attachments,updated_at',
         '&order=updated_at.desc');
 
     return rows
@@ -4497,6 +4501,7 @@ async function loadPrivateNotes() {
             id: String(row.id),
             title: typeof row.title === 'string' ? row.title : '',
             content: typeof row.content === 'string' ? row.content : '',
+            attachments: normalizePrivateNoteAttachments(row.attachments),
             updatedAt: typeof row.updated_at === 'string' ? row.updated_at : new Date(0).toISOString()
         }))
         .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
@@ -4504,6 +4509,12 @@ async function loadPrivateNotes() {
 
 function clearPrivateNotesState() {
     privateNotesRevision += 1;
+    releasePrivateNoteDraftImages();
+    for (const url of privateNoteImageObjectUrls.values()) {
+        URL.revokeObjectURL(url);
+    }
+    privateNoteImageObjectUrls.clear();
+    privateNoteImageLoads.clear();
     privateNotes = [];
     privateNotesLoaded = false;
     privateNotesLoadError = null;
@@ -4511,6 +4522,7 @@ function clearPrivateNotesState() {
     privateNotesSelectedId = null;
     privateNotesDraft = null;
     privateNotesFeedback = '';
+    privateNotesImagesStatus = '';
     privateNotesSearch = '';
 
     const layout = el('private-notes-layout');
@@ -4525,6 +4537,19 @@ function clearPrivateNotesState() {
         const input = el(id);
         if (input) {
             input.value = '';
+        }
+    }
+    for (const id of ['private-notes-images', 'private-notes-images-preview', 'private-notes-images-status']) {
+        const element = el(id);
+        if (!element) {
+            continue;
+        }
+        if (id === 'private-notes-images') {
+            element.value = '';
+        } else if (id === 'private-notes-images-preview') {
+            element.replaceChildren();
+        } else {
+            element.textContent = '';
         }
     }
 }
@@ -4608,6 +4633,7 @@ async function refreshPrivateNotes() {
         privateNotesLoadError = null;
         if (privateNotesSelectedId !== null
             && !privateNotes.some(note => note.id === privateNotesSelectedId)) {
+            releasePrivateNoteDraftImages();
             privateNotesSelectedId = null;
             privateNotesDraft = null;
         }
@@ -4658,9 +4684,191 @@ function ensurePrivateNotesDraft() {
     privateNotesDraft = {
         id: note?.id ?? null,
         title: note?.title ?? '',
-        content: note?.content ?? ''
+        content: note?.content ?? '',
+        attachments: [...(note?.attachments ?? [])],
+        newImages: []
     };
     return privateNotesDraft;
+}
+
+function releasePrivateNoteDraftImages(draft = privateNotesDraft) {
+    for (const image of draft?.newImages ?? []) {
+        if (image.previewUrl) {
+            URL.revokeObjectURL(image.previewUrl);
+        }
+    }
+    if (draft && Array.isArray(draft.newImages)) {
+        draft.newImages = [];
+    }
+}
+
+function releasePrivateNoteImageUrl(path) {
+    const url = privateNoteImageObjectUrls.get(path);
+    if (url) {
+        URL.revokeObjectURL(url);
+        privateNoteImageObjectUrls.delete(path);
+    }
+}
+
+async function privateNoteStorageRequest(url, options, retryAuthentication = true) {
+    if (supabase === null || !canAccessPrivateNotes()) {
+        throw new Error('只有 Frank 的最高權限帳號可以存取私人筆記圖片。');
+    }
+    if (authAccessToken === null && !await refreshAuthAccessToken()) {
+        throw new Error('登入已失效，請重新登入 Frank 的最高權限帳號。');
+    }
+    if (!canAccessPrivateNotes()) {
+        throw new Error('目前登入帳號無權存取私人筆記圖片。');
+    }
+
+    const headers = new Headers(options.headers ?? {});
+    headers.set('apikey', supabase.anonKey);
+    headers.set('Authorization', `Bearer ${authAccessToken}`);
+    const response = await fetch(url, { ...options, headers, cache: 'no-store' });
+
+    if (response.status === 401 && retryAuthentication && await refreshAuthAccessToken()) {
+        if (!canAccessPrivateNotes()) {
+            throw new Error('目前登入帳號無權存取私人筆記圖片。');
+        }
+        return privateNoteStorageRequest(url, options, false);
+    }
+
+    return response;
+}
+
+async function loadPrivateNoteImageObjectUrl(path) {
+    if (!normalizePrivateNoteAttachments([{ path }]).length) {
+        throw new Error('私人筆記圖片路徑無效。');
+    }
+    const cached = privateNoteImageObjectUrls.get(path);
+    if (cached) {
+        return cached;
+    }
+    if (privateNoteImageLoads.has(path)) {
+        return privateNoteImageLoads.get(path);
+    }
+
+    const load = (async () => {
+        const response = await privateNoteStorageRequest(
+            `${supabase.url}/storage/v1/object/authenticated/${PRIVATE_NOTE_IMAGES_BUCKET}/${encodeStoragePath(path)}`,
+            { method: 'GET' });
+        if (!response.ok) {
+            throw new Error(`私人筆記圖片讀取失敗（${response.status}）。`);
+        }
+
+        const blob = await response.blob();
+        if (!canAccessPrivateNotes()) {
+            throw new Error('目前登入帳號無權存取私人筆記圖片。');
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        privateNoteImageObjectUrls.set(path, objectUrl);
+        return objectUrl;
+    })();
+    privateNoteImageLoads.set(path, load);
+
+    try {
+        return await load;
+    } finally {
+        if (privateNoteImageLoads.get(path) === load) {
+            privateNoteImageLoads.delete(path);
+        }
+    }
+}
+
+function renderPrivateNoteImages(draft) {
+    const host = el('private-notes-images-preview');
+    if (!host) {
+        return;
+    }
+
+    host.replaceChildren();
+    const attachments = Array.isArray(draft?.attachments) ? draft.attachments : [];
+    const newImages = Array.isArray(draft?.newImages) ? draft.newImages : [];
+    if (attachments.length === 0 && newImages.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'notes-images-empty';
+        empty.textContent = '尚未加入圖片。';
+        host.append(empty);
+        return;
+    }
+
+    const appendCard = (imageInfo, previewUrl, remove, isStored) => {
+        const figure = document.createElement('figure');
+        figure.className = 'notes-image-card';
+        const image = document.createElement('img');
+        image.alt = imageInfo.name || '私人筆記圖片';
+        image.loading = 'lazy';
+        if (previewUrl) {
+            image.src = previewUrl;
+        } else if (isStored) {
+            image.dataset.privatePath = imageInfo.path;
+            const cached = privateNoteImageObjectUrls.get(imageInfo.path);
+            if (cached) {
+                image.src = cached;
+            } else {
+                image.alt = `${imageInfo.name || '私人筆記圖片'}（載入中）`;
+                const selectedId = draft.id;
+                void loadPrivateNoteImageObjectUrl(imageInfo.path)
+                    .then(url => {
+                        if (!canAccessPrivateNotes() || privateNotesSelectedId !== selectedId) {
+                            return;
+                        }
+                        const target = [...host.querySelectorAll('img[data-private-path]')]
+                            .find(item => item.dataset.privatePath === imageInfo.path);
+                        if (target) {
+                            target.src = url;
+                            target.alt = imageInfo.name || '私人筆記圖片';
+                        }
+                    })
+                    .catch(() => {
+                        if (canAccessPrivateNotes() && privateNotesSelectedId === selectedId) {
+                            const target = [...host.querySelectorAll('img[data-private-path]')]
+                                .find(item => item.dataset.privatePath === imageInfo.path);
+                            if (target) {
+                                target.alt = `${imageInfo.name || '私人筆記圖片'}（讀取失敗）`;
+                            }
+                            el('private-notes-images-status').textContent = '圖片讀取失敗，請確認登入狀態後重試。';
+                        }
+                    });
+            }
+        }
+
+        const caption = document.createElement('figcaption');
+        caption.textContent = imageInfo.name || '圖片';
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.className = 'notes-image-remove';
+        removeButton.textContent = '×';
+        removeButton.setAttribute('aria-label', `移除${imageInfo.name || '圖片'}`);
+        removeButton.addEventListener('click', remove);
+        figure.append(image, caption, removeButton);
+        host.append(figure);
+    };
+
+    attachments.forEach((imageInfo, index) => appendCard(
+        imageInfo,
+        '',
+        () => {
+            const current = ensurePrivateNotesDraft();
+            current.attachments.splice(index, 1);
+            privateNotesImagesStatus = '已標記移除，儲存筆記後生效。';
+            renderPrivateNotesEditor();
+        },
+        true));
+
+    newImages.forEach((imageInfo, index) => appendCard(
+        imageInfo,
+        imageInfo.previewUrl,
+        () => {
+            const current = ensurePrivateNotesDraft();
+            const [removed] = current.newImages.splice(index, 1);
+            if (removed?.previewUrl) {
+                URL.revokeObjectURL(removed.previewUrl);
+            }
+            privateNotesImagesStatus = '已取消加入這張圖片。';
+            renderPrivateNotesEditor();
+        },
+        false));
 }
 
 function renderPrivateNotesEditor() {
@@ -4670,14 +4878,17 @@ function renderPrivateNotesEditor() {
     el('private-notes-edit-id').value = note?.id ?? '';
     el('private-notes-heading').value = draft.title;
     el('private-notes-content').value = draft.content;
+    el('private-notes-images-status').textContent = privateNotesImagesStatus;
     el('private-notes-delete').hidden = note === null;
     el('private-notes-feedback').textContent = privateNotesFeedback;
     el('private-notes-save').disabled = privateNotesSaving;
     el('private-notes-new').disabled = privateNotesSaving;
     el('private-notes-heading').disabled = privateNotesSaving;
     el('private-notes-content').disabled = privateNotesSaving;
+    el('private-notes-images').disabled = privateNotesSaving;
     el('private-notes-cancel').disabled = privateNotesSaving;
     el('private-notes-delete').disabled = privateNotesSaving;
+    renderPrivateNoteImages(draft);
 }
 
 function renderPrivateNotes() {
@@ -4719,9 +4930,11 @@ function renderPrivateNotes() {
                 : 'notes-list-item';
             item.disabled = privateNotesSaving;
             item.addEventListener('click', () => {
+                releasePrivateNoteDraftImages();
                 privateNotesSelectedId = note.id;
                 privateNotesDraft = null;
                 privateNotesFeedback = '';
+                privateNotesImagesStatus = '';
                 renderPrivateNotes();
             });
 
@@ -4765,8 +4978,8 @@ async function privateNotesRequest(method, noteId = null, payload = null, retryA
     }
 
     const query = method === 'POST'
-        ? '?select=id,title,content,updated_at'
-        : `?id=eq.${encodeURIComponent(noteId)}&select=id,title,content,updated_at`;
+        ? '?select=id,title,content,attachments,updated_at'
+        : `?id=eq.${encodeURIComponent(noteId)}&select=id,title,content,attachments,updated_at`;
     const headers = {
         apikey: supabase.anonKey,
         Authorization: `Bearer ${authAccessToken}`,
@@ -4804,17 +5017,22 @@ async function privateNotesRequest(method, noteId = null, payload = null, retryA
         id: saved.id,
         title: typeof saved.title === 'string' ? saved.title : '',
         content: typeof saved.content === 'string' ? saved.content : '',
+        attachments: normalizePrivateNoteAttachments(saved.attachments),
         updatedAt: typeof saved.updated_at === 'string' ? saved.updated_at : new Date().toISOString()
     };
 }
 
-async function savePrivateNoteRemote(note) {
+async function savePrivateNoteRemote(note, isNew = note.id === null) {
     const payload = {
         title: note.title,
         content: note.content,
+        attachments: normalizePrivateNoteAttachments(note.attachments),
         updated_at: note.updatedAt
     };
-    return privateNotesRequest(note.id === null ? 'POST' : 'PATCH', note.id, payload);
+    if (isNew) {
+        payload.id = note.id;
+    }
+    return privateNotesRequest(isNew ? 'POST' : 'PATCH', isNew ? null : note.id, payload);
 }
 
 async function deletePrivateNoteRemote(noteId) {
@@ -4832,9 +5050,11 @@ function wirePrivateNotes() {
         if (privateNotesSaving || !canAccessPrivateNotes()) {
             return;
         }
+        releasePrivateNoteDraftImages();
         privateNotesSelectedId = null;
-        privateNotesDraft = { id: null, title: '', content: '' };
+        privateNotesDraft = { id: null, title: '', content: '', attachments: [], newImages: [] };
         privateNotesFeedback = '';
+        privateNotesImagesStatus = '';
         renderPrivateNotes();
         el('private-notes-heading').focus();
     });
@@ -4853,6 +5073,56 @@ function wirePrivateNotes() {
         });
     }
 
+    el('private-notes-images').addEventListener('change', async event => {
+        const draft = ensurePrivateNotesDraft();
+        const selectedId = privateNotesSelectedId;
+        const files = Array.from(event.target.files ?? []);
+        const compressed = [];
+        const rejected = [];
+        let accepted = 0;
+        let remaining = NOTE_IMAGE_MAX_COUNT - draft.attachments.length - draft.newImages.length;
+
+        for (const file of files) {
+            if (remaining <= 0) {
+                rejected.push(`${file.name}：每筆最多 ${NOTE_IMAGE_MAX_COUNT} 張`);
+                continue;
+            }
+
+            let prepared;
+            try {
+                prepared = await compressNoteImage(file);
+            } catch (error) {
+                rejected.push(`${file.name}：${error instanceof Error ? error.message : '壓縮失敗'}`);
+                continue;
+            }
+
+            if (!canAccessPrivateNotes()
+                || privateNotesSelectedId !== selectedId
+                || privateNotesDraft !== draft) {
+                continue;
+            }
+
+            draft.newImages.push({
+                file: prepared,
+                name: prepared.name,
+                previewUrl: URL.createObjectURL(prepared)
+            });
+            if (prepared !== file) {
+                compressed.push(`${file.name} 已自動壓縮`);
+            }
+            accepted += 1;
+            remaining -= 1;
+        }
+
+        event.target.value = '';
+        privateNotesImagesStatus = accepted > 0
+            ? `已加入 ${accepted} 張圖片。${compressed.length > 0 ? ` ${compressed.join('、')}。` : ''}${rejected.length > 0 ? ` 略過：${rejected.join('、')}` : ''}`
+            : rejected.length > 0
+                ? `沒有加入圖片：${rejected.join('、')}`
+                : '';
+        renderPrivateNotesEditor();
+    });
+
     el('private-notes-form').addEventListener('submit', event => {
         event.preventDefault();
         if (privateNotesSaving || !canAccessPrivateNotes()) {
@@ -4868,22 +5138,50 @@ function wirePrivateNotes() {
         }
 
         const draft = ensurePrivateNotesDraft();
+        const isNew = privateNotesSelectedId === null;
         const note = {
-            id: privateNotesSelectedId,
+            id: privateNotesSelectedId ?? crypto.randomUUID(),
             title,
             content: el('private-notes-content').value,
+            attachments: normalizePrivateNoteAttachments(draft.attachments),
             updatedAt: new Date().toISOString()
         };
+        const newImages = [...draft.newImages];
+        const previousNote = privateNotes.find(item => item.id === privateNotesSelectedId) ?? null;
+        const removedPaths = (previousNote?.attachments ?? [])
+            .map(image => image.path)
+            .filter(path => !note.attachments.some(image => image.path === path));
+        if (note.attachments.length + newImages.length > NOTE_IMAGE_MAX_COUNT) {
+            privateNotesImagesStatus = `每筆最多 ${NOTE_IMAGE_MAX_COUNT} 張圖片。`;
+            renderPrivateNotesEditor();
+            return;
+        }
+
         privateNotesSaving = true;
-        privateNotesFeedback = '儲存中…';
+        privateNotesFeedback = newImages.length > 0 ? '圖片上傳中…' : '儲存中…';
         renderPrivateNotesEditor();
 
         void (async () => {
+            const uploaded = [];
             try {
-                const saved = await savePrivateNoteRemote(note);
+                for (const image of newImages) {
+                    uploaded.push(await uploadPrivateNoteImage(note.id, image));
+                }
+                note.attachments.push(...uploaded);
+                privateNotesFeedback = '儲存中…';
+                renderPrivateNotesEditor();
+                const saved = await savePrivateNoteRemote(note, isNew);
                 if (!canAccessPrivateNotes()) {
                     clearPrivateNotesState();
                     return;
+                }
+
+                let cleanupFailed = false;
+                try {
+                    await removePrivateNoteImages(removedPaths);
+                    removedPaths.forEach(releasePrivateNoteImageUrl);
+                } catch {
+                    cleanupFailed = true;
                 }
 
                 privateNotesRevision += 1;
@@ -4895,13 +5193,24 @@ function wirePrivateNotes() {
                 }
                 privateNotes.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
                 privateNotesSelectedId = saved.id;
+                releasePrivateNoteDraftImages(draft);
                 privateNotesDraft = null;
                 privateNotesLoaded = true;
                 privateNotesLoadError = null;
                 privateNotesLastLoadedAt = Date.now();
-                privateNotesFeedback = `已儲存 ${formatNoteUpdatedAt(saved.updatedAt)}`;
-            } catch {
-                privateNotesFeedback = '儲存失敗，請檢查網路連線後重試。';
+                privateNotesImagesStatus = '';
+                privateNotesFeedback = cleanupFailed
+                    ? `已儲存 ${formatNoteUpdatedAt(saved.updatedAt)}，部分舊圖片未清理。`
+                    : `已儲存 ${formatNoteUpdatedAt(saved.updatedAt)}`;
+            } catch (error) {
+                try {
+                    await removePrivateNoteImages(uploaded.map(image => image.path));
+                } catch {
+                    // 盡力清除已上傳但未存入筆記的檔案，不覆蓋原始錯誤。
+                }
+                privateNotesFeedback = error instanceof Error && error.message.includes('圖片')
+                    ? error.message
+                    : '儲存失敗，請檢查網路連線後重試。';
             } finally {
                 privateNotesSaving = false;
                 renderPrivateNotes();
@@ -4913,8 +5222,10 @@ function wirePrivateNotes() {
         if (privateNotesSaving) {
             return;
         }
+        releasePrivateNoteDraftImages();
         privateNotesDraft = null;
         privateNotesFeedback = '';
+        privateNotesImagesStatus = '';
         renderPrivateNotes();
     });
 
@@ -4928,26 +5239,35 @@ function wirePrivateNotes() {
         privateNotesFeedback = '刪除中…';
         renderPrivateNotesEditor();
 
-        void deletePrivateNoteRemote(note.id)
-            .then(() => {
+        void (async () => {
+            try {
+                await deletePrivateNoteRemote(note.id);
                 if (!canAccessPrivateNotes()) {
                     clearPrivateNotesState();
                     return;
                 }
+
                 privateNotesRevision += 1;
                 privateNotes = privateNotes.filter(item => item.id !== note.id);
                 privateNotesSelectedId = null;
+                releasePrivateNoteDraftImages();
                 privateNotesDraft = null;
                 privateNotesLastLoadedAt = Date.now();
-                privateNotesFeedback = '已刪除。';
-            })
-            .catch(() => {
+                let cleanupFailed = false;
+                try {
+                    await removePrivateNoteImages((note.attachments ?? []).map(image => image.path));
+                    (note.attachments ?? []).forEach(image => releasePrivateNoteImageUrl(image.path));
+                } catch {
+                    cleanupFailed = true;
+                }
+                privateNotesFeedback = cleanupFailed ? '筆記已刪除，部分圖片未清理。' : '已刪除。';
+            } catch {
                 privateNotesFeedback = '刪除失敗，請檢查網路連線後重試。';
-            })
-            .finally(() => {
+            } finally {
                 privateNotesSaving = false;
                 renderPrivateNotes();
-            });
+            }
+        })();
     });
 }
 
@@ -4985,6 +5305,30 @@ function normalizeNoteAttachments(value) {
 
             const parts = item.path.split('/');
             return parts[0] === 'notes'
+                && parts.length >= 3
+                && parts.every(part => part.length > 0 && part !== '.' && part !== '..');
+        })
+        .slice(0, NOTE_IMAGE_MAX_COUNT)
+        .map(item => ({
+            path: item.path,
+            name: typeof item.name === 'string' && item.name.trim().length > 0 ? item.name : '圖片',
+            mimeType: typeof item.mimeType === 'string' ? item.mimeType : '',
+            size: Number.isSafeInteger(item.size) && item.size >= 0 ? item.size : null
+        }));
+}
+
+function normalizePrivateNoteAttachments(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value
+        .filter(item => {
+            if (!item || typeof item.path !== 'string') {
+                return false;
+            }
+            const parts = item.path.split('/');
+            return parts[0] === 'private'
                 && parts.length >= 3
                 && parts.every(part => part.length > 0 && part !== '.' && part !== '..');
         })
@@ -5207,6 +5551,67 @@ async function removeNoteImages(paths) {
 
     if (!response.ok) {
         throw new Error(`圖片清理失敗（${response.status}）`);
+    }
+}
+
+async function uploadPrivateNoteImage(noteId, image) {
+    if (image.file.size > NOTE_IMAGE_MAX_BYTES) {
+        throw new Error('圖片壓縮後仍超過 5 MB');
+    }
+
+    const mimeType = noteImageSourceType(image.file);
+    const extension = NOTE_IMAGE_EXTENSIONS[mimeType];
+    if (extension === undefined) {
+        throw new Error('圖片尚未轉成可上傳格式');
+    }
+
+    const path = `private/${noteId}/${crypto.randomUUID()}.${extension}`;
+    const response = await privateNoteStorageRequest(
+        `${supabase.url}/storage/v1/object/${PRIVATE_NOTE_IMAGES_BUCKET}/${encodeStoragePath(path)}`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': mimeType,
+                'x-upsert': 'false'
+            },
+            body: image.file
+        });
+
+    if (!response.ok) {
+        let detail = '';
+        try {
+            const body = await response.json();
+            detail = String(body?.message ?? body?.error ?? '').trim();
+        } catch {
+            // 儲存服務有時回空 body；HTTP 狀態仍足以定位。
+        }
+        throw new Error(`私人圖片上傳失敗（${response.status}${detail === '' ? '' : `：${detail}`}）`);
+    }
+
+    return {
+        path,
+        name: image.file.name,
+        mimeType,
+        size: image.file.size
+    };
+}
+
+async function removePrivateNoteImages(paths) {
+    const cleanPaths = normalizePrivateNoteAttachments(paths.map(path => ({ path })))
+        .map(image => image.path);
+    if (cleanPaths.length === 0 || supabase === null || !canAccessPrivateNotes()) {
+        return;
+    }
+
+    const response = await privateNoteStorageRequest(
+        `${supabase.url}/storage/v1/object/${PRIVATE_NOTE_IMAGES_BUCKET}`,
+        {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prefixes: cleanPaths })
+        });
+    if (!response.ok) {
+        throw new Error(`私人圖片清理失敗（${response.status}）`);
     }
 }
 

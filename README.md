@@ -213,12 +213,14 @@ Dashboard 與帳戶明細的折線圖共用版本 A：滑鼠移動／點擊或�
 - 筆記存於 Supabase `notes` 表；正在編輯時背景重讀不會覆蓋草稿。
 - 儲存或刪除成功後，較早發出的背景讀取會因清單版本已變更而被捨棄，不會把剛寫入的筆記從清單覆蓋掉；下一輪背景同步仍會取得其他裝置的更新。
 - 子頁籤名稱為「網站維護」，資料仍保留原有類型、狀態、永久編號與圖片附件功能；`notes` 表沿用公開 anon 模型，不適合保存私密內容。
-- 「私人筆記」採用雙欄工作台：左側清單、標題／內容搜尋，右側新增與編輯；只有標題和內容欄位，不設類型或狀態控制，並支援新增、編輯與刪除。
-- 私人筆記存於獨立的 Supabase `private_notes` 表。`db/065_private_notes.sql` 建立資料表與 RLS，`db/066_private_notes_access_hardening.sql` 撤除匿名、操作角色及服務角色的表級權限；資料列 policy 同時核對登入者 ID 與 Frank 的固定 Auth email。登入密碼只存在 Supabase Auth，不寫入程式或文件。
+- 「私人筆記」採用雙欄工作台：左側清單、標題／內容搜尋，右側新增與編輯；只有標題和內容欄位，不設類型或狀態控制，並支援新增、編輯、刪除及最多 6 張圖片。
+- 私人筆記存於獨立的 Supabase `private_notes` 表。`db/065_private_notes.sql` 建立資料表與 RLS，`db/066_private_notes_access_hardening.sql` 撤除匿名、操作角色及服務角色的表級權限；資料列 policy 同時核對登入者 ID 與 Frank 的固定 Auth email。附件另存於非公開 `private-note-images` bucket，Storage policy 限定同一 Frank Auth 身分；`db/067_private_note_images.sql` 建立附件欄位與 bucket 權限。登入密碼只存在 Supabase Auth，不寫入程式或文件。
 - Podcast／股癌正式採用方案 E，放在筆記子頁籤：進入 `?view=notes&notesTab=gooaye` 可查看跨集宏觀總覽、研究概念／市場情境／待驗證三欄與集數演進。集數演進使用左側日期／集數節點、垂直連線與逐集白色內容卡；來源頁只要求輸入時間、集數與 Gemini Notebook 逐字稿分析。來源透過 Supabase 儲存，支援新增、編輯、移除，多筆匯入與單筆編輯面板都在集數演進區域就地開啟並自行捲動，其餘欄位由內容解析產生預覽，尚未串接正式 Gemini API。
 - 股癌頁籤的手機版小控件會固定在市場導覽的最上層，切換市場時不會被後續內容誤接收點擊；管理員裝置清單以「裝置名稱＋IP＋模式」呈現，支援最高權限、監控者、持倉者與訪客，依裝置名稱、IP、模式各組只顯示最後活動紀錄；其他市場的彈出式 K 線標題也一律連到既有 MoneyDJ 財經百科查詢。
 
 `db/023_notes_images.sql` 已套用正式 Supabase；`note-images` bucket、`notes.attachments` 與三條 Storage policy 均已查證存在，匿名上傳／刪除測試皆回 HTTP 200。它沿用目前筆記的公開 anon 模型，請勿上傳含帳號、密碼或敏感金融資訊的原始截圖。
+
+私人筆記的附件只透過 Frank 已登入的授權請求讀寫，前端以瀏覽器記憶體中的 blob URL 預覽，不產生公開圖片網址。正式資料搬移時短暫套用的兩個精確路徑匿名上傳 policy 已由 `db/068_private_note_image_import.sql` 建立，並由 `db/069_private_note_image_import_cleanup.sql` 移除；目前沒有匿名讀取或上傳權限。
 
 私人筆記清除網站資料、使用無痕視窗或更換裝置後仍會讀到同一份資料。既有 `notes`、`topic_edits` 與資產資料表仍採匿名權限，整體 RLS 收權限工作仍列於 [TODO.md](Doc/TODO.md)。
 

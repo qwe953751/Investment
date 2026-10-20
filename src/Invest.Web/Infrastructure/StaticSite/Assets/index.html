@@ -426,6 +426,18 @@
                             <span>內容</span>
                             <textarea id="private-notes-content" rows="12" placeholder="寫下自己的想法、整理或備忘…"></textarea>
                         </label>
+                        <section class="notes-images-field" aria-labelledby="private-notes-images-title">
+                            <div class="notes-images-heading">
+                                <span id="private-notes-images-title">圖片</span>
+                                <small>最多 6 張，單張上限 5 MB；超過 5 MB 會自動壓縮</small>
+                            </div>
+                            <label class="notes-image-picker">
+                                <span>選擇圖片</span>
+                                <input type="file" id="private-notes-images" accept="image/*,.heic,.heif" multiple />
+                            </label>
+                            <div class="notes-images-preview" id="private-notes-images-preview"></div>
+                            <p class="notes-images-status" id="private-notes-images-status" role="status"></p>
+                        </section>
                         <div class="notes-editor-actions">
                             <button type="button" class="notes-danger-button" id="private-notes-delete" hidden>刪除</button>
                             <span></span>
