@@ -10475,7 +10475,7 @@ function makeAssetValueTrendCard(rows, options) {
     const selectedChange = selectionItem('與前一斷點');
     const selectedAmount = document.createElement('small');
     selectedChange.item.append(selectedAmount);
-    const selectedCurrentChange = selectionItem('與現在資產');
+    const selectedCurrentChange = selectionItem('目前相較斷點');
     const selectedCurrentAmount = document.createElement('small');
     selectedCurrentChange.item.append(selectedCurrentAmount);
     heading.append(selection);
@@ -10601,7 +10601,7 @@ function makeAssetValueTrendCard(rows, options) {
         const row = visibleRows[selectedIndex];
         const previous = selectedIndex > 0 ? visibleRows[selectedIndex - 1] : null;
         const previousChange = assetTrendChangeMeta(row.value, previous?.value);
-        const currentChange = assetTrendChangeMeta(row.value, options.currentValue);
+        const currentChange = assetTrendChangeMeta(options.currentValue, row.value);
 
         selectedDate.value.textContent = row.date.replaceAll('-', '/');
         selectedTotal.value.textContent = assetCurrency(row.value);
