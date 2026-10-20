@@ -2146,7 +2146,7 @@ const ETF_COLUMNS = [
     { key: 'close', title: '收盤價', hint: 'ETF 名冊中最近一個有效交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'price', title: '漲跌幅', hint: '分層顯示日／週／年漲跌幅，全部已還原權息（除息、分割不會被當成下跌）；今年才掛牌的標籤是「掛」，從官方掛牌參考價起算。排序以日漲跌幅為準。', value: row => row.priceChange, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange, { weeklyFromListing: row.weeklyFromListing, yearFromListing: row.yearToDateFromListing }) },
     { key: 'tradingValue', title: '成交值（億）', hint: '所選交易日或盤中最新一輪的 ETF 成交值；盤中還沒有報價的標的顯示 —。', value: row => row.tradingValue, cell: row => ({ text: missing(row.tradingValue) ? '—' : toBillionText(row.tradingValue), cls: 'numeric' }) },
-    { key: 'payout', title: '配息資訊', hint: '點擊欄位展開或收合年度配息紀錄。配息資料尚未串接時，欄位會顯示空狀態。', sortable: false, cell: () => ({ cls: 'etf-payout-cell', payout: true }) }
+    { key: 'payout', title: '配息資訊', hint: '外層顯示最近一筆發放日與金額皆已公告的紀錄；點擊展開或收合年度紀錄，排序依外層每單位金額。', value: etfDividendPayoutSortValue, cell: () => ({ cls: 'etf-payout-cell', payout: true }) }
 ];
 
 // 自訂頁的盤中欄位沿用同一組個股欄位，只改成即時資料的語意。
@@ -21054,6 +21054,20 @@ function etfDividendNextEvent(row) {
         : null };
 }
 
+function etfDividendLatestCompletePayment(row) {
+    let latest = null;
+    for (const payment of etfDividendFundForRow(row)?.events ?? []) {
+        if (!payment.paymentDate || payment.amountPerUnit === null) continue;
+        if (!latest || payment.paymentDate > latest.paymentDate) latest = payment;
+    }
+    return latest;
+}
+
+function etfDividendPayoutSortValue(row) {
+    const payment = etfDividendLatestCompletePayment(row);
+    return payment ? Number(payment.amountPerUnit) : null;
+}
+
 function formatEtfDividendDate(value) {
     if (!value) return '待公告';
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -21116,6 +21130,9 @@ function appendRankingCell(tr, row, column, options = {}) {
         const expanded = state.etfExpandedPayoutTicker === row.ticker;
         const { market, fund, event } = etfDividendNextEvent(row);
         const statusText = etfDividendStatusText(market, fund, Boolean(event));
+        const latestCompletePayment = etfDividendLatestCompletePayment(row);
+        const hasIncompleteAnnouncement = (fund?.events ?? []).some(payment => payment.amountPerUnit === null)
+            || (fund?.unresolvedEvents?.length ?? 0) > 0;
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'etf-payout-button';
@@ -21128,22 +21145,21 @@ function appendRankingCell(tr, row, column, options = {}) {
         summary.className = 'etf-payout-summary';
         const label = document.createElement('span');
         label.className = 'etf-payout-label';
-        const hasKnownPayment = !event && (fund?.events?.length ?? 0) > 0;
-        const hasPreview = !event && !hasKnownPayment && (fund?.unresolvedEvents?.length ?? 0) > 0;
-        const known = event ?? (hasKnownPayment ? fund.events.at(-1) : hasPreview ? fund.unresolvedEvents.at(-1) : null);
-        label.textContent = event ? '下次發放' : hasKnownPayment ? '最近已知發放' : hasPreview ? '已知除息預告' : '配息資料';
+        label.textContent = latestCompletePayment
+            ? (latestCompletePayment.paymentDate >= etfDividendTaipeiDate() ? '下次發放' : '最近已知發放')
+            : '配息資料';
         const date = document.createElement('span');
-        date.className = `etf-payout-date${event ? '' : ' is-empty'}`;
-        date.textContent = known ? formatEtfDividendDate(hasPreview ? known.exDate : known.paymentDate) : statusText;
+        date.className = `etf-payout-date${latestCompletePayment ? '' : ' is-empty'}`;
+        date.textContent = latestCompletePayment
+            ? formatEtfDividendDate(latestCompletePayment.paymentDate)
+            : hasIncompleteAnnouncement ? '尚無完整公告' : statusText;
         summary.append(label, date);
 
         const details = document.createElement('span');
         details.className = 'etf-payout-details';
         const amount = document.createElement('span');
         amount.className = 'etf-payout-amount';
-        amount.textContent = known
-            ? (known.amountPerUnit === null ? '金額待公告' : `${known.amountPerUnit} 元 / 單位`)
-            : '— / 單位';
+        amount.textContent = latestCompletePayment ? `${latestCompletePayment.amountPerUnit} 元 / 單位` : '— / 單位';
         const stateLabel = document.createElement('span');
         stateLabel.className = 'etf-payout-state';
         stateLabel.textContent = statusText === '已更新' ? '' : statusText;

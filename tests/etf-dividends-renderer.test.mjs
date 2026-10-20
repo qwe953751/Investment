@@ -58,16 +58,22 @@ async function createRenderer(payload, error = '', extra = {}) {
     const source = await readFile(SOURCE_PATH, 'utf8');
     const start = source.indexOf('function etfDividendTaipeiDate(');
     const end = source.indexOf('\nfunction renderTable()', start);
-    assert.ok(start >= 0 && end > start, 'expected the production ETF payout renderer block');
-    const code = `${source.slice(start, end)}\nglobalThis.renderers = { appendRankingCell, buildEtfPayoutHistoryRow, ensureEtfDividendPayload, validateEtfDividendPayload, state };`;
+    const sortStart = source.indexOf('function sortedRows(rows) {');
+    const sortEnd = source.indexOf('\nfunction rowsForCurrentPage()', sortStart);
+    const columnsStart = source.indexOf('const ETF_COLUMNS = [');
+    const columnsEnd = source.indexOf('\n];', columnsStart) + 3;
+    assert.ok(start >= 0 && end > start && sortStart >= 0 && sortEnd > sortStart
+        && columnsStart >= 0 && columnsEnd > columnsStart, 'expected the production ETF renderer and sorting blocks');
+    const code = `${source.slice(sortStart, sortEnd)}\n${source.slice(start, end)}\n${source.slice(columnsStart, columnsEnd)}\nglobalThis.renderers = { appendRankingCell, buildEtfPayoutHistoryRow, ensureEtfDividendPayload, validateEtfDividendPayload, etfDividendLatestCompletePayment, etfDividendPayoutSortValue, sortedRows, ETF_COLUMNS, state };`;
     const context = vm.createContext({
         Date: FixedDate,
         Intl,
+        toTickerCell: () => null,
         document: {
             createElement: tag => new Element(tag),
             createTextNode: text => String(text)
         },
-        state: { view: 'etf', etfExpandedPayoutTicker: '', etfPayoutHistoryYear: null },
+        state: { view: 'etf', etfExpandedPayoutTicker: '', etfPayoutHistoryYear: null, sortKey: 'payout', sortDescending: true },
         etfDividendPayload: payload,
         etfDividendPayloadError: error,
         etfDividendPayloadLoading: null,
@@ -80,6 +86,7 @@ async function createRenderer(payload, error = '', extra = {}) {
         ...extra
     });
     vm.runInContext(code, context, { filename: 'production-etf-payout-renderer.js' });
+    context.columns = () => context.renderers.ETF_COLUMNS;
     return context.renderers;
 }
 
@@ -155,26 +162,58 @@ test('known payments outside the current year are available through the year sel
     assert.doesNotMatch(selectedHistory.textContent, /2026\/10\/20/);
 });
 
-test('known past payments and undated preview amounts remain visible in the collapsed cell', async () => {
-    const past = payload({ events: [event({ paymentDate: '2026-09-11', amount: '0.28' })],
-        windows: [{ fromDate: '2026-01-01', throughDate: '2027-12-31', eventId: null }] });
-    past.markets.twse.coverage = { scope: 'limited', note: '8 月除息資料', sources: [] };
-    const pastCell = await renderCell(past);
-    assert.match(pastCell.button.textContent, /最近已知發放2026\/09\/11/);
-    assert.match(pastCell.button.textContent, /0\.28 元 \/ 單位/);
-    assert.doesNotMatch(pastCell.button.textContent, /下次發放2026\/09\/11/);
+test('collapsed cell shows the latest complete payment and hides newer incomplete announcements', async () => {
+    const complete = event({ exDate: '2026-07-21', paymentDate: '2026-08-10', amount: '1.35', id: 'a' });
+    const pending = event({ exDate: '2026-10-22', paymentDate: '2026-11-11', amount: null, id: 'b' });
+    const data = payload({ events: [complete, pending], windows: [
+        { fromDate: '2026-01-01', throughDate: '2026-11-11', eventId: pending.eventId },
+        { fromDate: '2026-11-12', throughDate: '2027-12-31', eventId: null }
+    ] });
+    data.funds[0].ticker = '0056';
+    const actualRow = { ticker: '0056', name: '元大高股息', market: 'twse' };
+    const completeCell = await renderCell(data, '', actualRow);
+    assert.match(completeCell.button.textContent, /最近已知發放2026\/08\/10/);
+    assert.match(completeCell.button.textContent, /1\.35 元 \/ 單位/);
+    assert.doesNotMatch(completeCell.button.textContent, /2026\/11\/11|金額待公告/);
+    const history = (await createRenderer(data)).buildEtfPayoutHistoryRow(actualRow, 6);
+    assert.match(history.textContent, /2026\/11\/11/);
+    assert.match(history.textContent, /金額待公告/);
+
     const preview = payload({ events: [], unresolvedEvents: [event({ paymentDate: null, exDate: '2026-10-19', amount: '0.16' })],
         windows: [{ fromDate: '2026-01-01', throughDate: '2027-12-31', eventId: null }] });
-    preview.markets.twse.coverage = past.markets.twse.coverage;
     const previewCell = await renderCell(preview);
-    assert.match(previewCell.button.textContent, /已知除息預告2026\/10\/19/);
-    assert.match(previewCell.button.textContent, /0\.16 元 \/ 單位/);
+    assert.match(previewCell.button.textContent, /尚無完整公告/);
+    assert.doesNotMatch(previewCell.button.textContent, /2026\/10\/19|0\.16 元/);
 });
 
-async function renderCell(data, error = '') {
+test('payout column sorts by the outer per-unit amount and keeps incomplete amounts last', async () => {
+    const complete = event({ exDate: '2026-07-21', paymentDate: '2026-08-10', amount: '1.35', id: 'a' });
+    const pending = event({ exDate: '2026-10-22', paymentDate: '2026-11-11', amount: null, id: 'b' });
+    const data = payload({ events: [complete, pending], windows: [
+        { fromDate: '2026-01-01', throughDate: '2026-11-11', eventId: pending.eventId },
+        { fromDate: '2026-11-12', throughDate: '2027-12-31', eventId: null }
+    ] });
+    data.funds.push({ market: 'twse', ticker: '0056', events: [
+        event({ ticker: '0056', exDate: '2026-04-23', paymentDate: '2026-05-14', amount: '2', id: 'c' })
+    ], unresolvedEvents: [], nextWindows: [] });
+    const renderer = await createRenderer(data);
+    const payoutColumn = renderer.ETF_COLUMNS.find(column => column.key === 'payout');
+    assert.equal(payoutColumn.sortable, undefined);
+    assert.equal(renderer.etfDividendPayoutSortValue({ ticker: '00713', market: 'twse' }), 1.35);
+    const rows = [
+        { ticker: '00713', market: 'twse' },
+        { ticker: '0056', market: 'twse' },
+        { ticker: '00646', market: 'twse' }
+    ];
+    assert.deepEqual(Array.from(renderer.sortedRows(rows), item => item.ticker), ['0056', '00713', '00646']);
+    renderer.state.sortDescending = false;
+    assert.deepEqual(Array.from(renderer.sortedRows(rows), item => item.ticker), ['00713', '0056', '00646']);
+});
+
+async function renderCell(data, error = '', targetRow = row) {
     const renderer = await createRenderer(data, error);
     const tr = new Element('tr');
-    renderer.appendRankingCell(tr, row, payoutColumn);
+    renderer.appendRankingCell(tr, targetRow, payoutColumn);
     return { tr, button: find(tr, item => item.tagName === 'button') };
 }
 
@@ -200,7 +239,8 @@ test('production renderer shows cross-year payment date and preserves source dec
 test('production renderer distinguishes null from a true zero amount and lists unresolved dates', async () => {
     const nullData = payload({ events: [event({ amount: null })], unresolvedEvents: [{ eventId: 'b'.repeat(64) }] });
     const nullResult = await renderCell(nullData);
-    assert.match(nullResult.button.textContent, /金額待公告/);
+    assert.match(nullResult.button.textContent, /尚無完整公告/);
+    assert.doesNotMatch(nullResult.button.textContent, /金額待公告/);
     const nullHistory = (await createRenderer(nullData)).buildEtfPayoutHistoryRow(row, 8);
     assert.match(nullHistory.textContent, /金額待公告/);
     assert.match(nullHistory.textContent, /另有 1 筆事件的發放日待公告/);
@@ -311,8 +351,9 @@ test('the v2 compact payload lists available years and shows only the selected y
 
     const renderer = await createRenderer(decoded);
     const { button } = await renderCell(decoded);
-    assert.match(button.textContent, /下次發放2027\/01\/12/);
-    assert.match(button.textContent, /金額待公告/);
+    assert.match(button.textContent, /最近已知發放2026\/10\/13/);
+    assert.match(button.textContent, /1\.25 元 \/ 單位/);
+    assert.doesNotMatch(button.textContent, /2027\/01\/12|金額待公告/);
     const history = renderer.buildEtfPayoutHistoryRow(row, 6);
     assert.match(history.textContent, /2026 年配息紀錄/);
     assert.doesNotMatch(history.textContent, /其他已取得發放紀錄/);

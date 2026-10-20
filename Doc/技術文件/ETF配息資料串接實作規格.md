@@ -187,7 +187,7 @@ stkNo=&startDate=20250101&endDate=20271231&lang=zh-tw
 
 events 依發放日、除息日排序；undated 是尚未公告發放日的事件；next 是 C# 算好的「下次發放」區間，`[起日, 迄日, events 索引或 null]`，從當年 1/1 連續涵蓋到次年 12/31。eventId、recordDate 與原文 hash 不放進網站。completeCheckDate 為兩市場同一批次都已接受的最近業務日；sourceCheckDate 已移除。實測全名冊 362 檔（229 檔有紀錄）、4,524 筆；正式發布的精簡 JSON 為 229,710 bytes（gzip 29,185 bytes），筆數是舊版 186 筆的 24 倍，檔案大小與舊版 231KB 相當。
 
-**前端**：`validateEtfDividendPayload` 驗證 v2 後還原成畫面函式既有的物件形狀（events／unresolvedEvents／nextWindows）。配息資訊按鈕展開後，以原生年度選單切換已定發放日的年度紀錄，預設當年度，每次只顯示選定年度；未定發放日事件仍列在表格下方，不併入任何發放年度。
+**前端**：`validateEtfDividendPayload` 驗證 v2 後還原成畫面函式既有的物件形狀（events／unresolvedEvents／nextWindows）。配息資訊按鈕展開後，以原生年度選單切換已定發放日的年度紀錄，預設當年度，每次只顯示選定年度；未定發放日事件仍列在表格下方，不併入任何發放年度。收合摘要只取發放日與金額皆已公布的最新事件；較新的金額待公告事件不覆蓋外層已知完整紀錄，無完整事件時不顯示未定日期或待公告金額。ETF「配息資訊」表頭依外層相同事件的每單位金額排序，缺少完整金額者固定排最後。
 
 **流程 v5**：`etf-dividends.yml` run-name 為 `ETF 配息 v5 | 業務日 | exchange`；gate／run 查核只認 v5，舊 v4 開放資料或 blocked-license 綠燈不算完成也不占重試額度。終態核驗要求公開檔 asOfDate 與 completeCheckDate 都等於業務日、兩市場 fresh 並有成功時間與來源 hash。
 
