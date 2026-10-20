@@ -442,7 +442,7 @@ const VIEWS = [
     { key: 'custom', text: '自訂', hint: '瀏覽指定交易日的全部上市、上櫃、興櫃與 TDR 收盤資料，或最新一輪的全市場盤中資料；不建立預設排行。' },
     { key: 'etf', text: 'ETF', hint: '瀏覽官方 ETF 名冊的最近收盤價與日漲跌；不混入個股成交值排行。' },
     { key: 'assets', text: '資產', hint: '自己維護的帳戶與持倉：使用者、帳戶、現金與持倉存在資料庫，任何裝置打開都看得到；可上傳券商截圖辨識後套用。' },
-    { key: 'notes', text: '筆記', hint: '記錄功能想法、Bug 與待驗證項目；筆記存在資料庫，任何裝置打開網站都能看到並編輯。' }
+    { key: 'notes', text: '筆記', hint: '網站維護筆記與 Frank 專屬私人筆記。' }
 ];
 
 const CUSTOM_DATA_SOURCES = [
@@ -1067,6 +1067,7 @@ async function fetchAllRows(table, select, extraQuery = '', timeoutMs = null) {
 // 登入後也不能把 JWT 帶進去，否則沒有 authenticated SELECT policy 時會得到 200 + 空陣列，
 // 看起來像資料消失。新增受保護資料表時，必須同時加入 allowlist、專用 RLS policy 與回歸測試。
 const AUTHENTICATED_FETCH_TABLES = new Set([
+    'private_notes',
     'asset_operation_rows',
     'asset_operation_settings',
     'asset_operation_group_columns',
@@ -2180,6 +2181,7 @@ const columns = () => columnsForView(state.view);
 const VIEW_PREFERENCE_VIEWS = ['daily', 'intraday', 'custom', 'etf'];
 
 const NOTES_TABLE = 'notes';
+const PRIVATE_NOTES_TABLE = 'private_notes';
 const NOTE_CATEGORIES = [
     { key: 'all', text: '全部' },
     { key: '功能', text: '功能' },
@@ -2294,6 +2296,17 @@ let notesDraft = null;
 let notesSaveStatus = '';
 let notesImagesStatus = '';
 let notesControlsWired = false;
+let privateNotes = [];
+let privateNotesLoaded = false;
+let privateNotesLoadError = null;
+let privateNotesRevision = 0;
+let privateNotesLastLoadedAt = 0;
+let privateNotesSearch = '';
+let privateNotesSelectedId = null;
+let privateNotesDraft = null;
+let privateNotesFeedback = '';
+let privateNotesSaving = false;
+let privateNotesControlsWired = false;
 
 function defaultViewPreferences() {
     return {
@@ -3008,8 +3021,9 @@ function renderAccessBadge() {
 // 筆記 #37：登入列。跟網址決定的下限（URL_ACCESS）各自獨立，登入只會把權限往上加，
 // 不會蓋掉網址原本給的下限——見檔案開頭 applyEffectiveAccess() 的說明。
 // 帳號固定四組、密碼只保存在 Supabase Auth；同一個最高權限層可指定不同的資產初始使用者。
+const FRANK_ADMIN_EMAIL = 'admin@investment.local';
 const ACCESS_TIER_ACCOUNTS = [
-    { email: 'admin@investment.local', tier: 'admin', defaultAssetOwnerName: 'Frank' },
+    { email: FRANK_ADMIN_EMAIL, tier: 'admin', defaultAssetOwnerName: 'Frank' },
     { email: 'fortune@investment.local', tier: 'admin', defaultAssetOwnerName: '財神' },
     { email: 'monitor@investment.local', tier: 'monitor' },
     { email: 'holdings@investment.local', tier: 'holdings', defaultAssetOwnerName: 'Frank' }
@@ -3020,6 +3034,12 @@ function accessTierAccountForEmail(email) {
     const normalized = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
     return ACCESS_TIER_ACCOUNTS.find(account => account.email === normalized) ?? null;
+}
+
+function canAccessPrivateNotes() {
+    return SITE_ACCESS === 'admin'
+        && loginTier === 'admin'
+        && loginAccount?.email === FRANK_ADMIN_EMAIL;
 }
 
 function resetAssetSelectionForLogin() {
@@ -3216,8 +3236,7 @@ async function restoreSession() {
         return;
     }
 
-    const account = accessTierAccountForEmail(result.session.user?.email)
-        ?? accessTierAccountForEmail(stored.email);
+    const account = accessTierAccountForEmail(result.session.user?.email);
 
     if (account === null) {
         clearAuthSession();
@@ -3246,8 +3265,7 @@ async function refreshAuthAccessToken() {
         return false;
     }
 
-    const account = accessTierAccountForEmail(result.session.user?.email)
-        ?? accessTierAccountForEmail(stored.email);
+    const account = accessTierAccountForEmail(result.session.user?.email);
 
     if (account === null) {
         clearAuthSession();
@@ -3290,6 +3308,10 @@ function renderAccessBar() {
 // 頁首那幾顆小控件（裝置、通知）只在頁面第一次載入時判斷過權限，不會自己跟著變，
 // 這裡要一併重新判斷一次，不然登出後畫面還留著最高權限才看得到的按鈕。
 function afterAccessChange() {
+    if (!canAccessPrivateNotes()) {
+        clearPrivateNotesState();
+    }
+
     if (!availableViews().some(view => view.key === state.view)) {
         state.view = SITE_ACCESS === 'holdings'
             ? 'assets'
@@ -4418,9 +4440,62 @@ async function loadNotes() {
         .sort(compareNotes);
 }
 
+async function loadPrivateNotes() {
+    if (supabase === null || !canAccessPrivateNotes()) {
+        return [];
+    }
+
+    const rows = await fetchAuthenticatedAllRows(
+        PRIVATE_NOTES_TABLE,
+        'id,title,content,updated_at',
+        '&order=updated_at.desc');
+
+    return rows
+        .filter(row => row !== null && typeof row === 'object')
+        .map(row => ({
+            id: String(row.id),
+            title: typeof row.title === 'string' ? row.title : '',
+            content: typeof row.content === 'string' ? row.content : '',
+            updatedAt: typeof row.updated_at === 'string' ? row.updated_at : new Date(0).toISOString()
+        }))
+        .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+}
+
+function clearPrivateNotesState() {
+    privateNotesRevision += 1;
+    privateNotes = [];
+    privateNotesLoaded = false;
+    privateNotesLoadError = null;
+    privateNotesLastLoadedAt = 0;
+    privateNotesSelectedId = null;
+    privateNotesDraft = null;
+    privateNotesFeedback = '';
+    privateNotesSearch = '';
+
+    const layout = el('private-notes-layout');
+    if (layout) {
+        layout.hidden = true;
+    }
+    const list = el('private-notes-list');
+    if (list) {
+        list.replaceChildren();
+    }
+    for (const id of ['private-notes-heading', 'private-notes-content', 'private-notes-edit-id', 'private-notes-search']) {
+        const input = el(id);
+        if (input) {
+            input.value = '';
+        }
+    }
+}
+
 // 失敗也記一次時間，否則連不上資料庫時每一格 tick 都會再試一遍。
 // 失敗時刻意保留舊的 notes 陣列：清單不該因為一次讀取失敗就整個清空。
 async function refreshNotes() {
+    if (podcastPreviewTabKey() === 'private' && canAccessPrivateNotes()) {
+        await refreshPrivateNotes();
+        return;
+    }
+
     lastNotesLoadedAt = Date.now();
 
     if (isPodcastNotesStaticView()) {
@@ -4469,7 +4544,377 @@ async function refreshNotes() {
     notesLoaded = true;
 }
 
+async function refreshPrivateNotes() {
+    if (!canAccessPrivateNotes()) {
+        clearPrivateNotesState();
+        return;
+    }
+
+    privateNotesLastLoadedAt = Date.now();
+    const revision = privateNotesRevision;
+
+    try {
+        if (supabase === null) {
+            throw new Error('資料庫連線尚未載入。');
+        }
+
+        const loaded = await loadPrivateNotes();
+        if (revision !== privateNotesRevision || !canAccessPrivateNotes()) {
+            return;
+        }
+
+        privateNotes = loaded;
+        privateNotesLoadError = null;
+        if (privateNotesSelectedId !== null
+            && !privateNotes.some(note => note.id === privateNotesSelectedId)) {
+            privateNotesSelectedId = null;
+            privateNotesDraft = null;
+        }
+    } catch {
+        if (revision !== privateNotesRevision || !canAccessPrivateNotes()) {
+            return;
+        }
+
+        privateNotesLoadError = '讀取私人筆記失敗，請稍後重試。';
+    }
+
+    privateNotesLoaded = true;
+}
+
+function privateNotesStorageNoteText() {
+    if (!canAccessPrivateNotes()) {
+        return '僅限 Frank 的最高權限帳號使用。';
+    }
+
+    if (supabase === null) {
+        return '需要資料庫連線才能讀寫私人筆記。';
+    }
+
+    if (!privateNotesLoaded) {
+        return '載入中…';
+    }
+
+    if (privateNotesLoadError) {
+        return privateNotesLoadError;
+    }
+
+    return 'Frank 專屬資料庫 · 每分鐘同步一次';
+}
+
+function filteredPrivateNotes() {
+    const query = privateNotesSearch.trim().toLocaleLowerCase();
+
+    return privateNotes.filter(note => query.length === 0
+        || `${note.title}\n${note.content}`.toLocaleLowerCase().includes(query));
+}
+
+function ensurePrivateNotesDraft() {
+    if (privateNotesDraft !== null && privateNotesDraft.id === privateNotesSelectedId) {
+        return privateNotesDraft;
+    }
+
+    const note = privateNotes.find(item => item.id === privateNotesSelectedId) ?? null;
+    privateNotesDraft = {
+        id: note?.id ?? null,
+        title: note?.title ?? '',
+        content: note?.content ?? ''
+    };
+    return privateNotesDraft;
+}
+
+function renderPrivateNotesEditor() {
+    const note = privateNotes.find(item => item.id === privateNotesSelectedId) ?? null;
+    const draft = ensurePrivateNotesDraft();
+    el('private-notes-editor-heading').textContent = note === null ? '新增私人筆記' : '編輯私人筆記';
+    el('private-notes-edit-id').value = note?.id ?? '';
+    el('private-notes-heading').value = draft.title;
+    el('private-notes-content').value = draft.content;
+    el('private-notes-delete').hidden = note === null;
+    el('private-notes-feedback').textContent = privateNotesFeedback;
+    el('private-notes-save').disabled = privateNotesSaving;
+    el('private-notes-new').disabled = privateNotesSaving;
+    el('private-notes-heading').disabled = privateNotesSaving;
+    el('private-notes-content').disabled = privateNotesSaving;
+    el('private-notes-cancel').disabled = privateNotesSaving;
+    el('private-notes-delete').disabled = privateNotesSaving;
+}
+
+function renderPrivateNotes() {
+    if (!canAccessPrivateNotes()) {
+        clearPrivateNotesState();
+        return;
+    }
+
+    el('private-notes-storage-note').textContent = privateNotesStorageNoteText();
+
+    const search = el('private-notes-search');
+    if (search.value !== privateNotesSearch) {
+        search.value = privateNotesSearch;
+    }
+
+    const visibleNotes = filteredPrivateNotes();
+    el('private-notes-count').textContent = `共 ${visibleNotes.length} / ${privateNotes.length} 筆`;
+
+    const list = el('private-notes-list');
+    list.replaceChildren();
+
+    if (visibleNotes.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'notes-empty';
+        empty.textContent = privateNotes.length > 0
+            ? '找不到符合條件的私人筆記。'
+            : !privateNotesLoaded
+                ? '私人筆記載入中…'
+                : privateNotesLoadError
+                    ? privateNotesLoadError
+                    : '目前還沒有私人筆記，按右上角「新增私人筆記」開始。';
+        list.append(empty);
+    } else {
+        for (const note of visibleNotes) {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = note.id === privateNotesSelectedId
+                ? 'notes-list-item selected'
+                : 'notes-list-item';
+            item.disabled = privateNotesSaving;
+            item.addEventListener('click', () => {
+                privateNotesSelectedId = note.id;
+                privateNotesDraft = null;
+                privateNotesFeedback = '';
+                renderPrivateNotes();
+            });
+
+            const head = document.createElement('span');
+            head.className = 'notes-list-item-head';
+
+            const title = document.createElement('strong');
+            title.className = 'notes-list-item-title';
+            title.textContent = note.title || '未命名筆記';
+
+            const date = document.createElement('time');
+            date.className = 'notes-list-item-date';
+            date.dateTime = note.updatedAt;
+            date.textContent = formatNoteUpdatedAt(note.updatedAt);
+            head.append(title, date);
+
+            const preview = document.createElement('span');
+            preview.className = 'notes-list-item-preview';
+            const oneLine = note.content.replace(/\s+/g, ' ').trim();
+            preview.textContent = oneLine.length > 110 ? `${oneLine.slice(0, 110)}…` : oneLine || '尚未填寫內容';
+
+            item.append(head, preview);
+            list.append(item);
+        }
+    }
+
+    renderPrivateNotesEditor();
+}
+
+async function privateNotesRequest(method, noteId = null, payload = null, retryAuthentication = true) {
+    if (supabase === null || !canAccessPrivateNotes()) {
+        throw new Error('只有 Frank 的最高權限帳號可以修改私人筆記。');
+    }
+
+    if (authAccessToken === null && !await refreshAuthAccessToken()) {
+        throw new Error('登入已失效，請重新登入 Frank 的最高權限帳號。');
+    }
+
+    if (!canAccessPrivateNotes()) {
+        throw new Error('目前登入帳號無權修改私人筆記。');
+    }
+
+    const query = method === 'POST'
+        ? '?select=id,title,content,updated_at'
+        : `?id=eq.${encodeURIComponent(noteId)}&select=id,title,content,updated_at`;
+    const headers = {
+        apikey: supabase.anonKey,
+        Authorization: `Bearer ${authAccessToken}`,
+        Prefer: 'return=representation'
+    };
+    if (payload !== null) {
+        headers['Content-Type'] = 'application/json';
+    }
+
+    const response = await fetch(`${supabase.url}/rest/v1/${PRIVATE_NOTES_TABLE}${query}`, {
+        method,
+        headers,
+        body: payload === null ? undefined : JSON.stringify(payload),
+        cache: 'no-store'
+    });
+
+    if (response.status === 401 && retryAuthentication && await refreshAuthAccessToken()) {
+        if (!canAccessPrivateNotes()) {
+            throw new Error('目前登入帳號無權修改私人筆記。');
+        }
+        return privateNotesRequest(method, noteId, payload, false);
+    }
+
+    if (!response.ok) {
+        throw new Error(`私人筆記資料庫回應 HTTP ${response.status}。`);
+    }
+
+    const result = await response.json();
+    const saved = Array.isArray(result) ? result[0] : result;
+    if (!saved || typeof saved !== 'object' || typeof saved.id !== 'string') {
+        throw new Error('私人筆記沒有取得資料庫確認回應。');
+    }
+
+    return {
+        id: saved.id,
+        title: typeof saved.title === 'string' ? saved.title : '',
+        content: typeof saved.content === 'string' ? saved.content : '',
+        updatedAt: typeof saved.updated_at === 'string' ? saved.updated_at : new Date().toISOString()
+    };
+}
+
+async function savePrivateNoteRemote(note) {
+    const payload = {
+        title: note.title,
+        content: note.content,
+        updated_at: note.updatedAt
+    };
+    return privateNotesRequest(note.id === null ? 'POST' : 'PATCH', note.id, payload);
+}
+
+async function deletePrivateNoteRemote(noteId) {
+    return privateNotesRequest('DELETE', noteId);
+}
+
+function wirePrivateNotes() {
+    if (privateNotesControlsWired) {
+        return;
+    }
+
+    privateNotesControlsWired = true;
+
+    el('private-notes-new').addEventListener('click', () => {
+        if (privateNotesSaving || !canAccessPrivateNotes()) {
+            return;
+        }
+        privateNotesSelectedId = null;
+        privateNotesDraft = { id: null, title: '', content: '' };
+        privateNotesFeedback = '';
+        renderPrivateNotes();
+        el('private-notes-heading').focus();
+    });
+
+    el('private-notes-search').addEventListener('input', event => {
+        privateNotesSearch = event.target.value;
+        renderPrivateNotes();
+    });
+
+    for (const id of ['private-notes-heading', 'private-notes-content']) {
+        el(id).addEventListener('input', () => {
+            const draft = ensurePrivateNotesDraft();
+            draft.title = el('private-notes-heading').value;
+            draft.content = el('private-notes-content').value;
+            privateNotesFeedback = '';
+        });
+    }
+
+    el('private-notes-form').addEventListener('submit', event => {
+        event.preventDefault();
+        if (privateNotesSaving || !canAccessPrivateNotes()) {
+            return;
+        }
+
+        const title = el('private-notes-heading').value.trim();
+        if (title.length === 0) {
+            privateNotesFeedback = '請先輸入標題。';
+            renderPrivateNotesEditor();
+            el('private-notes-heading').focus();
+            return;
+        }
+
+        const draft = ensurePrivateNotesDraft();
+        const note = {
+            id: privateNotesSelectedId,
+            title,
+            content: el('private-notes-content').value,
+            updatedAt: new Date().toISOString()
+        };
+        privateNotesSaving = true;
+        privateNotesFeedback = '儲存中…';
+        renderPrivateNotesEditor();
+
+        void (async () => {
+            try {
+                const saved = await savePrivateNoteRemote(note);
+                if (!canAccessPrivateNotes()) {
+                    clearPrivateNotesState();
+                    return;
+                }
+
+                privateNotesRevision += 1;
+                const existingIndex = privateNotes.findIndex(item => item.id === saved.id);
+                if (existingIndex >= 0) {
+                    privateNotes[existingIndex] = saved;
+                } else {
+                    privateNotes.push(saved);
+                }
+                privateNotes.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+                privateNotesSelectedId = saved.id;
+                privateNotesDraft = null;
+                privateNotesLoaded = true;
+                privateNotesLoadError = null;
+                privateNotesLastLoadedAt = Date.now();
+                privateNotesFeedback = `已儲存 ${formatNoteUpdatedAt(saved.updatedAt)}`;
+            } catch {
+                privateNotesFeedback = '儲存失敗，請檢查網路連線後重試。';
+            } finally {
+                privateNotesSaving = false;
+                renderPrivateNotes();
+            }
+        })();
+    });
+
+    el('private-notes-cancel').addEventListener('click', () => {
+        if (privateNotesSaving) {
+            return;
+        }
+        privateNotesDraft = null;
+        privateNotesFeedback = '';
+        renderPrivateNotes();
+    });
+
+    el('private-notes-delete').addEventListener('click', () => {
+        const note = privateNotes.find(item => item.id === privateNotesSelectedId);
+        if (privateNotesSaving || !note || !window.confirm(`確定刪除「${note.title}」？`)) {
+            return;
+        }
+
+        privateNotesSaving = true;
+        privateNotesFeedback = '刪除中…';
+        renderPrivateNotesEditor();
+
+        void deletePrivateNoteRemote(note.id)
+            .then(() => {
+                if (!canAccessPrivateNotes()) {
+                    clearPrivateNotesState();
+                    return;
+                }
+                privateNotesRevision += 1;
+                privateNotes = privateNotes.filter(item => item.id !== note.id);
+                privateNotesSelectedId = null;
+                privateNotesDraft = null;
+                privateNotesLastLoadedAt = Date.now();
+                privateNotesFeedback = '已刪除。';
+            })
+            .catch(() => {
+                privateNotesFeedback = '刪除失敗，請檢查網路連線後重試。';
+            })
+            .finally(() => {
+                privateNotesSaving = false;
+                renderPrivateNotes();
+            });
+    });
+}
+
 function notesIsStale() {
+    if (podcastPreviewTabKey() === 'private' && canAccessPrivateNotes()) {
+        return Date.now() - privateNotesLastLoadedAt >= NOTES_REFRESH_MS;
+    }
+
     return Date.now() - lastNotesLoadedAt >= NOTES_REFRESH_MS;
 }
 
@@ -4916,6 +5361,11 @@ function renderNotes() {
     const podcastPreview = el('podcast-notes-preview');
     const podcastSubtabs = el('podcast-notes-subtabs');
     const legacyLayout = el('legacy-notes-layout');
+    const privateLayout = el('private-notes-layout');
+
+    if (!canAccessPrivateNotes()) {
+        clearPrivateNotesState();
+    }
 
     const podcastTab = podcastPreviewTabKey();
 
@@ -4928,6 +5378,9 @@ function renderNotes() {
         if (legacyLayout) {
             legacyLayout.hidden = true;
         }
+        if (privateLayout) {
+            privateLayout.hidden = true;
+        }
         if (podcastPreview) {
             podcastPreview.hidden = false;
             renderPodcastNotesPreview();
@@ -4935,8 +5388,26 @@ function renderNotes() {
         return;
     }
 
+    if (podcastTab === 'private' && canAccessPrivateNotes()) {
+        if (legacyLayout) {
+            legacyLayout.hidden = true;
+        }
+        if (podcastPreview) {
+            podcastPreview.hidden = true;
+        }
+        if (privateLayout) {
+            privateLayout.hidden = false;
+        }
+        wirePrivateNotes();
+        renderPrivateNotes();
+        return;
+    }
+
     if (podcastPreview) {
         podcastPreview.hidden = true;
+    }
+    if (privateLayout) {
+        privateLayout.hidden = true;
     }
 
     if (legacyLayout) {
@@ -5752,6 +6223,9 @@ function podcastPreviewVariantKey() {
 
 function podcastPreviewTabKey() {
     const tab = new URLSearchParams(window.location.search).get('notesTab');
+    if (tab === 'private') {
+        return canAccessPrivateNotes() ? 'private' : 'my';
+    }
     if (tab === 'gooaye') {
         return 'gooaye';
     }
@@ -5858,9 +6332,12 @@ function podcastPreviewMakeSubtabs(active) {
     nav.setAttribute('aria-label', '筆記來源');
 
     const items = [
-        { key: 'my', label: '我的筆記' },
+        { key: 'my', label: '網站維護' },
         { key: 'gooaye', label: '股癌' }
     ];
+    if (canAccessPrivateNotes()) {
+        items.push({ key: 'private', label: '私人筆記' });
+    }
 
     for (const item of items) {
         const button = podcastPreviewButton('', 'toggle-button' + (item.key === active ? ' selected' : ''), () => {
@@ -5885,6 +6362,18 @@ function podcastPreviewMakeSubtabs(active) {
                         }
                     });
                 }
+            }
+
+            if (item.key === 'private') {
+                privateNotesLoadError = null;
+                privateNotesLoaded = false;
+                privateNotesSelectedId = null;
+                privateNotesDraft = null;
+                void refreshPrivateNotes().then(() => {
+                    if (podcastPreviewTabKey() === 'private' && canAccessPrivateNotes()) {
+                        renderNotes();
+                    }
+                });
             }
 
             renderNotes();
@@ -6072,7 +6561,7 @@ function podcastPreviewMakeEpisodeList() {
 function podcastPreviewMakeMyNotes() {
     const section = podcastPreviewElement('section', 'podcast-preview-list-section');
     section.append(
-        podcastPreviewMakeListHeader('我的筆記', '把 Podcast 的原始分析轉成自己的追蹤問題與補充。'));
+        podcastPreviewMakeListHeader('網站維護', '整理網站功能需求、修繕紀錄與後續追蹤。'));
 
     const meta = podcastPreviewElement('div', 'podcast-preview-list-meta');
     meta.append(
@@ -30000,16 +30489,18 @@ function renderSnapshotNote() {
     }
 
     if (state.view === 'notes') {
-        el('snapshot-note').textContent = isPodcastNotesStaticView() && podcastPreviewTabKey() === 'gooaye'
-            ? podcastPreviewSourcesStatusText()
-                ?? `股癌研究分析 · 來源存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(PODCAST_SOURCES_REFRESH_MS / 1000)} 秒自動重讀一次。`
-            : PODCAST_NOTES_LOCAL_PREVIEW
-                ? '一次性 UI 比較 · 內容皆為示意資料，不會讀寫正式資料庫。'
-                : NOTES_LOCAL_PREVIEW
-                    ? '本機預覽筆記：用來確認永久編號版面，不會讀寫資料庫。'
-                    : supabase === null
-                        ? '筆記需要資料庫連線；離線快照看不到筆記。'
-                        : `筆記存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(NOTES_REFRESH_MS / 1000)} 秒自動重讀一次。`;
+        el('snapshot-note').textContent = podcastPreviewTabKey() === 'private' && canAccessPrivateNotes()
+            ? '私人筆記只由 Frank 的最高權限登入存取，資料由 Supabase RLS 保護。'
+            : isPodcastNotesStaticView() && podcastPreviewTabKey() === 'gooaye'
+                ? podcastPreviewSourcesStatusText()
+                    ?? `股癌研究分析 · 來源存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(PODCAST_SOURCES_REFRESH_MS / 1000)} 秒自動重讀一次。`
+                : PODCAST_NOTES_LOCAL_PREVIEW
+                    ? '一次性 UI 比較 · 內容皆為示意資料，不會讀寫正式資料庫。'
+                    : NOTES_LOCAL_PREVIEW
+                        ? '本機預覽筆記：用來確認永久編號版面，不會讀寫資料庫。'
+                        : supabase === null
+                            ? '筆記需要資料庫連線；離線快照看不到筆記。'
+                            : `筆記存在資料庫，任何裝置打開網站都能看到並編輯；每 ${Math.round(NOTES_REFRESH_MS / 1000)} 秒自動重讀一次。`;
         return;
     }
 

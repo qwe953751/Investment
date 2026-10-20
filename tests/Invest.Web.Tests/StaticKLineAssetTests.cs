@@ -854,6 +854,45 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
+    public void 私人筆記僅Frank最高權限可見且資料表由Rls保護()
+    {
+        var html = ReadAsset("index.html");
+        var script = ReadAsset("site.js");
+        var migration = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "065_private_notes.sql"));
+        var hardening = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "db", "066_private_notes_access_hardening.sql"));
+        var privateLayoutStart = html.IndexOf("id=\"private-notes-layout\"", StringComparison.Ordinal);
+        var privateLayoutEnd = html.IndexOf("<section class=\"asset-excel-page\"", privateLayoutStart, StringComparison.Ordinal);
+
+        Assert.Contains("id=\"notes-page-title\">網站維護", html, StringComparison.Ordinal);
+        Assert.True(privateLayoutStart >= 0 && privateLayoutEnd > privateLayoutStart, "找不到私人筆記工作台。");
+        var privateLayout = html[privateLayoutStart..privateLayoutEnd];
+        Assert.Contains("id=\"private-notes-heading\"", privateLayout, StringComparison.Ordinal);
+        Assert.Contains("id=\"private-notes-content\"", privateLayout, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"private-notes-category\"", privateLayout, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"private-notes-status\"", privateLayout, StringComparison.Ordinal);
+        Assert.Contains("function canAccessPrivateNotes()", script, StringComparison.Ordinal);
+        Assert.Contains("SITE_ACCESS === 'admin'", script, StringComparison.Ordinal);
+        Assert.Contains("loginTier === 'admin'", script, StringComparison.Ordinal);
+        Assert.Contains("loginAccount?.email === FRANK_ADMIN_EMAIL", script, StringComparison.Ordinal);
+        var clearStateStart = script.IndexOf("function clearPrivateNotesState()", StringComparison.Ordinal);
+        var clearStateEnd = script.IndexOf("function privateNotesStorageNoteText()", clearStateStart, StringComparison.Ordinal);
+        Assert.True(clearStateStart >= 0 && clearStateEnd > clearStateStart, "找不到私人筆記權限清除函式。");
+        var clearState = script[clearStateStart..clearStateEnd];
+        Assert.Contains("privateNotes = []", clearState, StringComparison.Ordinal);
+        Assert.Contains("layout.hidden = true", clearState, StringComparison.Ordinal);
+        Assert.Contains("input.value = ''", clearState, StringComparison.Ordinal);
+        Assert.Contains("'private_notes'", script, StringComparison.Ordinal);
+        Assert.Contains("function savePrivateNoteRemote(note)", script, StringComparison.Ordinal);
+        Assert.Contains("create policy \"frank_private_notes_only\"", migration, StringComparison.Ordinal);
+        Assert.Contains("alter table public.private_notes enable row level security", migration, StringComparison.Ordinal);
+        Assert.Contains("grant select, insert, update, delete on table public.private_notes to authenticated", migration, StringComparison.Ordinal);
+        Assert.Contains("(select auth.uid()) = user_id", migration, StringComparison.Ordinal);
+        Assert.Contains("(select auth.jwt() ->> 'email') = 'admin@investment.local'", migration, StringComparison.Ordinal);
+        Assert.Contains("from public, anon, authenticated, invest_writer, service_role", hardening, StringComparison.Ordinal);
+        Assert.Contains("((select auth.jwt()) ->> 'email') = 'admin@investment.local'", hardening, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 筆記清單顯示資料庫永久編號且新增不由前端配號()
     {
         var script = ReadAsset("site.js");

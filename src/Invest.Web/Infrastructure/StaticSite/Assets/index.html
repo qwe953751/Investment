@@ -288,7 +288,7 @@
         <div id="legacy-notes-layout">
         <div class="notes-toolbar">
             <div>
-                <h2 id="notes-page-title">我的筆記</h2>
+                <h2 id="notes-page-title">網站維護</h2>
                 <p class="notes-storage-note" id="notes-storage-note">載入中…</p>
             </div>
             <button type="button" class="notes-primary-button" id="notes-new">＋ 新增筆記</button>
@@ -375,6 +375,59 @@
                 </form>
             </section>
         </div>
+        </div>
+
+        <div id="private-notes-layout" hidden>
+            <div class="notes-toolbar">
+                <div>
+                    <h2 id="private-notes-title">私人筆記</h2>
+                    <p class="notes-storage-note" id="private-notes-storage-note">登入檢查中…</p>
+                </div>
+                <button type="button" class="notes-primary-button" id="private-notes-new">＋ 新增私人筆記</button>
+            </div>
+
+            <div class="notes-filter-row private-notes-filter-row" aria-label="私人筆記搜尋">
+                <label class="notes-search">
+                    <span>搜尋</span>
+                    <input type="search" id="private-notes-search" placeholder="標題或內容" autocomplete="off" />
+                </label>
+            </div>
+
+            <div class="notes-layout">
+                <section class="notes-list-card" aria-labelledby="private-notes-list-title">
+                    <div class="notes-card-heading">
+                        <h3 id="private-notes-list-title">私人筆記清單</h3>
+                        <span id="private-notes-count"></span>
+                    </div>
+                    <div class="notes-list" id="private-notes-list"></div>
+                </section>
+
+                <section class="notes-editor-card" aria-labelledby="private-notes-editor-heading">
+                    <div class="notes-card-heading">
+                        <h3 id="private-notes-editor-heading">新增私人筆記</h3>
+                        <span class="notes-save-status" id="private-notes-feedback" role="status"></span>
+                    </div>
+                    <form id="private-notes-form">
+                        <input type="hidden" id="private-notes-edit-id" />
+                        <div class="notes-form-grid private-notes-form-grid">
+                            <label>
+                                <span>標題</span>
+                                <input type="text" id="private-notes-heading" maxlength="120" placeholder="記下一個想法" required />
+                            </label>
+                        </div>
+                        <label class="notes-content-field">
+                            <span>內容</span>
+                            <textarea id="private-notes-content" rows="12" placeholder="寫下自己的想法、整理或備忘…"></textarea>
+                        </label>
+                        <div class="notes-editor-actions">
+                            <button type="button" class="notes-danger-button" id="private-notes-delete" hidden>刪除</button>
+                            <span></span>
+                            <button type="button" class="notes-secondary-button" id="private-notes-cancel">取消</button>
+                            <button type="submit" class="notes-primary-button" id="private-notes-save">儲存筆記</button>
+                        </div>
+                    </form>
+                </section>
+            </div>
         </div>
     </section>
 </div>
