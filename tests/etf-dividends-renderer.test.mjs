@@ -19,6 +19,7 @@ class Element {
         this.children = [];
         this.dataset = {};
         this.attributes = {};
+        this.listeners = {};
         this.className = '';
         this.classList = { add: (...names) => {
             const values = new Set(this.className.split(/\s+/).filter(Boolean));
@@ -30,7 +31,8 @@ class Element {
     get textContent() { return (this._textContent ?? '') + this.children.map(child => typeof child === 'string' ? child : child.textContent).join(''); }
     append(...nodes) { this.children.push(...nodes); }
     setAttribute(name, value) { this.attributes[name] = String(value); }
-    addEventListener() {}
+    addEventListener(name, listener) { this.listeners[name] = listener; }
+    focus() {}
 }
 
 function find(node, predicate) {
@@ -57,7 +59,7 @@ async function createRenderer(payload, error = '', extra = {}) {
     const start = source.indexOf('function etfDividendTaipeiDate(');
     const end = source.indexOf('\nfunction renderTable()', start);
     assert.ok(start >= 0 && end > start, 'expected the production ETF payout renderer block');
-    const code = `${source.slice(start, end)}\nglobalThis.renderers = { appendRankingCell, buildEtfPayoutHistoryRow, ensureEtfDividendPayload, validateEtfDividendPayload };`;
+    const code = `${source.slice(start, end)}\nglobalThis.renderers = { appendRankingCell, buildEtfPayoutHistoryRow, ensureEtfDividendPayload, validateEtfDividendPayload, state };`;
     const context = vm.createContext({
         Date: FixedDate,
         Intl,
@@ -65,14 +67,14 @@ async function createRenderer(payload, error = '', extra = {}) {
             createElement: tag => new Element(tag),
             createTextNode: text => String(text)
         },
-        state: { view: 'etf', etfExpandedPayoutTicker: '' },
+        state: { view: 'etf', etfExpandedPayoutTicker: '', etfPayoutHistoryYear: null },
         etfDividendPayload: payload,
         etfDividendPayloadError: error,
         etfDividendPayloadLoading: null,
         etfDividendMidnightTimer: null,
         toTaipeiText: value => value,
         renderTable() {},
-        el() { return { querySelectorAll: () => [] }; },
+        el() { return { querySelector: () => null, querySelectorAll: () => [] }; },
         clearTimeout() {},
         setTimeout() {},
         ...extra
@@ -135,12 +137,22 @@ test('refresh failure preserves the last verified payload', async () => {
     assert.match(tr.textContent, /已知資料・更新失敗/);
 });
 
-test('known payments outside the current year are retained in a separately labelled group', async () => {
+test('known payments outside the current year are available through the year selector', async () => {
     const data = payload({ events: [event({ paymentDate: '2027-01-12', paymentYear: 2027 })] });
     const renderer = await createRenderer(data);
     const history = renderer.buildEtfPayoutHistoryRow(row, 6);
-    assert.match(history.textContent, /其他已取得發放紀錄/);
-    assert.match(history.textContent, /2027\/01\/12/);
+    const yearSelect = find(history, item => item.tagName === 'select');
+    assert.equal(yearSelect.value, '2026');
+    assert.deepEqual(yearSelect.children.map(option => option.value), ['2027', '2026']);
+    assert.doesNotMatch(history.textContent, /2027\/01\/12/);
+
+    yearSelect.value = '2027';
+    yearSelect.listeners.change({ target: yearSelect });
+    const selectedHistory = renderer.buildEtfPayoutHistoryRow(row, 6);
+    assert.equal(renderer.state.etfPayoutHistoryYear, 2027);
+    assert.match(selectedHistory.textContent, /2027 年配息紀錄/);
+    assert.match(selectedHistory.textContent, /2027\/01\/12/);
+    assert.doesNotMatch(selectedHistory.textContent, /2026\/10\/20/);
 });
 
 test('known past payments and undated preview amounts remain visible in the collapsed cell', async () => {
@@ -237,6 +249,9 @@ test('limited open data shows real unresolved amounts, scope and attribution wit
     assert.match(history.textContent, /2026\/10\/20/);
     assert.match(history.textContent, /近期除息預告/);
     assert.match(history.textContent, /來源未提供發放日，未列入發放年度/);
+    const panel = find(history, element => element.className === 'etf-payout-history-panel');
+    assert.equal(panel.children[1]?.className, 'etf-payout-availability');
+    assert.equal(panel.children[2]?.className, 'etf-payout-history-table');
     const preview = collect(history, element => element.tagName === 'tr').find(element => element.children.length === 4 && element.textContent.includes('0.1250 元'));
     assert.equal(preview.children[0].textContent, '未定');
     assert.equal(preview.children[2].textContent, '來源未提供');
@@ -283,7 +298,7 @@ function compactPayload(overrides = {}) {
 
 const descriptorFor = data => ({ asOfDate: data.asOfDate, completeCheckDate: data.completeCheckDate, batchId: data.batchId });
 
-test('the v2 compact payload decodes into the renderer shape and shows every past year', async () => {
+test('the v2 compact payload lists available years and shows only the selected year', async () => {
     const decoder = await createRenderer(null);
     const raw = compactPayload();
     const decoded = decoder.validateEtfDividendPayload(raw, descriptorFor(raw));
@@ -300,11 +315,32 @@ test('the v2 compact payload decodes into the renderer shape and shows every pas
     assert.match(button.textContent, /金額待公告/);
     const history = renderer.buildEtfPayoutHistoryRow(row, 6);
     assert.match(history.textContent, /2026 年配息紀錄/);
-    assert.match(history.textContent, /其他已取得發放紀錄/);
-    const cells = collect(history, item => item.tagName === 'td').map(cell => cell.textContent);
-    for (const expected of ['2025/01/13', '2025/10/15', '2026/01/12', '2026/10/13', '2027/01/12', '1.4 元', '0.78 元', '1.25 元']) {
-        assert.ok(cells.includes(expected), `missing ${expected}`);
-    }
+    assert.doesNotMatch(history.textContent, /其他已取得發放紀錄/);
+    const yearSelect = find(history, item => item.tagName === 'select');
+    assert.deepEqual(yearSelect.children.map(option => option.value), ['2027', '2026', '2025']);
+    assert.match(history.textContent, /2026\/01\/12/);
+    assert.match(history.textContent, /2026\/10\/13/);
+    assert.doesNotMatch(history.textContent, /2025\/01\/13|2025\/10\/15|2027\/01\/12/);
+
+    yearSelect.value = '2025';
+    yearSelect.listeners.change({ target: yearSelect });
+    const previousYear = renderer.buildEtfPayoutHistoryRow(row, 6);
+    assert.match(previousYear.textContent, /2025 年配息紀錄/);
+    assert.match(previousYear.textContent, /2025\/01\/13/);
+    assert.match(previousYear.textContent, /2025\/10\/15/);
+    assert.doesNotMatch(previousYear.textContent, /2026\/10\/13|2027\/01\/12/);
+});
+
+test('complete annual history places the table directly below the heading', async () => {
+    const decoder = await createRenderer(null);
+    const raw = compactPayload();
+    const decoded = decoder.validateEtfDividendPayload(raw, descriptorFor(raw));
+    const renderer = await createRenderer(decoded);
+    const history = renderer.buildEtfPayoutHistoryRow(row, 6);
+    const panel = find(history, item => item.className === 'etf-payout-history-panel');
+
+    assert.equal(panel.children[1]?.className, 'etf-payout-history-table',
+        'an empty availability note must not leave a blank row between the heading and annual table');
 });
 
 test('the v2 decoder rejects malformed tuples, broken windows and duplicate funds instead of showing partial data', async () => {

@@ -2325,6 +2325,7 @@ const state = {
     etfSortKey: 'ticker',
     etfSortDescending: false,
     etfExpandedPayoutTicker: '',
+    etfPayoutHistoryYear: null,
     customStatusFilters: {
         all: true,
         disposition: false,
@@ -21154,6 +21155,7 @@ function appendRankingCell(tr, row, column, options = {}) {
         button.append(summary, details);
         button.addEventListener('click', () => {
             state.etfExpandedPayoutTicker = expanded ? '' : row.ticker;
+            state.etfPayoutHistoryYear = null;
             renderTable();
             el('table-body').querySelectorAll('.etf-payout-button')
                 .forEach(item => { if (item.dataset.ticker === row.ticker) item.focus({ preventScroll: true }); });
@@ -21256,10 +21258,43 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
     const status = document.createElement('span');
     status.className = 'etf-payout-history-status';
     status.textContent = etfDividendStatusText(market, fund, Boolean(event));
-    heading.append(title, status);
-    const availability = document.createElement('p');
-    availability.className = 'etf-payout-availability';
-    availability.textContent = fund?.availability?.note
+
+    const availableYears = [...new Set((fund?.events ?? [])
+        .map(payment => payment.paymentYear)
+        .filter(Number.isInteger))];
+    if (!availableYears.includes(year)) availableYears.push(year);
+    availableYears.sort((left, right) => right - left);
+    const selectedYear = availableYears.includes(state.etfPayoutHistoryYear)
+        ? state.etfPayoutHistoryYear
+        : year;
+    title.textContent = `${selectedYear} 年配息紀錄`;
+
+    const controls = document.createElement('div');
+    controls.className = 'etf-payout-history-controls';
+    const yearLabel = document.createElement('label');
+    yearLabel.className = 'etf-payout-year-control';
+    const yearLabelText = document.createElement('span');
+    yearLabelText.textContent = '年度';
+    const yearSelect = document.createElement('select');
+    yearSelect.className = 'custom-select etf-payout-year-select';
+    yearSelect.setAttribute('aria-label', `${row.ticker} 配息年度`);
+    for (const availableYear of availableYears) {
+        const option = document.createElement('option');
+        option.value = String(availableYear);
+        option.textContent = String(availableYear);
+        option.selected = availableYear === selectedYear;
+        yearSelect.append(option);
+    }
+    yearSelect.value = String(selectedYear);
+    yearSelect.addEventListener('change', () => {
+        state.etfPayoutHistoryYear = Number(yearSelect.value);
+        renderTable();
+        el('table-body').querySelector('.etf-payout-year-select')?.focus({ preventScroll: true });
+    });
+    yearLabel.append(yearLabelText, yearSelect);
+    controls.append(yearLabel, status);
+    heading.append(title, controls);
+    const availabilityNote = fund?.availability?.note
         ?? (market?.coverage?.scope === 'limited' ? '先顯示目前已取得的資料；今年完整性與下一次發放仍未確認。' : '');
 
     const table = document.createElement('table');
@@ -21276,11 +21311,11 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
 
     thead.append(headerRow);
     const tbody = document.createElement('tbody');
-    const events = (fund?.events ?? []).filter(event => event.paymentYear === year);
-    for (const event of events) {
+    const events = (fund?.events ?? []).filter(payment => payment.paymentYear === selectedYear);
+    for (const payment of events) {
         const tr = document.createElement('tr');
-        const cells = [String(event.paymentYear), formatEtfDividendDate(event.exDate),
-            formatEtfDividendDate(event.paymentDate), event.amountPerUnit === null ? '金額待公告' : `${event.amountPerUnit} 元`];
+        const cells = [String(payment.paymentYear), formatEtfDividendDate(payment.exDate),
+            formatEtfDividendDate(payment.paymentDate), payment.amountPerUnit === null ? '金額待公告' : `${payment.amountPerUnit} 元`];
         for (const value of cells) {
             const cell = document.createElement('td');
             cell.textContent = value;
@@ -21288,38 +21323,18 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
         }
         tbody.append(tr);
     }
-    const otherPayments = (fund?.events ?? []).filter(event => event.paymentYear !== year);
-    if (otherPayments.length > 0) {
-        const groupRow = document.createElement('tr');
-        const groupCell = document.createElement('td');
-        groupCell.colSpan = 4;
-        groupCell.className = 'etf-payout-history-empty';
-        groupCell.textContent = '其他已取得發放紀錄';
-        groupRow.append(groupCell);
-        tbody.append(groupRow);
-        for (const payment of otherPayments) {
-            const paymentRow = document.createElement('tr');
-            for (const value of [String(payment.paymentYear), formatEtfDividendDate(payment.exDate),
-                formatEtfDividendDate(payment.paymentDate), payment.amountPerUnit === null ? '金額待公告' : `${payment.amountPerUnit} 元`]) {
-                const cell = document.createElement('td');
-                cell.textContent = value;
-                paymentRow.append(cell);
-            }
-            tbody.append(paymentRow);
-        }
-    }
     if (events.length === 0) {
         const emptyRow = document.createElement('tr');
         const emptyCell = document.createElement('td');
         emptyCell.colSpan = 4;
         emptyCell.className = 'etf-payout-history-empty';
         if (market?.coverage?.scope === 'limited') {
-            emptyCell.textContent = '目前開放資料未涵蓋這檔 ETF 的發放紀錄，無法確認完整年度公告。';
+            emptyCell.textContent = `目前資料未涵蓋這檔 ETF 的 ${selectedYear} 年發放紀錄，無法確認該年度完整性。`;
         } else if (market?.status === 'fresh') {
-            emptyCell.textContent = `${year} 年尚未查得配息公告。`;
+            emptyCell.textContent = `${selectedYear} 年尚未查得配息公告。`;
         } else {
             const statusText = etfDividendPayloadError || etfDividendStatusText(market, fund);
-            emptyCell.textContent = `${statusText}，目前無法確認 ${year} 年度配息公告。`;
+            emptyCell.textContent = `${statusText}，目前無法確認 ${selectedYear} 年度配息公告。`;
         }
         emptyRow.append(emptyCell);
         tbody.append(emptyRow);
@@ -21375,7 +21390,7 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
             '157399': '基金基本資料彙總表', '160547': '投信投顧公會境內基金配息資料',
             '43476': '投信投顧公會境內基金基本資料'
         };
-        attribution.textContent = `金融監督管理委員會證券期貨局 ${year} ${datasetNames[artifact.datasetUrl.split('/').at(-1)] ?? '開放資料'}`;
+        attribution.textContent = `金融監督管理委員會證券期貨局 ${selectedYear} ${datasetNames[artifact.datasetUrl.split('/').at(-1)] ?? '開放資料'}`;
         meta.append(document.createTextNode(' · '), attribution);
         if (artifact.dataPeriod) meta.append(document.createTextNode(`（${artifact.dataPeriod}）`));
     }
@@ -21388,8 +21403,14 @@ function buildEtfPayoutHistoryRow(row, columnCount) {
         meta.append(document.createTextNode(' · '), license);
     }
 
-    panel.append(heading, availability, table);
-    panel.append(meta);
+    panel.append(heading);
+    if (availabilityNote) {
+        const availability = document.createElement('p');
+        availability.className = 'etf-payout-availability';
+        availability.textContent = availabilityNote;
+        panel.append(availability);
+    }
+    panel.append(table, meta);
     td.append(panel);
     tr.append(td);
     return tr;
