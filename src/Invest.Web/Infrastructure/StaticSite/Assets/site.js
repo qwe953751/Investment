@@ -2846,6 +2846,7 @@ let expandedTicker = null;
 let expandedKLineName = '';
 let expandedKLineMarket = '';
 let expandedKLineIsEtf = false;
+let expandedKLinePeriod = 'day';
 let klineUseLatestDate = false;
 // 市場總覽小卡／排行標的用：切到過往交易日時要帶那天當 K 線終點，
 // 不能一律 latest，否則瀏覽過去日期時圖表還是顯示最新三個月（跟瀏覽的日期對不起來）。
@@ -20712,6 +20713,8 @@ function renderKLinePopover(ticker, name, anchor) {
     const isEtf = expandedKLineIsEtf || String(payload?.adjustmentMethod ?? '').endsWith('-tw-etf-daily');
     const isTdr = String(payload?.adjustmentMethod ?? '').endsWith('-tw-tdr-daily');
     const isEmerging = String(payload?.adjustmentMethod ?? '').endsWith('-tw-emerging-daily');
+    const isTaiwan = !isUs && (expandedKLineMarket === ''
+        || expandedKLineMarket === '台股' || isEtf || isTdr || isEmerging);
     const holdingCost = klineHoldingCost(ticker, expandedKLineMarket);
 
     // id 留在外層的 <strong> 上：index.html 的 aria-labelledby 指著它。
@@ -20744,11 +20747,14 @@ function renderKLinePopover(ticker, name, anchor) {
     const requestedStartDate = endDate ? klineStartDate(endDate) : '';
     const bars = klineData.has(ticker) ? selectedKLineBars(ticker) : [];
     const actualStartDate = bars[0]?.date ?? requestedStartDate;
-    const periodLabel = isEtf ? 'ETF 還原權息日 K'
-        : isTdr ? 'TDR 還原權息日 K'
-        : isEmerging ? '興櫃還原權息日 K（日均價）'
+    const timeframeLabel = isTaiwan && expandedKLinePeriod === 'week' ? '週 K'
+        : isTaiwan && expandedKLinePeriod === 'month' ? '月 K'
+        : '日 K';
+    const periodLabel = isEtf ? `ETF 還原權息${timeframeLabel}`
+        : isTdr ? `TDR 還原權息${timeframeLabel}`
+        : isEmerging ? `興櫃還原權息${timeframeLabel}（日均價）`
         : isUs ? '美股日 K'
-        : '還原權息日 K';
+        : `還原權息${timeframeLabel}`;
     period.textContent = endDate
         ? `${periodLabel}・${actualStartDate.replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
         : periodLabel;
@@ -20783,7 +20789,53 @@ function renderKLinePopover(ticker, name, anchor) {
         card.append(topicRow);
     }
 
-    if (klineError) {
+    if (isTaiwan) {
+        const timeframe = document.createElement('div');
+        timeframe.className = 'daily-kline-timeframe-row';
+
+        const timeframeLabelElement = document.createElement('span');
+        timeframeLabelElement.className = 'daily-kline-timeframe-label';
+        timeframeLabelElement.textContent = '週期';
+
+        const timeframeOptions = document.createElement('div');
+        timeframeOptions.className = 'daily-kline-timeframe-options';
+        timeframeOptions.setAttribute('role', 'group');
+        timeframeOptions.setAttribute('aria-label', '還原權息 K 線週期');
+
+        for (const [value, label] of [['day', '日 K'], ['week', '週 K'], ['month', '月 K']]) {
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.className = 'daily-kline-timeframe';
+            option.textContent = label;
+            option.setAttribute('aria-pressed', String(expandedKLinePeriod === value));
+            option.addEventListener('click', () => {
+                if (expandedKLinePeriod === value) {
+                    return;
+                }
+
+                expandedKLinePeriod = value;
+                renderKLinePopover(ticker, name, anchor);
+            });
+            timeframeOptions.append(option);
+        }
+
+        timeframe.append(timeframeLabelElement, timeframeOptions);
+        card.append(timeframe);
+    }
+
+    if (isTaiwan && expandedKLinePeriod !== 'day') {
+        const message = document.createElement('div');
+        message.className = 'daily-kline-period-empty';
+        message.setAttribute('role', 'status');
+
+        const title = document.createElement('strong');
+        title.textContent = `${timeframeLabel} 資料尚未串接`;
+
+        const hint = document.createElement('span');
+        hint.textContent = '目前提供還原日 K，請選擇「日 K」查看圖表。';
+        message.append(title, hint);
+        card.append(message);
+    } else if (klineError) {
         const message = document.createElement('p');
         message.className = 'daily-kline-empty';
         message.textContent = isEtf
@@ -20863,6 +20915,7 @@ function closeKLine(restoreFocus = true) {
     expandedKLineName = '';
     expandedKLineMarket = '';
     expandedKLineIsEtf = false;
+    expandedKLinePeriod = 'day';
     klineUseLatestDate = false;
     klineOverrideEndDate = null;
     klineAnchor = null;
@@ -20932,6 +20985,7 @@ async function toggleKLine(ticker, name, anchor, options = {}) {
     expandedKLineName = name;
     expandedKLineMarket = options.market ?? '';
     expandedKLineIsEtf = options.etf === true;
+    expandedKLinePeriod = 'day';
     klineUseLatestDate = options.latest === true;
     klineOverrideEndDate = options.endDate ?? null;
     klineAnchor = anchor;
