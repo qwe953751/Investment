@@ -3276,7 +3276,46 @@ async function refreshAuthAccessToken() {
     return true;
 }
 
+const ADMIN_BGM_EMBED_URL = 'https://www.youtube-nocookie.com/embed/OzKVZhRrUzc?playsinline=1&autoplay=1';
+let adminBgmWasAllowed = false;
+
+function renderAdminBgm() {
+    const panel = el('admin-bgm');
+    const player = el('admin-bgm-player');
+    if (!panel || !player) {
+        return;
+    }
+
+    if (!panel.dataset.wired) {
+        panel.dataset.wired = 'true';
+        panel.addEventListener('toggle', () => {
+            const allowed = SITE_ACCESS === 'admin' && loginTier === 'admin';
+            if (!allowed || !panel.open) {
+                player.removeAttribute('src');
+                if (!allowed) panel.open = false;
+                return;
+            }
+
+            if (!player.hasAttribute('src')) {
+                player.src = ADMIN_BGM_EMBED_URL;
+            }
+        });
+    }
+
+    const allowed = SITE_ACCESS === 'admin' && loginTier === 'admin';
+    const justAllowed = allowed && !adminBgmWasAllowed;
+    adminBgmWasAllowed = allowed;
+    panel.hidden = !allowed;
+    if (!allowed) {
+        panel.open = false;
+        player.removeAttribute('src');
+    } else if (justAllowed) {
+        panel.open = true;
+    }
+}
+
 function renderAccessBar() {
+    renderAdminBgm();
     const tierLabel = el('access-bar-tier');
 
     if (!tierLabel) {
@@ -3322,6 +3361,7 @@ function afterAccessChange() {
     renderFilters();
     marketSwitchRender?.();
     renderAccessBadge();
+    renderAdminBgm();
     wireDevicePresence();
     void registerDevicePresence();
     void refreshAlerts();

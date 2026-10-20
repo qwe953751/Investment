@@ -11500,3 +11500,7 @@ html {
 .ranking-status[data-state="error"] { border-color: #b7791f; }
 .ranking-status button { margin-inline-start: .75rem; }
 #ranking[aria-busy="true"] .table-container { min-height: 18rem; opacity: .65; }
+
+.admin-bgm { margin-block: .75rem; }
+.admin-bgm summary { cursor: pointer; }
+.admin-bgm iframe { display: block; max-width: 100%; margin-top: .5rem; border: 0; }
