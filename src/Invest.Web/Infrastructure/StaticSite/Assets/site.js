@@ -3281,42 +3281,580 @@ async function refreshAuthAccessToken() {
     return true;
 }
 
-const ADMIN_BGM_EMBED_URL = 'https://www.youtube-nocookie.com/embed/OzKVZhRrUzc?playsinline=1&autoplay=1';
-let adminBgmWasAllowed = false;
+const ADMIN_BGM_TABLE = 'admin_bgm';
+const ADMIN_BGM_BUCKET = 'admin-bgm';
+const ADMIN_BGM_MAX_FILE_BYTES = 20 * 1024 * 1024;
+const ADMIN_BGM_SIGNED_URL_SECONDS = 60 * 60;
+const ADMIN_BGM_AUDIO_FORMATS = Object.freeze({
+    mp3: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    mp4: 'audio/mp4',
+    aac: 'audio/aac',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    oga: 'audio/ogg',
+    webm: 'audio/webm'
+});
+
+let adminBgmWasAuthenticated = false;
+let adminBgmIsPlaying = false;
+let adminBgmIsBusy = false;
+let adminBgmLoaded = false;
+let adminBgmRequestSerial = 0;
+let adminBgmRecord = null;
+let adminBgmObjectUrl = null;
+let adminBgmSignedUrl = null;
+
+function canManageAdminBgm() {
+    return SITE_ACCESS === 'admin'
+        && loginTier === 'admin'
+        && loginAccount?.tier === 'admin'
+        && accessTierAccountForEmail(loginAccount?.email)?.tier === 'admin';
+}
+
+function updateAdminBgmControls() {
+    const play = el('admin-bgm-play');
+    const uploadTrigger = el('admin-bgm-upload-trigger');
+    const save = el('admin-bgm-save');
+    if (!play || !uploadTrigger || !save) {
+        return;
+    }
+
+    const allowed = canManageAdminBgm();
+    play.disabled = !allowed || adminBgmIsBusy || adminBgmObjectUrl === null;
+    uploadTrigger.disabled = !allowed || adminBgmIsBusy;
+    save.disabled = !allowed || adminBgmIsBusy || !adminBgmLoaded;
+}
+
+function updateAdminBgmOriginLink(value) {
+    const link = el('admin-bgm-origin-link');
+    if (!link) {
+        return;
+    }
+
+    let safeUrl = null;
+    try {
+        const parsed = new URL(value);
+        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+            safeUrl = parsed.href;
+        }
+    } catch {
+    }
+
+    if (safeUrl === null || !canManageAdminBgm()) {
+        link.hidden = true;
+        link.removeAttribute('href');
+        return;
+    }
+
+    link.href = safeUrl;
+    link.hidden = false;
+}
+
+function clearAdminBgmAudio() {
+    const player = el('admin-bgm-player');
+    player?.pause();
+    if (player) {
+        player.removeAttribute('src');
+        player.load();
+    }
+    if (adminBgmObjectUrl !== null) {
+        URL.revokeObjectURL(adminBgmObjectUrl);
+        adminBgmObjectUrl = null;
+    }
+    adminBgmIsPlaying = false;
+    const play = el('admin-bgm-play');
+    if (play) {
+        play.textContent = '播放';
+        play.setAttribute('aria-pressed', 'false');
+    }
+    const state = el('admin-bgm-state');
+    state?.classList.remove('is-active');
+}
+
+function clearAdminBgmSession() {
+    adminBgmRequestSerial++;
+    adminBgmIsBusy = false;
+    clearAdminBgmAudio();
+    adminBgmRecord = null;
+    adminBgmSignedUrl = null;
+    adminBgmLoaded = false;
+    const fileInput = el('admin-bgm-file');
+    const fileName = el('admin-bgm-file-name');
+    const title = el('admin-bgm-track-title');
+    const sourceInput = el('admin-bgm-origin-url');
+    const sourceLink = el('admin-bgm-source');
+    const originLink = el('admin-bgm-origin-link');
+    const state = el('admin-bgm-state');
+    if (fileInput) fileInput.value = '';
+    if (fileName) fileName.textContent = '音檔尚未提供';
+    if (title) title.textContent = '夢的翅膀受了傷（DJ 阿智版）';
+    if (sourceInput) sourceInput.value = '';
+    if (sourceLink) {
+        sourceLink.hidden = true;
+        sourceLink.removeAttribute('href');
+    }
+    if (originLink) {
+        originLink.hidden = true;
+        originLink.removeAttribute('href');
+    }
+    if (state) state.textContent = '尚未載入音源';
+    updateAdminBgmControls();
+}
+
+async function adminBgmRequest(url, options = {}, retryAuthentication = true) {
+    if (!canManageAdminBgm()) {
+        throw new Error('只有已登入的最高權限帳號可以存取 BGM。');
+    }
+    if (supabase === null) {
+        throw new Error('目前沒有 Supabase 連線設定。');
+    }
+    if (authAccessToken === null && !await refreshAuthAccessToken()) {
+        throw new Error('登入已失效，請重新登入最高權限帳號。');
+    }
+
+    const headers = new Headers(options.headers ?? {});
+    headers.set('apikey', supabase.anonKey);
+    headers.set('Authorization', `Bearer ${authAccessToken}`);
+    const response = await fetch(url, { ...options, headers, cache: 'no-store' });
+    if (response.status === 401
+        && retryAuthentication
+        && await refreshAuthAccessToken()) {
+        return adminBgmRequest(url, options, false);
+    }
+    if (!response.ok) {
+        let detail = '';
+        try {
+            const body = await response.json();
+            detail = String(body?.message ?? body?.error_description ?? body?.error ?? '').trim();
+        } catch {
+        }
+        throw new Error(`Supabase 請求失敗（HTTP ${response.status}${detail === '' ? '' : `：${detail.slice(0, 120)}`}）`);
+    }
+    return response;
+}
+
+async function createAdminBgmSignedUrl(path) {
+    const response = await adminBgmRequest(
+        `${supabase.url}/storage/v1/object/sign/${ADMIN_BGM_BUCKET}/${encodeStoragePath(path)}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expiresIn: ADMIN_BGM_SIGNED_URL_SECONDS })
+        });
+    const body = await response.json();
+    const signedPath = body?.signedURL ?? body?.signedUrl ?? body?.signed_url;
+    if (typeof signedPath !== 'string' || signedPath === '') {
+        throw new Error('Supabase 未回傳音檔連結。');
+    }
+    if (/^https?:\/\//i.test(signedPath)) {
+        return signedPath;
+    }
+    if (signedPath.startsWith('/storage/v1/')) {
+        return `${supabase.url}${signedPath}`;
+    }
+    return `${supabase.url}/storage/v1${signedPath.startsWith('/') ? signedPath : `/${signedPath}`}`;
+}
+
+async function refreshAdminBgmSignedUrl() {
+    const sourceLink = el('admin-bgm-source');
+    if (!canManageAdminBgm() || !adminBgmRecord?.audio_path || !sourceLink) {
+        return;
+    }
+
+    try {
+        adminBgmSignedUrl = await createAdminBgmSignedUrl(adminBgmRecord.audio_path);
+        if (!canManageAdminBgm()) {
+            return;
+        }
+        sourceLink.href = adminBgmSignedUrl;
+        sourceLink.hidden = false;
+    } catch {
+        adminBgmSignedUrl = null;
+        sourceLink.hidden = true;
+        sourceLink.removeAttribute('href');
+    }
+}
+
+function renderAdminBgmRecord(record) {
+    adminBgmRecord = record;
+    const title = el('admin-bgm-track-title');
+    const fileName = el('admin-bgm-file-name');
+    const sourceInput = el('admin-bgm-origin-url');
+    if (title) title.textContent = record?.title || '夢的翅膀受了傷（DJ 阿智版）';
+    if (fileName) fileName.textContent = record?.audio_name || '音檔尚未提供';
+    if (sourceInput) sourceInput.value = record?.source_url || '';
+    updateAdminBgmOriginLink(record?.source_url || '');
+    const sourceLink = el('admin-bgm-source');
+    if (!record?.audio_path && sourceLink) {
+        sourceLink.hidden = true;
+        sourceLink.removeAttribute('href');
+        adminBgmSignedUrl = null;
+    }
+}
+
+async function loadAdminBgm({ autoPlay = false } = {}) {
+    if (!canManageAdminBgm() || supabase === null) {
+        return;
+    }
+
+    const requestSerial = ++adminBgmRequestSerial;
+    const isCurrentRequest = () => requestSerial === adminBgmRequestSerial && canManageAdminBgm();
+    const status = el('admin-bgm-status');
+    const state = el('admin-bgm-state');
+    adminBgmIsBusy = true;
+    if (status) status.textContent = '正在從 Supabase 載入音源…';
+    if (state) state.textContent = '載入中';
+    updateAdminBgmControls();
+
+    try {
+        const metadataResponse = await adminBgmRequest(
+            `${supabase.url}/rest/v1/${ADMIN_BGM_TABLE}?id=eq.1&select=id,title,audio_path,audio_name,audio_mime_type,audio_size_bytes,source_url,updated_at`,
+            { method: 'GET' });
+        const rows = await metadataResponse.json();
+        if (!isCurrentRequest()) return;
+
+        const record = Array.isArray(rows) ? rows[0] ?? null : null;
+        renderAdminBgmRecord(record);
+        adminBgmLoaded = true;
+        clearAdminBgmAudio();
+        if (!record?.audio_path) {
+            if (state) state.textContent = '尚未載入音源';
+            if (status) status.textContent = record?.source_url
+                ? '資料庫已有原始來源連結；請上傳可播放的音檔，網站不會擷取 Threads／Instagram 影音。'
+                : '資料庫尚未有音檔；選擇音檔並按「儲存音源」後即可自動載入。';
+            return;
+        }
+
+        if (!/^audio\/[0-9a-f-]{36}\.(mp3|m4a|mp4|aac|wav|ogg|oga|webm)$/i.test(record.audio_path)) {
+            throw new Error('資料庫中的音檔路徑格式無效。');
+        }
+        const audioResponse = await adminBgmRequest(
+            `${supabase.url}/storage/v1/object/authenticated/${ADMIN_BGM_BUCKET}/${encodeStoragePath(record.audio_path)}`,
+            { method: 'GET' });
+        const audioBlob = await audioResponse.blob();
+        if (!isCurrentRequest()) return;
+        if (audioBlob.size === 0 || audioBlob.size > ADMIN_BGM_MAX_FILE_BYTES) {
+            throw new Error('音檔大小不正確或超過 20 MB。');
+        }
+
+        adminBgmObjectUrl = URL.createObjectURL(audioBlob);
+        const player = el('admin-bgm-player');
+        if (player) {
+            player.src = adminBgmObjectUrl;
+            player.load();
+        }
+        if (state) state.textContent = '已載入';
+        await refreshAdminBgmSignedUrl();
+        if (!isCurrentRequest()) return;
+        if (autoPlay) {
+            await setAdminBgmPlaying(true);
+        } else if (status) {
+            status.textContent = '音檔已從 Supabase 私有 Storage 載入；音檔連結有效 1 小時。';
+        }
+    } catch (error) {
+        if (requestSerial === adminBgmRequestSerial && !canManageAdminBgm()) {
+            renderAdminBgm();
+        } else if (isCurrentRequest()) {
+            clearAdminBgmAudio();
+            if (state) state.textContent = '載入失敗';
+            if (status) status.textContent = `BGM 載入失敗：${error.message}`;
+        }
+    } finally {
+        if (isCurrentRequest()) {
+            adminBgmIsBusy = false;
+            updateAdminBgmControls();
+        }
+    }
+}
+
+function adminBgmFileFormat(file) {
+    const extension = file.name.toLowerCase().split('.').pop();
+    const mimeType = ADMIN_BGM_AUDIO_FORMATS[extension];
+    if (!mimeType) {
+        throw new Error('音檔格式請使用 MP3、M4A、AAC、WAV、OGG 或 WEBM。');
+    }
+    if (file.size <= 0 || file.size > ADMIN_BGM_MAX_FILE_BYTES) {
+        throw new Error('音檔需大於 0 且不超過 20 MB。');
+    }
+    return { extension, mimeType };
+}
+
+async function removeAdminBgmObject(path) {
+    if (!path) return;
+    const response = await adminBgmRequest(
+        `${supabase.url}/storage/v1/object/${ADMIN_BGM_BUCKET}`,
+        {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prefixes: [path] })
+        });
+    if (!response.ok) {
+        throw new Error(`舊音檔清理失敗（HTTP ${response.status}）。`);
+    }
+}
+
+async function saveAdminBgm() {
+    if (!canManageAdminBgm() || supabase === null) {
+        return;
+    }
+
+    const file = el('admin-bgm-file')?.files?.[0] ?? null;
+    const sourceValue = el('admin-bgm-origin-url')?.value.trim() ?? '';
+    let sourceUrl = null;
+    if (sourceValue !== '') {
+        try {
+            const parsed = new URL(sourceValue);
+            if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+                throw new Error();
+            }
+            sourceUrl = parsed.href;
+        } catch {
+            const status = el('admin-bgm-status');
+            if (status) status.textContent = '原始來源請填入有效的 HTTP 或 HTTPS 網址。';
+            return;
+        }
+    }
+
+    let fileFormat = null;
+    try {
+        if (file) fileFormat = adminBgmFileFormat(file);
+    } catch (error) {
+        const status = el('admin-bgm-status');
+        if (status) status.textContent = error.message;
+        return;
+    }
+    if (!file && !adminBgmRecord?.audio_path && sourceUrl === null) {
+        const status = el('admin-bgm-status');
+        if (status) status.textContent = '請選擇音檔，或先填入原始來源網址。';
+        return;
+    }
+
+    const status = el('admin-bgm-status');
+    const fileInput = el('admin-bgm-file');
+    const previousPath = adminBgmRecord?.audio_path ?? null;
+    let uploadedPath = null;
+    adminBgmIsBusy = true;
+    clearAdminBgmAudio();
+    if (status) status.textContent = file ? '正在上傳音檔並儲存來源資訊…' : '正在儲存來源資訊…';
+    updateAdminBgmControls();
+
+    try {
+        let audioPath = previousPath;
+        let audioName = adminBgmRecord?.audio_name ?? null;
+        let audioMimeType = adminBgmRecord?.audio_mime_type ?? null;
+        let audioSizeBytes = adminBgmRecord?.audio_size_bytes ?? null;
+        if (file && fileFormat) {
+            audioPath = `audio/${crypto.randomUUID()}.${fileFormat.extension}`;
+            uploadedPath = audioPath;
+            const uploadResponse = await adminBgmRequest(
+                `${supabase.url}/storage/v1/object/${ADMIN_BGM_BUCKET}/${encodeStoragePath(audioPath)}`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': fileFormat.mimeType,
+                        'x-upsert': 'false'
+                    },
+                    body: file
+                });
+            if (!uploadResponse.ok) {
+                throw new Error(`音檔上傳失敗（HTTP ${uploadResponse.status}）。`);
+            }
+            if (!canManageAdminBgm()) {
+                renderAdminBgm();
+                return;
+            }
+            audioName = file.name;
+            audioMimeType = fileFormat.mimeType;
+            audioSizeBytes = file.size;
+        }
+
+        const payload = {
+            id: 1,
+            title: '夢的翅膀受了傷（DJ 阿智版）',
+            audio_path: audioPath,
+            audio_name: audioName,
+            audio_mime_type: audioMimeType,
+            audio_size_bytes: audioSizeBytes,
+            source_url: sourceUrl,
+            updated_at: new Date().toISOString()
+        };
+        const saveResponse = await adminBgmRequest(
+            `${supabase.url}/rest/v1/${ADMIN_BGM_TABLE}?on_conflict=id`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Prefer: 'resolution=merge-duplicates,return=representation'
+                },
+                body: JSON.stringify([payload])
+            });
+        const savedRows = await saveResponse.json();
+        if (!canManageAdminBgm()) {
+            renderAdminBgm();
+            return;
+        }
+        adminBgmRecord = Array.isArray(savedRows) ? savedRows[0] ?? payload : payload;
+        adminBgmLoaded = true;
+        if (fileInput) fileInput.value = '';
+        renderAdminBgmRecord(adminBgmRecord);
+        let oldFileCleanupFailed = false;
+        if (previousPath && previousPath !== audioPath) {
+            try {
+                await removeAdminBgmObject(previousPath);
+            } catch {
+                oldFileCleanupFailed = true;
+            }
+        }
+        adminBgmIsBusy = false;
+        updateAdminBgmControls();
+        await loadAdminBgm();
+        if (oldFileCleanupFailed && status) {
+            status.textContent = '新音源已儲存；舊音檔清理失敗，可稍後再更換一次音源清理。';
+        }
+    } catch (error) {
+        if (uploadedPath) {
+            try {
+                await removeAdminBgmObject(uploadedPath);
+            } catch {
+            }
+        }
+        if (!canManageAdminBgm()) {
+            renderAdminBgm();
+        } else if (status) {
+            status.textContent = `BGM 儲存失敗：${error.message}`;
+        }
+    } finally {
+        adminBgmIsBusy = false;
+        updateAdminBgmControls();
+    }
+}
+
+async function setAdminBgmPlaying(playing) {
+    const player = el('admin-bgm-player');
+    const button = el('admin-bgm-play');
+    const state = el('admin-bgm-state');
+    const status = el('admin-bgm-status');
+    if (!player || !button || !state || !status || !canManageAdminBgm()) {
+        return;
+    }
+
+    if (playing && adminBgmObjectUrl === null) {
+        if (!adminBgmLoaded) {
+            await loadAdminBgm({ autoPlay: true });
+        } else {
+            status.textContent = '尚未載入音檔；請先選擇音檔並儲存。';
+        }
+        return;
+    }
+
+    if (playing) {
+        try {
+            await player.play();
+            adminBgmIsPlaying = true;
+            button.textContent = '停止播放';
+            button.setAttribute('aria-pressed', 'true');
+            state.textContent = '播放中';
+            state.classList.add('is-active');
+            status.textContent = 'BGM 正在播放；若收合面板會停止播放。';
+        } catch {
+            adminBgmIsPlaying = false;
+            player.pause();
+            button.textContent = '播放';
+            button.setAttribute('aria-pressed', 'false');
+            state.textContent = '已載入';
+            state.classList.remove('is-active');
+            status.textContent = '瀏覽器封鎖了自動播放，請按「播放」啟動音樂。';
+        }
+    } else {
+        adminBgmIsPlaying = false;
+        player.pause();
+        try {
+            player.currentTime = 0;
+        } catch {
+        }
+        button.textContent = '播放';
+        button.setAttribute('aria-pressed', 'false');
+        state.textContent = adminBgmObjectUrl === null ? '尚未載入音源' : '已停止';
+        state.classList.remove('is-active');
+        status.textContent = '目前未播放。';
+    }
+}
 
 function renderAdminBgm() {
     const panel = el('admin-bgm');
-    const player = el('admin-bgm-player');
-    if (!panel || !player) {
+    const toggle = el('admin-bgm-toggle');
+    const popover = el('admin-bgm-panel');
+    const play = el('admin-bgm-play');
+    const uploadTrigger = el('admin-bgm-upload-trigger');
+    const save = el('admin-bgm-save');
+    const fileInput = el('admin-bgm-file');
+    const fileName = el('admin-bgm-file-name');
+    const originalSource = el('admin-bgm-origin-url');
+    const status = el('admin-bgm-status');
+    if (!panel || !toggle || !popover || !play || !uploadTrigger || !save || !fileInput) {
         return;
     }
 
     if (!panel.dataset.wired) {
         panel.dataset.wired = 'true';
-        panel.addEventListener('toggle', () => {
-            const allowed = SITE_ACCESS === 'admin' && loginTier === 'admin';
-            if (!allowed || !panel.open) {
-                player.removeAttribute('src');
-                if (!allowed) panel.open = false;
-                return;
+        toggle.addEventListener('click', () => {
+            const opening = toggleHeaderPanel(toggle, popover);
+            if (!opening) {
+                void setAdminBgmPlaying(false);
+            } else if (canManageAdminBgm() && adminBgmRecord?.audio_path) {
+                void refreshAdminBgmSignedUrl();
             }
-
-            if (!player.hasAttribute('src')) {
-                player.src = ADMIN_BGM_EMBED_URL;
+        });
+        play.addEventListener('click', () => void setAdminBgmPlaying(!adminBgmIsPlaying));
+        uploadTrigger.addEventListener('click', () => fileInput.click());
+        save.addEventListener('click', () => void saveAdminBgm());
+        fileInput.addEventListener('change', () => {
+            const file = fileInput.files?.[0];
+            if (!file) return;
+            if (fileName) fileName.textContent = `${file.name}（尚未上傳，${(file.size / 1024 / 1024).toFixed(1)} MB）`;
+            if (status) status.textContent = '按「儲存音源」後會將音檔上傳至 Supabase 私有 Storage。';
+            updateAdminBgmControls();
+        });
+        originalSource?.addEventListener('input', () => {
+            updateAdminBgmOriginLink(originalSource.value.trim());
+            if (status) status.textContent = '來源網址尚未儲存；按「儲存音源」後寫入 Supabase。';
+        });
+        document.addEventListener('click', event => {
+            if (!popover.hidden && !panel.contains(event.target)) {
+                popover.hidden = true;
+                toggle.setAttribute('aria-expanded', 'false');
+                void setAdminBgmPlaying(false);
+            }
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !popover.hidden) {
+                popover.hidden = true;
+                toggle.setAttribute('aria-expanded', 'false');
+                void setAdminBgmPlaying(false);
+                toggle.focus();
             }
         });
     }
 
-    const allowed = SITE_ACCESS === 'admin' && loginTier === 'admin';
-    const justAllowed = allowed && !adminBgmWasAllowed;
-    adminBgmWasAllowed = allowed;
+    const allowed = SITE_ACCESS === 'admin'
+        && (loginTier === 'admin' || ACCESS_PREVIEW);
+    const authenticated = allowed && canManageAdminBgm();
+    const justAuthenticated = authenticated && !adminBgmWasAuthenticated;
+    adminBgmWasAuthenticated = authenticated;
     panel.hidden = !allowed;
     if (!allowed) {
-        panel.open = false;
-        player.removeAttribute('src');
-    } else if (justAllowed) {
-        panel.open = true;
+        popover.hidden = true;
+        toggle.setAttribute('aria-expanded', 'false');
+        clearAdminBgmSession();
+        if (status) status.textContent = '最高權限登入後可管理 BGM。';
+    } else if (!authenticated) {
+        clearAdminBgmSession();
+        if (status) status.textContent = '本機預覽只顯示版面；正式網站會由最高權限登入後讀取 Supabase 音源。';
+    } else if (justAuthenticated) {
+        void loadAdminBgm({ autoPlay: true });
     }
+    updateAdminBgmControls();
 }
 
 function renderAccessBar() {
@@ -32050,6 +32588,7 @@ function mspBuildUtilityPreviewSlot() {
         '#theme-switcher',
         '#access-badge',
         '#device-presence',
+        '#admin-bgm',
         '#alert-bell'
     ]) {
         const element = tools.querySelector(selector);
@@ -35015,9 +35554,15 @@ body[data-msp-nav-variant="u1"] .msp-market-bar[data-nav-variant] {
     }
 }
 
-/* U1 手機版的裝置浮層要以全寬工具列左側為基準；若沿用桌面 right: 0，
-   浮層會跟著按鈕寬度反向定位，造成左側內容被裁掉。 */
-@media (max-width: 720px) {
+/* U1 窄版工具列的浮層以工具群組左側為基準，避免從個別按鈕向左展開而被視窗裁切。 */
+@media (max-width: 960px) {
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-utility-system {
+        position: relative;
+    }
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-utility-system #device-presence,
+    body[data-msp-nav-variant="u1"] .msp-market-bar .msp-utility-system #admin-bgm {
+        position: static;
+    }
     body[data-msp-nav-variant="u1"] .msp-market-bar .msp-utility-slot .device-presence-panel {
         left: 0;
         right: auto;

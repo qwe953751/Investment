@@ -11561,6 +11561,40 @@ html {
 .ranking-status button { margin-inline-start: .75rem; }
 #ranking[aria-busy="true"] .table-container { min-height: 18rem; opacity: .65; }
 
-.admin-bgm { margin-block: .75rem; }
-.admin-bgm summary { cursor: pointer; }
-.admin-bgm iframe { display: block; max-width: 100%; margin-top: .5rem; border: 0; }
+.admin-bgm { position: relative; }
+.admin-bgm-panel { width: min(560px, calc(100vw - 48px)); }
+.admin-bgm-track {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-alt);
+}
+.admin-bgm-track p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+.admin-bgm-state { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.admin-bgm-state::before { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #9aa6b2; content: ""; }
+.admin-bgm-state.is-active { color: #1e6f50; }
+.admin-bgm-state.is-active::before { background: #25a56f; }
+.admin-bgm-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.admin-bgm-play { min-height: 34px; padding: 6px 14px; }
+.admin-bgm-source { color: var(--accent-strong); font-size: 13px; }
+.admin-bgm-source[hidden] { display: none; }
+.admin-bgm-origin-field { display: grid; gap: 6px; margin-top: 12px; color: var(--text-muted); font-size: 12px; }
+.admin-bgm-origin-field input {
+    width: 100%;
+    min-height: 34px;
+    box-sizing: border-box;
+    padding: 6px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+}
+.admin-bgm-status { margin: 10px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.admin-bgm-player { display: block; width: 100%; margin-top: 12px; }
+.admin-bgm-player[hidden] { display: none; }

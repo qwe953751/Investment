@@ -64,6 +64,52 @@
                         <p class="device-presence-status" id="device-presence-status" role="status"></p>
                     </section>
                 </div>
+                <div class="admin-bgm" id="admin-bgm" hidden>
+                    <button type="button" class="device-presence-button admin-bgm-toggle" id="admin-bgm-toggle"
+                            aria-expanded="false" aria-controls="admin-bgm-panel"
+                            data-hint="最高權限可控制背景音樂。">
+                        <span class="device-presence-icon" aria-hidden="true">♫</span><span>BGM</span>
+                    </button>
+                    <section class="device-presence-panel admin-bgm-panel" id="admin-bgm-panel"
+                             aria-labelledby="admin-bgm-title" hidden>
+                        <div class="device-presence-panel-heading">
+                            <div>
+                                <h2 id="admin-bgm-title">BGM</h2>
+                                <p>最高權限專用背景音樂</p>
+                            </div>
+                        </div>
+                        <div class="admin-bgm-track">
+                            <div>
+                                <strong id="admin-bgm-track-title">夢的翅膀受了傷（DJ 阿智版）</strong>
+                                <p id="admin-bgm-file-name">音檔尚未提供</p>
+                            </div>
+                            <span class="admin-bgm-state" id="admin-bgm-state">尚未載入音源</span>
+                        </div>
+                        <div class="admin-bgm-actions">
+                            <button type="button" class="device-presence-refresh admin-bgm-play"
+                                    id="admin-bgm-play" aria-pressed="false">播放</button>
+                            <button type="button" class="device-presence-refresh admin-bgm-upload"
+                                    id="admin-bgm-upload-trigger">選擇音檔</button>
+                            <input type="file" id="admin-bgm-file"
+                                   accept=".mp3,.m4a,.mp4,.aac,.wav,.ogg,.webm,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/ogg,audio/webm" hidden />
+                            <button type="button" class="device-presence-refresh admin-bgm-save"
+                                    id="admin-bgm-save">儲存音源</button>
+                            <a class="admin-bgm-source" id="admin-bgm-source" href="#"
+                               target="_blank" rel="noopener noreferrer" hidden>音檔連結（1 小時）↗</a>
+                            <a class="admin-bgm-source" id="admin-bgm-origin-link" href="#"
+                               target="_blank" rel="noopener noreferrer" hidden>原始來源 ↗</a>
+                        </div>
+                        <label class="admin-bgm-origin-field" for="admin-bgm-origin-url">
+                            <span>原始來源連結（Threads／Instagram Reels，可選，只記錄網址）</span>
+                            <input type="url" id="admin-bgm-origin-url"
+                                   placeholder="貼上原始貼文網址" autocomplete="url" />
+                        </label>
+                        <p class="admin-bgm-status" id="admin-bgm-status" role="status">
+                            音檔會存入 Supabase 私有 Storage；社群網址只記錄來源，需上傳可播放的音檔。
+                        </p>
+                        <audio class="admin-bgm-player" id="admin-bgm-player" preload="none" loop hidden></audio>
+                    </section>
+                </div>
                 <div class="alert-bell" id="alert-bell" hidden>
                     <button type="button" class="alert-button" id="alert-toggle"
                             aria-expanded="false"
@@ -130,13 +176,6 @@
         <div class="view-switch" id="view-options"></div>
 
         <p class="snapshot-note" id="snapshot-note">載入中…</p>
-        <details class="admin-bgm" id="admin-bgm" hidden>
-            <summary>🎵 BGM：夢的翅膀受了傷（DJ 阿智版）</summary>
-            <p>登入最高權限時會自動播放；若瀏覽器封鎖，請按播放器播放。收合後會停止。</p>
-            <iframe id="admin-bgm-player" title="夢的翅膀受了傷（DJ 阿智版）" width="320" height="200"
-                    loading="lazy" referrerpolicy="strict-origin-when-cross-origin"
-                    allow="autoplay; encrypted-media; picture-in-picture; web-share" allowfullscreen></iframe>
-        </details>
     </header>
 
     <div class="custom-asset-switch" id="custom-asset-switch"
