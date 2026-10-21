@@ -11606,6 +11606,10 @@ html {
     color: var(--text);
     font: inherit;
 }
+.admin-bgm-import { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.admin-bgm-import .admin-bgm-origin-field { margin-top: 0; }
+.admin-bgm-import-rights { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.admin-bgm-import-rights input { margin-top: 2px; }
 .admin-bgm-status { margin: 10px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .admin-bgm-player { display: block; width: 100%; margin-top: 12px; }
 .admin-bgm-player[hidden] { display: none; }

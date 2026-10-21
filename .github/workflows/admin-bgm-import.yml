@@ -1,0 +1,55 @@
+name: BGM 連結匯入
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      probe_url:
+        description: '可選：只測試公開來源擷取與轉檔，不更新 BGM'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: admin-bgm-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SUPABASE_URL: https://dehzxlxyfvtnylwgbmqy.supabase.co
+      SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
+      BGM_PROBE_URL: ${{ inputs.probe_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 檢查待匯入工作
+        id: check
+        run: python scripts/admin_bgm_import.py --check
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.run == 'true'
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.run == 'true'
+        with:
+          node-version: '22'
+      - name: 安裝轉檔工具
+        if: steps.check.outputs.run == 'true'
+        run: |
+          python -m pip install 'yt-dlp[default]==2026.08.19' \
+            'yt-dlp-threads @ git+https://github.com/tribixbite/yt-dlp-threads.git@c4c44141cb10715f94296a808f5d89a0d24dfe94'
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+      - name: 處理一筆待匯入 BGM
+        if: steps.check.outputs.run == 'true' && env.BGM_PROBE_URL == ''
+        run: python scripts/admin_bgm_import.py
+      - name: 只探測來源，不寫入 BGM
+        if: steps.check.outputs.run == 'true' && env.BGM_PROBE_URL != ''
+        run: python scripts/admin_bgm_import.py --probe

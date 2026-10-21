@@ -3284,7 +3284,7 @@ async function refreshAuthAccessToken() {
 const ADMIN_BGM_TABLE = 'admin_bgm';
 const ADMIN_BGM_BUCKET = 'admin-bgm';
 const ADMIN_BGM_MAX_FILE_BYTES = 20 * 1024 * 1024;
-const ADMIN_BGM_STORAGE_OBJECT_ID = '00000000-0000-4000-8000-000000000001';
+const ADMIN_BGM_IMPORT_POLL_MS = 15_000;
 const ADMIN_BGM_AUDIO_FORMATS = Object.freeze({
     mp3: 'audio/mpeg',
     m4a: 'audio/mp4',
@@ -3303,6 +3303,8 @@ let adminBgmLoaded = false;
 let adminBgmRequestSerial = 0;
 let adminBgmRecord = null;
 let adminBgmObjectUrl = null;
+let adminBgmAudioPath = null;
+let adminBgmImportPollTimer = null;
 
 function canManageAdminBgm() {
     return SITE_ACCESS === 'admin'
@@ -3316,6 +3318,7 @@ function updateAdminBgmControls() {
     const uploadTrigger = el('admin-bgm-upload-trigger');
     const save = el('admin-bgm-save');
     const download = el('admin-bgm-download');
+    const importSubmit = el('admin-bgm-import-submit');
     if (!play || !uploadTrigger || !save || !download) {
         return;
     }
@@ -3325,6 +3328,7 @@ function updateAdminBgmControls() {
     uploadTrigger.disabled = !allowed || adminBgmIsBusy;
     save.disabled = !allowed || adminBgmIsBusy || !adminBgmLoaded;
     download.disabled = !allowed || adminBgmIsBusy || adminBgmObjectUrl === null;
+    if (importSubmit) importSubmit.disabled = !allowed || adminBgmIsBusy || !adminBgmLoaded;
 }
 
 function updateAdminBgmOriginLink(value) {
@@ -3363,6 +3367,7 @@ function clearAdminBgmAudio() {
         URL.revokeObjectURL(adminBgmObjectUrl);
         adminBgmObjectUrl = null;
     }
+    adminBgmAudioPath = null;
     adminBgmIsPlaying = false;
     const play = el('admin-bgm-play');
     if (play) {
@@ -3375,6 +3380,7 @@ function clearAdminBgmAudio() {
 
 function clearAdminBgmSession() {
     adminBgmRequestSerial++;
+    stopAdminBgmImportPolling();
     adminBgmIsBusy = false;
     clearAdminBgmAudio();
     adminBgmRecord = null;
@@ -3386,8 +3392,11 @@ function clearAdminBgmSession() {
     const download = el('admin-bgm-download');
     const originLink = el('admin-bgm-origin-link');
     const state = el('admin-bgm-state');
+    const importUrl = el('admin-bgm-import-url');
+    const importRights = el('admin-bgm-import-rights');
+    const importStatus = el('admin-bgm-import-status');
     if (fileInput) fileInput.value = '';
-    if (fileName) fileName.textContent = '音檔會永久保存於私有 Storage，儲存新檔時會覆蓋舊檔';
+    if (fileName) fileName.textContent = '音檔保存在私有 Storage；新音檔完成後才會替換舊音檔';
     if (title) title.textContent = '尚未上傳音檔';
     if (sourceInput) sourceInput.value = '';
     if (download) download.hidden = true;
@@ -3396,6 +3405,9 @@ function clearAdminBgmSession() {
         originLink.removeAttribute('href');
     }
     if (state) state.textContent = '尚未載入音源';
+    if (importUrl) importUrl.value = '';
+    if (importRights) importRights.checked = false;
+    if (importStatus) importStatus.textContent = '送出後在背景轉成 MP3；成功才會替換目前音檔。';
     updateAdminBgmControls();
 }
 
@@ -3439,11 +3451,113 @@ function renderAdminBgmRecord(record) {
     const download = el('admin-bgm-download');
     if (title) title.textContent = record?.audio_name || '尚未上傳音檔';
     if (fileName) fileName.textContent = record?.audio_path
-        ? '永久保存於私有 Storage；儲存新檔會覆蓋此音檔'
-        : '音檔會永久保存於私有 Storage，儲存新檔時會覆蓋舊檔';
+        ? '保存在私有 Storage；新音檔完成後才會替換此音檔'
+        : '音檔保存在私有 Storage；新音檔完成後才會替換舊音檔';
     if (sourceInput) sourceInput.value = record?.source_url || '';
     if (download) download.hidden = !record?.audio_path;
     updateAdminBgmOriginLink(record?.source_url || '');
+}
+
+function stopAdminBgmImportPolling() {
+    if (adminBgmImportPollTimer !== null) {
+        clearTimeout(adminBgmImportPollTimer);
+        adminBgmImportPollTimer = null;
+    }
+}
+
+function displayAdminBgmImportStatus(record) {
+    const status = el('admin-bgm-import-status');
+    if (status) {
+        status.textContent = {
+            pending: '匯入已排入佇列；背景工作通常幾分鐘內開始。原音檔仍可播放。',
+            processing: '正在擷取並轉成 MP3；完成前原音檔仍可播放。',
+            done: '連結音訊已匯入並儲存為 BGM。',
+            failed: `匯入失敗：${record?.import_error || '來源無法處理。'}原音檔未更動。`
+        }[record?.import_status] || '送出後在背景轉成 MP3；成功才會替換目前音檔。';
+    }
+    if (record?.import_status === 'pending' || record?.import_status === 'processing'
+        || (record?.import_status === 'done' && record.audio_path !== adminBgmAudioPath)) {
+        if (adminBgmImportPollTimer === null) {
+            adminBgmImportPollTimer = setTimeout(() => void pollAdminBgmImport(), ADMIN_BGM_IMPORT_POLL_MS);
+        }
+    } else {
+        stopAdminBgmImportPolling();
+    }
+}
+
+async function pollAdminBgmImport() {
+    adminBgmImportPollTimer = null;
+    if (!canManageAdminBgm() || supabase === null) return;
+    if (adminBgmIsBusy) {
+        displayAdminBgmImportStatus(adminBgmRecord);
+        return;
+    }
+    try {
+        const response = await adminBgmRequest(
+            `${supabase.url}/rest/v1/${ADMIN_BGM_TABLE}?id=eq.1&select=id,audio_path,audio_name,audio_mime_type,audio_size_bytes,source_url,updated_at,import_id,import_url,import_status,import_error,import_requested_at,import_started_at,import_finished_at`,
+            { method: 'GET' });
+        const rows = await response.json();
+        if (!canManageAdminBgm() || adminBgmIsBusy) return;
+        const record = rows?.[0];
+        if (!record) return;
+        const changedAudio = record.audio_path !== adminBgmAudioPath;
+        if (changedAudio) {
+            await loadAdminBgm({ autoPlay: adminBgmIsPlaying });
+        } else {
+            adminBgmRecord = record;
+            displayAdminBgmImportStatus(record);
+        }
+    } catch (error) {
+        const status = el('admin-bgm-import-status');
+        if (status && canManageAdminBgm()) status.textContent = `匯入狀態暫時無法讀取：${error.message}`;
+    } finally {
+        if (canManageAdminBgm() && adminBgmImportPollTimer === null) displayAdminBgmImportStatus(adminBgmRecord);
+    }
+}
+
+async function submitAdminBgmImport() {
+    if (!canManageAdminBgm() || !adminBgmLoaded || adminBgmIsBusy) return;
+    const status = el('admin-bgm-import-status');
+    const rawUrl = el('admin-bgm-import-url')?.value.trim() || '';
+    const rights = el('admin-bgm-import-rights');
+    let parsed;
+    try {
+        parsed = new URL(rawUrl);
+        if (parsed.protocol !== 'https:' || !/^(www\.|m\.|music\.)?(youtube\.com|youtu\.be|instagram\.com|threads\.com|threads\.net)$/.test(parsed.hostname)
+            || parsed.username || parsed.password || parsed.port || parsed.hash || rawUrl.length > 2048) throw new Error();
+    } catch {
+        if (status) status.textContent = '請貼上支援平台的公開 HTTPS 影片或貼文連結。';
+        return;
+    }
+    if (!rights?.checked) {
+        if (status) status.textContent = '請先確認音訊的擷取、保存與播放權利。';
+        return;
+    }
+    adminBgmIsBusy = true;
+    updateAdminBgmControls();
+    if (status) status.textContent = '正在送出匯入工作…';
+    try {
+        const payload = {
+            import_id: crypto.randomUUID(), import_url: parsed.href,
+            import_status: 'pending', import_error: null,
+            import_requested_at: new Date().toISOString(),
+            import_started_at: null, import_finished_at: null
+        };
+        const response = await adminBgmRequest(
+            `${supabase.url}/rest/v1/${ADMIN_BGM_TABLE}?id=eq.1&select=*`,
+            { method: 'PATCH', headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' }, body: JSON.stringify(payload) });
+        const rows = await response.json();
+        if (!canManageAdminBgm()) return;
+        if (rows.length !== 1) throw new Error('找不到 BGM 設定資料。');
+        adminBgmRecord = rows[0];
+        rights.checked = false;
+        displayAdminBgmImportStatus(adminBgmRecord);
+    } catch (error) {
+        if (status && canManageAdminBgm()) status.textContent = `匯入工作送出失敗：${error.message}`;
+    } finally {
+        adminBgmIsBusy = false;
+        updateAdminBgmControls();
+    }
 }
 
 function downloadAdminBgm() {
@@ -3477,7 +3591,7 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
 
     try {
         const metadataResponse = await adminBgmRequest(
-            `${supabase.url}/rest/v1/${ADMIN_BGM_TABLE}?id=eq.1&select=id,audio_path,audio_name,audio_mime_type,audio_size_bytes,source_url,updated_at`,
+            `${supabase.url}/rest/v1/${ADMIN_BGM_TABLE}?id=eq.1&select=id,audio_path,audio_name,audio_mime_type,audio_size_bytes,source_url,updated_at,import_id,import_url,import_status,import_error,import_requested_at,import_started_at,import_finished_at`,
             { method: 'GET' });
         const rows = await metadataResponse.json();
         if (!isCurrentRequest()) return;
@@ -3485,12 +3599,13 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
         const record = Array.isArray(rows) ? rows[0] ?? null : null;
         renderAdminBgmRecord(record);
         adminBgmLoaded = true;
-        clearAdminBgmAudio();
         if (!record?.audio_path) {
+            clearAdminBgmAudio();
             if (state) state.textContent = '尚未載入音源';
             if (status) status.textContent = record?.source_url
-                ? '資料庫已有原始來源連結；請上傳可播放的音檔，網站不會擷取 Threads／Instagram 影音。'
-                : '資料庫尚未有音檔；選擇音檔並按「儲存音源」後即可自動載入。';
+                ? '目前只有來源連結。可選擇音檔上傳，或使用連結匯入。'
+                : '資料庫尚未有音檔；可選擇音檔上傳，或使用連結匯入。';
+            displayAdminBgmImportStatus(record);
             return;
         }
 
@@ -3507,7 +3622,9 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
             throw new Error('音檔大小不正確或超過 20 MB。');
         }
 
+        clearAdminBgmAudio();
         adminBgmObjectUrl = URL.createObjectURL(audioBlob);
+        adminBgmAudioPath = record.audio_path;
         const player = el('admin-bgm-player');
         if (player) {
             player.src = adminBgmObjectUrl;
@@ -3518,13 +3635,14 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
         if (autoPlay) {
             await setAdminBgmPlaying(true);
         } else if (status) {
-            status.textContent = '音檔已從 Supabase 私有 Storage 載入並永久保存；儲存新檔時會直接覆蓋。';
+            status.textContent = '音檔已從 Supabase 私有 Storage 載入。';
         }
+        displayAdminBgmImportStatus(record);
+        return true;
     } catch (error) {
         if (requestSerial === adminBgmRequestSerial && !canManageAdminBgm()) {
             renderAdminBgm();
         } else if (isCurrentRequest()) {
-            clearAdminBgmAudio();
             if (state) state.textContent = '載入失敗';
             if (status) status.textContent = `BGM 載入失敗：${error.message}`;
         }
@@ -3534,6 +3652,7 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
             updateAdminBgmControls();
         }
     }
+    return false;
 }
 
 function adminBgmFileFormat(file) {
@@ -3602,9 +3721,7 @@ async function saveAdminBgm() {
     const fileInput = el('admin-bgm-file');
     const previousPath = adminBgmRecord?.audio_path ?? null;
     let uploadedPath = null;
-    let uploadCompleted = false;
     adminBgmIsBusy = true;
-    clearAdminBgmAudio();
     if (status) status.textContent = file ? '正在上傳音檔並儲存來源資訊…' : '正在儲存來源資訊…';
     updateAdminBgmControls();
 
@@ -3614,7 +3731,7 @@ async function saveAdminBgm() {
         let audioMimeType = adminBgmRecord?.audio_mime_type ?? null;
         let audioSizeBytes = adminBgmRecord?.audio_size_bytes ?? null;
         if (file && fileFormat) {
-            audioPath = `audio/${ADMIN_BGM_STORAGE_OBJECT_ID}.${fileFormat.extension}`;
+            audioPath = `audio/${crypto.randomUUID()}.${fileFormat.extension}`;
             uploadedPath = audioPath;
             const uploadResponse = await adminBgmRequest(
                 `${supabase.url}/storage/v1/object/${ADMIN_BGM_BUCKET}/${encodeStoragePath(audioPath)}`,
@@ -3622,14 +3739,13 @@ async function saveAdminBgm() {
                     method: 'POST',
                     headers: {
                         'Content-Type': fileFormat.mimeType,
-                        'x-upsert': 'true'
+                        'x-upsert': 'false'
                     },
                     body: file
                 });
             if (!uploadResponse.ok) {
                 throw new Error(`音檔上傳失敗（HTTP ${uploadResponse.status}）。`);
             }
-            uploadCompleted = true;
             if (!canManageAdminBgm()) {
                 renderAdminBgm();
                 return;
@@ -3647,7 +3763,14 @@ async function saveAdminBgm() {
             audio_mime_type: audioMimeType,
             audio_size_bytes: audioSizeBytes,
             source_url: sourceUrl,
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
+            import_id: null,
+            import_url: null,
+            import_status: null,
+            import_error: null,
+            import_requested_at: null,
+            import_started_at: null,
+            import_finished_at: null
         };
         const saveResponse = await adminBgmRequest(
             `${supabase.url}/rest/v1/${ADMIN_BGM_TABLE}?on_conflict=id`,
@@ -3665,22 +3788,19 @@ async function saveAdminBgm() {
             return;
         }
         adminBgmRecord = Array.isArray(savedRows) ? savedRows[0] ?? payload : payload;
+        displayAdminBgmImportStatus(adminBgmRecord);
         adminBgmLoaded = true;
         if (fileInput) fileInput.value = '';
         renderAdminBgmRecord(adminBgmRecord);
-        let oldFileCleanupFailed = false;
-        if (previousPath && previousPath !== audioPath) {
+        adminBgmIsBusy = false;
+        updateAdminBgmControls();
+        const loaded = await loadAdminBgm();
+        if (loaded && previousPath && previousPath !== audioPath) {
             try {
                 await removeAdminBgmObject(previousPath);
             } catch {
-                oldFileCleanupFailed = true;
+                if (status) status.textContent = '新音源已儲存；舊音檔清理失敗。';
             }
-        }
-        adminBgmIsBusy = false;
-        updateAdminBgmControls();
-        await loadAdminBgm();
-        if (oldFileCleanupFailed && status) {
-            status.textContent = '新音源已儲存；舊音檔清理失敗，可稍後再更換一次音源清理。';
         }
     } catch (error) {
         if (uploadedPath && uploadedPath !== previousPath) {
@@ -3692,9 +3812,7 @@ async function saveAdminBgm() {
         if (!canManageAdminBgm()) {
             renderAdminBgm();
         } else if (status) {
-            status.textContent = uploadedPath === previousPath && uploadCompleted
-                ? `音檔已覆蓋，但資料庫資訊儲存失敗；請再按「儲存音源」同步檔名。${error.message}`
-                : `BGM 儲存失敗：${error.message}`;
+            status.textContent = `BGM 儲存失敗：${error.message} 原音檔保留。`;
         }
     } finally {
         adminBgmIsBusy = false;
@@ -3764,6 +3882,7 @@ function renderAdminBgm() {
     const fileInput = el('admin-bgm-file');
     const fileName = el('admin-bgm-file-name');
     const originalSource = el('admin-bgm-origin-url');
+    const importSubmit = el('admin-bgm-import-submit');
     const status = el('admin-bgm-status');
     if (!panel || !toggle || !popover || !play || !uploadTrigger || !save || !download || !fileInput) {
         return;
@@ -3781,13 +3900,14 @@ function renderAdminBgm() {
         download.addEventListener('click', downloadAdminBgm);
         uploadTrigger.addEventListener('click', () => fileInput.click());
         save.addEventListener('click', () => void saveAdminBgm());
+        importSubmit?.addEventListener('click', () => void submitAdminBgmImport());
         fileInput.addEventListener('change', () => {
             const file = fileInput.files?.[0];
             if (!file) return;
             const title = el('admin-bgm-track-title');
             if (title) title.textContent = file.name;
-            if (fileName) fileName.textContent = `儲存後會覆蓋原音檔 · ${(file.size / 1024 / 1024).toFixed(1)} MB`;
-            if (status) status.textContent = '按「儲存音源」後會覆蓋私有 Storage 中的音檔，檔案會永久保存。';
+            if (fileName) fileName.textContent = `新音檔 · ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+            if (status) status.textContent = '按「儲存音源」上傳；成功後才替換目前音檔。';
             updateAdminBgmControls();
         });
         originalSource?.addEventListener('input', () => {

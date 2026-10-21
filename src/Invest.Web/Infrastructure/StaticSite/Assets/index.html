@@ -81,7 +81,7 @@
                         <div class="admin-bgm-track">
                             <div>
                                 <strong id="admin-bgm-track-title">尚未上傳音檔</strong>
-                                <p id="admin-bgm-file-name">音檔會永久保存於私有 Storage，儲存新檔時會覆蓋舊檔</p>
+                                <p id="admin-bgm-file-name">音檔保存在私有 Storage；新音檔完成後才會替換舊音檔</p>
                             </div>
                             <span class="admin-bgm-state" id="admin-bgm-state">尚未載入音源</span>
                         </div>
@@ -100,12 +100,27 @@
                                target="_blank" rel="noopener noreferrer" hidden>原始來源 ↗</a>
                         </div>
                         <label class="admin-bgm-origin-field" for="admin-bgm-origin-url">
-                            <span>原始來源連結（Threads／Instagram Reels，可選，只記錄網址）</span>
+                            <span>原始來源連結（手動上傳音檔時，可選）</span>
                             <input type="url" id="admin-bgm-origin-url"
                                    placeholder="貼上原始貼文網址" autocomplete="url" />
                         </label>
+                        <div class="admin-bgm-import">
+                            <label class="admin-bgm-origin-field" for="admin-bgm-import-url">
+                                <span>從 YouTube／Instagram／Threads 公開貼文匯入音訊</span>
+                                <input type="url" id="admin-bgm-import-url"
+                                       placeholder="貼上影片或貼文連結" autocomplete="url" />
+                            </label>
+                            <label class="admin-bgm-import-rights">
+                                <input type="checkbox" id="admin-bgm-import-rights" />
+                                <span>我確認擁有擷取、保存及播放這段音訊所需的權利</span>
+                            </label>
+                            <button type="button" class="device-presence-refresh" id="admin-bgm-import-submit">匯入連結</button>
+                            <p class="admin-bgm-status" id="admin-bgm-import-status" role="status">
+                                送出後在背景轉成 MP3；成功才會替換目前音檔。
+                            </p>
+                        </div>
                         <p class="admin-bgm-status" id="admin-bgm-status" role="status">
-                            音檔會永久保存在 Supabase 私有 Storage；儲存新檔時直接覆蓋原音檔。
+                            音檔保存在 Supabase 私有 Storage；更換失敗時保留目前音檔。
                         </p>
                         <audio class="admin-bgm-player" id="admin-bgm-player" preload="none" loop hidden></audio>
                     </section>
