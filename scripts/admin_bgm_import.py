@@ -145,14 +145,18 @@ def download_and_convert(url: str, destination: pathlib.Path) -> str:
         work = pathlib.Path(folder)
         command = [
             sys.executable, "-m", "yt_dlp", "--no-config", "--no-playlist",
-            "--playlist-items", "1", "--max-downloads", "1",
+            "--playlist-items", "1",
             "--max-filesize", str(MAX_SOURCE_BYTES), "--match-filter", f"duration <= {MAX_SECONDS}",
             "--socket-timeout", "15", "--retries", "2", "--fragment-retries", "2",
             "--no-simulate", "--print-json", "-o", str(work / "source.%(ext)s"), url,
         ]
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=240, check=True)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        except subprocess.CalledProcessError as exc:
+            detail = re.sub(r"https?://\S+", "[URL]", (exc.stderr or "").strip().splitlines()[-1] if exc.stderr else "")
+            print(f"yt-dlp exit {exc.returncode}: {detail[:300]}", file=sys.stderr)
+            raise ImportFailure("來源影片無法擷取、無法公開讀取，或超過 15 分鐘／100 MB。") from exc
+        except subprocess.TimeoutExpired as exc:
             raise ImportFailure("來源影片無法擷取、無法公開讀取，或超過 15 分鐘／100 MB。") from exc
         sources = [p for p in work.glob("source.*") if p.is_file() and p.suffix not in {".part", ".json"}]
         if len(sources) != 1 or sources[0].stat().st_size > MAX_SOURCE_BYTES:
