@@ -3284,7 +3284,7 @@ async function refreshAuthAccessToken() {
 const ADMIN_BGM_TABLE = 'admin_bgm';
 const ADMIN_BGM_BUCKET = 'admin-bgm';
 const ADMIN_BGM_MAX_FILE_BYTES = 20 * 1024 * 1024;
-const ADMIN_BGM_SIGNED_URL_SECONDS = 60 * 60;
+const ADMIN_BGM_STORAGE_OBJECT_ID = '00000000-0000-4000-8000-000000000001';
 const ADMIN_BGM_AUDIO_FORMATS = Object.freeze({
     mp3: 'audio/mpeg',
     m4a: 'audio/mp4',
@@ -3303,7 +3303,6 @@ let adminBgmLoaded = false;
 let adminBgmRequestSerial = 0;
 let adminBgmRecord = null;
 let adminBgmObjectUrl = null;
-let adminBgmSignedUrl = null;
 
 function canManageAdminBgm() {
     return SITE_ACCESS === 'admin'
@@ -3316,7 +3315,8 @@ function updateAdminBgmControls() {
     const play = el('admin-bgm-play');
     const uploadTrigger = el('admin-bgm-upload-trigger');
     const save = el('admin-bgm-save');
-    if (!play || !uploadTrigger || !save) {
+    const download = el('admin-bgm-download');
+    if (!play || !uploadTrigger || !save || !download) {
         return;
     }
 
@@ -3324,6 +3324,7 @@ function updateAdminBgmControls() {
     play.disabled = !allowed || adminBgmIsBusy || adminBgmObjectUrl === null;
     uploadTrigger.disabled = !allowed || adminBgmIsBusy;
     save.disabled = !allowed || adminBgmIsBusy || !adminBgmLoaded;
+    download.disabled = !allowed || adminBgmIsBusy || adminBgmObjectUrl === null;
 }
 
 function updateAdminBgmOriginLink(value) {
@@ -3377,23 +3378,19 @@ function clearAdminBgmSession() {
     adminBgmIsBusy = false;
     clearAdminBgmAudio();
     adminBgmRecord = null;
-    adminBgmSignedUrl = null;
     adminBgmLoaded = false;
     const fileInput = el('admin-bgm-file');
     const fileName = el('admin-bgm-file-name');
     const title = el('admin-bgm-track-title');
     const sourceInput = el('admin-bgm-origin-url');
-    const sourceLink = el('admin-bgm-source');
+    const download = el('admin-bgm-download');
     const originLink = el('admin-bgm-origin-link');
     const state = el('admin-bgm-state');
     if (fileInput) fileInput.value = '';
-    if (fileName) fileName.textContent = '音檔尚未提供';
-    if (title) title.textContent = '夢的翅膀受了傷（DJ 阿智版）';
+    if (fileName) fileName.textContent = '音檔會永久保存於私有 Storage，儲存新檔時會覆蓋舊檔';
+    if (title) title.textContent = '尚未上傳音檔';
     if (sourceInput) sourceInput.value = '';
-    if (sourceLink) {
-        sourceLink.hidden = true;
-        sourceLink.removeAttribute('href');
-    }
+    if (download) download.hidden = true;
     if (originLink) {
         originLink.hidden = true;
         originLink.removeAttribute('href');
@@ -3434,63 +3431,34 @@ async function adminBgmRequest(url, options = {}, retryAuthentication = true) {
     return response;
 }
 
-async function createAdminBgmSignedUrl(path) {
-    const response = await adminBgmRequest(
-        `${supabase.url}/storage/v1/object/sign/${ADMIN_BGM_BUCKET}/${encodeStoragePath(path)}`,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ expiresIn: ADMIN_BGM_SIGNED_URL_SECONDS })
-        });
-    const body = await response.json();
-    const signedPath = body?.signedURL ?? body?.signedUrl ?? body?.signed_url;
-    if (typeof signedPath !== 'string' || signedPath === '') {
-        throw new Error('Supabase 未回傳音檔連結。');
-    }
-    if (/^https?:\/\//i.test(signedPath)) {
-        return signedPath;
-    }
-    if (signedPath.startsWith('/storage/v1/')) {
-        return `${supabase.url}${signedPath}`;
-    }
-    return `${supabase.url}/storage/v1${signedPath.startsWith('/') ? signedPath : `/${signedPath}`}`;
-}
-
-async function refreshAdminBgmSignedUrl() {
-    const sourceLink = el('admin-bgm-source');
-    if (!canManageAdminBgm() || !adminBgmRecord?.audio_path || !sourceLink) {
-        return;
-    }
-
-    try {
-        adminBgmSignedUrl = await createAdminBgmSignedUrl(adminBgmRecord.audio_path);
-        if (!canManageAdminBgm()) {
-            return;
-        }
-        sourceLink.href = adminBgmSignedUrl;
-        sourceLink.hidden = false;
-    } catch {
-        adminBgmSignedUrl = null;
-        sourceLink.hidden = true;
-        sourceLink.removeAttribute('href');
-    }
-}
-
 function renderAdminBgmRecord(record) {
     adminBgmRecord = record;
     const title = el('admin-bgm-track-title');
     const fileName = el('admin-bgm-file-name');
     const sourceInput = el('admin-bgm-origin-url');
-    if (title) title.textContent = record?.title || '夢的翅膀受了傷（DJ 阿智版）';
-    if (fileName) fileName.textContent = record?.audio_name || '音檔尚未提供';
+    const download = el('admin-bgm-download');
+    if (title) title.textContent = record?.audio_name || '尚未上傳音檔';
+    if (fileName) fileName.textContent = record?.audio_path
+        ? '永久保存於私有 Storage；儲存新檔會覆蓋此音檔'
+        : '音檔會永久保存於私有 Storage，儲存新檔時會覆蓋舊檔';
     if (sourceInput) sourceInput.value = record?.source_url || '';
+    if (download) download.hidden = !record?.audio_path;
     updateAdminBgmOriginLink(record?.source_url || '');
-    const sourceLink = el('admin-bgm-source');
-    if (!record?.audio_path && sourceLink) {
-        sourceLink.hidden = true;
-        sourceLink.removeAttribute('href');
-        adminBgmSignedUrl = null;
+}
+
+function downloadAdminBgm() {
+    if (!canManageAdminBgm() || !adminBgmRecord?.audio_path || adminBgmObjectUrl === null) {
+        return;
     }
+
+    const link = document.createElement('a');
+    link.href = adminBgmObjectUrl;
+    link.download = adminBgmRecord.audio_name || 'bgm';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    const status = el('admin-bgm-status');
+    if (status) status.textContent = '音檔已下載；檔案會永久保存在私有 Storage，直到儲存新檔覆蓋。';
 }
 
 async function loadAdminBgm({ autoPlay = false } = {}) {
@@ -3509,7 +3477,7 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
 
     try {
         const metadataResponse = await adminBgmRequest(
-            `${supabase.url}/rest/v1/${ADMIN_BGM_TABLE}?id=eq.1&select=id,title,audio_path,audio_name,audio_mime_type,audio_size_bytes,source_url,updated_at`,
+            `${supabase.url}/rest/v1/${ADMIN_BGM_TABLE}?id=eq.1&select=id,audio_path,audio_name,audio_mime_type,audio_size_bytes,source_url,updated_at`,
             { method: 'GET' });
         const rows = await metadataResponse.json();
         if (!isCurrentRequest()) return;
@@ -3529,8 +3497,9 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
         if (!/^audio\/[0-9a-f-]{36}\.(mp3|m4a|mp4|aac|wav|ogg|oga|webm)$/i.test(record.audio_path)) {
             throw new Error('資料庫中的音檔路徑格式無效。');
         }
+        const cacheNonce = encodeURIComponent(record.updated_at || String(Date.now()));
         const audioResponse = await adminBgmRequest(
-            `${supabase.url}/storage/v1/object/authenticated/${ADMIN_BGM_BUCKET}/${encodeStoragePath(record.audio_path)}`,
+            `${supabase.url}/storage/v1/object/authenticated/${ADMIN_BGM_BUCKET}/${encodeStoragePath(record.audio_path)}?cacheNonce=${cacheNonce}`,
             { method: 'GET' });
         const audioBlob = await audioResponse.blob();
         if (!isCurrentRequest()) return;
@@ -3545,12 +3514,11 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
             player.load();
         }
         if (state) state.textContent = '已載入';
-        await refreshAdminBgmSignedUrl();
-        if (!isCurrentRequest()) return;
+        updateAdminBgmControls();
         if (autoPlay) {
             await setAdminBgmPlaying(true);
         } else if (status) {
-            status.textContent = '音檔已從 Supabase 私有 Storage 載入；音檔連結有效 1 小時。';
+            status.textContent = '音檔已從 Supabase 私有 Storage 載入並永久保存；儲存新檔時會直接覆蓋。';
         }
     } catch (error) {
         if (requestSerial === adminBgmRequestSerial && !canManageAdminBgm()) {
@@ -3634,6 +3602,7 @@ async function saveAdminBgm() {
     const fileInput = el('admin-bgm-file');
     const previousPath = adminBgmRecord?.audio_path ?? null;
     let uploadedPath = null;
+    let uploadCompleted = false;
     adminBgmIsBusy = true;
     clearAdminBgmAudio();
     if (status) status.textContent = file ? '正在上傳音檔並儲存來源資訊…' : '正在儲存來源資訊…';
@@ -3645,7 +3614,7 @@ async function saveAdminBgm() {
         let audioMimeType = adminBgmRecord?.audio_mime_type ?? null;
         let audioSizeBytes = adminBgmRecord?.audio_size_bytes ?? null;
         if (file && fileFormat) {
-            audioPath = `audio/${crypto.randomUUID()}.${fileFormat.extension}`;
+            audioPath = `audio/${ADMIN_BGM_STORAGE_OBJECT_ID}.${fileFormat.extension}`;
             uploadedPath = audioPath;
             const uploadResponse = await adminBgmRequest(
                 `${supabase.url}/storage/v1/object/${ADMIN_BGM_BUCKET}/${encodeStoragePath(audioPath)}`,
@@ -3653,13 +3622,14 @@ async function saveAdminBgm() {
                     method: 'POST',
                     headers: {
                         'Content-Type': fileFormat.mimeType,
-                        'x-upsert': 'false'
+                        'x-upsert': 'true'
                     },
                     body: file
                 });
             if (!uploadResponse.ok) {
                 throw new Error(`音檔上傳失敗（HTTP ${uploadResponse.status}）。`);
             }
+            uploadCompleted = true;
             if (!canManageAdminBgm()) {
                 renderAdminBgm();
                 return;
@@ -3671,7 +3641,7 @@ async function saveAdminBgm() {
 
         const payload = {
             id: 1,
-            title: '夢的翅膀受了傷（DJ 阿智版）',
+            title: audioName || 'BGM',
             audio_path: audioPath,
             audio_name: audioName,
             audio_mime_type: audioMimeType,
@@ -3713,7 +3683,7 @@ async function saveAdminBgm() {
             status.textContent = '新音源已儲存；舊音檔清理失敗，可稍後再更換一次音源清理。';
         }
     } catch (error) {
-        if (uploadedPath) {
+        if (uploadedPath && uploadedPath !== previousPath) {
             try {
                 await removeAdminBgmObject(uploadedPath);
             } catch {
@@ -3722,7 +3692,9 @@ async function saveAdminBgm() {
         if (!canManageAdminBgm()) {
             renderAdminBgm();
         } else if (status) {
-            status.textContent = `BGM 儲存失敗：${error.message}`;
+            status.textContent = uploadedPath === previousPath && uploadCompleted
+                ? `音檔已覆蓋，但資料庫資訊儲存失敗；請再按「儲存音源」同步檔名。${error.message}`
+                : `BGM 儲存失敗：${error.message}`;
         }
     } finally {
         adminBgmIsBusy = false;
@@ -3788,11 +3760,12 @@ function renderAdminBgm() {
     const play = el('admin-bgm-play');
     const uploadTrigger = el('admin-bgm-upload-trigger');
     const save = el('admin-bgm-save');
+    const download = el('admin-bgm-download');
     const fileInput = el('admin-bgm-file');
     const fileName = el('admin-bgm-file-name');
     const originalSource = el('admin-bgm-origin-url');
     const status = el('admin-bgm-status');
-    if (!panel || !toggle || !popover || !play || !uploadTrigger || !save || !fileInput) {
+    if (!panel || !toggle || !popover || !play || !uploadTrigger || !save || !download || !fileInput) {
         return;
     }
 
@@ -3802,18 +3775,19 @@ function renderAdminBgm() {
             const opening = toggleHeaderPanel(toggle, popover);
             if (!opening) {
                 void setAdminBgmPlaying(false);
-            } else if (canManageAdminBgm() && adminBgmRecord?.audio_path) {
-                void refreshAdminBgmSignedUrl();
             }
         });
         play.addEventListener('click', () => void setAdminBgmPlaying(!adminBgmIsPlaying));
+        download.addEventListener('click', downloadAdminBgm);
         uploadTrigger.addEventListener('click', () => fileInput.click());
         save.addEventListener('click', () => void saveAdminBgm());
         fileInput.addEventListener('change', () => {
             const file = fileInput.files?.[0];
             if (!file) return;
-            if (fileName) fileName.textContent = `${file.name}（尚未上傳，${(file.size / 1024 / 1024).toFixed(1)} MB）`;
-            if (status) status.textContent = '按「儲存音源」後會將音檔上傳至 Supabase 私有 Storage。';
+            const title = el('admin-bgm-track-title');
+            if (title) title.textContent = file.name;
+            if (fileName) fileName.textContent = `儲存後會覆蓋原音檔 · ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+            if (status) status.textContent = '按「儲存音源」後會覆蓋私有 Storage 中的音檔，檔案會永久保存。';
             updateAdminBgmControls();
         });
         originalSource?.addEventListener('input', () => {

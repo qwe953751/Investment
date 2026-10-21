@@ -11581,8 +11581,19 @@ html {
 .admin-bgm-state.is-active::before { background: #25a56f; }
 .admin-bgm-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .admin-bgm-play { min-height: 34px; padding: 6px 14px; }
+.admin-bgm-download {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent-strong);
+    font: inherit;
+    font-size: 13px;
+    text-decoration: underline;
+    cursor: pointer;
+}
 .admin-bgm-source { color: var(--accent-strong); font-size: 13px; }
-.admin-bgm-source[hidden] { display: none; }
+.admin-bgm-download:disabled { color: var(--text-muted); cursor: default; }
+.admin-bgm-download[hidden] { display: none; }
 .admin-bgm-origin-field { display: grid; gap: 6px; margin-top: 12px; color: var(--text-muted); font-size: 12px; }
 .admin-bgm-origin-field input {
     width: 100%;

@@ -80,8 +80,8 @@
                         </div>
                         <div class="admin-bgm-track">
                             <div>
-                                <strong id="admin-bgm-track-title">夢的翅膀受了傷（DJ 阿智版）</strong>
-                                <p id="admin-bgm-file-name">音檔尚未提供</p>
+                                <strong id="admin-bgm-track-title">尚未上傳音檔</strong>
+                                <p id="admin-bgm-file-name">音檔會永久保存於私有 Storage，儲存新檔時會覆蓋舊檔</p>
                             </div>
                             <span class="admin-bgm-state" id="admin-bgm-state">尚未載入音源</span>
                         </div>
@@ -94,8 +94,8 @@
                                    accept=".mp3,.m4a,.mp4,.aac,.wav,.ogg,.webm,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/ogg,audio/webm" hidden />
                             <button type="button" class="device-presence-refresh admin-bgm-save"
                                     id="admin-bgm-save">儲存音源</button>
-                            <a class="admin-bgm-source" id="admin-bgm-source" href="#"
-                               target="_blank" rel="noopener noreferrer" hidden>音檔連結（1 小時）↗</a>
+                            <button type="button" class="admin-bgm-download" id="admin-bgm-download"
+                                    hidden disabled>下載音檔（永久保存）↓</button>
                             <a class="admin-bgm-source" id="admin-bgm-origin-link" href="#"
                                target="_blank" rel="noopener noreferrer" hidden>原始來源 ↗</a>
                         </div>
@@ -105,7 +105,7 @@
                                    placeholder="貼上原始貼文網址" autocomplete="url" />
                         </label>
                         <p class="admin-bgm-status" id="admin-bgm-status" role="status">
-                            音檔會存入 Supabase 私有 Storage；社群網址只記錄來源，需上傳可播放的音檔。
+                            音檔會永久保存在 Supabase 私有 Storage；儲存新檔時直接覆蓋原音檔。
                         </p>
                         <audio class="admin-bgm-player" id="admin-bgm-player" preload="none" loop hidden></audio>
                     </section>
