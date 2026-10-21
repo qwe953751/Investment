@@ -3554,6 +3554,17 @@ async function submitAdminBgmImport() {
         adminBgmRecord = rows[0];
         rights.checked = false;
         displayAdminBgmImportStatus(adminBgmRecord);
+        try {
+            await adminBgmRequest(`${supabase.url}/functions/v1/admin-bgm-dispatch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ import_id: payload.import_id })
+            });
+        } catch (error) {
+            if (status && canManageAdminBgm()) {
+                status.textContent = `匯入已排入，但立即啟動失敗：${error.message}。排程會補處理。`;
+            }
+        }
     } catch (error) {
         if (status && canManageAdminBgm()) status.textContent = `匯入工作送出失敗：${error.message}`;
     } finally {

@@ -20,3 +20,8 @@ verify_jwt = false
 [functions.asset-operation-sync]
 entrypoint = './functions/asset-operation-sync/index.js'
 verify_jwt = false
+
+# 管理員 JWT 觸發已排入的 BGM 匯入；函式另向 Auth 查驗 app_metadata.access_role。
+[functions.admin-bgm-dispatch]
+entrypoint = './functions/admin-bgm-dispatch/index.js'
+verify_jwt = true
