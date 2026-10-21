@@ -3298,6 +3298,7 @@ const ADMIN_BGM_AUDIO_FORMATS = Object.freeze({
 
 let adminBgmWasAuthenticated = false;
 let adminBgmIsPlaying = false;
+let adminBgmAutoplayPending = false;
 let adminBgmIsBusy = false;
 let adminBgmLoaded = false;
 let adminBgmRequestSerial = 0;
@@ -3369,6 +3370,7 @@ function clearAdminBgmAudio() {
     }
     adminBgmAudioPath = null;
     adminBgmIsPlaying = false;
+    adminBgmAutoplayPending = false;
     const play = el('admin-bgm-play');
     if (play) {
         play.textContent = '播放';
@@ -3502,7 +3504,7 @@ async function pollAdminBgmImport() {
         if (!record) return;
         const changedAudio = record.audio_path !== adminBgmAudioPath;
         if (changedAudio) {
-            await loadAdminBgm({ autoPlay: adminBgmIsPlaying });
+            await loadAdminBgm({ autoPlay: adminBgmIsPlaying || adminBgmAutoplayPending });
         } else {
             adminBgmRecord = record;
             displayAdminBgmImportStatus(record);
@@ -3622,6 +3624,7 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
             throw new Error('音檔大小不正確或超過 20 MB。');
         }
 
+        const shouldAutoPlay = autoPlay || adminBgmIsPlaying || adminBgmAutoplayPending;
         clearAdminBgmAudio();
         adminBgmObjectUrl = URL.createObjectURL(audioBlob);
         adminBgmAudioPath = record.audio_path;
@@ -3632,7 +3635,7 @@ async function loadAdminBgm({ autoPlay = false } = {}) {
         }
         if (state) state.textContent = '已載入';
         updateAdminBgmControls();
-        if (autoPlay) {
+        if (shouldAutoPlay) {
             await setAdminBgmPlaying(true);
         } else if (status) {
             status.textContent = '音檔已從 Supabase 私有 Storage 載入。';
@@ -3829,6 +3832,8 @@ async function setAdminBgmPlaying(playing) {
         return;
     }
 
+    adminBgmAutoplayPending = false;
+
     if (playing && adminBgmObjectUrl === null) {
         if (!adminBgmLoaded) {
             await loadAdminBgm({ autoPlay: true });
@@ -3846,7 +3851,7 @@ async function setAdminBgmPlaying(playing) {
             button.setAttribute('aria-pressed', 'true');
             state.textContent = '播放中';
             state.classList.add('is-active');
-            status.textContent = 'BGM 正在播放；若收合面板會停止播放。';
+            status.textContent = 'BGM 正在播放；收合面板不會停止音樂。';
         } catch {
             adminBgmIsPlaying = false;
             player.pause();
@@ -3854,7 +3859,8 @@ async function setAdminBgmPlaying(playing) {
             button.setAttribute('aria-pressed', 'false');
             state.textContent = '已載入';
             state.classList.remove('is-active');
-            status.textContent = '瀏覽器封鎖了自動播放，請按「播放」啟動音樂。';
+            adminBgmAutoplayPending = true;
+            status.textContent = '瀏覽器封鎖了自動播放；首次點擊網頁時會自動重試，也可在面板按「播放」。';
         }
     } else {
         adminBgmIsPlaying = false;
@@ -3891,10 +3897,7 @@ function renderAdminBgm() {
     if (!panel.dataset.wired) {
         panel.dataset.wired = 'true';
         toggle.addEventListener('click', () => {
-            const opening = toggleHeaderPanel(toggle, popover);
-            if (!opening) {
-                void setAdminBgmPlaying(false);
-            }
+            toggleHeaderPanel(toggle, popover);
         });
         play.addEventListener('click', () => void setAdminBgmPlaying(!adminBgmIsPlaying));
         download.addEventListener('click', downloadAdminBgm);
@@ -3918,14 +3921,15 @@ function renderAdminBgm() {
             if (!popover.hidden && !panel.contains(event.target)) {
                 popover.hidden = true;
                 toggle.setAttribute('aria-expanded', 'false');
-                void setAdminBgmPlaying(false);
+            }
+            if (adminBgmAutoplayPending) {
+                void setAdminBgmPlaying(true);
             }
         });
         document.addEventListener('keydown', event => {
             if (event.key === 'Escape' && !popover.hidden) {
                 popover.hidden = true;
                 toggle.setAttribute('aria-expanded', 'false');
-                void setAdminBgmPlaying(false);
                 toggle.focus();
             }
         });
