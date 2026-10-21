@@ -146,7 +146,8 @@ def download_and_convert(url: str, destination: pathlib.Path) -> str:
         command = [
             sys.executable, "-m", "yt_dlp", "--no-config", "--no-playlist",
             "--playlist-items", "1",
-            "--max-filesize", str(MAX_SOURCE_BYTES), "--match-filter", f"duration <= {MAX_SECONDS}",
+            # Instagram Reels can omit duration metadata; ffprobe validates the actual file below.
+            "--max-filesize", str(MAX_SOURCE_BYTES), "--match-filter", f"duration <=? {MAX_SECONDS}",
             "--socket-timeout", "15", "--retries", "2", "--fragment-retries", "2",
             "--no-simulate", "--print-json", "-o", str(work / "source.%(ext)s"), url,
         ]
@@ -160,6 +161,10 @@ def download_and_convert(url: str, destination: pathlib.Path) -> str:
             raise ImportFailure("來源影片無法擷取、無法公開讀取，或超過 15 分鐘／100 MB。") from exc
         sources = [p for p in work.glob("source.*") if p.is_file() and p.suffix not in {".part", ".json"}]
         if len(sources) != 1 or sources[0].stat().st_size > MAX_SOURCE_BYTES:
+            hints = [line for line in (result.stderr + "\n" + result.stdout).splitlines()
+                     if "does not pass filter" in line or "WARNING:" in line]
+            hint = re.sub(r"https?://\S+", "[URL]", hints[-1])[:300] if hints else "no extractor hint"
+            print(f"yt-dlp produced {len(sources)} source files: {hint}", file=sys.stderr)
             raise ImportFailure("沒有取得單一可用影片，或來源超過 100 MB。")
         metadata = next((json.loads(line) for line in reversed(result.stdout.splitlines()) if line.startswith("{")), {})
         try:

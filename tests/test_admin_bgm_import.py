@@ -2,6 +2,7 @@
 
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -56,6 +57,26 @@ class BgmImportTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(bgm.ImportFailure):
                     bgm.validate_source_url(value)
+
+    def test_instagram_reel_without_metadata_duration_reaches_media_probe(self):
+        def run(command, **_kwargs):
+            if command[1:3] == ["-m", "yt_dlp"]:
+                filter_value = command[command.index("--match-filter") + 1]
+                self.assertEqual(filter_value, f"duration <=? {bgm.MAX_SECONDS}")
+                pathlib.Path(command[command.index("-o") + 1].replace("%(ext)s", "mp4")).write_bytes(b"source")
+                return mock.Mock(stdout='{"title":"IG Reel"}\n', stderr="")
+            if command[0] == "ffprobe":
+                return mock.Mock(stdout='{"format":{"duration":"60"},"streams":[{"codec_type":"audio"}]}')
+            if command[0] == "ffmpeg":
+                pathlib.Path(command[-1]).write_bytes(b"converted")
+                return mock.Mock()
+            self.fail(f"unexpected command: {command[0]}")
+
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(bgm.subprocess, "run", side_effect=run):
+            destination = pathlib.Path(folder) / "output.mp3"
+            name = bgm.download_and_convert("https://www.instagram.com/reel/Dcvf9-ONVRW/", destination)
+            self.assertEqual(name, "IG Reel.mp3")
+            self.assertEqual(destination.read_bytes(), b"converted")
 
     def test_failed_conversion_keeps_original_audio(self):
         api = FakeSupabase()
