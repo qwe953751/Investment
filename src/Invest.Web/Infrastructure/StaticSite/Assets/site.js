@@ -23584,6 +23584,23 @@ function makeMarketStructureBreadthRow(label, breadth) {
     return row;
 }
 
+function jumpToMarketStructureWeightEntry(source, index) {
+    const card = source.closest('.market-structure-market-chart');
+    const details = card?.querySelector('.market-structure-weights');
+    const item = details?.querySelector(`li[data-weight-index="${index}"]`);
+
+    if (!details || !item) {
+        return;
+    }
+
+    details.open = true;
+    item.tabIndex = -1;
+    item.classList.add('is-jump-target');
+    item.focus({ preventScroll: true });
+    item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    window.setTimeout(() => item.classList.remove('is-jump-target'), 1800);
+}
+
 function makeMarketStructureWeightStrip(market) {
     if (!Array.isArray(market?.weightGroup)) {
         return null;
@@ -23616,13 +23633,15 @@ function makeMarketStructureWeightStrip(market) {
     cells.className = 'market-structure-weight-cells';
     market.weightGroup.forEach((stock, index) => {
         const change = stock.adjustedChangePercent;
-        const cell = document.createElement('span');
+        const cell = document.createElement('button');
+        cell.type = 'button';
         cell.className = `market-structure-weight-cell ${marketStructureTone(change)}`;
         cell.textContent = String(index + 1).padStart(2, '0');
         const weight = stock.startWeight == null ? '' : `（權重 ${(Number(stock.startWeight) * 100).toFixed(2)}%）`;
         const details = `${stock.ticker} ${stock.name}：${marketStructurePercent(change)}${weight}`;
         cell.title = details;
-        cell.setAttribute('aria-label', details);
+        cell.setAttribute('aria-label', `跳到權值觀察群第 ${index + 1} 檔：${details}`);
+        cell.addEventListener('click', () => jumpToMarketStructureWeightEntry(cell, index));
         cells.append(cell);
     });
 
@@ -23800,11 +23819,18 @@ function renderMarketStructure(result, pending = false, message = null, expanded
             summary.textContent = `權值觀察群（已知 ${market.weightGroup.length}/20 檔；固定名單）`;
             details.append(summary);
             const list = document.createElement('ol');
-            for (const stock of market.weightGroup) {
+            market.weightGroup.forEach((stock, index) => {
                 const item = document.createElement('li');
-                const identity = document.createElement('span');
+                item.className = marketStructureTone(stock.adjustedChangePercent);
+                item.dataset.weightIndex = String(index);
+                const identity = document.createElement('button');
+                identity.type = 'button';
+                identity.className = 'market-structure-weight-ticker';
                 identity.textContent = `${stock.ticker} ${stock.name}`;
+                identity.setAttribute('aria-label', `跳到排行榜：${stock.ticker} ${stock.name}`);
+                identity.addEventListener('click', () => jumpToRankedRow(stock.ticker));
                 const change = document.createElement('span');
+                change.className = 'market-structure-weight-change';
                 change.textContent = marketStructurePercent(stock.adjustedChangePercent);
                 const turnover = document.createElement('span');
                 turnover.textContent = stock.tradingValueShare === null || stock.tradingValueShare === undefined
@@ -23814,7 +23840,7 @@ function renderMarketStructure(result, pending = false, message = null, expanded
                 weight.textContent = stock.startWeight == null ? '權重 —' : `權重 ${(Number(stock.startWeight) * 100).toFixed(4)}%`;
                 item.append(identity, weight, change, turnover);
                 list.append(item);
-            }
+            });
             details.append(list);
             card.append(details);
         }
