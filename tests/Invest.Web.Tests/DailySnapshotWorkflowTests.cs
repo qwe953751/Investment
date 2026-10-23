@@ -85,6 +85,35 @@ public sealed class DailySnapshotWorkflowTests
         Assert.Contains("inputs.publish-only != true", workflow, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 2026-10-19：期交所匯率回非 JSON，sync-fx 中止，回補、對帳、匯出與發布明明都成功，
+    /// 整輪卻標紅，鈴鐺誤報「排行可能還停在前一個交易日」。匯率不進靜態網站，
+    /// 所以比照「美股資料新鮮度」：這一步允許失敗，改亮獨立的匯率警報。
+    /// </summary>
+    [Fact]
+    public void 匯率取不到時不把整輪標紅而是亮獨立的匯率警報()
+    {
+        var workflow = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        var step = workflow[workflow.IndexOf("- name: 更新美元兌台幣參考匯率", StringComparison.Ordinal)..];
+        var header = step[..step.IndexOf("run:", StringComparison.Ordinal)];
+        Assert.Contains("id: fx", header, StringComparison.Ordinal);
+        Assert.Contains("continue-on-error: true", header, StringComparison.Ordinal);
+        Assert.Contains("inputs.publish-only != true", header, StringComparison.Ordinal);
+
+        var alertStart = workflow.IndexOf("- name: 更新「美元兌台幣參考匯率」警報", StringComparison.Ordinal);
+        Assert.True(alertStart >= 0, "找不到匯率警報步驟。");
+        var alert = workflow[alertStart..workflow.IndexOf("- name: 失敗時留下線索", alertStart, StringComparison.Ordinal)];
+
+        // 純發布會跳過匯率那一步（outcome 是 skipped）：這時既不能收掉還在壞的警報，也不能誤發。
+        Assert.Contains("steps.fx.outcome == 'success' || steps.fx.outcome == 'failure'", alert, StringComparison.Ordinal);
+        Assert.Contains("alert-clear \"美元兌台幣參考匯率\"", alert, StringComparison.Ordinal);
+        Assert.Contains("alert \"美元兌台幣參考匯率\" warning", alert, StringComparison.Ordinal);
+        Assert.DoesNotContain("job.status", alert, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void 純發布會先拒絕日K快取格式落後的資料()
     {

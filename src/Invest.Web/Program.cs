@@ -2242,9 +2242,8 @@ static async Task RunExchangeRateSyncAsync(IServiceProvider services)
 
     var client = scope.ServiceProvider.GetRequiredService<TaifexExchangeRateClient>();
     var store = scope.ServiceProvider.GetRequiredService<ExchangeRateStore>();
-    var rate = await client.GetLatestUsdTwdAsync();
-    await store.SaveAsync(rate);
-    Console.WriteLine($"USD/TWD {rate.RateDate:yyyy-MM-dd} = {rate.Rate:0.######}（{rate.Source}）");
+    Environment.ExitCode = await UsdTwdExchangeRateSync.RunAsync(
+        client, store.SaveAsync, store.LoadLastSavedAtAsync, DateTimeOffset.UtcNow, Console.Out, Console.Error);
 }
 
 /// <summary>

@@ -473,8 +473,16 @@ jobs:
 
       # 匯率只需每日一筆，由伺服器端集中讀取期交所並保存；不要讓每台裝置各自打
       # 外部 API。publish-only 不改資料庫，因此沿用上一次完整流程保存的匯率。
+      #
+      # 這一步允許失敗。2026-10-19～10-22 期交所四度回中文開頭的非 JSON，sync-fx 以未處理例外中止，
+      # 其中 10/19 那輪回補、對帳、匯出與發布明明都成功，整輪卻標紅，鈴鐺誤報「排行可能還停在前一個交易日」。
+      # 現在程式自己重試三次，仍取不到就不寫任何值，資料庫既有的最新一筆照常給資產頁用（帳戶頁標出匯率日期）；
+      # 期交所目前這份檔案稍早已有別輪存過就 exit 0，還沒存到才 exit 1。匯率不進靜態網站，
+      # 比照「美股資料新鮮度」改由最後面獨立的「美元兌台幣參考匯率」警報提醒，不把整輪判成失敗。
       - name: 更新美元兌台幣參考匯率
+        id: fx
         if: ${{ !cancelled() && inputs.publish-only != true }}
+        continue-on-error: true
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- sync-fx
@@ -716,6 +724,23 @@ jobs:
               else
                   exit 1
               fi
+          fi
+
+      # 獨立於「每日排行快照」那顆鈴鐺：匯率取不到不代表排行沒發布（見「更新美元兌台幣參考匯率」）。
+      # 只看匯率那一步自己的結果。純發布或那一步沒跑到時兩種都不做，保留上一輪的狀態——
+      # 否則每一次純發布都會把還在壞的匯率警報收掉。
+      - name: 更新「美元兌台幣參考匯率」警報
+        if: ${{ always() && (steps.fx.outcome == 'success' || steps.fx.outcome == 'failure') }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ '${{ steps.fx.outcome }}' = 'success' ]; then
+              dotnet run -c Release --project src/Invest.Web -- alert-clear "美元兌台幣參考匯率"
+          else
+              dotnet run -c Release --project src/Invest.Web -- alert "美元兌台幣參考匯率" warning \
+                  "期交所目前這份 USD/TWD 參考匯率還沒有任何一輪存到，資產頁沿用資料庫既有的最新一筆（帳戶頁會標出匯率日期）；下一次完整流程會再試，原因見執行紀錄。" \
+                  "$RUN_URL"
           fi
 
       - name: 失敗時留下線索

@@ -28,4 +28,25 @@ public sealed class ExchangeRateStore
         command.Parameters.AddWithValue("source", rate.Source);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// USD/TWD 最近一次成功保存的時間；一筆都沒有時回 null。
+    /// sync-fx 取不到期交所時，用它判斷期交所目前這份檔案是不是已經有別輪存過。
+    /// </summary>
+    public async Task<DateTimeOffset?> LoadLastSavedAtAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            """
+            select max(updated_at)
+              from exchange_rates
+             where base_currency = 'USD' and quote_currency = 'TWD'
+            """,
+            connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        return await reader.ReadAsync(cancellationToken) && !reader.IsDBNull(0)
+            ? reader.GetFieldValue<DateTimeOffset>(0)
+            : null;
+    }
 }
