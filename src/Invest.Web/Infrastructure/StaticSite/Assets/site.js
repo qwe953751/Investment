@@ -21551,7 +21551,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         }),
         svgElement('text', {
             class: 'daily-kline-section-title', x: left, y: volumeSectionTitleY
-        }, `下層：${volumeLabel}`));
+        }, isCrypto ? '下層：成交額' : '下層：成交量'));
 
     bars.forEach((bar, index) => {
         const value = Number(bar.tradingVolume);
