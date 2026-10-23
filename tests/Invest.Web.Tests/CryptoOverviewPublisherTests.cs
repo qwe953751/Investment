@@ -11,6 +11,16 @@ namespace Invest.Web.Tests;
 [Collection("Supabase storage environment")]
 public sealed class CryptoOverviewPublisherTests
 {
+    [Theory]
+    [InlineData("NoSuchKey", "404", true)]
+    [InlineData("AccessDenied", "403", false)]
+    public async Task 首次發布只接受明確缺物件的Storage400(string code, string status, bool missing)
+    {
+        var publisher = Publisher(new StorageHandler { MissingCode = code, MissingStatus = status });
+        if (missing) Assert.Null(await publisher.ReadPublishedAsync());
+        else await Assert.ThrowsAsync<InvalidOperationException>(() => publisher.ReadPublishedAsync());
+    }
+
     private static CryptoOverviewStage Stage(DateTimeOffset? now = null)
     {
         var time = now ?? DateTimeOffset.UtcNow;
@@ -136,6 +146,8 @@ public sealed class CryptoOverviewPublisherTests
         public List<string> Writes { get; } = [];
         public bool CorruptSnapshots { get; set; }
         public int Calls { get; private set; }
+        public string? MissingCode { get; init; }
+        public string? MissingStatus { get; init; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -148,7 +160,8 @@ public sealed class CryptoOverviewPublisherTests
                 return Objects.TryGetValue(file, out var body)
                     ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(
                         CorruptSnapshots && path.Contains("/authenticated/", StringComparison.Ordinal) && file.StartsWith("crypto/snapshots/", StringComparison.Ordinal) ? "{}"u8.ToArray() : body) }
-                    : new HttpResponseMessage(HttpStatusCode.NotFound);
+                    : MissingCode is null ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                        : new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = JsonContent.Create(new { code = MissingCode, statusCode = MissingStatus }) };
             if (path.Contains("/object/list/", StringComparison.Ordinal))
             {
                 var json = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);

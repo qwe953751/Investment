@@ -31,6 +31,17 @@ public sealed class CryptoOverviewPublisher(IConfiguration configuration, HttpCl
     {
         using var response = await httpClient.GetAsync($"{BaseUrl}/crypto/latest.json", cancellationToken);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        // Storage 舊版外層可能回 400；只有明確的缺物件代碼可視為首次發布。
+        if (response.StatusCode == HttpStatusCode.BadRequest)
+        {
+            try
+            {
+                var error = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+                if (error.TryGetProperty("code", out var code) && code.GetString() == "NoSuchKey"
+                    && error.TryGetProperty("statusCode", out var status) && status.GetString() == "404") return null;
+            }
+            catch (JsonException) { /* 未知錯誤維持失敗，不覆寫既有資料。 */ }
+        }
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"加密 latest HTTP {(int)response.StatusCode}。");
         var pointer = await response.Content.ReadFromJsonAsync<CryptoOverviewPointer>(CryptoOverviewJson.Options, cancellationToken)
             ?? throw new InvalidOperationException("加密 latest 空白。");
