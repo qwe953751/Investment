@@ -144,6 +144,12 @@ test('樣版 B 保留說明、有效報價、20 個權值燈號與權值群外�
     const breadthLabel = findNode(card, node => node.className === 'market-structure-breadth-label'
         && node.children.some(child => child.textContent === '權值群外'));
     assert.equal(cells.children.length, 20);
+    // 每個燈號都是可點的按鈕，點了要跳到名單裡對應那一檔（快速定位，2026-10-21 加入）。
+    assert.ok(cells.children.every(cell => cell.tag === 'button' && cell.listeners.click?.length === 1));
+    const jumps = [];
+    context.jumpToMarketStructureWeightEntry = (source, index) => jumps.push([source, index]);
+    cells.children[4].listeners.click[0]();
+    assert.deepEqual(jumps, [[cells.children[4], 4]]);
     assert.match(allText(card), /權值群外多數股票與多數產業同向下跌，市場跌勢擴散。/);
     assert.match(allText(card), /有效報價 1,083\/1,083/);
     assert.equal(findNode(card, node => node.className === 'market-structure-quote-count'), null);
@@ -160,13 +166,58 @@ function testDocument() {
                 tag,
                 children: [],
                 attributes: {},
+                listeners: {},
                 style: {}, dataset: {},
                 append(...nodes) { this.children.push(...nodes); },
-                setAttribute(name, value) { this.attributes[name] = value; }
+                setAttribute(name, value) { this.attributes[name] = value; },
+                addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); }
             };
         }
     };
 }
+
+test('快速定位：點權值燈號會展開名單、標出對應那一列並捲過去，找不到時什麼都不做', () => {
+    const timers = [];
+    const context = vm.createContext({
+        window: { setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; } }
+    });
+    vm.runInContext(slice('function jumpToMarketStructureWeightEntry(', 'function makeMarketStructureWeightStrip('), context);
+
+    const classes = new Set();
+    const calls = [];
+    const item = {
+        tabIndex: 0,
+        classList: { add: name => classes.add(name), remove: name => classes.delete(name) },
+        focus: options => calls.push(['focus', JSON.stringify(options)]),
+        scrollIntoView: options => calls.push(['scroll', JSON.stringify(options)])
+    };
+    const details = {
+        open: false,
+        querySelector: selector => selector === 'li[data-weight-index="3"]' ? item : null
+    };
+    const card = { querySelector: selector => selector === '.market-structure-weights' ? details : null };
+    const source = { closest: selector => selector === '.market-structure-market-chart' ? card : null };
+
+    context.jumpToMarketStructureWeightEntry(source, 3);
+    assert.equal(details.open, true);
+    assert.equal(item.tabIndex, -1);
+    assert.ok(classes.has('is-jump-target'));
+    assert.deepEqual(calls, [
+        ['focus', '{"preventScroll":true}'],
+        ['scroll', '{"behavior":"smooth","block":"center"}']
+    ]);
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].delay, 1800);
+    timers[0].callback();
+    assert.equal(classes.has('is-jump-target'), false);
+
+    // 名單裡沒有那一檔（例如權值資料不足）或找不到卡片時，不展開、不報錯。
+    details.open = false;
+    context.jumpToMarketStructureWeightEntry(source, 9);
+    context.jumpToMarketStructureWeightEntry({ closest: () => null }, 3);
+    assert.equal(details.open, false);
+    assert.equal(timers.length, 1);
+});
 
 function findNode(root, predicate) {
     if (predicate(root)) return root;

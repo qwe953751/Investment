@@ -73,6 +73,9 @@ jobs:
               create role supabase_admin;"
           docker exec restoretest psql -U postgres -v ON_ERROR_STOP=1 -q \
               -c "create database restored;"
+          # 這句 drop schema 只對上面剛建的拋棄式容器，絕不能照抄去還原正式庫：備份不含
+          # private_notes、admin_bgm 這類私密表，正式庫裡的那些資料只存在正式庫，砍掉就沒有了。
+          # 還原回 Supabase 只准補回缺少的資料，不准 drop／truncate／--clean（見 README「備份與還原」）。
           docker exec restoretest psql -U postgres -d restored -v ON_ERROR_STOP=1 -q \
               -c "drop schema public cascade;"
 
