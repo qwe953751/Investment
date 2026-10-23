@@ -192,7 +192,7 @@ done
 # 出現就代表排除沒生效；這份檔案會公開在 data 分支，所以這裡在壓縮、寫進快照目錄之前就擋下。
 for private in "${private_tables[@]}"; do
     if grep -Eq "public\.$private([^[:alnum:]_]|\$)" "$plain"; then
-        echo "備份裡出現私密表 $private，排除失效了。" >&2
+        echo "備份裡出現私密表 ${private}，排除失效了。" >&2
         exit 1
     fi
 done
