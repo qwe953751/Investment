@@ -21423,6 +21423,9 @@ function klineTrendClass(bar) {
 }
 
 function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null) {
+    const isCrypto = klineData.get(ticker)?.market === 'CRYPTO';
+    const volumeLabel = isCrypto ? '成交額' : '成交量';
+    const formatVolume = isCrypto ? value => `${toFixedText(value, 0)} USD` : toLotText;
     const width = 600;
     const height = 360;
     const left = 16;
@@ -21457,7 +21460,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         class: 'daily-kline-svg',
         viewBox: `0 0 ${width} ${height}`,
         role: 'img',
-        'aria-label': `${ticker} ${name} 三個月還原權息日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與成交量`
+        'aria-label': `${ticker} ${name} 三個月${isCrypto ? '完整 UTC' : '還原權息'}日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與${volumeLabel}`
             + (holdingCost === null ? '' : '，並標示持倉成本均價')
     });
 
@@ -21548,7 +21551,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         }),
         svgElement('text', {
             class: 'daily-kline-section-title', x: left, y: volumeSectionTitleY
-        }, '下層：成交量'));
+        }, `下層：${volumeLabel}`));
 
     bars.forEach((bar, index) => {
         const value = Number(bar.tradingVolume);
@@ -21572,7 +21575,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         }),
         svgElement('text', {
             class: 'daily-kline-axis', x: priceAxisX, y: volumeTop + 4, 'text-anchor': 'start'
-        }, toLotText(maxVolume)));
+        }, isCrypto ? `${toFixedText(maxVolume / 100_000_000, 1)}億 USD` : formatVolume(maxVolume)));
 
     const labels = [bars[0], bars[Math.floor(bars.length / 2)], bars[bars.length - 1]];
     labels.forEach((bar, index) => {
@@ -21601,8 +21604,8 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         lowerY: volumeY,
         lowerValue: bar => bar.tradingVolume,
         lowerReferenceKey: 'volume',
-        lowerLabel: '成交量',
-        formatLower: toLotText
+        lowerLabel: volumeLabel,
+        formatLower: formatVolume
     }, referenceSummary);
 
     return svg;
@@ -21763,11 +21766,12 @@ function renderKLinePopover(ticker, name, anchor) {
 
     const title = document.createElement('div');
     const payload = klineData.get(ticker);
+    const isCrypto = payload?.market === 'CRYPTO';
     const isUs = expandedKLineMarket === '美股' || payload?.market === 'US';
     const isEtf = expandedKLineIsEtf || String(payload?.adjustmentMethod ?? '').endsWith('-tw-etf-daily');
     const isTdr = String(payload?.adjustmentMethod ?? '').endsWith('-tw-tdr-daily');
     const isEmerging = String(payload?.adjustmentMethod ?? '').endsWith('-tw-emerging-daily');
-    const isTaiwan = !isUs && (expandedKLineMarket === ''
+    const isTaiwan = !isUs && !isCrypto && (expandedKLineMarket === ''
         || expandedKLineMarket === '台股' || isEtf || isTdr || isEmerging);
     const holdingCost = klineHoldingCost(ticker, expandedKLineMarket);
 
@@ -21782,7 +21786,8 @@ function renderKLinePopover(ticker, name, anchor) {
     titleLink.rel = 'noopener noreferrer';
     titleLink.title = '在 MoneyDJ 財經百科查這家公司（公司簡介、產品與競爭條件、市場銷售及競爭）';
     titleLink.textContent = `${ticker} ${name}`;
-    strong.append(titleLink);
+    if (isCrypto) strong.textContent = `${ticker} ${name}`;
+    else strong.append(titleLink);
 
     const klineSuspension = klineSuspensionOf(ticker);
     const klineSuspensionBadge = suspensionBadge(klineSuspension);
@@ -21807,6 +21812,7 @@ function renderKLinePopover(ticker, name, anchor) {
     const periodLabel = isEtf ? `ETF 還原權息${timeframeLabel}`
         : isTdr ? `TDR 還原權息${timeframeLabel}`
         : isEmerging ? `興櫃還原權息${timeframeLabel}（日均價）`
+        : isCrypto ? '加密完整 UTC 日 K'
         : isUs ? '美股日 K'
         : `還原權息${timeframeLabel}`;
     period.textContent = endDate
@@ -21833,7 +21839,7 @@ function renderKLinePopover(ticker, name, anchor) {
         card.append(note);
     }
 
-    if (!isUs && !isEtf && !isTdr) {
+    if (!isUs && !isCrypto && !isEtf && !isTdr) {
         const topicRow = document.createElement('div');
         topicRow.className = 'daily-kline-topic-row';
         const topicLabel = document.createElement('span');
@@ -21896,7 +21902,7 @@ function renderKLinePopover(ticker, name, anchor) {
             ? '尚無可用的 ETF 日 K 資料，請重新產生靜態網站。'
             : isTdr
             ? '尚無可用的 TDR 日 K 資料，請重新產生靜態網站。'
-            : isUs
+            : isUs || isCrypto
             ? '尚無可用的日 K 資料，請稍後再試或重新產生靜態網站。'
             : '讀不到已驗證的還原權息日 K，請重新產生靜態網站。';
         card.append(message);
