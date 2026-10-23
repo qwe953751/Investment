@@ -230,17 +230,24 @@ public sealed class MarketOverviewDownloader(
     {
         foreach (var (date, bySymbol) in buffer.OrderBy(pair => pair.Key))
         {
-            var existing = await store.LoadAsync(date, cancellationToken);
-            var merged = MergeBySymbol(existing?.Quotes ?? [], bySymbol.Values);
-
-            await store.SaveAsync(
-                new MarketOverviewSnapshot
-                {
-                    TradingDate = date,
-                    DownloadedAt = DateTimeOffset.Now,
-                    Quotes = merged
-                },
-                cancellationToken);
+            var crypto = bySymbol.Values.Where(x => CryptoOverviewProjection.Symbols.Any(s => s.Symbol == x.Symbol)).ToArray();
+            if (crypto.Length == 9)
+                await store.SaveCryptoAsync(new MarketOverviewSnapshot
+                { TradingDate = date, DownloadedAt = DateTimeOffset.UtcNow, Quotes = crypto }, cancellationToken);
+            var other = bySymbol.Values.Except(crypto).ToArray();
+            if (other.Length > 0)
+            {
+                var existing = await store.LoadLegacyAsync(date, cancellationToken);
+                var merged = MergeBySymbol(existing?.Quotes ?? [], other);
+                await store.SaveAsync(
+                    new MarketOverviewSnapshot
+                    {
+                        TradingDate = date,
+                        DownloadedAt = DateTimeOffset.Now,
+                        Quotes = merged
+                    },
+                    cancellationToken);
+            }
 
             report.DatesWritten.Add(date);
         }

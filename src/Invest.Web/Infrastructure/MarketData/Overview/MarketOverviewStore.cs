@@ -28,6 +28,7 @@ public sealed class MarketOverviewStore
     }
 
     public string Directory => _directory;
+    public string CryptoDirectory => Path.Combine(Path.GetDirectoryName(_directory)!, "imports-overview-crypto");
 
     public async Task SaveAsync(MarketOverviewSnapshot snapshot, CancellationToken cancellationToken = default)
     {
@@ -37,7 +38,7 @@ public sealed class MarketOverviewStore
         await JsonSerializer.SerializeAsync(stream, snapshot, SerializerOptions, cancellationToken);
     }
 
-    public Task<MarketOverviewSnapshot?> LoadAsync(
+    public Task<MarketOverviewSnapshot?> LoadLegacyAsync(
         DateOnly tradingDate,
         CancellationToken cancellationToken = default)
     {
@@ -48,27 +49,47 @@ public sealed class MarketOverviewStore
             : Task.FromResult<MarketOverviewSnapshot?>(null);
     }
 
+    public async Task<MarketOverviewSnapshot?> LoadAsync(DateOnly tradingDate, CancellationToken cancellationToken = default)
+    {
+        var legacy = await LoadLegacyAsync(tradingDate, cancellationToken);
+        var path = Path.Combine(CryptoDirectory, $"{tradingDate:yyyy-MM-dd}.json");
+        var crypto = File.Exists(path) ? await ReadAsync(path, cancellationToken) : null;
+        if (crypto is null) return legacy;
+        var rows = (legacy?.Quotes ?? []).ToDictionary(x => x.Symbol, StringComparer.Ordinal);
+        foreach (var quote in crypto.Quotes) rows[quote.Symbol] = quote;
+        return crypto with { Quotes = rows.Values.ToArray() };
+    }
+
+    /// <summary>僅新增完整日線，既存值保持不變，來源修訂由 raw 觀測另留證據。</summary>
+    public async Task<bool> SaveCryptoAsync(MarketOverviewSnapshot snapshot, CancellationToken cancellationToken = default)
+    {
+        if (snapshot.TradingDate >= DateOnly.FromDateTime(DateTime.UtcNow))
+            throw new InvalidOperationException("加密完整日線不可包含當日形成中 K。");
+        var expected = CryptoOverviewProjection.Symbols.Select(x => x.Symbol).ToHashSet();
+        if (snapshot.Quotes.Count != expected.Count || !snapshot.Quotes.Select(x => x.Symbol).ToHashSet().SetEquals(expected))
+            throw new InvalidOperationException("加密完整日線須有九幣且不得重複。");
+        System.IO.Directory.CreateDirectory(CryptoDirectory);
+        var path = Path.Combine(CryptoDirectory, $"{snapshot.TradingDate:yyyy-MM-dd}.json");
+        if (File.Exists(path)) return false;
+        var temporary = path + ".tmp";
+        await File.WriteAllBytesAsync(temporary, JsonSerializer.SerializeToUtf8Bytes(snapshot, SerializerOptions), cancellationToken);
+        File.Move(temporary, path, overwrite: false);
+        return true;
+    }
+
     public async Task<IReadOnlyList<MarketOverviewSnapshot>> LoadAllAsync(
         CancellationToken cancellationToken = default)
     {
-        if (!System.IO.Directory.Exists(_directory))
+        var dates = new HashSet<DateOnly>();
+        foreach (var directory in new[] { _directory, CryptoDirectory }.Where(System.IO.Directory.Exists))
         {
-            return [];
+            foreach (var path in System.IO.Directory.EnumerateFiles(directory, "*.json"))
+                if (DateOnly.TryParseExact(Path.GetFileNameWithoutExtension(path), "yyyy-MM-dd", out var date)) dates.Add(date);
         }
-
         var snapshots = new List<MarketOverviewSnapshot>();
-
-        foreach (var path in System.IO.Directory.EnumerateFiles(_directory, "*.json"))
-        {
-            var snapshot = await ReadAsync(path, cancellationToken);
-
-            if (snapshot is not null)
-            {
-                snapshots.Add(snapshot);
-            }
-        }
-
-        return snapshots.OrderBy(snapshot => snapshot.TradingDate).ToArray();
+        foreach (var date in dates.Order())
+            if (await LoadAsync(date, cancellationToken) is { } snapshot) snapshots.Add(snapshot);
+        return snapshots;
     }
 
     private async Task<MarketOverviewSnapshot?> ReadAsync(string path, CancellationToken cancellationToken)

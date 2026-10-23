@@ -1,0 +1,101 @@
+name: 加密貨幣半小時快照
+
+on:
+  schedule:
+    # 全天、週末執行；GitHub 排程可能延遲，網站以來源時間顯示過期。
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: 補足兩年完整 UTC 日線（首次啟用或補洞）
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: crypto-market-snapshot
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+          sparse-checkout: |
+            imports-overview
+            imports-overview-crypto
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: 建置加密收集器
+        run: dotnet build src/Invest.Web -c Release --nologo
+      - name: 收集九幣並計算完整 UTC 日線
+        id: prepare
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+        run: |
+          args=()
+          if [ "$BOOTSTRAP" = 'true' ]; then args+=(--bootstrap); fi
+          dotnet run --no-build -c Release --project src/Invest.Web -- crypto-overview prepare "$RUNNER_TEMP/crypto-overview" "${args[@]}"
+      - name: 保存完整日線到 data
+        id: save
+        working-directory: data
+        run: |
+          git add imports-overview-crypto
+          if git diff --cached --name-only --diff-filter=D | grep -q .; then
+            echo '禁止刪除加密完整日線。' >&2
+            exit 1
+          fi
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -qm '保存加密完整 UTC 日線與來源紀錄'
+            for attempt in 1 2 3; do
+              if git push origin HEAD:data; then break; fi
+              if [ "$attempt" = 3 ]; then exit 1; fi
+              git fetch origin data
+              git rebase origin/data
+            done
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: 發布精簡快照與按需日 K
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        env:
+          SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
+          DATA_COMMIT: ${{ steps.save.outputs.commit }}
+          SAVE_OUTCOME: ${{ steps.save.outcome }}
+        run: |
+          args=()
+          if [ "$SAVE_OUTCOME" != 'success' ]; then
+            DATA_COMMIT=$(git -C data rev-parse HEAD)
+            args+=(--retain-daily)
+          fi
+          dotnet run --no-build -c Release --project src/Invest.Web -- crypto-overview publish "$RUNNER_TEMP/crypto-overview" --data-commit "$DATA_COMMIT" "${args[@]}"
+      - name: 記錄收集結果
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / 'crypto-overview/stage.json'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('加密快照目標：24/7 每 30 分鐘；GitHub 排程不保證準時。\n\n')
+              if path.exists():
+                  snapshot = json.loads(path.read_text())['snapshot']
+                  output.write(f"來源時間：{snapshot['sourceAsOf']}\n\n完整日線：{(snapshot.get('daily') or {}).get('asOf', '未到齊')}\n")
+                  if snapshot.get('warnings'):
+                      output.write('\n' + '\n'.join(snapshot['warnings']) + '\n')
+                  if json.loads(path.read_text()).get('dailyError'):
+                      raise SystemExit('完整日線失敗；行情已依可用資料嘗試發布，需核對前面步驟。')
+          PY

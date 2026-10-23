@@ -70,7 +70,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
-    command is "backfill" or "backfill-bars" or "backfill-index-weights" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
+    command is "backfill" or "backfill-bars" or "backfill-index-weights" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "crypto-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "market-structure-intraday-audit" or "market-structure-audit" or "repair-market-indices" or "rebuild-market-structure" or "rebuild-intraday-ranking" or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet" or "etf-dividends";
 
 string[] hostArgs = isConsoleCommand ? [] : args;
@@ -130,6 +130,9 @@ builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<EmergingIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<MarketOverviewIntradaySnapshotPublisher>();
+builder.Services.AddHttpClient<CryptoOverviewPublisher>();
+builder.Services.AddHttpClient<CryptoOverviewClient>(ConfigureQuoteClient);
+builder.Services.AddTransient<CryptoOverviewCollector>();
 builder.Services.AddHttpClient<MarketTurnoverSnapshotPublisher>();
 // crumb 認證需要跨 GET/POST 帶同一組 cookie，handler 要固定用同一個 CookieContainer。
 builder.Services.AddHttpClient(nameof(YahooScreenerMarketTurnoverClient), ConfigureQuoteClient)
@@ -361,6 +364,44 @@ if (command is "verify-kline-cache")
 if (command is "backfill-us")
 {
     await RunUsBackfillAsync(app.Services);
+    return;
+}
+
+if (command is "crypto-overview")
+{
+    using var scope = app.Services.CreateScope();
+    try
+    {
+        if (args.Length < 3 || args[1] is not ("prepare" or "publish"))
+            throw new ArgumentException("crypto-overview prepare|publish ABS_DIRECTORY [--bootstrap] [--data-commit SHA]");
+        var directory = Path.GetFullPath(args[2]);
+        var path = Path.Combine(directory, "stage.json");
+        if (args[1] == "prepare")
+        {
+            var collector = scope.ServiceProvider.GetRequiredService<CryptoOverviewCollector>();
+            var stage = await collector.PrepareAsync(args.Contains("--bootstrap"));
+            Directory.CreateDirectory(directory);
+            await File.WriteAllBytesAsync(path, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(stage, CryptoOverviewJson.Options));
+            Console.WriteLine($"九幣收集完成；來源 {stage.Snapshot.SourceAsOf:O}，完整日線 {stage.Snapshot.Daily?.AsOf ?? "未到齊"}。");
+        }
+        else
+        {
+            var stage = System.Text.Json.JsonSerializer.Deserialize<CryptoOverviewStage>(await File.ReadAllBytesAsync(path), CryptoOverviewJson.Options)
+                ?? throw new InvalidOperationException("加密 staging 無效。");
+            var index = Array.IndexOf(args, "--data-commit");
+            if (index < 0 || index + 1 >= args.Length) throw new ArgumentException("publish 必須指定 --data-commit。");
+            var publisher = scope.ServiceProvider.GetRequiredService<CryptoOverviewPublisher>();
+            var pointer = await publisher.PublishAsync(stage, args[index + 1], args.Contains("--retain-daily"));
+            Console.WriteLine($"加密快照發布成功；SHA256 {pointer.Sha256}，來源 {pointer.SourceAsOf:O}。");
+        }
+    }
+    catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or ArgumentException
+        or System.Text.Json.JsonException or IOException or KeyNotFoundException)
+    {
+        // 不輸出可能包含端點／權杖的 HTTP exception 內容。
+        Console.Error.WriteLine(exception is HttpRequestException ? "加密資料連線失敗，請檢查來源／Storage HTTP 狀態。" : exception.Message);
+        Environment.ExitCode = 1;
+    }
     return;
 }
 

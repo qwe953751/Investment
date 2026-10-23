@@ -54,7 +54,8 @@ public sealed class StaticSiteExporter(
     YahooFinanceDailyQuoteClient turnoverKLineClient,
     ILogger<StaticSiteExporter> logger,
     IConfiguration configuration,
-    EtfDividendProjectionService etfDividendProjection)
+    EtfDividendProjectionService etfDividendProjection,
+    CryptoOverviewPublisher? cryptoOverviewPublisher = null)
 {
     /// <summary>
     /// 催化事件頁最多列幾則。六十天的重大訊息篩掉例行公告之後還有一千多則，
@@ -385,7 +386,9 @@ public sealed class StaticSiteExporter(
                 ToCurveExport(turnoverCalibration),
                 ToAccelerationExport(),
                 marketStructureExport,
-                dividendManifest),
+                dividendManifest,
+                CryptoOverviewCdn: cryptoOverviewPublisher is not null && await cryptoOverviewPublisher.HasPublishedAsync(cancellationToken)
+                    ? new CryptoOverviewCdnExport(cryptoOverviewPublisher.BaseUrl!) : null),
             cancellationToken);
 
         await WriteMarketOverviewAsync(dataDirectory, cancellationToken);
@@ -2208,6 +2211,7 @@ public sealed class StaticSiteExporter(
     }
 
     private sealed record MarketOverviewIntradayCdnExport(string BaseUrl);
+    private sealed record CryptoOverviewCdnExport(string BaseUrl, int SchemaVersion = 1);
 
     private async Task<MarketTurnoverCdnExport?> ToMarketTurnoverCdnExportAsync(
         CancellationToken cancellationToken)
@@ -2294,7 +2298,8 @@ public sealed class StaticSiteExporter(
         MarketStructureExport? MarketStructure,
 
         // 獨立 ETF 配息檔；以內容 SHA 快取，失敗狀態由各市場分開標示。
-        EtfDividendManifestExport EtfDividends, string RankingRulesVersion = RankingSortOrders.RulesVersion);
+        EtfDividendManifestExport EtfDividends, string RankingRulesVersion = RankingSortOrders.RulesVersion,
+        CryptoOverviewCdnExport? CryptoOverviewCdn = null);
 
     private sealed record ThresholdExport(int Key, string Text);
 

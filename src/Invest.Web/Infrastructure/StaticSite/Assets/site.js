@@ -20408,6 +20408,8 @@ function makeKLineButton(ticker, name, options = {}) {
 }
 
 async function loadKLineData(ticker) {
+    const cryptoAsset = cryptoOverviewSnapshot?.daily?.kLines?.[ticker];
+    if (cryptoAsset && cryptoOverviewCdn) return loadCryptoKLine(ticker, cryptoAsset);
     if (klineData.has(ticker)) {
         return;
     }
@@ -31990,6 +31992,228 @@ function startIntradayTimer() {
 // 台股維持既有頁面完全不重畫——切到其他市場時只是用 CSS 把 .ranking-page
 // 整塊隱藏，改顯示這裡建立的市場總覽面板；切回台股就是把 .ranking-page 顯示回來，
 // 台股本身的渲染／初始化流程完全不受影響。
+// 筆記 #90：加密專屬 24/7 精簡快照，與日韓交易時段、台股 raw 輪詢分開。
+const CRYPTO_SYMBOLS = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'DOGE-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD', 'AVAX-USD', 'LINK-USD'];
+const CRYPTO_POLL_MS = 5 * 60_000;
+const CRYPTO_STALE_MS = 90 * 60_000;
+let cryptoOverviewCdn = null;
+let cryptoOverviewSnapshot = null;
+let cryptoOverviewHash = null;
+let cryptoOverviewPromise = null;
+let cryptoOverviewCheckedAt = 0;
+let cryptoOverviewChannel = null;
+let cryptoOverviewShared = null;
+const cryptoKLineHashes = new Map();
+
+function cryptoOverviewIsActive() {
+    return marketSwitchProto?.market === 'crypto' && !['assets', 'notes'].includes(state.view)
+        && document.visibilityState === 'visible' && navigator.onLine !== false;
+}
+
+function cryptoValidDate(value) {
+    return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+        && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+}
+
+function validateCryptoSnapshot(snapshot, pointer) {
+    const rows = snapshot?.live;
+    const times = Array.isArray(rows) ? rows.map(x => Date.parse(x.sourceAt)) : [];
+    const validNumber = x => typeof x === 'number' && Number.isFinite(x);
+    if (snapshot?.schemaVersion !== 1 || snapshot.market !== 'crypto' || pointer?.schemaVersion !== 1
+        || pointer.market !== 'crypto' || !Array.isArray(rows) || rows.length !== 9
+        || new Set(rows.map(x => x.symbol)).size !== 9 || rows.some(x => !CRYPTO_SYMBOLS.includes(x.symbol)
+            || !validNumber(x.price) || x.price <= 0 || typeof x.name !== 'string'
+            || ['daily', 'dailyAmount', 'ytd', 'ytdAmount'].some(k => x[k] != null && !validNumber(x[k]))
+            || ['dailyBaseDate', 'ytdBaseDate'].some(k => x[k] != null && !cryptoValidDate(x[k])))
+        || times.some(x => !Number.isFinite(x) || x > Date.now() + 2 * 60_000)
+        || new Set(rows.map(x => x.sourceAt.slice(0, 10))).size !== 1
+        || Date.parse(snapshot.sourceAsOf) !== Math.min(...times)
+        || snapshot.sourceAsOf !== pointer.sourceAsOf || (snapshot.daily?.asOf ?? null) !== (pointer.dailyAsOf ?? null)) {
+        throw new Error('加密行情契約不符');
+    }
+    if (snapshot.daily != null) {
+        const daily = snapshot.daily;
+        const index = daily.kLines;
+        if (!cryptoValidDate(daily.asOf) || daily.asOf >= snapshot.sourceAsOf.slice(0, 10)
+            || !/^[a-f0-9]{40}$/.test(daily.dataCommit ?? '') || daily.group?.asOf !== daily.asOf
+            || !Array.isArray(daily.group?.indices) || daily.group.indices.length !== 3
+            || new Set(daily.group.indices.map(x => x.symbol)).size !== 3
+            || daily.group.indices.some(x => !CRYPTO_SYMBOLS.slice(0, 3).includes(x.symbol))
+            || !Array.isArray(daily.group?.sectors) || daily.group.sectors.length !== 9
+            || new Set(daily.group.sectors.map(x => x.symbol)).size !== 9
+            || daily.group.sectors.some(x => !CRYPTO_SYMBOLS.includes(x.symbol))
+            || index == null || Object.keys(index).length !== 9
+            || CRYPTO_SYMBOLS.some(symbol => !validCryptoKLineAsset(index[symbol], symbol, daily.asOf))) {
+            throw new Error('加密完整日線契約不符');
+        }
+    }
+    return snapshot;
+}
+
+function validCryptoKLineAsset(asset, symbol, asOf) {
+    return asset != null && asset.asOf === asOf && /^[a-f0-9]{64}$/.test(asset.sha256 ?? '')
+        && new RegExp(`^crypto/daily/${asOf}-[a-f0-9]{16}-${symbol}\\.json$`).test(asset.file ?? '');
+}
+
+async function cryptoReadHashed(file, sha256) {
+    if (!/^[a-f0-9]{64}$/.test(sha256 ?? '')) throw new Error('加密 hash 格式不符');
+    const response = await fetch(`${cryptoOverviewCdn.baseUrl.replace(/\/$/, '')}/${file}`, { signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) { const error = new Error(`加密檔案 HTTP ${response.status}`); error.status = response.status; throw error; }
+    const bytes = await response.arrayBuffer();
+    const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(x => x.toString(16).padStart(2, '0')).join('');
+    if (hash !== sha256) throw new Error('加密內容 hash 不符');
+    return { bytes, snapshot: JSON.parse(new TextDecoder().decode(bytes)) };
+}
+
+function acceptCryptoOverview(snapshot, hash) {
+    const previous = cryptoOverviewSnapshot;
+    if (previous && (snapshot.live.some(row => Date.parse(row.sourceAt) < Date.parse(previous.live.find(x => x.symbol === row.symbol).sourceAt))
+        || (snapshot.daily?.asOf ?? '') < (previous.daily?.asOf ?? ''))) throw new Error('加密快照倒退');
+    if (hash === cryptoOverviewHash) return false;
+    cryptoOverviewSnapshot = snapshot;
+    cryptoOverviewHash = hash;
+    for (const symbol of CRYPTO_SYMBOLS) {
+        if (previous?.daily?.kLines?.[symbol]?.sha256 !== snapshot.daily?.kLines?.[symbol]?.sha256) {
+            klineData.delete(symbol);
+            cryptoKLineHashes.delete(symbol);
+        }
+    }
+    if (cryptoOverviewIsActive() && CRYPTO_SYMBOLS.includes(expandedTicker) && snapshot.daily?.kLines?.[expandedTicker]) {
+        klineOverrideEndDate = snapshot.daily.asOf;
+        void loadKLineData(expandedTicker).then(refreshKLinePopover).catch(() => {});
+    }
+    return true;
+}
+
+async function refreshCryptoOverview() {
+    if (!cryptoOverviewIsActive() || cryptoOverviewCdn === null || cryptoOverviewPromise !== null
+        || Date.now() - cryptoOverviewCheckedAt < CRYPTO_POLL_MS) return false;
+    // leader 租約只涵蓋一次有上限請求；各市場使用獨立 key，背景頁不續租。
+    if (cryptoOverviewChannel !== null) {
+        try {
+            const owner = intradayTabId;
+            const lease = JSON.parse(localStorage.getItem('invest-crypto-overview-lease') ?? 'null');
+            if (lease?.until > Date.now() && lease.owner !== owner) {
+                cryptoOverviewChannel.postMessage({ type: 'request' });
+                return false;
+            }
+            localStorage.setItem('invest-crypto-overview-lease', JSON.stringify({ owner, until: Date.now() + 45_000 }));
+        } catch { /* Storage 不可用時仍只輪詢小型 CDN 指標。 */ }
+    }
+    cryptoOverviewCheckedAt = Date.now();
+    cryptoOverviewPromise = (async () => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const response = await fetch(`${cryptoOverviewCdn.baseUrl.replace(/\/$/, '')}/crypto/latest.json`,
+                { cache: 'no-cache', signal: AbortSignal.timeout(15_000) });
+            if (!response.ok) throw new Error(`加密指標 HTTP ${response.status}`);
+            const pointer = await response.json();
+            if (!/^crypto\/snapshots\/\d{14}-(?:\d{4}-\d{2}-\d{2}-[a-f0-9]{16}|none)-[a-f0-9]{64}\.json$/.test(pointer.file ?? '')
+                || pointer.schemaVersion !== 1 || pointer.market !== 'crypto') throw new Error('加密指標不符');
+            if (pointer.sha256 === cryptoOverviewHash) return false;
+            let downloaded;
+            try { downloaded = await cryptoReadHashed(pointer.file, pointer.sha256); }
+            catch (error) { if (attempt === 0 && error.status === 404) continue; throw error; }
+            const { bytes, snapshot } = downloaded;
+            const changed = acceptCryptoOverview(validateCryptoSnapshot(snapshot, pointer), pointer.sha256);
+            cryptoOverviewShared = { type: 'snapshot', bytes, pointer };
+            cryptoOverviewChannel?.postMessage(cryptoOverviewShared);
+            return changed;
+        }
+        return false;
+    })();
+    try { return await cryptoOverviewPromise; }
+    catch { return false; } // 保留最後有效資料及時間，不退回 DB 或來源直連。
+    finally { cryptoOverviewPromise = null; }
+}
+
+function cryptoOverviewGroup() {
+    const snapshot = cryptoOverviewSnapshot;
+    if (snapshot === null) return null;
+    const daily = snapshot.daily?.group;
+    return {
+        ...(daily ?? {}), asOf: snapshot.daily?.asOf ?? null, dates: [], cryptoLive: true,
+        heatScore: daily?.heatScore ?? null, sectorHeatScore: null,
+        indices: CRYPTO_SYMBOLS.slice(0, 3).map(symbol => {
+            const row = snapshot.live.find(x => x.symbol === symbol);
+            return { symbol, name: row.name, value: row.price, daily: row.daily, ytd: row.ytd,
+                dailyAmount: row.dailyAmount, ytdAmount: row.ytdAmount,
+                heatScore: daily?.indices.find(x => x.symbol === symbol)?.heatScore ?? null };
+        }),
+        sectors: snapshot.live.map(row => ({ symbol: row.symbol, name: row.name, change: row.daily,
+            weight: daily?.sectors.find(x => x.symbol === row.symbol)?.weight ?? null })),
+        warnings: Array.isArray(snapshot.warnings) ? snapshot.warnings : []
+    };
+}
+
+async function loadCryptoKLine(ticker, asset, retry = true) {
+    if (cryptoKLineHashes.get(ticker) === asset.sha256 && klineData.has(ticker)) return;
+    const key = `crypto:${ticker}:${asset.sha256}`;
+    if (!klinePromises.has(key)) klinePromises.set(key, (async () => {
+        const { snapshot: payload } = await cryptoReadHashed(asset.file, asset.sha256);
+        if (payload.market !== 'CRYPTO' || payload.adjustmentMethod !== 'raw-market-overview-daily'
+            || payload.adjustmentThrough !== asset.asOf || !Array.isArray(payload.bars)
+            || payload.bars.some(bar => !cryptoValidDate(bar.date) || bar.date > asset.asOf)) throw new Error('加密日 K 契約不符');
+        if (cryptoOverviewSnapshot?.daily?.kLines?.[ticker]?.sha256 !== asset.sha256) return;
+        klineData.set(ticker, payload);
+        cryptoKLineHashes.set(ticker, asset.sha256);
+    })());
+    try { await klinePromises.get(key); }
+    catch (error) {
+        if (retry && error.status === 404) {
+            cryptoOverviewCheckedAt = 0;
+            await refreshCryptoOverview();
+            const latest = cryptoOverviewSnapshot?.daily?.kLines?.[ticker];
+            if (latest && latest.sha256 !== asset.sha256) return loadCryptoKLine(ticker, latest, false);
+        }
+        throw error;
+    } finally { klinePromises.delete(key); }
+}
+
+function startCryptoOverviewRefresh() {
+    try {
+        cryptoOverviewChannel = new BroadcastChannel('invest-crypto-overview-v1');
+        cryptoOverviewChannel.onmessage = async ({ data }) => {
+            if (data?.type === 'request') {
+                if (cryptoOverviewShared !== null) cryptoOverviewChannel.postMessage(cryptoOverviewShared);
+                return;
+            }
+            if (data?.type !== 'snapshot' || !(data.bytes instanceof ArrayBuffer)) return;
+            try {
+                const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', data.bytes))].map(x => x.toString(16).padStart(2, '0')).join('');
+                if (hash !== data.pointer?.sha256) return;
+                const snapshot = validateCryptoSnapshot(JSON.parse(new TextDecoder().decode(data.bytes)), data.pointer);
+                const changed = acceptCryptoOverview(snapshot, hash);
+                cryptoOverviewShared = data;
+                cryptoOverviewCheckedAt = Date.now();
+                if (changed && cryptoOverviewIsActive()) marketSwitchRender?.();
+            } catch { /* 拒絕不一致的跨分頁訊息。 */ }
+        };
+        cryptoOverviewChannel.postMessage({ type: 'request' });
+    } catch { cryptoOverviewChannel = null; }
+    const tick = () => {
+        void refreshCryptoOverview().then(changed => { if (changed && cryptoOverviewIsActive()) marketSwitchRender?.(); });
+        if (cryptoOverviewIsActive()) {
+            const label = document.querySelector('[data-crypto-status]');
+            if (label) label.textContent = cryptoOverviewStatusText();
+        }
+    };
+    const loop = () => { tick(); setTimeout(loop, 60_000); };
+    setTimeout(loop, 60_000);
+    for (const event of ['focus', 'pageshow', 'online']) window.addEventListener(event, tick);
+    document.addEventListener('visibilitychange', tick);
+    tick();
+}
+
+function cryptoOverviewStatusText() {
+    const snapshot = cryptoOverviewSnapshot;
+    if (snapshot === null) return '行情暫用已完成日線；尚無有效半小時快照。';
+    const delayed = Date.now() - Date.parse(snapshot.sourceAsOf) > CRYPTO_STALE_MS;
+    const time = new Date(snapshot.sourceAsOf).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
+    const daily = snapshot.daily?.asOf ?? '未到齊';
+    return `${delayed ? '⚠ 行情超過 90 分鐘未更新｜' : ''}行情截至 ${time}（台北）｜每 30 分鐘收集目標｜當日依 UTC 換日（台北 08:00）｜熱絡／資金關注度／日 K 截至 ${daily}`;
+}
+
+
 // 美股／日股／韓股／加密貨幣讀 data/market-overview.json（見 StaticSiteExporter.WriteMarketOverviewAsync），
 // 台股沒有這份檔案：切到台股時顯示的是真實的既有頁面，不需要也不會去讀它。
 // 這份檔案在使用者第一次切離台股時才 fetch（見 ensureMarketOverviewData），
@@ -32839,7 +33063,7 @@ function mspBuildIndices(group, market, proto) {
                             ? '韓股'
                             : '美股',
                 // 切到過往交易日時要帶那天當 K 線終點，latest 只在瀏覽最新一天時才對。
-                endDate: proto?.date ?? group.dates?.at(-1) ?? ''
+                endDate: proto?.date ?? group.dates?.at(-1) ?? (market === 'crypto' ? group.asOf : '')
             }));
         }
 
@@ -32853,7 +33077,8 @@ function mspBuildIndices(group, market, proto) {
         changes.className = 'msp-index-tile-changes';
         const daily = document.createElement('span');
         daily.className = `msp-index-tile-daily ${toTrendClass(index.daily ?? 0)}`;
-        const dailyChangeAmount = calculateIndexPointChange(index.value, index.daily);
+        const dailyChangeAmount = market === 'crypto' && group.cryptoLive === true
+            ? index.dailyAmount : calculateIndexPointChange(index.value, index.daily);
         const dailyChangeSuffix = missing(dailyChangeAmount)
             ? ''
             : `（${mspFormatIndexChangeAmount(market, dailyChangeAmount)}）`;
@@ -32862,7 +33087,8 @@ function mspBuildIndices(group, market, proto) {
             : `日 ${toSignedPercentText(index.daily / 100, 2)}${dailyChangeSuffix}`;
         const ytd = document.createElement('span');
         ytd.className = `msp-index-tile-ytd ${toTrendClass(index.ytd ?? 0)}`;
-        const ytdChangeAmount = calculateIndexPointChange(index.value, index.ytd);
+        const ytdChangeAmount = market === 'crypto' && group.cryptoLive === true
+            ? index.ytdAmount : calculateIndexPointChange(index.value, index.ytd);
         const ytdChangeSuffix = missing(ytdChangeAmount)
             ? ''
             : `（${mspFormatIndexChangeAmount(market, ytdChangeAmount)}）`;
@@ -33423,6 +33649,14 @@ function mspResolveTurnoverGroup(group, market, proto) {
 function mspBuildDashboard(group, market, proto, paint) {
     const dashboard = document.createElement('div');
     dashboard.className = 'msp-dashboard';
+    if (market === 'crypto') {
+        const status = document.createElement('p');
+        status.className = 'msp-card-detail';
+        status.dataset.cryptoStatus = '';
+        status.textContent = group.cryptoLive === true ? cryptoOverviewStatusText()
+            : `行情暫用完整 UTC 日線，截至 ${group.asOf ?? '—'}；尚無有效半小時快照。`;
+        dashboard.append(status);
+    }
 
     const sessionSwitch = mspBuildSessionSwitch(market, proto, paint);
     if (sessionSwitch !== null) {
@@ -35805,6 +36039,7 @@ function initMarketSwitch() {
 
         const workspaceView = state.view === 'assets' || state.view === 'notes';
         const showOverview = proto.market !== 'tw' && !workspaceView;
+        if (showOverview && proto.market === 'crypto') void refreshCryptoOverview().then(changed => { if (changed && cryptoOverviewIsActive()) render(); });
         const navVariant = MARKET_NAV_DEFAULT_VARIANT;
 
         if (SITE_ACCESS === 'holdings' && state.view === 'assets') {
@@ -35851,6 +36086,8 @@ function initMarketSwitch() {
             inner.append(
                 mspBuildLayoutPreviewNotice(proto.market),
                 mspBuildDashboard(localPreviewGroup, proto.market, proto, render));
+        } else if (proto.market === 'crypto' && cryptoOverviewGroup() !== null) {
+            inner.append(mspBuildDashboard(cryptoOverviewGroup(), 'crypto', proto, render));
         } else if (marketOverviewLoadError !== null) {
             const notice = document.createElement('section');
             notice.className = 'notice warning msp-overview-notice';
@@ -35930,7 +36167,9 @@ async function start() {
     intradayCdn = manifest.intradayCdn ?? null;
     marketOverviewIntradayCdn = manifest.marketOverviewIntradayCdn ?? null;
     marketTurnoverCdn = manifest.marketTurnoverCdn ?? null;
+    cryptoOverviewCdn = manifest.cryptoOverviewCdn?.schemaVersion === 1 ? manifest.cryptoOverviewCdn : null;
     startMarketOverviewIntradayRefresh();
+    startCryptoOverviewRefresh();
     marketSwitchRender?.();
     dispositions = new Map((manifest.dispositions ?? []).map(entry => [entry.ticker, entry]));
     alteredTrading = new Set(manifest.alteredTrading ?? []);
