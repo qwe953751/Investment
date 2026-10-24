@@ -252,8 +252,9 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("const COMPARISON_MODES", script, StringComparison.Ordinal);
         Assert.Contains("comparisonMode: 'range'", script, StringComparison.Ordinal);
         // 單日比較每個期間一份檔，前端與匯出器的檔名要一致；只有切到「單日」才下載。
+        // 檔案是事先 gzip 的 .json.gz，前端組檔名一律經過 rankingFilePath()（見 StaticRankingGzipTests）。
         Assert.Contains("`single-${selection.period}-${selection.date}`", script, StringComparison.Ordinal);
-        Assert.Contains("$\"single-{comparison.PeriodDays}-{date:yyyy-MM-dd}.json\"", exporter, StringComparison.Ordinal);
+        Assert.Contains("$\"single-{comparison.PeriodDays}-{date:yyyy-MM-dd}.json.gz\"", exporter, StringComparison.Ordinal);
         Assert.Contains("ComparisonMode.SingleDay", exporter, StringComparison.Ordinal);
     }
 

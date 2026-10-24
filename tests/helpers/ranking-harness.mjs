@@ -45,6 +45,9 @@ export function harness(overrides = {}, functions = []) {
         reloadIfStale: async () => false, staticJsonLoadErrorMessage: (key, error) => key + ':' + error.message,
         ...overrides
     });
-    vm.runInContext([coordination, ...['median', 'shrunkVolumeRatio', 'currentLiquidityFloor', 'rankRows', 'applySingleDayComparison', ...functions].map(fn)].join('\n'), context);
+    // 真實的 fetchPeriod 會呼叫 rankingFilePath／decodeStaticJson（排行檔改成 .json.gz 之後才有）。
+    // 只在腳本裡真的有這兩個函式時才載入，讓 RANKING_SCRIPT 仍然可以指向改版前的舊腳本。
+    const staticJsonHelpers = ['rankingFilePath', 'decodeStaticJson'].filter(name => script.includes(`function ${name}(`));
+    vm.runInContext([coordination, ...['median', 'shrunkVolumeRatio', 'currentLiquidityFloor', 'rankRows', 'applySingleDayComparison', ...staticJsonHelpers, ...functions].map(fn)].join('\n'), context);
     return { context, nodes, calls, read: expression => vm.runInContext(expression, context), change(changes) { Object.assign(context.state, changes); if (context.syncRankingIntent) context.syncRankingIntent(); } };
 }

@@ -1125,10 +1125,58 @@ async function fetchAuthenticatedAllRows(
     }
 }
 
+// 排行檔（期間 × 交易日、單日比較）由 C# 事先 gzip。GitHub Pages 以 application/gzip 原樣送出、
+// 不帶 Content-Encoding，瀏覽器不會自動解壓，所以這裡自己解；開頭不是 gzip 標記（1F 8B）就當一般 JSON。
+// 讀排行檔一律走這兩個函式，不要在別處自己拼 data/{key}.json——檔名與解壓方式必須一起改。
+function rankingFilePath(key) {
+    return `data/${key}.json.gz`;
+}
+
+let gunzipFallbackPromise = null;
+
+// DecompressionStream 需要 Safari 16.4+；更舊的瀏覽器才下載本站自帶的 fflate（不走 CDN）。
+function loadGunzipFallback() {
+    gunzipFallbackPromise ??= new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = `fflate.min.js?v=${version}`;
+        script.onload = () => {
+            if (typeof globalThis.fflate?.gunzipSync === 'function') {
+                resolve(globalThis.fflate);
+            } else {
+                // 失敗的 promise 要丟掉，不然之後每次重試都拿到同一個壞掉的結果。
+                gunzipFallbackPromise = null;
+                reject(new Error('解壓備援載入不完整。'));
+            }
+        };
+        script.onerror = () => {
+            gunzipFallbackPromise = null;
+            reject(new Error('解壓備援載入失敗。'));
+        };
+        document.head.append(script);
+    });
+    return gunzipFallbackPromise;
+}
+
+async function decodeStaticJson(response) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+
+    if (bytes.length < 2 || bytes[0] !== 0x1f || bytes[1] !== 0x8b) {
+        return JSON.parse(new TextDecoder().decode(bytes));
+    }
+
+    if (typeof DecompressionStream === 'function') {
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+        return JSON.parse(await new Response(stream).text());
+    }
+
+    const fflate = await loadGunzipFallback();
+    return JSON.parse(new TextDecoder().decode(fflate.gunzipSync(bytes)));
+}
+
 // 行動網路或 GitHub Pages 短暫沒有回應時，不能讓整個網站永遠等在 fetch。
 // 沒有 AbortController 的舊瀏覽器仍會拿到正常的 fetch 結果，只是失去逾時中止能力。
-// timeout 要包住 response.json()：大型快照可能已拿到 header，卻卡在 body 解析。
-async function fetchJsonAttempt(url, options = {}, timeoutMs = 8_000) {
+// timeout 要包住 decode（預設 response.json()）：大型快照可能已拿到 header，卻卡在 body 解析或解壓。
+async function fetchJsonAttempt(url, options = {}, timeoutMs = 8_000, decode = response => response.json()) {
     const controller = typeof AbortController === 'function'
         ? new AbortController()
         : null;
@@ -1155,7 +1203,7 @@ async function fetchJsonAttempt(url, options = {}, timeoutMs = 8_000) {
             throw error;
         }
 
-        return await Promise.race([response.json(), timeout]);
+        return await Promise.race([decode(response), timeout]);
     } finally {
         if (timeoutId !== null) {
             clearTimeout(timeoutId);
@@ -1173,7 +1221,7 @@ async function fetchJsonWithRetry(url, options = {}, policy = {}) {
 
     for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
         try {
-            return await fetchJsonAttempt(url, options, timeoutMs);
+            return await fetchJsonAttempt(url, options, timeoutMs, policy.decode);
         } catch (error) {
             const status = Number(error?.status);
             const retryable = !Number.isInteger(status)
@@ -16752,13 +16800,13 @@ async function assetCloseIndexForDate(date) {
         return assetCloseIndexByDate.get(date) ?? new Map();
     }
 
-    const response = await fetch(`data/1-${date}.json?v=${version}`, { cache: 'force-cache' });
+    const response = await fetch(`${rankingFilePath(`1-${date}`)}?v=${version}`, { cache: 'force-cache' });
 
     if (!response.ok) {
         return new Map();
     }
 
-    const data = await response.json();
+    const data = await decodeStaticJson(response);
     const index = new Map();
 
     for (const row of data.rows ?? []) {
@@ -25895,8 +25943,8 @@ async function fetchPeriod(key, background = false) {
     const requestedVersion = version;
     const promise = Promise.resolve().then(async () => {
         try {
-            const data = await fetchJsonWithRetry(`data/${key}.json?v=${requestedVersion}`, {},
-                { timeoutMs: 30_000, retryDelays: [1_000] });
+            const data = await fetchJsonWithRetry(`${rankingFilePath(key)}?v=${requestedVersion}`, {},
+                { timeoutMs: 30_000, retryDelays: [1_000], decode: decodeStaticJson });
             const valid = Array.isArray(data?.rows) && (key.startsWith('single-')
                 ? data.periodDays === Number(key.split('-')[1])
                 : data.key === key);
@@ -25921,7 +25969,7 @@ async function fetchPeriod(key, background = false) {
 }
 
 // 單日比較共用 1 日排行檔的當天成交值、成交比與價格欄位；前期均值、增減率與成交比變化
-// 由 C# 匯出成每個期間一份的 single-{期間}-{日期}.json，只有切到「單日」才下載。
+// 由 C# 匯出成每個期間一份的 single-{期間}-{日期}.json.gz，只有切到「單日」才下載。
 // 瀏覽器只做資料組合，不重新實作排行公式。
 function applySingleDayComparison(data, comparison, selection = state) {
     if (!comparison || comparison.periodDays !== selection.period) {
@@ -26124,7 +26172,7 @@ async function loadCustomDailyResult(context, silent) {
         }
 
         rankingNotice(context, error
-            ? staticJsonLoadErrorMessage(`data/${key}.json`, error)
+            ? staticJsonLoadErrorMessage(rankingFilePath(key), error)
             : `讀不到 ${selection.date} 的單日資料，請確認目前發布版本包含這個檔案。`, true, () => {
                 void loadCustom(false, true).catch(reportLoadFailure);
             });
@@ -31679,7 +31727,7 @@ async function loadCloseRanking(context) {
 
         if (!rankingJobIsCurrent(context)) return;
         rankingNotice(context, error
-            ? staticJsonLoadErrorMessage(`data/${failedKey}.json`, error)
+            ? staticJsonLoadErrorMessage(rankingFilePath(failedKey), error)
             : `讀不到 ${failedKey} 這個組合的資料，請確認目前發布版本包含這個檔案。`, true, () => {
                 void load().catch(reportLoadFailure);
             });

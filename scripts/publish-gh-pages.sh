@@ -83,6 +83,95 @@ if [ -n "${GH_PAGES_CNAME:-}" ]; then
     printf '%s\n' "$GH_PAGES_CNAME" > "$work/CNAME"
 fi
 
+# 容量守門：推送前量「真正要推出去的內容」（$work，含 .nojekyll／CNAME），過大就中止、什麼都不推。
+# 量這裡而不是 $site，是因為舊網址只發一頁空白頁，不該被正式站的大小擋下。
+#
+# GitHub Pages 的網站上限是 1 GB（官方只寫「no larger than 1 GB」，沒說是 10^9 還是 2^30，
+# 保守照 10^9 bytes 算）。actions/deploy-pages 只檢查壓縮後的 artifact——2026-10-24 正式站是
+# 948 MB，artifact 只有約 184 MB——所以網站超過上限之前不會有任何警告，等到超過的那一次發布
+# 才失敗。排行檔占 88%，已事先 gzip 成 .json.gz（StaticSiteExporter.WriteGzipJsonAsync）；
+# 週／月 K 隨行情累積每年約 +18 MB，門檻不必因此調整。
+#
+# data/ 裡若又出現未壓縮的排行檔（.json），代表 export 的輸出目錄沒清乾淨、新舊格式一起被帶上來，
+# 容量會變回兩倍，所以直接擋下，不是只印警告。
+size_limit=${GH_PAGES_SIZE_LIMIT_BYTES:-900000000}
+size_warn=${GH_PAGES_SIZE_WARN_BYTES:-700000000}
+
+python3 -I - "$work" "$size_limit" "$size_warn" <<'PY'
+import os
+import re
+import sys
+
+root = sys.argv[1]
+
+try:
+    limit, warn = int(sys.argv[2]), int(sys.argv[3])
+except ValueError:
+    print('GH_PAGES_SIZE_LIMIT_BYTES／GH_PAGES_SIZE_WARN_BYTES 必須是整數（bytes）。', file=sys.stderr)
+    sys.exit(1)
+
+ranking = re.compile(r'data/(?:single-)?\d+-\d{4}-\d{2}-\d{2}\.json(?P<gzip>\.gz)?')
+categories = ['排行檔', 'data/kline', 'data/etf', 'data/market-structure', '其他']
+totals = {name: [0, 0] for name in categories}  # [檔數, bytes]
+uncompressed = []
+
+for directory, subdirectories, names in os.walk(root):
+    subdirectories[:] = [name for name in subdirectories if name != '.git']
+
+    for name in names:
+        path = os.path.join(directory, name)
+        relative = os.path.relpath(path, root).replace(os.sep, '/')
+        size = os.lstat(path).st_size
+        match = ranking.fullmatch(relative)
+
+        if match:
+            category = '排行檔'
+
+            if match.group('gzip') is None:
+                uncompressed.append(relative)
+        elif relative.startswith('data/kline/'):
+            category = 'data/kline'
+        elif relative.startswith('data/etf/'):
+            category = 'data/etf'
+        elif relative.startswith('data/market-structure/'):
+            category = 'data/market-structure'
+        else:
+            category = '其他'
+
+        totals[category][0] += 1
+        totals[category][1] += size
+
+total = sum(size for _, size in totals.values())
+count = sum(files for files, _ in totals.values())
+
+print(f'容量守門：準備推送 {count} 個檔案，合計 {total / 1e6:.1f} MB（警告 {warn / 1e6:.0f} MB、上限 {limit / 1e6:.0f} MB）')
+for name in categories:
+    files, size = totals[name]
+    print(f'  {name:<22} {size / 1e6:8.1f} MB  {files:5d} 檔')
+
+# 管線裡 stdout 是整塊緩衝、stderr 不是；不先 flush，Actions 的 log 會變成錯誤訊息在表格之前。
+sys.stdout.flush()
+
+if uncompressed:
+    print(
+        f'::error::data/ 裡有 {len(uncompressed)} 個未壓縮的排行檔（例如 {uncompressed[0]}）。'
+        '排行檔應該全部是 .json.gz；請用乾淨的輸出目錄重新 export，不要把新舊格式混在一起發布。',
+        file=sys.stderr)
+    sys.exit(1)
+
+if total >= limit:
+    print(
+        f'::error::網站 {total / 1e6:.1f} MB 已達發布上限 {limit / 1e6:.0f} MB（GitHub Pages 硬上限 1 GB），'
+        '不推送。請先看上面各類別的大小再瘦身，不要直接調高上限。',
+        file=sys.stderr)
+    sys.exit(1)
+
+if total >= warn:
+    print(
+        f'::warning::網站 {total / 1e6:.1f} MB 已超過警告線 {warn / 1e6:.0f} MB，'
+        f'離發布上限 {limit / 1e6:.0f} MB 剩 {(limit - total) / 1e6:.1f} MB；再加資料類型前先量容量。')
+PY
+
 cd "$work"
 git init -q -b gh-pages
 git config user.name 'github-actions[bot]'
@@ -91,8 +180,10 @@ git add -A
 git commit -qm "更新排行快照 $version"
 git push -qf "$remote" gh-pages
 
+# 變數一律加大括號：macOS 內建的 bash 3.2 在 UTF-8 locale 下，會把緊接在 $trade_date 後面的全形括號
+# 當成變數名稱的一部分，set -u 之後整支腳本在推送完成後才以 unbound variable 失敗。
 if [ -n "$publish_root" ]; then
-    echo "已發佈快照 $version（最新交易日 $trade_date）到網域根目錄，訪客模式為預設，監控者／最高權限需登入"
+    echo "已發佈快照 ${version}（最新交易日 ${trade_date}）到網域根目錄，訪客模式為預設，監控者／最高權限需登入"
 else
-    echo "已發佈空白頁（無內容），未對外公開任何排行資料（最新交易日 $trade_date）"
+    echo "已發佈空白頁（無內容），未對外公開任何排行資料（最新交易日 ${trade_date}）"
 fi

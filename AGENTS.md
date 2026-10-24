@@ -183,6 +183,33 @@ $response.Content -like '*yearToDatePointSuffix*'
 $response.Content -like '*intraday_topic_heat_latest*'
 ```
 
+排行檔（`data/{期間}-{日期}.json.gz` 與 `data/single-{期間}-{日期}.json.gz`，共 1,200 個）自 2026-10-24 起事先 gzip：
+GitHub Pages 以 `application/gzip` 原樣送出、**不帶 `Content-Encoding`**，瀏覽器不會自動解壓，由 `site.js` 的 `decodeStaticJson()` 解壓
+（舊瀏覽器改用自帶的 `fflate.min.js`）。看內容要先解壓，不要直接在瀏覽器打開（只會下載到壓縮檔）；舊檔名 `.json` 應為 404：
+
+```powershell
+$v = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); $base = 'https://frank-invest.github.io'
+$d = (Invoke-RestMethod "$base/manifest.json?verify=$v").dates[-5]
+$tmp = Join-Path $env:TEMP "60-$d.json.gz"
+$r = Invoke-WebRequest -UseBasicParsing "$base/data/60-$d.json.gz?verify=$v" -OutFile $tmp -PassThru
+$r.StatusCode; $r.Headers['Content-Type']      # 200；application/gzip，而且沒有 Content-Encoding
+$gz = [IO.Compression.GZipStream]::new([IO.File]::OpenRead($tmp), [IO.Compression.CompressionMode]::Decompress)
+$reader = [IO.StreamReader]::new($gz, [Text.Encoding]::UTF8)
+$doc = $reader.ReadToEnd() | ConvertFrom-Json; $reader.Dispose()
+$doc.key; $doc.rows.Count
+(Invoke-WebRequest -UseBasicParsing "$base/fflate.min.js?verify=$v").StatusCode   # 舊瀏覽器的解壓備援，應為 200
+```
+
+macOS／Linux 對應寫法：`curl -sS "$BASE/data/60-$D.json.gz?verify=$V" | gunzip | head -c 300`。
+
+網站合計大小也要看（Pages 上限 1 GB；`publish-gh-pages.sh` 推送前的容量守門在 700 MB 警告、900 MB 中止，2026-10-24 改版前是 948.0 MB、改版後預期約 264.7 MB）：
+
+```powershell
+gh api 'repos/frank-invest/frank-invest.github.io/git/trees/gh-pages?recursive=1' --jq '{truncated, total: ([.tree[] | select(.type=="blob") | .size] | add)}'
+```
+
+`truncated` 必須是 `false`，否則加總不完整。
+
 `gh-pages` API 已有新版本但公開 URL 暫時仍是舊版時，先視為 CDN 快取延遲，等待後重試；以 `gh-pages` 的 `manifest.json` 版本與公開 URL 最終同版為完成條件。不要用舊的本機 `publish/site` 直接覆蓋網站；export 路徑錯誤或本機快取過期時，指令仍可能成功但發布錯快照。
 
 `frank-invest/frank-invest.github.io` 這個 repo 屬於另一個 GitHub 組織，`gh api` 讀取需要
@@ -194,6 +221,8 @@ repo 的讀取權，否則 `gh api repos/frank-invest/...` 會 404 而不是權�
 
 1. 先用 `gh run view <RUN_ID> --json jobs` 找第一個失敗步驟，不要直接重跑整輪。
 2. 若是發布步驟失敗，檢查 `publish/site` 是否由本次 export 產生、以及 `scripts/publish-gh-pages.sh` 的輸出；不要手改 `gh-pages`。
+   若 log 有「容量守門」的 `::error::`：超過 900 MB 就看各類別大小是誰撐大的（不要直接調高 `GH_PAGES_SIZE_LIMIT_BYTES`，Pages 本身上限是 1 GB）；
+   「未壓縮的排行檔」代表 export 輸出目錄沒清乾淨、`.json` 與 `.json.gz` 混在一起，改用全新的空目錄重新 export，不要手動刪檔後硬推。
 3. 若是完整流程的回補失敗，先判斷是否尚未到收盤資料公布時間、官方 API 被擋或確實是休市日；只改畫面時改用 `publish-only=true`。
    若失敗的是「擋下盤中啟動的完整流程」，代表在 15:00 前用 `publish-only=false` 啟動了完整流程，這是守衛按預期擋下，不是故障——不要重跑同一組參數。
 4. 若是 `心跳與狀態` 因 `db/013_intraday_topic_heat.sql` 未套用而失敗，確認 workflow 已包含 `publish-only != true` 的跳過條件，再用目前 `main` 重新觸發 publish-only；publish-only 不會偷偷套 migration。
