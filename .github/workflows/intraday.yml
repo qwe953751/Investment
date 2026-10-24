@@ -207,39 +207,40 @@ jobs:
               # 這些 return 一律帶 0：這個函式是在 while 迴圈裡裸呼叫的，
               # 「現在不必叫快照」是正常結果，不是錯誤。
               [ "$snapshot_kicked" -eq 0 ] || return 0
-              local d h since run_id
+              local d h today result
               d=$(date +%u); h=$(date +%H%M)
               [ "$d" -le 5 ] || return 0
               [ "$h" -ge 1800 ] && [ "$h" -lt 2200 ] || return 0
+              today=$(date +%F)
 
-              # 「今天」是台北的今天；API 回的是 UTC，所以拿台北 00:00 換算成 UTC 當分界線。
-              # date -u 會連輸入字串一起當成 UTC 解讀，所以先在本地時區算出 epoch 再轉。
-              since=$(date -u -d "@$(date -d "$(date +%F) 00:00:00" +%s)" +%Y-%m-%dT%H:%M:%SZ)
-
-              # 只認「真的把今天行情收回來」的那種 run。
+              # 只認「今天 18:00 之後真的把今天行情收回來、驗證過、而且發布出去」的那種 run。
+              # 判斷寫在 scripts/daily-snapshot-done.mjs，這裡跟 daily-snapshot.yml 的 preflight
+              # 共用同一份，細節與規則都看那支腳本的開頭註解。有兩次事故塑造了這個條件：
               #
-              # 2026-08-31 就是栽在這裡：當天 GitHub 的 cron 一發都沒送到，本來全靠這個
-              # 鬧鐘補位，但白天有人手動用 publish-only 重發過幾次網站。publish-only 會
-              # 跳過「回補行情」，只重跑輸出與發布，run 的 conclusion 一樣是 success。
-              # 舊寫法只看 conclusion，於是 18:00:30 判定「今天已經有成功的每日快照」而
-              # 不叫，整天的盤後資料就沒人收——data 分支停在 08-28，網站也停在 08-28。
+              # 2026-08-31：當天 GitHub 的 cron 一發都沒送到，本來全靠這個鬧鐘補位，但白天有人
+              # 手動用 publish-only 重發過幾次網站。publish-only 會跳過「回補行情」，只重跑輸出與
+              # 發布，run 的 conclusion 一樣是 success。舊寫法只看 conclusion，於是 18:00:30 判定
+              # 「今天已經有成功的每日快照」而不叫，整天的盤後資料就沒人收——data 分支停在 08-28，
+              # 網站也停在 08-28。所以不能看 run 的結論，要看步驟：純發布會跳過「驗證網站盤後日期」。
               #
-              # 所以改成逐一翻開當天的 run，確認「盤後資料對帳」真的成功過。
-              # 步驟名稱是跟 daily-snapshot.yml 對齊的約定，改那邊要順手改這裡
-              # （已用單元測試釘住）。
-              for run_id in $(gh api \
-                  "repos/$GITHUB_REPOSITORY/actions/workflows/daily-snapshot.yml/runs?per_page=30" \
-                  --jq "[.workflow_runs[]
-                         | select(.updated_at > \"$since\")
-                         | .id] | .[]" 2>/dev/null); do
-                  if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
-                      --jq '.jobs[].steps[]? | select(.name == "盤後資料對帳" and .conclusion == "success") | .name' \
-                      2>/dev/null | grep -q .; then
-                      echo "今天的 run $run_id 已通過盤後資料對帳，不重複叫。"
-                      snapshot_kicked=1
-                      return 0
-                  fi
-              done
+              # 2026-09-03、10-14、10-20（TODO #33）：前一晚的 run 拖過午夜才結束，舊寫法用
+              # 「run 在今天 00:00 之後結束」當成今天的 run，18:00 的鬧鐘就以為今天已經跑過而不叫，
+              # 當天行情拖到 21:3x 才由晚到的排程補回來（延遲約 3.5 小時，資料沒掉）。
+              # 所以改看步驟自己的開始時間：驗證必須在今天 18:00 之後才開始。
+              #
+              # 語意比舊寫法嚴：舊寫法只要「盤後資料對帳」成功就算，現在還要驗證通過且發布成功。
+              # 行情收進來但發布失敗時，鬧鐘會再叫一次完整流程（一棒最多一次）；這是刻意的，
+              # 因為回補後一定要發布到網站，手機看得到才算完成。
+              #
+              # 腳本查不到（API 出錯、exit 非 0）就當成「不確定」，照常叫：寧可多跑一輪，也不要漏收。
+              # stderr 不丟掉，原因要留在 log 裡。
+              if result=$(node scripts/daily-snapshot-done.mjs \
+                      --repository "$GITHUB_REPOSITORY" --business-date "$today") \
+                  && [ "$(echo "$result" | jq -r '.done')" = 'true' ]; then
+                  echo "今天的 run $(echo "$result" | jq -r '.runId') 已在 18:00 後驗證並發布今天的盤後行情，不重複叫。"
+                  snapshot_kicked=1
+                  return 0
+              fi
 
               echo "台北 $(date '+%F %T')：過了 18:00 但今天還沒有成功的每日快照，叫它起來。"
 
@@ -410,6 +411,7 @@ jobs:
       # 讓警報步驟留下線索並交給下一個 runner。整場都問得到 MIS、只是日期一直停在上一個交易日，
       # 才算休市、正常結束。
       - name: 收集盤中報價
+        id: collect
         if: steps.wait.outputs.collect == 'true' && steps.wait.outputs.mode != 'tail'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -420,6 +422,7 @@ jobs:
       # 興櫃尾段：13:35 上市櫃收盤後到 15:05 興櫃收盤前，只更新興櫃（見 SESSION_TAIL_CLOSE）。
       # 上市櫃、ETF、TDR 取 CDN 上最後一輪快照凍結；今天沒有快照（休市、整天沒寫成）就正常結束。
       - name: 收集興櫃尾段
+        id: tail
         if: steps.wait.outputs.collect == 'true' && steps.wait.outputs.mode == 'tail'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -440,6 +443,38 @@ jobs:
               dotnet run -c Release --project src/Invest.Web -- alert "盤中報價收集" error \
                   "盤中收集這一場沒有正常收工，盤中頁的數字可能停在中途。" "$RUN_URL"
           fi
+
+      # ── 確定休市就留在這一棒 ───────────────────────────────────────
+      #
+      # 2026-10-23 颱風假：收集器 10:00 判定沒開盤、提早收工，但收工的只是這一棒。
+      # 下一棒的「等到開盤」只看 market-calendar.json（證交所年度休市日曆，臨時停班不會在裡面），
+      # 於是又開始收集：過了 10:00 只跑 1 輪就收工，補睡到 3 分鐘，再換下一棒——
+      # 10:01 到 15:07 重複了 101 棒（平常 9～12 棒），每棒都白打約 40 個請求、寫一次 Supabase、開兩個 job。
+      #
+      # 所以收集正常結束、還沒過今天收集時段結束（15:05）時，用 market-day 問一次今天開不開盤：
+      # 確定休市就留在這一棒，睡到 15:05 或本棒預算到期（取早的），每 10 分鐘複查一次、
+      # MIS 一出現今天的日期就提早交棒；其他結果（開盤、不確定、出錯）照常交棒，跟改之前一樣。
+      # 細節與取捨看 scripts/intraday-closed-hold.sh 開頭的註解。
+      #
+      # 不用收集器的結束結果當休市訊號：興櫃尾段讀不到 CDN 與「今天沒有快照」回的是同一個結果。
+      # 這一步不需要任何 secret（market-day 只打證交所日曆與 MIS），也永遠不讓這一棒轉紅。
+      # 放在「更新網站上的警報」之後：警報先結算，再多留；「保底停留」排在最後，留過之後不會再補睡。
+      - name: 確定休市就留在本棒到今天收集時段結束
+        if: steps.wait.outputs.collect == 'true' && (steps.collect.outcome == 'success' || steps.tail.outcome == 'success')
+        run: |
+          started=$(cat "$RUNNER_TEMP/hop-started-at" 2>/dev/null || echo 0)
+          if [ "$started" -le 0 ]; then
+              echo "沒讀到本棒開跑時間，不留。"
+              exit 0
+          fi
+
+          deadline=$(( started + HOP_BUDGET_SECONDS ))
+          hold_until=$(date -d "$(date +%F) ${SESSION_TAIL_CLOSE:0:2}:${SESSION_TAIL_CLOSE:2:2}:00" +%s)
+          if [ "$deadline" -lt "$hold_until" ]; then
+              hold_until=$deadline
+          fi
+
+          bash scripts/intraday-closed-hold.sh "$hold_until"
 
       # ── 防暴衝 ────────────────────────────────────────────────────
       #

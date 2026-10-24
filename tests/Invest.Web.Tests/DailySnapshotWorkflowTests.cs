@@ -60,18 +60,89 @@ public sealed class DailySnapshotWorkflowTests
             workflow[backfillStart..backfillRun], StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 晚到的排程要不要略過，看的是「今天 18:00 之後有沒有一輪真的驗證並發布了今天的盤後行情」。
+    ///
+    /// 舊寫法用 run 的 updated_at 是否在今天 00:00 之後當成「同日」：前一晚拖過午夜才結束的 run
+    /// （9/03、10/14、10/20、10/22 都有）會被當成今天已經發布；而且只列 event=schedule，看不到
+    /// 18:00 鬧鐘叫起來的 workflow_dispatch 完整流程，晚到的排程因此幾乎每天多跑一輪（TODO #33）。
+    /// </summary>
     [Fact]
-    public void 收盤後備援以正式發布步驟判斷是否已完成而非只看run結論()
+    public void 收盤後備援看今天18點後的驗證與發布步驟而非run的結束時間()
     {
         var workflow = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
+            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var preflight = workflow[..workflow.IndexOf("\n  snapshot:\n", StringComparison.Ordinal)];
 
-        Assert.Contains("actions/runs/$run_id/jobs?per_page=100", workflow, StringComparison.Ordinal);
+        Assert.Contains("node scripts/daily-snapshot-done.mjs", preflight, StringComparison.Ordinal);
         Assert.Contains(
-            "發佈到 frank-invest.github.io（單一網址，訪客為預設）",
-            workflow,
+            "--repository \"$GITHUB_REPOSITORY\" --business-date \"$today\" --exclude-run-id \"$GITHUB_RUN_ID\"",
+            preflight,
             StringComparison.Ordinal);
-        Assert.Contains(".conclusion == \"success\"", workflow, StringComparison.Ordinal);
+
+        // 只有明確回報 done=true 且腳本成功才略過；查不到（非 0）要照常執行。
+        Assert.Contains("[ \"$code\" -eq 0 ] && [ \"$(echo \"$result\" | jq -r '.done')\" = 'true' ]", preflight, StringComparison.Ordinal);
+        Assert.Contains("保守起見執行這場快照", preflight, StringComparison.Ordinal);
+
+        // 舊寫法的特徵都不能回來。
+        Assert.DoesNotContain("event=schedule&per_page=50", preflight, StringComparison.Ordinal);
+        Assert.DoesNotContain("day_start=", preflight, StringComparison.Ordinal);
+        Assert.DoesNotContain("[.id, .updated_at] | @tsv", preflight, StringComparison.Ordinal);
+
+        // 順序：先對帳缺口、再看是否晚到太久、最後才看同日是否已完成。
+        Assert.True(
+            preflight.IndexOf("close-coverage check", StringComparison.Ordinal)
+                < preflight.IndexOf("[ \"$wait\" -gt 10800 ]", StringComparison.Ordinal)
+            && preflight.IndexOf("[ \"$wait\" -gt 10800 ]", StringComparison.Ordinal)
+                < preflight.IndexOf("node scripts/daily-snapshot-done.mjs", StringComparison.Ordinal));
+
+        // preflight 只有排程事件才 checkout 原始碼，腳本才會存在；手動觸發在最前面就離開了。
+        Assert.Contains("if: ${{ github.event_name == 'schedule' }}\n        uses: actions/checkout@v4", preflight, StringComparison.Ordinal);
+        Assert.True(
+            preflight.IndexOf("if [ \"$GITHUB_EVENT_NAME\" != \"schedule\" ]", StringComparison.Ordinal)
+                < preflight.IndexOf("node scripts/daily-snapshot-done.mjs", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// 共用腳本認的三個步驟名稱、18:00 這個分界，都是跟其他檔案對齊的約定：
+    /// 改任何一邊而漏改另一邊，鬧鐘與 preflight 就會悄悄判錯（要等到某天行情晚到才發現）。
+    /// </summary>
+    [Fact]
+    public void 共用腳本認的步驟名稱與18點分界和workflow及排程定義一致()
+    {
+        var root = FindRepositoryRoot();
+        var script = File.ReadAllText(Path.Combine(root, "scripts", "daily-snapshot-done.mjs"));
+        var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "daily-snapshot.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        foreach (var name in new[]
+        {
+            "驗證網站盤後日期",
+            "發佈到 frank-invest.github.io（單一網址，訪客為預設）",
+            "回補行情"
+        })
+        {
+            Assert.Contains($"'{name}'", script, StringComparison.Ordinal);
+            Assert.Contains($"      - name: {name}\n", workflow, StringComparison.Ordinal);
+        }
+
+        // 純發布一定要跳過驗證步驟，否則白天的純發布會被誤認成「今天已完成」（2026-08-31 的事故）。
+        var verifyStart = workflow.IndexOf("      - name: 驗證網站盤後日期\n", StringComparison.Ordinal);
+        var verify = workflow[verifyStart..workflow.IndexOf("run:", verifyStart, StringComparison.Ordinal)];
+        Assert.Contains("inputs.publish-only != true", verify, StringComparison.Ordinal);
+
+        // 18:00 在三個地方各寫一份：腳本、排程定義、盤後對帳的到期時間。
+        Assert.Contains("DAILY_REFRESH_HOUR = 18;", script, StringComparison.Ordinal);
+        Assert.Contains("DailyRefresh = new(18, 0)", File.ReadAllText(Path.Combine(
+            root, "src", "Invest.Web", "Infrastructure", "MarketData", "CollectionSchedule.cs")), StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromHours(18)", File.ReadAllText(Path.Combine(
+            root, "src", "Invest.Web", "Infrastructure", "MarketData", "DailyCloseCoverage.cs")), StringComparison.Ordinal);
+
+        // 兩個 workflow 都用這支腳本，而且不再各自翻 run。
+        Assert.Contains("node scripts/daily-snapshot-done.mjs", File.ReadAllText(Path.Combine(
+            root, ".github", "workflows", "intraday.yml")), StringComparison.Ordinal);
+        Assert.Contains("node scripts/daily-snapshot-done.mjs", workflow, StringComparison.Ordinal);
     }
 
     [Fact]

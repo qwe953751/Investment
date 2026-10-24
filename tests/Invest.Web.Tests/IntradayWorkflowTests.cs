@@ -196,28 +196,135 @@ public sealed class IntradayWorkflowTests
     /// 18:00:30 回報「今天已經有成功的每日快照，不重複叫」，整天的盤後資料沒人收。
     /// 原因是白天有人用 publish-only 重發過網站——publish-only 會跳過「回補行情」，
     /// 只重跑輸出與發布，run 的 conclusion 一樣是 success，舊寫法只看 conclusion 就被騙了。
-    /// 判斷依據必須是「回補行情這一步真的成功過」，不是 run 的結論。
+    ///
+    /// 2026-09-03、10-14、10-20（TODO #33）：前一晚的 run 拖過午夜才結束，舊寫法用
+    /// 「run 在今天 00:00 之後結束」當成今天的 run，18:00 的鬧鐘就以為今天已經跑過而不叫，
+    /// 當天行情拖到 21:3x 才由晚到的排程補回來（延遲約 3.5 小時，資料沒掉）。
+    ///
+    /// 所以判斷依據是「步驟」而不是 run 的結論或結束時間，而且鬧鐘與每日快照的 preflight
+    /// 共用同一支 scripts/daily-snapshot-done.mjs，不能各寫一份。
     /// </summary>
     [Fact]
-    public void 鬧鐘要看有沒有真的回補行情而不是只看run成功()
+    public void 鬧鐘看今天18點後有沒有真的驗證並發布而不是run的結論或結束時間()
     {
         var workflow = ReadIntradayWorkflow();
         var alarm = Slice(workflow, "maybe_kick_snapshot() {", "if in_session; then");
 
-        // 逐一翻開當天的 run，看步驟層級的結果。
-        Assert.Contains("actions/runs/$run_id/jobs?per_page=100", alarm, StringComparison.Ordinal);
-        Assert.Contains(
-            "select(.name == \"盤後資料對帳\" and .conclusion == \"success\")",
-            alarm,
-            StringComparison.Ordinal);
+        // 判斷交給共用腳本，且問的是台北的今天。
+        Assert.Contains("node scripts/daily-snapshot-done.mjs", alarm, StringComparison.Ordinal);
+        Assert.Contains("--repository \"$GITHUB_REPOSITORY\" --business-date \"$today\"", alarm, StringComparison.Ordinal);
+        Assert.Contains("today=$(date +%F)", alarm, StringComparison.Ordinal);
 
-        // 純發布也會成功，所以 run 層級的 conclusion 不能再當成判斷依據。
+        // 只有明確回報 done=true 才不叫；腳本出錯（非 0）一律當成不確定，照常叫。
+        Assert.Contains("jq -r '.done')\" = 'true'", alarm, StringComparison.Ordinal);
+
+        // 舊寫法的三個特徵都不能回來：以 updated_at 當作「今天」、只認對帳步驟、只看最近 30 筆。
+        Assert.DoesNotContain("select(.updated_at >", alarm, StringComparison.Ordinal);
+        Assert.DoesNotContain("select(.name == \"盤後資料對帳\"", alarm, StringComparison.Ordinal);
+        Assert.DoesNotContain("runs?per_page=30", alarm, StringComparison.Ordinal);
         Assert.DoesNotContain("select(.conclusion == \\\"success\\\")", alarm, StringComparison.Ordinal);
 
-        // 步驟名稱是跟 daily-snapshot.yml 對齊的約定，兩邊要一起改。
-        var daily = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"));
-        Assert.Contains("- name: 回補行情", daily, StringComparison.Ordinal);
+        // 腳本在 checkout 之後才存在；鬧鐘跑在「等到開盤」步驟，必須排在 checkout 後面。
+        Assert.True(
+            workflow.IndexOf("uses: actions/checkout@v4", StringComparison.Ordinal)
+                < workflow.IndexOf("node scripts/daily-snapshot-done.mjs", StringComparison.Ordinal));
+
+        // 叫起來的仍然必須是完整流程（見上一條測試）。
+        Assert.Contains("-f \"inputs[publish-only]=false\"", alarm, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 2026-10-23 颱風假：收集器 10:00 判定沒開盤、提早收工，但收工的只是「這一棒」。
+    /// 下一棒的「等到開盤」只看 market-calendar.json（證交所年度休市日曆，臨時停班不在裡面），
+    /// 於是又開始收集，過了 10:00 只跑 1 輪就收工，再換下一棒——10:01 到 15:07 重複了 101 棒
+    /// （平常 9～12 棒），每棒都白打約 40 個請求、寫一次 Supabase、開兩個 job（TODO #33）。
+    ///
+    /// 修法：收集正常結束、還沒過收集時段結束時，用 market-day 問今天開不開盤，確定休市就留在這一棒。
+    /// 不改收集器：興櫃尾段讀不到 CDN 與「今天沒有快照」回的是同一個結果，分不出休市與故障。
+    /// </summary>
+    [Fact]
+    public void 確定休市就留在本棒而不是交給只會重開收集的下一棒()
+    {
+        var workflow = ReadIntradayWorkflow().Replace("\r\n", "\n", StringComparison.Ordinal);
+        var schedule = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), "src", "Invest.Web", "Infrastructure", "MarketData", "CollectionSchedule.cs"));
+
+        // 兩個收集步驟要有 id，留棒那一步才認得出「收集正常結束」。
+        Assert.Contains("      - name: 收集盤中報價\n        id: collect\n", workflow, StringComparison.Ordinal);
+        Assert.Contains("      - name: 收集興櫃尾段\n        id: tail\n", workflow, StringComparison.Ordinal);
+
+        var holdStart = workflow.IndexOf("      - name: 確定休市就留在本棒到今天收集時段結束\n", StringComparison.Ordinal);
+        Assert.True(holdStart >= 0, "找不到休市留棒的步驟。");
+        var holdEnd = workflow.IndexOf("\n      # ── 防暴衝", holdStart, StringComparison.Ordinal);
+        Assert.True(holdEnd > holdStart);
+        var hold = workflow[holdStart..holdEnd];
+
+        // 位置：先結算網站警報，再多留；「保底停留」排最後，留過之後不會再補睡。
+        Assert.True(
+            workflow.IndexOf("      - name: 更新網站上的警報", StringComparison.Ordinal) < holdStart,
+            "休市留棒必須排在「更新網站上的警報」之後。");
+        Assert.True(
+            holdStart < workflow.IndexOf("      - name: 保底停留", StringComparison.Ordinal),
+            "休市留棒必須排在「保底停留」之前。");
+
+        // 只在收集「正常結束」才留：失敗的那一棒照舊交給下一棒；用 always() 就會在失敗後也多留，是錯的。
+        Assert.Contains(
+            "if: steps.wait.outputs.collect == 'true' && (steps.collect.outcome == 'success' || steps.tail.outcome == 'success')",
+            hold,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("always()", hold, StringComparison.Ordinal);
+        Assert.DoesNotContain("continue-on-error", hold, StringComparison.Ordinal);
+
+        // 上限：今天收集時段結束（SESSION_TAIL_CLOSE）與本棒預算到期，取早的那個。
+        Assert.Contains("$RUNNER_TEMP/hop-started-at", hold, StringComparison.Ordinal);
+        Assert.Contains("started + HOP_BUDGET_SECONDS", hold, StringComparison.Ordinal);
+        Assert.Contains("${SESSION_TAIL_CLOSE:0:2}:${SESSION_TAIL_CLOSE:2:2}", hold, StringComparison.Ordinal);
+        Assert.Contains("bash scripts/intraday-closed-hold.sh \"$hold_until\"", hold, StringComparison.Ordinal);
+
+        // market-day 只打證交所日曆與 MIS，不需要任何 secret；也不能碰資料庫。
+        Assert.DoesNotContain("secrets.", hold, StringComparison.Ordinal);
+        Assert.DoesNotContain("SUPABASE", hold, StringComparison.Ordinal);
+
+        // 收集時段結束的時間要和排程定義是同一個值（興櫃交易到 15:00，多留五分鐘）。
+        Assert.Contains("SESSION_TAIL_CLOSE: '1505'", workflow, StringComparison.Ordinal);
+        Assert.Contains("EmergingIntradayEnd = new(15, 5)", schedule, StringComparison.Ordinal);
+
+        // 刻意不動「等到開盤」的休市判斷：它只讀休市日曆，臨時停班由 market-day 負責。
+        Assert.Contains("market-calendar.json", workflow, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 留棒腳本只在 market-day 回「確定休市」（10）時才留；開盤、不確定、程式出錯都照常交棒，
+    /// 而且永遠不讓這一棒轉紅——它只是「要不要多留一會兒」，任何環節出錯都退回改之前的行為。
+    /// exit code 的對應和 Program.cs、daily-snapshot.yml 的 case 是同一份約定。
+    /// </summary>
+    [Fact]
+    public void 休市留棒腳本只在確定休市時留_其餘照常交棒且不讓這一棒轉紅()
+    {
+        var root = FindRepositoryRoot();
+        var script = File.ReadAllText(Path.Combine(root, "scripts", "intraday-closed-hold.sh"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var program = File.ReadAllText(Path.Combine(root, "src", "Invest.Web", "Program.cs"));
+        var daily = File.ReadAllText(Path.Combine(root, ".github", "workflows", "daily-snapshot.yml"));
+
+        // exit code 約定：0 開盤、10 確定休市、其餘不確定。
+        Assert.Contains("MarketDayStatus.Open => 0", program, StringComparison.Ordinal);
+        Assert.Contains("MarketDayStatus.Closed => 10", program, StringComparison.Ordinal);
+        Assert.Contains("10) status=closed ;;", daily, StringComparison.Ordinal);
+
+        Assert.Contains("-- market-day", script, StringComparison.Ordinal);
+        Assert.Contains("if [ \"$code\" -ne 10 ]; then", script, StringComparison.Ordinal);
+        Assert.Contains("if [ \"$code\" -eq 0 ]; then", script, StringComparison.Ordinal);
+
+        // 沒有 errexit（出錯要退回照常交棒，不能中止腳本），而且只有用法錯誤才非 0。
+        Assert.DoesNotContain("set -e", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("set -euo", script, StringComparison.Ordinal);
+        Assert.EndsWith("exit 0\n", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("SUPABASE", script, StringComparison.Ordinal);
+
+        // macOS 的 bash 在 UTF-8 語系下，會把 $變數 後面緊接的全形字元當成變數名稱（set -u 就報 unbound variable）。
+        // 這支腳本要能在本機跑測試，變數緊接中文時一律加大括號。
+        Assert.DoesNotMatch(new System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]"), script);
     }
 
     private static string ReadIntradayProgramSection()
