@@ -573,7 +573,7 @@ dotnet run --project src/Invest.Web -- export "$(pwd)/publish/site"
 
 產出最近 120 個可選交易日 × 5 種期間，也就是最多 600 個排行檔（另有 600 個單日比較檔，見下），另以 `data/kline/{ticker}.json` 逐檔保存日 K、週 K、月 K，
 加上 `index.html` / `site.css` / `site.js`，
-整包約 264.7 MB（2026-10-24 排行檔預先 gzip 之前是 948.0 MB，GitHub Pages 上限 1 GB），但單頁只載入其中一個約 187 KB 的檔案。20 MB 的原始行情不會上網。
+整包約 264.8 MB（2026-10-24 排行檔預先 gzip 之前是 948.0 MB，GitHub Pages 上限 1 GB），但單頁只載入其中一個約 187 KB 的檔案。20 MB 的原始行情不會上網。
 
 一個檔案就是一份**完整名單**：全市場近兩千檔，不篩市場、不設門檻、不截斷筆數，
 每一列同時帶著兩種排行模式要用的數字。市場、門檻與模式由前端就地篩選與排序，
