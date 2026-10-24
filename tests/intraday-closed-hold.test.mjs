@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -183,4 +183,114 @@ test('bad arguments are a usage error (exit 2), the only way this script fails',
         }
         assert.deepEqual(await callLog(), []);
     });
+});
+
+// ── intraday.yml 裡那一步的 inline shell：算出「留到幾點」 ───────────────────────────
+//
+// 上面的測試只涵蓋腳本本身。YAML 步驟自己還有一小段 shell：讀本棒開跑時間、取「今天 15:05」與
+// 「本棒預算到期」較早的那個當上限。這段原本沒有任何東西會真的執行它，這裡從 workflow 原文抽出來跑，
+// 用假的 date（只支援這一步用到的兩種用法，GNU date -d 在 macOS 上不存在）和假的留棒腳本。
+
+const workflow = (await readFile(new URL('../.github/workflows/intraday.yml', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
+
+function holdStepScript() {
+    const header = '      - name: 確定休市就留在本棒到今天收集時段結束\n';
+    const start = workflow.indexOf(header);
+    assert.ok(start >= 0, 'hold step not found');
+    const runStart = workflow.indexOf('        run: |\n', start) + '        run: |\n'.length;
+    const runEnd = workflow.indexOf('\n      # ──', runStart);
+    assert.ok(runEnd > runStart);
+    return workflow.slice(runStart, runEnd).split('\n').map(line => line.startsWith(' '.repeat(10)) ? line.slice(10) : line).join('\n');
+}
+
+// 台灣沒有日光節約，固定 +08:00。
+const taipei = (date, time) => Math.floor(Date.parse(`${date}T${time}+08:00`) / 1000);
+
+async function runHoldStep({ now, startedAt, budget = '19800', tailClose = '1505' }) {
+    const directory = await mkdtemp(join(tmpdir(), 'hold-step-'));
+    try {
+        const temp = join(directory, 'runner-temp');
+        await mkdir(temp);
+        await mkdir(join(directory, 'scripts'));
+        const calls = join(directory, 'hold-calls.log');
+        if (startedAt !== null) await writeFile(join(temp, 'hop-started-at'), `${startedAt}\n`);
+
+        await writeFile(join(directory, 'scripts', 'intraday-closed-hold.sh'), `echo "$@" >> "${calls}"\n`);
+        const bin = join(directory, 'bin');
+        await mkdir(bin);
+        await writeFile(join(bin, 'date'), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const now = Number(process.env.FAKE_NOW);
+if (args[0] === '+%F') console.log(new Date((now + 8 * 3600) * 1000).toISOString().slice(0, 10));
+else if (args[0] === '+%s') console.log(now);
+else if (args[0] === '-d' && args[2] === '+%s') console.log(Math.floor(Date.parse(args[1].replace(' ', 'T') + '+08:00') / 1000));
+else { console.error('unsupported fake date call: ' + args.join(' ')); process.exit(1); }
+`);
+        await chmod(join(bin, 'date'), 0o755);
+
+        const result = spawnSync('bash', ['-e', '-c', holdStepScript()], {
+            encoding: 'utf8',
+            cwd: directory,
+            timeout: HARD_TIMEOUT_MS,
+            env: {
+                ...process.env,
+                LC_ALL: UTF8,
+                PATH: `${bin}:${process.env.PATH}`,
+                RUNNER_TEMP: temp,
+                HOP_BUDGET_SECONDS: budget,
+                SESSION_TAIL_CLOSE: tailClose,
+                FAKE_NOW: String(now)
+            }
+        });
+        const called = (await readFile(calls, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
+        return { result, called };
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+}
+
+test('hold step: a hop that cannot tell when it started does not hold, and does not fail', async () => {
+    const { result, called } = await runHoldStep({ now: taipei('2026-10-23', '10:01:00'), startedAt: null });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /沒讀到本棒開跑時間，不留。/);
+    assert.deepEqual(called, []);
+});
+
+test('hold step: a hop whose budget ends before 15:05 holds only until its budget ends (10/23: 07:38 start, budget end 13:08)', async () => {
+    const startedAt = taipei('2026-10-23', '07:38:00');
+    const { result, called } = await runHoldStep({ now: taipei('2026-10-23', '10:01:00'), startedAt });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(called, [String(startedAt + 19800)]);
+    assert.equal(startedAt + 19800, taipei('2026-10-23', '13:08:00'));
+});
+
+test('hold step: a hop with plenty of budget holds until today\'s 15:05 (10/23: 13:08 start, budget would end 18:38)', async () => {
+    const { result, called } = await runHoldStep({
+        now: taipei('2026-10-23', '13:36:00'),
+        startedAt: taipei('2026-10-23', '13:08:00')
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(called, [String(taipei('2026-10-23', '15:05:00'))]);
+});
+
+test('hold step: "today" is the Taipei date, even when it is still the previous day in UTC', async () => {
+    // 台北 2026-10-24 07:00 = UTC 2026-10-23 23:00：用 UTC 日期會算成前一天。
+    // 預算放大到一整天，才輪得到「今天 15:05」當上限（06:50 開跑的一棒預設預算 12:20 就到期了）。
+    const { called } = await runHoldStep({
+        now: taipei('2026-10-24', '07:00:00'),
+        startedAt: taipei('2026-10-24', '06:50:00'),
+        budget: '86400'
+    });
+    assert.deepEqual(called, [String(taipei('2026-10-24', '15:05:00'))]);
+});
+
+test('hold step: the cut-off follows SESSION_TAIL_CLOSE and the budget follows HOP_BUDGET_SECONDS', async () => {
+    const now = taipei('2026-10-23', '13:36:00');
+    const startedAt = taipei('2026-10-23', '13:08:00');
+
+    const earlier = await runHoldStep({ now, startedAt, tailClose: '1400' });
+    assert.deepEqual(earlier.called, [String(taipei('2026-10-23', '14:00:00'))]);
+
+    const shortBudget = await runHoldStep({ now, startedAt, budget: '1800' });
+    assert.deepEqual(shortBudget.called, [String(startedAt + 1800)]);
 });
