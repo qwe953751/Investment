@@ -212,6 +212,7 @@ function assetKLineFlow() {
         functionSource('scaleKLineBar'),
         functionSource('assetIntradayLiveKLine'),
         functionSource('klineEndDate'),
+        functionSource('klineLiveBar'),
         functionSource('selectedKLineBars')
     ].join('\n\n'), context);
     return context;

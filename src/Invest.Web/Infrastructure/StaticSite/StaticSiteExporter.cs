@@ -1461,9 +1461,15 @@ public sealed class StaticSiteExporter(
     }
 
     /// <summary>
-    /// 每檔標的一份日 K，避免使用者只看一檔卻先下載整個市場。
-    /// 輸出範圍從最舊可選基準日往前三個月開始，切換歷史基準日時仍有完整圖形；
+    /// 每檔標的一份 K 線檔，避免使用者只看一檔卻先下載整個市場。
+    ///
+    /// 日 K 輸出範圍從最舊可選基準日往前三個月開始，切換歷史基準日時仍有完整圖形；
     /// MA 則由計算器使用更早的有效收盤，不要求那些舊資料也具備完整 OHLC。
+    ///
+    /// 週 K、月 K 由同一份逐日還原序列彙整，輸出可得的全部歷史（不依基準日截斷）：
+    /// 前端要替「還沒走完的最後一根」重算均線，需要前面每個週期的收盤。
+    /// 檔案格式是 <see cref="KLineSchemaVersion"/> 版的位置陣列，欄位名稱只寫一次
+    /// （見 <see cref="KLineDailyFields"/>、<see cref="KLinePeriodFields"/>），網站容量才放得下週／月 K。
     /// </summary>
     internal static async Task<int> WriteKLineExportsAsync(
         string directory,
@@ -1510,37 +1516,30 @@ public sealed class StaticSiteExporter(
             var tickerEvents = eventsByTicker.TryGetValue(ticker, out var foundEvents)
                 ? foundEvents
                 : [];
-            var points = DailyKLineCalculator.Calculate(
+            // 還原倍率只算一次，日、週、月 K 吃同一份逐日序列。
+            var adjustedRows = DailyKLineCalculator.AdjustedRows(
                 trading,
                 tickerEvents,
                 ticker,
-                startDate,
-                endDate,
                 adjustmentThroughDate);
+            var points = DailyKLineCalculator.Calculate(adjustedRows, startDate, endDate);
 
             if (points.Count == 0)
             {
                 continue;
             }
 
-            var export = new KLineExport(
+            var export = new KLineFileExport(
+                KLineSchemaVersion,
                 "TW",
                 adjustmentMethod,
-                adjustmentThroughDate.ToString("yyyy-MM-dd"),
+                adjustmentThroughDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 tickerEvents.Length,
-                [.. points.Select(point => new KLineBarExport(
-                    point.TradingDate.ToString("yyyy-MM-dd"),
-                    RoundKLine(point.Open),
-                    RoundKLine(point.High),
-                    RoundKLine(point.Low),
-                    RoundKLine(point.Close),
-                    RoundKLine(point.PreviousClose),
-                    RoundKLine(point.Ma5),
-                    RoundKLine(point.Ma10),
-                    RoundKLine(point.Ma20),
-                    RoundKLine(point.Ma60),
-                    RoundKLine(point.Ma240),
-                    RoundKLine(point.TradingVolume)))]);
+                KLineDailyFields,
+                KLinePeriodFields,
+                [.. points.Select(KLineDailyRow)],
+                [.. PeriodKLineCalculator.Calculate(adjustedRows, KLinePeriod.Week).Select(KLinePeriodRow)],
+                [.. PeriodKLineCalculator.Calculate(adjustedRows, KLinePeriod.Month).Select(KLinePeriodRow)]);
 
             await WriteJsonAsync(
                 Path.Combine(directory, ticker + ".json"),
@@ -1551,6 +1550,75 @@ public sealed class StaticSiteExporter(
 
         return count;
     }
+
+    /// <summary>
+    /// K 線檔格式版本。2 = 位置陣列（<c>fields</c> 對應 <c>daily</c>，<c>periodFields</c> 對應
+    /// <c>weekly</c>、<c>monthly</c>）；舊版（物件陣列 <c>bars</c>）只剩美股、日韓與加密貨幣還在用。
+    /// 前端的解碼層（site.js 的 decodeKLinePayload）依這個欄位決定怎麼讀。
+    /// </summary>
+    internal const int KLineSchemaVersion = 2;
+
+    /// <summary>日 K 每一列的欄位順序。改順序或增減欄位時，前端解碼層是依名稱對應，不必同步改。</summary>
+    internal static readonly string[] KLineDailyFields =
+    [
+        "date", "open", "high", "low", "close", "previousClose",
+        "ma5", "ma10", "ma20", "ma60", "ma240", "tradingVolume"
+    ];
+
+    /// <summary>
+    /// 週 K、月 K 每一列的欄位順序。<c>date</c> 是週期內第一個交易日、<c>endDate</c> 是最後一個交易日；
+    /// <c>open</c>／<c>high</c>／<c>low</c> 為 null 的週期不能畫 K 棒，但收盤仍用來算均線。
+    /// </summary>
+    internal static readonly string[] KLinePeriodFields =
+    [
+        "date", "endDate", "open", "high", "low", "close", "previousClose",
+        "ma5", "ma10", "ma20", "ma60", "ma240", "tradingVolume"
+    ];
+
+    private static object?[] KLineDailyRow(DailyKLinePoint point) =>
+    [
+        KLineDate(point.TradingDate),
+        CompactKLine(point.Open),
+        CompactKLine(point.High),
+        CompactKLine(point.Low),
+        CompactKLine(point.Close),
+        CompactKLine(point.PreviousClose),
+        CompactKLine(point.Ma5),
+        CompactKLine(point.Ma10),
+        CompactKLine(point.Ma20),
+        CompactKLine(point.Ma60),
+        CompactKLine(point.Ma240),
+        CompactKLine(point.TradingVolume)
+    ];
+
+    private static object?[] KLinePeriodRow(PeriodKLinePoint point) =>
+    [
+        KLineDate(point.FirstTradingDate),
+        KLineDate(point.LastTradingDate),
+        CompactKLine(point.Open),
+        CompactKLine(point.High),
+        CompactKLine(point.Low),
+        CompactKLine(point.Close),
+        CompactKLine(point.PreviousClose),
+        CompactKLine(point.Ma5),
+        CompactKLine(point.Ma10),
+        CompactKLine(point.Ma20),
+        CompactKLine(point.Ma60),
+        CompactKLine(point.Ma240),
+        CompactKLine(point.TradingVolume)
+    ];
+
+    private static string KLineDate(DateOnly date)
+        => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// 先四捨五入到 4 位小數，再去掉尾端多餘的 0（decimal 會保留刻度，1496.6580、2405.00
+    /// 會原樣寫出）。數值完全相同，JSON 讀回來是同一個數字，只是檔案少幾個位元組。
+    /// </summary>
+    private static object? CompactKLine(decimal? value)
+        => value is { } number
+            ? Math.Round(number, 4) / 1.0000000000000000000000000000m
+            : null;
 
     internal const string ForwardAdjustedKLineMethod = "forward-rights-dividends";
 
@@ -2343,6 +2411,22 @@ public sealed class StaticSiteExporter(
         string AdjustmentThrough,
         int AdjustmentEventCount,
         IReadOnlyList<KLineBarExport> Bars);
+
+    /// <summary>
+    /// 台股 K 線檔（<see cref="KLineSchemaVersion"/> 版）。<see cref="Daily"/> 的每一列依
+    /// <see cref="Fields"/> 排欄位，<see cref="Weekly"/>、<see cref="Monthly"/> 依 <see cref="PeriodFields"/>。
+    /// </summary>
+    private sealed record KLineFileExport(
+        int SchemaVersion,
+        string Market,
+        string AdjustmentMethod,
+        string AdjustmentThrough,
+        int AdjustmentEventCount,
+        IReadOnlyList<string> Fields,
+        IReadOnlyList<string> PeriodFields,
+        IReadOnlyList<object?[]> Daily,
+        IReadOnlyList<object?[]> Weekly,
+        IReadOnlyList<object?[]> Monthly);
 
     private sealed record EtfDailyExport(
         string TradeDate,

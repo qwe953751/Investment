@@ -528,7 +528,9 @@ public sealed class StaticKLineAssetTests
 
         var function = script[start..end];
 
-        Assert.Contains("const referenceDate = String(bar.date ?? '').replaceAll('-', '/').slice(-5);", function, StringComparison.Ordinal);
+        // 日 K 的日期是 MM/DD；週 K、月 K 由 layout.dateLabel 換成週期起訖（10/19~10/22、2026/10）。
+        Assert.Contains("const referenceDate = layout.dateLabel", function, StringComparison.Ordinal);
+        Assert.Contains(": String(bar.date ?? '').replaceAll('-', '/').slice(-5);", function, StringComparison.Ordinal);
         Assert.Contains("referenceValues.push(`${bar.isLive ? '現價' : '收盤'} ${toFixedText(priceValue, 2)}${changeText}`);", function, StringComparison.Ordinal);
         Assert.Contains("assetChangePercent(priceValue, Number(bar.previousClose))", function, StringComparison.Ordinal);
         Assert.Contains("assetHoldingPriceChangeText(changePercent)", function, StringComparison.Ordinal);
@@ -536,6 +538,48 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("referenceSummary.replaceChildren();", function, StringComparison.Ordinal);
         Assert.Contains("`${referenceDate} ${priceReference.label} ${priceReference.value}`", function, StringComparison.Ordinal);
         Assert.Contains("kline-price-change ${klinePriceChangeClass(priceReference.changePercent)}", function, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 台股週K與月K接上真實資料_不再顯示尚未串接的佔位()
+    {
+        var script = ReadAsset("site.js");
+        var styles = ReadAsset("site.css");
+
+        // 佔位說明與它的樣式都拿掉了；週期列本身（日／週／月）保留。
+        Assert.DoesNotContain("資料尚未串接", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("daily-kline-period-empty", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("daily-kline-period-empty", styles, StringComparison.Ordinal);
+        Assert.Contains("[['day', '日 K'], ['week', '週 K'], ['month', '月 K']]", script, StringComparison.Ordinal);
+
+        // 圖表吃 selectedKLinePeriodBars 的結果；沒有週／月資料的舊格式檔案才顯示說明。
+        Assert.Contains("selectedKLinePeriodBars(ticker, activePeriod)", script, StringComparison.Ordinal);
+        Assert.Contains("renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost, activePeriod)", script, StringComparison.Ordinal);
+        Assert.Contains("資料尚未發布，請重新整理頁面後再試。", script, StringComparison.Ordinal);
+
+        // 日 K 與週 K／月 K 一樣是 60 根的量級；不是三個月（週 K 只有 14 根、月 K 只有 4 根）。
+        Assert.Contains("const KLINE_PERIOD_BARS = 60;", script, StringComparison.Ordinal);
+        Assert.Contains("slice(-KLINE_PERIOD_BARS)", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 台股K線檔依schemaVersion解碼_舊格式照舊_日週月共用同一個盤中即時棒()
+    {
+        var script = ReadAsset("site.js");
+
+        // 解碼層：schemaVersion 2 依檔頭欄位名稱還原成物件，其他市場的物件陣列原樣通過。
+        Assert.Contains("function decodeKLinePayload(raw)", script, StringComparison.Ordinal);
+        Assert.Contains("raw?.schemaVersion !== 2", script, StringComparison.Ordinal);
+        Assert.Contains("decodeKLinePayload(await response.json())", script, StringComparison.Ordinal);
+
+        // 盤中即時棒與還原倍數只有一份判斷：日 K 與週／月 K 都從 klineLiveBar 取。
+        Assert.Contains("function klineLiveBar(ticker)", script, StringComparison.Ordinal);
+        Assert.Contains("const liveBar = klineLiveBar(ticker);", script, StringComparison.Ordinal);
+        Assert.Contains("const liveBar = klineLiveBar(ticker);\n    const factor = liveBar === null ? 1 : Number(liveBar.adjustmentFactor);", script.Replace("\r\n", "\n"), StringComparison.Ordinal);
+
+        // 公式的正本在 C#；前端的最後一根只在這裡組，且 C# 說畫不出來的週期不畫。
+        Assert.Contains("function buildKLinePeriodBars(periodBars, dailyBars, period, endDate, factor = 1)", script, StringComparison.Ordinal);
+        Assert.Contains("klinePeriodBarHasPrices(cSharpBar)", script, StringComparison.Ordinal);
     }
 
     [Fact]

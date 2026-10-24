@@ -5271,31 +5271,6 @@ td.stock-name.stock-name-change-down {
     font-size: 13px;
 }
 
-.daily-kline-period-empty {
-    display: flex;
-    aspect-ratio: 1.8;
-    min-height: 260px;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    margin: 4px 0 8px;
-    border: 1px dashed var(--border);
-    border-radius: 6px;
-    background: #f8fafc;
-    color: var(--text-muted);
-    text-align: center;
-}
-
-.daily-kline-period-empty strong {
-    color: var(--text-secondary);
-    font-size: 15px;
-}
-
-.daily-kline-period-empty span {
-    font-size: 13px;
-}
-
 .daily-kline-coverage {
     margin: 8px 0 3px;
     color: #8a5a00;

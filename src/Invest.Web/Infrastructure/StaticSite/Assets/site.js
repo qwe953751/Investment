@@ -323,6 +323,9 @@ function tableHeaderHint(key, fallback) {
 }
 
 const KLINE_MONTHS = 3;
+// 週 K、月 K 最多畫幾根。日 K 是「檢視日往前三個月」（約 60～67 根）；週／月 K 取同一個數量級，
+// 不用三個月：三個月只有 14 根週 K、4 根月 K，看不出趨勢。
+const KLINE_PERIOD_BARS = 60;
 const KLINE_MOVING_AVERAGES = [
     { key: 'ma5', label: 'MA5', className: 'ma5' },
     { key: 'ma10', label: 'MA10', className: 'ma10' },
@@ -20407,6 +20410,28 @@ function makeKLineButton(ticker, name, options = {}) {
     return button;
 }
 
+// 台股 K 線檔是 schemaVersion 2 的位置陣列：欄位名稱只在檔頭寫一次，網站容量才放得下週／月 K。
+// 這裡依檔頭的欄位名稱還原成物件，畫圖與其餘程式照舊讀 bar.date／bar.close。
+// 美股、日韓與加密貨幣的檔案仍是物件陣列 bars，原樣通過。檔案缺陣列時留成 null，
+// 讓後面的 Array.isArray(payload.bars) 檢查明確拒絕，而不是畫一張空圖。
+function decodeKLinePayload(raw) {
+    if (raw?.schemaVersion !== 2) {
+        return raw;
+    }
+
+    const decodeRows = (rows, fields) => Array.isArray(rows) && Array.isArray(fields)
+        ? rows.map(row => Object.fromEntries(fields.map((field, index) => [field, row[index] ?? null])))
+        : null;
+    const { daily, weekly, monthly, fields, periodFields, ...rest } = raw;
+
+    return {
+        ...rest,
+        bars: decodeRows(daily, fields),
+        weeks: decodeRows(weekly, periodFields),
+        months: decodeRows(monthly, periodFields)
+    };
+}
+
 async function loadKLineData(ticker) {
     const cryptoAsset = cryptoOverviewSnapshot?.daily?.kLines?.[ticker];
     if (cryptoAsset && cryptoOverviewCdn) return loadCryptoKLine(ticker, cryptoAsset);
@@ -20422,7 +20447,7 @@ async function loadKLineData(ticker) {
                 throw new Error(String(response.status));
             }
 
-            const payload = await response.json();
+            const payload = decodeKLinePayload(await response.json());
 
             // 台股全部向前還原權息（普通股、ETF、TDR、興櫃）；舊版快取的 raw-tw-* 只在換版過渡期還讀得到。
             const validAdjustment = payload?.adjustmentMethod === 'forward-rights-dividends'
@@ -21078,6 +21103,35 @@ function scaleKLineBar(bar, factor) {
     return scaled;
 }
 
+// 盤中把 MIS 的當日開高低與最新現價接到歷史日 K 尾端；排行榜與族群列表
+// 都讀各自正在呈現的同一輪盤中資料，不能拿前一次切換頁籤的排名資料湊。
+// 資產頁的台股持倉接的是 chooseAssetTwQuote 選中的那一輪快照（和自訂頁盤中同一份），
+// 不是排行榜的 current.rows，否則從資產頁開的彈窗會永遠停在最近一個已收盤日。
+// 沒有即時棒或欄位不完整時回傳 null。日 K、週 K、月 K 都從這裡取，才會接上同一根當日棒。
+function klineLiveBar(ticker) {
+    const liveBar = isIntradayDataView() || isEtfIntradayView()
+        ? current?.rows.find(row => row.ticker === ticker)?.liveKLine
+        : topicUsesIntradayData()
+            ? topicIntradayKLines.get(ticker)
+            : state.view === 'assets'
+                ? assetIntradayLiveKLine(ticker)
+                : null;
+
+    if (liveBar === null || liveBar === undefined) {
+        return null;
+    }
+
+    if (!liveBar
+        || liveBar.open === null
+        || liveBar.high === null
+        || liveBar.low === null
+        || liveBar.close === null) {
+        return null;
+    }
+
+    return liveBar;
+}
+
 function selectedKLineBars(ticker) {
     const endDate = klineEndDate();
 
@@ -21089,27 +21143,9 @@ function selectedKLineBars(ticker) {
     const bars = (klineData.get(ticker)?.bars ?? [])
         .filter(bar => bar.date >= startDate && bar.date <= endDate);
 
-    // 盤中把 MIS 的當日開高低與最新現價接到歷史日 K 尾端；排行榜與族群列表
-    // 都讀各自正在呈現的同一輪盤中資料，不能拿前一次切換頁籤的排名資料湊。
-    // 資產頁的台股持倉接的是 chooseAssetTwQuote 選中的那一輪快照（和自訂頁盤中同一份），
-    // 不是排行榜的 current.rows，否則從資產頁開的彈窗會永遠停在最近一個已收盤日。
-    const liveBar = isIntradayDataView() || isEtfIntradayView()
-        ? current?.rows.find(row => row.ticker === ticker)?.liveKLine
-        : topicUsesIntradayData()
-            ? topicIntradayKLines.get(ticker)
-            : state.view === 'assets'
-                ? assetIntradayLiveKLine(ticker)
-                : null;
+    const liveBar = klineLiveBar(ticker);
 
-    if (liveBar === null || liveBar === undefined) {
-        return bars;
-    }
-
-    if (!liveBar
-        || liveBar.open === null
-        || liveBar.high === null
-        || liveBar.low === null
-        || liveBar.close === null) {
+    if (liveBar === null) {
         return bars;
     }
 
@@ -21132,6 +21168,123 @@ function selectedKLineBars(ticker) {
         isLive: true
     }]
         .sort((left, right) => left.date.localeCompare(right.date));
+}
+
+// ───────── 週 K、月 K ─────────
+// 已走完的週期由 C# 預先算好（payload.weeks／payload.months，含只供均線用的畫不出來的週期）。
+// 「結束日所在、還沒走完的那一根」在這裡用已載入的日 K 現組：檢視日可能是過去的任何一天，
+// 盤中還要接即時棒，沒辦法事先算好。規則與 C# 的 PeriodKLineCalculator 一模一樣
+// （高低取週期內每一天、開收取首尾、量加總、前收是上一期收盤、均線用各期收盤），
+// 兩邊對同一份 tests/fixtures/kline-period-parity.json，改規則時要一起改。
+
+// 週期的起算日：週是週一（沿用排行的 weekStartKey），月是當月 1 日。
+function klinePeriodStart(dateKey, period) {
+    return period === 'month' ? `${dateKey.slice(0, 7)}-01` : weekStartKey(dateKey);
+}
+
+function klinePeriodBarHasPrices(bar) {
+    return !missing(bar.open) && !missing(bar.high) && !missing(bar.low);
+}
+
+// periodBars：payload.weeks／payload.months（由舊到新）。
+// dailyBars：selectedKLineBars 的結果（已還原、已接即時棒、結束於檢視日）。
+// factor：即時棒帶來的當日還原倍數；已走完的週期要乘上它才接得上即時棒，與日 K 的 scaleKLineBar 同一件事。
+function buildKLinePeriodBars(periodBars, dailyBars, period, endDate, factor = 1) {
+    const lastDaily = dailyBars.at(-1) ?? null;
+    const currentStart = lastDaily === null ? null : klinePeriodStart(lastDaily.date, period);
+
+    // 已走完 = 最後一個交易日早於「最後一根日 K 所在週期」的起算日；沒有任何日 K 時以檢視日為界。
+    // 檢視日在過去時，比它晚的週期整個丟掉，不能把基準日之後的行情混進去。
+    const completed = (periodBars ?? [])
+        .filter(bar => currentStart === null ? bar.endDate <= endDate : bar.endDate < currentStart)
+        .map(bar => scaleKLineBar(bar, factor));
+    const bars = [...completed];
+
+    if (lastDaily !== null) {
+        const inPeriod = dailyBars.filter(bar => bar.date >= currentStart);
+        const volumes = inPeriod.map(bar => bar.tradingVolume).filter(value => !missing(value));
+        // 均線用前面每一期的收盤（含畫不出來的週期）加上這一根目前的收盤。
+        const closes = [...completed.map(bar => Number(bar.close)), Number(lastDaily.close)];
+        const currentBar = {
+            date: inPeriod[0].date,
+            endDate: lastDaily.date,
+            open: inPeriod[0].open,
+            high: Math.max(...inPeriod.map(bar => Number(bar.high))),
+            low: Math.min(...inPeriod.map(bar => Number(bar.low))),
+            close: lastDaily.close,
+            previousClose: completed.length > 0 ? completed.at(-1).close : null,
+            tradingVolume: volumes.length > 0
+                ? volumes.reduce((sum, value) => sum + Number(value), 0)
+                : null,
+            isLive: lastDaily.isLive === true
+        };
+
+        for (const line of KLINE_MOVING_AVERAGES) {
+            const length = Number(line.key.slice(2));
+            currentBar[line.key] = closes.length >= length
+                ? closes.slice(-length).reduce((sum, value) => sum + value, 0) / length
+                : null;
+        }
+
+        // C# 已標明這個週期畫不出來（期間內有一天缺開高低，或被擋下為不可能的價格）就不畫。
+        // 日 K 看不到被丟掉的那一天，光靠日 K 現組會畫出一根少算一天的假 K 棒；
+        // C# 還沒有這個週期（例如週一盤中）時沒有疑慮，照常組。
+        const cSharpBar = (periodBars ?? [])
+            .find(bar => klinePeriodStart(bar.date, period) === currentStart);
+
+        if (cSharpBar === undefined || klinePeriodBarHasPrices(cSharpBar)) {
+            bars.push(currentBar);
+        }
+    }
+
+    return bars.filter(klinePeriodBarHasPrices).slice(-KLINE_PERIOD_BARS);
+}
+
+// 這檔標的在檢視日的週 K／月 K。檔案沒有週／月資料（舊格式）時回傳 null，讓畫面說明而不是畫空圖。
+function selectedKLinePeriodBars(ticker, period) {
+    const payload = klineData.get(ticker);
+    const periodBars = period === 'month' ? payload?.months : payload?.weeks;
+    const endDate = klineEndDate();
+
+    if (!Array.isArray(periodBars)) {
+        return null;
+    }
+
+    if (!endDate) {
+        return [];
+    }
+
+    const liveBar = klineLiveBar(ticker);
+    const factor = liveBar === null ? 1 : Number(liveBar.adjustmentFactor);
+
+    return buildKLinePeriodBars(periodBars, selectedKLineBars(ticker), period, endDate, factor);
+}
+
+// 圖下方的日期標籤。日 K 是 MM/DD；週 K 一年以上要帶年；月 K 只到月。
+function klineBarAxisLabel(bar, period) {
+    const date = String(bar.date ?? '');
+
+    return period === 'month'
+        ? date.slice(0, 7).replace('-', '/')
+        : period === 'week'
+            ? date.replaceAll('-', '/')
+            : date.slice(5).replace('-', '/');
+}
+
+// 查價線上的日期。日 K 是 MM/DD；週 K 是該週第一～最後一個交易日；月 K 是 YYYY/MM。
+function klineBarReferenceLabel(bar, period) {
+    const date = String(bar.date ?? '').replaceAll('-', '/');
+
+    if (period === 'month') {
+        return date.slice(0, 7);
+    }
+
+    if (period === 'week') {
+        const endDate = String(bar.endDate ?? bar.date ?? '').replaceAll('-', '/');
+        return endDate === date ? date.slice(-5) : `${date.slice(-5)}~${endDate.slice(-5)}`;
+    }
+
+    return date.slice(-5);
 }
 
 function klineMarketKey(market) {
@@ -21295,7 +21448,9 @@ function attachKLineInteractions(svg, bars, layout, referenceSummary) {
             return;
         }
 
-        const referenceDate = String(bar.date ?? '').replaceAll('-', '/').slice(-5);
+        const referenceDate = layout.dateLabel
+            ? layout.dateLabel(bar)
+            : String(bar.date ?? '').replaceAll('-', '/').slice(-5);
         const referenceValues = [];
         let priceReference = null;
         let lowerReference = '';
@@ -21422,7 +21577,7 @@ function klineTrendClass(bar) {
             : 'daily-kline-flat';
 }
 
-function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null) {
+function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null, period = 'day') {
     const isCrypto = klineData.get(ticker)?.market === 'CRYPTO';
     const volumeLabel = isCrypto ? '成交額' : '成交量';
     const formatVolume = isCrypto ? value => `${toFixedText(value, 0)} USD` : toLotText;
@@ -21460,7 +21615,9 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         class: 'daily-kline-svg',
         viewBox: `0 0 ${width} ${height}`,
         role: 'img',
-        'aria-label': `${ticker} ${name} 三個月${isCrypto ? '完整 UTC' : '還原權息'}日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與${volumeLabel}`
+        'aria-label': (period === 'day'
+            ? `${ticker} ${name} 三個月${isCrypto ? '完整 UTC' : '還原權息'}日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與${volumeLabel}`
+            : `${ticker} ${name} 還原權息${period === 'week' ? '週' : '月'} K 圖，最近 ${bars.length} 根，包含 MA5、MA10、MA20、MA60、MA240 與${volumeLabel}`)
             + (holdingCost === null ? '' : '，並標示持倉成本均價')
     });
 
@@ -21580,13 +21737,15 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
     const labels = [bars[0], bars[Math.floor(bars.length / 2)], bars[bars.length - 1]];
     labels.forEach((bar, index) => {
         const labelIndex = index === 0 ? 0 : index === 1 ? Math.floor(bars.length / 2) : bars.length - 1;
-        const x = left + step * (labelIndex + 0.5);
+        // 週／月 K 的標籤比日 K 長（含年），頭尾兩個貼齊圖的左右邊界，不然會被畫面切掉。
+        const edgeAligned = period !== 'day' && index !== 1;
+        const x = edgeAligned ? (index === 0 ? left : right) : left + step * (labelIndex + 0.5);
         svg.append(svgElement('text', {
             class: 'daily-kline-date',
             x,
             y: dateLabelY,
-            'text-anchor': 'middle'
-        }, bar.date.slice(5).replace('-', '/')));
+            'text-anchor': edgeAligned ? (index === 0 ? 'start' : 'end') : 'middle'
+        }, klineBarAxisLabel(bar, period)));
     });
 
     attachKLineInteractions(svg, bars, {
@@ -21605,13 +21764,14 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         lowerValue: bar => bar.tradingVolume,
         lowerReferenceKey: 'volume',
         lowerLabel: volumeLabel,
-        formatLower: formatVolume
+        formatLower: formatVolume,
+        dateLabel: bar => klineBarReferenceLabel(bar, period)
     }, referenceSummary);
 
     return svg;
 }
 
-function renderKLineLegend(bars, holdingCost = null) {
+function renderKLineLegend(bars, holdingCost = null, period = 'day') {
     const legend = document.createElement('div');
     legend.className = 'daily-kline-legend';
 
@@ -21637,7 +21797,11 @@ function renderKLineLegend(bars, holdingCost = null) {
         // 只有整條線都不在價格區間內才標「（圖外）」。有一段畫得出來就不標，
         // 免得穿進穿出的均線讓標記一直閃。
         const visible = values.some(value => value >= min && value <= max);
-        item.textContent = line.label + (values.length > 0 && !visible ? '（圖外）' : '');
+        // 週／月 K 的歷史比日 K 短很多（MA240 要 240 週或 240 個月），整條線沒有值時直接說明，
+        // 不要只留一個沒有線的色票讓人以為壞了。日 K 沿用原樣。
+        item.textContent = line.label
+            + (values.length > 0 && !visible ? '（圖外）' : '')
+            + (period !== 'day' && values.length === 0 ? '（資料不足）' : '');
         legend.append(item);
     }
 
@@ -21804,10 +21968,17 @@ function renderKLinePopover(ticker, name, anchor) {
     period.className = 'daily-kline-period';
     const endDate = klineEndDate();
     const requestedStartDate = endDate ? klineStartDate(endDate) : '';
-    const bars = klineData.has(ticker) ? selectedKLineBars(ticker) : [];
+    const activePeriod = isTaiwan ? expandedKLinePeriod : 'day';
+    // 週／月 K：檔案沒有這份資料（舊格式）時 periodBars 是 null，下面改顯示說明而不是畫空圖。
+    const periodBars = klineData.has(ticker) && activePeriod !== 'day'
+        ? selectedKLinePeriodBars(ticker, activePeriod)
+        : null;
+    const bars = !klineData.has(ticker)
+        ? []
+        : activePeriod === 'day' ? selectedKLineBars(ticker) : (periodBars ?? []);
     const actualStartDate = bars[0]?.date ?? requestedStartDate;
-    const timeframeLabel = isTaiwan && expandedKLinePeriod === 'week' ? '週 K'
-        : isTaiwan && expandedKLinePeriod === 'month' ? '月 K'
+    const timeframeLabel = activePeriod === 'week' ? '週 K'
+        : activePeriod === 'month' ? '月 K'
         : '日 K';
     const periodLabel = isEtf ? `ETF 還原權息${timeframeLabel}`
         : isTdr ? `TDR 還原權息${timeframeLabel}`
@@ -21883,22 +22054,12 @@ function renderKLinePopover(ticker, name, anchor) {
         card.append(timeframe);
     }
 
-    if (isTaiwan && expandedKLinePeriod !== 'day') {
-        const message = document.createElement('div');
-        message.className = 'daily-kline-period-empty';
-        message.setAttribute('role', 'status');
-
-        const title = document.createElement('strong');
-        title.textContent = `${timeframeLabel} 資料尚未串接`;
-
-        const hint = document.createElement('span');
-        hint.textContent = '目前提供還原日 K，請選擇「日 K」查看圖表。';
-        message.append(title, hint);
-        card.append(message);
-    } else if (klineError) {
+    if (klineError) {
         const message = document.createElement('p');
         message.className = 'daily-kline-empty';
-        message.textContent = isEtf
+        message.textContent = activePeriod !== 'day'
+            ? `讀不到${timeframeLabel} 資料，請稍後再試或重新整理頁面。`
+            : isEtf
             ? '尚無可用的 ETF 日 K 資料，請重新產生靜態網站。'
             : isTdr
             ? '尚無可用的 TDR 日 K 資料，請重新產生靜態網站。'
@@ -21909,13 +22070,20 @@ function renderKLinePopover(ticker, name, anchor) {
     } else if (!klineData.has(ticker)) {
         const message = document.createElement('p');
         message.className = 'daily-kline-empty';
-        message.textContent = '日 K 載入中…';
+        message.textContent = activePeriod === 'day' ? '日 K 載入中…' : `${timeframeLabel} 載入中…`;
+        card.append(message);
+    } else if (activePeriod !== 'day' && periodBars === null) {
+        const message = document.createElement('p');
+        message.className = 'daily-kline-empty';
+        message.textContent = `${timeframeLabel} 資料尚未發布，請重新整理頁面後再試。`;
         card.append(message);
     } else {
         if (bars.length === 0) {
             const message = document.createElement('p');
             message.className = 'daily-kline-empty';
-            message.textContent = '這個期間沒有完整的日 K 資料。';
+            message.textContent = activePeriod === 'day'
+                ? '這個期間沒有完整的日 K 資料。'
+                : `這個期間沒有完整的${timeframeLabel} 資料。`;
             card.append(message);
         } else {
             if (isEmerging) {
@@ -21926,7 +22094,14 @@ function renderKLinePopover(ticker, name, anchor) {
                 card.append(note);
             }
 
-            if (hasIncompleteKLineHistory(requestedStartDate, actualStartDate)) {
+            if (activePeriod !== 'day' && bars.length < KLINE_PERIOD_BARS) {
+                // 行情歷史只有一年多，月 K 目前一定會走到這裡；照實說明，不假裝有完整的 60 根。
+                const coverage = document.createElement('p');
+                coverage.className = 'daily-kline-coverage';
+                coverage.textContent = `此檔${timeframeLabel} 資料目前從 ${klineBarAxisLabel(bars[0], activePeriod)} 起，`
+                    + `共 ${bars.length} 根，尚不足 ${KLINE_PERIOD_BARS} 根；圖表只顯示可用區間。`;
+                card.append(coverage);
+            } else if (activePeriod === 'day' && hasIncompleteKLineHistory(requestedStartDate, actualStartDate)) {
                 const coverage = document.createElement('p');
                 coverage.className = 'daily-kline-coverage';
                 coverage.textContent = `此檔日 K 資料目前從 ${actualStartDate.replaceAll('-', '/')} 起，`
@@ -21945,9 +22120,9 @@ function renderKLinePopover(ticker, name, anchor) {
 
             const referenceControls = renderKLineReferenceControls(referenceOptions);
             card.append(
-                renderKLineLegend(bars, holdingCost),
+                renderKLineLegend(bars, holdingCost, activePeriod),
                 referenceControls.element,
-                renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost));
+                renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost, activePeriod));
         }
     }
 

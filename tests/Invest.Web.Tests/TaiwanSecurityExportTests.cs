@@ -185,8 +185,13 @@ public sealed class TaiwanSecurityExportTests : IDisposable
         Assert.Equal(1, kline.RootElement.GetProperty("adjustmentEventCount").GetInt32());
 
         // 分割前的收盤換算到分割後：443.15 → 20.14，K 線沒有斷崖。
-        var bars = kline.RootElement.GetProperty("bars").EnumerateArray().ToArray();
-        Assert.Equal(20.14m, decimal.Round(bars[0].GetProperty("close").GetDecimal(), 2));
+        // 檔案是位置陣列（schemaVersion 2）：依檔頭的欄位名稱找收盤價那一欄。
+        var closeColumn = kline.RootElement.GetProperty("fields").EnumerateArray()
+            .Select(field => field.GetString())
+            .ToList()
+            .IndexOf("close");
+        var firstRow = kline.RootElement.GetProperty("daily").EnumerateArray().First();
+        Assert.Equal(20.14m, decimal.Round(firstRow[closeColumn].GetDecimal(), 2));
     }
 
     [Fact]
