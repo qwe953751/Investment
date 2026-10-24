@@ -130,6 +130,25 @@ public sealed class CorporateActionClient(
     }
 
     /// <summary>
+    /// 獨立週期歷史回補用的年度事件批次。年度表已與月份表核對，避免為月收盤暖身逐日回補。
+    /// 一般每日流程仍保留原本按月的請求與重試規則；任一年度來源失敗不宣告涵蓋。
+    /// </summary>
+    public async Task<IReadOnlyList<ReferenceAction>> GetPeriodHistoryYearAsync(
+        DateOnly first, DateOnly last, CancellationToken cancellationToken = default)
+    {
+        if (first.Year != last.Year || last < first) throw new ArgumentException("事件批次必須在同一年內。");
+        var twse = await ReadTwseAsync(first, last,
+            root => ParseActionTable(root, Market.Twse, TwseSource, "資料日期", "股票代號"), cancellationToken);
+        await Task.Delay(1000, cancellationToken);
+        var tpex = await ReadTpexAsync(first, last,
+            table => ParseActionTable(table, Market.Tpex, TpexSource, "除權息日期", "代號"), cancellationToken);
+        var resumptions = await GetResumptionsAsync(first, last, TimeSpan.FromSeconds(1), cancellationToken);
+        if (resumptions.RequiredFailures.Count > 0 || resumptions.BestEffortFailures.Count > 0)
+            throw new InvalidDataException($"{first.Year} 恢復買賣事件表不完整，不能建立還原週月 K。");
+        return [.. twse, .. tpex, .. resumptions.Actions];
+    }
+
+    /// <summary>
     /// 讀取區間內的<b>恢復買賣參考價公告</b>：減資、變更股票面額、ETF 分割與反分割
     /// （上市三張、上櫃四張，都是交易所公布的最後交易日收盤與恢復買賣的開盤競價基準）。
     ///

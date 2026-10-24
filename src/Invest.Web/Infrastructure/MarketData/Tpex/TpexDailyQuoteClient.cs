@@ -19,6 +19,10 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
         CancellationToken cancellationToken = default)
         => await GetDailyQuotesCoreAsync(tradingDate, null, cancellationToken);
 
+    internal Task<IReadOnlyList<DailyQuote>> GetVerifiedBoundaryQuotesAsync(
+        DateOnly date, IReadOnlySet<string> etfTickers, CancellationToken ct)
+        => GetDailyQuotesCoreAsync(date, etfTickers, ct, verifyDate: true);
+
     public async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesAsync(
         DateOnly tradingDate,
         IReadOnlySet<string> etfTickers,
@@ -28,7 +32,7 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
     private async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesCoreAsync(
         DateOnly tradingDate,
         IReadOnlySet<string>? etfTickers,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool verifyDate = false)
     {
         var url = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
             + $"?date={tradingDate:yyyy/MM/dd}&type=EW&id=&response=json";
@@ -40,6 +44,9 @@ public sealed class TpexDailyQuoteClient(HttpClient httpClient, ILogger<TpexDail
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
 
         var root = document.RootElement;
+        if (verifyDate && (!root.TryGetProperty("date", out var actualDate)
+            || actualDate.GetString() != tradingDate.ToString("yyyyMMdd")))
+            throw new InvalidDataException("TPEx 首尾日回應日期不符，拒絕以目前行情代替歷史行情。");
 
         if (!root.TryGetProperty("tables", out var tables) || tables.ValueKind != JsonValueKind.Array)
         {

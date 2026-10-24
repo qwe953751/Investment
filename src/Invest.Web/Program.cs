@@ -21,6 +21,7 @@ using Invest.Web.Infrastructure.MarketData.IndexWeights;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Overview;
 using Invest.Web.Infrastructure.MarketData.Reference;
+using Invest.Web.Infrastructure.MarketData.PeriodHistory;
 using Invest.Web.Infrastructure.MarketData.Turnover;
 using Invest.Web.Infrastructure.MarketData.Tpex;
 using Invest.Web.Infrastructure.MarketData.Twse;
@@ -70,6 +71,7 @@ using System.Text.Json.Serialization;
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
 var isConsoleCommand =
+    command == "backfill-periods" ||
     command is "backfill" or "backfill-bars" or "backfill-index-weights" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "crypto-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "market-structure-intraday-audit" or "market-structure-audit" or "repair-market-indices" or "rebuild-market-structure" or "rebuild-intraday-ranking" or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet" or "etf-dividends";
 
@@ -153,6 +155,10 @@ builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<YahooFinanceDailyQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<YahooFinanceIntradayQuoteClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<NikkeiIndexDailyQuoteClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<PeriodSummaryClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<OfficialPeriodDataClient>(ConfigureQuoteClient);
+builder.Services.AddSingleton<PeriodHistoryStore>();
+builder.Services.AddTransient<PeriodHistoryBackfiller>();
 
 // 備援：Alpha Vantage，目前沒有接線，留著在 Yahoo Finance 被擋時可以手動切回。
 builder.Services.AddHttpClient<AlphaVantageDailyQuoteClient>(
@@ -322,6 +328,35 @@ if (command is "backfill-index-weights")
 if (command is "close-coverage")
 {
     Environment.ExitCode = await RunCloseCoverageAsync(app.Services, args);
+    return;
+}
+
+if (command is "backfill-periods")
+{
+    using var scope = app.Services.CreateScope();
+    var data = await scope.ServiceProvider.GetRequiredService<TradingValueRankingQueryService>().GetDataSetAsync();
+    if (args.Length > 2 && args[1] == "--export-only")
+    {
+        var selected = args.Skip(3).ToHashSet(StringComparer.Ordinal);
+        var subset = new MarketDataSet
+        {
+            Stocks = data.Stocks.Where(s => selected.Count == 0 || selected.Contains(s.Ticker)).ToArray(),
+            DailyTrading = data.DailyTrading.Where(r => selected.Count == 0 || selected.Contains(r.Ticker)).ToArray(),
+            MarketIndices = data.MarketIndices, PriceAdjustments = data.PriceAdjustments
+        };
+        var dates = data.DailyTrading.Select(r => r.TradingDate).Distinct().Order().ToArray();
+        var count = await StaticSiteExporter.WriteKLineExportsAsync(args[2], subset,
+            RankingDates.Selectable(dates), data.PriceAdjustments, dates[^1], CancellationToken.None,
+            scope.ServiceProvider.GetRequiredService<PeriodHistoryStore>());
+        Console.WriteLine($"已從本輪 data 與週期摘要匯出 {count} 檔 K 線至 {Path.GetFullPath(args[2])}。");
+        return;
+    }
+    var tickers = args.Skip(1).Where(a => a != "--warmup60" && a != "--refresh-existing").ToArray();
+    var warmup = args.Contains("--warmup60") ? 59 : 239;
+    var failed = await scope.ServiceProvider.GetRequiredService<PeriodHistoryBackfiller>().BackfillAsync(
+        data, tickers, warmup, new Progress<string>(Console.WriteLine), CancellationToken.None,
+        args.Contains("--refresh-existing"));
+    if (failed > 0) Environment.ExitCode = 1;
     return;
 }
 

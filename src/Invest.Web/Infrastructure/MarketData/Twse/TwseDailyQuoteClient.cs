@@ -22,6 +22,10 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
         CancellationToken cancellationToken = default)
         => (await GetDailyDataCoreAsync(tradingDate, null, cancellationToken)).Quotes;
 
+    internal async Task<IReadOnlyList<DailyQuote>> GetVerifiedBoundaryQuotesAsync(
+        DateOnly date, IReadOnlySet<string> etfTickers, CancellationToken ct)
+        => (await GetDailyDataCoreAsync(date, etfTickers, ct, verifyDate: true)).Quotes;
+
     public async Task<IReadOnlyList<DailyQuote>> GetDailyQuotesAsync(
         DateOnly tradingDate,
         IReadOnlySet<string> etfTickers,
@@ -42,7 +46,7 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
     private async Task<TwseDailyData> GetDailyDataCoreAsync(
         DateOnly tradingDate,
         IReadOnlySet<string>? etfTickers,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool verifyDate = false)
     {
         var url = "https://wwwc.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
             + $"?date={tradingDate:yyyyMMdd}&type=ALLBUT0999&response=json";
@@ -54,6 +58,9 @@ public sealed class TwseDailyQuoteClient(HttpClient httpClient, ILogger<TwseDail
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
 
         var root = document.RootElement;
+        if (verifyDate && (!root.TryGetProperty("date", out var actualDate)
+            || actualDate.GetString() != tradingDate.ToString("yyyyMMdd")))
+            throw new InvalidDataException("TWSE 首尾日回應日期不符，拒絕以目前行情代替歷史行情。");
 
         if (!root.TryGetProperty("tables", out var tables) || tables.ValueKind != JsonValueKind.Array)
         {

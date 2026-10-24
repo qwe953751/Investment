@@ -443,6 +443,13 @@ jobs:
         continue-on-error: true
         run: dotnet run -c Release --project src/Invest.Web -- backfill-index-weights 10
 
+      # 只更新已初始化摘要的還原基準與新增完整週期；初次長歷史回補走獨立 workflow。
+      - name: 更新既有週月摘要
+        if: ${{ inputs.publish-only != true }}
+        continue-on-error: true
+        timeout-minutes: 10
+        run: dotnet run -c Release --project src/Invest.Web -- backfill-periods --refresh-existing
+
       - name: 保存行情快取
         id: save_quotes
         if: ${{ !cancelled() && inputs.publish-only != true }}
@@ -450,8 +457,9 @@ jobs:
         run: |
           # imports-ref、imports-weights、imports-shares 要等第一次補抓成功才會生出來。目錄還不存在時
           # git add 會以 pathspec 錯誤整步中止，連帶擋掉上面已經抓好的行情。
-          mkdir -p imports-ref imports-weights imports-shares
+          mkdir -p imports-ref imports-weights imports-shares imports-periods
           git add -A imports imports-ref imports-weights imports-shares market-calendar.json
+          find imports-periods -type f -name '*.json' -print0 | xargs -0 -r git add --
 
           # 行情只增不減。真的少了檔案代表出了意外，寧可讓整個流程停在這裡，
           # 也不要把「刪掉歷史」這件事推上去。

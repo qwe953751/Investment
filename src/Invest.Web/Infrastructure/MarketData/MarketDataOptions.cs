@@ -16,6 +16,9 @@ public sealed class MarketDataOptions
     /// </summary>
     public string ReferenceDirectory { get; set; } = "../../data/imports-ref";
 
+    /// <summary>獨立的歷史週／月摘要，不混進逐日行情與排行輸入。</summary>
+    public string PeriodHistoryDirectory { get; set; } = "../../data/imports-periods";
+
     /// <summary>
     /// 權值前 20 的官方原始資料：期交所加權指數月表放 twse/、櫃買個股市值排行放 tpex/，
     /// 一個資料日期一個檔。預設指向 data/imports-weights。

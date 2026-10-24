@@ -14,6 +14,7 @@ using Invest.Web.Features.MarketStructure.Services;
 using Invest.Web.Features.TradingValueRanking.Models;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData;
+using Invest.Web.Infrastructure.MarketData.PeriodHistory;
 using Invest.Web.Infrastructure.MarketData.EtfDividends;
 using Invest.Web.Infrastructure.MarketData.Intraday;
 using Invest.Web.Infrastructure.MarketData.Overview;
@@ -56,7 +57,8 @@ public sealed class StaticSiteExporter(
     ILogger<StaticSiteExporter> logger,
     IConfiguration configuration,
     EtfDividendProjectionService etfDividendProjection,
-    CryptoOverviewPublisher? cryptoOverviewPublisher = null)
+    CryptoOverviewPublisher? cryptoOverviewPublisher = null,
+    PeriodHistoryStore? periodHistoryStore = null)
 {
     /// <summary>
     /// 催化事件頁最多列幾則。六十天的重大訊息篩掉例行公告之後還有一千多則，
@@ -136,7 +138,8 @@ public sealed class StaticSiteExporter(
                 selectableDates,
                 dataSet.PriceAdjustments,
                 tradingDates[^1],
-                cancellationToken);
+                cancellationToken,
+                periodHistoryStore);
 
             etfFileCount = await WriteEtfExportsAsync(
                 Path.Combine(dataDirectory, "etf"),
@@ -1491,7 +1494,8 @@ public sealed class StaticSiteExporter(
         IReadOnlyList<DateOnly> selectableDates,
         IReadOnlyList<StockPriceAdjustment> adjustments,
         DateOnly adjustmentThroughDate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        PeriodHistoryStore? historyStore = null)
     {
         if (selectableDates.Count == 0)
         {
@@ -1501,6 +1505,11 @@ public sealed class StaticSiteExporter(
         Directory.CreateDirectory(directory);
         var startDate = selectableDates[0].AddMonths(-DailyKLineSelector.DefaultMonths);
         var endDate = selectableDates[^1];
+        var klineMarketDates = dataSet.DailyTrading.Select(row => row.TradingDate).Distinct().Order().ToArray();
+        var historyCalendar = historyStore is null ? null : await historyStore.LoadCalendarAsync(cancellationToken);
+        // 新交易日以正式 data 為準；摘要來源暫時失敗，不應讓較舊日期清單阻止日行情發布。
+        var coverageDates = (historyCalendar ?? []).Concat(klineMarketDates)
+            .Where(date => date <= adjustmentThroughDate).Distinct().Order().ToArray();
         var eventsByTicker = adjustments
             .Where(item => item.EffectiveDate <= adjustmentThroughDate)
             .GroupBy(item => item.Ticker, StringComparer.Ordinal)
@@ -1543,6 +1552,15 @@ public sealed class StaticSiteExporter(
                 continue;
             }
 
+            var history = historyStore is null ? null : await historyStore.LoadAsync(ticker, cancellationToken);
+            var rawTrading = trading.OrderBy(row => row.TradingDate).ToArray();
+            var weeks = PeriodKLineHistoryMerger.Merge(
+                PeriodKLineCalculator.Calculate(adjustedRows, KLinePeriod.Week), rawTrading,
+                coverageDates, history, KLinePeriod.Week, tickerEvents, adjustmentThroughDate);
+            var months = PeriodKLineHistoryMerger.Merge(
+                PeriodKLineCalculator.Calculate(adjustedRows, KLinePeriod.Month), rawTrading,
+                coverageDates, history, KLinePeriod.Month, tickerEvents, adjustmentThroughDate);
+
             var export = new KLineFileExport(
                 KLineSchemaVersion,
                 "TW",
@@ -1552,8 +1570,8 @@ public sealed class StaticSiteExporter(
                 KLineDailyFields,
                 KLinePeriodFields,
                 [.. points.Select(KLineDailyRow)],
-                [.. PeriodKLineCalculator.Calculate(adjustedRows, KLinePeriod.Week).Select(KLinePeriodRow)],
-                [.. PeriodKLineCalculator.Calculate(adjustedRows, KLinePeriod.Month).Select(KLinePeriodRow)]);
+                [.. weeks.Select(KLinePeriodRow)],
+                [.. months.Select(KLinePeriodRow)]);
 
             await WriteJsonAsync(
                 Path.Combine(directory, ticker + ".json"),
