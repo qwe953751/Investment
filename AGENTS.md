@@ -202,7 +202,7 @@ $doc.key; $doc.rows.Count
 
 macOS／Linux 對應寫法：`curl -sS "$BASE/data/60-$D.json.gz?verify=$V" | gunzip | head -c 300`。
 
-網站合計大小也要看（Pages 上限 1 GB；`publish-gh-pages.sh` 推送前的容量守門在 700 MB 警告、900 MB 中止，2026-10-24 改版前是 948.0 MB、改版後預期約 264.7 MB）：
+網站合計大小也要看（Pages 上限 1 GB；`publish-gh-pages.sh` 推送前的容量守門在 700 MB 警告、900 MB 中止，2026-10-24 改版前是 948.0 MB、2026-10-25 改版後實測 264.8 MB）：
 
 ```powershell
 gh api 'repos/frank-invest/frank-invest.github.io/git/trees/gh-pages?recursive=1' --jq '{truncated, total: ([.tree[] | select(.type=="blob") | .size] | add)}'
