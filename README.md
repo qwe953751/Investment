@@ -832,6 +832,11 @@ gh workflow run daily-snapshot.yml --ref main -f publish-only=false -f backup-on
 此模式只備份，不回補行情、不做行情同步、不發布網站。只有遠端 data 檔案已核對成功，才解除「原生資料備份」。
 完整流程仍用 `publish-only=false`；網站純發布仍用 `publish-only=true`。
 
+2026-10-24 正式備份與 PG17 還原均已成功，33 表列數相符；data 歷史快照已加密、裝置資料已清除。
+舊 service_role 已撤銷並驗證拒絕存取；Windows Worker 尚待現場更新，詳見上方交接規格與 TODO #31。
+網站已由 [publish-only 40096845563](https://github.com/qwe953751/Investment/actions/runs/40096845563) 成功發布；
+公開 manifest 與 gh-pages 同版 `1792848033`，使用新公開金鑰。
+
 `restore-test.yml` 每週日台北 08:00 把最新完整備份解密、核對時效（96 小時）、還原到拋棄式 PostgreSQL 17，
 逐表比對列數與外鍵。只有隔離還原 job 能取得解密 key，正式庫連線只在另一個通知 job；失敗亮獨立「備份還原驗證」。
 測試 Auth UUID 沒有登入憑證，不代表完整 Auth 還原。密文損毀、漏列、配錯清單或過期都不能當成功。
