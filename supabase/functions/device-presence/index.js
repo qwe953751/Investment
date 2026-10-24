@@ -85,7 +85,7 @@ function requestIp(request) {
 function databaseHeaders(serviceRoleKey, extra = {}) {
     return {
         apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
+        ...(serviceRoleKey.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${serviceRoleKey}` }),
         'Content-Type': 'application/json',
         ...extra
     };
@@ -93,7 +93,7 @@ function databaseHeaders(serviceRoleKey, extra = {}) {
 
 async function databaseRequest(path, init = {}) {
     const projectUrl = Deno.env.get('SUPABASE_URL');
-    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const serviceRoleKey = Deno.env.get('INVEST_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
     if (!projectUrl || !serviceRoleKey) {
         throw new Error('Supabase Edge Function environment is incomplete');

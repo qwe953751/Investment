@@ -1,5 +1,5 @@
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const SERVICE_ROLE_KEY = Deno.env.get('INVEST_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const OCR_BUCKET = 'ocr-private';
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 // 在線確認（2026-10-11 使用者定案，說明見 Doc/技術文件/AI OCR.md §3.5）：
@@ -44,7 +44,7 @@ function json(request, status, body) {
 function serviceHeaders(extra = {}) {
     return {
         apikey: SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+        ...(SERVICE_ROLE_KEY.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${SERVICE_ROLE_KEY}` }),
         ...extra
     };
 }

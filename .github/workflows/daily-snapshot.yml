@@ -38,6 +38,10 @@ on:
         description: 只用 data 分支現有快取重新輸出並發布，不等待今日行情（要連今天的行情一起更新才取消勾選，且須等收盤後）
         type: boolean
         default: true
+      backup-only:
+        description: 只備份原生資料，不回補行情或發布網站；需同時設定 publish-only=false
+        type: boolean
+        default: false
       etf-backfill-days:
         description: 補抓幾個交易日的 ETF 歷史（0 表示不補；只有 2026-09-01 之前的舊快取需要）
         default: '0'
@@ -97,6 +101,15 @@ jobs:
         name: 判斷排程是否仍可執行
         shell: bash
         run: |
+          if [ '${{ inputs.backup-only }}' = 'true' ]; then
+              if [ '${{ inputs.publish-only }}' = 'true' ]; then
+                  echo 'backup-only 與 publish-only 不能同時為 true。' >&2
+                  exit 1
+              fi
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo '只執行獨立備份 job。'
+              exit 0
+          fi
           if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
               echo "should_run=true" >> "$GITHUB_OUTPUT"
               echo "手動觸發，直接執行。"
@@ -509,35 +522,6 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: dotnet run -c Release --project src/Invest.Web -- verify
 
-      # runner 內建的是 pg_dump 16，Supabase 已經是 PostgreSQL 17，
-      # 版本對不上 pg_dump 會直接拒絕匯出（不是警告，是 exit 1）。
-      # runner 內建的套件庫只到 16，所以要自己掛上 PostgreSQL 官方的 pgdg。
-      #
-      # 裝好還不夠：`/usr/bin/pg_dump` 是 pg_wrapper，runner 上有 16 的預設 cluster，
-      # 它就照那個挑 16，裝了 17 也一樣。所以直接把 17 的執行檔位置交給備份腳本。
-      - name: 裝上對得上 Supabase 的 pg_dump
-        if: ${{ !cancelled() && inputs.publish-only != true }}
-        run: |
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
-              https://www.postgresql.org/media/keys/ACCC4CF8.asc
-
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc]" \
-              "https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
-              | sudo tee /etc/apt/sources.list.d/pgdg.list
-
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client-17
-
-          echo "PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump" >> "$GITHUB_ENV"
-          /usr/lib/postgresql/17/bin/pg_dump --version
-
-      - name: 備份原生資料
-        if: ${{ !cancelled() && inputs.publish-only != true }}
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: scripts/backup-supabase.sh data/snapshots
-
       # 日韓總覽有獨立的盤後回補流程（asia-market-overview-daily.yml），跟這裡的
       # 台股回補時間不同步；只是提醒，不擋這次發布——今天沒有日韓新資料時，
       # 網站會沿用前一個交易日的快取，不是空白，沒有急迫性。今天若剛好是日韓
@@ -667,20 +651,20 @@ jobs:
           dotnet run -c Release --project src/Invest.Web -- status \
               "github-actions" "$GITHUB_WORKSPACE/data/STATUS.md"
 
-      - name: 保存備份與狀態
+      - name: 保存狀態
         if: ${{ always() && inputs.publish-only != true }}
         working-directory: data
         run: |
-          git add -A snapshots STATUS.md
+          git add STATUS.md
 
           if git diff --cached --quiet; then
-              echo "備份與狀態都沒有變化。"
+              echo "狀態沒有變化。"
               exit 0
           fi
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -qm "備份與狀態 $(date +%Y-%m-%d)"
+          git commit -qm "狀態 $(date +%Y-%m-%d)"
           git push -q
 
       # 網站上那個鈴鐺。放在最後、而且用 always()，因為它要回答的是
@@ -763,3 +747,75 @@ jobs:
               echo "行情快取與靜態網站是分開推的，前面失敗不代表後面沒更新，"
               echo "實際狀態看 \`data\` 分支的 STATUS.md。"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # 與排行發布分開：preflight 略過排行、行情失敗，都不能讓原生備份消失。
+  # 外層 daily-snapshot 併發鎖仍序列化本 workflow 對 data 的寫入。
+  backup:
+    needs: [preflight, snapshot]
+    if: ${{ always() && !cancelled() && inputs.publish-only != true && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TZ: Asia/Taipei
+    steps:
+      - name: 取出原始碼
+        uses: actions/checkout@v4
+      - name: 取出備份快照
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: 安裝備份工具
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+              https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+              | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+          echo "PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump" >> "$GITHUB_ENV"
+          echo "PSQL=/usr/lib/postgresql/17/bin/psql" >> "$GITHUB_ENV"
+      - name: 驗證備份完整性與歷史清理防護
+        run: python3 -m unittest discover -s tests -p 'test_*backup*.py' -v
+      - name: 備份原生資料
+        id: dump
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_PROTECTED_BACKUP_DB_URL: ${{ secrets.SUPABASE_PROTECTED_BACKUP_DB_URL }}
+        run: python3 scripts/backup-bundle.py create data/snapshots
+      - name: 保存並核對遠端備份
+        id: saved
+        working-directory: data
+        run: |
+          git add -A snapshots
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --cached --quiet || git commit -qm "完整原生備份 $(date +%F)"
+          # 其他行情 workflow 可能已前進 data；只 rebase 本次 snapshots 提交，不覆蓋行情。
+          git pull --rebase origin data
+          git push origin HEAD:data
+          git fetch origin data
+          git merge-base --is-ancestor HEAD origin/data
+          for suffix in backup.cms backup.json; do
+              file="snapshots/$(date +%F).$suffix"
+              test "$(git rev-parse "HEAD:$file")" = "$(git rev-parse "origin/data:$file")"
+          done
+          python3 ../scripts/backup-bundle.py validate "snapshots/$(date +%F).backup.json" --max-age-hours 24
+      - name: 更新原生資料備份獨立警報
+        if: ${{ always() && !cancelled() }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SAVED: ${{ steps.saved.outcome }}
+        run: |
+          if [ "$SAVED" = success ]; then
+              dotnet run -c Release --project src/Invest.Web -- alert-clear "原生資料備份"
+          else
+              dotnet run -c Release --project src/Invest.Web -- alert "原生資料備份" error \
+                  "原生資料備份未完成或未成功保存至遠端；網站發布成功不代表備份恢復。請檢查獨立備份 job。" "$RUN_URL"
+          fi

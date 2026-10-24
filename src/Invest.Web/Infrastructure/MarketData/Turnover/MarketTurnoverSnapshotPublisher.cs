@@ -251,7 +251,10 @@ public sealed class MarketTurnoverSnapshotPublisher(
     private HttpRequestMessage CreateRequest(HttpMethod method, string url, string secret)
     {
         var request = new HttpRequestMessage(method, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        if (!secret.StartsWith("sb_secret_", StringComparison.Ordinal))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        }
         request.Headers.Add("apikey", secret);
         return request;
     }

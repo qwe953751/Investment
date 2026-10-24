@@ -1,6 +1,6 @@
 // 管理員送出 BGM 連結後立即啟動轉檔；排程仍可補處理漏掉的工作。
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const SERVICE_KEY = Deno.env.get('INVEST_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const GITHUB_TOKEN = Deno.env.get('GH_ACTIONS_PAT') ?? '';
 const GITHUB_DISPATCH = 'https://api.github.com/repos/qwe953751/Investment/actions/workflows/admin-bgm-import.yml/dispatches';
 const ALLOWED_ORIGINS = new Set([

@@ -25,3 +25,8 @@ verify_jwt = false
 [functions.admin-bgm-dispatch]
 entrypoint = './functions/admin-bgm-dispatch/index.js'
 verify_jwt = true
+
+# Database Webhook 使用獨立 secret；函式自行驗證，不接受 legacy service_role JWT。
+[functions.us-watchlist-dispatch]
+entrypoint = './functions/us-watchlist-dispatch/index.ts'
+verify_jwt = false

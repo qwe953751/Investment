@@ -42,7 +42,7 @@
 | 28 | [ETF 配息資料正式串接（筆記 #87）](#todo-28) | 🟡 官網全歷史、年度選單、完整公告摘要與每單位金額排序均已發布；仍待 07:30 排程觀察 |
 | 29 | [最高權限 BGM 音檔上傳與播放驗收](#todo-29) | 🟡 IG 實際送出與 Storage 切換成功；待瀏覽器播放／下載及新連結即時啟動驗收 |
 | 30 | [期交所匯率間歇回非 JSON，sync-fx 讓每日快照整輪紅燈](#todo-30) | 🟡 修正已完成（commit `29acb60dc`）；推送後待下一次完整流程驗收並看 log 判斷根因 |
-| 31 | [每日備份恢復：私密表不進公開備份](#todo-31) | 🟡 修正已完成；推送後待完整流程確認備份產出，並決定 4 項後續 |
+| 31 | [加密備份、還原與外洩金鑰處置](#todo-31) | 🟡 正式備份／還原／網站／金鑰撤銷通過；Windows Worker 與 GitHub 舊快取待處理 |
 | 32 | [台股週 K／月 K：歷史長度與實機驗收（筆記 #92）](#todo-32) | 🟡 已串接真實資料；月 K 現在只有約 16 根，要不要補更早的行情等你決定 |
 | 33 | [颱風休市與跨午夜 run：盤中鏈空轉、鬧鐘被前一晚的 run 騙到](#todo-33) | ⚪ 兩項都要修，方案已定案（2026-10-24），等其他模型實作 |
 
@@ -2533,13 +2533,15 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 
 <a id="todo-31"></a>
-## 🟡 31. 每日備份恢復：私密表不進公開備份
+## 🟡 31. 原生加密備份、還原驗證與外洩金鑰處置
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**已完成**（2026-10-23）：備份自 10/20 起因 `private_notes` 擋住 `pg_dump` 鎖表而整份中止。使用者決定私人筆記不備份；`private_notes`、`admin_bgm` 整張排除，`device_sessions` 只備份建表語句，備份前檢查備份帳號讀得到每張要備份的表，還原只准補回、不刪既有。細節與驗證見版本紀錄 2026-10-23。
+**已實作與正式驗證**（2026-10-24）：備份改獨立 job，排行 skipped／failure 仍執行；支援 backup-only。新增獨立備份／還原警報，純發布不能解除。九張表正式有資料、invest_writer 為 0 已查證，專用唯讀角色匯出並以同一 MVCC snapshot 比對列數。發現函式定義夾帶仍有效的 service_role JWT，使用者授權輪替，故改完整 SQL 加密而非僅九張表；私人筆記與 Storage 維持不備份。`db/072`、`db/073` 已獨立套用；六支雲端函式切換新 key、webhook 改 Vault secret。真實加密備份在隔離 PG 18.6 還原 33 表全部列數相符；.NET 1084/1084、Node 450/450、Python 21/21。歷史預演 244 commits／63 快照 blob，移除重複跨快照的 3,161 裝置列，所有非 snapshots 資料樹及其他 SQL 保持。細節見[規格](技術文件/原生資料加密備份與金鑰外洩處置.md)。
 
-**待完成**：(1) 推送 main 後第一輪完整流程要產出 `data/snapshots/日期.sql.gz`，並確認其中沒有私密表；下個週日還原測試用的是最新備份。(2) 備份失敗目前只靠「每日排行快照」鈴鐺，隔天純發布會把它收掉，建議比照「美元兌台幣參考匯率」加獨立警報。(3) 歷史快照已含裝置 IP，要清除得改寫 data 分支歷史，需使用者決定。(4) 10/19 備份中 9 張表是 0 列（`access_share_links`、`asset_operation_group_columns`、`asset_operation_snapshots`、`asset_operation_sync_operations`、`asset_operation_sync_state`、`ocr_evaluations`、`ocr_jobs`、`ocr_user_routing`、`ocr_workers`），可能是 RLS 讓 `invest_writer` 靜默讀不到，是否真有資料未驗證。(5) 私人筆記與所有 Storage 檔案沒有任何備份，是使用者接受的風險。
+**正式驗收**：[備份 40096346769](https://github.com/qwe953751/Investment/actions/runs/40096346769)、[PG17 還原 40096540031](https://github.com/qwe953751/Investment/actions/runs/40096540031) 均 success，已在遠端保存 10/24 密文並重新下載解密核對。data 歷史已 lease 推送，無明文 SQL、裝置 0 列，行情樹未變。legacy API keys 停用、舊 HS256 revoked，舊 service_role 作 apikey／Bearer 皆 HTTP 401；新 key、ES256 登入與 Mac Worker 心跳成功。補強發布 [40096845563](https://github.com/qwe953751/Investment/actions/runs/40096845563) 與 Pages 均 success，公開版本 `1792848033` 與分支同版。另以新 key 實跑加密快照 [40098200416](https://github.com/qwe953751/Investment/actions/runs/40098200416) 成功，公開行情快照 HTTP／雜湊通過。
+
+**剩餘跨裝置與平台事項**：Windows Worker 尚未更新，舊 key 已撤銷，需現場依[Windows 操作](技術文件/原生資料加密備份與金鑰外洩處置.md#windows-worker-待辦操作)重建後驗證登入及心跳；目前 chat 沒有該電腦執行通道。第三方 clone／fork 與 GitHub 舊 SHA 快取無法只靠 branch 重寫移除，需要 GitHub Support 的部分另行處理；尚未代發支援訊息，不得宣稱已從全網抹除。私人筆記、BGM、所有 Storage、Auth 憑證與 Vault 設定仍不備份。
 
 
 <a id="todo-32"></a>

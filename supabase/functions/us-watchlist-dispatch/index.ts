@@ -14,11 +14,8 @@
 // 這是「加速」不是「取代」——就算這裡失敗（GitHub API 掛掉、PAT 過期等），
 // 隔天的既有排程還是會照常跑，行情最晚一天內一定會到。
 //
-// 安全性：Supabase anon key 是刻意公開的值（見 appsettings.json 註解），任何人都
-// 讀得到，若只靠平台的 verify_jwt 擋非登入請求，anon key 一樣能通過驗證、進而
-// 濫用來狂發 GitHub Actions dispatch。所以這裡額外檢查 JWT 的 role claim 一定要是
-// service_role——Database Webhook（型別選 Supabase Edge Functions）會自動帶
-// service_role 的 Authorization header，前端用 anon key 打不進來。
+// 安全性：只接受 Vault／Edge Secret 配對的 webhook 專用 secret。
+// 不解析未驗證的 JWT role，也不把 service_role 金鑰寫入公開可備份的函式定義。
 //
 // 這裡故意不做的事：
 // - 不處理 UPDATE／ticker 改名，只處理新增列，改名的情境很少見，維持現狀就好。
@@ -29,8 +26,9 @@
 //   新股票）重複觸發多次。
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const SERVICE_ROLE_KEY = Deno.env.get('INVEST_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const GITHUB_TOKEN = Deno.env.get('GH_ACTIONS_PAT') ?? '';
+const WEBHOOK_SECRET = Deno.env.get('US_WATCHLIST_WEBHOOK_SECRET') ?? '';
 
 const GITHUB_REPO = 'qwe953751/Investment';
 const GITHUB_WORKFLOW = 'us-daily-snapshot.yml';
@@ -48,7 +46,7 @@ function json(body, status = 200) {
 function serviceHeaders(extra = {}) {
     return {
         apikey: SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+        ...(SERVICE_ROLE_KEY.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${SERVICE_ROLE_KEY}` }),
         'Content-Type': 'application/json',
         ...extra
     };
@@ -61,25 +59,15 @@ async function serviceFetch(path, init = {}) {
     });
 }
 
-function jwtRole(authorizationHeader) {
-    if (!authorizationHeader?.startsWith('Bearer ')) {
-        return null;
-    }
-
-    const token = authorizationHeader.slice('Bearer '.length);
-    const parts = token.split('.');
-
-    if (parts.length !== 3) {
-        return null;
-    }
-
-    try {
-        const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-        const payload = JSON.parse(atob(normalized));
-        return payload?.role ?? null;
-    } catch {
-        return null;
-    }
+async function validWebhookSecret(value) {
+    if (!WEBHOOK_SECRET || !value) return false;
+    const encoder = new TextEncoder();
+    const [expected, actual] = await Promise.all([WEBHOOK_SECRET, value]
+        .map(input => crypto.subtle.digest('SHA-256', encoder.encode(input))));
+    const left = new Uint8Array(expected), right = new Uint8Array(actual);
+    let difference = 0;
+    for (let i = 0; i < left.length; i++) difference |= left[i] ^ right[i];
+    return difference === 0;
 }
 
 function githubHeaders(extra = {}) {
@@ -200,7 +188,7 @@ Deno.serve(async request => {
         return json({ error: 'method not allowed' }, 405);
     }
 
-    if (jwtRole(request.headers.get('authorization')) !== 'service_role') {
+    if (!await validWebhookSecret(request.headers.get('x-watchlist-webhook-secret'))) {
         return json({ error: 'forbidden' }, 403);
     }
 

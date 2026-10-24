@@ -794,41 +794,56 @@ dotnet run --project src/Invest.Web -- verify
 
 ## 備份與還原
 
+原生資料備份現在**完整加密**，不再把 SQL 明文提交到公開 `data`。原因是函式定義也可能包含憑證；
+只排除私人筆記或加密受 RLS 保護的資料表仍不夠。完整規格、驗證與金鑰外洩處置見
+[原生資料加密備份與金鑰外洩處置](Doc/技術文件/原生資料加密備份與金鑰外洩處置.md)。
+
+在 repo 根目錄執行；須先設定 `SUPABASE_DB_URL` 與 `SUPABASE_PROTECTED_BACKUP_DB_URL`，不可用假值：
+
 ```bash
-scripts/backup-supabase.sh [快照目錄]        # 預設 data/snapshots
+python3 scripts/backup-bundle.py create data/snapshots
+python3 scripts/backup-bundle.py validate data/snapshots/YYYY-MM-DD.backup.json --max-age-hours 96
 ```
 
-備份的是**原生資料**——族群、編輯、筆記這類只存在於資料庫、別的地方生不回來的東西。
-`daily_quotes` 與 `intraday_*` 只備份結構、不備份內容：它們的權威在 `imports`，
-備份裡留一份三個月前的行情，還原時就有機會拿舊資料蓋掉正確的，這是正確性問題而不是省空間。
-還原完直接跑 `sync` 就會補滿。
+預期產生台北當日的 `.backup.cms` 密文與 schemaVersion 2 `.backup.json` 列數／雜湊清單。
+`backup-supabase.sh` 是內部匯出器，直接呼叫會拒絕。失敗時提供 exit code、SQLSTATE、表名與失敗步驟；
+不要貼連線字串、原始 SQL、資料列或金鑰。
 
-**另有兩類刻意不備份**（2026-10-23 使用者決定），因為快照會 commit 進公開 repo 的 `data` 分支，進了 git 歷史就刪不掉：
+原有原生表由 invest_writer 匯出；九張受保護表由 `invest_backup_reader` 唯讀匯出。
+它沒有 BYPASSRLS／DDL／寫入權；不放寬一般寫入帳號。兩個角色使用相同 MVCC snapshot，逐表比對來源與 COPY 列數。
+所有 SQL 一起以 CMS AES-256-GCM 加密，公開加密憑證可以進 Git，解密私鑰只存受限位置與 GitHub Secret。
+GFS 保留最近 5 份、每週 4 份、每月 6 份，密文與清單一同輪替。
 
-| 項目 | 備份了什麼 | 原因與後果 |
-|---|---|---|
-| `private_notes`（私人筆記）、`admin_bgm`（BGM 設定） | **整張都不備份**，連建表語句都沒有 | 只有最高權限本人能讀；備份帳號 `invest_writer` 被刻意撤掉讀取權（`db/066`、`db/070`），`pg_dump` 鎖不了表，整份備份會中止。這兩張表與 Storage 裡的所有檔案（私人筆記圖片、BGM 音檔、公開筆記圖片）都**沒有任何備份**，只存在於正式庫；搬到新專案時不會跟著走，要先自己從舊專案匯出 |
-| `device_sessions`（各裝置在線狀態） | 只備份建表語句，不備份內容 | 內容含各裝置的 IP 與瀏覽器資訊；還原後裝置連上來就會自己重建。修正前的歷史快照已含這些 IP，要清除得改寫 `data` 分支歷史，需另案決定 |
+| 不備份項目 | 範圍與還原原則 |
+|---|---|
+| 盤後／盤中行情、月營收原表 | 只備份結構；權威仍在 imports／交易所／觀測站，不用舊備份覆蓋行情 |
+| device_sessions | 只備份結構；不保存 IP 或瀏覽器資料 |
+| private_notes、admin_bgm | 整張排除，維持使用者不備份決定；正式還原不碰既有內容 |
+| 所有 Storage 檔案 | 私人／公開筆記圖片、BGM、OCR 等物件都不在 SQL 備份內 |
+| Auth 登入憑證、Vault 設定 | 不在 public 原生資料備份內；換專案要另行準備 |
 
-備份前會先問資料庫，不對就在 `pg_dump` 之前點名並中止，不用再看一句不知所云的 `permission denied`：
-備份帳號讀不到、又沒列為私密表的表；指向被排除內容的表的外鍵；指向私密表的外鍵。
-`pg_dump` 之後還會確認備份裡沒有私密表的任何痕跡才壓縮、寫進快照目錄。
-新增這類表時加進 `scripts/backup-supabase.sh` 的 `private_tables`。
-2026-10-20 起備份曾連續多天沒有產出，就是 `private_notes` 擋住 `pg_dump` 鎖表造成的。
+每日流程的獨立 backup job 在排行 skipped／failure 時仍執行；純發布／取消不動備份與既有警報。
+需單獨補備份時，在 repo 根目錄執行：
 
-每天跟著盤後流程跑，寫成 `snapshots/yyyy-MM-dd.sql.gz`（約 3 MB，2026-10-19 實測 3.2 MB），
-保留最近 5 份、每週 4 份、每月 6 份，共 15 份涵蓋約半年。
-輪替掉的檔案只是從目錄消失，git 歷史裡永遠找得回來。
+```bash
+gh workflow run daily-snapshot.yml --ref main -f publish-only=false -f backup-only=true
+```
 
-`.github/workflows/restore-test.yml` 每週日把最新的備份**真的還原一次**，
-目標是當場開、跑完就丟的 postgres 容器，碰不到 Supabase。
-除了確認能還原，也會檢查行情表是不是空的——不是空的就代表排除清單失效了。
+此模式只備份，不回補行情、不做行情同步、不發布網站。只有遠端 data 檔案已核對成功，才解除「原生資料備份」。
+完整流程仍用 `publish-only=false`；網站純發布仍用 `publish-only=true`。
 
-**真正要還原回 Supabase 永遠是人工的**：先列出差異、經過確認才執行，不做成自動流程。
-**還原只准補回缺少的資料，絕不刪除正式庫現有的東西**（使用者 2026-10-23 明確要求）：
-不 `drop schema`、`drop table`、`truncate`，也不用 `pg_dump --clean` 這類會先刪再建的語句；
-`restore-test.yml` 裡的 `drop schema public cascade` 只對當場開的拋棄式容器，不能照抄。
-備份沒有的東西（上面兩類，加上 Storage 的檔案）在正式庫裡現有的資料，還原時一律不動。
+2026-10-24 正式備份與 PG17 還原均已成功，33 表列數相符；data 歷史快照已加密、裝置資料已清除。
+舊 service_role 已撤銷並驗證拒絕存取；Windows Worker 尚待現場更新，詳見上方交接規格與 TODO #31。
+網站已由 [publish-only 40096845563](https://github.com/qwe953751/Investment/actions/runs/40096845563) 成功發布；
+公開 manifest 與 gh-pages 同版 `1792848033`，使用新公開金鑰。
+
+`restore-test.yml` 每週日台北 08:00 把最新完整備份解密、核對時效（96 小時）、還原到拋棄式 PostgreSQL 17，
+逐表比對列數與外鍵。只有隔離還原 job 能取得解密 key，正式庫連線只在另一個通知 job；失敗亮獨立「備份還原驗證」。
+測試 Auth UUID 沒有登入憑證，不代表完整 Auth 還原。密文損毀、漏列、配錯清單或過期都不能當成功。
+
+**正式還原永遠先列差異、再人工確認，只補缺少資料。** 不使用 DROP／TRUNCATE／--clean；
+測試容器中的 drop schema 不能照抄到正式庫。私人筆記、Storage 與正式庫既有資料一律不動。
+歷史 SQL 清理改存 `.sql.gz.cms`；舊 clone 不可 merge 回 data，以免重新帶回明文與 IP。
 
 ## 專案結構
 

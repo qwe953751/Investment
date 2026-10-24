@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 把 Supabase 的「原生資料」備份成一份可以自己重建資料庫的 SQL。
+# backup-bundle.py 的內部 SQL 匯出器；原始 SQL 不可直接放進公開 Git。
 #
 #   scripts/backup-supabase.sh [快照目錄]
 #
@@ -29,6 +29,11 @@
 # 輪替掉的檔案只是從目錄消失，git 歷史裡永遠找得回來。
 
 set -euo pipefail
+
+if [ "${INVEST_BACKUP_INTERNAL:-}" != 1 ]; then
+    echo '請改用 python3 scripts/backup-bundle.py create：原生 SQL 必須完整加密後才可保存。' >&2
+    exit 2
+fi
 
 snapshot_dir=${1:-data/snapshots}
 
@@ -62,6 +67,16 @@ excluded_tables=(
     intraday_topic_heat
     monthly_revenue
     device_sessions
+    # 由 backup-bundle.py 透過專用唯讀角色匯出、加密；公開 SQL 只保留結構。
+    access_share_links
+    asset_operation_group_columns
+    asset_operation_snapshots
+    asset_operation_sync_operations
+    asset_operation_sync_state
+    ocr_evaluations
+    ocr_jobs
+    ocr_user_routing
+    ocr_workers
 )
 
 # 整張表都不備份，連建表語句都不留。新增這類表時加在這裡；漏了也不會悄悄壞掉：
@@ -161,11 +176,13 @@ if [ -n "$private_referrers" ]; then
     exit 1
 fi
 
+dump_args=(--format=plain --schema=public --no-owner --enable-row-security)
+if [ -n "${PG_DUMP_SNAPSHOT:-}" ]; then
+    dump_args+=(--snapshot="$PG_DUMP_SNAPSHOT")
+fi
+
 "$pg_dump" "$SUPABASE_DB_URL" \
-    --format=plain \
-    --schema=public \
-    --no-owner \
-    --enable-row-security \
+    "${dump_args[@]}" \
     "${exclude_args[@]}" \
     > "$plain"
 

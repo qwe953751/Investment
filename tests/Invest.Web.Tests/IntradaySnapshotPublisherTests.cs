@@ -157,14 +157,16 @@ public sealed class IntradaySnapshotPublisherTests
     // Supabase storage-api 收到「沒有 cache-control」的上傳就套用它的預設值 no-cache。
     // 這裡不能只讀程式碼字面——要真的組出 HttpRequestMessage 並確認 header 落在正確的集合、
     // 值也是合法的 Cache-Control 語法，否則同一種「看起來對、實際沒送出去」的錯誤會再犯一次。
-    [Fact]
-    public async Task 完整快照上傳送出immutable的長TTL且不落在ContentHeaders()
+    [Theory]
+    [InlineData("test-secret", true)]
+    [InlineData("sb_secret_test_only", false)]
+    public async Task 完整快照上傳送出immutable的長TTL且不落在ContentHeaders(string secret, bool legacyBearer)
     {
         // PublishRawAsync 一開始就靠這個環境變數判斷「有沒有設定發佈」，沒設定會直接
         // 回傳 NotConfigured、完全不打任何請求——要驗證真正送出去的 header 就一定要設它。
         // 跟這個測試專案既有的 OcrWorkerApiClientTests 同一套 try/finally 慣例，
         // 避免留下製程層級的環境變數影響到其他測試。
-        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, "test-secret");
+        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, secret);
 
         try
         {
@@ -195,6 +197,12 @@ public sealed class IntradaySnapshotPublisherTests
                 snapshot,
                 new DateTimeOffset(2026, 9, 11, 5, 36, 0, TimeSpan.Zero),
                 CancellationToken.None);
+
+            Assert.All(capturedRequests, request =>
+            {
+                Assert.Equal(secret, request.Headers.GetValues("apikey").Single());
+                Assert.Equal(legacyBearer ? secret : null, request.Headers.Authorization?.Parameter);
+            });
 
             var snapshotUpload = capturedRequests.Single(request =>
                 request.RequestUri!.ToString().Contains("intraday-20260911", StringComparison.Ordinal));
