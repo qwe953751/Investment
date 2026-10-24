@@ -843,7 +843,7 @@ gh workflow run daily-snapshot.yml --ref main -f publish-only=false -f backup-on
 完整流程仍用 `publish-only=false`；網站純發布仍用 `publish-only=true`。
 
 2026-10-24 正式備份與 PG17 還原均已成功，33 表列數相符；data 歷史快照已加密、裝置資料已清除。
-舊 service_role 已撤銷並驗證拒絕存取；Windows Worker 尚待現場更新，詳見上方交接規格與 TODO #31。
+舊 service_role 已撤銷並驗證拒絕存取；Windows Worker 已於 2026-10-25 由使用者現場重建，AI OCR v5／指名回應啟動訊息與正式心跳已核對。GitHub 舊 SHA 快取等平台後續見 TODO #31。
 網站已由 [publish-only 40096845563](https://github.com/qwe953751/Investment/actions/runs/40096845563) 成功發布；
 公開 manifest 與 gh-pages 同版 `1792848033`，使用新公開金鑰。
 

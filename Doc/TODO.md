@@ -42,7 +42,7 @@
 | 28 | [ETF 配息資料正式串接（筆記 #87）](#todo-28) | 🟡 官網全歷史、年度選單、完整公告摘要與每單位金額排序均已發布；仍待 07:30 排程觀察 |
 | 29 | [最高權限 BGM 音檔上傳與播放驗收](#todo-29) | 🟡 IG 實際送出與 Storage 切換成功；待瀏覽器播放／下載及新連結即時啟動驗收 |
 | 30 | [期交所匯率間歇回非 JSON，sync-fx 讓每日快照整輪紅燈](#todo-30) | 🟡 修正已完成（commit `29acb60dc`）；推送後待下一次完整流程驗收並看 log 判斷根因 |
-| 31 | [加密備份、還原與外洩金鑰處置](#todo-31) | 🟡 正式備份／還原／網站／金鑰撤銷通過；Windows Worker 與 GitHub 舊快取待處理 |
+| 31 | [加密備份、還原與外洩金鑰處置](#todo-31) | 🟡 正式備份／還原／網站／金鑰撤銷與兩台 Worker 通過；GitHub 舊快取待處理 |
 | 32 | [台股週 K／月 K：歷史長度與實機驗收（筆記 #92）](#todo-32) | 🟡 已串接真實資料；月 K 現在只有約 16 根，要不要補更早的行情等你決定 |
 | 33 | [颱風休市與跨午夜 run：盤中鏈空轉、鬧鐘被前一晚的 run 騙到](#todo-33) | 🟡 兩項都已實作並通過測試（2026-10-25）；待 10/27 交易日驗收，留棒效果要等下一次臨時休市 |
 
@@ -2545,7 +2545,9 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 **正式驗收**：[備份 40096346769](https://github.com/qwe953751/Investment/actions/runs/40096346769)、[PG17 還原 40096540031](https://github.com/qwe953751/Investment/actions/runs/40096540031) 均 success，已在遠端保存 10/24 密文並重新下載解密核對。data 歷史已 lease 推送，無明文 SQL、裝置 0 列，行情樹未變。legacy API keys 停用、舊 HS256 revoked，舊 service_role 作 apikey／Bearer 皆 HTTP 401；新 key、ES256 登入與 Mac Worker 心跳成功。補強發布 [40096845563](https://github.com/qwe953751/Investment/actions/runs/40096845563) 與 Pages 均 success，公開版本 `1792848033` 與分支同版。另以新 key 實跑加密快照 [40098200416](https://github.com/qwe953751/Investment/actions/runs/40098200416) 成功，公開行情快照 HTTP／雜湊通過。
 
-**剩餘跨裝置與平台事項**：Windows Worker 尚未更新，舊 key 已撤銷，需現場依[Windows 操作](技術文件/原生資料加密備份與金鑰外洩處置.md#windows-worker-待辦操作)重建後驗證登入及心跳；目前 chat 沒有該電腦執行通道。第三方 clone／fork 與 GitHub 舊 SHA 快取無法只靠 branch 重寫移除，需要 GitHub Support 的部分另行處理；尚未代發支援訊息，不得宣稱已從全網抹除。私人筆記、BGM、所有 Storage、Auth 憑證與 Vault 設定仍不備份。
+**Windows 已驗收（2026-10-25）**：使用者以 bc1438b7e 現場重建 win-x64 自包含 Worker，發布成功、排程 Running；以 UTF-8 讀啟動 log 確認「AI OCR v5」「Realtime 喚醒」「在線詢問：指名回應」，正式資料庫亦見 Windows v5 的 03:24:03（台北）心跳。原有修改保留在具名 stash，未在本 chat 還原或比對。這是金鑰切換／重建／連線驗收，不代表新圖片 OCR 正確率與長期運行驗收。見[Windows 操作與證據](技術文件/原生資料加密備份與金鑰外洩處置.md#windows-worker-更新與驗收)。
+
+**剩餘平台事項**：第三方 clone／fork 與 GitHub 舊 SHA 快取無法只靠 branch 重寫移除，需要 GitHub Support 的部分另行處理；尚未代發支援訊息，不得宣稱已從全網抹除。私人筆記、BGM、所有 Storage、Auth 憑證與 Vault 設定仍不備份。
 
 
 <a id="todo-32"></a>
