@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO.Compression;
 using System.Reflection;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -310,16 +311,16 @@ public sealed class StaticSiteExporter(
 
                     foreach (var comparison in comparisons)
                     {
-                        await WriteJsonAsync(
-                            Path.Combine(dataDirectory, $"single-{comparison.PeriodDays}-{date:yyyy-MM-dd}.json"),
+                        await WriteGzipJsonAsync(
+                            Path.Combine(dataDirectory, $"single-{comparison.PeriodDays}-{date:yyyy-MM-dd}.json.gz"),
                             comparison,
                             cancellationToken);
                         fileCount++;
                     }
                 }
 
-                await WriteJsonAsync(
-                    Path.Combine(dataDirectory, key + ".json"),
+                await WriteGzipJsonAsync(
+                    Path.Combine(dataDirectory, key + ".json.gz"),
                     ToExport(key, periodDays, historyLength, result),
                     cancellationToken);
 
@@ -1187,6 +1188,19 @@ public sealed class StaticSiteExporter(
     {
         await using var stream = File.Create(path);
         await JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken);
+    }
+
+    /// <summary>
+    /// 排行檔（期間 × 交易日、單日比較）事先 gzip。內容與 <see cref="WriteJsonAsync{T}"/> 逐位元組相同，
+    /// 只是存成壓縮檔：GitHub Pages 以 application/gzip 原樣送出、不帶 Content-Encoding，
+    /// 由 site.js 的 decodeStaticJson() 解壓。一份約 1 MB 的檔案壓完約 180 KB，
+    /// 網站才裝得下 120 個基準日 × 5 個期間 × 2 類檔案（期間檔、單日比較檔）（Pages 上限 1 GB）。
+    /// </summary>
+    private static async Task WriteGzipJsonAsync<T>(string path, T value, CancellationToken cancellationToken)
+    {
+        await using var file = File.Create(path);
+        await using var gzip = new GZipStream(file, CompressionLevel.SmallestSize);
+        await JsonSerializer.SerializeAsync(gzip, value, JsonOptions, cancellationToken);
     }
 
     /// <summary>

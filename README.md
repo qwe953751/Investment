@@ -571,9 +571,9 @@ dotnet run --project src/Invest.Web -- export "$(pwd)/publish/site"
 預設讀的是 repo 根目錄的 `publish/site`——兩邊對不上時，發佈出去的是上一次的舊快照，
 而且指令不會報錯。
 
-產出最近 120 個可選交易日 × 5 種期間，也就是最多 600 個排行 JSON，另以 `data/kline/{ticker}.json` 逐檔保存日 K、週 K、月 K，
+產出最近 120 個可選交易日 × 5 種期間，也就是最多 600 個排行檔（另有 600 個單日比較檔，見下），另以 `data/kline/{ticker}.json` 逐檔保存日 K、週 K、月 K，
 加上 `index.html` / `site.css` / `site.js`，
-整包約 131 MB，但單頁只載入其中一個約 460 KB 的檔案。20 MB 的原始行情不會上網。
+整包約 264.7 MB（2026-10-24 排行檔預先 gzip 之前是 948.0 MB，GitHub Pages 上限 1 GB），但單頁只載入其中一個約 187 KB 的檔案。20 MB 的原始行情不會上網。
 
 一個檔案就是一份**完整名單**：全市場近兩千檔，不篩市場、不設門檻、不截斷筆數，
 每一列同時帶著兩種排行模式要用的數字。市場、門檻與模式由前端就地篩選與排序，
@@ -582,9 +582,19 @@ dotnet run --project src/Invest.Web -- export "$(pwd)/publish/site"
 檔案裡只寫數字，顯示文字由前端套格式。原本連文字都先算好，但那樣單檔將近 1 MB，
 交易日一多整包就撐不住；只留數字後單檔剩下約四分之一。
 
-交易日只輸出最近 120 天：每多一天就是五個期間各一份全市場名單（約 2.2 MB）。
+交易日只輸出最近 120 天：每多一天就是五個期間各一份全市場名單，再加五份單日比較（未壓縮約 6.99 MB、預先 gzip 後約 1.29 MB）。
 
-單日比較（1／5／10／20／60 日各一份，`data/single-{期間}-{日期}.json`）與盤後市場結構
+**排行檔事先 gzip**：期間檔 `data/{期間}-{日期}.json.gz` 與單日比較檔 `data/single-{期間}-{日期}.json.gz`（共 1,200 個，占網站 88%）
+由 `StaticSiteExporter.WriteGzipJsonAsync` 寫成 gzip，解壓後與未壓縮的 JSON 逐位元組相同，公式與欄位都沒變；
+不壓縮的話整站 948.0 MB，離 GitHub Pages 的 1 GB 只剩約 52 MB（`actions/deploy-pages` 只檢查壓縮後的 artifact，超限前不會有任何警告）。
+GitHub Pages 以 `application/gzip` 原樣送出、不帶 `Content-Encoding`，瀏覽器不會自動解壓，所以 `site.js` 的 `decodeStaticJson()`
+先讀位元組，開頭是 gzip 標記（1F 8B）就用 `DecompressionStream('gzip')` 解，否則當一般 JSON；`DecompressionStream` 需要 Safari／iOS 16.4+、
+Chrome／Edge 80+、Firefox 113+，更舊的瀏覽器才下載本站自帶的 `fflate.min.js`（fflate 0.8.2，MIT，檔頭保留授權全文）。
+讀排行檔的路徑一律經過 `rankingFilePath()`。看檔案內容要先解壓：`curl -s "$URL" | gunzip | head -c 300`，不要直接在瀏覽器打開。
+`scripts/publish-gh-pages.sh` 推送前會量要發布的內容並分類印出大小：700 MB 警告、900 MB 中止，`data/` 若混進未壓縮的排行檔也會中止
+（`GH_PAGES_SIZE_WARN_BYTES`／`GH_PAGES_SIZE_LIMIT_BYTES` 可調）。
+
+單日比較（1／5／10／20／60 日各一份，`data/single-{期間}-{日期}.json.gz`）與盤後市場結構
 （`data/market-structure/{日期}.json`，約 35 KB）各自獨立成檔，只在畫面用到時下載：
 預設的「區間」檢視換日只抓排行檔（原本 1 日檔夾帶五組單日比較，gzip 約 495 KB，拆開後約 163 KB），
 5～60 日區間也不必為了市場結構另抓一份 1 日檔。前端同時發出排行、單日比較與市場結構的請求，

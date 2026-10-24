@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import zlib from 'node:zlib';
 
 const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const siteScript = fs.readFileSync(
@@ -43,6 +44,8 @@ function commonLoadSource(functionName) {
         optionalFunctionSource('fetchJsonAttempt'),
         optionalFunctionSource('fetchJsonWithRetry'),
         optionalFunctionSource('staticJsonLoadErrorMessage'),
+        optionalFunctionSource('rankingFilePath'),
+        optionalFunctionSource('decodeStaticJson'),
         functionSource(functionName)
     ].filter(Boolean).join('\n');
 }
@@ -216,6 +219,8 @@ test('盤中資料庫 fallback 的分頁與摘要也有獨立的有界逾時', (
 
 function periodHarness() {
     let calls = 0;
+    const requestedUrls = [];
+    const body = zlib.gzipSync(Buffer.from(JSON.stringify({ key: '1-2026-09-08', rows: [{ ticker: '2330' }] })));
     const context = {
         cache: new Map(), rankingResourceKeys: new Set(), rankingJob: null, periodPrefetched: new Set(),
         periodCacheVersions: new Map(), periodLoading: new Map(), trimPeriodCache() {},
@@ -224,16 +229,22 @@ function periodHarness() {
         AbortController,
         clearTimeout,
         setTimeout,
-        fetch: async () => {
+        Blob,
+        DecompressionStream,
+        Response,
+        TextDecoder,
+        fetch: async url => {
             calls += 1;
+            requestedUrls.push(String(url));
 
             if (calls === 1) {
                 throw new TypeError('simulated offline');
             }
 
+            // 排行檔是事先 gzip 的 .json.gz；Pages 原樣送出，沒有 Content-Encoding，所以拿到的是 gzip 位元組。
             return {
                 ok: true,
-                json: async () => ({ key: '1-2026-09-08', rows: [{ ticker: '2330' }] })
+                arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)
             };
         }
     };
@@ -243,7 +254,8 @@ function periodHarness() {
 
     return {
         fetchPeriod: context.fetchPeriod,
-        calls: () => calls
+        calls: () => calls,
+        requestedUrls: () => requestedUrls
     };
 }
 
@@ -253,6 +265,11 @@ test('期間快照遇到暫時斷線後會自動重試並完成載入', async ()
 
     assert.deepEqual(JSON.parse(JSON.stringify(result)), { key: '1-2026-09-08', rows: [{ ticker: '2330' }] });
     assert.equal(harness.calls(), 2);
+    // 兩次請求（第一次斷線、重試成功）都指向壓縮檔。
+    assert.deepEqual(harness.requestedUrls(), [
+        'data/1-2026-09-08.json.gz?v=test-version',
+        'data/1-2026-09-08.json.gz?v=test-version'
+    ]);
 });
 
 function jsonBodyTimeoutHarness() {
@@ -274,6 +291,62 @@ function jsonBodyTimeoutHarness() {
 
 test('大型 JSON 的 response body 卡住時也會在逾時後返回錯誤', async () => {
     await assert.rejects(jsonBodyTimeoutHarness(), error => error?.name === 'TimeoutError');
+});
+
+function fetchAttemptContext(response) {
+    const context = {
+        AbortController,
+        clearTimeout,
+        setTimeout,
+        fetch: async () => response
+    };
+
+    vm.createContext(context);
+    vm.runInContext(optionalFunctionSource('fetchJsonAttempt'), context);
+
+    return context;
+}
+
+test('自訂解碼器（排行檔解壓）卡住時同樣受逾時保護', async () => {
+    const context = fetchAttemptContext({ ok: true, json: async () => ({ unused: true }) });
+
+    await assert.rejects(
+        context.fetchJsonAttempt('data/test.json.gz', {}, 10, () => new Promise(() => {})),
+        error => error?.name === 'TimeoutError');
+});
+
+test('沒有指定解碼器時維持 response.json()，指定時改用該解碼器', async () => {
+    const response = { ok: true, json: async () => ({ via: 'json' }) };
+    const context = fetchAttemptContext(response);
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(await context.fetchJsonAttempt('data/test.json', {}, 1_000))),
+        { via: 'json' });
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(await context.fetchJsonAttempt('data/test.json.gz', {}, 1_000, async received => {
+            assert.equal(received, response);
+            return { via: 'decode' };
+        }))),
+        { via: 'decode' });
+});
+
+test('重試包裝會把 policy.decode 傳給單次請求，沒指定時不影響原本行為', async () => {
+    const received = [];
+    const context = {
+        fetchJsonAttempt: async (_url, _options, _timeoutMs, decode) => {
+            received.push(decode);
+            return { ok: true };
+        }
+    };
+
+    vm.createContext(context);
+    vm.runInContext(optionalFunctionSource('fetchJsonWithRetry'), context);
+
+    const decode = () => {};
+    await context.fetchJsonWithRetry('data/a.json.gz', {}, { timeoutMs: 30_000, retryDelays: [], decode });
+    await context.fetchJsonWithRetry('data/b.json');
+
+    assert.deepEqual(received, [decode, undefined]);
 });
 
 function topicsHarness() {
