@@ -2531,13 +2531,13 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 
 
 <a id="todo-31"></a>
-## 🟡 31. 每日備份恢復：私密表不進公開備份
+## 🟡 31. 原生加密備份、還原驗證與外洩金鑰處置
 
 [↑ 回到 TODO 列表](#快速跳轉)
 
-**已完成**（2026-10-23）：備份自 10/20 起因 `private_notes` 擋住 `pg_dump` 鎖表而整份中止。使用者決定私人筆記不備份；`private_notes`、`admin_bgm` 整張排除，`device_sessions` 只備份建表語句，備份前檢查備份帳號讀得到每張要備份的表，還原只准補回、不刪既有。細節與驗證見版本紀錄 2026-10-23。
+**已實作與本機驗證**（2026-10-24）：備份改獨立 job，排行 skipped／failure 仍執行；支援 backup-only。新增獨立備份／還原警報，純發布不能解除。九張表正式有資料、invest_writer 為 0 已查證，專用唯讀角色匯出並以同一 MVCC snapshot 比對列數。發現函式定義夾帶仍有效的 service_role JWT，使用者授權輪替，故改完整 SQL 加密而非僅九張表；私人筆記與 Storage 維持不備份。`db/072`、`db/073` 已獨立套用；六支雲端函式切換新 key、webhook 改 Vault secret。真實加密備份在隔離 PG 18.6 還原 33 表全部列數相符；.NET 1081/1081、Node 450/450、Python 21/21。歷史預演 244 commits／63 快照 blob，移除重複跨快照的 3,161 裝置列，所有非 snapshots 資料樹及其他 SQL 保持。細節見[規格](技術文件/原生資料加密備份與金鑰外洩處置.md)。
 
-**待完成**：(1) 推送 main 後第一輪完整流程要產出 `data/snapshots/日期.sql.gz`，並確認其中沒有私密表；下個週日還原測試用的是最新備份。(2) 備份失敗目前只靠「每日排行快照」鈴鐺，隔天純發布會把它收掉，建議比照「美元兌台幣參考匯率」加獨立警報。(3) 歷史快照已含裝置 IP，要清除得改寫 data 分支歷史，需使用者決定。(4) 10/19 備份中 9 張表是 0 列（`access_share_links`、`asset_operation_group_columns`、`asset_operation_snapshots`、`asset_operation_sync_operations`、`asset_operation_sync_state`、`ocr_evaluations`、`ocr_jobs`、`ocr_user_routing`、`ocr_workers`），可能是 RLS 讓 `invest_writer` 靜默讀不到，是否真有資料未驗證。(5) 私人筆記與所有 Storage 檔案沒有任何備份，是使用者接受的風險。
+**待正式核驗**：data 歷史清理遠端結果、GitHub backup-only 的新完整密文、PG17 還原 run、網站純發布與公開版本、舊 legacy key／HS256 撤銷及 Mac Worker 公開金鑰更新，完成後補本項與版本紀錄。Windows Worker 需要更新公開金鑰，但目前 chat 沒有 Windows 執行通道，已詢問使用者。第三方 clone／fork 與 GitHub 舊 SHA 快取無法只靠 branch 重寫移除，需要 GitHub Support 的部分須另記，不得宣稱已從全網抹除。
 
 
 <a id="todo-32"></a>

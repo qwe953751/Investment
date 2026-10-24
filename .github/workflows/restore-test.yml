@@ -29,16 +29,24 @@ jobs:
       - name: 挑出最新的備份
         id: pick
         run: |
-          latest=$(ls -1 data/snapshots/*.sql.gz 2>/dev/null | tail -1 || true)
+          latest=$(ls -1 data/snapshots/*.backup.json 2>/dev/null | tail -1 || true)
           if [ -z "$latest" ]; then
-              echo "snapshots/ 裡沒有備份，先讓每日流程跑過一次。" >&2
+              echo "snapshots/ 裡沒有完整備份清單，先讓獨立備份 job 跑過一次。" >&2
               exit 1
           fi
           echo "檔案：$latest（$(du -h "$latest" | cut -f1)）"
           echo "path=$latest" >> "$GITHUB_OUTPUT"
 
-      - name: 檢查壓縮檔完整性
-        run: gzip -t "${{ steps.pick.outputs.path }}"
+      - name: 核對完整性、時效及解密備份
+        env:
+          BACKUP_DECRYPT_KEY: ${{ secrets.PROTECTED_BACKUP_DECRYPT_KEY }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/backup-key.pem"
+          printf '%s' "$BACKUP_DECRYPT_KEY" > "$key"
+          export BACKUP_DECRYPT_KEY_FILE="$key"
+          trap 'rm -f "$key"' EXIT
+          python3 scripts/backup-bundle.py prepare-test "${{ steps.pick.outputs.path }}" --output "$RUNNER_TEMP/restore-input"
 
       # psql 用容器裡的，版本跟 dump 對得起來。
       # runner 內建的 client 版本比 Supabase 舊，會看不懂 \restrict 這類新指令。
@@ -56,8 +64,8 @@ jobs:
 
       - name: 還原
         run: |
-          gunzip -c "${{ steps.pick.outputs.path }}" > /tmp/restore.sql
-          docker cp /tmp/restore.sql restoretest:/tmp/restore.sql
+          docker cp "$RUNNER_TEMP/restore-input" restoretest:/tmp/restore-input
+          docker cp scripts/restore-test-bootstrap.sql restoretest:/tmp/bootstrap.sql
 
           # 備份裡有 Supabase 的角色與 CREATE SCHEMA public，
           # 空容器兩者都沒有／已經有，得先把場地整理成跟來源一樣。
@@ -68,6 +76,7 @@ jobs:
               create role authenticated;
               create role service_role;
               create role invest_writer;
+              create role invest_backup_reader;
               -- Supabase 的託管 PostgreSQL 角色不會出現在 pg_dump 裡，
               -- 但 public schema 的權限／擁有者語句仍可能引用它。
               create role supabase_admin;"
@@ -79,8 +88,12 @@ jobs:
           docker exec restoretest psql -U postgres -d restored -v ON_ERROR_STOP=1 -q \
               -c "drop schema public cascade;"
 
-          docker exec restoretest psql -U postgres -d restored -v ON_ERROR_STOP=1 -q \
-              -f /tmp/restore.sql
+          # 缺 auth schema 曾讓每週還原連續失敗；測試身分沒有密碼或 token。
+          # 不關閉外鍵，不忽略 SQL 錯誤；錯誤只印 SQLSTATE，避免洩漏資料列。
+          docker exec restoretest psql -U postgres -d restored -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -q \
+              -f /tmp/bootstrap.sql -f /tmp/restore-input/auth-identities.sql \
+              -f /tmp/restore-input/restore.sql \
+              -f /tmp/restore-input/verify.sql
 
       - name: 驗收還原結果
         run: |
@@ -110,6 +123,9 @@ jobs:
           # 指向 intraday_runs，所以必須跟著一起空。2026-08-23、08-30 連兩週的
           # 還原測試就是敗在它有資料、intraday_runs 沒有，外鍵當場擋下。
           check "intraday_topic_heat 是空的" "select count(*) from intraday_topic_heat;" "0"
+          check "裝置 IP 不還原" "select count(*) from device_sessions;" "0"
+          check "私人筆記不在備份內" "select to_regclass('public.private_notes') is null;" "t"
+          check "BGM 不在備份內" "select to_regclass('public.admin_bgm') is null;" "t"
 
           # 用名字點名，不用數量。數量會在每加一張表就紅一次，
           # 那種紅燈跟「備份壞了」長得一模一樣。
@@ -126,4 +142,29 @@ jobs:
 
       - name: 收掉資料庫
         if: always()
-        run: docker rm -f restoretest || true
+        run: |
+          docker rm -f restoretest || true
+          rm -rf "$RUNNER_TEMP/restore-input"
+
+  # 正式連線只交給通知 job，restore job 永遠拿不到正式資料庫連線。
+  alert:
+    needs: restore
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: 更新備份還原獨立警報
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RESTORE_RESULT: ${{ needs.restore.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$RESTORE_RESULT" = success ]; then
+              dotnet run -c Release --project src/Invest.Web -- alert-clear "備份還原驗證"
+          else
+              dotnet run -c Release --project src/Invest.Web -- alert "備份還原驗證" error \
+                  "最新完整備份未通過時效、解密或隔離還原驗證；請查看還原 job，網站純發布不會解除此警報。" "$RUN_URL"
+          fi

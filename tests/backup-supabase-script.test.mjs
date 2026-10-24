@@ -65,6 +65,7 @@ async function withBackup(options, check) {
             env: {
                 ...process.env,
                 SUPABASE_DB_URL: 'postgres://stub',
+                INVEST_BACKUP_INTERNAL: '1',
                 PG_DUMP: join(directory, 'pg_dump'),
                 PSQL: join(directory, 'psql'),
                 STUB_DIR: directory,
@@ -186,9 +187,11 @@ test('名字只是前綴相同的另一張表不算洩漏私密表', { skip }, a
 test('每週還原測試只碰當場開的容器：drop schema 不能漏到 Supabase', async () => {
     const workflow = (await readFile(new URL('../.github/workflows/restore-test.yml', import.meta.url), 'utf8'))
         .replaceAll('\r\n', '\n');
-    assert.doesNotMatch(workflow, /SUPABASE|secrets\./, '還原測試不該拿到任何連線資訊');
+    const restore = workflow.split('\n  alert:')[0];
+    assert.doesNotMatch(restore, /SUPABASE/, '隔離還原 job 不該拿到正式連線資訊');
+    assert.match(restore, /secrets\.PROTECTED_BACKUP_DECRYPT_KEY/);
 
-    const code = workflow.split('\n').filter(line => !/^\s*#/.test(line));
+    const code = restore.split('\n').filter(line => !/^\s*#/.test(line));
     const psqlLines = code.filter(line => /\bpsql\b/.test(line));
     assert.ok(psqlLines.length >= 4);
     assert.ok(psqlLines.every(line => line.includes('docker exec restoretest')),

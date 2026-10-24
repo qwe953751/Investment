@@ -7,7 +7,7 @@
  */
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const SERVICE_ROLE_KEY = Deno.env.get('INVEST_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const SPREADSHEET_ID = Deno.env.get('ASSET_OPERATION_SPREADSHEET_ID') ?? '';
 const SHEET_ID = Number(Deno.env.get('ASSET_OPERATION_SHEET_ID') ?? '58931507');
 const SHEET_NAME = Deno.env.get('ASSET_OPERATION_SHEET_NAME') ?? '操作(台)';
@@ -352,7 +352,7 @@ async function supabaseRequest(path, options = {}) {
         ...options,
         headers: {
             apikey: SERVICE_ROLE_KEY,
-            Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+            ...(SERVICE_ROLE_KEY.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${SERVICE_ROLE_KEY}` }),
             'Content-Type': 'application/json',
             ...(options.headers ?? {})
         }

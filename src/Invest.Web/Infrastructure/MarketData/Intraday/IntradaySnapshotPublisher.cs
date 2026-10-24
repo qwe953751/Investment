@@ -732,7 +732,10 @@ public sealed class IntradaySnapshotPublisher(
         };
 
         request.Headers.TryAddWithoutValidation("apikey", settings.Secret);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.Secret);
+        if (!settings.Secret.StartsWith("sb_secret_", StringComparison.Ordinal))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.Secret);
+        }
         request.Headers.TryAddWithoutValidation("x-upsert", "true");
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
@@ -976,7 +979,10 @@ public sealed class IntradaySnapshotPublisher(
     {
         var request = new HttpRequestMessage(method, endpoint);
         request.Headers.TryAddWithoutValidation("apikey", secret);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        if (!secret.StartsWith("sb_secret_", StringComparison.Ordinal))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        }
         return request;
     }
 
