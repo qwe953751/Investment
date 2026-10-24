@@ -139,6 +139,12 @@ public sealed class DailySnapshotWorkflowTests
         Assert.Contains("TimeSpan.FromHours(18)", File.ReadAllText(Path.Combine(
             root, "src", "Invest.Web", "Infrastructure", "MarketData", "DailyCloseCoverage.cs")), StringComparison.Ordinal);
 
+        // 100 筆 run 的原始回應有 1.2 MB（2026-10-25 實測），超過 execFileSync 預設的 1 MiB 輸出上限而 ENOBUFS：
+        // 腳本會一律 exit 1、被當成「不確定」而照舊執行，整個修正等於沒生效，而且沒有任何錯誤訊息以外的症狀。
+        // 小 fixture 的單元測試看不出來，是對正式 API 試跑才發現的，所以瘦身與放大輸出上限都要留著。
+        Assert.Contains("'--jq'", script, StringComparison.Ordinal);
+        Assert.Contains("maxBuffer:", script, StringComparison.Ordinal);
+
         // 兩個 workflow 都用這支腳本，而且不再各自翻 run。
         Assert.Contains("node scripts/daily-snapshot-done.mjs", File.ReadAllText(Path.Combine(
             root, ".github", "workflows", "intraday.yml")), StringComparison.Ordinal);

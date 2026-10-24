@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
     DAILY_REFRESH_HOUR,
+    RUN_PROJECTION,
     STEP_NAMES,
     findCompletedSnapshotRun,
     refreshStartMs
@@ -222,28 +223,44 @@ const runCli = (directory, args) => spawnSync(process.execPath,
     [new URL('../scripts/daily-snapshot-done.mjs', import.meta.url).pathname, ...args],
     { encoding: 'utf8', env: { ...process.env, PATH: `${directory}:${process.env.PATH}` } });
 
-// 真實 API 的 run 清單是新到舊，假 gh 照同樣的順序回傳。
+// 假 gh 盡量貼近真的：run 清單照真實 API 的新到舊順序，而且有帶 --jq 就真的用 jq 套運算式
+// （正式 API 的 100 筆清單有 1.2 MB，不先用 jq 瘦身就會超過 execFileSync 的輸出上限，見腳本內註解）。
+// 環境變數 BLOAT_BYTES 讓 jobs 回應多帶一大塊無用資料，驗證輸出上限放大的保險。
 const fakeGhServingFixture = `
 const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
 const fixture = JSON.parse(fs.readFileSync(${JSON.stringify(new URL('./fixtures/daily-snapshot-runs.json', import.meta.url).pathname)}, 'utf8'));
-const path = process.argv[3];
-fs.appendFileSync(process.env.GH_CALLS, path + '\\n');
+const args = process.argv.slice(2);
+const path = args[1];
+const jqIndex = args.indexOf('--jq');
+fs.appendFileSync(process.env.GH_CALLS, args.join(' ') + '\\n');
+const respond = body => {
+    if (jqIndex < 0) return process.stdout.write(JSON.stringify(body));
+    const jq = spawnSync('jq', ['-c', args[jqIndex + 1]], { input: JSON.stringify(body), encoding: 'utf8' });
+    if (jq.status !== 0) { process.stderr.write(jq.stderr); process.exit(1); }
+    process.stdout.write(jq.stdout);
+};
 const jobs = /^repos\\/[^/]+\\/[^/]+\\/actions\\/runs\\/(\\d+)\\/jobs\\?per_page=100$/.exec(path);
 if (path === 'repos/qwe953751/Investment/actions/workflows/daily-snapshot.yml/runs?per_page=100') {
-    const newestFirst = [...fixture.runs].sort((a, b) => b.created_at.localeCompare(a.created_at));
-    process.stdout.write(JSON.stringify({ workflow_runs: newestFirst }));
+    // 真實回應每一筆還有上百個無用欄位；用一大塊填充模擬，才測得到「沒瘦身就爆」。
+    const padding = 'x'.repeat(12_000);
+    const newestFirst = [...fixture.runs].sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .map(run => ({ ...run, repository: { description: padding }, head_commit: { message: padding } }));
+    respond({ total_count: newestFirst.length, workflow_runs: newestFirst });
 } else if (jobs) {
-    process.stdout.write(JSON.stringify(fixture.jobs[jobs[1]]));
+    const body = { ...fixture.jobs[jobs[1]] };
+    if (process.env.BLOAT_BYTES) body.padding = 'y'.repeat(Number(process.env.BLOAT_BYTES));
+    respond(body);
 } else { process.stderr.write('unexpected gh api path: ' + path); process.exit(1); }
 `;
 
-async function runCliWithFixture(args) {
+async function runCliWithFixture(args, extraEnv = {}) {
     return withFakeGh(fakeGhServingFixture, async directory => {
         const calls = join(directory, 'calls.log');
         const result = spawnSync(process.execPath,
             [new URL('../scripts/daily-snapshot-done.mjs', import.meta.url).pathname,
                 '--repository', 'qwe953751/Investment', ...args],
-            { encoding: 'utf8', env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, GH_CALLS: calls } });
+            { encoding: 'utf8', env: { ...process.env, ...extraEnv, PATH: `${directory}:${process.env.PATH}`, GH_CALLS: calls } });
         const paths = (await readFile(calls, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
         return { result, paths };
     });
@@ -258,12 +275,13 @@ test('CLI lists the unfiltered latest 100 runs, newest first, and stops at the f
     // 10/22 23:39 開始、10/23 00:00:01 才驗證的那一輪，驗證晚於 10/22 的 18:00，對 10/22 來說是有效證據。
     assert.equal(output.runId, REAL.crossMidnight1022);
 
-    assert.equal(paths[0], 'repos/qwe953751/Investment/actions/workflows/daily-snapshot.yml/runs?per_page=100');
+    assert.equal(paths[0], `api repos/qwe953751/Investment/actions/workflows/daily-snapshot.yml/runs?per_page=100 --jq ${RUN_PROJECTION}`,
+        'the run list is projected by jq on the gh side');
     assert.ok(paths.every(path => !/event=|created=/.test(path)), 'no search filters on the run list');
     // 新到舊：先打開 10/23 的純發布（驗證被跳過，不算），再打開 23:39 那一輪才命中就停。
     assert.deepEqual(paths.slice(1), [
-        `repos/qwe953751/Investment/actions/runs/${REAL.purePublish1023}/jobs?per_page=100`,
-        `repos/qwe953751/Investment/actions/runs/${REAL.crossMidnight1022}/jobs?per_page=100`
+        `api repos/qwe953751/Investment/actions/runs/${REAL.purePublish1023}/jobs?per_page=100`,
+        `api repos/qwe953751/Investment/actions/runs/${REAL.crossMidnight1022}/jobs?per_page=100`
     ]);
 });
 
@@ -281,7 +299,15 @@ test('CLI answers "not done" for 10/23 and only opens the one run that passes th
 
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), { done: false, checked: 1 });
-    assert.deepEqual(paths.slice(1), [`repos/qwe953751/Investment/actions/runs/${REAL.purePublish1023}/jobs?per_page=100`]);
+    assert.deepEqual(paths.slice(1), [`api repos/qwe953751/Investment/actions/runs/${REAL.purePublish1023}/jobs?per_page=100`]);
+});
+
+test('CLI survives a very large jobs response (output cap raised) and the 1.2 MB-class run list is projected away', async () => {
+    // jobs 回應多帶 3 MB 無用資料：超過 execFileSync 預設的 1 MiB 上限，沒放大 maxBuffer 就會 ENOBUFS。
+    const { result } = await runCliWithFixture(['--business-date', '2026-10-23'], { BLOAT_BYTES: String(3 * 1024 * 1024) });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { done: false, checked: 1 });
 });
 
 test('CLI exits 1 with the reason on stderr when gh fails, so callers treat it as "not sure"', async () => {

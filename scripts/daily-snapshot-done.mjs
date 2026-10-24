@@ -33,6 +33,9 @@ export const STEP_NAMES = Object.freeze({
 
 const BUSINESS_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+// gh api --jq 的運算式：只留判斷用得到的欄位。
+export const RUN_PROJECTION = '[.workflow_runs[] | {id, event, status, conclusion, created_at, updated_at}]';
+
 /** 台北日期 D 的 18:00 對應的 epoch 毫秒。台灣沒有日光節約，固定 +08:00。 */
 export function refreshStartMs(businessDate) {
     if (!BUSINESS_DATE.test(businessDate ?? '')) {
@@ -101,13 +104,20 @@ if (process.argv[1]?.endsWith('daily-snapshot-done.mjs')) {
             throw new Error('An exact repository and Taipei business date are required.');
         }
 
-        const api = path => JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8', timeout: 30_000 }));
+        // 不用 --jq 的話，100 筆 run 的原始回應有 1.2 MB（2026-10-25 實測，而且會隨 run 變多越長），超過
+        // execFileSync 預設 1 MiB 的輸出上限而 ENOBUFS——單元測試的 fixture 很小，看不出來，是對正式 API
+        // 試跑才發現的。所以先在 gh 端用 jq 只留需要的六個欄位（約 16 KB），maxBuffer 再放大當保險。
+        const api = (path, jq) => JSON.parse(execFileSync('gh', ['api', path, ...(jq ? ['--jq', jq] : [])], {
+            encoding: 'utf8',
+            timeout: 30_000,
+            maxBuffer: 32 * 1024 * 1024
+        }));
 
         // 刻意不加 event= 或 created= 之類的搜尋條件：10/22 23:39 那一場用 event=schedule 的篩選列表
         // 只花 0.44 秒就回「找不到」（平常 3～6 秒），原因沒查清楚。不加篩選的最新 100 筆約涵蓋一週半。
-        const runs = api(`repos/${repository}/actions/workflows/daily-snapshot.yml/runs?per_page=100`).workflow_runs
-            .map(({ id, event, status, conclusion, created_at, updated_at }) =>
-                ({ id, event, status, conclusion, created_at, updated_at }));
+        const runs = api(
+            `repos/${repository}/actions/workflows/daily-snapshot.yml/runs?per_page=100`,
+            RUN_PROJECTION);
 
         const result = findCompletedSnapshotRun({
             runs,
