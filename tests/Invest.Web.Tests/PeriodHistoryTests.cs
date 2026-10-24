@@ -237,4 +237,19 @@ public sealed class PeriodHistoryTests
         Assert.Throws<InvalidDataException>(() => PeriodSummaryClient.Parse(doc.RootElement));
         Assert.Equal(35.69m, Assert.Single(PeriodSummaryClient.Parse(doc.RootElement, allowCandidateOpen: true)).Close);
     }
+
+    [Theory]
+    [InlineData("成交仟股", 2000000)]
+    [InlineData("成交張數", 2000000)]
+    [InlineData("成交股數", 2000)]
+    public void 上櫃歷史與新版量欄位依公布單位轉換_不固定假設為股數(string field, int volume)
+    {
+        using var doc = JsonDocument.Parse("""
+            {"stat":"ok","date":"20250101","tables":[{"fields":["日 期","VOLUME","開盤","最高","最低","收盤"],
+            "data":[["114/01/02","2000","440","450","430","445"]]}]}
+            """.Replace("VOLUME", field));
+        var row = Assert.Single(OfficialPeriodDataClient.ParseEventMonth(doc.RootElement, new(2025, 1, 1), Market.Tpex));
+        Assert.Equal(volume, row.Volume);
+        Assert.Equal(440m, row.Open);
+    }
 }

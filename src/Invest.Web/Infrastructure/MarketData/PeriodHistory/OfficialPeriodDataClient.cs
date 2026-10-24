@@ -104,11 +104,13 @@ public sealed class OfficialPeriodDataClient(HttpClient http, TwseDailyQuoteClie
             || !root.TryGetProperty("date", out var date) || date.GetString() != month.ToString("yyyyMMdd"))
             throw new InvalidDataException("官方事件月份日期／狀態不符，不能混用目前月份。");
         var table = market == Market.Twse ? root : root.GetProperty("tables")[0];
-        var names = table.GetProperty("fields").EnumerateArray().Select(f => f.GetString()?.Replace(" ", "")).ToArray();
+        var names = table.GetProperty("fields").EnumerateArray()
+            .Select(f => string.Concat((f.GetString() ?? "").Where(c => !char.IsWhiteSpace(c)))).ToArray();
         int Field(params string[] choices) => Array.FindIndex(names, n => choices.Contains(n));
         var indices = new[] { Field("日期"), Field("開盤價", "開盤"), Field("最高價", "最高"),
-            Field("最低價", "最低"), Field("收盤價", "收盤"), Field("成交股數", "成交仟股") };
-        if (indices.Any(i => i < 0)) throw new InvalidDataException("官方事件月份欄位變更。");
+            Field("最低價", "最低"), Field("收盤價", "收盤"), Field("成交股數", "成交仟股", "成交張數") };
+        if (indices.Any(i => i < 0)) throw new InvalidDataException($"{market} {month:yyyy-MM} 官方事件月份欄位變更：{string.Join('/', names)}");
+        var volumeUnit = names[indices[5]] == "成交股數" ? 1m : 1000m;
         var rows = new List<RawPeriodBar>();
         foreach (var row in table.GetProperty("data").EnumerateArray())
         {
@@ -121,7 +123,7 @@ public sealed class OfficialPeriodDataClient(HttpClient http, TwseDailyQuoteClie
             if (!DailyBarValidator.IsValid(values[0], values[1], values[2], values[3]) || values[4] is not >= 0m)
                 throw new InvalidDataException($"官方事件日 OHLC／量無效：{day}");
             rows.Add(new(day, values[0]!.Value, values[1]!.Value, values[2]!.Value, values[3]!.Value,
-                values[4]!.Value * (market == Market.Tpex ? 1000m : 1m)));
+                values[4]!.Value * volumeUnit));
         }
         return rows;
     }
