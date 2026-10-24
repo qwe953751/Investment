@@ -15,10 +15,12 @@ namespace Invest.Web.Tests;
 [Collection("Supabase storage environment")]
 public sealed class MarketTurnoverSnapshotPublisherTests
 {
-    [Fact]
-    public async Task 同一個publisher實例發布第二個市場不會重複建立bucket()
+    [Theory]
+    [InlineData("test-secret")]
+    [InlineData("sb_secret_fixture")]
+    public async Task 同一個publisher實例發布第二個市場不會重複建立bucket(string secret)
     {
-        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, "test-secret");
+        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, secret);
         try
         {
             var requests = new List<HttpRequestMessage>();
@@ -31,6 +33,12 @@ public sealed class MarketTurnoverSnapshotPublisherTests
             var kr = await publisher.PublishAsync(CreateSnapshot("kr"));
 
             Assert.True(jp.Published);
+            Assert.All(requests, request =>
+            {
+                Assert.Equal(secret, Assert.Single(request.Headers.GetValues("apikey")));
+                Assert.Equal(secret.StartsWith("sb_secret_", StringComparison.Ordinal) ? null : secret,
+                    request.Headers.Authorization?.Parameter);
+            });
             Assert.True(kr.Published);
             Assert.Single(requests, request =>
                 request.RequestUri!.AbsolutePath.EndsWith("/storage/v1/bucket", StringComparison.Ordinal));

@@ -10,10 +10,12 @@ namespace Invest.Web.Tests;
 [Collection("Supabase storage environment")]
 public sealed class MarketOverviewIntradaySnapshotPublisherTests
 {
-    [Fact]
-    public async Task 首次發佈會建立獨立公開bucket並先寫完整檔再寫latest()
+    [Theory]
+    [InlineData("test-secret")]
+    [InlineData("sb_secret_fixture")]
+    public async Task 首次發佈會建立獨立公開bucket並先寫完整檔再寫latest(string secret)
     {
-        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, "test-secret");
+        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, secret);
         try
         {
             var requests = new List<HttpRequestMessage>();
@@ -34,6 +36,12 @@ public sealed class MarketOverviewIntradaySnapshotPublisherTests
                 []));
 
             Assert.True(result.Published);
+            Assert.All(requests, request =>
+            {
+                Assert.Equal(secret, Assert.Single(request.Headers.GetValues("apikey")));
+                Assert.Equal(secret.StartsWith("sb_secret_", StringComparison.Ordinal) ? null : secret,
+                    request.Headers.Authorization?.Parameter);
+            });
             Assert.Contains(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/storage/v1/bucket", StringComparison.Ordinal));
             var snapshot = requests.Single(request => request.RequestUri!.AbsolutePath.Contains(
                 "/jp/market-overview-intraday-", StringComparison.Ordinal));

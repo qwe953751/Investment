@@ -32,14 +32,16 @@ public sealed class CryptoOverviewPublisherTests
         { ["Supabase:Url"] = "https://storage.example.test" }).Build(), new HttpClient(handler),
         NullLogger<CryptoOverviewPublisher>.Instance);
 
-    [Fact]
-    public async Task 先驗證九個K線與完整檔才更新latest且第二輪不重送每日資產()
+    [Theory]
+    [InlineData("fixture-only")]
+    [InlineData("sb_secret_fixture")]
+    public async Task 先驗證九個K線與完整檔才更新latest且第二輪不重送每日資產(string secret)
     {
         var old = Environment.GetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable);
-        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, "fixture-only");
+        Environment.SetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable, secret);
         try
         {
-            var handler = new StorageHandler(); var publisher = Publisher(handler);
+            var handler = new StorageHandler { ExpectedSecret = secret }; var publisher = Publisher(handler);
             var stage = Stage();
             var first = await publisher.PublishAsync(stage, new string('a', 40));
             Assert.Equal("crypto/latest.json", handler.Writes[^1]);
@@ -146,6 +148,7 @@ public sealed class CryptoOverviewPublisherTests
         public List<string> Writes { get; } = [];
         public bool CorruptSnapshots { get; set; }
         public int Calls { get; private set; }
+        public string? ExpectedSecret { get; init; }
         public string? MissingCode { get; init; }
         public string? MissingStatus { get; init; }
 
@@ -153,6 +156,20 @@ public sealed class CryptoOverviewPublisherTests
         {
             Calls++;
             var path = request.RequestUri!.AbsolutePath;
+            if (ExpectedSecret is { } secret)
+            {
+                if (path.Contains("/object/public/", StringComparison.Ordinal))
+                {
+                    Assert.False(request.Headers.Contains("apikey"));
+                    Assert.Null(request.Headers.Authorization);
+                }
+                else
+                {
+                    Assert.Equal(secret, Assert.Single(request.Headers.GetValues("apikey")));
+                    Assert.Equal(secret.StartsWith("sb_secret_", StringComparison.Ordinal) ? null : secret,
+                        request.Headers.Authorization?.Parameter);
+                }
+            }
             const string bucket = "market-overview-intraday-snapshots/";
             var index = path.IndexOf(bucket, StringComparison.Ordinal);
             var file = index < 0 ? "" : path[(index + bucket.Length)..];

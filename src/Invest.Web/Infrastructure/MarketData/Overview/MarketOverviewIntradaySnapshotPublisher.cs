@@ -294,7 +294,10 @@ public sealed class MarketOverviewIntradaySnapshotPublisher(
     {
         var request = new HttpRequestMessage(method, endpoint);
         request.Headers.TryAddWithoutValidation("apikey", secret);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        if (!secret.StartsWith("sb_secret_", StringComparison.Ordinal))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        }
         return request;
     }
 

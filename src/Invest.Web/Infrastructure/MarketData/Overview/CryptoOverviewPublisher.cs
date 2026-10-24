@@ -130,7 +130,10 @@ public sealed class CryptoOverviewPublisher(IConfiguration configuration, HttpCl
         var request = new HttpRequestMessage(method, configuration["Supabase:Url"]!.TrimEnd('/') + "/storage/v1/" + suffix);
         var secret = Environment.GetEnvironmentVariable(IntradaySnapshotPublisher.StorageSecretVariable)!;
         request.Headers.TryAddWithoutValidation("apikey", secret);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        if (!secret.StartsWith("sb_secret_", StringComparison.Ordinal))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        }
         return request;
     }
 
