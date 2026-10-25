@@ -132,7 +132,9 @@ public sealed class DailySnapshotWorkflowTests
         var verify = workflow[verifyStart..workflow.IndexOf("run:", verifyStart, StringComparison.Ordinal)];
         Assert.Contains("inputs.publish-only != true", verify, StringComparison.Ordinal);
 
-        // 18:00 在三個地方各寫一份：腳本、排程定義、盤後對帳的到期時間。
+        // 18:00 在四個地方各寫一份：腳本、排程定義、盤後對帳的到期時間，以及備份的收盤週期起點
+        // （backup-bundle.py 的 CYCLE_HOUR：每個收盤週期只備份一次，起點必須和「今天完成了沒」同一個分界）。
+        Assert.Contains("CYCLE_HOUR = 18", File.ReadAllText(Path.Combine(root, "scripts", "backup-bundle.py")), StringComparison.Ordinal);
         Assert.Contains("DAILY_REFRESH_HOUR = 18;", script, StringComparison.Ordinal);
         Assert.Contains("DailyRefresh = new(18, 0)", File.ReadAllText(Path.Combine(
             root, "src", "Invest.Web", "Infrastructure", "MarketData", "CollectionSchedule.cs")), StringComparison.Ordinal);
@@ -438,6 +440,148 @@ public sealed class DailySnapshotWorkflowTests
         Assert.DoesNotContain("git push -f", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("--force", workflow, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// 備份每個收盤週期（台北 18:00 起算）只做一次。以前每一輪完整流程都 pg_dump 並 commit 約 4 MB 的密文，
+    /// 一個工作日約四份（鬧鐘那輪加三場晚到排程）。判斷本身在 scripts/backup-bundle.py 的 cycle（有 Python 測試），
+    /// 這裡釘住 workflow 的接線：略過時不安裝工具、不 pg_dump、不 commit，警報只在「親自驗證過」時解除。
+    /// </summary>
+    [Fact]
+    public void 備份每個收盤週期只做一次且略過時不動遠端()
+    {
+        var job = BackupJob();
+
+        var cycle = Step(job, "判斷本收盤週期是否已有有效備份");
+        Assert.Contains("id: cycle", cycle, StringComparison.Ordinal);
+        Assert.Contains("continue-on-error: true", cycle, StringComparison.Ordinal);
+        Assert.Contains("python3 scripts/backup-bundle.py cycle data/snapshots", cycle, StringComparison.Ordinal);
+
+        // backup-only=true 是「現在就要一份新的」，不能被既有備份擋掉。
+        Assert.Contains("BACKUP_ONLY: ${{ inputs.backup-only }}", cycle, StringComparison.Ordinal);
+        Assert.Contains("echo 'fresh=false' >> \"$GITHUB_OUTPUT\"", cycle, StringComparison.Ordinal);
+
+        foreach (var name in new[] { "安裝備份工具", "備份原生資料", "保存並核對遠端備份" })
+        {
+            Assert.Contains("if: ${{ steps.cycle.outputs.fresh != 'true' }}", Step(job, name), StringComparison.Ordinal);
+        }
+
+        Assert.Contains("if: ${{ steps.cycle.outputs.fresh == 'true' }}", Step(job, "本收盤週期已有有效備份，略過這一輪"), StringComparison.Ordinal);
+
+        // 備份程式自己的測試要排在判斷之前：判斷若壞成永遠回報已備份，備份會悄悄停掉。
+        var order = new[]
+        {
+            "驗證備份完整性與歷史清理防護", "判斷本收盤週期是否已有有效備份", "安裝備份工具",
+            "備份原生資料", "保存並核對遠端備份", "更新原生資料備份獨立警報"
+        }.Select(name => job.IndexOf("- name: " + name, StringComparison.Ordinal)).ToArray();
+        Assert.All(order, index => Assert.True(index >= 0));
+        Assert.Equal(order.OrderBy(index => index), order);
+
+        // 警報：保存並核對成功，或「本週期的現有備份剛通過驗證」才解除；備份失敗被跳過的保存步驟不算。
+        var alert = Step(job, "更新原生資料備份獨立警報");
+        Assert.Contains("SAVED: ${{ steps.saved.outcome }}", alert, StringComparison.Ordinal);
+        Assert.Contains("FRESH: ${{ steps.cycle.outputs.fresh }}", alert, StringComparison.Ordinal);
+        Assert.Contains("[ \"$SAVED\" = success ] || { [ \"$SAVED\" = skipped ] && [ \"$FRESH\" = true ]; }", alert, StringComparison.Ordinal);
+        Assert.DoesNotContain("job.status", alert, StringComparison.Ordinal);
+        Assert.DoesNotContain("steps.dump.outcome", alert, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 整輪備份可能跨過午夜：create 在開始時定下日期，核對遠端時不能再用 date（會變成隔天而找不到檔案，
+    /// 備份其實已推上去卻誤報「原生資料備份」失敗）。內部匯出器也不能自己再問 date。
+    /// </summary>
+    [Fact]
+    public void 備份核對與內部匯出器都用create定下的同一個日期()
+    {
+        var root = FindRepositoryRoot();
+        var job = BackupJob();
+
+        var saved = Step(job, "保存並核對遠端備份");
+        Assert.Contains("BACKUP_DATE: ${{ steps.dump.outputs.date }}", saved, StringComparison.Ordinal);
+        Assert.Contains("snapshots/$BACKUP_DATE.$suffix", saved, StringComparison.Ordinal);
+        Assert.Contains("validate \"snapshots/$BACKUP_DATE.backup.json\" --max-age-hours 24", saved, StringComparison.Ordinal);
+        Assert.Contains("完整原生備份 $BACKUP_DATE", saved, StringComparison.Ordinal);
+        Assert.Contains("${BACKUP_DATE:?", saved, StringComparison.Ordinal);
+
+        // 整個 backup job（註解除外）不再有任何 $(date ...)。
+        var code = string.Join('\n', job.Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
+        Assert.DoesNotContain("$(date ", code, StringComparison.Ordinal);
+
+        var create = File.ReadAllText(Path.Combine(root, "scripts", "backup-bundle.py"));
+        Assert.Contains("INVEST_BACKUP_DATE=today", create, StringComparison.Ordinal);
+        Assert.Contains("write_output('date', today)", create, StringComparison.Ordinal);
+
+        var exporter = File.ReadAllText(Path.Combine(root, "scripts", "backup-supabase.sh"));
+        Assert.Contains("today=${INVEST_BACKUP_DATE:-$(date +%F)}", exporter, StringComparison.Ordinal);
+    }
+
+    private const string PublishGate =
+        "steps.unit_tests.outcome == 'success' && steps.node_tests.outcome == 'success' && " +
+        "(inputs.publish-only != true || steps.verify_kline.outcome == 'success')";
+
+    /// <summary>
+    /// 測試失敗不能再被發布步驟無視：以前「驗證計算公式」失敗只會讓整輪標紅，export 與發布用 !cancelled()，
+    /// 2026-10-23 與 2026-09-06 都是測試失敗而網站照樣發布。執行層級的檢查（各種步驟結果下會不會執行）
+    /// 在 tests/daily-snapshot-publish-gate.test.mjs；這裡釘住結構，讓 dotnet test 本身也擋得住。
+    /// </summary>
+    [Fact]
+    public void 發布與盤中CDN重算要求單元測試Node測試與日K快取驗證都通過()
+    {
+        var steps = SnapshotSteps();
+
+        Assert.Contains("id: unit_tests", Step(steps, "驗證計算公式"), StringComparison.Ordinal);
+        Assert.Contains("id: verify_kline", Step(steps, "驗證日 K 快取版本"), StringComparison.Ordinal);
+
+        var node = Step(steps, "驗證前端與工作流程契約");
+        Assert.Contains("id: node_tests", node, StringComparison.Ordinal);
+        Assert.Contains("if: ${{ !cancelled() }}", node, StringComparison.Ordinal);
+        Assert.Contains("run: node --test tests/*.test.mjs", node, StringComparison.Ordinal);
+
+        // Node 測試在行情收集（回補、保存、同步、對帳）之後、匯出之前：它只能擋發布，不能擋收集。
+        var text = string.Join("\n      - ", steps);
+        foreach (var before in new[] { "回補行情", "保存行情快取", "同步到 Supabase", "對帳" })
+        {
+            Assert.True(
+                text.IndexOf("name: " + before, StringComparison.Ordinal) < text.IndexOf("name: 驗證前端與工作流程契約", StringComparison.Ordinal),
+                $"{before} 要排在 Node 測試之前。");
+        }
+
+        Assert.True(
+            text.IndexOf("name: 驗證前端與工作流程契約", StringComparison.Ordinal) < text.IndexOf("name: 輸出靜態網站", StringComparison.Ordinal));
+
+        // 凡是依賴 export 成功、會把結果送到網站或盤中 CDN 的步驟，都必須帶同一段門檻。
+        var downstream = steps.Where(step => step.Contains("steps.export_site.outcome == 'success'", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(4, downstream.Length);
+        Assert.All(downstream, step => Assert.Contains(PublishGate, step, StringComparison.Ordinal));
+        Assert.Contains(downstream, step => step.Contains("name: 發佈到 frank-invest.github.io", StringComparison.Ordinal));
+        Assert.Contains(downstream, step => step.Contains("name: 更新既有盤中排行", StringComparison.Ordinal));
+    }
+
+    private static string BackupJob()
+    {
+        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        return workflow[workflow.IndexOf("\n  backup:\n", StringComparison.Ordinal)..];
+    }
+
+    private static string[] SnapshotSteps()
+    {
+        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "daily-snapshot.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var start = workflow.IndexOf("\n  snapshot:\n", StringComparison.Ordinal);
+        var end = workflow.IndexOf("\n  backup:\n", start, StringComparison.Ordinal);
+        return workflow[start..end].Split("\n      - ").Skip(1).ToArray();
+    }
+
+    private static string Step(string job, string name)
+    {
+        var start = job.IndexOf("- name: " + name + "\n", StringComparison.Ordinal);
+        Assert.True(start >= 0, $"找不到步驟：{name}");
+        var next = job.IndexOf("\n      - ", start, StringComparison.Ordinal);
+        return next < 0 ? job[start..] : job[start..next];
+    }
+
+    private static string Step(string[] steps, string name) =>
+        steps.Single(step => step.StartsWith("name: " + name + "\n", StringComparison.Ordinal));
 
     private static string FindRepositoryRoot()
     {

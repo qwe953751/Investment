@@ -3,10 +3,11 @@
 
 所有 SQL／解密內容只在 0700 暫存目錄；不印出連線資訊、SQL 資料列或原始錯誤。
 validate 不需要正式庫權限。prepare-test 只產出拋棄式資料庫的測試資料。
+cycle 只讀快照目錄，回答「本收盤週期內是不是已經有一份通過驗證的備份」，不連資料庫。
 """
 import argparse
 from contextlib import ExitStack
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import gzip
 import hashlib
 import json
@@ -22,6 +23,11 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
+TAIPEI = ZoneInfo('Asia/Taipei')
+# 收盤週期從台北 18:00 起算：當天收盤行情與盤後同步完成的時刻，也是每日快照判斷「今天完成了沒」的分界。
+# 必須等於 CollectionSchedule.DailyRefresh（C#）與 scripts/daily-snapshot-done.mjs 的 DAILY_REFRESH_HOUR；
+# tests/Invest.Web.Tests/DailySnapshotWorkflowTests.cs 的契約測試會盯著。
+CYCLE_HOUR = 18
 PROTECTED = (
     'access_share_links', 'asset_operation_group_columns', 'asset_operation_snapshots',
     'asset_operation_sync_operations', 'asset_operation_sync_state', 'ocr_evaluations',
@@ -196,6 +202,61 @@ def prune(directory):
             (directory / (path + suffix)).unlink(missing_ok=True)
 
 
+def write_output(name, value):
+    """把結果交給 GitHub Actions 後面的步驟（$GITHUB_OUTPUT）；不在 Actions 裡就什麼都不做。"""
+    path = os.environ.get('GITHUB_OUTPUT')
+    if path:
+        with open(path, 'a', encoding='utf-8') as handle:
+            handle.write(f'{name}={value}\n')
+
+
+def cycle_start(now):
+    """含 now 的收盤週期起點：最近一個不晚於 now 的台北 18:00，回傳 UTC（台灣沒有夏令時間）。"""
+    local = now.astimezone(TAIPEI)
+    start = local.replace(hour=CYCLE_HOUR, minute=0, second=0, microsecond=0)
+    if local < start:
+        start -= timedelta(days=1)
+    return start.astimezone(timezone.utc)
+
+
+def current_backup(directory, now=None):
+    """本收盤週期內已完成、且通過 validate 的備份：(日期, None)；沒有就 (None, 原因)。
+
+    只認日期最新的那一份清單。它壞了就當作沒有，不退回去相信更舊的檔案——
+    寧可多備份一次，也不要讓每週還原測試挑到壞檔，或是壞檔蓋住「其實沒有備份」。
+    不解密（Actions 上沒有私鑰）：和備份成功路徑最後那次 validate 是同一套驗證。"""
+    now = now or datetime.now(timezone.utc)
+    manifests = sorted(directory.glob('*.backup.json'), reverse=True)
+    if not manifests:
+        return None, 'no-manifest'
+    try:
+        manifest, _, _ = validate(manifests[0])
+        created = datetime.fromisoformat(manifest['createdAt'])
+        if created > now + timedelta(minutes=5):
+            return None, 'future-timestamp'
+        if created < cycle_start(now):
+            return None, 'older-than-cycle'
+        return manifest['date'], None
+    except Exception as error:  # 任何驗證不了的狀況（含缺欄位、時間沒有時區）都等於沒有備份
+        return None, 'invalid-' + type(error).__name__
+
+
+def report_cycle(directory, now=None):
+    """給 workflow 用：永遠 exit 0，結果寫進 fresh（true／false）。
+
+    判斷不出來一律當作 false，也就是照常備份：多做一次的代價是約 4 MB，漏掉一次是沒有備份。"""
+    try:
+        found, reason = current_backup(directory, now)
+    except Exception as error:
+        found, reason = None, 'error-' + type(error).__name__
+    if found:
+        print('Current-cycle backup is valid: ' + found)
+        write_output('date', found)
+    else:
+        print('No valid backup in the current cycle (' + reason + ')')
+    write_output('fresh', 'true' if found else 'false')
+
+
 def create(directory):
     # 全部必要設定先檢查，缺一個就不產出貌似完整的新備份。
     db_env('SUPABASE_PROTECTED_BACKUP_DB_URL')
@@ -204,7 +265,9 @@ def create(directory):
         raise RuntimeError('backup encryption certificate is missing')
     os.umask(0o077)
     directory.mkdir(parents=True, exist_ok=True)
-    today = datetime.now(ZoneInfo('Asia/Taipei')).date().isoformat()
+    # 這一輪備份只讀一次日期：檔名、清單、內部匯出器與後面的遠端核對都用它。
+    # 備份可能跨過午夜，任何地方再自己問一次「今天」都會對不上檔名。
+    today = datetime.now(TAIPEI).date().isoformat()
     with tempfile.TemporaryDirectory(prefix='invest-backup-') as temporary, ExitStack() as stack:
         work = Path(temporary)
         public = Snapshot('SUPABASE_DB_URL')
@@ -220,8 +283,10 @@ def create(directory):
         audit_rls(protected, PROTECTED)
         public_counts = read_counts(public, public_tables)
         protected_counts = read_counts(protected, PROTECTED)
+        # INVEST_BACKUP_DATE：內部匯出器用同一個日期命名，不自己再問一次 date（跨午夜會寫成隔天的檔名）。
         env = dict(os.environ, PG_DUMP=tool('pg_dump'), PSQL=tool('psql'),
-                   PG_DUMP_SNAPSHOT=public.snapshot, TZ='Asia/Taipei', INVEST_BACKUP_INTERNAL='1')
+                   PG_DUMP_SNAPSHOT=public.snapshot, TZ='Asia/Taipei', INVEST_BACKUP_INTERNAL='1',
+                   INVEST_BACKUP_DATE=today)
         run(['bash', ROOT / 'scripts/backup-supabase.sh', work / 'public'], env=env)
         public_bytes = (work / 'public' / (today + '.sql.gz')).read_bytes()
         public_sql = gzip.decompress(public_bytes).decode()
@@ -266,6 +331,8 @@ def create(directory):
         prune(directory)
         print('Backup bundle complete: ' + today)
         print(json.dumps(dict(publicRows=public_counts, protectedRows=protected_counts)))
+        # 後面「保存並核對遠端備份」用這個日期找檔案，不能自己再算一次。
+        write_output('date', today)
 
 
 def validate(path, max_age=None, decrypt=False):
@@ -341,7 +408,7 @@ def prepare_test(path, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('create', 'validate', 'prepare-test'))
+    parser.add_argument('command', choices=('create', 'validate', 'prepare-test', 'cycle'))
     parser.add_argument('path', type=Path)
     parser.add_argument('--max-age-hours', type=float)
     parser.add_argument('--decrypt', action='store_true')
@@ -349,6 +416,8 @@ def main():
     args = parser.parse_args()
     if args.command == 'create':
         create(args.path)
+    elif args.command == 'cycle':
+        report_cycle(args.path)
     elif args.command == 'prepare-test':
         if not args.output:
             parser.error('--output is required')

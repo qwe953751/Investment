@@ -217,13 +217,18 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # 這一步的結果同時是發布門檻：失敗時不發布網站（見下方兩個發布步驟與兩個盤中 CDN 重算步驟的條件）。
+      # 以前這一步失敗只會讓整輪標紅，後面用 !cancelled() 的 export 與發布照跑，測試擋不住壞掉的畫面上線：
+      # 2026-10-23 StaticKLineAssetTests 失敗（run 39936675213）、2026-09-06 兩項契約測試失敗，網站都照樣發布了。
       - name: 驗證計算公式
+        id: unit_tests
         run: dotnet test -c Release
 
       # 純發布只讀 data 快取，不會補抓 OHLC。日 K 格式升版後若舊快取還沒回補，
       # 新的資料防呆會排除舊棒，結果是這次筆記 #44 那種大規模缺棒；此時寧可中止，
       # 不把看似成功但殘缺的快照推到正式網站。
       - name: 驗證日 K 快取版本
+        id: verify_kline
         if: ${{ inputs.publish-only == true }}
         run: dotnet run -c Release --project src/Invest.Web -- verify-kline-cache "$TRADING_DAYS"
 
@@ -556,6 +561,19 @@ jobs:
               echo "::warning::$today 的市場總覽快取沒有韓股資料，網站會沿用前一個交易日的韓股資料；若今天是韓股假日則屬預期。"
           fi
 
+      # 前端（site.js）、workflow 與備份腳本的 Node 測試，以前完全不在 CI 裡跑（本機約 1 分鐘、529 項），
+      # 只有開發者記得跑才擋得住。跟 .NET 測試一樣是發布門檻，但刻意放在行情回補、保存與同步之後：
+      # 測試環境的小差異不能擋住「抓到有為止」的行情收集，只能擋住發布。
+      # !cancelled()：前面的步驟失敗（例如同步）時也要照跑，否則它的 outcome 會是 skipped，發布永遠被擋。
+      - uses: actions/setup-node@v4
+        if: ${{ !cancelled() }}
+        with:
+          node-version: '24'
+      - name: 驗證前端與工作流程契約
+        id: node_tests
+        if: ${{ !cancelled() }}
+        run: node --test tests/*.test.mjs
+
       # export 大部分吃 data/imports 的行情快取，唯一要連資料庫的是重大訊息
       # （material_events）——催化事件頁與族群新聞熱度都讀它。沒帶這個 secret 時
       # 程式不會炸，只會記一行「讀取重大訊息失敗」然後把那兩塊發成空的，
@@ -590,15 +608,17 @@ jobs:
               .etfDividends.batchId == $payload[0].batchId
           ' "$manifest" >/dev/null
 
+      # 這兩步會把重算結果傳到盤中 CDN（使用者的畫面直接讀它），所以和網站發布用同一組門檻：
+      # 單元測試與 Node 測試都要過，純發布還要日 K 快取格式驗證過。
       - name: 更新既有盤中市場結構（同價同輪，不補行情）
-        if: ${{ !cancelled() && steps.export_site.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.export_site.outcome == 'success' && steps.unit_tests.outcome == 'success' && steps.node_tests.outcome == 'success' && (inputs.publish-only != true || steps.verify_kline.outcome == 'success') }}
         env:
           Logging__LogLevel__Default: Warning
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
         run: dotnet run -c Release --project src/Invest.Web -- rebuild-market-structure
 
       - name: 更新既有盤中排行（同價同輪，不補行情）
-        if: ${{ !cancelled() && steps.export_site.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.export_site.outcome == 'success' && steps.unit_tests.outcome == 'success' && steps.node_tests.outcome == 'success' && (inputs.publish-only != true || steps.verify_kline.outcome == 'success') }}
         env:
           Logging__LogLevel__Default: Warning
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
@@ -627,7 +647,7 @@ jobs:
       # publish-gh-pages.sh 只會發一頁空白頁，訪客看不到任何排行資料。這個 repo
       # 的 gh-pages 分支還留著（沒關 Pages），但打開網址什麼都看不到。
       - name: 發佈到 GitHub Pages（舊網址，僅留空白頁）
-        if: ${{ !cancelled() && steps.export_site.outcome == 'success' && steps.verify_topics.outcome == 'success' && (inputs.publish-only == true || (steps.save_quotes.outcome == 'success' && steps.verify_manifest.outcome == 'success')) }}
+        if: ${{ !cancelled() && steps.export_site.outcome == 'success' && steps.verify_topics.outcome == 'success' && steps.unit_tests.outcome == 'success' && steps.node_tests.outcome == 'success' && (inputs.publish-only != true || steps.verify_kline.outcome == 'success') && (inputs.publish-only == true || (steps.save_quotes.outcome == 'success' && steps.verify_manifest.outcome == 'success')) }}
         env:
           GH_PAGES_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
@@ -643,7 +663,7 @@ jobs:
       # 最高權限一律要登入才能拿到（筆記 #37 收尾：不再有 admin888/、viewer/
       # 這兩個獨立網址）。
       - name: 發佈到 frank-invest.github.io（單一網址，訪客為預設）
-        if: ${{ !cancelled() && steps.export_site.outcome == 'success' && steps.verify_topics.outcome == 'success' && (inputs.publish-only == true || (steps.save_quotes.outcome == 'success' && steps.verify_manifest.outcome == 'success')) }}
+        if: ${{ !cancelled() && steps.export_site.outcome == 'success' && steps.verify_topics.outcome == 'success' && steps.unit_tests.outcome == 'success' && steps.node_tests.outcome == 'success' && (inputs.publish-only != true || steps.verify_kline.outcome == 'success') && (inputs.publish-only == true || (steps.save_quotes.outcome == 'success' && steps.verify_manifest.outcome == 'success')) }}
         env:
           GH_PAGES_REMOTE: https://x-access-token:${{ secrets.FRANK_INVEST_PAT }}@github.com/frank-invest/frank-invest.github.io.git
           GH_PAGES_PUBLISH_ROOT: '1'
@@ -751,6 +771,8 @@ jobs:
               echo "- **回補行情**：官方網站擋或改格式。重跑通常就好。"
               echo "- **同步／對帳／心跳**：Supabase 被暫停或密碼變了。"
               echo "- **對帳不符**：以 \`data/imports\` 為準，先刪掉資料庫那幾天再同步。"
+              echo "- **驗證計算公式／驗證前端與工作流程契約／驗證日 K 快取版本**：任何一項失敗都會擋下網站發布與盤中 CDN 重算"
+              echo "  （網站維持上一個版本；行情收集與同步不受影響）。看失敗的測試名稱修好後，再用 publish-only=true 重發。"
               echo
               echo "行情快取與靜態網站是分開推的，前面失敗不代表後面沒更新，"
               echo "實際狀態看 \`data\` 分支的 STATUS.md。"
@@ -758,6 +780,15 @@ jobs:
 
   # 與排行發布分開：preflight 略過排行、行情失敗，都不能讓原生備份消失。
   # 外層 daily-snapshot 併發鎖仍序列化本 workflow 對 data 的寫入。
+  #
+  # 每個收盤週期（台北 18:00 到隔天 18:00，和每日快照判斷「今天完成了沒」同一個分界）只備份一次。
+  # 以前每一輪完整流程都會 pg_dump 並 commit 一份約 4 MB、無法差異壓縮的密文：鬧鐘叫起來的那輪加上
+  # 三場晚到排程，一個工作日約四份，推估 data 分支每月多約 350 MB，Supabase 每月多流出約 1.2 GB（推估值）。
+  # 不能用「台北日曆日」判斷：晚到排程常拖過午夜才送達（9/08 以來最近 100 場排程裡，有 15 個日子的排程
+  # 在隔天 00:16～03:59 才來），凌晨那場會先做掉「當天」的備份，當晚 18:00 的完整流程反而被略過，
+  # 白天的修改要到隔天晚上才進備份。
+  # 判斷在 scripts/backup-bundle.py 的 cycle：只認日期最新的一份清單，且必須通過 validate、
+  # 建立時間落在本週期內；任何判斷不出來的狀況都當成沒有，照常備份。backup-only=true 一律重做。
   backup:
     needs: [preflight, snapshot]
     if: ${{ always() && !cancelled() && inputs.publish-only != true && needs.preflight.result == 'success' }}
@@ -777,7 +808,33 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      # 先驗證備份程式本身：下面「本收盤週期是否已有有效備份」若壞成永遠回報已備份，備份就會悄悄停掉，
+      # 所以它的測試必須在它被採信之前就過；測試失敗整個 job 失敗，警報會亮。
+      - name: 驗證備份完整性與歷史清理防護
+        run: python3 -m unittest discover -s tests -p 'test_*backup*.py' -v
+      # 這一步只讀 data 分支的 snapshots/（checkout 就是遠端現況），不連資料庫、不需要 pg_dump。
+      # continue-on-error：它自己出錯時 fresh 不會是 true，後面的備份照常執行。
+      - name: 判斷本收盤週期是否已有有效備份
+        id: cycle
+        continue-on-error: true
+        env:
+          BACKUP_ONLY: ${{ inputs.backup-only }}
+        run: |
+          if [ "$BACKUP_ONLY" = 'true' ]; then
+              echo 'backup-only=true：不看既有備份，強制重做。'
+              echo 'fresh=false' >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          python3 scripts/backup-bundle.py cycle data/snapshots
+      - name: 本收盤週期已有有效備份，略過這一輪
+        if: ${{ steps.cycle.outputs.fresh == 'true' }}
+        env:
+          BACKUP_DATE: ${{ steps.cycle.outputs.date }}
+        run: |
+          echo "本收盤週期（台北 18:00 起算）已有通過驗證的備份：${BACKUP_DATE}。不重複 pg_dump，也不新增 commit。"
+          echo '要強制重做請用 backup-only=true、publish-only=false。'
       - name: 安裝備份工具
+        if: ${{ steps.cycle.outputs.fresh != 'true' }}
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
@@ -788,40 +845,48 @@ jobs:
           sudo apt-get install -y -qq postgresql-client-17
           echo "PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump" >> "$GITHUB_ENV"
           echo "PSQL=/usr/lib/postgresql/17/bin/psql" >> "$GITHUB_ENV"
-      - name: 驗證備份完整性與歷史清理防護
-        run: python3 -m unittest discover -s tests -p 'test_*backup*.py' -v
       - name: 備份原生資料
         id: dump
+        if: ${{ steps.cycle.outputs.fresh != 'true' }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SUPABASE_PROTECTED_BACKUP_DB_URL: ${{ secrets.SUPABASE_PROTECTED_BACKUP_DB_URL }}
         run: python3 scripts/backup-bundle.py create data/snapshots
       - name: 保存並核對遠端備份
         id: saved
+        if: ${{ steps.cycle.outputs.fresh != 'true' }}
         working-directory: data
+        env:
+          # 備份開始時定下的日期（create 輸出）。不能在這裡再用 date：整輪備份跨過午夜時，
+          # 現在的「今天」是隔天，找不到剛推上去的檔案而誤報失敗，其實備份早已保存成功。
+          BACKUP_DATE: ${{ steps.dump.outputs.date }}
         run: |
+          : "${BACKUP_DATE:?備份步驟沒有回報實際使用的日期，不能核對遠端備份。}"
           git add -A snapshots
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git diff --cached --quiet || git commit -qm "完整原生備份 $(date +%F)"
+          git diff --cached --quiet || git commit -qm "完整原生備份 $BACKUP_DATE"
           # 其他行情 workflow 可能已前進 data；只 rebase 本次 snapshots 提交，不覆蓋行情。
           git pull --rebase origin data
           git push origin HEAD:data
           git fetch origin data
           git merge-base --is-ancestor HEAD origin/data
           for suffix in backup.cms backup.json; do
-              file="snapshots/$(date +%F).$suffix"
+              file="snapshots/$BACKUP_DATE.$suffix"
               test "$(git rev-parse "HEAD:$file")" = "$(git rev-parse "origin/data:$file")"
           done
-          python3 ../scripts/backup-bundle.py validate "snapshots/$(date +%F).backup.json" --max-age-hours 24
+          python3 ../scripts/backup-bundle.py validate "snapshots/$BACKUP_DATE.backup.json" --max-age-hours 24
+      # 只在「這一輪親自確認遠端有有效備份」時解除：保存並核對成功，或本週期的現有備份剛通過驗證。
+      # 純發布不會進這個 job；備份失敗、被跳過的步驟都不解除，前一輪的真正失敗不會被蓋掉。
       - name: 更新原生資料備份獨立警報
         if: ${{ always() && !cancelled() }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SAVED: ${{ steps.saved.outcome }}
+          FRESH: ${{ steps.cycle.outputs.fresh }}
         run: |
-          if [ "$SAVED" = success ]; then
+          if [ "$SAVED" = success ] || { [ "$SAVED" = skipped ] && [ "$FRESH" = true ]; }; then
               dotnet run -c Release --project src/Invest.Web -- alert-clear "原生資料備份"
           else
               dotnet run -c Release --project src/Invest.Web -- alert "原生資料備份" error \

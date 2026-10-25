@@ -52,10 +52,15 @@ printf '%s\\n' "$STUB_DUMP_EXTRA"
 echo '-- PostgreSQL database dump complete'
 `;
 
+// 假的 date：+%F 回固定的日期（模擬備份跑到跨過午夜之後才問「今天」），其餘照舊交給真的 date。
+const dateStub = `#!/bin/bash
+if [ "$1" = '+%F' ] && [ -n "$STUB_FAKE_DATE" ]; then echo "$STUB_FAKE_DATE"; else exec /bin/date "$@"; fi
+`;
+
 async function withBackup(options, check) {
     const directory = await mkdtemp(join(tmpdir(), 'backup-script-'));
     try {
-        for (const [name, body] of [['psql', psqlStub], ['pg_dump', pgDumpStub]]) {
+        for (const [name, body] of [['psql', psqlStub], ['pg_dump', pgDumpStub], ['date', dateStub]]) {
             await writeFile(join(directory, name), body);
             await chmod(join(directory, name), 0o700);
         }
@@ -64,6 +69,9 @@ async function withBackup(options, check) {
             encoding: 'utf8',
             env: {
                 ...process.env,
+                // 只有明確要求時才讓假 date 排在最前面，其他測試仍用真的 date。
+                ...(options.fakeDate ? { PATH: `${directory}:${process.env.PATH}`, STUB_FAKE_DATE: options.fakeDate } : {}),
+                ...(options.backupDate === undefined ? {} : { INVEST_BACKUP_DATE: options.backupDate }),
                 SUPABASE_DB_URL: 'postgres://stub',
                 INVEST_BACKUP_INTERNAL: '1',
                 PG_DUMP: join(directory, 'pg_dump'),
@@ -176,6 +184,35 @@ for (const [name, dumpExtra, expected] of [
         });
     });
 }
+
+// 2026-10-25 審查：create() 一開始就定好日期，但內部匯出器自己再問一次 date。備份剛好跨過午夜時，
+// 匯出器寫成隔天的檔名，Python 卻去找原本的日期，整輪備份在最後一步才因找不到檔案而中止。
+test('備份日期由呼叫端交過來，即使 date 已經是隔天也照用', { skip }, async () => {
+    await withBackup({ backupDate: '2026-10-26', fakeDate: '2026-10-27' }, async ({ result, snapshots }) => {
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(await readdir(snapshots), ['2026-10-26.sql.gz']);
+    });
+});
+
+test('沒有交日期時才退回 date（直接執行腳本已被內部旗標擋掉，這只是最後的保險）', { skip }, async () => {
+    await withBackup({ fakeDate: '2026-10-27' }, async ({ result, snapshots }) => {
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(await readdir(snapshots), ['2026-10-27.sql.gz']);
+    });
+});
+
+test('備份日期格式不對就中止，不把怪字串當檔名', { skip }, async () => {
+    for (const backupDate of ['2026-10-26; touch pwned', '../2026-10-26', '20261026', '']) {
+        await withBackup({ backupDate }, async ({ result, snapshots, pgDumpArgs }) => {
+            assert.equal(result.status, backupDate === '' ? 0 : 1, `${JSON.stringify(backupDate)}: ${result.stderr}`);
+            if (backupDate !== '') {
+                assert.match(result.stderr, /備份日期格式不對/);
+                assert.equal(pgDumpArgs, null);
+                assert.deepEqual(await readdir(snapshots), []);
+            }
+        });
+    }
+});
 
 test('名字只是前綴相同的另一張表不算洩漏私密表', { skip }, async () => {
     await withBackup({ dumpExtra: 'CREATE TABLE public.private_notes_archive (id integer);' }, async ({ result, snapshots }) => {

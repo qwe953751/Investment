@@ -99,7 +99,14 @@ done
 
 mkdir -p "$snapshot_dir"
 
-today=$(date +%F)
+# 日期由 backup-bundle.py 在整輪備份開始時定好再交過來（INVEST_BACKUP_DATE），這裡不自己再問 date：
+# 備份跨過午夜時，這裡晚一步算出的「今天」會是隔天，檔名就和 Python 預期的 <日期>.sql.gz 對不上，
+# 整輪備份在最後一步才因找不到檔案而中止。沒帶（直接呼叫已被上面的 INVEST_BACKUP_INTERNAL 擋掉）才退回 date。
+today=${INVEST_BACKUP_DATE:-$(date +%F)}
+if ! [[ "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo "備份日期格式不對：$today" >&2
+    exit 1
+fi
 target="$snapshot_dir/$today.sql.gz"
 previous=$(ls -1 "$snapshot_dir"/*.sql.gz 2>/dev/null | grep -v "/$today.sql.gz\$" | tail -1 || true)
 
