@@ -59,9 +59,10 @@ public sealed class PeriodHistoryBackfiller(
                 if (!tradingByTicker.TryGetValue(stock.Ticker, out var trading))
                     throw new InvalidDataException("正式名冊中有代號但沒有任何每日行情，請核對 data 資料。");
                 if (existing is not null && existing.AdjustmentThrough <= through
-                    && existing.Market == stock.Market && existing.RequestedFrom <= first
-                    && existing.CoveredFrom == adjustedFirst
+                    && existing.Market == stock.Market
+                    && (refreshExistingOnly || existing.RequestedFrom <= first && existing.CoveredFrom == adjustedFirst)
                     && existing.Validation.Contains("official first-day open / last-day close", StringComparison.Ordinal)
+                    && existing.Validation.Contains("actual trading-day boundaries", StringComparison.Ordinal)
                     && CanReuse(existing, trading, calendar, data.PriceAdjustments, firstView, through))
                 {
                     if (existing.AdjustmentThrough < through)
@@ -80,7 +81,10 @@ public sealed class PeriodHistoryBackfiller(
                 // 防止同代號舊公司、錯市場或 stale source 被當成現行股票歷史。
                 VerifyCloseOverlap(rawMonths, trading, KLinePeriod.Month, through, calendar);
                 VerifyCloseOverlap(rawWeeks, trading, KLinePeriod.Week, through, calendar);
-                var validation = await source.VerifyMonthlyAsync(stock.Ticker, stock.Market, rawMonths, through, ct);
+                var fullMonthFrom = new DateOnly(firstView.Year, firstView.Month, 1).AddMonths(-59);
+                var verified = await source.VerifyMonthlyAsync(stock.Ticker, stock.Market, rawMonths, fullMonthFrom, through, ct);
+                rawMonths = verified.Bars;
+                var validation = verified.Validation;
                 var factors = BuildFactors(stock.Ticker, actionBook.Actions, data.PriceAdjustments, through);
                 IEnumerable<DateOnly> Boundaries(IReadOnlyList<RawPeriodBar> bars, KLinePeriod period)
                 {
@@ -104,7 +108,7 @@ public sealed class PeriodHistoryBackfiller(
                 {
                     Ticker = stock.Ticker, Market = stock.Market, AdjustmentThrough = through,
                     DownloadedAt = DateTimeOffset.UtcNow, Source = PeriodSummaryClient.Source,
-                    Validation = validation + "; official first-day open / last-day close; official event OHLC", RequestedFrom = first, CoveredFrom = adjustedFirst,
+                    Validation = validation + "; official first-day open / last-day close; official event OHLC; actual trading-day boundaries", RequestedFrom = first, CoveredFrom = adjustedFirst,
                     Weekly = Union(existing?.Weekly, weekly, existing?.AdjustmentThrough, through, factors, KLinePeriod.Week),
                     Monthly = Union(existing?.Monthly, monthly, existing?.AdjustmentThrough, through, factors, KLinePeriod.Month)
                 };
@@ -155,6 +159,15 @@ public sealed class PeriodHistoryBackfiller(
             var f = factors.Where(a => a.EffectiveDate > lastDate).Aggregate(1m, (v, a) => v * a.Factor);
             if (start < displayStart)
             {
+                if (factors.Any(a => a.EffectiveDate > bar.Date && a.EffectiveDate <= lastDate))
+                {
+                    var actual = await official.GetPeriodBoundaryAsync(ticker, market,
+                        expected.Where(d => d >= bar.Date), first: false, ct);
+                    if (actual.Quote.ClosePrice != bar.Close)
+                        throw new InvalidDataException($"{ticker} {start} 暖身收盤與官方期末成交日不符。");
+                    lastDate = actual.Date;
+                    f = factors.Where(a => a.EffectiveDate > lastDate).Aggregate(1m, (v, a) => v * a.Factor);
+                }
                 result.Add(new(bar.Date, lastDate, null, null, null, bar.Close * f, null));
                 continue;
             }
@@ -165,14 +178,23 @@ public sealed class PeriodHistoryBackfiller(
                 result.Add(PeriodHistoryBar.FromPoint(point));
                 continue;
             }
-            var head = await official.GetBoundaryAsync(ticker, market, bar.Date, ct);
-            var tail = await official.GetBoundaryAsync(ticker, market, lastDate, ct);
+            var headResult = await official.GetPeriodBoundaryAsync(ticker, market,
+                expected.Where(d => d >= bar.Date), first: true, ct);
+            var tailResult = await official.GetPeriodBoundaryAsync(ticker, market,
+                expected.Where(d => d >= headResult.Date), first: false, ct);
+            var head = headResult.Quote;
+            var tail = tailResult.Quote;
+            var firstDate = headResult.Date;
+            lastDate = tailResult.Date;
+            f = factors.Where(a => a.EffectiveDate > lastDate).Aggregate(1m, (v, a) => v * a.Factor);
             if (tail.ClosePrice != bar.Close || !DailyBarValidator.IsValid(head.OpenPrice, bar.High, bar.Low, bar.Close))
                 throw new InvalidDataException($"{ticker} {start} 官方首尾價格與摘要高低收不符，不採用。");
-            if (!factors.Any(a => a.EffectiveDate > bar.Date && a.EffectiveDate <= lastDate))
+            if (!factors.Any(a => a.EffectiveDate > firstDate && a.EffectiveDate <= lastDate))
             {
-                result.Add(new(bar.Date, lastDate, head.OpenPrice * f, bar.High * f, bar.Low * f,
-                    bar.Close * f, bar.Volume) { Origin = "Anue period HLCV; official first-day open / last-day close" });
+                result.Add(new(firstDate, lastDate, head.OpenPrice * f, bar.High * f, bar.Low * f,
+                    bar.Close * f, bar.Volume) { Origin = period == KLinePeriod.Month && market == Market.Twse
+                        ? "TWSE FMSRFK HLV; official first-day open / last-day close"
+                        : "Anue period HLCV; official first-day open / last-day close" });
                 continue;
             }
 
@@ -180,21 +202,25 @@ public sealed class PeriodHistoryBackfiller(
             var key = (start, lastDate);
             if (!dailyCache.TryGetValue(key, out var daily))
             {
-                daily = await official.GetEventDaysAsync(ticker, head.Market, start, lastDate, ct);
+                daily = await official.GetEventDaysAsync(ticker, head.Market, firstDate, lastDate, ct);
                 dailyCache[key] = daily;
             }
-            if (daily.Count == 0 || daily[0].Date != bar.Date || daily[^1].Date != lastDate
+            if (daily.Count == 0 || daily[0].Date != firstDate || daily[^1].Date != lastDate
                 || daily[0].Open != head.OpenPrice || daily[^1].Close != bar.Close
-                || daily.Max(d => d.High) != bar.High || daily.Min(d => d.Low) != bar.Low
-                || (head.Market == Market.Twse && Math.Abs(daily.Sum(d => d.Volume) - bar.Volume) > daily.Count))
+                || daily.Max(d => d.High) != bar.High || daily.Min(d => d.Low) != bar.Low)
                 throw new InvalidDataException($"{ticker} {start} 事件週期日資料與原始摘要不一致，拒絕猜測影線。");
             var calculated = PeriodKLineCalculator.Calculate(daily.Select(d => d.ToDaily(ticker)),
                 factors, ticker, period, through);
             var adjusted = calculated.SingleOrDefault(p => p.PeriodStart == start && p.HasBar)
                 ?? throw new InvalidDataException($"{ticker} {start} 事件週期無法完整彙整。");
             // 上櫃官方月查詢的每日量只公布整仟股，不能拿它湊出假精確股數；量沿用原週期摘要。
-            result.Add(PeriodHistoryBar.FromPoint(adjusted) with { TradingVolume = bar.Volume,
-                Origin = "official event-period daily OHLC; Anue period volume" });
+            result.Add(PeriodHistoryBar.FromPoint(adjusted) with
+            {
+                TradingVolume = period == KLinePeriod.Week && head.Market == Market.Twse
+                    ? daily.Sum(d => d.Volume) : bar.Volume,
+                Origin = period == KLinePeriod.Month && market == Market.Twse ? "TWSE FMSRFK volume; official event-period OHLC"
+                    : head.Market == Market.Twse ? "official event-period daily OHLCV" : "official event-period daily OHLC; Anue period volume"
+            });
         }
         return result;
     }

@@ -3,6 +3,9 @@ using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Services;
 using Invest.Web.Infrastructure.MarketData.PeriodHistory;
 using Invest.Web.Infrastructure.MarketData.Reference;
+using Invest.Web.Infrastructure.MarketData.Twse;
+using Invest.Web.Infrastructure.MarketData.Tpex;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Invest.Web.Tests;
 
@@ -251,5 +254,51 @@ public sealed class PeriodHistoryTests
         var row = Assert.Single(OfficialPeriodDataClient.ParseEventMonth(doc.RootElement, new(2025, 1, 1), Market.Tpex));
         Assert.Equal(volume, row.Volume);
         Assert.Equal(440m, row.Open);
+    }
+
+    [Fact]
+    public async Task 月量以官方月摘要為準_候選來源漏量不能阻止正確的事件月還原()
+    {
+        using var http = new HttpClient(new MonthlyReport());
+        RawPeriodBar[] raw = [new(new(2023, 3, 1), 504, 539, 504, 533, 576326001)];
+        var result = await new PeriodSummaryClient(http).VerifyMonthlyAsync("2330", Market.Twse, raw,
+            new(2023, 3, 1), new(2023, 4, 3), default);
+        Assert.Equal(577588001m, Assert.Single(result.Bars).Volume);
+        Assert.Equal(533m, result.Bars[0].Close);
+    }
+
+    [Fact]
+    public async Task 分割停牌的週五沒有交易_週尾必須退回實際最後成交日()
+    {
+        using var http = new HttpClient(new SplitWeek());
+        var official = new OfficialPeriodDataClient(http,
+            new TwseDailyQuoteClient(http, NullLogger<TwseDailyQuoteClient>.Instance),
+            new TpexDailyQuoteClient(http, NullLogger<TpexDailyQuoteClient>.Instance))
+            { EtfTickers = new HashSet<string> { "0050" } };
+        var dates = Enumerable.Range(0, 4).Select(i => new DateOnly(2025, 6, 10).AddDays(i)).ToHashSet();
+        official.BeginTicker(dates);
+        var result = await official.GetPeriodBoundaryAsync("0050", Market.Twse, dates, first: false, default);
+        Assert.Equal(new DateOnly(2025, 6, 10), result.Date);
+        Assert.Equal(188.65m, result.Quote.ClosePrice);
+    }
+
+    private sealed class MonthlyReport : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            { Content = new StringContent("""{"stat":"OK","fields":["年度","月份","最高價","最低價","成交股數(B)"],"data":[[112,3,"539","504","577,588,001"]]}""") });
+    }
+
+    private sealed class SplitWeek : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var query = request.RequestUri!.Query.Split('&').Single(s => s.Contains("date="));
+            var date = Uri.UnescapeDataString(query[(query.IndexOf("date=", StringComparison.Ordinal) + 5)..]).Replace("/", "");
+            var data = date == "20250610" && request.RequestUri.Host.Contains("twse")
+                ? """[{"title":"每日收盤行情","data":[["0050","元大台灣50","1000","1","188650","188","189","187","188.65","+","0.65"]]}]""" : "[]";
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                { Content = new StringContent("{\"date\":\"" + date + "\",\"tables\":" + data + "}") });
+        }
     }
 }

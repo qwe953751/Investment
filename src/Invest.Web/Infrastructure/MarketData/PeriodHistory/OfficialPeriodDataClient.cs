@@ -13,17 +13,35 @@ public sealed class OfficialPeriodDataClient(HttpClient http, TwseDailyQuoteClie
     private readonly HashSet<(Market, DateOnly)> unavailable = [];
     private readonly HashSet<Market> blockedMarkets = [];
     private readonly Dictionary<(Market, DateOnly), IReadOnlyList<RawPeriodBar>> fallbackMonths = [];
-    private IReadOnlySet<DateOnly> wanted = new HashSet<DateOnly>();
+    private HashSet<DateOnly> wanted = [];
     public IReadOnlySet<string> EtfTickers { get; set; } = new HashSet<string>();
 
     public void BeginTicker(IReadOnlySet<DateOnly> boundaryDates)
     {
-        wanted = boundaryDates;
+        wanted = boundaryDates.ToHashSet();
         fallbackMonths.Clear();
     }
 
     public async Task<DailyQuote> GetBoundaryAsync(string ticker, Market market, DateOnly date, CancellationToken ct)
+        => await TryGetBoundaryAsync(ticker, market, date, ct)
+            ?? throw new InvalidDataException($"{ticker} {date} 官方首尾日無有效 OHLC，不猜測開收。");
+
+    public async Task<(DateOnly Date, DailyQuote Quote)> GetPeriodBoundaryAsync(string ticker, Market market,
+        IEnumerable<DateOnly> candidates, bool first, CancellationToken ct)
     {
+        foreach (var date in first ? candidates.Order() : candidates.OrderDescending())
+            if (await TryGetBoundaryAsync(ticker, market, date, ct) is { } quote) return (date, quote);
+        throw new InvalidDataException($"{ticker} 此週期無有效官方首尾交易日，不造 K 棒。");
+    }
+
+    private async Task<DailyQuote?> TryGetBoundaryAsync(string ticker, Market market, DateOnly date, CancellationToken ct)
+    {
+        if (wanted.Add(date))
+        {
+            var month = new DateOnly(date.Year, date.Month, 1);
+            fallbackMonths.Remove((Market.Twse, month));
+            fallbackMonths.Remove((Market.Tpex, month));
+        }
         foreach (var candidate in new[] { market, market == Market.Twse ? Market.Tpex : Market.Twse })
         {
             var key = (candidate, date);
@@ -63,7 +81,7 @@ public sealed class OfficialPeriodDataClient(HttpClient http, TwseDailyQuoteClie
                     TradingValue = 0m, TradingVolume = row.Volume };
             }
         }
-        throw new InvalidDataException($"{ticker} {date} 官方首尾日無有效 OHLC（可能轉板、停牌或新上市），不猜測開收。");
+        return null;
     }
 
     public async Task<IReadOnlyList<RawPeriodBar>> GetEventDaysAsync(

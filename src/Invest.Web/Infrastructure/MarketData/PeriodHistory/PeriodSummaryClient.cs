@@ -12,7 +12,7 @@ namespace Invest.Web.Infrastructure.MarketData.PeriodHistory;
 /// </summary>
 public sealed class PeriodSummaryClient(HttpClient http)
 {
-    public const string Source = "Anue Cnyes raw period HLCV; TWSE/TPEx boundary and event OHLC";
+    public const string Source = "TWSE FMSRFK / Anue raw period summaries; official boundary and event OHLC";
 
     /// <summary>交易日曆只取有效指數收盤的日期；舊指數沒有成交量不等於當天沒有交易。</summary>
     public async Task<IReadOnlyList<DateOnly>> GetCalendarAsync(DateOnly first, DateOnly last, CancellationToken ct)
@@ -114,43 +114,51 @@ public sealed class PeriodSummaryClient(HttpClient http)
         return result;
     }
 
-    public async Task<string> VerifyMonthlyAsync(string ticker, Market market,
-        IReadOnlyList<RawPeriodBar> monthly, DateOnly through, CancellationToken ct)
+    public async Task<(IReadOnlyList<RawPeriodBar> Bars, string Validation)> VerifyMonthlyAsync(string ticker, Market market,
+        IReadOnlyList<RawPeriodBar> monthly, DateOnly fullFrom, DateOnly through, CancellationToken ct)
     {
-        var closed = monthly.Where(b => new DateOnly(b.Date.Year, b.Date.Month, 1).AddMonths(1) <= through)
-            .OrderByDescending(b => b.Date).ToArray();
+        var closed = monthly.Where(b => b.Date >= fullFrom
+                && new DateOnly(b.Date.Year, b.Date.Month, 1).AddMonths(1) <= through).ToArray();
         if (closed.Length == 0) throw new InvalidDataException("來源沒有已完成月份可供核對。");
-        // TWSE 月摘要含完整盤中高低及成交股數；TPEx 月表的收市最高低不是盤中高低，不能混用。
-        if (market != Market.Twse) return "verified raw weekly/monthly close overlap with data/imports";
-        var year = closed[0].Date.Year;
-        var url = $"https://www.twse.com.tw/exchangeReport/FMSRFK?response=json&date={year}0101&stockNo={Uri.EscapeDataString(ticker)}";
-        using var response = await http.GetAsync(url, ct);
-        response.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-        var root = doc.RootElement;
-        if (root.GetProperty("stat").GetString() != "OK")
-            throw new InvalidDataException("官方月摘要不可用，不能標記來源已通過核對。");
-        var fields = root.GetProperty("fields").EnumerateArray().Select(x => x.GetString()).ToArray();
-        var high = Array.IndexOf(fields, "最高價");
-        var low = Array.IndexOf(fields, "最低價");
-        var volume = Array.IndexOf(fields, "成交股數(B)");
-        var month = Array.IndexOf(fields, "月份");
-        if (new[] { high, low, volume, month }.Any(i => i < 0))
-            throw new InvalidDataException("官方月摘要欄位已變更。");
-        var verified = 0;
-        foreach (var row in root.GetProperty("data").EnumerateArray())
+        // 上櫃月表的收市最高低不是盤中高低，不能混用；上市直接使用權威原始月摘要。
+        if (market != Market.Twse) return (monthly, "verified raw weekly/monthly close overlap with data/imports");
+        var verified = new Dictionary<(int Year, int Month), RawPeriodBar>();
+        foreach (var year in closed.Select(b => b.Date.Year).Distinct().Order())
         {
-            var m = int.Parse(row[month].ToString(), CultureInfo.InvariantCulture);
-            var bar = closed.FirstOrDefault(b => b.Date.Year == year && b.Date.Month == m);
-            if (bar is null) continue;
-            static decimal Number(JsonElement value) => decimal.Parse(value.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture);
-            if (Number(row[high]) != bar.High || Number(row[low]) != bar.Low
-                || Math.Abs(Number(row[volume]) - bar.Volume) > 1m)
-                throw new InvalidDataException($"{ticker} {year}/{m} 外部月摘要與 TWSE 高低／量不一致。");
-            verified++;
+            var url = $"https://www.twse.com.tw/exchangeReport/FMSRFK?response=json&date={year}0101&stockNo={Uri.EscapeDataString(ticker)}";
+            using var response = await http.GetAsync(url, ct);
+            response.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            var root = doc.RootElement;
+            if (root.GetProperty("stat").GetString() != "OK")
+                throw new InvalidDataException("官方月摘要不可用，不能標記來源已通過核對。");
+            var fields = root.GetProperty("fields").EnumerateArray().Select(x => x.GetString()).ToArray();
+            var high = Array.IndexOf(fields, "最高價");
+            var low = Array.IndexOf(fields, "最低價");
+            var volume = Array.IndexOf(fields, "成交股數(B)");
+            var month = Array.IndexOf(fields, "月份");
+            var calendarYear = Array.IndexOf(fields, "年度");
+            if (new[] { high, low, volume, month, calendarYear }.Any(i => i < 0))
+                throw new InvalidDataException("官方月摘要欄位已變更。");
+            foreach (var row in root.GetProperty("data").EnumerateArray())
+            {
+                var actualYear = int.Parse(row[calendarYear].ToString(), CultureInfo.InvariantCulture);
+                if (actualYear < 1911) actualYear += 1911;
+                if (actualYear != year) throw new InvalidDataException("官方月摘要回應年度不符。");
+                var m = int.Parse(row[month].ToString(), CultureInfo.InvariantCulture);
+                var bar = closed.FirstOrDefault(b => b.Date.Year == year && b.Date.Month == m);
+                if (bar is null) continue;
+                static decimal Number(JsonElement v) => decimal.Parse(v.ToString(), NumberStyles.Number, CultureInfo.InvariantCulture);
+                var value = bar with { High = Number(row[high]), Low = Number(row[low]), Volume = Number(row[volume]) };
+                if (!DailyBarValidator.IsValid(value.Close, value.High, value.Low, value.Close) || value.Volume < 0m)
+                    throw new InvalidDataException($"{ticker} {year}/{m} 官方月摘要與候選收盤不相容。");
+                verified[(year, m)] = value;
+            }
+            await Task.Delay(1000, ct);
         }
-        if (verified == 0) throw new InvalidDataException("官方月摘要沒有可比對的已完成月份。");
-        return $"TWSE FMSRFK {year}: {verified} months high/low/volume; raw close overlap";
+        if (verified.Count != closed.Length) throw new InvalidDataException("官方月摘要缺少所需已完成月份。");
+        return (monthly.Select(b => verified.GetValueOrDefault((b.Date.Year, b.Date.Month), b)).ToArray(),
+            $"TWSE FMSRFK: {verified.Count} displayed months official high/low/volume; raw close overlap");
     }
 
     private static long Epoch(DateOnly date) => new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUnixTimeSeconds();
