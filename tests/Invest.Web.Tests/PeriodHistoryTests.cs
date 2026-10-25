@@ -282,6 +282,35 @@ public sealed class PeriodHistoryTests
         Assert.Equal(188.65m, result.Quote.ClosePrice);
     }
 
+    [Theory]
+    [InlineData("112/10/19*")]
+    [InlineData("2023/10/19*")]
+    [InlineData(" 112/10/19* ")]
+    public void 官方日期尾端註記不改變實際交易日期(string date)
+    {
+        using var doc = JsonDocument.Parse("""
+            {"stat":"OK","date":"20231001","fields":["日期","成交股數","開盤價","最高價","最低價","收盤價"],
+            "data":[["DATE","1000","10","12","9","11"]]}
+            """.Replace("DATE", date));
+        var row = Assert.Single(OfficialPeriodDataClient.ParseEventMonth(doc.RootElement, new(2023, 10, 1), Market.Twse));
+        Assert.Equal(new DateOnly(2023, 10, 19), row.Date);
+        Assert.Equal(1000m, row.Volume);
+    }
+
+    [Theory]
+    [InlineData("112/10/XX")]
+    [InlineData("112/10/32")]
+    [InlineData("112/09/19*")]
+    [InlineData("112/10/19other*")]
+    public void 非法或超出月份的官方日期以來源錯誤拒絕_不發生未處理解析例外(string date)
+    {
+        using var doc = JsonDocument.Parse("""
+            {"stat":"OK","date":"20231001","fields":["日期","成交股數","開盤價","最高價","最低價","收盤價"],
+            "data":[["DATE","1000","10","12","9","11"]]}
+            """.Replace("DATE", date));
+        Assert.Throws<InvalidDataException>(() => OfficialPeriodDataClient.ParseEventMonth(doc.RootElement, new(2023, 10, 1), Market.Twse));
+    }
+
     private sealed class MonthlyReport : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)

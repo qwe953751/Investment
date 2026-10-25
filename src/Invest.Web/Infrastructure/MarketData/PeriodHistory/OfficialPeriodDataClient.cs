@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Invest.Web.Domain.Stocks;
 using Invest.Web.Features.TradingValueRanking.Services;
@@ -132,8 +133,15 @@ public sealed class OfficialPeriodDataClient(HttpClient http, TwseDailyQuoteClie
         var rows = new List<RawPeriodBar>();
         foreach (var row in table.GetProperty("data").EnumerateArray())
         {
-            var parts = row[indices[0]].GetString()!.Split('/').Select(int.Parse).ToArray();
-            var day = new DateOnly(parts[0] < 1911 ? parts[0] + 1911 : parts[0], parts[1], parts[2]);
+            var rawDate = row[indices[0]].GetString()?.Trim().TrimEnd('*').Trim();
+            var parts = rawDate?.Split('/');
+            if (parts is not { Length: 3 }
+                || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var year) || year <= 0
+                || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var monthNumber)
+                || !int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var dayNumber)
+                || !DateOnly.TryParseExact($"{(year < 1911 ? year + 1911 : year):D4}/{monthNumber:D2}/{dayNumber:D2}",
+                    "yyyy/MM/dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day))
+                throw new InvalidDataException("官方事件日日期格式無效，不能猜測交易日。");
             if (day.Year != month.Year || day.Month != month.Month) throw new InvalidDataException("官方事件日超出查詢月份。");
             if (onlyDates is not null && !onlyDates.Contains(day)) continue;
             var values = indices.Skip(1).Select(i => QuoteFieldParser.ParseNullableDecimal(row[i].ToString())).ToArray();

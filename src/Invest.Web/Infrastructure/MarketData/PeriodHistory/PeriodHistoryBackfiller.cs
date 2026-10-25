@@ -116,7 +116,7 @@ public sealed class PeriodHistoryBackfiller(
                 progress.Report($"{stock.Ticker} 完成：週 {weekly.Count}／月 {monthly.Count}（只保存摘要與前置收盤）。");
                 consecutiveFailures = 0;
             }
-            catch (Exception e) when (e is HttpRequestException or InvalidDataException or JsonException or TaskCanceledException
+            catch (Exception e) when (e is HttpRequestException or InvalidDataException or JsonException or FormatException or TaskCanceledException
                 && !ct.IsCancellationRequested)
             {
                 failed++;
