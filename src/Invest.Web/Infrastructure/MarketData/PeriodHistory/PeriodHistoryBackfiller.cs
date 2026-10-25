@@ -60,7 +60,7 @@ public sealed class PeriodHistoryBackfiller(
                     throw new InvalidDataException("正式名冊中有代號但沒有任何每日行情，請核對 data 資料。");
                 if (existing is not null && existing.AdjustmentThrough <= through
                     && existing.Market == stock.Market
-                    && (refreshExistingOnly || existing.RequestedFrom <= first && existing.CoveredFrom == adjustedFirst)
+                    && (refreshExistingOnly || existing.RequestedFrom <= first && existing.CoveredFrom <= adjustedFirst)
                     && existing.Validation.Contains("official first-day open / last-day close", StringComparison.Ordinal)
                     && existing.Validation.Contains("actual trading-day boundaries", StringComparison.Ordinal)
                     && CanReuse(existing, trading, calendar, data.PriceAdjustments, firstView, through))
@@ -81,15 +81,38 @@ public sealed class PeriodHistoryBackfiller(
                 // 防止同代號舊公司、錯市場或 stale source 被當成現行股票歷史。
                 VerifyCloseOverlap(rawMonths, trading, KLinePeriod.Month, through, calendar);
                 VerifyCloseOverlap(rawWeeks, trading, KLinePeriod.Week, through, calendar);
-                var fullMonthFrom = new DateOnly(firstView.Year, firstView.Month, 1).AddMonths(-59);
+                var minimumHistory = new DateOnly(2011, 1, 1);
+                var needMonths = adjustedFirst > minimumHistory && rawMonths.Count(b => b.Date <= firstView) < 60 + warmup;
+                var needWeeks = weekFrom > minimumHistory && rawWeeks.Count(b => b.Date <= firstView) < 60 + warmup;
+                var stockFirst = adjustedFirst;
+                if ((needMonths || needWeeks) && actionBook.CoveredFrom > minimumHistory)
+                    actionBook = await LoadActionsAsync(minimumHistory, through, progress, ct);
+                if ((needMonths || needWeeks) && calendar[0] > actionBook.CoveredFrom)
+                    calendar = await LoadCalendarAsync(actionBook.CoveredFrom, through, progress, ct);
+                if (needMonths && actionBook.CoveredFrom < adjustedFirst)
+                {
+                    rawMonths = await ExtendAsync(stock.Ticker, "M", rawMonths, adjustedFirst,
+                        actionBook.CoveredFrom, firstView, 60 + warmup, ct);
+                    VerifyCloseOverlap(rawMonths, trading, KLinePeriod.Month, through, calendar);
+                    stockFirst = actionBook.CoveredFrom;
+                }
+                if (needWeeks && actionBook.CoveredFrom < weekFrom)
+                {
+                    rawWeeks = await ExtendAsync(stock.Ticker, "W", rawWeeks, weekFrom,
+                        actionBook.CoveredFrom, firstView, 60 + warmup, ct);
+                    VerifyCloseOverlap(rawWeeks, trading, KLinePeriod.Week, through, calendar);
+                    stockFirst = actionBook.CoveredFrom;
+                }
+                rawMonths = TrimWarmup(rawMonths, firstView, 60 + warmup);
+                rawWeeks = TrimWarmup(rawWeeks, firstView, 60 + warmup);
+                var fullMonthFrom = DisplayStart(rawMonths, KLinePeriod.Month, firstView);
                 var verified = await source.VerifyMonthlyAsync(stock.Ticker, stock.Market, rawMonths, fullMonthFrom, through, ct);
                 rawMonths = verified.Bars;
                 var validation = verified.Validation;
                 var factors = BuildFactors(stock.Ticker, actionBook.Actions, data.PriceAdjustments, through);
                 IEnumerable<DateOnly> Boundaries(IReadOnlyList<RawPeriodBar> bars, KLinePeriod period)
                 {
-                    var start = PeriodKLineCalculator.PeriodStart(firstView, period);
-                    start = period == KLinePeriod.Month ? start.AddMonths(-59) : start.AddDays(-59 * 7);
+                    var start = DisplayStart(bars, period, firstView);
                     foreach (var bar in bars.Where(b => b.Date >= start
                         && PeriodKLineHistoryMerger.PeriodEnd(PeriodKLineCalculator.PeriodStart(b.Date, period), period) < through))
                     {
@@ -100,15 +123,18 @@ public sealed class PeriodHistoryBackfiller(
                 }
                 official.BeginTicker(Boundaries(rawMonths, KLinePeriod.Month).Concat(Boundaries(rawWeeks, KLinePeriod.Week)).ToHashSet());
                 var dailyCache = new Dictionary<(DateOnly Start, DateOnly End), IReadOnlyList<RawPeriodBar>>();
+                var reusable = existing is not null && existing.Market == stock.Market && existing.AdjustmentThrough <= through
+                    && existing.Validation.Contains("official first-day open / last-day close", StringComparison.Ordinal)
+                    && existing.Validation.Contains("actual trading-day boundaries", StringComparison.Ordinal) ? existing : null;
                 var weekly = await BuildAsync(stock.Ticker, stock.Market, rawWeeks, KLinePeriod.Week, firstView,
-                    through, calendar, factors, trading, data.PriceAdjustments, dailyCache, ct);
+                    through, calendar, factors, trading, data.PriceAdjustments, reusable, dailyCache, ct);
                 var monthly = await BuildAsync(stock.Ticker, stock.Market, rawMonths, KLinePeriod.Month, firstView,
-                    through, calendar, factors, trading, data.PriceAdjustments, dailyCache, ct);
+                    through, calendar, factors, trading, data.PriceAdjustments, reusable, dailyCache, ct);
                 var file = new PeriodHistoryFile
                 {
                     Ticker = stock.Ticker, Market = stock.Market, AdjustmentThrough = through,
                     DownloadedAt = DateTimeOffset.UtcNow, Source = PeriodSummaryClient.Source,
-                    Validation = validation + "; official first-day open / last-day close; official event OHLC; actual trading-day boundaries", RequestedFrom = first, CoveredFrom = adjustedFirst,
+                    Validation = validation + "; official first-day open / last-day close; official event OHLC; actual trading-day boundaries", RequestedFrom = first, CoveredFrom = stockFirst,
                     Weekly = Union(existing?.Weekly, weekly, existing?.AdjustmentThrough, through, factors, KLinePeriod.Week),
                     Monthly = Union(existing?.Monthly, monthly, existing?.AdjustmentThrough, through, factors, KLinePeriod.Month)
                 };
@@ -138,13 +164,18 @@ public sealed class PeriodHistoryBackfiller(
         DateOnly firstView, DateOnly through, IReadOnlyList<DateOnly> calendar,
         IReadOnlyList<StockPriceAdjustment> factors, IReadOnlyList<DailyStockTrading> trading,
         IReadOnlyList<StockPriceAdjustment> localFactors,
+        PeriodHistoryFile? previous,
         Dictionary<(DateOnly Start, DateOnly End), IReadOnlyList<RawPeriodBar>> dailyCache, CancellationToken ct)
     {
-        var displayStart = PeriodKLineCalculator.PeriodStart(firstView, period);
-        displayStart = period == KLinePeriod.Month ? displayStart.AddMonths(-59) : displayStart.AddDays(-59 * 7);
+        var displayStart = DisplayStart(raw, period, firstView);
         var localRowsByDate = trading.ToDictionary(r => r.TradingDate);
         var local = PeriodKLineCalculator.Calculate(trading, localFactors, ticker, period, through)
             .ToDictionary(b => b.PeriodStart);
+        var cached = ((period == KLinePeriod.Week ? previous?.Weekly : previous?.Monthly) ?? [])
+            .Where(b => b.Open is not null && b.High is not null && b.Low is not null)
+            .ToDictionary(b => PeriodKLineCalculator.PeriodStart(b.Date, period));
+        var cacheFactor = previous is null ? 1m : factors.Where(a => a.EffectiveDate > previous.AdjustmentThrough)
+            .Aggregate(1m, (value, a) => value * a.Factor);
         var result = new List<PeriodHistoryBar>();
         foreach (var bar in raw)
         {
@@ -176,6 +207,12 @@ public sealed class PeriodHistoryBackfiller(
             {
                 // 不下載這根的逐日資料；合併時仍以原有計算結果為優先。
                 result.Add(PeriodHistoryBar.FromPoint(point));
+                continue;
+            }
+            if (cached.TryGetValue(start, out var saved))
+            {
+                result.Add(saved with { Open = saved.Open * cacheFactor, High = saved.High * cacheFactor,
+                    Low = saved.Low * cacheFactor, Close = saved.Close * cacheFactor });
                 continue;
             }
             var headResult = await official.GetPeriodBoundaryAsync(ticker, market,
@@ -282,6 +319,44 @@ public sealed class PeriodHistoryBackfiller(
         };
     }
 
+    private async Task<IReadOnlyList<RawPeriodBar>> ExtendAsync(string ticker, string resolution,
+        IReadOnlyList<RawPeriodBar> bars, DateOnly originalFrom, DateOnly verifiedFrom,
+        DateOnly firstView, int needed, CancellationToken ct)
+    {
+        var from = originalFrom.AddYears(-1);
+        if (from < verifiedFrom) from = verifiedFrom;
+        while (true)
+        {
+            var older = await source.GetAsync(ticker, resolution, from, bars[0].Date.AddDays(-1), ct);
+            bars = older.Concat(bars).GroupBy(b => b.Date).Select(g => g.Last()).OrderBy(b => b.Date).ToArray();
+            if (bars.Count(b => b.Date <= firstView) >= needed || from == verifiedFrom) return bars;
+            from = verifiedFrom;
+        }
+    }
+
+    internal static IReadOnlyList<RawPeriodBar> TrimWarmup(IReadOnlyList<RawPeriodBar> bars, DateOnly firstView, int needed)
+    {
+        var first = bars.Where(b => b.Date <= firstView).OrderBy(b => b.Date).TakeLast(needed).FirstOrDefault();
+        return first is null ? bars : bars.Where(b => b.Date >= first.Date).OrderBy(b => b.Date).ToArray();
+    }
+
+    internal static DateOnly DisplayStart(IReadOnlyList<RawPeriodBar> bars, KLinePeriod period, DateOnly firstView)
+    {
+        var start = PeriodKLineCalculator.PeriodStart(firstView, period);
+        start = period == KLinePeriod.Month ? start.AddMonths(-59) : start.AddDays(-59 * 7);
+        var observed = bars.Where(b => b.Date <= firstView).OrderBy(b => b.Date).TakeLast(60).FirstOrDefault();
+        if (observed is not null)
+        {
+            var actual = PeriodKLineCalculator.PeriodStart(observed.Date, period);
+            if (actual < start) start = actual;
+        }
+        return start;
+    }
+
+    internal static bool HasFullDisplayBars(IReadOnlyList<PeriodHistoryBar> bars, DateOnly firstView)
+        => bars.Where(b => b.Date <= firstView).OrderBy(b => b.Date).TakeLast(60)
+            .All(b => b.Open is not null && b.High is not null && b.Low is not null);
+
     private static bool CanReuse(PeriodHistoryFile file, IReadOnlyList<DailyStockTrading> trading,
         IReadOnlyList<DateOnly> calendar, IReadOnlyList<StockPriceAdjustment> events,
         DateOnly firstView, DateOnly through)
@@ -289,6 +364,7 @@ public sealed class PeriodHistoryBackfiller(
         var rows = trading.ToDictionary(r => r.TradingDate);
         foreach (var period in new[] { KLinePeriod.Week, KLinePeriod.Month })
         {
+            if (!HasFullDisplayBars(period == KLinePeriod.Week ? file.Weekly : file.Monthly, firstView)) return false;
             var points = PeriodKLineCalculator.Calculate(trading, events, file.Ticker, period, through);
             var summaries = (period == KLinePeriod.Week ? file.Weekly : file.Monthly)
                 .Where(b => b.Open is not null && b.High is not null && b.Low is not null)

@@ -40,6 +40,57 @@ public sealed class PeriodHistoryTests
         Assert.Equal(5000m, result.TradingVolume);
     }
 
+    [Theory]
+    [InlineData(0, 0, true)]
+    [InlineData(346, 34600, false)]
+    [InlineData(-1, 0, false)]
+    [InlineData(0, 100, false)]
+    public void 明確零成交且四價全空的日期不是漏日_有量或成交值缺價仍不完整(int volume, int value, bool complete)
+    {
+        var trading = Enumerable.Range(0, 5).Select(i => i == 2
+            ? new DailyStockTrading { Ticker = "2330", TradingDate = Monday.AddDays(i), TradingValue = value, TradingVolume = volume }
+            : Day(i)).ToArray();
+        var points = PeriodKLineCalculator.Calculate(trading, [], "2330", KLinePeriod.Week, Through);
+        var result = Assert.Single(PeriodKLineHistoryMerger.Merge(points, trading, Calendar,
+            History(), KLinePeriod.Week, [], Through));
+        Assert.Equal(complete, result.HasBar);
+        if (complete) Assert.Equal(4000m, result.TradingVolume);
+    }
+
+    [Fact]
+    public void 稀疏月交易必須補實際六十期_不是只看六十個日曆月()
+    {
+        var raw = Enumerable.Range(0, 70).Select(i => new RawPeriodBar(new DateOnly(2015, 1, 1).AddMonths(i * 2), 100, 110, 90, 105, 1000)).ToArray();
+        Assert.Equal(new DateOnly(2016, 5, 1), PeriodHistoryBackfiller.DisplayStart(raw, KLinePeriod.Month, new(2026, 4, 30)));
+    }
+
+    [Fact]
+    public void 稀疏週交易依實際六十期向前延伸_不計入檢視日之後的首筆成交()
+    {
+        var raw = Enumerable.Range(0, 200).Select(i => new RawPeriodBar(new DateOnly(2019, 1, 7).AddDays(i * 14), 100, 110, 90, 105, 1000)).ToArray();
+        Assert.Equal(new DateOnly(2024, 1, 15), PeriodHistoryBackfiller.DisplayStart(raw, KLinePeriod.Week, new(2026, 4, 30)));
+    }
+
+    [Fact]
+    public void 稀疏顯示窗內只有暖身收盤的舊摘要必須重補_窗外暖身不影響重用()
+    {
+        var bars = Enumerable.Range(0, 70).Select(i => new PeriodHistoryBar(
+            new DateOnly(2015, 1, 1).AddMonths(i * 2), new DateOnly(2015, 1, 1).AddMonths(i * 2 + 1).AddDays(-1),
+            i < 10 ? null : 100, i < 10 ? null : 110, i < 10 ? null : 90, 105, 1000)).ToArray();
+        Assert.False(PeriodHistoryBackfiller.HasFullDisplayBars(bars, new(2026, 4, 30)));
+        Assert.True(PeriodHistoryBackfiller.HasFullDisplayBars(bars, new(2026, 8, 31)));
+    }
+
+    [Fact]
+    public void 延伸較早來源後只保留所需暖身_不刪除較新檢視日要用的週期()
+    {
+        var raw = Enumerable.Range(0, 200).Select(i => new RawPeriodBar(new DateOnly(2010, 1, 1).AddMonths(i), 100, 110, 90, 105, 1000)).ToArray();
+        var result = PeriodHistoryBackfiller.TrimWarmup(raw, new(2026, 4, 30), 119);
+        Assert.Equal(119, result.Count(b => b.Date <= new DateOnly(2026, 4, 30)));
+        Assert.Equal(new DateOnly(2016, 6, 1), result[0].Date);
+        Assert.Equal(raw[^1].Date, result[^1].Date);
+    }
+
     [Fact]
     public void 中間整天遺漏_即使現有四日OHLC都齊全也必須用完整摘要()
     {
