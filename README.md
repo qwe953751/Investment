@@ -936,6 +936,7 @@ Invest/
 初次／補缺使用獨立 `backfill-periods.yml`（空白代號表示全部台股，成功項目逐檔保存，失敗保留舊檔並回報）；之後完整盤後流程只更新已初始化摘要，純發布不回補。
 本機在 repo 根目錄執行 `dotnet run -c Release --project src/Invest.Web -- backfill-periods 2330 2454` 可指定代號；`--warmup60` 只準備 MA60 暖身，`--refresh-existing` 只更新已存在摘要。失敗請提供代號、行情基準日與錯誤訊息，勿提供環境變數值。
 回補成功後另以既有 `daily-snapshot.yml`、`publish-only=true` 發布，資料只由 workflow 保存至 `data` branch。
+2026-10-25 首批八檔（0050、0056、2303、2317、2330、2454、6488、9103）已正式發布，公開週／月各最近 60 根 OHLC 與 MA60 通過核對；全市場另行批次初始化，來源限制與發布證據見 [TODO #32](Doc/TODO.md#todo-32) 及[版本紀錄](Doc/版本紀錄.md)。
 
 為了讓 1 GB 的網站容量放得下週／月 K，`data/kline/{ticker}.json` 的台股檔案升為 `schemaVersion: 2`：日、週、月 K 都是位置陣列
 （`fields`／`daily`、`periodFields`／`weekly`／`monthly`），欄位名稱只在檔頭寫一次，數字也去掉多餘的 0；前端 `decodeKLinePayload`
