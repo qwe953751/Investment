@@ -115,13 +115,17 @@ test('collection summary is literal markdown with query range and isolated-row c
         ] }));
         const block = shellStep('收集兩市場配息原文與觀測');
         const branch = block.split('complete:0|partial:2)')[1].split(';;')[0];
+        // 摘要寫進檔案再讀回來。以前把 GITHUB_STEP_SUMMARY 指到 /dev/stdout：Linux 上子程序的 stdout 是 socket，
+        // 重新開啟 /dev/stdout 會失敗（ENXIO），GitHub 的 ubuntu runner 上這個測試因此一直失敗，macOS 上卻會過。
+        const stepSummary = join(directory, 'step-summary.md');
         const result = spawnSync('bash', ['-c', branch], {
-            encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: '/dev/stdout', SUMMARY_FILE: summary,
+            encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: stepSummary, SUMMARY_FILE: summary,
                 status: 'complete', batch: 'b-1' }
         });
         assert.equal(result.status, 0, result.stderr);
-        assert.match(result.stdout, /狀態：`complete`/);
-        assert.match(result.stdout, /twse：fresh，查詢 2000-01-01～2027-12-31，有效 1642 筆、重複 9 筆、衝突 0 筆、無效 1 筆。/);
+        const markdown = await readFile(stepSummary, 'utf8');
+        assert.match(markdown, /狀態：`complete`/);
+        assert.match(markdown, /twse：fresh，查詢 2000-01-01～2027-12-31，有效 1642 筆、重複 9 筆、衝突 0 筆、無效 1 筆。/);
         assert.doesNotMatch(result.stderr, /command not found/);
     } finally { await rm(directory, { recursive: true, force: true }); }
 });

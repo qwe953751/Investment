@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -154,13 +154,25 @@ test('a longer window mixes full intervals and a shorter last nap', async () => 
 });
 
 test('without dotnet on PATH it still hands over instead of failing the hop', async () => {
-    const result = spawnSync('/bin/bash', [script, String(Math.floor(Date.now() / 1000) + 3600), '600'], {
-        encoding: 'utf8',
-        timeout: HARD_TIMEOUT_MS,
-        env: { LC_ALL: UTF8, PATH: '/usr/bin:/bin' } // 刻意沒有 dotnet
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /照常交棒/);
+    // PATH 只放腳本唯一需要的外部指令 date。以前寫 '/usr/bin:/bin' 當作「沒有 dotnet」：GitHub 的 ubuntu runner
+    // 在 /usr/bin 就有 dotnet，腳本於是真的去跑 market-day，等到逾時被殺（status 變 null）。
+    const bin = await mkdtemp(join(tmpdir(), 'closed-hold-no-dotnet-'));
+    try {
+        await symlink('/bin/date', join(bin, 'date'));
+        const env = { LC_ALL: UTF8, PATH: bin };
+        const probe = spawnSync('/bin/bash', ['-c', 'command -v dotnet'], { encoding: 'utf8', env });
+        assert.notEqual(probe.status, 0, '前提：這個 PATH 上找不到 dotnet');
+
+        const result = spawnSync('/bin/bash', [script, String(Math.floor(Date.now() / 1000) + 3600), '600'], {
+            encoding: 'utf8',
+            timeout: HARD_TIMEOUT_MS,
+            env
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /照常交棒/);
+    } finally {
+        await rm(bin, { recursive: true, force: true });
+    }
 });
 
 test('an omitted or empty interval falls back to the default of 10 minutes', async () => {
