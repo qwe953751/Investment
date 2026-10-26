@@ -1,18 +1,30 @@
 name: 補齊週月 K 摘要
 
 on:
+  schedule:
+    # 台北 02:15；每天補進新標的，並接續前一批未完成的名單。
+    - cron: '15 18 * * *'
   workflow_dispatch:
     inputs:
       tickers:
-        description: 股票代號，以空白分隔；空白表示全部台股
+        description: 股票代號，以空白分隔；空白表示依持久化佇列補缺
         default: ''
       warmup60:
         description: 只補 MA60 暖身（否則準備 MA240 暖身）
+        type: boolean
+        default: true
+      auto-continue:
+        description: 本批保存後，繼續派送下一批並定期發布網站
+        type: boolean
+        default: false
+      retry-rejected:
+        description: 明確重試先前來源檢核未通過的標的
         type: boolean
         default: false
 
 permissions:
   contents: write
+  actions: write
 
 # 和完整盤後流程共用 data 寫入鎖；純發布仍能讀舊的已完成快取。
 concurrency:
@@ -26,7 +38,9 @@ jobs:
     env:
       TZ: Asia/Taipei
       TICKERS: ${{ inputs.tickers }}
-      WARMUP60: ${{ inputs.warmup60 }}
+      WARMUP60: ${{ github.event_name == 'schedule' || inputs.warmup60 == true }}
+      RETRY_REJECTED: ${{ inputs.retry-rejected }}
+      AUTO_CONTINUE: ${{ inputs.auto-continue == true || github.event_name == 'schedule' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -39,24 +53,45 @@ jobs:
           dotnet-version: '10.0.x'
       - name: 驗證計算公式
         run: dotnet test tests/Invest.Web.Tests/Invest.Web.Tests.csproj -c Release --logger 'console;verbosity=minimal'
+      - name: 驗證週月回補佇列與公開驗收
+        run: python3 -m unittest tests.test_period_backfill_queue tests.test_period_kline_public_audit
+      - name: 選出這批缺漏標的
+        id: plan
+        run: |
+          options=()
+          if [ "$RETRY_REJECTED" = 'true' ]; then options+=(--retry-rejected); fi
+          python3 scripts/period-backfill-queue.py plan --data-dir data --output /tmp/period-plan.json --limit 75 --tickers "$TICKERS" "${options[@]}"
+          echo "tickers=$(jq -r '.tickers | join(" ")' /tmp/period-plan.json)" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq -r '.tickers | length' /tmp/period-plan.json)" >> "$GITHUB_OUTPUT"
       - name: 補齊獨立週月摘要
         id: backfill
-        continue-on-error: true
+        if: ${{ steps.plan.outputs.count != '0' }}
         run: |
-          if [[ ! "$TICKERS" =~ ^[0-9A-Za-z[:space:]]*$ ]]; then
-              echo '股票代號只能含英數字與空白。' >&2
-              exit 1
-          fi
-          read -r -a tickers <<< "$TICKERS"
+          read -r -a tickers <<< "${{ steps.plan.outputs.tickers }}"
           options=()
           if [ "$WARMUP60" = 'true' ]; then options+=(--warmup60); fi
-          timeout --signal=INT 19200 dotnet run -c Release --no-build --project src/Invest.Web -- backfill-periods "${tickers[@]}" "${options[@]}"
+          set +e
+          timeout --signal=INT 5700 dotnet run -c Release --no-build --project src/Invest.Web -- backfill-periods "${tickers[@]}" "${options[@]}" 2>&1 | tee /tmp/period-backfill.log
+          result=${PIPESTATUS[0]}
+          echo "$result" > /tmp/period-backfill.exit
+          exit 0
+      - name: 記錄逐檔狀態與下一批
+        id: progress
+        if: ${{ steps.plan.outputs.count != '0' }}
+        run: |
+          python3 scripts/period-backfill-queue.py finish --data-dir data --plan /tmp/period-plan.json --log /tmp/period-backfill.log --exit-code "$(cat /tmp/period-backfill.exit)" | tee /tmp/period-result.json
+          python3 scripts/period-backfill-queue.py plan --data-dir data --output /tmp/period-next.json --limit 75 > /dev/null
+          echo "attempted=$(jq -r '.attempted' /tmp/period-result.json)" >> "$GITHUB_OUTPUT"
+          echo "remaining=$(jq -r '.tickers | length' /tmp/period-next.json)" >> "$GITHUB_OUTPUT"
+          echo "runs=$(jq -r '.runs' /tmp/period-result.json)" >> "$GITHUB_OUTPUT"
+          cat /tmp/period-result.json >> "$GITHUB_STEP_SUMMARY"
       - name: 保存已驗證的週月摘要
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.plan.outputs.count != '0' }}
         working-directory: data
         run: |
-          mkdir -p imports-periods
+          mkdir -p imports-periods imports-periods-status
           find imports-periods -type f -name '*.json' -print0 | xargs -0 -r git add --
+          if [ -f imports-periods-status/queue.json ]; then git add imports-periods-status/queue.json; fi
           if git diff --cached --name-only --diff-filter=D | grep -q .; then
               echo '偵測到摘要被刪除，停止保存。' >&2
               exit 1
@@ -70,13 +105,22 @@ jobs:
               git pull --rebase origin data
           done
           exit 1
-      - name: 回報回補結果
-        if: ${{ !cancelled() }}
+      - name: 派送下一批或發布已保存資料
+        if: ${{ !cancelled() && steps.plan.outputs.count != '0' && steps.progress.outcome == 'success' }}
         env:
-          RESULT: ${{ steps.backfill.outcome }}
+          GH_TOKEN: ${{ github.token }}
+          REMAINING: ${{ steps.progress.outputs.remaining }}
+          ATTEMPTED: ${{ steps.progress.outputs.attempted }}
+          RUNS: ${{ steps.progress.outputs.runs }}
         run: |
-          if [ "$RESULT" != 'success' ]; then
-              echo '部分摘要尚未完成，成功項目已保存；重新執行會接續。' >&2
+          if [ "$AUTO_CONTINUE" != 'true' ]; then exit 0; fi
+          if [ "$ATTEMPTED" = '0' ]; then
+              echo '本批沒有可持久化的逐檔結果，停止立即接續；明日排程再檢查。' >&2
               exit 1
           fi
-          echo '摘要已保存。網站以 daily-snapshot.yml publish-only=true 另行發布。'
+          if [ "$REMAINING" = '0' ] || [ $((RUNS % 5)) -eq 0 ]; then
+              gh workflow run daily-snapshot.yml --ref main -f trading-days=300 -f publish-only=true
+          fi
+          if [ "$REMAINING" != '0' ]; then
+              gh workflow run backfill-periods.yml --ref main -f warmup60=true -f auto-continue=true
+          fi
