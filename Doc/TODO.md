@@ -1363,7 +1363,7 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 修正只在 `site.js`（**不需重建 Worker、不升版**）：暫時性錯誤（斷線、5xx、429）背景等回前景、前景退避重試（1／2／4／8 秒），不取消伺服器工作；9 分鐘時限只計前景時間並在到期前再問一次；上傳沿用 Idempotency-Key；Tesseract 等回前景才開始並在卡片寫出原因；換票暫時連不上不再登出；辨識中不整頁重載；順便修掉 `resumeAssetAiJobs` 自 09-13 起的 `myGeneration` 作用域錯誤。
 
 **待辦（依序）**：
-1. 🔴 **iPhone 實機驗收**（[AI OCR §3.2](技術文件/AI%20OCR.md#ocr-pending-acceptance) #13）：網站發布後，在 Chrome 上傳 3～5 張截圖、**立刻切到別的 App 30～60 秒再回來**，每張都該是「D+ AI 完成」；再測一次全程留在前景。
+1. 🔴 **iPhone 實機驗收**（[AI OCR §3.2](技術文件/AI%20OCR.md#ocr-pending-acceptance) #13）：網站已於 2026-10-26 17:30 發布（[run 40297921597](https://github.com/qwe953751/Investment/actions/runs/40297921597)），現在就可以測；在 Chrome 上傳 3～5 張截圖、**立刻切到別的 App 30～60 秒再回來**，每張都該是「D+ AI 完成」；再測一次全程留在前景。
    仍掉到 Tesseract 時，卡片現在會寫出原因，請連同那行字與公司 Windows 的 `logs\ocr-worker-*.out.log` 一起提供。
 2. 🟡 **可選：查證當晚的正式紀錄**（需要資料庫唯讀或 Windows log）：`ocr_jobs` 22:50 之後前 3 張應為 `cancelled`、Windows log 應有「已被取消或租約易主」；目前根因只由程式分析、使用者描述與假環境重現支持。
 3. 🟡 **已知取捨**（[AI OCR §3.4](技術文件/AI%20OCR.md#ocr-known-risks) #10）：正常輪詢在背景時不暫停（桌機切視窗照常跑）；校對草稿開著時不會自動換新版（要按「檢查更新」或套用／捨棄草稿）；在背景超過 60 分鐘（工作到期）才回來會改走 Tesseract。
