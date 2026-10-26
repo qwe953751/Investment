@@ -51,7 +51,16 @@ print(manifest['version'], manifest.get('latestTradingDate', '?'))
 ")
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+cleanup_work() {
+    local result=$?
+    for attempt in 1 2 3; do
+        if rm -rf "$work"; then return "$result"; fi
+        sleep 1
+    done
+    echo "::warning::暫存發布目錄未清乾淨：$work（runner 結束時會清除）" >&2
+    return "$result"
+}
+trap cleanup_work EXIT
 
 if [ -n "$publish_root" ]; then
     # 網站內容直接發到網域根目錄，不再經過子路徑或 iframe 轉發——訪客／監控者／
