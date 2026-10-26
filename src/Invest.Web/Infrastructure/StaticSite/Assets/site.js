@@ -4012,7 +4012,7 @@ function renderAdminBgm() {
         clearAdminBgmSession();
         if (status) status.textContent = '本機預覽只顯示版面；正式網站會由最高權限登入後讀取 Supabase 音源。';
     } else if (justAuthenticated) {
-        void loadAdminBgm({ autoPlay: true });
+        void loadAdminBgm();
     }
     updateAdminBgmControls();
 }
