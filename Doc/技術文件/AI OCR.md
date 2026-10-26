@@ -1,6 +1,7 @@
 # AI OCR
 
-> 最後整理：2026-10-17 晚上（新增 [§4.18](#ocr-incident-1017-windows-encoding)：**Windows 上 Claude 的結果被當成 Big5 讀壞**，Worker 升到 **v5**；同日 [§4.17](#ocr-incident-1017-claude-schema)：Claude 備援自 2026-09-07 起從沒成功過——Schema 被 CLI 拒絕，v4 修正）——
+> 最後整理：2026-10-26（新增 [§4.19](#ocr-incident-1025-background)：**手機切到別的 App，前端把還在辨識的 AI 工作自己取消、改跑 Tesseract**——只改網站前端，Worker、Edge Function、資料庫都沒動，待 iPhone 實機驗收）。
+> 前一次整理：2026-10-17 晚上（新增 [§4.18](#ocr-incident-1017-windows-encoding)：**Windows 上 Claude 的結果被當成 Big5 讀壞**，Worker 升到 **v5**；同日 [§4.17](#ocr-incident-1017-claude-schema)：Claude 備援自 2026-09-07 起從沒成功過——Schema 被 CLI 拒絕，v4 修正）——
 > **程式已在 `main`（`52803d7b4`）、家裡 Mac 與公司 Windows 都已是 v5，兩台的 Claude 備援都已實測成功（Windows 10-17 晚上 20 秒、Mac 10-18 凌晨 17.7 秒，合成截圖四列全對），剩正式上傳驗收**；
 > 2026-10-16：[§4.16](#ocr-incident-1016-agent-switch) Agent 改成「沒成功就換」（v3）；
 > 2026-10-13：公司 Windows Worker 依 [§3.5.9](#ocr-probe-rollout) 階段 W 重建並以 `ocr_workers` 核對；`db/062` 與 `ocr-jobs` v24 仍是 2026-10-11 核對的內容；
@@ -89,6 +90,9 @@ Codex 一直沒事，是因為它的結果從 `-o` 寫出的 UTF-8 檔案讀，�
 「驗證 Claude 備援」在一般 PowerShell 視窗執行則一定會中。**v5 修正**：CLI 的 stdout／stderr 一律以 UTF-8 解讀（兩個 CLI 都適用）。家裡 Mac 已是 v5（Mac 預設本來就是 UTF-8，不受影響）；
 **公司 Windows 當晚重建為 v5，重跑「驗證 Claude 備援」成功**：`實際使用的 Agent：Claude；是否為備援：False；狀態：Success；耗時：00:00:20.2549071`，四列（2330 台積電 1,000 620,000／2317 鴻海 2,000 190,000／0050 元大台灣50 3,000 540,000／2454 聯發科 500 430,000）代號、名稱、股數、成本全對。**Claude 這條路從 2026-09-07 起第一次真正跑通**；剩正式上傳驗收（Codex 額度用完時，正式 Worker 自動改用 Claude，[§3.2](#ocr-pending-acceptance) #12）。
 
+**2026-10-26：手機切到別的 App，前端把還在辨識的 AI 工作自己取消、改跑 Tesseract（[§4.19](#ocr-incident-1025-background)）**。2026-10-25 22:59 使用者在 iPhone Chrome 上傳 5 張截圖後立刻切到別的 App：iOS 凍結頁面，進行中的狀態查詢斷線（`Load failed`），舊版前端「查一次失敗就取消 AI 工作並改走 Tesseract」，前 3 張就這樣被網頁自己放棄；Worker、Codex、Claude 都沒有問題（Mac 整晚沒有任何工作、Windows 在接件）。使用者留在前景重測就正常。
+修正只在網站前端（`site.js`，**不需重建 Worker、不升版**）：斷線、5xx、429 視為暫時性錯誤，背景就等回到前景、前景就退避重試（1／2／4／8 秒），**不取消伺服器上的工作**；9 分鐘最後防線只計前景時間，到期前再問一次、已辨識好就用 AI 結果；readiness 與上傳（沿用同一把 Idempotency-Key）同樣重試；Tesseract 備援等回到前景才開始算 10 秒，卡片寫出改用的原因；換票暫時連不上不再把人登出；辨識中或草稿還開著不會因網站出新版而整頁重載。同時修掉一個 2026-09-13 起的潛在 bug（`resumeAssetAiJobs` 的 `.finally` 引用了作用域外的 `myGeneration`，`assetAiResumePromise` 永遠不歸零）。**根因由程式分析、使用者描述與假環境重現支持；當晚的正式資料庫紀錄與 Windows log 未查。待 iPhone 實機驗收**（[§3.2](#ocr-pending-acceptance) #13）。
+
 ### 0.2 元件部署狀態
 
 | 元件 | 目前狀態 | 依據 |
@@ -98,6 +102,7 @@ Codex 一直沒事，是因為它的結果從 `-o` 寫出的 UTF-8 檔案讀，�
 | `db/062_ocr_worker_probe.sql` | ✅ 2026-10-11 已套用。套用前在正式資料庫單一交易內連 migration 一起執行並跑完 31 項斷言，確認 rollback 無痕跡 | 版本紀錄 2026-10-11 |
 | `ocr-jobs` Edge Function | ✅ v24（2026-10-11），`verify_jwt=false`，未帶 JWT 回 401 | Management API 核對 |
 | 前端 `site.js` | ✅ 2026-10-17 晚上 publish-only run `39024710675`（head `52803d7b4`）把網站要求的 AI OCR 版本升到 v5；同日早上 run `38993024420`（head `ed4727839`，包含 `9ebf6fe50`）；我自己觸發的 `38992767637` 在排隊時被 GitHub 取消——另一個 session 在 4 分鐘後推了 `ed4727839`（台股操作表同步可靠性）並觸發較新的 run，同一併發群組只保留最新的排隊 run，v4 版本常數由較新的 run 一併發布：網站要求的 AI OCR 版本升到 v4，舊版警告文字改為「Codex 失敗時無法改用 Claude」；2026-10-16 run `38922361264` 升到 v3；2026-10-13 run `38409067142` 起上傳前比對負責那台的 AI OCR 版本，舊版顯示黃色警告；readiness 期間仍顯示「確認 Windows／Mac 是否在線…」與每台的詢問結果（2026-10-11 run `38140004887` 起） | gh-pages 與公開 manifest `1792232724` |
+| 前端：暫時性錯誤重試與前景時限（2026-10-26） | ✅ 程式與測試已在 `main`；**只改網站前端，Worker 不需重建、不升版**。待 iPhone 實機驗收（[§3.2](#ocr-pending-acceptance) #13） | [§4.19](#ocr-incident-1025-background) |
 | 公司 Windows Worker | ✅ 2026-10-12 以 `a4a795acd` 重建（Worker 程式與 `ea373ea5` 相同；EXE ProductVersion 含該 SHA）：排程 `Invest D+ OCR Worker` Running、只有一個程序，啟動訊息含「在線詢問：指名回應」，`-Once` exit 0；Codex CLI `0.146.0`。10-13 唯讀核對 `probe_protocol=1`、心跳週期 1800 秒、`last_pong_at` 有值；10-12 22:15／22:20 兩次真實上傳由它辨識成功。**2026-10-16 23:52 再以 `0cd731862`（Worker 程式與 `7af16f563` 相同）重建為 AI OCR v3**（[§1.8](#ocr-deploy) 的一段式 PowerShell：`git pull --ff-only` 快轉 `3f39ebae8..0cd731862`、發布 win-x64 建置 51.6 秒，新啟動記錄 `logs\ocr-worker-20261016-235219.out.log` 第 1 行含「AI OCR v3」與「在線詢問：指名回應」）；**尚未核對**：只有一個程序、EXE ProductVersion、`ocr_workers` 的 v3 platform。**2026-10-17 14:22 以 `50804d7de`（Worker 程式與 `9ebf6fe50` 相同）重建為 AI OCR v4（[§1.8](#ocr-deploy) 的一段式 PowerShell：`git pull --ff-only` 快轉 `0cd731862..50804d7de`、發布 win-x64 建置 47.3 秒，新啟動記錄 `logs\ocr-worker-20261017-142211.out.log` 第 1 行含「AI OCR v4」與「在線詢問：指名回應」）**；**2026-10-17 晚上再重建為 AI OCR v5**（使用者回報；重建的輸出未貼回——第一次 `git pull` 撞到同一秒的 git 更新而在動排程前停下，加上重試後重跑），接著「驗證 Claude 備援」成功（Claude Pro、CLI `2.1.302`、Claude 單獨辨識合成截圖 20 秒、四列全對；結果能被正確解析，與 v5 的 UTF-8 解讀一致） | [§3.5.9](#ocr-probe-rollout)、[§4.15](#ocr-incident-1013-quantity-columns) |
 | 家裡 Mac Worker | ✅ 2026-10-11 以 `ea373ea56` 發布並由 LaunchAgent 常駐；啟動訊息含「在線詢問：指名回應」與「Worker 發布版本」；`probe_protocol=1`、心跳週期 1800 秒；已用合成圖片走完整條 Codex 辨識。**2026-10-13 20:49 以 `8cc0a5bc4` 重建（三欄股數），21:55 再以 `be8069d6f` 重建為 AI OCR v2**（`PUBLISHED_COMMIT`＝`be8069d6f`，啟動訊息含「AI OCR v2」與「Worker 發布版本：be8069d6f」，launchd running、新版啟動後 error log 無新增）；**2026-10-16 23:15 再以 `7af16f563` 重建為 AI OCR v3**（`PUBLISHED_COMMIT`＝`7af16f563`，啟動訊息含「AI OCR v3」、「在線詢問：指名回應」、「Worker 發布版本：7af16f563」與「Claude CLI 路徑：未找到（Claude 備援目前不可用）」，launchd running、新版啟動後 error log 無新增）；**2026-10-17 09:55 再以 `9ebf6fe50` 重建為 AI OCR v4**（`PUBLISHED_COMMIT`＝`9ebf6fe50`，啟動訊息含「AI OCR v4」「在線詢問：指名回應」「Worker 發布版本：9ebf6fe50」與「Claude CLI 路徑：未找到（Claude 備援目前不可用）」，launchd running（PID 49067），新版啟動後 error log 無新增）；**2026-10-17 18:24 再以 `52803d7b4` 重建為 AI OCR v5**（`PUBLISHED_COMMIT`＝`52803d7b4`，啟動訊息含「AI OCR v5」「在線詢問：指名回應」「Worker 發布版本：52803d7b4」，launchd running（PID 86914），新版啟動後 error log 無新增）；**2026-10-18 03:56 用官方安裝程式（`https://claude.ai/install.sh`，從 downloads.claude.ai 下載並以 SHA256 校驗）裝好 Claude Code 命令列版 `2.1.302` 到 `~/.local/bin/claude`（指向 `~/.local/share/claude/versions/2.1.302`，`~/.zshrc` 未被修改），`claude auth login --claudeai` 由使用者在瀏覽器授權後 `Login successful`（Claude Pro）；04:02 `launchctl kickstart -k` 重新載入 Worker，啟動訊息含「Claude CLI 路徑：/Users/frankchiang/.local/bin/claude」與「AI OCR v5」**；在接近 LaunchAgent 的環境（`env -i` 只給 HOME／USER／LOGNAME／TMPDIR／PATH）以已發布的 v5 跑 `ocr-poc`、只用 Claude：`實際使用的 Agent：Claude；是否為備援：False；狀態：Success；耗時：00:00:17.74`，合成截圖四列全對 | [§4.14](#ocr-incident-1011-probe)、[§4.15](#ocr-incident-1013-quantity-columns) |
 | AI 三欄股數（昨日餘額／今買成／今賣成） | 🟡 程式與測試已在 `main`（`8cc0a5bc4`）；Mac 與公司 Windows（10-16 23:52）都已重建。使用者 21:08 那批 5 張截圖（38 檔）以新版本機端到端重跑 38/38 正確；**正式驗收待使用者重新上傳那 5 張**（見 [§3.2](#ocr-pending-acceptance) #10） | [§4.15](#ocr-incident-1013-quantity-columns) |
@@ -158,8 +163,9 @@ relay（Windows 呼叫時）：Edge 先指名問 Mac（最多 5 次）
    └─ fallback_required → 同頁仍有原圖就直接本機 Tesseract；重整後才用 action=download 取回 → 一樣人工勾選
 ```
 
-前端時限：`ASSET_AI_OCR_TIMEOUT_MS = 9 分鐘`，從送出起算，**第一次看到 `leased` 時重新起算**
-（排隊時間不吃掉處理時限）；到期仍無終態就回退 Tesseract，現在只是最後一道防線，正常情況下不會用到。前端同時最多
+前端時限：`ASSET_AI_OCR_TIMEOUT_MS = 9 分鐘`，**只計前景時間**（`assetForegroundNow()`：扣掉頁面在背景的時間），從送出起算，**第一次看到 `leased` 時重新起算**
+（排隊時間不吃掉處理時限）；到期前**再問一次**（暫時性錯誤最多重試兩次），已辨識好就用 AI 結果，仍沒有終態才回退 Tesseract，現在只是最後一道防線，正常情況下不會用到
+（細節見 [§1.5](#ocr-architecture) 與 [§4.19](#ocr-incident-1025-background)）。前端同時最多
 3 件 AI 工作（`ASSET_AI_OCR_CONCURRENCY = 3`），Tesseract 備援維持序列化。
 
 <a id="ocr-availability"></a>
@@ -302,11 +308,16 @@ Worker 整個結束，交由 Windows 排程每 2 分鐘的 recovery／Mac Launch
 |---|---|
 | 上傳前 | 呼叫 `readiness`，狀態列顯示「確認 Windows／Mac 是否在線…（最多約 15 秒）」；`ready:false` 時整批在瀏覽器跑 Tesseract、圖片不上傳，並列出每台的詢問結果（`assetAiOcrProbeSummary()`，例如「Windows 5 次詢問皆未回應，Mac 已回應」）；`ready:true` 顯示由哪台處理 |
 | Worker 版本警告（2026-10-13 起） | `ready:true` 時用 `assetAiOcrWorkerVersion(readiness.workerPlatform)` 讀出負責那台的 AI OCR 版本（Worker 把「AI OCR vN」放在 platform 最前面；沒有就當 v1），比 `ASSET_AI_OCR_WORKER_VERSION` 舊就把 `assetAiOcrOutdatedWorkerNotice()` 的文字存進這批草稿的 `workerWarning`，在辨識中與校對畫面上方以黃色 `.asset-ocr-worker-warning` 顯示（例：「⚠ AI OCR 已更新到 v2，但這批交給的 Windows Worker 還是更新前的 v1…」），換下一批清掉。只警告、不擋上傳；重整後恢復批次（`resumeAssetAiJobs()`）不重新詢問，所以不顯示 |
-| 輪詢節奏 | `assetAiOcrPollDelayMs()`：`queued` 固定 3 秒；`leased` 前 10 秒 0.7 秒、之後 1.5 秒 |
+| 輪詢節奏 | `assetAiOcrPollDelayMs()`：`queued` 固定 3 秒；`leased` 前 10 秒 0.7 秒、之後 1.5 秒。上傳與重整後恢復共用同一個輪詢函式 `assetAiOcrPollUntilTerminal()`（2026-10-26 起，原本各自維護一份迴圈） |
+| 暫時性錯誤與背景（2026-10-26 起） | `assetAiOcrRequest()` 把「沒收到回應」（`fetch` 丟例外，`code=network_error`）標成暫時性，`assetAiOcrJson()` 把 5xx／429／408 標成暫時性（`error.transient`，並帶 `error.status`）；401／403／404／409 等明確答覆不是。`assetAiOcrWithRetry()`：暫時性錯誤不放棄——頁面在背景就等回到前景（`assetAiOcrWaitUntilVisible()`：`visibilitychange`／`pageshow`／`focus` 事件加每秒一次的 `setTimeout` 補底，不用 `setInterval`），再退避重試 1／2／4／8 秒（之後固定 8 秒）；卡片顯示「連線不穩，重試中…」或「等待回到前景再確認結果…」。適用 readiness（最多再重試 60 秒前景時間，之後整批走 Tesseract）、上傳（沿用同一把 `Idempotency-Key`，伺服器回 `replayed`，不重複建工作）與 status。正常輪詢在背景時**不暫停**（桌機切視窗仍照常跑），只有失敗後才等回前景 |
+| 前景時鐘（2026-10-26 起） | `assetForegroundNow()`＝`Date.now()` 扣掉頁面在背景的累計時間（事件記下進背景的時間點，每次取樣再對照 `document.hidden`）。9 分鐘最後防線與重試上限都用它；到期前再問一次（`ASSET_AI_OCR_FINAL_CHECK_RETRIES = 2`），已辨識好就用 AI 結果，仍無終態才回傳 `ai_timeout` 並把 jobId 交給呼叫端取消、清掉私有圖片 |
 | `wake` | 只在 `queued`、進度超過 5 秒沒更新、且距上次 wake ≥ 30 秒才送；`leased` 不送。伺服器端 `ocr_wake_job` 另有 5 秒 row lock 節流 |
-| 已送出的工作 | **不再用心跳新鮮度猜測離線而提早取消**（2026-09-12 修正）；離線偵測交給伺服器在 status 輪詢中指名詢問，前端只看工作自己的狀態與 9 分鐘時限 |
+| 已送出的工作 | **不再用心跳新鮮度猜測離線而提早取消**（2026-09-12 修正）；離線偵測交給伺服器在 status 輪詢中指名詢問，前端只看工作自己的狀態與 9 分鐘時限（只計前景時間）。**暫時性錯誤也不取消工作**（2026-10-26 修正，[§4.19](#ocr-incident-1025-background)）：只有「決定放棄 AI」（最後再問一次仍無結果、伺服器明確終態、404／403 等不可恢復的錯誤），或使用者強制取消、換帳戶、開新一批，才取消並刪除私有圖片 |
 | 強制取消 | 世代編號 `assetScreenshotGeneration` 取代物件比對；取消時同步清空 localStorage 待處理清單；`resumeAssetAiJobs()` 在已有草稿時不再生新草稿（見 [§4.10](#ocr-incident-0913-cancel)） |
-| fallback 文字 | `assetAiOcrFallbackText()`：`worker_offline`、`no_worker`、`no_available_agent`、`worker_stalled`（舊資料）、`all_agents_quota_exhausted`、`ai_invalid_output`、`ai_execution_failed` |
+| fallback 文字 | `assetAiOcrFallbackText()`：`worker_offline`、`no_worker`、`no_available_agent`、`worker_stalled`（舊資料）、`all_agents_quota_exhausted`、`ai_invalid_output`、`ai_execution_failed`，以及 2026-10-26 新增的 `ai_timeout`（9 分鐘前景時限）、`network_error`、`auth_refresh_unavailable`、`ai_service_error`、`job_not_found`。改用 Tesseract 時，原因直接寫在那張卡片上（`Tesseract 備援中（原因）…`），失敗也會更新卡片 |
+| Tesseract 備援（前端，2026-10-26 起） | 等頁面在前景才開始（引擎載入前後各等一次，每張 10 秒的辨識預算從回到前景才算）；引擎載入或辨識途中被切到背景而失敗，回前景後最多再試 `ASSET_OCR_BACKGROUND_RETRIES = 2` 次；強制取消與沒進過背景的失敗照舊往外丟。重整後恢復的備援也先等回前景 |
+| 登入換票（2026-10-26 起） | `refreshAuthSession()` 回傳 `{ ok, transient }`：換票遇到斷線、逾時、429、5xx 只標 `transient`，**保留登入狀態與 refresh token**（手機剛從背景回來時網路常常還沒好）；Auth 明確拒絕（400／401）才 `clearAuthSession()`。`refreshAuthAccessToken()` 介面不變（回傳 `ok`） |
+| 自動重載保護（2026-10-26 起） | `startSiteVersionChecker()` 每 10 分鐘發現新版會整頁重載；辨識進行中或校對草稿還開著（`assetOcrBlocksSiteReload()`：`assetScreenshotDraft !== null` 或恢復中）時略過，比照 `assetsAreEditing()`「有東西開著就先別動」，草稿結束後的下一次檢查再換新版。使用者自己按「檢查更新」不受影響 |
 | 重整恢復 | localStorage 只存非影像 job descriptor；fallback 時以 owner 驗證的 `download` 取回 10 分鐘 signed URL |
 | 結果套用 | 差異確認畫面＋人工勾選；名稱唯一反查補代號；確認快照 fingerprint 防止套用舊值（見 [§5.14](#ocr-name-progress)） |
 
@@ -708,6 +719,7 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 | 10 | 三欄股數（[§4.15](#ocr-incident-1013-quantity-columns)） | **公司 Windows 已於 2026-10-16 23:52 重建為 v3**，使用者用「投資成本／昨日餘額／今買成／今賣成」版型的截圖重新上傳：有今買成的列，股數＝昨日餘額＋今買成（不是只有昨日餘額）；成本為 0 的列標黃；被裁切的今賣成欄不造成整批黃色。三張原截圖的預期值見 §4.15 的驗證段 |
 | 11 | Worker 版本警告（[§1.5](#ocr-architecture)） | 公司 Windows 重建前上傳：辨識中與校對畫面上方出現「⚠ AI OCR 已更新到 v3，但這批交給的 Windows Worker 還是更新前的 v1…」；重建到 v3 後再上傳：不再出現警告，且啟動訊息含「AI OCR v3」 |
 | 12 | Agent 切換（[§4.16](#ocr-incident-1016-agent-switch)） | **兩台 Worker 都是 v5 且至少一台 Claude 已登入並通過 #6 後**，在 Codex 額度用完的時段（或暫時把 `OCR_CODEX_PATH` 指向不存在路徑後重啟）上傳：Worker log 的「單次 AI」那行是 `agent=Claude fallback=True`，畫面是 AI 草稿而不是 Tesseract；再讓兩個 Agent 都不可用，確認先接力到另一台、都不行才走 Tesseract |
+| 13 | 手機切換 App（[§4.19](#ocr-incident-1025-background)） | **網站發布後**，在 iPhone Chrome 上傳 3～5 張截圖，**立刻切到別的 App 30～60 秒再回來**：每張都該是「D+ AI 完成」，不出現 Tesseract；回來時卡片可能短暫顯示「連線不穩，重試中…」。再測一次：上傳後全程留在前景，結果相同；也試切走超過 1 分鐘再回來（9 分鐘只計前景時間）。仍掉到 Tesseract 時，卡片現在會寫出原因（`連線中斷，無法確認 AI 結果`、`AI 辨識超過 9 分鐘時限`…），請連同那行字與公司 Windows 的 `logs\ocr-worker-*.out.log` 一起提供 |
 
 <a id="ocr-not-implemented"></a>
 
@@ -718,7 +730,7 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
 
 | 項目 | 規格內容 | 現況 |
 |---|---|---|
-| status 指數退避 | 1s → 2s → 4s → 8s，上限 10s | 未做；仍是 queued 3 秒、leased 0.7／1.5 秒 |
+| status 指數退避 | 1s → 2s → 4s → 8s，上限 10s | 正常輪詢節奏未改（queued 3 秒、leased 0.7／1.5 秒）；**失敗後的重試退避（1→2→4→8 秒、之後固定 8 秒）已於 2026-10-26 實作**（[§4.19](#ocr-incident-1025-background)） |
 | batch claim | `ocr_claim_job()` 一次回傳多筆，減少 claim 風暴 | 未做；`handleClaim()` 一次一筆（一個喚醒訊號只叫醒一個槽已做，見 [§1.4](#ocr-worker-lifecycle)） |
 | 監控告警 | `site_alerts`：`ocr_jobs` 24 小時 0 筆但 `ocr_workers` 有心跳 → 告警 | 未做 |
 | 真正的 DB 並發測試 | `ocr_claim_job` 與 `ocr_reroute_jobs` 同時發生只能一個贏 | 兩者都用 `for update skip locked` 鎖同一批列，邏輯上互斥；已有單交易的函式行為測試（31 項），未做真正的多連線並發測試 |
@@ -755,6 +767,7 @@ Low 只有 3 筆（P50 input 16,449、cached 0、output 788、reasoning 372）�
    券商畫面常把「今賣成」放在最右邊而被截掉；C# 驗證器把沒入鏡的今買成／今賣成視為 0，列仍是綠色。唯一的保護網是「總成本為 0 但股數大於 0」會標黃
    （當天全部賣出時券商會把成本歸零，是目前唯一能從畫面推得的徵兆）；部分賣出（成本不為 0）沒有徵兆。要根治只能請使用者截圖時把賣出欄拍進來，
    或日後改採有「庫存股數」欄的畫面。2026-10-13 的三張原截圖就是這種情況，其中一檔成本為 0 因此被標黃。
+10. **前端暫時性錯誤重試的邊界（2026-10-26，[§4.19](#ocr-incident-1025-background)）**：① 正常輪詢在背景時不暫停（桌機切視窗照常跑），只有失敗後才等回前景；② 連續離線超過 9 個前景分鐘才放棄，改走 Tesseract（需要引擎檔已載入或可連線）；③ 在背景超過 60 分鐘（工作到期）才回來，最後再問一次會拿到 expired／404 而改走 Tesseract（原圖仍在頁面記憶體）；④ iOS 直接丟棄整個分頁時走既有的重整恢復（`resumeAssetAiJobs()`，這次修好它的 Promise 歸零，沒有實機驗證）；⑤ 校對草稿開著時不會自動換新版（比照資產頁的背景重讀），要按「檢查更新」或套用／捨棄草稿後才會；⑥ Tesseract 備援途中切到背景的重試只有接線測試，沒有真實 WASM 引擎的實測。
 
 <a id="ocr-probe-spec"></a>
 
@@ -1485,7 +1498,41 @@ function readinessHeartbeatAgeMs(request) {
 - **結果（Windows，v5）**：`實際使用的 Agent：Claude；是否為備援：False；狀態：Success；耗時：00:00:20.2549071`，四列（2330 台積電 1,000 620,000／2317 鴻海 2,000 190,000／0050 元大台灣50 3,000 540,000／2454 聯發科 500 430,000）代號、名稱、股數、成本全對。登入、旗標、模型 `claude-sonnet-5`、`Read` 讀圖、`structured_output`、UTF-8 解讀全部通過——**Claude 這條路從 2026-09-07 起第一次真正跑通**。
   仍未驗證：正式 Worker 在 Codex 額度用完時自動改用 Claude（[§3.2](#ocr-pending-acceptance) #12），以及排程（隱藏主控台）下的 Claude 登入憑證——同一個 Windows 使用者，預期相同。
 
-### 4.19 共同教訓
+<a id="ocr-incident-1025-background"></a>
+
+### 4.19 2026-10-25 手機切到別的 App：前端把還在辨識的 AI 工作自己取消、改跑 Tesseract（只改網站前端，Worker 不變）
+
+- **現象**：2026-10-25 22:59（台北）使用者在 iPhone Chrome（4G）的資產頁上傳 5 張截圖，選完圖就**立刻切到別的 App**。回來時前 3 張卡片停在「Tesseract 備援中…（90%）」，第 4 張是「AI 辨識中…（5%）」、第 5 張「等待中」；使用者回報「為什麼又變成 Tesseract」，並確認 AI Agent 都正常。留在前景重測一次，全部正常 AI 辨識。
+- **排除 Worker／Agent 的證據**：
+  1. 上傳前的在線確認成功（否則整批不會上傳）；畫面沒有舊版警告，負責的是 v5 的公司 Windows。家裡 Mac Worker（v5）本機 Codex、Claude 都已登入，22:37 起醒著且有連線，stdout log 自 10-24 20:59 啟動後沒有任何工作紀錄、當時也沒有子程序。
+  2. 若 Windows 的兩個 Agent 都失敗，relay 只會有兩種結果：交給 Mac（Mac 沒收到），或清空這批路由使之後的 submit 回 409 走 Tesseract（但第 4 張卻成功送出並被接走，顯示 leased 5%）。兩種都沒發生，所以不是額度、登入或 Worker 離線。
+  3. 10-17 之後前端 OCR 程式沒有改動；10-24 換金鑰只改了 `ocr-jobs` 呼叫資料庫時帶的金鑰標頭，Supabase 文件說明簽名網址不受金鑰撤銷影響。
+- **根因（推定）**：iOS 在使用者切走後凍結頁面，進行中的 `fetch` 在回來時以 `TypeError: Load failed` 失敗。舊的 `assetAiOcrRecognize()` 輪詢**沒有任何重試**，任何一次例外都進 `catch` → `assetAiOcrPrepareFallback()` 對 `queued`／`leased` 的工作送 `cancel` → 改走 Tesseract。
+  三張圖各有一個輪詢迴圈，同一次凍結同時打斷它們，所以一起被放棄（此時 Windows 已接走）；第 4 張推定是回來後才送出，網路正常，照常走 AI。這違反 [§1.6](#ocr-architecture) 原則 2（失敗代價不對稱，閘門往樂觀倒）：2026-09-12（[§4.8](#ocr-incident-0912-slots)）修掉的是「用心跳猜測就取消」，這次是「用一次查詢失敗就取消」，同一類問題。
+  Tesseract 備援也沒成功：每張 10 秒預算與引擎載入都沒考慮頁面被凍結；卡片文字只在 `updateAssetAiProgress()` 時更新（辨識中不重畫整頁），所以已經失敗的卡片仍顯示「Tesseract 備援中」——「三張都停在 90%」其實有的已經失敗，畫面看不出來。
+  **證據強度**：程式分析、使用者描述（上傳後立刻切 App、留在前景就正常）與假環境重現（見驗證）互相吻合；**未查**當晚正式資料庫 `ocr_jobs`（預期前 3 張為 `cancelled`）與公司 Windows 的 `logs\ocr-worker-*.out.log`（預期有「已被取消或租約易主」）。
+- **同類隱患（一併處理）**：① 9 分鐘時限用牆上時間，在背景待太久回來就直接當逾時，連 Worker 早就辨識好的結果都丟掉；② 回前景後第一個請求若遇 401，`refreshAuthAccessToken()` 在換票遇到暫時連不上時也會 `clearAuthSession()` 把人登出，整個 OCR 隨之失敗；③ 網站每 10 分鐘檢查版本，有新版就整頁重載，不管是否正在辨識（當晚網站正好在 22:58、23:18 各發布一次）；④ `resumeAssetAiJobs()` 的 `.finally` 引用了宣告在 async 函式裡面的 `myGeneration`（2026-09-13 起），一執行就丟 ReferenceError，`assetAiResumePromise` 永遠不歸零（本次寫測試時抓到；不修的話新加的「辨識中不重載」保護會在恢復過一次之後永久擋住版本更新）。
+- **修正（只改 `site.js`，不重建 Worker、不升 Worker 版本）**：
+  1. 在請求層分類：沒收到回應（`fetch` 丟例外，`network_error`）與 5xx／429／408 是**暫時性錯誤**（`error.transient`）；401／403／404／409 等伺服器明確答覆維持原本的立即處理。
+  2. 暫時性錯誤**不放棄、不取消**：`assetAiOcrWithRetry()` 在頁面於背景時等回到前景（`assetAiOcrWaitUntilVisible()`），再退避重試 1／2／4／8 秒（之後固定 8 秒）。readiness 最多重試 60 秒前景時間；上傳重試沿用同一把 `Idempotency-Key`（伺服器對同一把 key 只建一件工作，回 `replayed`）。
+  3. 上傳與重整恢復兩份重複的輪詢迴圈合併成 `assetAiOcrPollUntilTerminal()`：9 分鐘最後防線改用**前景時間**（`assetForegroundNow()`），到期前**再問一次**（暫時性錯誤最多重試兩次），已辨識好就用 AI 結果；真的放棄才回傳 `ai_timeout`，並把 jobId 交給呼叫端清理。
+  4. 只有「決定放棄 AI」才取消伺服器工作並刪除私有圖片：最後再問一次仍無結果、伺服器明確回終態、不可恢復的錯誤（404、403…），以及使用者強制取消、換帳戶、開新一批（行為不變）。
+  5. Tesseract 備援：等頁面在前景才開始算 10 秒（引擎載入前後各等一次）；途中被切到背景而失敗，回前景後最多再試 2 次；卡片寫出改用的原因；失敗也更新卡片。
+  6. `refreshAuthSession()`：換票遇到斷線、逾時、429、5xx 只回報 `transient`，**保留登入狀態與 refresh token**，Auth 明確拒絕（400／401）才清掉。
+  7. 辨識進行中或校對草稿還開著時，每 10 分鐘的版本檢查不整頁重載（比照 `assetsAreEditing()`）。
+  8. 修掉 `myGeneration` 的作用域錯誤。
+- **替代方案與取捨**：「查詢失敗只重試一次」較簡單，但擋不住 iOS 凍結幾十秒到幾分鐘、也擋不住 4G 連續掉線，重試也失敗時仍會取消；「頁面在背景就暫停所有輪詢」會讓桌機切到別的視窗時整批停住（目前背景時照常輪詢，只有失敗後才等回前景）；Worker 沒有問題，不改。
+  選擇「錯誤分類＋重試＋前景時限」：改動集中在前端、與伺服器契約完全相容，網站發布後立刻生效，不需重建兩台 Worker。
+- **驗證**：
+  - 事故重現：用同一個假環境（假 `fetch`、假計時器、假頁面可見性）跑事故當天的舊程式（`origin/main`），status 第一次斷線得到 `submit → status → status → cancel`，結果 `tesseract`；新程式得到 `submit → status ×3 → acknowledge`，結果 `ai`，沒有 cancel。
+  - 新增 `tests/asset-ai-ocr-background.test.mjs` 27 項（跑真正的 `site.js` 區段）：斷線／503／429／408／520 重試且不取消、上傳重試同一把 Idempotency-Key、409／404 不重試、終態分流、背景不發請求且回前景才重試（含只發 `focus` 的瀏覽器）、9 分鐘只計前景（背景 30 分鐘不算）、到期前再問一次（含暫時性錯誤重試與最後仍失敗）、abort 立刻結束並清掉計時器、換帳戶才送 cancel、錯誤分類、退避間隔、前景時鐘、重整恢復（含 Promise 歸零）、換票暫時失敗不清登入、辨識中／草稿開著不重載，以及畫面流程接線。
+  - 反向檢查：分別拆掉 9 項修正（暫時性判斷、斷線標記、前景時鐘、最後再問、等回前景、Idempotency-Key、版本重載保護、`myGeneration`、換票暫時失敗）後，各自至少 1 項新測試轉紅；還原後 27/27。
+  - 完整：.NET 10.0.302 Release **1153/1153**、Node **610/610**（含新增 27 項）、`node --check` 通過。兩個舊的 .NET 字串測試跟著更新（`setInterval` 規範：備援計時器改用遞迴 `setTimeout`；時限原因改記 `ai_timeout`）。
+  - 真實瀏覽器（本機靜態伺服器載入改過的 `site.js`，假 `fetch`）：status 第一次 `TypeError: Load failed` → 1001 ms 後重試 → AI 結果，請求序列 `submit、status×3、acknowledge`，無 cancel；頁面在背景 4 秒只發 1 次請求、卡片寫「等待回到前景再確認結果…」、前景時鐘只前進 1 ms，回前景 1002 ms 後重查並拿到 AI 結果。
+- **部署**：網站前端，發布後生效；Worker 不需重建。發布證據見 [版本紀錄.md](../版本紀錄.md) 最新一則。
+- **未驗證**：iPhone 實機（[§3.2](#ocr-pending-acceptance) #13）；當晚的正式資料庫與 Windows log（見根因的「證據強度」）；Tesseract 備援途中切到背景的重試只有接線測試；iOS 直接丟棄整個分頁時的重整恢復沒有實機驗證。
+
+### 4.20 共同教訓
 
 1. **看不見的狀態最危險**：EXE 版本、readiness 判定原因、槽數量、log 編碼——每次事故都是因為畫面或 log
    看不出真正狀態。新功能要讓「為什麼走 Tesseract」直接顯示在畫面或 log（現在連每台機器的詢問結果都會顯示）。
@@ -1510,6 +1557,10 @@ function readinessHeartbeatAgeMs(request) {
 15. **修好一層會露出下一層；跨平台的預設值要明講**（2026-10-17）：Claude 這條路依序卡在登入、Schema、編碼三層，每修一層才看得到下一層，所以每一層都要真跑到「下一個失敗點」。
     `Process` 的輸出編碼在 Mac／Linux 預設 UTF-8、在 Windows 預設主控台字碼頁——在 Mac 上測不出來。凡是讀外部程式輸出的地方，編碼一律明確指定。
 14. **「某個 App 開著」不是「Worker 用得到」**（2026-10-17）：Worker 執行的是另一支命令列程式，登入狀態與 App 分開；判斷以 Worker 實際執行的指令（`auth status --text` 結束碼）為準。
+16. **行動瀏覽器的背景暫停是「正常失敗」，不是錯誤**（2026-10-25）：手機切到別的 App，頁面被凍結、進行中的連線被切斷，回來時第一個請求常常失敗。前端流程（輪詢、上傳、備援）凡是會跑超過幾秒的，
+    都要把「連線中斷」與「伺服器明確答覆」分開：前者重試、不取消、不改走備援；時限只計前景時間；驗收清單要有「上傳後切到別的 App 再回來」這一項。
+    09-12 修的是「用心跳猜測就取消」，這次是「用一次查詢失敗就取消」——凡是用間接證據取消別人正在做的工作，都有同一類誤殺風險。
+    另外：順手把重複的迴圈收成一個共用函式，才能一次修好兩條路徑，並讓測試只需要覆蓋一份；寫測試時抓到一個放了一個月的作用域錯誤，代表沒被測試覆蓋的流程分支值得抽樣跑一次。
 
 ---
 
