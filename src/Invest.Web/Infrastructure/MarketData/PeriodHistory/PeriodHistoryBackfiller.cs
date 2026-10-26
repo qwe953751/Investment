@@ -278,13 +278,14 @@ public sealed class PeriodHistoryBackfiller(
             if (daily.Count == 0 || daily[0].Date != firstDate || daily[^1].Date != lastDate
                 || daily[0].Open != head.OpenPrice || daily[^1].Close != bar.Close
                 || !missingSourceHead && (daily.Max(d => d.High) != bar.High || daily.Min(d => d.Low) != bar.Low)
-                || missingSourceHead && period == KLinePeriod.Month && daily.Sum(d => d.Volume) != bar.Volume)
+                || missingSourceHead && period == KLinePeriod.Month && head.Market == Market.Twse
+                    && daily.Sum(d => d.Volume) != bar.Volume)
                 throw new InvalidDataException($"{ticker} {start} 事件週期日資料與原始摘要不一致，拒絕猜測影線。");
             var calculated = PeriodKLineCalculator.Calculate(daily.Select(d => d.ToDaily(ticker)),
                 factors, ticker, period, through);
             var adjusted = calculated.SingleOrDefault(p => p.PeriodStart == start && p.HasBar)
                 ?? throw new InvalidDataException($"{ticker} {start} 事件週期無法完整彙整。");
-            // 上櫃官方月查詢的每日量只公布整仟股，不能拿它湊出假精確股數；量沿用原週期摘要。
+            // 上櫃一般事件週期仍沿用原摘要量；漏首日例外已逐日核對全市場精確股數。
             result.Add(PeriodHistoryBar.FromPoint(adjusted) with
             {
                 TradingVolume = missingSourceHead && head.Market == Market.Tpex
