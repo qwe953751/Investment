@@ -43,7 +43,8 @@ def audit(args):
         raise ValueError("週月回補佇列版本不相容")
     manifest = get_json(args.site, "manifest.json")
     entries = queue["tickers"]
-    listed = sorted(t for t, record in entries.items() if record.get("market") in ("Twse", "Tpex"))
+    listed = sorted(t for t, record in entries.items()
+                    if record.get("market") in ("Twse", "Tpex") and record.get("status") != "archive_only")
     rows = []
 
     def check(ticker):
@@ -67,7 +68,8 @@ def audit(args):
     report = {"checkedAt": datetime.now(timezone.utc).isoformat(), "site": args.site,
               "manifestVersion": manifest.get("version"), "latestTradingDate": latest,
               "queueTradingDate": expected, "publicationLag": publication_lag,
-              "statusCounts": counts, "listedChecked": len(listed), "publicPassed": len(listed) - len(failed),
+              "statusCounts": counts, "listedChecked": len(listed), "archiveOnly": counts.get("archive_only", 0),
+              "publicPassed": len(listed) - len(failed),
               "publicFailures": failed, "remainingOrExceptions": other, "rows": rows}
     Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: report[key] for key in ("manifestVersion", "latestTradingDate", "queueTradingDate",

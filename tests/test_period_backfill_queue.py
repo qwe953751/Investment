@@ -1,4 +1,5 @@
 import argparse
+import datetime as dt
 import importlib.util
 import json
 import tempfile
@@ -88,6 +89,31 @@ class PeriodBackfillQueueTests(unittest.TestCase):
         self.assertIn("2330", self.plan()["tickers"])
         self.save_coverage("2330")
         self.assertNotIn("2330", self.plan()["tickers"])
+
+    def test_old_quote_with_full_history_is_not_claimed_as_public_complete(self):
+        self.save_coverage("2330")
+        self.save_coverage("2809")
+        (self.root / "imports" / "2025-09-17.json").write_text(json.dumps({
+            "isTradingDay": True, "quotes": [{"ticker": "2809", "market": "Twse"}]
+        }), encoding="utf-8")
+        for offset in range(120):
+            date = dt.date(2026, 4, 1) + dt.timedelta(days=offset)
+            (self.root / "imports" / f"{date}.json").write_text(json.dumps({
+                "isTradingDay": True, "quotes": [{"ticker": "2330", "market": "Twse"}]
+            }), encoding="utf-8")
+        plan = self.plan()
+        self.assertNotIn("2809", plan["tickers"])
+        self.assertEqual(1, plan["archiveOnly"])
+        state = self.finish("")
+        self.assertEqual("archive_only", state["tickers"]["2809"]["status"])
+        self.assertEqual("2025-09-17", state["tickers"]["2809"]["lastSeen"])
+        current = self.root / "imports" / "2026-10-22.json"
+        snapshot = json.loads(current.read_text(encoding="utf-8"))
+        snapshot["quotes"].append({"ticker": "2809", "market": "Twse"})
+        current.write_text(json.dumps(snapshot), encoding="utf-8")
+        self.assertIn("2809", self.plan()["tickers"])
+        state = self.finish("2809 已有本輪合格摘要，略過。\n")
+        self.assertEqual("complete", state["tickers"]["2809"]["status"])
 
 
 if __name__ == "__main__":

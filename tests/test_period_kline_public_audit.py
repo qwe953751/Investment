@@ -58,6 +58,24 @@ class PublicPeriodKLineAuditTests(unittest.TestCase):
             self.assertEqual(1, report["publicPassed"])
             self.assertEqual("3711", report["publicFailures"][0]["ticker"])
 
+    def test_archive_only_is_reported_without_requesting_nonexistent_chart(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = root / "imports-periods-status" / "queue.json"
+            state.parent.mkdir()
+            state.write_text(json.dumps({"schemaVersion": 1, "lastRun": {"through": "2026-10-22"},
+                "tickers": {"2809": {"market": "Twse", "status": "archive_only",
+                                      "reason": "最後行情在公開 K 線期間以前"}}}), encoding="utf-8")
+            output = root / "report.json"
+            with patch.object(audit, "get_json", return_value={"version": "v1", "latestTradingDate": "2026/10/22"}) as get:
+                audit.audit(argparse.Namespace(data_dir=str(root), site="https://example.test",
+                                               output=str(output), workers=2))
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(1, report["archiveOnly"])
+            self.assertEqual(0, report["listedChecked"])
+            self.assertEqual([], report["publicFailures"])
+            get.assert_called_once_with("https://example.test", "manifest.json")
+
 
 if __name__ == "__main__":
     unittest.main()

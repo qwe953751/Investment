@@ -6,6 +6,7 @@ this script schedules tickers and records its verified outcomes.
 """
 
 import argparse
+import calendar
 import collections
 import datetime as dt
 import json
@@ -48,16 +49,28 @@ def universe(data_dir):
     if not files:
         raise ValueError("data/imports 沒有正式行情，不能規劃回補")
     stocks = {}
+    last_seen = {}
+    trading_days = []
     for file in files:
         snapshot = read_json(file)
         if not snapshot.get("isTradingDay"):
             continue
+        trading_days.append(file.stem)
         for quote in snapshot.get("quotes", []):
             ticker = quote.get("ticker")
             market = quote.get("market")
             if isinstance(ticker, str) and ticker.isascii() and ticker.isalnum() and market in ("Twse", "Tpex", "Emerging"):
                 stocks[ticker] = market
-    return stocks, files[-1].stem
+                last_seen[ticker] = file.stem
+    if not trading_days:
+        raise ValueError("data/imports 沒有交易日，不能規劃回補")
+    # StaticSiteExporter: RankingDates.Selectable(last 120).First().AddMonths(-3).
+    first = dt.date.fromisoformat(trading_days[-120] if len(trading_days) >= 120 else trading_days[0])
+    month_index = first.year * 12 + first.month - 1 - 3
+    year, month_zero = divmod(month_index, 12)
+    month = month_zero + 1
+    chart_from = dt.date(year, month, min(first.day, calendar.monthrange(year, month)[1])).isoformat()
+    return stocks, trading_days[-1], last_seen, chart_from
 
 
 def coverage(data_dir, ticker):
@@ -101,7 +114,7 @@ def eligible(record, today, through, retry_rejected):
 
 def plan(args):
     data_dir = Path(args.data_dir)
-    stocks, through = universe(data_dir)
+    stocks, through, last_seen, chart_from = universe(data_dir)
     state = state_at(data_dir)
     selected = []
     specified = args.tickers.split() if args.tickers else []
@@ -113,7 +126,8 @@ def plan(args):
         candidates = specified
         known_bars = {}
     else:
-        known_bars = {t: coverage(data_dir, t) for t, market in stocks.items() if market != "Emerging"}
+        known_bars = {t: coverage(data_dir, t) for t, market in stocks.items()
+                      if market != "Emerging" and last_seen[t] >= chart_from}
         # First initialize missing stocks; older valid files that still need a longer window follow.
         candidates = sorted(known_bars, key=lambda t: (known_bars[t] is not None, t))
     instant = now().isoformat()
@@ -122,7 +136,10 @@ def plan(args):
             break
         bars = coverage(data_dir, ticker) if specified else known_bars[ticker]
         record = state["tickers"].get(ticker, {})
-        if not specified and bars and bars["weekly"] >= 60 and bars["monthly"] >= 60 and bars["initialBoundaryChecked"]:
+        revived = record.get("status") == "archive_only" and last_seen[ticker] >= chart_from
+        if revived:
+            record = {}
+        if not specified and not revived and bars and bars["weekly"] >= 60 and bars["monthly"] >= 60 and bars["initialBoundaryChecked"]:
             continue
         if bars is None and record.get("status") in ("complete", "short_history"):
             record = {}
@@ -132,8 +149,11 @@ def plan(args):
             continue
         selected.append(ticker)
     result = {"schemaVersion": 1, "through": through, "tickers": selected, "batchSize": args.limit,
-              "candidateCount": sum(market != "Emerging" for market in stocks.values()),
-              "excludedEmerging": sum(market == "Emerging" for market in stocks.values())}
+              "candidateCount": len(known_bars) if not specified else sum(
+                  market != "Emerging" and last_seen[t] >= chart_from for t, market in stocks.items()),
+              "excludedEmerging": sum(market == "Emerging" for market in stocks.values()),
+              "archiveOnly": sum(market != "Emerging" and last_seen[t] < chart_from
+                                 for t, market in stocks.items())}
     atomic_json(Path(args.output), result)
     print(json.dumps(result, ensure_ascii=False))
 
@@ -184,7 +204,7 @@ def finish(args):
                 "status": "interrupted", "reason": "整批在此代號附近中止；無逐檔成功或拒收結果，稍後重試",
                 "retryAt": (when + dt.timedelta(minutes=30)).isoformat(),
             }
-    stocks, through = universe(data_dir)
+    stocks, through, last_seen, chart_from = universe(data_dir)
     if through != plan_data["through"]:
         raise ValueError("回補期間內行情基準已改變，拒絕保存不一致的狀態")
     for ticker, market in stocks.items():
@@ -192,7 +212,14 @@ def finish(args):
             state["tickers"][ticker] = {"status": "unsupported_source", "market": market,
                                          "reason": "興櫃日均價口徑尚無合格的週月摘要來源"}
             continue
+        if last_seen[ticker] < chart_from:
+            state["tickers"][ticker] = {"status": "archive_only", "market": market,
+                "lastSeen": last_seen[ticker], "reason":
+                f"最後行情 {last_seen[ticker]} 早於目前公開日 K 起點 {chart_from}；保留歷史摘要但不宣稱有公開圖表"}
+            continue
         record = state["tickers"].get(ticker)
+        if record is not None and record.get("status") == "archive_only":
+            record = None
         if record is None:
             bars = coverage(data_dir, ticker)
             if bars and bars["weekly"] >= 60 and bars["monthly"] >= 60 and bars["initialBoundaryChecked"]:
