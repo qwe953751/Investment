@@ -72,6 +72,18 @@ public sealed class PeriodHistoryTests
     }
 
     [Fact]
+    public void 新上市首週若來源漏整週_只用官方原始日補回缺口()
+    {
+        RawPeriodBar[] candidate = [new(new(2026, 4, 13), 10.61m, 11m, 10.58m, 10.8m, 500m)];
+        RawPeriodBar[] official = [new(new(2026, 4, 10), 10.54m, 10.61m, 10.50m, 10.61m, 99045102m)];
+        var result = PeriodHistoryBackfiller.PrependInitialWeeks(candidate, official);
+        Assert.Equal(2, result.Count);
+        Assert.Equal(new DateOnly(2026, 4, 10), result[0].Date);
+        Assert.Equal(99045102m, result[0].Volume);
+        Assert.Equal(candidate[0], result[1]);
+    }
+
+    [Fact]
     public void 稀疏顯示窗內只有暖身收盤的舊摘要必須重補_窗外暖身不影響重用()
     {
         var bars = Enumerable.Range(0, 70).Select(i => new PeriodHistoryBar(
