@@ -340,6 +340,20 @@ public sealed class PeriodHistoryTests
     }
 
     [Fact]
+    public async Task 上櫃首月候選漏日_用官方全市場精確股數核對個股日價量()
+    {
+        using var http = new HttpClient(new PreciseTpexDay());
+        var official = new OfficialPeriodDataClient(http,
+            new TwseDailyQuoteClient(http, NullLogger<TwseDailyQuoteClient>.Instance),
+            new TpexDailyQuoteClient(http, NullLogger<TpexDailyQuoteClient>.Instance))
+            { EtfTickers = new HashSet<string> { "00937B" } };
+        var day = Assert.Single(await official.GetPreciseTpexDaysAsync("00937B",
+            new(2023, 12, 5), new(2023, 12, 5), default));
+        Assert.Equal(237644988m, day.Volume);
+        Assert.Equal(15.21m, day.Open);
+    }
+
+    [Fact]
     public async Task 月量以官方月摘要為準_候選來源漏量不能阻止正確的事件月還原()
     {
         using var http = new HttpClient(new MonthlyReport());
@@ -399,6 +413,18 @@ public sealed class PeriodHistoryTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
             => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
             { Content = new StringContent("""{"stat":"OK","fields":["年度","月份","最高價","最低價","成交股數(B)"],"data":[[112,3,"539","504","577,588,001"]]}""") });
+    }
+
+    private sealed class PreciseTpexDay : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var body = request.RequestUri!.AbsolutePath.Contains("tradingStock", StringComparison.Ordinal)
+                ? """{"stat":"ok","date":"20231201","code":"00937B","tables":[{"fields":["日 期","成交仟股","成交仟元","開盤","最高","最低","收盤","漲跌","筆數"],"data":[["112/12/05*","237,645","3,669,097","15.21","15.65","15.21","15.65","0.54","44,683"]]}]}"""
+                : """{"stat":"ok","date":"20231205","tables":[{"title":"上櫃股票行情","fields":["代號","名稱","收盤","開盤","最高","最低","成交股數","成交金額(元)","成交筆數"],"data":[["00937B","群益ESG投等債20+","15.65","15.21","15.65","15.21","237,644,988","3,669,096,594","44,683"]]}]}""";
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                { Content = new StringContent(body) });
+        }
     }
 
     private sealed class SplitWeek : HttpMessageHandler

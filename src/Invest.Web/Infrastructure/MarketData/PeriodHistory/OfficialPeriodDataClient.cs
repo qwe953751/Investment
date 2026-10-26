@@ -96,6 +96,27 @@ public sealed class OfficialPeriodDataClient(HttpClient http, TwseDailyQuoteClie
         return result.OrderBy(d => d.Date).ToArray();
     }
 
+    public async Task<IReadOnlyList<RawPeriodBar>> GetPreciseTpexDaysAsync(
+        string ticker, DateOnly first, DateOnly last, CancellationToken ct)
+    {
+        var individual = await GetEventDaysAsync(ticker, Market.Tpex, first, last, ct);
+        var precise = new List<RawPeriodBar>(individual.Count);
+        foreach (var day in individual)
+        {
+            // 個股歷史月查詢的日量只到千股；同日全市場表有精確成交股數。
+            var quote = (await tpex.GetVerifiedBoundaryQuotesAsync(day.Date, EtfTickers, ct))
+                .SingleOrDefault(q => q.Ticker == ticker);
+            if (quote is null || quote.TradingVolume < 0m
+                || quote.OpenPrice != day.Open || quote.HighPrice != day.High
+                || quote.LowPrice != day.Low || quote.ClosePrice != day.Close
+                || Math.Abs(quote.TradingVolume - day.Volume) >= 1000m)
+                throw new InvalidDataException($"{ticker} {day.Date} 上櫃精確日量與個股歷史日價量不符。");
+            precise.Add(day with { Volume = quote.TradingVolume });
+            await Task.Delay(300, ct);
+        }
+        return precise;
+    }
+
     private async Task<IReadOnlyList<RawPeriodBar>> ReadMonthAsync(string ticker, Market market, DateOnly month,
         IReadOnlySet<DateOnly>? onlyDates, CancellationToken ct)
     {

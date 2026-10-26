@@ -254,8 +254,6 @@ public sealed class PeriodHistoryBackfiller(
             lastDate = tailResult.Date;
             f = factors.Where(a => a.EffectiveDate > lastDate).Aggregate(1m, (v, a) => v * a.Factor);
             var missingSourceHead = firstDate < bar.Date;
-            if (missingSourceHead && head.Market != Market.Twse)
-                throw new InvalidDataException($"{ticker} {start} 摘要漏官方首日，且上櫃日量無精確股數；拒絕不完整週期量。");
             if (tail.ClosePrice != bar.Close || !missingSourceHead
                     && !DailyBarValidator.IsValid(head.OpenPrice, bar.High, bar.Low, bar.Close))
                 throw new InvalidDataException($"{ticker} {start} 官方首尾價格與摘要高低收不符，不採用。");
@@ -272,7 +270,9 @@ public sealed class PeriodHistoryBackfiller(
             var key = (start, lastDate);
             if (!dailyCache.TryGetValue(key, out var daily))
             {
-                daily = await official.GetEventDaysAsync(ticker, head.Market, firstDate, lastDate, ct);
+                daily = missingSourceHead && head.Market == Market.Tpex
+                    ? await official.GetPreciseTpexDaysAsync(ticker, firstDate, lastDate, ct)
+                    : await official.GetEventDaysAsync(ticker, head.Market, firstDate, lastDate, ct);
                 dailyCache[key] = daily;
             }
             if (daily.Count == 0 || daily[0].Date != firstDate || daily[^1].Date != lastDate
@@ -287,9 +287,12 @@ public sealed class PeriodHistoryBackfiller(
             // 上櫃官方月查詢的每日量只公布整仟股，不能拿它湊出假精確股數；量沿用原週期摘要。
             result.Add(PeriodHistoryBar.FromPoint(adjusted) with
             {
-                TradingVolume = period == KLinePeriod.Week && head.Market == Market.Twse
+                TradingVolume = missingSourceHead && head.Market == Market.Tpex
+                    || period == KLinePeriod.Week && head.Market == Market.Twse
                     ? daily.Sum(d => d.Volume) : bar.Volume,
-                Origin = bar.Origin ?? (missingSourceHead ? "official missing-head daily OHLCV; TWSE monthly volume verified"
+                Origin = bar.Origin ?? (missingSourceHead && head.Market == Market.Tpex
+                        ? "TPEx individual daily OHLC; verified precise dailyQuotes volume"
+                    : missingSourceHead ? "official missing-head daily OHLCV; TWSE monthly volume verified"
                     : period == KLinePeriod.Month && market == Market.Twse ? "TWSE FMSRFK volume; official event-period OHLC"
                     : head.Market == Market.Twse ? "official event-period daily OHLCV" : "official event-period daily OHLC; Anue period volume")
             });
