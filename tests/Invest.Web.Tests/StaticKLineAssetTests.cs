@@ -1885,7 +1885,8 @@ public sealed class StaticKLineAssetTests
         // ASSET_AI_OCR_TIMEOUT_MS 絕對時限（事實：真的等了 9 分鐘），不是用 Worker
         // 心跳新鮮度去猜「看起來像離線」；心跳判斷只留在上傳前的一次性 readiness 檢查。
         Assert.Contains("if (finalStatus === null) {", script, StringComparison.Ordinal);
-        Assert.Contains("await assetAiOcrMarkFallback(job.jobId, 'ai_execution_failed').catch(() => {});", script, StringComparison.Ordinal);
+        // 2026-10-26：時限只計前景時間、到期前再問一次（見 assetAiOcrPollUntilTerminal），原因改記 ai_timeout。
+        Assert.Contains("await assetAiOcrMarkFallback(job.jobId, 'ai_timeout').catch(() => {});", script, StringComparison.Ordinal);
         Assert.Contains("assetAiOcrRequest('fallback'", script, StringComparison.Ordinal);
         Assert.DoesNotContain("assetAiQueuedWorkerUnavailable", script, StringComparison.Ordinal);
         Assert.DoesNotContain("ASSET_AI_OCR_QUEUE_GRACE_MS", script, StringComparison.Ordinal);

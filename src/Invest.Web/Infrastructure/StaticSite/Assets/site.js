@@ -3302,34 +3302,45 @@ async function restoreSession() {
     activateLoginAccount(account, result.session);
 }
 
-async function refreshAuthAccessToken() {
+// ok：換票成功。transient：失敗只是暫時連不上（斷線、逾時、429、5xx），登入狀態與 refresh token 都保留，稍後可再試；
+// 兩者都是 false 代表 Auth 明確拒絕（400／401…）或本機沒有 refresh token，Auth 拒絕時已清掉登入狀態。
+// 手機剛從背景回來時網路常常還沒好，這時換票失敗不能把人登出（2026-10-25）。
+async function refreshAuthSession() {
     let stored;
 
     try {
         stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY));
     } catch {
-        return false;
+        return { ok: false, transient: false };
     }
 
     if (!stored?.refreshToken) {
-        return false;
+        return { ok: false, transient: false };
     }
 
     const result = await authRequest('refresh_token', { refresh_token: stored.refreshToken });
     if (result.session === null) {
+        if (result.error !== null && isTransientAuthError(result.error)) {
+            return { ok: false, transient: true };
+        }
+
         clearAuthSession();
-        return false;
+        return { ok: false, transient: false };
     }
 
     const account = accessTierAccountForEmail(result.session.user?.email);
 
     if (account === null) {
         clearAuthSession();
-        return false;
+        return { ok: false, transient: false };
     }
 
     activateLoginAccount(account, result.session);
-    return true;
+    return { ok: true, transient: false };
+}
+
+async function refreshAuthAccessToken() {
+    return (await refreshAuthSession()).ok;
 }
 
 const ADMIN_BGM_TABLE = 'admin_bgm';
@@ -4012,7 +4023,7 @@ function renderAdminBgm() {
         clearAdminBgmSession();
         if (status) status.textContent = '本機預覽只顯示版面；正式網站會由最高權限登入後讀取 Supabase 音源。';
     } else if (justAuthenticated) {
-        void loadAdminBgm({ autoPlay: true });
+        void loadAdminBgm();
     }
     updateAdminBgmControls();
 }
@@ -15141,6 +15152,164 @@ const ASSET_AI_OCR_CONCURRENCY = 3;
 // 上傳時若負責的 Worker 比這個舊，畫面直接警告（2026-10-13：公司 Windows 沒重建卻毫無徵兆）。
 const ASSET_AI_OCR_WORKER_VERSION = 5;
 const ASSET_AI_PENDING_JOBS_KEY = 'invest.assetAiOcrJobs.v1';
+const ASSET_AI_OCR_TERMINAL_STATUSES = ['succeeded', 'fallback_required', 'failed', 'expired', 'cancelled'];
+// 2026-10-25：手機上傳截圖後立刻切到別的 App，作業系統會凍結這個頁面，進行中的連線跟著中斷
+// （Safari 的 fetch 丟 TypeError「Load failed」）。舊版查一次狀態失敗就取消 AI 工作、改跑 Tesseract，
+// 三張圖明明還在 Windows 上辨識，卻被網頁自己放棄。現在的規則：
+// 1. 斷線、逾時、5xx、429 是「暫時性錯誤」，不是 AI 失敗：頁面在背景就等回到前景，在前景就退避重試，
+//    不取消伺服器上的工作。
+// 2. 只有「決定放棄 AI」才取消並清掉私有圖片：9 分鐘時限到、最後再問一次仍沒有結果，伺服器明確回終態，
+//    或不可恢復的錯誤（404、403…）；以及使用者強制取消、換帳戶、開新一批。
+// 3. 9 分鐘最後防線只計前景時間（assetForegroundNow）；到期前先再問一次，已辨識好就用 AI 的結果。
+const ASSET_AI_OCR_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
+// readiness 本身最久約 15～18 秒；暫時性失敗最多再重試這麼久（只計前景時間），之後整批改走 Tesseract。
+const ASSET_AI_OCR_READINESS_RETRY_MS = 60_000;
+// 時限到了「最後再問一次」時，暫時性錯誤最多重試幾次（第一次不算）。
+const ASSET_AI_OCR_FINAL_CHECK_RETRIES = 2;
+// Tesseract 備援辨識途中被切到背景而失敗時，回到前景後最多再試幾次。
+const ASSET_OCR_BACKGROUND_RETRIES = 2;
+
+// 頁面在背景的累計時間。iOS 把頁面凍結幾分鐘，這段時間不該算進 9 分鐘最後防線，
+// 也不該讓 Tesseract 的 10 秒預算在使用者回來之前就用完。事件負責記下「進背景」的時間點
+// （只靠取樣看不出已經過去的背景時間）；每次取樣也會對照 document.hidden，漏接事件時至少狀態是對的。
+const assetPageClock = { hiddenSince: null, hiddenMs: 0, hiddenCount: 0 };
+
+function assetPageClockSync() {
+    const now = Date.now();
+
+    if (document.hidden) {
+        if (assetPageClock.hiddenSince === null) {
+            assetPageClock.hiddenSince = now;
+            assetPageClock.hiddenCount += 1;
+        }
+    } else if (assetPageClock.hiddenSince !== null) {
+        assetPageClock.hiddenMs += now - assetPageClock.hiddenSince;
+        assetPageClock.hiddenSince = null;
+    }
+
+    return now;
+}
+
+// 前景時間：Date.now() 扣掉頁面在背景的時間，頁面在背景時不前進。
+function assetForegroundNow() {
+    const now = assetPageClockSync();
+    const hiddenNow = assetPageClock.hiddenSince === null ? 0 : now - assetPageClock.hiddenSince;
+
+    return now - assetPageClock.hiddenMs - hiddenNow;
+}
+
+// 到目前為止頁面進過幾次背景；拿來判斷「這一輪途中有沒有被切到背景」。
+function assetPageHiddenCount() {
+    assetPageClockSync();
+
+    return assetPageClock.hiddenCount;
+}
+
+// 從 hiddenCountBefore 那一刻到現在，頁面有沒有進過背景（或現在還在背景）。
+function assetPageBackgroundedSince(hiddenCountBefore) {
+    return document.hidden || assetPageHiddenCount() !== hiddenCountBefore;
+}
+
+for (const eventName of ['visibilitychange', 'pageshow', 'focus']) {
+    window.addEventListener(eventName, assetPageClockSync);
+}
+
+// 頁面在背景就等回到前景。除了事件，另用每秒一次的 setTimeout 補一層（不用 setInterval，見
+// StaticKLineAssetTests 的規範）：有些瀏覽器回前景只發 focus 或 pageshow。
+function assetAiOcrWaitUntilVisible(signal = null) {
+    assetPageClockSync();
+
+    if (!document.hidden) {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+        const eventNames = ['visibilitychange', 'pageshow', 'focus'];
+        let timer = null;
+        const finish = (error = null) => {
+            for (const eventName of eventNames) {
+                window.removeEventListener(eventName, check);
+            }
+
+            window.clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+
+            if (error === null) {
+                resolve();
+            } else {
+                reject(error);
+            }
+        };
+        const check = () => {
+            assetPageClockSync();
+
+            if (!document.hidden) {
+                finish();
+                return;
+            }
+
+            window.clearTimeout(timer);
+            timer = window.setTimeout(check, 1_000);
+        };
+        const onAbort = () => finish(assetOcrCancelledError());
+
+        if (signal?.aborted) {
+            onAbort();
+            return;
+        }
+
+        for (const eventName of eventNames) {
+            window.addEventListener(eventName, check);
+        }
+
+        timer = window.setTimeout(check, 1_000);
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
+function assetAiOcrTransientError(message, code, cause = null) {
+    const error = new Error(message);
+    error.code = code;
+    error.transient = true;
+
+    if (cause !== null) {
+        error.cause = cause;
+    }
+
+    return error;
+}
+
+// 暫時性錯誤：沒收到回應（斷線、逾時、頁面被凍結後連線中斷；assetAiOcrRequest 標記）或伺服器暫時出錯
+// （5xx）、被限流（429）、請求逾時（408；assetAiOcrJson 標記）。其餘 HTTP 狀態是伺服器明確的答覆
+// （401 登入失效、403、404、409 ai_not_ready…），照原本的流程處理，不重試。
+function assetAiOcrIsTransientError(error) {
+    return error?.transient === true;
+}
+
+// 暫時性錯誤不放棄：背景就等回到前景，再退避重試（1、2、4、8 秒，之後固定 8 秒）。
+// isOutOfTime() 為真或重試次數用完，就把最後一次的錯誤交給呼叫端決定；非暫時性錯誤與取消一律立刻往外丟。
+async function assetAiOcrWithRetry(run, signal, { isOutOfTime = () => false, maxRetries = Infinity, onRetry = null } = {}) {
+    for (let attempt = 0; ; attempt += 1) {
+        assetOcrThrowIfCancelled(signal);
+
+        try {
+            return await run();
+        } catch (error) {
+            if (signal?.aborted
+                || !assetAiOcrIsTransientError(error)
+                || attempt >= maxRetries
+                || isOutOfTime()) {
+                throw error;
+            }
+
+            onRetry?.(error);
+            await assetAiOcrWaitUntilVisible(signal);
+            await assetOcrDelay(
+                ASSET_AI_OCR_RETRY_DELAYS_MS[Math.min(attempt, ASSET_AI_OCR_RETRY_DELAYS_MS.length - 1)],
+                signal);
+        }
+    }
+}
 
 function assetAiOcrPollDelayMs(queuedAt, status) {
     if (status === 'queued') {
@@ -15181,6 +15350,14 @@ function forgetAssetAiJob(jobId) {
     writeAssetAiPendingJobs(readAssetAiPendingJobs().filter(row => row.jobId !== jobId));
 }
 
+// 換票失敗時的錯誤：只是暫時連不上（斷線、逾時、429、5xx）就標成暫時性，讓呼叫端稍後重試；
+// Auth 明確拒絕才是「登入已失效」。
+function assetAiOcrAuthRefreshError(refreshed) {
+    return refreshed.transient
+        ? assetAiOcrTransientError('登入憑證暫時無法更新（網路不穩）。', 'auth_refresh_unavailable')
+        : new Error('登入已失效。');
+}
+
 async function assetAiOcrRequest(action, options = {}, retryAuthentication = true) {
     assetOcrThrowIfCancelled(options.signal);
 
@@ -15188,23 +15365,43 @@ async function assetAiOcrRequest(action, options = {}, retryAuthentication = tru
         throw new Error('AI OCR 需要最高權限登入。');
     }
 
-    if (authAccessToken === null && !await refreshAuthAccessToken()) {
-        throw new Error('登入已失效。');
+    if (authAccessToken === null) {
+        const refreshed = await refreshAuthSession();
+
+        if (!refreshed.ok) {
+            throw assetAiOcrAuthRefreshError(refreshed);
+        }
     }
 
     assetOcrThrowIfCancelled(options.signal);
     const headers = new Headers(options.headers ?? {});
     headers.set('apikey', supabase.anonKey);
     headers.set('Authorization', `Bearer ${authAccessToken}`);
-    const response = await fetch(
-        `${supabase.url}/functions/v1/${ASSET_AI_OCR_FUNCTION}?action=${encodeURIComponent(action)}${options.query ?? ''}`,
-        { ...options, query: undefined, headers, cache: 'no-store' });
+    let response;
+
+    try {
+        response = await fetch(
+            `${supabase.url}/functions/v1/${ASSET_AI_OCR_FUNCTION}?action=${encodeURIComponent(action)}${options.query ?? ''}`,
+            { ...options, query: undefined, headers, cache: 'no-store' });
+    } catch (error) {
+        // 強制取消（abort）照舊往外丟；其餘是沒收到回應的網路錯誤（斷線、頁面被凍結後連線中斷），屬暫時性。
+        if (options.signal?.aborted) {
+            throw error;
+        }
+
+        throw assetAiOcrTransientError('連線中斷或暫時連不上 AI 佇列。', 'network_error', error);
+    }
 
     if (response.status === 401 && retryAuthentication) {
         assetOcrThrowIfCancelled(options.signal);
+        const refreshed = await refreshAuthSession();
 
-        if (await refreshAuthAccessToken()) {
+        if (refreshed.ok) {
             return assetAiOcrRequest(action, options, false);
+        }
+
+        if (refreshed.transient) {
+            throw assetAiOcrAuthRefreshError(refreshed);
         }
     }
 
@@ -15222,6 +15419,9 @@ async function assetAiOcrJson(response, operation) {
         const error = new Error(`${operation}失敗（HTTP ${response.status}）`);
         error.code = body?.error ?? 'ai_service_error';
         error.fallbackReason = body?.fallbackReason ?? null;
+        error.status = response.status;
+        // 5xx、429、408 是暫時性的，等一下再問即可；其餘（401／403／404／409…）是伺服器明確的答覆。
+        error.transient = response.status >= 500 || response.status === 429 || response.status === 408;
         throw error;
     }
 
@@ -15447,8 +15647,26 @@ function assetAiOcrFallbackText(reason) {
         case 'all_agents_quota_exhausted': return '所有 AI Agent 額度不足';
         case 'ai_invalid_output': return 'AI 結果未通過格式驗證';
         case 'ai_execution_failed': return 'AI 執行失敗';
+        case 'ai_timeout': return 'AI 辨識超過 9 分鐘時限';
+        case 'network_error': return '連線中斷，無法確認 AI 結果';
+        case 'auth_refresh_unavailable': return '登入憑證暫時無法更新';
+        case 'ai_service_error': return 'AI 服務暫時出錯';
+        case 'job_not_found': return 'AI 工作已不存在';
         default: return 'AI 目前不可用';
     }
+}
+
+// 排隊中／辨識中的卡片文字；上傳流程與重整後恢復流程共用。
+function assetAiOcrQueueStatusText(status) {
+    if (status.status === 'leased') {
+        return 'AI 辨識中…';
+    }
+
+    if (status.queuePosition > 0) {
+        return `AI 佇列等待中（前方還有 ${status.queuePosition} 張）`;
+    }
+
+    return status.queuePosition === 0 ? 'AI 佇列等待中（即將開始）' : 'AI 佇列等待中…';
 }
 
 function assetAiProgressForStatus(status) {
@@ -15545,16 +15763,101 @@ function assetAiDraftRows(result, market = '', sourceJobId = null) {
     });
 }
 
+// 輪詢一件 AI OCR 工作，直到伺服器給出終態；上傳流程（assetAiOcrRecognize）與重整後恢復流程
+// （resumeAssetAiJobs）共用。回傳：
+//   { outcome: 'terminal', status }  伺服器給了終態（succeeded、fallback_required、failed、expired、cancelled）
+//   { outcome: 'timeout' }           9 分鐘時限用完，最後再問一次也沒有終態
+//   { outcome: 'stale' }             isStale() 為真（使用者已換帳戶或取消這一批），由呼叫端清理
+// 暫時性錯誤不放棄（見 assetAiOcrWithRetry）；時限只計前景時間。非暫時性錯誤（401、403、404…）與取消
+// 照舊往外丟，由呼叫端決定要不要放棄 AI。report(status)：每輪更新畫面；notify(text)：重試或等待時更新畫面。
+async function assetAiOcrPollUntilTerminal(jobId, { signal, queuedAt, screenshot, report, notify = null, isStale = () => false }) {
+    let deadline = assetForegroundNow() + ASSET_AI_OCR_TIMEOUT_MS;
+    let leasedDeadlineReset = false;
+
+    for (;;) {
+        assetOcrThrowIfCancelled(signal);
+
+        if (isStale()) {
+            return { outcome: 'stale' };
+        }
+
+        // 時限到了不直接放棄：Worker 可能剛好在最後一個輪詢間隔內做完，或頁面剛從背景回來、結果其實早就好了。
+        // 再問一次才算數（這一次不等時限，只做少數幾次暫時性錯誤的重試）。
+        const finalCheck = assetForegroundNow() >= deadline;
+        let status;
+
+        try {
+            status = await assetAiOcrWithRetry(
+                () => assetAiOcrStatus(jobId, signal),
+                signal,
+                {
+                    ...(finalCheck
+                        ? { maxRetries: ASSET_AI_OCR_FINAL_CHECK_RETRIES }
+                        : { isOutOfTime: () => assetForegroundNow() >= deadline }),
+                    onRetry: () => notify?.(document.hidden ? '等待回到前景再確認結果…' : '連線不穩，重試中…')
+                });
+        } catch (error) {
+            if (signal?.aborted || !assetAiOcrIsTransientError(error)) {
+                throw error;
+            }
+
+            if (finalCheck) {
+                return { outcome: 'timeout' };
+            }
+
+            // 重試期間時限用完了：下一圈走「最後再問一次」。
+            continue;
+        }
+
+        if (ASSET_AI_OCR_TERMINAL_STATUSES.includes(status.status)) {
+            return { outcome: 'terminal', status };
+        }
+
+        if (finalCheck) {
+            return { outcome: 'timeout' };
+        }
+
+        // 初次切到 leased（Worker 真的開始處理）才起算處理時限，排隊等候時間不計入。
+        if (status.status === 'leased' && !leasedDeadlineReset) {
+            leasedDeadlineReset = true;
+            deadline = assetForegroundNow() + ASSET_AI_OCR_TIMEOUT_MS;
+        }
+
+        await assetAiOcrWakeIfStalled(jobId, status, screenshot, signal);
+        report(status);
+        await assetOcrDelay(assetAiOcrPollDelayMs(queuedAt, status.status), signal);
+    }
+}
+
 async function assetAiOcrRecognize(file, accountId, market, screenshot, index, total, signal = null) {
     let jobId = null;
     const idempotencyKey = crypto.randomUUID();
+    // 暫時性錯誤的重試提示：寫在卡片與狀態列上，使用者回到畫面時看得到「正在重試」而不是卡住。
+    const notifyRetry = text => {
+        screenshot.status = text;
+        updateAssetAiProgress(index - 1, 'queued', {
+            stage: screenshot.progressStage,
+            percent: screenshot.progressPercent,
+            statusText: text
+        });
+        setAssetOcrStatus(`第 ${index} / ${total} 張：${text}`);
+    };
 
     try {
         assetOcrThrowIfCancelled(signal);
         screenshot.status = '上傳至私有 AI 佇列…';
         updateAssetAiProgress(index - 1, 'queued', { stage: '上傳至私有 AI 佇列', percent: 5 });
         setAssetOcrStatus(`第 ${index} / ${total} 張：上傳至私有 AI 佇列…`);
-        const submitted = await assetAiOcrSubmit(file, accountId, market, idempotencyKey, signal);
+        // 上傳遇到暫時性錯誤就沿用同一把 Idempotency-Key 重試：伺服器對同一把 key 只建一件工作
+        // （第二次回 replayed），不會重複建立工作或重複上傳圖片。
+        const submitDeadline = assetForegroundNow() + ASSET_AI_OCR_TIMEOUT_MS;
+        const submitted = await assetAiOcrWithRetry(
+            () => assetAiOcrSubmit(file, accountId, market, idempotencyKey, signal),
+            signal,
+            {
+                isOutOfTime: () => assetForegroundNow() >= submitDeadline,
+                onRetry: () => notifyRetry(document.hidden ? '等待回到前景再上傳…' : '連線不穩，重新上傳中…')
+            });
         jobId = submitted.jobId;
         screenshot.jobId = jobId;
         rememberAssetAiJob({
@@ -15566,19 +15869,34 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
             createdAt: new Date().toISOString(),
             expiresAt: submitted.expiresAt ?? null
         });
-        let deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
-        let leasedDeadlineReset = false;
-        const queuedAt = Date.now();
 
-        while (Date.now() < deadline) {
-            assetOcrThrowIfCancelled(signal);
-
-            if (assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId) {
-                await assetAiOcrAcknowledge(jobId, 'cancel').catch(() => {});
-                return null;
+        const polled = await assetAiOcrPollUntilTerminal(jobId, {
+            signal,
+            queuedAt: Date.now(),
+            screenshot,
+            isStale: () => assetScreenshotDraft === null || assetScreenshotDraft.accountId !== accountId,
+            notify: notifyRetry,
+            report: status => {
+                const progress = assetAiProgressForStatus(status.status);
+                screenshot.status = assetAiOcrQueueStatusText(status);
+                updateAssetAiProgress(index - 1, status.status, {
+                    stage: status.progressStage ?? progress.stage,
+                    percent: status.progressPercent ?? progress.percent,
+                    updatedAt: status.progressUpdatedAt,
+                    statusText: screenshot.status
+                });
+                setAssetOcrStatus(`第 ${index} / ${total} 張：${screenshot.status}`);
             }
+        });
 
-            const status = await assetAiOcrStatus(jobId, signal);
+        if (polled.outcome === 'stale') {
+            await assetAiOcrAcknowledge(jobId, 'cancel').catch(() => {});
+            return null;
+        }
+
+        if (polled.outcome === 'terminal') {
+            const status = polled.status;
+
             if (status.status === 'succeeded') {
                 // Max 結果已拿到；若這張圖被抽中評估，acknowledge 只清掉 Max 草稿，
                 // private object 會保留到 Low 完成或 60 分鐘到期，不影響目前畫面。
@@ -15597,42 +15915,17 @@ async function assetAiOcrRecognize(file, accountId, market, screenshot, index, t
                 };
             }
 
-            if (['failed', 'expired', 'cancelled'].includes(status.status)) {
-                updateAssetAiProgress(index - 1, status.status, { statusText: 'AI 工作已結束' });
-                return {
-                    mode: 'tesseract',
-                    jobId,
-                    reason: status.fallbackReason ?? status.errorCode ?? 'ai_execution_failed'
-                };
-            }
-
-            // 初次切到 leased（Worker 真的開始處理）才起算處理時限，排隊等候時間不計入。
-            if (status.status === 'leased' && !leasedDeadlineReset) {
-                leasedDeadlineReset = true;
-                deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
-            }
-            await assetAiOcrWakeIfStalled(jobId, status, screenshot, signal);
-
-            const progress = assetAiProgressForStatus(status.status);
-            screenshot.status = status.status === 'leased'
-                ? 'AI 辨識中…'
-                : status.queuePosition > 0
-                    ? `AI 佇列等待中（前方還有 ${status.queuePosition} 張）`
-                    : status.queuePosition === 0
-                        ? 'AI 佇列等待中（即將開始）'
-                        : 'AI 佇列等待中…';
-            updateAssetAiProgress(index - 1, status.status, {
-                stage: status.progressStage ?? progress.stage,
-                percent: status.progressPercent ?? progress.percent,
-                updatedAt: status.progressUpdatedAt,
-                statusText: screenshot.status
-            });
-            setAssetOcrStatus(`第 ${index} / ${total} 張：${screenshot.status}`);
-            await assetOcrDelay(assetAiOcrPollDelayMs(queuedAt, status.status), signal);
+            updateAssetAiProgress(index - 1, status.status, { statusText: 'AI 工作已結束' });
+            return {
+                mode: 'tesseract',
+                jobId,
+                reason: status.fallbackReason ?? status.errorCode ?? 'ai_execution_failed'
+            };
         }
 
+        // 時限用完且最後再問一次也沒有結果：這時才決定放棄 AI；jobId 交給呼叫端清理（取消並刪除私有圖片）。
         assetOcrThrowIfCancelled(signal);
-        return { mode: 'tesseract', jobId, reason: 'ai_execution_failed' };
+        return { mode: 'tesseract', jobId, reason: 'ai_timeout' };
     } catch (error) {
         if (signal?.aborted) {
             throw error;
@@ -15672,11 +15965,13 @@ async function resumeAssetAiJobs(accountId) {
     const pending = readAssetAiPendingJobs().filter(job => job.accountId === accountId);
     if (account === null || pending.length === 0) return;
 
+    // 世代編號要宣告在 async 函式外面：下面 .finally 也要用它。2026-09-13 起它宣告在 async 函式裡面，
+    // .finally 一執行就丟 ReferenceError，assetAiResumePromise 永遠不會歸零（2026-10-26 測試抓到）。
+    const myGeneration = ++assetScreenshotGeneration;
     assetAiResumePromise = (async () => {
         const scanController = new AbortController();
         const signal = scanController.signal;
         assetScreenshotScanController = scanController;
-        const myGeneration = ++assetScreenshotGeneration;
         const view = assetAccountView(account);
         const placeholder = 'data:image/svg+xml;charset=utf-8,'
             + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">'
@@ -15716,44 +16011,41 @@ async function resumeAssetAiJobs(accountId) {
             let finalStatus = null;
             const queuedAt = Date.parse(job.createdAt ?? '') || Date.now();
             try {
-                let deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
-                let leasedDeadlineReset = false;
-                while (Date.now() < deadline) {
-                    assetOcrThrowIfCancelled(signal);
-                    const status = await assetAiOcrStatus(job.jobId, signal);
-                    if (['succeeded', 'fallback_required', 'failed', 'expired', 'cancelled'].includes(status.status)) {
-                        finalStatus = status;
-                        break;
+                // 輪詢與重試的規則和上傳流程共用（assetAiOcrPollUntilTerminal）：暫時性錯誤不放棄、
+                // 時限只計前景時間、到期前再問一次。
+                const polled = await assetAiOcrPollUntilTerminal(job.jobId, {
+                    signal,
+                    queuedAt,
+                    screenshot,
+                    notify: text => {
+                        screenshot.status = text;
+                        updateAssetAiProgress(index, 'queued', {
+                            stage: screenshot.progressStage,
+                            percent: screenshot.progressPercent,
+                            statusText: text
+                        });
+                        setAssetOcrStatus(`恢復第 ${index + 1} / ${pending.length} 張：${text}`);
+                    },
+                    report: status => {
+                        const progress = assetAiProgressForStatus(status.status);
+                        screenshot.status = assetAiOcrQueueStatusText(status);
+                        updateAssetAiProgress(index, status.status, {
+                            stage: status.progressStage ?? progress.stage,
+                            percent: status.progressPercent ?? progress.percent,
+                            updatedAt: status.progressUpdatedAt,
+                            statusText: screenshot.status
+                        });
+                        setAssetOcrStatus(`恢復第 ${index + 1} / ${pending.length} 張：${screenshot.status}`);
                     }
-                    if (status.status === 'leased' && !leasedDeadlineReset) {
-                        leasedDeadlineReset = true;
-                        deadline = Date.now() + ASSET_AI_OCR_TIMEOUT_MS;
-                    }
-                    await assetAiOcrWakeIfStalled(job.jobId, status, screenshot, signal);
-                    const progress = assetAiProgressForStatus(status.status);
-                    screenshot.status = status.status === 'leased'
-                        ? 'AI 辨識中…'
-                        : status.queuePosition > 0
-                            ? `AI 佇列等待中（前方還有 ${status.queuePosition} 張）`
-                            : status.queuePosition === 0
-                                ? 'AI 佇列等待中（即將開始）'
-                                : 'AI 佇列等待中…';
-                    updateAssetAiProgress(index, status.status, {
-                        stage: status.progressStage ?? progress.stage,
-                        percent: status.progressPercent ?? progress.percent,
-                        updatedAt: status.progressUpdatedAt,
-                        statusText: screenshot.status
-                    });
-                    setAssetOcrStatus(`恢復第 ${index + 1} / ${pending.length} 張：${screenshot.status}`);
-                    await assetOcrDelay(assetAiOcrPollDelayMs(queuedAt, status.status), signal);
-                }
+                });
+                finalStatus = polled.outcome === 'terminal' ? polled.status : null;
 
                 if (finalStatus === null) {
-                    // 等到事實性的絕對時限（ASSET_AI_OCR_TIMEOUT_MS）都還沒有任何終態，
+                    // 等到事實性的絕對時限（ASSET_AI_OCR_TIMEOUT_MS，只計前景時間）且最後再問一次都還沒有任何終態，
                     // 才判斷這件工作救不回來；不是靠心跳新鮮度提早猜測。標成
                     // fallback_required 保留原圖，讓使用者仍能改用 Tesseract 備援。
-                    await assetAiOcrMarkFallback(job.jobId, 'ai_execution_failed').catch(() => {});
-                    finalStatus = { status: 'fallback_required', fallbackReason: 'ai_execution_failed' };
+                    await assetAiOcrMarkFallback(job.jobId, 'ai_timeout').catch(() => {});
+                    finalStatus = { status: 'fallback_required', fallbackReason: 'ai_timeout' };
                 }
 
                 if (finalStatus?.status === 'succeeded') {
@@ -15772,6 +16064,8 @@ async function resumeAssetAiJobs(accountId) {
                     screenshot.previewUrl = URL.createObjectURL(file);
                     screenshot.status = '取回圖片，Tesseract 備援中…';
                     updateAssetAiProgress(index, 'fallback_required', { stage: 'Tesseract 備援中', percent: 90, statusText: screenshot.status });
+                    // 每張 10 秒的辨識預算要等使用者回到前景才開始算。
+                    await assetAiOcrWaitUntilVisible(signal);
                     await getAssetOcrWorker();
                     const result = await recognizeAssetScreenshot(file, index + 1, pending.length, signal);
                     rows.push(...assetEnrichOcrRows(result.rows, view.market));
@@ -18704,7 +18998,18 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
     let preflightFallbackReason = null;
     try {
         setAssetOcrStatus('確認 Windows／Mac 是否在線…（最多約 15 秒）');
-        aiReadiness = await assetAiOcrReadiness(null, signal);
+        // 剛選完圖就切到別的 App 時，這一次詢問可能被頁面凍結而斷線；暫時性錯誤先重試（只計前景時間，
+        // 最多再等 ASSET_AI_OCR_READINESS_RETRY_MS），不要一次失敗就整批改走 Tesseract。
+        const readinessDeadline = assetForegroundNow() + ASSET_AI_OCR_READINESS_RETRY_MS;
+        aiReadiness = await assetAiOcrWithRetry(
+            () => assetAiOcrReadiness(null, signal),
+            signal,
+            {
+                isOutOfTime: () => assetForegroundNow() >= readinessDeadline,
+                onRetry: () => setAssetOcrStatus(document.hidden
+                    ? '等待回到前景，再確認 Windows／Mac 是否在線…'
+                    : '連線不穩，重新確認 Windows／Mac 是否在線…')
+            });
         if (!aiReadiness?.ready) {
             preflightFallbackReason = aiReadiness?.fallbackReason ?? 'ai_execution_failed';
             // 2026-09-13 事故教訓：畫面只顯示一句籠統的「AI 執行失敗」，查了 7 小時
@@ -18798,18 +19103,38 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
             pendingAiJobId = aiResult.jobId;
             fallbackNotices.push(`第 ${index} 張：${reasonText}，已回退 Tesseract。`);
             assetScreenshotDraft.usedTesseract = true;
-            updateAssetAiProgress(zeroBasedIndex, 'fallback_required', { stage: 'Tesseract 備援中', percent: 90, statusText: 'Tesseract 備援中…' });
+            // 卡片上直接寫出為什麼改用 Tesseract，不必等整批結束才在說明裡看到。
+            updateAssetAiProgress(zeroBasedIndex, 'fallback_required', { stage: 'Tesseract 備援中', percent: 90, statusText: `Tesseract 備援中（${reasonText}）…` });
 
             const runTesseract = async () => {
-                // 預先等本機備援引擎就緒，避免把 WASM／字庫暖機時間算進每張 10 秒辨識預算。
-                await getAssetOcrWorker();
-                assetOcrThrowIfCancelled(signal);
-                const result = await recognizeAssetScreenshot(file, index, files.length, signal);
-                screenshot.status = `Tesseract 備援完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
-                updateAssetAiProgress(zeroBasedIndex, 'succeeded', { stage: '完成（Tesseract 備援）', percent: 100, statusText: screenshot.status });
-                screenshot.elapsedMs = result.elapsedMs;
-                rows.push(...assetEnrichOcrRows(result.rows, market));
-                matchedHeader ||= result.matchedHeader;
+                for (let attempt = 0; ; attempt += 1) {
+                    const hiddenCountBefore = assetPageHiddenCount();
+
+                    try {
+                        // 使用者還在別的 App 時先不開始：每張 10 秒的辨識預算要等回到前景才開始算。
+                        await assetAiOcrWaitUntilVisible(signal);
+                        // 預先等本機備援引擎就緒，避免把 WASM／字庫暖機時間算進每張 10 秒辨識預算。
+                        await getAssetOcrWorker();
+                        assetOcrThrowIfCancelled(signal);
+                        await assetAiOcrWaitUntilVisible(signal);
+                        const result = await recognizeAssetScreenshot(file, index, files.length, signal);
+                        screenshot.status = `Tesseract 備援完成 ${formatAssetOcrDuration(result.elapsedMs)}`;
+                        updateAssetAiProgress(zeroBasedIndex, 'succeeded', { stage: '完成（Tesseract 備援）', percent: 100, statusText: screenshot.status });
+                        screenshot.elapsedMs = result.elapsedMs;
+                        rows.push(...assetEnrichOcrRows(result.rows, market));
+                        matchedHeader ||= result.matchedHeader;
+                        return;
+                    } catch (error) {
+                        // 引擎載入或辨識途中被切到背景而失敗（頁面被凍結、回來時逾時計時器已超過 10 秒）：
+                        // 不是圖片本身辨識不出來，回到前景後再試。強制取消與沒進過背景的失敗照舊往外丟。
+                        if (signal.aborted
+                            || error?.code === 'ocr_cancelled'
+                            || attempt >= ASSET_OCR_BACKGROUND_RETRIES
+                            || !assetPageBackgroundedSince(hiddenCountBefore)) {
+                            throw error;
+                        }
+                    }
+                }
             };
             // 用 .then(onFulfilled, onRejected) 讓佇列在前一張失敗時仍繼續往下跑；
             // 這一張自己的錯誤會反映在下面 await tesseractQueue 上，走原本的 catch。
@@ -18827,7 +19152,13 @@ async function scanAssetScreenshots(files, accountId, holdings, market) {
                 return;
             }
 
-            screenshot.status = '失敗';
+            // 卡片文字只會在 updateAssetAiProgress 或整頁重畫時更新；辨識中不重畫，所以失敗也要明確更新卡片，
+            // 否則卡片會一直停在「Tesseract 備援中」（2026-10-25 使用者看到的就是這個）。
+            updateAssetAiProgress(zeroBasedIndex, 'failed', {
+                stage: '失敗',
+                percent: screenshot.progressPercent ?? 0,
+                statusText: `失敗：${String(error?.message ?? error)}`
+            });
             failures.push(`第 ${index} 張：${String(error?.message ?? error)}`);
         } finally {
             if (pendingAiJobId !== null) {
@@ -24987,9 +25318,17 @@ async function reloadIfStale(isCurrent = () => true) {
 // 的小型 manifest；這不是 Supabase 請求，也不會改變筆記、資產等既有資料更新機制。
 const SITE_VERSION_CHECK_MS = 10 * 60_000;
 
+// 截圖辨識進行中、或校對草稿還開著（還沒套用或捨棄）時，不能因為網站出新版就整頁重載：
+// 重載會丟掉畫面上的批次與草稿，而 AI 結果早已從伺服器清掉，只能重傳（重耗額度）。
+// 比照 assetsAreEditing()「有東西開著就先別動」；草稿結束後的下一次檢查再換新版。
+// 使用者自己按下「檢查更新」不受影響。
+function assetOcrBlocksSiteReload() {
+    return assetScreenshotDraft !== null || assetAiResumePromise !== null;
+}
+
 function startSiteVersionChecker() {
     const check = async () => {
-        if (!document.hidden) {
+        if (!document.hidden && !assetOcrBlocksSiteReload()) {
             try {
                 await reloadIfStale();
             } catch {

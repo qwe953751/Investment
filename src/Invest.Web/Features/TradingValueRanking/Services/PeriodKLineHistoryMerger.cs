@@ -70,6 +70,8 @@ public static class PeriodKLineHistoryMerger
         var expected = calendar.Where(date => date >= point.PeriodStart && date <= end && date <= through).ToArray();
         return calendar.Count > 0 && calendar[0] <= point.PeriodStart && expected.Length > 0 && point.HasBar
             && expected.All(date => rows.TryGetValue(date, out var row) && row.TradingVolume is >= 0m
-                && DailyBarValidator.IsValid(row.OpenPrice, row.HighPrice, row.LowPrice, row.ClosePrice));
+                && (DailyBarValidator.IsValid(row.OpenPrice, row.HighPrice, row.LowPrice, row.ClosePrice)
+                    || row.TradingVolume == 0m && row.TradingValue == 0m && row.OpenPrice is null && row.HighPrice is null
+                        && row.LowPrice is null && row.ClosePrice is null));
     }
 }
