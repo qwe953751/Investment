@@ -75,8 +75,8 @@
 
 | 情境 | Actions 參數 | 行為 |
 |---|---|---|
-| 只有程式碼／畫面／文件要更新，或收盤行情尚未公布 | `publish-only=true`（**手動觸發的預設值**） | 使用 `data` branch 既有快取，跑測試、export、發布；不回補今日行情、不寫入 `data`、不同步 Supabase、不做備份／心跳 |
-| 要更新今天的行情、資料庫與網站 | `publish-only=false`（**要顯式指定**） | 完整執行「回補 → 保存 `data` → 同步／對帳 Supabase → 備份 → export → 發布」；15:00 前啟動會被守衛擋下 |
+| 只有程式碼／畫面／文件要更新，或收盤行情尚未公布 | `publish-only=true`（**手動觸發的預設值**） | 使用 `data` branch 既有快取，跑測試（.NET、Node、日 K 快取版本）、export、發布；不回補今日行情、不寫入 `data`、不同步 Supabase、不做備份／心跳。**任何一項測試失敗都不會發布**（見下方〈失敗時的固定判斷順序〉） |
+| 要更新今天的行情、資料庫與網站 | `publish-only=false`（**要顯式指定**） | 完整執行「回補 → 保存 `data` → 同步／對帳 Supabase → 備份 → export → 發布」；備份每個收盤週期（台北 18:00 起算）只做一次，本週期已有通過驗證的備份就略過，要強制重做用 `backup-only=true`；15:00 前啟動會被守衛擋下 |
 
 手動觸發（`workflow_dispatch`）的預設值是 `publish-only=true`，因為手動觸發幾乎都是「把目前 `main` 發出去」。
 每天那三場排程是 `schedule` 事件，**不套用 `workflow_dispatch` 的 default**，所以照樣跑完整流程。
@@ -102,6 +102,11 @@ git diff --check
 $dotnet10 = 'C:\Users\frank_chiang\AppData\Local\Microsoft\dotnet\dotnet.exe'
 & $dotnet10 --version
 & $dotnet10 test 'tests\Invest.Web.Tests\Invest.Web.Tests.csproj' -c Release --no-restore --logger 'console;verbosity=minimal'
+
+# Node 測試也是 CI 的發布門檻（daily-snapshot.yml 的「驗證前端與工作流程契約」，Node 24、Linux）：
+# 推送前先在本機跑；只在 macOS 通過的測試（例如依賴 /dev/stdout、/usr/bin 沒有的 dotnet）到 CI 會被擋下。
+node --test tests/*.test.mjs
+python -m unittest discover -s tests -p 'test_*.py'
 ```
 
 確認測試通過、沒有未預期的檔案後，才在使用者已授權的前提下執行：
@@ -220,6 +225,9 @@ repo 的讀取權，否則 `gh api repos/frank-invest/...` 會 404 而不是權�
 #### 5. 失敗時的固定判斷順序
 
 1. 先用 `gh run view <RUN_ID> --json jobs` 找第一個失敗步驟，不要直接重跑整輪。
+   若第一個失敗的是 `驗證計算公式`、`驗證前端與工作流程契約` 或 `驗證日 K 快取版本`，這是**發布門檻在擋**：export 仍會跑完，
+   但兩個發布步驟與兩個盤中 CDN 重算步驟會是 skipped，網站維持上一個版本，「每日排行快照」警報會亮。
+   看失敗的測試名稱：真的壞了就修；只在 CI 的 Linux 才現形的環境差異就修測試，不要放寬或拿掉門檻；確認修好後用 `publish-only=true` 重發。
 2. 若是發布步驟失敗，檢查 `publish/site` 是否由本次 export 產生、以及 `scripts/publish-gh-pages.sh` 的輸出；不要手改 `gh-pages`。
    若 log 有「容量守門」的 `::error::`：超過 900 MB 就看各類別大小是誰撐大的（不要直接調高 `GH_PAGES_SIZE_LIMIT_BYTES`，Pages 本身上限是 1 GB）；
    「未壓縮的排行檔」代表 export 輸出目錄沒清乾淨、`.json` 與 `.json.gz` 混在一起，改用全新的空目錄重新 export，不要手動刪檔後硬推。
