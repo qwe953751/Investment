@@ -224,6 +224,20 @@ public sealed class PeriodHistoryBackfiller(
                 result.Add(PeriodHistoryBar.FromPoint(point));
                 continue;
             }
+            if (start == firstRawPeriod && local.TryGetValue(start, out point) && point.HasBar)
+            {
+                // 掛牌首週／首月的掛牌前市場交易日不屬於此標的；先用官方首日證明邊界，
+                // 再確認從掛牌日起每日快取完整，才能優先採既有精確股數。
+                var officialFirst = await official.GetPeriodBoundaryAsync(ticker, market, expected, first: true, ct);
+                if (PeriodKLineHistoryMerger.HasCompleteCoverageSince(point, localRowsByDate,
+                        calendar, period, through, officialFirst.Date)
+                    && localRowsByDate[officialFirst.Date].OpenPrice == officialFirst.Quote.OpenPrice
+                    && localRowsByDate[point.LastTradingDate].ClosePrice == bar.Close)
+                {
+                    result.Add(PeriodHistoryBar.FromPoint(point));
+                    continue;
+                }
+            }
             if (start != firstRawPeriod && cached.TryGetValue(start, out var saved))
             {
                 result.Add(saved with { Open = saved.Open * cacheFactor, High = saved.High * cacheFactor,

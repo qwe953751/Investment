@@ -65,10 +65,22 @@ public static class PeriodKLineHistoryMerger
     internal static bool HasCompleteCoverage(PeriodKLinePoint point,
         IReadOnlyDictionary<DateOnly, DailyStockTrading> rows, IReadOnlyList<DateOnly> calendar,
         KLinePeriod period, DateOnly through)
+        => calendar.Count > 0 && calendar[0] <= point.PeriodStart
+            && HasCoverageFrom(point, rows, calendar, period, through, point.PeriodStart, false);
+
+    internal static bool HasCompleteCoverageSince(PeriodKLinePoint point,
+        IReadOnlyDictionary<DateOnly, DailyStockTrading> rows, IReadOnlyList<DateOnly> calendar,
+        KLinePeriod period, DateOnly through, DateOnly officialFirst)
+        => HasCoverageFrom(point, rows, calendar, period, through, officialFirst, true);
+
+    private static bool HasCoverageFrom(PeriodKLinePoint point,
+        IReadOnlyDictionary<DateOnly, DailyStockTrading> rows, IReadOnlyList<DateOnly> calendar,
+        KLinePeriod period, DateOnly through, DateOnly first, bool requireFirstMatch)
     {
         var end = PeriodEnd(point.PeriodStart, period);
-        var expected = calendar.Where(date => date >= point.PeriodStart && date <= end && date <= through).ToArray();
-        return calendar.Count > 0 && calendar[0] <= point.PeriodStart && expected.Length > 0 && point.HasBar
+        var expected = calendar.Where(date => date >= first && date <= end && date <= through).ToArray();
+        return point.HasBar && first >= point.PeriodStart && first <= end
+            && (!requireFirstMatch || point.FirstTradingDate == first) && expected.Length > 0
             && expected.All(date => rows.TryGetValue(date, out var row) && row.TradingVolume is >= 0m
                 && (DailyBarValidator.IsValid(row.OpenPrice, row.HighPrice, row.LowPrice, row.ClosePrice)
                     || row.TradingVolume == 0m && row.TradingValue == 0m && row.OpenPrice is null && row.HighPrice is null

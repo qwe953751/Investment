@@ -85,6 +85,25 @@ public sealed class PeriodHistoryTests
     }
 
     [Fact]
+    public void 新上市首月只在官方首日起的每日行情齊全時優先採精確本地量()
+    {
+        var first = new DateOnly(2026, 1, 22);
+        var marketDates = new[] { new DateOnly(2026, 1, 1), new DateOnly(2026, 1, 21), first, first.AddDays(1) };
+        var trading = new[] { first, first.AddDays(1) }.Select(date => new DailyStockTrading
+        {
+            Ticker = "2330", TradingDate = date, OpenPrice = 100, HighPrice = 110,
+            LowPrice = 90, ClosePrice = 105, TradingVolume = 1000, TradingValue = 105000
+        }).ToArray();
+        var point = Assert.Single(PeriodKLineCalculator.Calculate(trading, [], "2330", KLinePeriod.Month, new(2026, 2, 2)));
+        var rows = trading.ToDictionary(x => x.TradingDate);
+        Assert.False(PeriodKLineHistoryMerger.HasCompleteCoverage(point, rows, marketDates, KLinePeriod.Month, new(2026, 2, 2)));
+        Assert.True(PeriodKLineHistoryMerger.HasCompleteCoverageSince(point, rows, marketDates,
+            KLinePeriod.Month, new(2026, 2, 2), first));
+        Assert.False(PeriodKLineHistoryMerger.HasCompleteCoverageSince(point, rows, marketDates,
+            KLinePeriod.Month, new(2026, 2, 2), first.AddDays(-1)));
+    }
+
+    [Fact]
     public void 稀疏顯示窗內只有暖身收盤的舊摘要必須重補_窗外暖身不影響重用()
     {
         var bars = Enumerable.Range(0, 70).Select(i => new PeriodHistoryBar(
