@@ -86,6 +86,7 @@ jobs:
           echo "runs=$(jq -r '.runs' /tmp/period-result.json)" >> "$GITHUB_OUTPUT"
           cat /tmp/period-result.json >> "$GITHUB_STEP_SUMMARY"
       - name: 保存已驗證的週月摘要
+        id: save
         if: ${{ !cancelled() && steps.plan.outputs.count != '0' }}
         working-directory: data
         run: |
@@ -106,7 +107,7 @@ jobs:
           done
           exit 1
       - name: 派送下一批或發布已保存資料
-        if: ${{ !cancelled() && steps.plan.outputs.count != '0' && steps.progress.outcome == 'success' }}
+        if: ${{ success() && steps.plan.outputs.count != '0' && steps.progress.outcome == 'success' && steps.save.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REMAINING: ${{ steps.progress.outputs.remaining }}
