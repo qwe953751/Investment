@@ -40,12 +40,13 @@ class PeriodBackfillQueueTests(unittest.TestCase):
                                         log=str(logfile), exit_code=exit_code))
         return queue.state_at(self.root)
 
-    def save_coverage(self, ticker, weekly=60, monthly=60):
+    def save_coverage(self, ticker, weekly=60, monthly=60, validated=True):
         directory = self.root / "imports-periods"
         directory.mkdir(exist_ok=True)
         bar = {"open": 1, "high": 2, "low": 1, "close": 2}
         (directory / f"{ticker}.json").write_text(json.dumps({
             "schemaVersion": 1, "ticker": ticker,
+            "validation": "initial-period first-day check" if validated else "old boundary rule",
             "weekly": [bar] * weekly, "monthly": [bar] * monthly,
         }), encoding="utf-8")
 
@@ -81,6 +82,12 @@ class PeriodBackfillQueueTests(unittest.TestCase):
         state = self.finish("3711 完成：週 70／月 65（只保存摘要與前置收盤）。\n", 124)
         self.assertEqual("interrupted", state["tickers"]["5483"]["status"])
         self.assertEqual([], self.plan()["tickers"])
+
+    def test_full_older_file_is_rechecked_until_initial_boundary_is_verified(self):
+        self.save_coverage("2330", validated=False)
+        self.assertIn("2330", self.plan()["tickers"])
+        self.save_coverage("2330")
+        self.assertNotIn("2330", self.plan()["tickers"])
 
 
 if __name__ == "__main__":

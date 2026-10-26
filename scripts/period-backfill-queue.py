@@ -74,6 +74,7 @@ def coverage(data_dir, ticker):
                 bar.get("open") is not None and bar.get("high") is not None
                 and bar.get("low") is not None and bar.get("close") is not None
                 for bar in source.get(period, []))
+        counts["initialBoundaryChecked"] = "initial-period first-day check" in source.get("validation", "")
         return counts
     except (ValueError, OSError, TypeError):
         return None
@@ -121,9 +122,11 @@ def plan(args):
             break
         bars = coverage(data_dir, ticker) if specified else known_bars[ticker]
         record = state["tickers"].get(ticker, {})
-        if not specified and bars and bars["weekly"] >= 60 and bars["monthly"] >= 60:
+        if not specified and bars and bars["weekly"] >= 60 and bars["monthly"] >= 60 and bars["initialBoundaryChecked"]:
             continue
         if bars is None and record.get("status") in ("complete", "short_history"):
+            record = {}
+        if bars and not bars["initialBoundaryChecked"] and record.get("status") == "complete":
             record = {}
         if not specified and not eligible(record, instant, through, args.retry_rejected):
             continue
@@ -163,7 +166,7 @@ def finish(args):
             if bars is None:
                 record["status"] = "interrupted"
                 record["reason"] = "回補回報成功，但未保存可核對的摘要檔"
-            elif bars["weekly"] >= 60 and bars["monthly"] >= 60:
+            elif bars["weekly"] >= 60 and bars["monthly"] >= 60 and bars["initialBoundaryChecked"]:
                 record["status"] = "complete"
                 record["weekly"] = bars["weekly"]
                 record["monthly"] = bars["monthly"]
@@ -192,7 +195,7 @@ def finish(args):
         record = state["tickers"].get(ticker)
         if record is None:
             bars = coverage(data_dir, ticker)
-            if bars and bars["weekly"] >= 60 and bars["monthly"] >= 60:
+            if bars and bars["weekly"] >= 60 and bars["monthly"] >= 60 and bars["initialBoundaryChecked"]:
                 record = {"status": "complete", "weekly": bars["weekly"], "monthly": bars["monthly"]}
             else:
                 record = {"status": "pending"}
