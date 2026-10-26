@@ -248,9 +248,9 @@ public sealed class PeriodHistoryBackfiller(
             if (!missingSourceHead && !factors.Any(a => a.EffectiveDate > firstDate && a.EffectiveDate <= lastDate))
             {
                 result.Add(new(firstDate, lastDate, head.OpenPrice * f, bar.High * f, bar.Low * f,
-                    bar.Close * f, bar.Volume) { Origin = period == KLinePeriod.Month && market == Market.Twse
+                    bar.Close * f, bar.Volume) { Origin = bar.Origin ?? (period == KLinePeriod.Month && market == Market.Twse
                         ? "TWSE FMSRFK HLV; official first-day open / last-day close"
-                        : "Anue period HLCV; official first-day open / last-day close" });
+                        : "Anue period HLCV; official first-day open / last-day close") });
                 continue;
             }
 
@@ -275,9 +275,9 @@ public sealed class PeriodHistoryBackfiller(
             {
                 TradingVolume = period == KLinePeriod.Week && head.Market == Market.Twse
                     ? daily.Sum(d => d.Volume) : bar.Volume,
-                Origin = missingSourceHead ? "official missing-head daily OHLCV; TWSE monthly volume verified"
+                Origin = bar.Origin ?? (missingSourceHead ? "official missing-head daily OHLCV; TWSE monthly volume verified"
                     : period == KLinePeriod.Month && market == Market.Twse ? "TWSE FMSRFK volume; official event-period OHLC"
-                    : head.Market == Market.Twse ? "official event-period daily OHLCV" : "official event-period daily OHLC; Anue period volume"
+                    : head.Market == Market.Twse ? "official event-period daily OHLCV" : "official event-period daily OHLC; Anue period volume")
             });
         }
         return result;
@@ -372,7 +372,8 @@ public sealed class PeriodHistoryBackfiller(
             {
                 var ordered = g.OrderBy(d => d.Date).ToArray();
                 return new RawPeriodBar(ordered[0].Date, ordered[0].Open, ordered.Max(d => d.High),
-                    ordered.Min(d => d.Low), ordered[^1].Close, ordered.Sum(d => d.Volume));
+                    ordered.Min(d => d.Low), ordered[^1].Close, ordered.Sum(d => d.Volume))
+                    { Origin = "TWSE STOCK_DAY initial-week OHLCV" };
             }).OrderBy(b => b.Date);
         return preceding.Concat(bars).ToArray();
     }

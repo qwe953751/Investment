@@ -80,6 +80,7 @@ public sealed class PeriodHistoryTests
         Assert.Equal(2, result.Count);
         Assert.Equal(new DateOnly(2026, 4, 10), result[0].Date);
         Assert.Equal(99045102m, result[0].Volume);
+        Assert.Equal("TWSE STOCK_DAY initial-week OHLCV", result[0].Origin);
         Assert.Equal(candidate[0], result[1]);
     }
 

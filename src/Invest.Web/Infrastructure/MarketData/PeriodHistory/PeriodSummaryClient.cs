@@ -166,6 +166,8 @@ public sealed class PeriodSummaryClient(HttpClient http)
 
 public sealed record RawPeriodBar(DateOnly Date, decimal Open, decimal High, decimal Low, decimal Close, decimal Volume)
 {
+    public string? Origin { get; init; }
+
     public DailyStockTrading ToDaily(string ticker) => new()
     {
         TradingDate = Date, Ticker = ticker, OpenPrice = Open, HighPrice = High,
