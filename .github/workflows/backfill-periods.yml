@@ -123,5 +123,13 @@ jobs:
               gh workflow run daily-snapshot.yml --ref main -f trading-days=300 -f publish-only=true
           fi
           if [ "$REMAINING" != '0' ]; then
+              # GitHub 同一 concurrency group 只保留一個 pending run。盤後完整快照若正在
+              # 等 data 鎖，立即派送下一批會把它取消；先讓日常行情完成，隔天 02:15 再接續。
+              weekday=$(TZ=Asia/Taipei date +%u)
+              hour=$(TZ=Asia/Taipei date +%H)
+              if [ "$weekday" -le 5 ] && [ "$hour" -ge 15 ]; then
+                  echo '台北平日 15:00 後暫停週月回補接續，讓完整盤後快照優先；隔日 02:15 排程續跑。'
+                  exit 0
+              fi
               gh workflow run backfill-periods.yml --ref main -f warmup60=true -f auto-continue=true
           fi
