@@ -22659,9 +22659,17 @@ function renderKLinePopover(ticker, name, anchor) {
     positionKLinePopover(anchor);
 }
 
+function klineIndicatorDefaultsOpen() {
+    return SITE_ACCESS === 'admin'
+        && loginTier === 'admin'
+        && loginAccount?.email === FRANK_ADMIN_EMAIL;
+}
+
 function renderKLineTechnicalIndicators(bars, period) {
-    if (klineIndicatorVisibility?.access !== SITE_ACCESS) {
-        klineIndicatorVisibility = { access: SITE_ACCESS, kd: SITE_ACCESS === 'admin', macd: SITE_ACCESS === 'admin' };
+    const account = loginTier === 'admin' ? loginAccount?.email ?? null : SITE_ACCESS;
+    if (klineIndicatorVisibility?.account !== account) {
+        const opened = klineIndicatorDefaultsOpen();
+        klineIndicatorVisibility = { account, kd: opened, macd: opened };
     }
     const section = document.createElement('section');
     section.className = 'kline-indicators';
