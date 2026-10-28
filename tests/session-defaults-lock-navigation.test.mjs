@@ -161,6 +161,11 @@ test('族群名次跳轉後保留與鎖定列一致的底色標記', () => {
     assert.equal(classes.has('jump-target-mark'), true);
     assert.equal(classes.has('jump-highlight'), false);
     assert.match(styleSource, /\.ranking-table tbody tr\.locked,\s*\.ranking-table tbody tr\.jump-target-mark\s*\{\s*background:\s*var\(--accent-bg\);/);
+
+    const highlightRule = styleSource.indexOf('.ranking-table tbody tr.jump-highlight td {');
+    const markedCellRule = styleSource.lastIndexOf('.ranking-table tbody tr.jump-target-mark td {');
+    assert.ok(markedCellRule > highlightRule);
+    assert.match(styleSource.slice(markedCellRule, styleSource.indexOf('}', markedCellRule)), /background:\s*var\(--accent-bg\);/);
 });
 
 test('族群盤中前100名切到盤中排行', () => {

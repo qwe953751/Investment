@@ -4920,6 +4920,11 @@ button.market-structure-weight-cell {
     transition: background 1.5s ease;
 }
 
+/* 持續標記優先於短暫閃示，跳轉列始終維持鎖定底色。 */
+.ranking-table tbody tr.jump-target-mark td {
+    background: var(--accent-bg);
+}
+
 .rank {
     font-weight: 700;
 }
