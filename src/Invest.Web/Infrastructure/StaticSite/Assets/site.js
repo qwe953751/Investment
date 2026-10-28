@@ -2912,6 +2912,7 @@ let expandedKLineName = '';
 let expandedKLineMarket = '';
 let expandedKLineIsEtf = false;
 let expandedKLinePeriod = 'day';
+let klineIndicatorVisibility = null;
 let klineUseLatestDate = false;
 // 市場總覽小卡／排行標的用：切到過往交易日時要帶那天當 K 線終點，
 // 不能一律 latest，否則瀏覽過去日期時圖表還是顯示最新三個月（跟瀏覽的日期對不起來）。
@@ -20934,12 +20935,12 @@ function makeKLineButton(ticker, name, options = {}) {
     return button;
 }
 
-// 台股 K 線檔是 schemaVersion 2 的位置陣列：欄位名稱只在檔頭寫一次，網站容量才放得下週／月 K。
+// 台股 K 線檔是 schemaVersion 2／3 的位置陣列：欄位名稱只在檔頭寫一次，網站容量才放得下週／月 K。
 // 這裡依檔頭的欄位名稱還原成物件，畫圖與其餘程式照舊讀 bar.date／bar.close。
 // 美股、日韓與加密貨幣的檔案仍是物件陣列 bars，原樣通過。檔案缺陣列時留成 null，
 // 讓後面的 Array.isArray(payload.bars) 檢查明確拒絕，而不是畫一張空圖。
 function decodeKLinePayload(raw) {
-    if (raw?.schemaVersion !== 2) {
+    if (raw?.schemaVersion !== 2 && raw?.schemaVersion !== 3) {
         return raw;
     }
 
@@ -21483,7 +21484,8 @@ function renderIndexKLinePopover(market, anchor) {
         card.append(
             renderIndexKLineLegend(bars),
             referenceControls.element,
-            renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars, referenceControls.status));
+            renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars, referenceControls.status),
+            renderKLineTechnicalIndicators(bars, 'day'));
     }
 
     popover.append(card);
@@ -21609,7 +21611,7 @@ function assetIntradayLiveKLine(ticker) {
 }
 
 // 歷史日 K 的價格欄位。今天除權息、減資、分割時，歷史要整段乘上今天的還原倍數才接得上即時棒。
-const KLINE_SCALED_FIELDS = ['open', 'high', 'low', 'close', 'previousClose', 'ma5', 'ma10', 'ma20', 'ma60', 'ma240'];
+const KLINE_SCALED_FIELDS = ['open', 'high', 'low', 'close', 'previousClose', 'ma5', 'ma10', 'ma20', 'ma60', 'ma240', 'macdDif', 'macdSignal', 'macdHistogram'];
 
 function scaleKLineBar(bar, factor) {
     if (!(factor > 0) || factor === 1) {
@@ -22646,7 +22648,8 @@ function renderKLinePopover(ticker, name, anchor) {
             card.append(
                 renderKLineLegend(bars, holdingCost, activePeriod),
                 referenceControls.element,
-                renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost, activePeriod));
+                renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost, activePeriod),
+                renderKLineTechnicalIndicators(bars, activePeriod));
         }
     }
 
@@ -22654,6 +22657,135 @@ function renderKLinePopover(ticker, name, anchor) {
     popover.hidden = false;
     el('kline-backdrop').hidden = false;
     positionKLinePopover(anchor);
+}
+
+function renderKLineTechnicalIndicators(bars, period) {
+    if (klineIndicatorVisibility?.access !== SITE_ACCESS) {
+        klineIndicatorVisibility = { access: SITE_ACCESS, kd: SITE_ACCESS === 'admin', macd: SITE_ACCESS === 'admin' };
+    }
+    const section = document.createElement('section');
+    section.className = 'kline-indicators';
+    section.setAttribute('aria-label', '技術指標');
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'kline-indicator-toolbar';
+    const label = document.createElement('strong');
+    label.textContent = '技術指標';
+    const options = document.createElement('div');
+    options.className = 'kline-indicator-options';
+    options.setAttribute('role', 'group');
+    options.setAttribute('aria-label', '顯示技術指標');
+
+    const panels = document.createElement('div');
+    panels.className = 'kline-indicator-panels';
+
+    for (const [key, title] of [['kd', 'KD'], ['macd', 'MACD']]) {
+        const panel = document.createElement('section');
+        panel.className = 'kline-indicator-panel';
+        panel.id = `kline-indicator-${key}`;
+        panel.setAttribute('aria-label', `${title} 指標圖`);
+
+        const heading = document.createElement('div');
+        heading.className = 'kline-indicator-panel-heading';
+        const panelTitle = document.createElement('strong');
+        panelTitle.textContent = title;
+        const fields = key === 'kd' ? ['kdK', 'kdD'] : ['macdDif', 'macdSignal', 'macdHistogram'];
+        const latest = [...bars].reverse().find(bar => fields.some(field => !missing(bar[field])) && bar.isLive !== true);
+        const values = document.createElement('span');
+        values.textContent = latest ? (key === 'kd'
+            ? `K ${formatKLineIndicator(latest.kdK)} · D ${formatKLineIndicator(latest.kdD)}`
+            : `DIF ${formatKLineIndicator(latest.macdDif)} · 訊號 ${formatKLineIndicator(latest.macdSignal)} · 柱 ${formatKLineIndicator(latest.macdHistogram)}`)
+            : '資料不足';
+        heading.append(panelTitle, values);
+
+        const plot = document.createElement('div');
+        plot.className = 'kline-indicator-plot';
+        if (latest) plot.append(renderKLineIndicatorSvg(bars, key));
+        else plot.textContent = '尚無足夠的完整 K 棒計算指標';
+        panel.append(heading, plot);
+        if (period !== 'day' && bars.at(-1)?.isLive !== true
+            && fields.every(field => missing(bars.at(-1)?.[field]))) {
+            const note = document.createElement('small');
+            note.textContent = '當期尚未完成；指標截至上一根完整 K 棒';
+            panel.append(note);
+        } else if (bars.at(-1)?.isLive === true) {
+            const note = document.createElement('small');
+            note.textContent = '盤中棒不計入指標';
+            panel.append(note);
+        }
+        panels.append(panel);
+        panel.hidden = !klineIndicatorVisibility[key];
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'kline-indicator-toggle';
+        toggle.textContent = title;
+        toggle.setAttribute('aria-pressed', String(klineIndicatorVisibility[key]));
+        toggle.setAttribute('aria-controls', panel.id);
+        toggle.addEventListener('click', () => {
+            const visible = toggle.getAttribute('aria-pressed') !== 'true';
+            klineIndicatorVisibility[key] = visible;
+            toggle.setAttribute('aria-pressed', String(visible));
+            panel.hidden = !visible;
+        });
+        options.append(toggle);
+    }
+
+    toolbar.append(label, options);
+    section.append(toolbar, panels);
+    return section;
+}
+
+function formatKLineIndicator(value) {
+    return missing(value) ? '—' : Number(value).toFixed(2);
+}
+
+function renderKLineIndicatorSvg(bars, key) {
+    const left = 62, right = 666, top = 10, bottom = 92;
+    const svg = svgElement('svg', {
+        class: 'kline-indicator-svg', viewBox: '0 0 680 110', role: 'img',
+        'aria-label': key === 'kd' ? 'KD 9、3、3 曲線' : 'MACD 12、26、9 曲線與柱狀圖'
+    });
+    const fields = key === 'kd' ? ['kdK', 'kdD'] : ['macdDif', 'macdSignal', 'macdHistogram'];
+    const numbers = bars.flatMap(bar => fields.map(field => bar[field]))
+        .filter(value => !missing(value) && Number.isFinite(Number(value))).map(Number);
+    const limit = key === 'kd' ? 100 : Math.max(1, ...numbers.map(Math.abs)) * 1.15;
+    const min = key === 'kd' ? 0 : -limit;
+    const max = key === 'kd' ? 100 : limit;
+    const y = value => top + (max - Number(value)) / (max - min) * (bottom - top);
+    const x = index => left + (right - left) * (index + 0.5) / Math.max(1, bars.length);
+    for (const tick of key === 'kd' ? [20, 50, 80] : [-limit, 0, limit]) {
+        svg.append(svgElement('line', { x1: left, x2: right, y1: y(tick), y2: y(tick), class: 'kline-indicator-grid' }));
+        svg.append(svgElement('text', { x: 674, y: y(tick) + 3, 'text-anchor': 'end', class: 'kline-indicator-axis' },
+            key === 'kd' ? String(tick) : formatKLineIndicator(tick)));
+    }
+    if (key === 'macd') bars.forEach((bar, index) => {
+        if (missing(bar.macdHistogram) || bar.isLive === true) return;
+        const zero = y(0), value = y(bar.macdHistogram);
+        svg.append(svgElement('rect', {
+            x: x(index) - Math.max(1, (right - left) / Math.max(1, bars.length) * 0.34),
+            y: Math.min(zero, value), width: Math.max(2, (right - left) / Math.max(1, bars.length) * 0.68),
+            height: Math.max(1, Math.abs(value - zero)),
+            class: bar.macdHistogram >= 0 ? 'kline-indicator-positive' : 'kline-indicator-negative'
+        }));
+    });
+    for (const [field, lineClass] of (key === 'kd'
+        ? [['kdK', 'kline-indicator-primary'], ['kdD', 'kline-indicator-secondary']]
+        : [['macdDif', 'kline-indicator-primary'], ['macdSignal', 'kline-indicator-secondary']])) {
+        let points = [];
+        const flush = () => {
+            if (points.length > 1) svg.append(svgElement('polyline', {
+                points: points.join(' '), class: `kline-indicator-line ${lineClass}`
+            }));
+            points = [];
+        };
+        bars.forEach((bar, index) => {
+            if (missing(bar[field]) || bar.isLive === true) flush();
+            else points.push(`${x(index)},${y(bar[field])}`);
+        });
+        flush();
+    }
+    return svg;
 }
 
 function setKLineButtonStates() {
@@ -22675,6 +22807,7 @@ function closeKLine(restoreFocus = true) {
     expandedKLineMarket = '';
     expandedKLineIsEtf = false;
     expandedKLinePeriod = 'day';
+    klineIndicatorVisibility = null;
     klineUseLatestDate = false;
     klineOverrideEndDate = null;
     klineAnchor = null;

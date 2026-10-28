@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
-// 台股週 K／月 K 的前端部分：解碼 schemaVersion 2 的位置陣列，以及把「還沒走完的最後一根」
+// 台股週 K／月 K 的前端部分：解碼 schemaVersion 2／3 的位置陣列，以及把「還沒走完的最後一根」
 // 用已載入的日 K 現組。公式的正本是 C# 的 PeriodKLineCalculator，兩邊對同一份
 // tests/fixtures/kline-period-parity.json（由獨立的 Python 參考實作產生）——這裡對的就是它。
 
@@ -140,6 +140,17 @@ function toV2Payload() {
 }
 
 const decoded = kline.decodeKLinePayload(toV2Payload());
+
+test('schemaVersion 3 的指標欄位依名稱解碼，舊版仍可讀', () => {
+    const payload = toV2Payload();
+    payload.schemaVersion = 3;
+    payload.fields.push('kdK', 'kdD', 'macdDif', 'macdSignal', 'macdHistogram');
+    payload.daily.forEach((row, index) => row.push(index === 0 ? 50 : null, null, null, null, null));
+    const result = kline.decodeKLinePayload(payload);
+    assert.equal(result.bars[0].kdK, 50);
+    assert.equal(result.bars[1].kdK, null);
+    assert.equal(result.bars.length, fixture.expected.daily.length);
+});
 
 test('schemaVersion 2 依檔頭欄位名稱還原成物件，沒有值的欄位是 null', () => {
     assert.equal(decoded.market, 'TW');

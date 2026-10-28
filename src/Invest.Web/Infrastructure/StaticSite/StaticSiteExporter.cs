@@ -5,6 +5,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Invest.Web.Domain.Stocks;
+using Invest.Web.Domain.Indicators;
 using Invest.Web.Features.Etfs.Dividends.Models;
 using Invest.Web.Features.Etfs.Dividends.Services;
 using Invest.Web.Features.StockTopics.Models;
@@ -681,7 +682,7 @@ public sealed class StaticSiteExporter(
 
             await WriteJsonAsync(
                 Path.Combine(directory, ticker + ".json"),
-                export,
+                WithIndicators(export),
                 cancellationToken);
             count++;
         }
@@ -772,7 +773,7 @@ public sealed class StaticSiteExporter(
                         RoundKLine(point.Ma240),
                         RoundKLine(point.TradingVolume)))]);
 
-                await WriteJsonAsync(Path.Combine(directory, symbol + ".json"), export, cancellationToken);
+                await WriteJsonAsync(Path.Combine(directory, symbol + ".json"), WithIndicators(export), cancellationToken);
                 count++;
             }
 
@@ -1560,6 +1561,17 @@ public sealed class StaticSiteExporter(
             var months = PeriodKLineHistoryMerger.Merge(
                 PeriodKLineCalculator.Calculate(adjustedRows, KLinePeriod.Month), rawTrading,
                 coverageDates, history, KLinePeriod.Month, tickerEvents, adjustmentThroughDate);
+            var dailyIndicators = KLineTechnicalIndicatorCalculator.Calculate(
+                adjustedRows.Where(row => row.State != AdjustedRowState.Rejected).ToArray(),
+                row => row.High, row => row.Low, row => row.Close);
+            var indicatorDates = adjustedRows.Where(row => row.State != AdjustedRowState.Rejected)
+                .Select(row => row.TradingDate).ToArray();
+            var dailyByDate = indicatorDates.Select((date, index) => (date, value: dailyIndicators[index]))
+                .ToDictionary(item => item.date, item => item.value);
+            var weekIndicators = KLineTechnicalIndicatorCalculator.Calculate(
+                weeks, row => row.High, row => row.Low, row => row.Close);
+            var monthIndicators = KLineTechnicalIndicatorCalculator.Calculate(
+                months, row => row.High, row => row.Low, row => row.Close);
 
             var export = new KLineFileExport(
                 KLineSchemaVersion,
@@ -1569,9 +1581,9 @@ public sealed class StaticSiteExporter(
                 tickerEvents.Length,
                 KLineDailyFields,
                 KLinePeriodFields,
-                [.. points.Select(KLineDailyRow)],
-                [.. weeks.Select(KLinePeriodRow)],
-                [.. months.Select(KLinePeriodRow)]);
+                [.. points.Select(point => KLineDailyRow(point, dailyByDate[point.TradingDate]))],
+                [.. weeks.Select((point, index) => KLinePeriodRow(point, weekIndicators[index]))],
+                [.. months.Select((point, index) => KLinePeriodRow(point, monthIndicators[index]))]);
 
             await WriteJsonAsync(
                 Path.Combine(directory, ticker + ".json"),
@@ -1584,17 +1596,18 @@ public sealed class StaticSiteExporter(
     }
 
     /// <summary>
-    /// K 線檔格式版本。2 = 位置陣列（<c>fields</c> 對應 <c>daily</c>，<c>periodFields</c> 對應
+    /// K 線檔格式版本。3 = 位置陣列加 KD／MACD（<c>fields</c> 對應 <c>daily</c>，<c>periodFields</c> 對應
     /// <c>weekly</c>、<c>monthly</c>）；舊版（物件陣列 <c>bars</c>）只剩美股、日韓與加密貨幣還在用。
     /// 前端的解碼層（site.js 的 decodeKLinePayload）依這個欄位決定怎麼讀。
     /// </summary>
-    internal const int KLineSchemaVersion = 2;
+    internal const int KLineSchemaVersion = 3;
 
     /// <summary>日 K 每一列的欄位順序。改順序或增減欄位時，前端解碼層是依名稱對應，不必同步改。</summary>
     internal static readonly string[] KLineDailyFields =
     [
         "date", "open", "high", "low", "close", "previousClose",
-        "ma5", "ma10", "ma20", "ma60", "ma240", "tradingVolume"
+        "ma5", "ma10", "ma20", "ma60", "ma240", "tradingVolume",
+        "kdK", "kdD", "macdDif", "macdSignal", "macdHistogram"
     ];
 
     /// <summary>
@@ -1604,10 +1617,11 @@ public sealed class StaticSiteExporter(
     internal static readonly string[] KLinePeriodFields =
     [
         "date", "endDate", "open", "high", "low", "close", "previousClose",
-        "ma5", "ma10", "ma20", "ma60", "ma240", "tradingVolume"
+        "ma5", "ma10", "ma20", "ma60", "ma240", "tradingVolume",
+        "kdK", "kdD", "macdDif", "macdSignal", "macdHistogram"
     ];
 
-    private static object?[] KLineDailyRow(DailyKLinePoint point) =>
+    private static object?[] KLineDailyRow(DailyKLinePoint point, KLineTechnicalIndicator indicator) =>
     [
         KLineDate(point.TradingDate),
         CompactKLine(point.Open),
@@ -1620,10 +1634,13 @@ public sealed class StaticSiteExporter(
         CompactKLine(point.Ma20),
         CompactKLine(point.Ma60),
         CompactKLine(point.Ma240),
-        CompactKLine(point.TradingVolume)
+        CompactKLine(point.TradingVolume),
+        CompactKLine(indicator.KdK), CompactKLine(indicator.KdD),
+        CompactKLine(indicator.MacdDif), CompactKLine(indicator.MacdSignal),
+        CompactKLine(indicator.MacdHistogram)
     ];
 
-    private static object?[] KLinePeriodRow(PeriodKLinePoint point) =>
+    private static object?[] KLinePeriodRow(PeriodKLinePoint point, KLineTechnicalIndicator indicator) =>
     [
         KLineDate(point.FirstTradingDate),
         KLineDate(point.LastTradingDate),
@@ -1637,7 +1654,10 @@ public sealed class StaticSiteExporter(
         CompactKLine(point.Ma20),
         CompactKLine(point.Ma60),
         CompactKLine(point.Ma240),
-        CompactKLine(point.TradingVolume)
+        CompactKLine(point.TradingVolume),
+        CompactKLine(indicator.KdK), CompactKLine(indicator.KdD),
+        CompactKLine(indicator.MacdDif), CompactKLine(indicator.MacdSignal),
+        CompactKLine(indicator.MacdHistogram)
     ];
 
     private static string KLineDate(DateOnly date)
@@ -2109,7 +2129,7 @@ public sealed class StaticSiteExporter(
 
             await WriteJsonAsync(
                 Path.Combine(directory, ticker + ".json"),
-                export,
+                WithIndicators(export),
                 cancellationToken);
             count++;
         }
@@ -2147,7 +2167,7 @@ public sealed class StaticSiteExporter(
                 startDate,
                 endDate);
 
-            return new MarketIndexKLineExport(
+            return WithIndicators(new MarketIndexKLineExport(
                 definition.Key,
                 definition.Label,
                 definition.TurnoverLabel,
@@ -2163,7 +2183,7 @@ public sealed class StaticSiteExporter(
                     RoundKLine(point.Ma20),
                     RoundKLine(point.Ma60),
                     RoundKLine(point.Ma240),
-                    RoundKLine(point.TradingValue)))]);
+                    RoundKLine(point.TradingValue)))]));
         }).ToArray();
 
         await WriteJsonAsync(
@@ -2178,6 +2198,40 @@ public sealed class StaticSiteExporter(
 
     private static decimal? RoundKLine(decimal? value)
         => value is { } number ? RoundKLine(number) : null;
+
+    private static KLineExport WithIndicators(KLineExport export)
+    {
+        var values = KLineTechnicalIndicatorCalculator.Calculate(
+            export.Bars, bar => bar.High, bar => bar.Low, bar => bar.Close);
+        return export with
+        {
+            Bars = export.Bars.Select((bar, index) => bar with
+            {
+                KdK = RoundKLine(values[index].KdK),
+                KdD = RoundKLine(values[index].KdD),
+                MacdDif = RoundKLine(values[index].MacdDif),
+                MacdSignal = RoundKLine(values[index].MacdSignal),
+                MacdHistogram = RoundKLine(values[index].MacdHistogram)
+            }).ToArray()
+        };
+    }
+
+    private static MarketIndexKLineExport WithIndicators(MarketIndexKLineExport export)
+    {
+        var values = KLineTechnicalIndicatorCalculator.Calculate(
+            export.Bars, bar => bar.High, bar => bar.Low, bar => bar.Close);
+        return export with
+        {
+            Bars = export.Bars.Select((bar, index) => bar with
+            {
+                KdK = RoundKLine(values[index].KdK),
+                KdD = RoundKLine(values[index].KdD),
+                MacdDif = RoundKLine(values[index].MacdDif),
+                MacdSignal = RoundKLine(values[index].MacdSignal),
+                MacdHistogram = RoundKLine(values[index].MacdHistogram)
+            }).ToArray()
+        };
+    }
 
     /// <summary>
     /// 收集時間表原封不動搬給前端。時間只有 <see cref="CollectionSchedule"/> 一份定義，
@@ -2553,7 +2607,14 @@ public sealed class StaticSiteExporter(
         decimal? Ma20,
         decimal? Ma60,
         decimal? Ma240,
-        decimal? TradingVolume);
+        decimal? TradingVolume)
+    {
+        public decimal? KdK { get; init; }
+        public decimal? KdD { get; init; }
+        public decimal? MacdDif { get; init; }
+        public decimal? MacdSignal { get; init; }
+        public decimal? MacdHistogram { get; init; }
+    }
 
     private sealed record MarketIndexKLineFileExport(
         IReadOnlyList<MarketIndexKLineExport> Markets);
@@ -2576,7 +2637,14 @@ public sealed class StaticSiteExporter(
         decimal? Ma20,
         decimal? Ma60,
         decimal? Ma240,
-        decimal? TradingValue);
+        decimal? TradingValue)
+    {
+        public decimal? KdK { get; init; }
+        public decimal? KdD { get; init; }
+        public decimal? MacdDif { get; init; }
+        public decimal? MacdSignal { get; init; }
+        public decimal? MacdHistogram { get; init; }
+    }
 
     private sealed record ScheduleExport(
         string IntradayStart,

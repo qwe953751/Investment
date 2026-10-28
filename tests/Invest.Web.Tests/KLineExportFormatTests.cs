@@ -6,7 +6,7 @@ using Invest.Web.Infrastructure.StaticSite;
 namespace Invest.Web.Tests;
 
 /// <summary>
-/// 台股 K 線檔（schemaVersion 2）：日 K、週 K、月 K 都是位置陣列，欄位名稱只在檔頭寫一次。
+/// 台股 K 線檔（schemaVersion 3）：日 K、週 K、月 K 都是位置陣列，欄位名稱只在檔頭寫一次。
 /// 網站離 GitHub Pages 的 1 GB 上限只剩幾十 MB，這個格式讓加上週／月 K 之後整體反而變小。
 /// 前端解碼層（site.js 的 decodeKLinePayload）依檔頭的欄位名稱對應，所以欄位順序可以演進。
 /// </summary>
@@ -89,13 +89,13 @@ public sealed class KLineExportFormatTests : IDisposable
 
         // decimal 會保留刻度（90.000、2405.00）；寫出前去掉尾端的 0，值不變、檔案變小。
         Assert.Contains(
-            "[\"2026-02-23\",90,90.9,83.7,84.6,null,null,null,null,null,null,10000]",
+            "[\"2026-02-23\",90,90.9,83.7,84.6,null,null,null,null,null,null,10000,",
             text,
             StringComparison.Ordinal);
 
         // 缺開高低的週期照樣輸出一列，開高低是 null，收盤保留供前端算均線。
         Assert.Contains(
-            "[\"2026-02-23\",\"2026-02-27\",null,null,null,87.3,null,null,null,null,null,null,66000]",
+            "[\"2026-02-23\",\"2026-02-27\",null,null,null,87.3,null,null,null,null,null,null,66000,",
             text,
             StringComparison.Ordinal);
         Assert.DoesNotContain(".0000", text, StringComparison.Ordinal);
@@ -153,6 +153,10 @@ public sealed class KLineExportFormatTests : IDisposable
         Assert.Equal(104, root.GetProperty("weekly").GetArrayLength());
         Assert.Equal("2024-10-07", root.GetProperty("weekly")[0][0].GetString());
         Assert.InRange(root.GetProperty("monthly").GetArrayLength(), 24, 25);
+        var dayFields = Strings(root.GetProperty("fields"));
+        var latestDay = root.GetProperty("daily")[root.GetProperty("daily").GetArrayLength() - 1];
+        Assert.Equal(JsonValueKind.Number, latestDay[Array.IndexOf(dayFields, "kdK")].ValueKind);
+        Assert.Equal(JsonValueKind.Number, latestDay[Array.IndexOf(dayFields, "macdHistogram")].ValueKind);
     }
 
     private static string[] Strings(JsonElement array)
@@ -169,7 +173,7 @@ public sealed class KLineExportFormatTests : IDisposable
         {
             foreach (var (field, position) in fields.Select((name, position) => (name, position)))
             {
-                var wanted = expected[index].GetProperty(field);
+                if (!expected[index].TryGetProperty(field, out var wanted)) continue;
                 var actual = rows[index][position];
                 var label = $"{rowsKey}[{index}].{field}";
 

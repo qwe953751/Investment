@@ -1,3 +1,5 @@
+using Invest.Web.Domain.Indicators;
+
 namespace Invest.Web.Infrastructure.MarketData.Overview;
 
 /// <summary>
@@ -426,38 +428,9 @@ public static class MarketOverviewCalculator
             return null;
         }
 
-        var fast = EmaSeries(closes, 12);
-        var slow = EmaSeries(closes, 26);
-        var macd = new decimal?[closes.Length];
-        var macdValues = new List<(int Index, decimal Value)>();
-
-        for (var index = 0; index < closes.Length; index++)
-        {
-            if (fast[index] is { } fastValue && slow[index] is { } slowValue)
-            {
-                macd[index] = fastValue - slowValue;
-                macdValues.Add((index, macd[index]!.Value));
-            }
-        }
-
-        if (macdValues.Count < 10)
-        {
-            return null;
-        }
-
-        var signal = new decimal?[closes.Length];
-        var signalValue = macdValues.Take(9).Average(item => item.Value);
-        signal[macdValues[8].Index] = signalValue;
-
-        for (var index = 9; index < macdValues.Count; index++)
-        {
-            signalValue = signalValue * 8m / 10m + macdValues[index].Value * 2m / 10m;
-            signal[macdValues[index].Index] = signalValue;
-        }
-
-        var histogram = Enumerable.Range(0, closes.Length)
-            .Where(index => macd[index] is not null && signal[index] is not null)
-            .Select(index => (Index: index, Value: macd[index]!.Value - signal[index]!.Value))
+        var histogram = KLineTechnicalIndicatorCalculator.CalculateMacd(closes)
+            .Where(point => point.MacdHistogram is not null)
+            .Select(point => point.MacdHistogram!.Value)
             .ToArray();
 
         if (histogram.Length < 2)
@@ -466,8 +439,8 @@ public static class MarketOverviewCalculator
         }
 
         return ClampScore(
-            (histogram[^1].Value > 0m ? 6m : 0m)
-            + (histogram[^1].Value > histogram[^2].Value ? 4m : 0m));
+            (histogram[^1] > 0m ? 6m : 0m)
+            + (histogram[^1] > histogram[^2] ? 4m : 0m));
     }
 
     private static decimal? CalculateRsiScore(IReadOnlyList<PricePoint> series)

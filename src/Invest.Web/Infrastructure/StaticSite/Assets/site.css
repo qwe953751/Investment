@@ -5207,6 +5207,110 @@ td.stock-name.stock-name-change-down {
     height: auto;
 }
 
+.kline-indicators {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+}
+
+.kline-indicator-toolbar,
+.kline-indicator-panel-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.kline-indicator-toolbar {
+    margin-bottom: 7px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.kline-indicator-options {
+    display: inline-flex;
+    gap: 5px;
+}
+
+.kline-indicator-toggle {
+    padding: 3px 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    font: inherit;
+    cursor: pointer;
+}
+
+.kline-indicator-toggle[aria-pressed="true"] {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.kline-indicator-panels {
+    display: grid;
+    gap: 7px;
+}
+
+.kline-indicator-panel {
+    padding: 7px 8px 8px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+}
+
+.kline-indicator-panel[hidden] {
+    display: none;
+}
+
+.kline-indicator-panel-heading {
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.kline-indicator-panel-heading span,
+.kline-indicator-plot {
+    color: var(--text-muted);
+}
+
+.kline-indicator-plot {
+    display: grid;
+    min-height: 76px;
+    margin-top: 5px;
+    place-items: center;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+}
+
+.kline-indicator-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.kline-indicator-grid {
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.kline-indicator-axis,
+.kline-indicator-panel small {
+    fill: var(--text-muted);
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
+.kline-indicator-line {
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+
+.kline-indicator-primary { stroke: #0d9488; }
+.kline-indicator-secondary { stroke: #dc4c4c; }
+.kline-indicator-positive { fill: #d75050; }
+.kline-indicator-negative { fill: #2ca66a; }
+
 .daily-kline-grid line,
 .daily-kline-grid-line {
     stroke: #dbe4ef;
