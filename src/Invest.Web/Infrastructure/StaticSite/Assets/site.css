@@ -4893,20 +4893,24 @@ button.market-structure-weight-cell {
     border-bottom: none;
 }
 
-/* 鎖定的個股。左側色條讓它在滿滿的數字裡一眼就能找到。 */
-.ranking-table tbody tr.locked {
+/* 鎖定的個股與最近跳轉目標沿用相同標記。 */
+.ranking-table tbody tr.locked,
+.ranking-table tbody tr.jump-target-mark {
     background: var(--accent-bg);
 }
 
-.ranking-table tbody tr.locked:hover {
+.ranking-table tbody tr.locked:hover,
+.ranking-table tbody tr.jump-target-mark:hover {
     background: var(--accent-bg);
 }
 
-.ranking-table tbody tr.locked td {
+.ranking-table tbody tr.locked td,
+.ranking-table tbody tr.jump-target-mark td {
     border-bottom-color: #bfdbfe;
 }
 
-.ranking-table tbody tr.locked td:first-child {
+.ranking-table tbody tr.locked td:first-child,
+.ranking-table tbody tr.jump-target-mark td:first-child {
     box-shadow: inset 3px 0 0 #2563eb;
 }
 

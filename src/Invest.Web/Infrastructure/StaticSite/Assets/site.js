@@ -20294,6 +20294,7 @@ function toLockedRankText(ticker) {
 /// 已顯示的標的直接定位；榜外或被篩掉的標的改到自訂搜尋，保留來源時段與日期。
 function jumpToRankedRow(ticker, forceCustomSearch = false) {
     flushPendingTableRows();
+    document.querySelector('#table-body tr.jump-target-mark')?.classList.remove('jump-target-mark');
     const row = forceCustomSearch
         ? null
         : document.querySelector(`#table-body tr[data-ticker="${CSS.escape(ticker)}"]`);
@@ -20319,6 +20320,7 @@ function jumpToRankedRow(ticker, forceCustomSearch = false) {
     }
 
     row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.classList.add('jump-target-mark');
     row.classList.add('jump-highlight');
     window.setTimeout(() => row.classList.remove('jump-highlight'), 1500);
 }
