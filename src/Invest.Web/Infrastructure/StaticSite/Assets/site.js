@@ -2266,6 +2266,16 @@ const NOTE_IMAGE_SOURCE_EXTENSIONS = {
 // 僅供 review-20260826-notes-v1 本機預覽閱讀，不會寫入資料庫。
 const NOTES_LOCAL_PREVIEW_ITEMS = [
     {
+        id: 'preview-note-86',
+        noteNumber: 86,
+        title: '【Supabase】流量過多',
+        category: '功能',
+        status: '待處理',
+        content: '1.Log Ingestion\n2.Log Query\n\n我認為上面兩個項目可能有異常，需知道為什麼用量這麼大。\n\n需求：在網站新增觀測站',
+        attachments: [{ name: '22222.PNG', path: 'note-image-preview-sample.svg', previewUrl: 'note-image-preview-sample.svg' }],
+        updatedAt: '2026-10-15T17:47:00+08:00'
+    },
+    {
         id: 'preview-note-24',
         noteNumber: 24,
         title: '【資產】多一個頁籤',
@@ -5504,9 +5514,14 @@ function renderPrivateNoteImages(draft) {
     const appendCard = (imageInfo, previewUrl, remove, isStored) => {
         const figure = document.createElement('figure');
         figure.className = 'notes-image-card';
+        const openButton = document.createElement('button');
+        openButton.type = 'button';
+        openButton.className = 'notes-image-preview-button';
+        openButton.setAttribute('aria-label', `查看原圖：${imageInfo.name || '私人筆記圖片'}`);
         const image = document.createElement('img');
         image.alt = imageInfo.name || '私人筆記圖片';
         image.loading = 'lazy';
+        const selectedId = draft.id;
         if (previewUrl) {
             image.src = previewUrl;
         } else if (isStored) {
@@ -5516,7 +5531,6 @@ function renderPrivateNoteImages(draft) {
                 image.src = cached;
             } else {
                 image.alt = `${imageInfo.name || '私人筆記圖片'}（載入中）`;
-                const selectedId = draft.id;
                 void loadPrivateNoteImageObjectUrl(imageInfo.path)
                     .then(url => {
                         if (!canAccessPrivateNotes() || privateNotesSelectedId !== selectedId) {
@@ -5541,6 +5555,24 @@ function renderPrivateNoteImages(draft) {
                     });
             }
         }
+        openButton.append(image);
+        openButton.addEventListener('click', () => {
+            void (async () => {
+                try {
+                    const source = previewUrl || (isStored
+                        ? await loadPrivateNoteImageObjectUrl(imageInfo.path)
+                        : '');
+                    if (isStored && (!canAccessPrivateNotes() || privateNotesSelectedId !== selectedId)) {
+                        return;
+                    }
+                    showNoteImagePreview(source, imageInfo.name || '私人筆記圖片');
+                } catch {
+                    if (canAccessPrivateNotes() && privateNotesSelectedId === selectedId) {
+                        el('private-notes-images-status').textContent = '圖片讀取失敗，請確認登入狀態後重試。';
+                    }
+                }
+            })();
+        });
 
         const caption = document.createElement('figcaption');
         caption.textContent = imageInfo.name || '圖片';
@@ -5550,7 +5582,7 @@ function renderPrivateNoteImages(draft) {
         removeButton.textContent = '×';
         removeButton.setAttribute('aria-label', `移除${imageInfo.name || '圖片'}`);
         removeButton.addEventListener('click', remove);
-        figure.append(image, caption, removeButton);
+        figure.append(openButton, caption, removeButton);
         host.append(figure);
     };
 
@@ -6513,6 +6545,8 @@ function renderNotes() {
         return;
     }
 
+    wireNotesImagePreview();
+
     const podcastPreview = el('podcast-notes-preview');
     const podcastSubtabs = el('podcast-notes-subtabs');
     const legacyLayout = el('legacy-notes-layout');
@@ -6714,10 +6748,19 @@ function renderNoteImages(draft) {
         const figure = document.createElement('figure');
         figure.className = 'notes-image-card';
 
+        const source = previewUrl || imageInfo.previewUrl || noteImagePublicUrl(imageInfo.path);
+        const openButton = document.createElement('button');
+        openButton.type = 'button';
+        openButton.className = 'notes-image-preview-button';
+        openButton.setAttribute('aria-label', `查看原圖：${imageInfo.name || '筆記圖片'}`);
         const image = document.createElement('img');
-        image.src = previewUrl || noteImagePublicUrl(imageInfo.path);
+        if (source) {
+            image.src = source;
+        }
         image.alt = imageInfo.name || '筆記圖片';
         image.loading = 'lazy';
+        openButton.append(image);
+        openButton.addEventListener('click', () => showNoteImagePreview(source, imageInfo.name || '筆記圖片'));
 
         const caption = document.createElement('figcaption');
         caption.textContent = imageInfo.name || '圖片';
@@ -6729,7 +6772,7 @@ function renderNoteImages(draft) {
         removeButton.setAttribute('aria-label', `移除${imageInfo.name || '圖片'}`);
         removeButton.addEventListener('click', remove);
 
-        figure.append(image, caption, removeButton);
+        figure.append(openButton, caption, removeButton);
         host.append(figure);
     };
 
@@ -6755,6 +6798,39 @@ function renderNoteImages(draft) {
             notesImagesStatus = '已取消加入這張圖片。';
             renderNoteEditor();
         }));
+}
+
+function wireNotesImagePreview() {
+    const dialog = el('notes-image-dialog');
+    if (!dialog || dialog.dataset.wired === 'true') {
+        return;
+    }
+
+    dialog.dataset.wired = 'true';
+    el('notes-image-dialog-close').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('click', event => {
+        if (event.target === dialog) {
+            dialog.close();
+        }
+    });
+    dialog.addEventListener('close', () => {
+        el('notes-image-dialog-image').removeAttribute('src');
+    });
+}
+
+function showNoteImagePreview(source, name) {
+    if (!source) {
+        return;
+    }
+
+    wireNotesImagePreview();
+    el('notes-image-dialog-image').src = source;
+    el('notes-image-dialog-image').alt = name;
+    el('notes-image-dialog-caption').textContent = name;
+    const dialog = el('notes-image-dialog');
+    if (!dialog.open) {
+        dialog.showModal();
+    }
 }
 
 function renderNoteEditor() {

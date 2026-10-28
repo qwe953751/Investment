@@ -1428,6 +1428,21 @@ body {
     object-fit: contain;
 }
 
+.notes-image-preview-button {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    cursor: zoom-in;
+}
+
+.notes-image-preview-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+
 .notes-image-card figcaption {
     margin-top: 6px;
     overflow: hidden;
@@ -1472,6 +1487,60 @@ body {
 .notes-images-status {
     min-height: 1.4em;
     margin: 6px 0 0;
+}
+
+.notes-image-dialog {
+    width: fit-content;
+    max-width: 96vw;
+    max-height: 94vh;
+    padding: 12px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 20px 70px rgb(0 0 0 / 35%);
+}
+
+.notes-image-dialog::backdrop {
+    background: rgb(15 23 42 / 78%);
+    backdrop-filter: blur(2px);
+}
+
+.notes-image-dialog img {
+    display: block;
+    max-width: calc(96vw - 24px);
+    max-height: 84vh;
+    object-fit: contain;
+}
+
+.notes-image-dialog p {
+    margin: 8px 36px 0 0;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.notes-image-dialog-close {
+    position: sticky;
+    top: 0;
+    float: right;
+    z-index: 1;
+    width: 32px;
+    height: 32px;
+    margin: -2px -2px 0 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 50%;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.notes-image-dialog-close:hover,
+.notes-image-dialog-close:focus-visible {
+    background: var(--surface-alt);
 }
 
 .notes-editor-actions {

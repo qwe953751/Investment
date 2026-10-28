@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820">
+  <rect width="1280" height="820" fill="#f5f7fb"/>
+  <rect width="1280" height="66" fill="#fff"/>
+  <path d="M0 65.5h1280" stroke="#dce3ed"/>
+  <circle cx="38" cy="33" r="12" fill="#3ecf8e"/>
+  <text x="62" y="40" fill="#25344a" font-family="Arial,sans-serif" font-size="22" font-weight="700">Project overview</text>
+  <text x="1060" y="39" fill="#617089" font-family="Arial,sans-serif" font-size="15">Usage · October 2026</text>
+  <text x="42" y="114" fill="#26364d" font-family="Arial,sans-serif" font-size="25" font-weight="700">Usage overview</text>
+  <text x="42" y="143" fill="#738099" font-family="Arial,sans-serif" font-size="15">Review request volume and query activity</text>
+  <g font-family="Arial,sans-serif">
+    <rect x="42" y="170" width="380" height="138" rx="10" fill="#fff" stroke="#dce3ed"/>
+    <text x="66" y="205" fill="#738099" font-size="15">Log Ingestion</text>
+    <text x="66" y="254" fill="#25344a" font-size="36" font-weight="700">1.28 M</text>
+    <text x="313" y="252" fill="#c2413a" font-size="14">↑ 24.6%</text>
+    <rect x="450" y="170" width="380" height="138" rx="10" fill="#fff" stroke="#dce3ed"/>
+    <text x="474" y="205" fill="#738099" font-size="15">Log Query</text>
+    <text x="474" y="254" fill="#25344a" font-size="36" font-weight="700">8.42 M</text>
+    <text x="720" y="252" fill="#c2413a" font-size="14">↑ 18.1%</text>
+    <rect x="858" y="170" width="380" height="138" rx="10" fill="#fff" stroke="#dce3ed"/>
+    <text x="882" y="205" fill="#738099" font-size="15">Database size</text>
+    <text x="882" y="254" fill="#25344a" font-size="36" font-weight="700">3.6 GB</text>
+    <text x="1123" y="252" fill="#31805c" font-size="14">Healthy</text>
+  </g>
+  <rect x="42" y="336" width="1196" height="434" rx="10" fill="#fff" stroke="#dce3ed"/>
+  <text x="66" y="374" fill="#25344a" font-family="Arial,sans-serif" font-size="18" font-weight="700">Requests by day</text>
+  <text x="66" y="402" fill="#738099" font-family="Arial,sans-serif" font-size="14">Last 30 days</text>
+  <g stroke="#e7ecf3" stroke-width="1">
+    <path d="M92 455h1096M92 522h1096M92 589h1096M92 656h1096"/>
+  </g>
+  <g fill="#8793a8" font-family="Arial,sans-serif" font-size="12">
+    <text x="60" y="459">12k</text><text x="60" y="526">9k</text><text x="60" y="593">6k</text><text x="60" y="660">3k</text>
+    <text x="92" y="700">Oct 01</text><text x="320" y="700">Oct 07</text><text x="548" y="700">Oct 13</text><text x="776" y="700">Oct 19</text><text x="1004" y="700">Oct 25</text>
+  </g>
+  <path d="M95 625L151 610L207 615L263 574L319 588L375 557L431 569L487 535L543 548L599 511L655 523L711 477L767 491L823 462L879 475L935 431L991 453L1047 414L1103 439L1184 397V656H95Z" fill="#3ecf8e" fill-opacity=".14"/>
+  <path d="M95 625L151 610L207 615L263 574L319 588L375 557L431 569L487 535L543 548L599 511L655 523L711 477L767 491L823 462L879 475L935 431L991 453L1047 414L1103 439L1184 397" fill="none" stroke="#25a875" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="1047" cy="414" r="6" fill="#fff" stroke="#25a875" stroke-width="3"/>
+</svg>
