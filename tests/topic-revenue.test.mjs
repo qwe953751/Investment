@@ -45,6 +45,14 @@ test('族群成員營收增減沿用營收彈窗按鈕', () => {
     assert.match(source, /revenueCell\.append\(revenueButton\)/);
 });
 
+test('族群成員全市場名次按鈕呼叫排行榜跳轉', () => {
+    const source = functionSource('makeTopicMemberTable');
+
+    assert.match(source, /const rankButton = document\.createElement\('button'\)/);
+    assert.match(source, /rankButton\.addEventListener\('click', \(\) => jumpToTopicMemberRank\(member\)\)/);
+    assert.match(source, /rankButton\.setAttribute\('aria-label'/);
+});
+
 test('所有營收檢視共用刷新與重繪入口', () => {
     const refresh = functionSource('wireRefreshButton');
     const intraday = functionSource('ensureIntradaySnapshot');

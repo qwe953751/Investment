@@ -68,6 +68,31 @@ function jumpHarness(view, row = null, extra = {}) {
     vm.runInContext(['isCustomIntradayView', 'isEtfIntradayView', 'isIntradayTopicDataView', 'flushPendingTableRows', 'jumpToRankedRow'].map(fn).join('\n'), c);
     return c;
 }
+
+function topicRankHarness({ intraday = false, row = null } = {}) {
+    const c = {
+        state: { view: 'topics', topicPeriod: intraday ? 'intraday' : 5, topicTab: 'heat', date: '2026-10-08' },
+        TOP_COUNT: 100,
+        INTRADAY_TOPIC_PERIOD: 'intraday',
+        INTRADAY_TOPIC_TABS: new Set(['heat']),
+        PERIODS: [{ days: 1 }, { days: 5 }],
+        settingsMarkers: { dailyDate: '2026-10-14' },
+        dates: ['2026-10-14'],
+        topicPeriod: () => ({ periodDays: 5 }),
+        document: { querySelector: () => row }, CSS: { escape: value => value }, pendingTableRows: null,
+        rankingSelectionKey: () => JSON.stringify(c.state),
+        flushPendingTableRows() {},
+        window: { setTimeout: callback => callback() },
+        update(changes) { c.changes = changes; Object.assign(c.state, changes); return true; }
+    };
+    vm.createContext(c);
+    vm.runInContext([
+        'isCustomIntradayView', 'isEtfIntradayView', 'isIntradayTopicDataView',
+        'flushPendingTableRows', 'jumpToRankedRow', 'finishTopicRankingJump', 'jumpToTopicMemberRank'
+    ].map(fn).join('\n'), c);
+    return c;
+}
+
 test('第100名仍在表格直接定位、加亮並還原，不更換頁籤', () => {
     const calls = [];
     const row = { scrollIntoView: options => calls.push(options.block), classList: { add: x => calls.push(x), remove: x => calls.push(x) } };
@@ -102,6 +127,44 @@ test('ETF鎖定跳轉保留ETF頁及來源時段', () => {
     assert.equal(c.state.view, 'etf');
     assert.equal(c.state.etfSearch, '0050');
     assert.equal(c.state.etfSession, 'intraday');
+});
+
+test('族群日線前100名切到相同期間的全市場成交熱度排行並定位', () => {
+    const calls = [];
+    const row = { scrollIntoView: options => calls.push(options.block), classList: { add: value => calls.push(value), remove: value => calls.push(value) } };
+    const c = topicRankHarness({ row });
+    c.jumpToTopicMemberRank({ ticker: '2330', rank: 13 });
+
+    assert.equal(c.state.view, 'daily');
+    assert.equal(c.state.date, '2026-10-14');
+    assert.equal(c.state.period, 5);
+    assert.equal(c.state.comparisonMode, 'range');
+    assert.equal(c.state.mode, 'heat');
+    assert.equal(c.state.market, 'all');
+    assert.equal(c.state.threshold, 0);
+
+    c.finishTopicRankingJump();
+    assert.deepEqual(calls, ['center', 'jump-highlight', 'jump-highlight']);
+});
+
+test('族群盤中前100名切到盤中排行', () => {
+    const c = topicRankHarness({ intraday: true });
+    c.jumpToTopicMemberRank({ ticker: '2330', rank: 13 });
+    assert.equal(c.state.view, 'intraday');
+    assert.equal(c.state.mode, 'heat');
+    assert.equal(c.state.market, 'all');
+    assert.equal(c.state.threshold, 0);
+});
+
+test('族群第101名起即使排行榜有同代號也改走自訂搜尋', () => {
+    const staleRow = { scrollIntoView() { assert.fail('101名不能跳到舊排行列'); }, classList: { add() {}, remove() {} } };
+    const c = topicRankHarness({ intraday: true, row: staleRow });
+    c.jumpToTopicMemberRank({ ticker: '6173', rank: 101 });
+    assert.equal(c.state.view, 'custom');
+    assert.equal(c.state.customSource, 'intraday');
+    assert.equal(c.state.customSearch, '6173');
+    assert.equal(c.state.customSearchDraft, '6173');
+    assert.equal(c.state.customThreshold, 0);
 });
 
 for (const available of [true, false]) {

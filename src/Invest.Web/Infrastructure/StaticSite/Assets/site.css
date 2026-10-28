@@ -6722,6 +6722,25 @@ td.stock-name.stock-name-change-down {
     outline: none;
 }
 
+.topic-member-rank-button {
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: #365b92;
+    font: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+
+.topic-member-rank-button:hover,
+.topic-member-rank-button:focus-visible {
+    color: #1d4ed8;
+    outline: 2px solid #93c5fd;
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
 .topic-member-table tbody tr:last-child td {
     border-bottom: none;
 }

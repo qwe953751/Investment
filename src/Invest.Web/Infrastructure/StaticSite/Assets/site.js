@@ -20292,9 +20292,11 @@ function toLockedRankText(ticker) {
 }
 
 /// 已顯示的標的直接定位；榜外或被篩掉的標的改到自訂搜尋，保留來源時段與日期。
-function jumpToRankedRow(ticker) {
+function jumpToRankedRow(ticker, forceCustomSearch = false) {
     flushPendingTableRows();
-    const row = document.querySelector(`#table-body tr[data-ticker="${CSS.escape(ticker)}"]`);
+    const row = forceCustomSearch
+        ? null
+        : document.querySelector(`#table-body tr[data-ticker="${CSS.escape(ticker)}"]`);
 
     if (!row) {
         const session = state.view === 'intraday' || isCustomIntradayView() || isEtfIntradayView()
@@ -20319,6 +20321,71 @@ function jumpToRankedRow(ticker) {
     row.scrollIntoView({ behavior: 'smooth', block: 'center' });
     row.classList.add('jump-highlight');
     window.setTimeout(() => row.classList.remove('jump-highlight'), 1500);
+}
+
+let pendingTopicRankingJump = null;
+
+/// 排行表完成載入後再定位；切離排行或改動選擇時取消過期跳轉。
+function finishTopicRankingJump() {
+    const pending = pendingTopicRankingJump;
+
+    if (pending === null) {
+        return;
+    }
+
+    if (pending.view !== state.view || pending.selectionKey !== rankingSelectionKey()) {
+        pendingTopicRankingJump = null;
+        return;
+    }
+
+    flushPendingTableRows();
+    pendingTopicRankingJump = null;
+    jumpToRankedRow(pending.ticker);
+}
+
+function jumpToTopicMemberRank(member) {
+    const rank = Number(member.rank);
+    pendingTopicRankingJump = null;
+
+    if (!Number.isInteger(rank) || rank < 1) {
+        return;
+    }
+
+    if (rank > TOP_COUNT) {
+        jumpToRankedRow(member.ticker, true);
+        return;
+    }
+
+    const intraday = isIntradayTopicDataView();
+    const changes = {
+        view: intraday ? 'intraday' : 'daily',
+        comparisonMode: 'range',
+        mode: 'heat',
+        market: 'all',
+        threshold: 0
+    };
+
+    if (!intraday) {
+        const periodDays = topicPeriod()?.periodDays ?? state.topicPeriod;
+        const latestDate = settingsMarkers?.dailyDate;
+
+        if (PERIODS.some(period => period.days === periodDays)) {
+            changes.period = periodDays;
+        }
+
+        if (dates.includes(latestDate)) {
+            changes.date = latestDate;
+        }
+    }
+
+    pendingTopicRankingJump = { ticker: member.ticker, view: changes.view, selectionKey: '' };
+
+    if (!update(changes)) {
+        pendingTopicRankingJump = null;
+        return;
+    }
+
+    pendingTopicRankingJump.selectionKey = rankingSelectionKey();
 }
 
 function renderLockRow(focusInput = false) {
@@ -23846,12 +23913,14 @@ function renderTable() {
                 flushPendingTableRows();
             }
         }, 0));
+        finishTopicRankingJump();
         return;
     }
 
     refreshKLinePopover();
     refreshRevenuePopover();
     jumpToCustomSearchResult();
+    finishTopicRankingJump();
 }
 
 /// 把還沒補上的表格列一次畫完。點擊鎖定列要在表格裡找那一列，找之前先補完，免得誤判成「不在榜上」。
@@ -29803,7 +29872,22 @@ function makeTopicMemberTable(members, onSortChanged = null) {
 
         const rank = document.createElement('td');
         rank.className = 'numeric';
-        rank.textContent = missing(member.rank) ? '—' : member.rank;
+        const rankValue = Number(member.rank);
+
+        if (!Number.isInteger(rankValue) || rankValue < 1) {
+            rank.textContent = '—';
+        } else {
+            const rankButton = document.createElement('button');
+            rankButton.type = 'button';
+            rankButton.className = 'topic-member-rank-button';
+            rankButton.textContent = String(rankValue);
+            rankButton.dataset.hint = rankValue <= TOP_COUNT
+                ? '點擊跳至全市場成交熱度排行榜並定位這檔標的。'
+                : '已超過前 100 名；點擊後到自訂頁搜尋這檔標的。';
+            rankButton.setAttribute('aria-label', `第 ${rankValue} 名，跳至排行榜查看 ${member.ticker} ${memberName}`);
+            rankButton.addEventListener('click', () => jumpToTopicMemberRank(member));
+            rank.append(rankButton);
+        }
 
         memberRow.append(ticker, name, share, change, revenueCell, highMonthsCell, rank);
         body.append(memberRow);
