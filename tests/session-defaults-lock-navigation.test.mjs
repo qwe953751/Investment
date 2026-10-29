@@ -99,7 +99,7 @@ test('第100名仍在表格直接定位、加亮並還原，不更換頁籤', ()
     const row = { scrollIntoView: options => calls.push(options.block), classList: { add: x => calls.push(x), remove: x => calls.push(x) } };
     const c = jumpHarness('daily', row);
     c.jumpToRankedRow('2330');
-    assert.deepEqual(calls, ['jump-target-mark', 'center', 'jump-target-mark', 'jump-highlight', 'jump-highlight']);
+    assert.deepEqual(calls, ['center', 'jump-highlight', 'jump-highlight']);
     assert.equal(c.changes, undefined);
 });
 for (const view of ['daily', 'intraday']) {
@@ -145,27 +145,14 @@ test('族群日線前100名切到相同期間的全市場成交熱度排行並�
     assert.equal(c.state.threshold, 0);
 
     c.finishTopicRankingJump();
-    assert.deepEqual(calls, ['jump-target-mark', 'center', 'jump-target-mark', 'jump-highlight', 'jump-highlight']);
+    assert.deepEqual(calls, ['center', 'jump-highlight', 'jump-highlight']);
 });
 
-test('族群名次跳轉後保留與鎖定列一致的底色標記', () => {
-    const classes = new Set();
-    const row = {
-        scrollIntoView() {},
-        classList: { add: value => classes.add(value), remove: value => classes.delete(value) }
-    };
-    const c = topicRankHarness({ row });
-    c.jumpToTopicMemberRank({ ticker: '2330', rank: 13 });
-    c.finishTopicRankingJump();
-
-    assert.equal(classes.has('jump-target-mark'), true);
-    assert.equal(classes.has('jump-highlight'), false);
-    assert.match(styleSource, /\.ranking-table tbody tr\.locked,\s*\.ranking-table tbody tr\.jump-target-mark\s*\{\s*background:\s*var\(--accent-bg\);/);
-
-    const highlightRule = styleSource.indexOf('.ranking-table tbody tr.jump-highlight td {');
-    const markedCellRule = styleSource.lastIndexOf('.ranking-table tbody tr.jump-target-mark td {');
-    assert.ok(markedCellRule > highlightRule);
-    assert.match(styleSource.slice(markedCellRule, styleSource.indexOf('}', markedCellRule)), /background:\s*var\(--accent-bg\);/);
+test('排行榜鎖定列維持淺藍；跳轉沿用短暫黃色閃示', () => {
+    assert.match(styleSource, /\.ranking-table tbody tr\.locked\s*\{\s*background:\s*var\(--accent-bg\);/);
+    assert.match(styleSource, /\.ranking-table tbody tr\.jump-highlight td\s*\{\s*background:\s*#fef3c7;\s*transition:\s*background 1\.5s ease;/);
+    assert.match(styleSource, /\.ranking-table tbody tr\.jump-highlight td\.stock-name\s*\{\s*background:\s*#fef3c7;/);
+    assert.doesNotMatch(styleSource, /\.ranking-table tbody tr\.jump-target-mark/);
 });
 
 test('族群盤中前100名切到盤中排行', () => {

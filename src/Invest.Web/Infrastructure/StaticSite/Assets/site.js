@@ -20300,7 +20300,6 @@ function toLockedRankText(ticker) {
 /// 已顯示的標的直接定位；榜外或被篩掉的標的改到自訂搜尋，保留來源時段與日期。
 function jumpToRankedRow(ticker, forceCustomSearch = false) {
     flushPendingTableRows();
-    document.querySelector('#table-body tr.jump-target-mark')?.classList.remove('jump-target-mark');
     const row = forceCustomSearch
         ? null
         : document.querySelector(`#table-body tr[data-ticker="${CSS.escape(ticker)}"]`);
@@ -20326,7 +20325,6 @@ function jumpToRankedRow(ticker, forceCustomSearch = false) {
     }
 
     row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    row.classList.add('jump-target-mark');
     row.classList.add('jump-highlight');
     window.setTimeout(() => row.classList.remove('jump-highlight'), 1500);
 }
@@ -21232,6 +21230,9 @@ function indexKLinePriceRange(bars) {
     };
 }
 
+const KLINE_ASSET_PLOT = Object.freeze({ width: 600, left: 16, right: 536, axisX: 544, axisAnchor: 'start' });
+const KLINE_INDEX_PLOT = Object.freeze({ width: 680, left: 62, right: 666, axisX: 54, axisAnchor: 'end' });
+
 function renderIndexKLineLegend(bars) {
     const legend = document.createElement('div');
     legend.className = 'daily-kline-legend index-kline-legend';
@@ -21258,11 +21259,9 @@ function renderIndexKLineLegend(bars) {
     return legend;
 }
 
-function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummary) {
-    const width = 680;
+function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummary, crosshair) {
+    const { width, left, right, axisX, axisAnchor } = KLINE_INDEX_PLOT;
     const height = 440;
-    const left = 62;
-    const right = 666;
     const top = 22;
     const priceBottom = 254;
     const volumeTop = 294;
@@ -21303,7 +21302,7 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummar
         svg.append(
             svgElement('line', { class: 'daily-kline-grid-line', x1: left, x2: right, y1: lineY, y2: lineY }),
             svgElement('text', {
-                class: 'daily-kline-axis', x: left - 8, y: lineY + 4, 'text-anchor': 'end'
+                class: 'daily-kline-axis', x: axisX, y: lineY + 4, 'text-anchor': axisAnchor
             }, toFixedText(price, 2)));
     }
 
@@ -21383,7 +21382,7 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummar
             class: 'daily-kline-grid-line', x1: left, x2: right, y1: volumeBottom, y2: volumeBottom
         }),
         svgElement('text', {
-            class: 'daily-kline-axis', x: left - 8, y: volumeTop + 4, 'text-anchor': 'end'
+            class: 'daily-kline-axis', x: axisX, y: volumeTop + 4, 'text-anchor': axisAnchor
         }, `${toBillionText(maxVolume)} 億`));
 
     const labels = bars.length <= 3
@@ -21413,6 +21412,10 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummar
         lowerLabel: turnoverLabel,
         formatLower: value => `${toBillionText(value)} 億`
     }, referenceSummary);
+    crosshair?.register(svg, {
+        width, left, right, x,
+        spans: [[top, priceBottom], [volumeTop, volumeBottom]]
+    });
 
     return svg;
 }
@@ -21486,11 +21489,17 @@ function renderIndexKLinePopover(market, anchor) {
                 { key: 'price', label: 'K棒' },
                 { key: 'turnover', label: '成交金額' }
             ]);
+        const crosshair = createKLineCrosshair(bars, card, {
+            dateLabel: bar => klineBarReferenceLabel(bar, 'day'),
+            volumeField: 'tradingValue',
+            volumeLabel: data.turnoverLabel,
+            formatVolume: value => `${toBillionText(value)} 億`
+        });
         card.append(
             renderIndexKLineLegend(bars),
             referenceControls.element,
-            renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars, referenceControls.status),
-            renderKLineTechnicalIndicators(bars, 'day'));
+            renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars, referenceControls.status, crosshair),
+            renderKLineTechnicalIndicators(bars, 'day', KLINE_INDEX_PLOT, crosshair));
     }
 
     popover.append(card);
@@ -21949,6 +21958,102 @@ function renderKLineReferenceControls(options) {
     return { element: controls, status };
 }
 
+function createKLineCrosshair(bars, card, options) {
+    const guides = [];
+    const readouts = new Set();
+    const tooltip = document.createElement('div');
+    tooltip.className = 'daily-kline-hover-tooltip';
+    tooltip.setAttribute('role', 'tooltip');
+    tooltip.hidden = true;
+    card.append(tooltip);
+
+    const setReadouts = index => readouts.forEach(update => update(index));
+    const hide = () => {
+        guides.forEach(({ lines }) => lines.forEach(line => line.setAttribute('visibility', 'hidden')));
+        tooltip.hidden = true;
+        setReadouts(null);
+    };
+    const show = (index, event) => {
+        const bar = bars[index];
+        if (!bar) return;
+
+        guides.forEach(({ lines, x }) => {
+            const position = x(index);
+            lines.forEach(line => {
+                line.setAttribute('x1', position);
+                line.setAttribute('x2', position);
+                line.setAttribute('visibility', 'visible');
+            });
+        });
+
+        const price = value => missing(value) || !Number.isFinite(Number(value))
+            ? '—'
+            : toFixedText(value, 2);
+        const volume = bar[options.volumeField];
+        const closeValue = missing(bar.close) ? null : Number(bar.close);
+        const change = closeValue === null || !Number.isFinite(closeValue)
+            ? null
+            : assetChangePercent(closeValue, Number(bar.previousClose));
+        tooltip.textContent = [
+            `${options.dateLabel(bar)}${bar.isLive === true ? '（盤中）' : ''}`,
+            `開 ${price(bar.open)}　高 ${price(bar.high)}`,
+            `低 ${price(bar.low)}　收 ${price(bar.close)}${change === null ? '' : `　${assetHoldingPriceChangeText(change)}`}`,
+            `${options.volumeLabel} ${missing(volume) || !Number.isFinite(Number(volume)) ? '—' : options.formatVolume(Number(volume))}`,
+            `KD　K ${formatKLineIndicator(bar.kdK)}　D ${formatKLineIndicator(bar.kdD)}`,
+            `MACD　DIF ${formatKLineIndicator(bar.macdDif)}`,
+            `訊號 ${formatKLineIndicator(bar.macdSignal)}　柱 ${formatKLineIndicator(bar.macdHistogram)}`
+        ].join('\n');
+        tooltip.hidden = false;
+
+        const cardBounds = card.getBoundingClientRect();
+        const tipWidth = tooltip.offsetWidth;
+        const tipHeight = tooltip.offsetHeight;
+        const pointerX = event.clientX - cardBounds.left;
+        const pointerY = event.clientY - cardBounds.top;
+        let left = pointerX + 12;
+        let top = pointerY + 12;
+        if (left + tipWidth > card.clientWidth - 6) left = pointerX - tipWidth - 12;
+        if (top + tipHeight > card.clientHeight - 6) top = pointerY - tipHeight - 12;
+        tooltip.style.left = `${Math.max(6, Math.min(left, card.clientWidth - tipWidth - 6))}px`;
+        tooltip.style.top = `${Math.max(6, Math.min(top, card.clientHeight - tipHeight - 6))}px`;
+        setReadouts(index);
+    };
+
+    card.addEventListener('pointerleave', hide);
+    card.addEventListener('pointermove', event => {
+        if (!event.target.closest?.('.daily-kline-svg, .kline-indicator-svg')) hide();
+    });
+
+    return {
+        register(svg, layout) {
+            const lines = layout.spans.map(([top, bottom]) => svgElement('line', {
+                class: 'daily-kline-crosshair',
+                x1: layout.x(0), x2: layout.x(0), y1: top, y2: bottom,
+                visibility: 'hidden', 'pointer-events': 'none'
+            }));
+            svg.append(...lines);
+            guides.push({ lines, x: layout.x });
+
+            svg.addEventListener('pointermove', event => {
+                const bounds = svg.getBoundingClientRect();
+                if (bounds.width <= 0 || bounds.height <= 0) return;
+                const pointerX = (event.clientX - bounds.left) / bounds.width * layout.width;
+                if (pointerX < layout.left || pointerX > layout.right) {
+                    hide();
+                    return;
+                }
+                const step = (layout.right - layout.left) / Math.max(1, bars.length);
+                const index = Math.max(0, Math.min(bars.length - 1, Math.floor((pointerX - layout.left) / step)));
+                show(index, event);
+            });
+        },
+        subscribe(update) {
+            readouts.add(update);
+            update(null);
+        }
+    };
+}
+
 function attachKLineInteractions(svg, bars, layout, referenceSummary) {
     const hoverLayer = svgElement('g', {
         class: 'daily-kline-hover-layer',
@@ -22108,15 +22213,13 @@ function klineTrendClass(bar) {
             : 'daily-kline-flat';
 }
 
-function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null, period = 'day') {
+function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null, period = 'day', crosshair = null) {
     const isCrypto = klineData.get(ticker)?.market === 'CRYPTO';
     const volumeLabel = isCrypto ? '成交額' : '成交量';
     const formatVolume = isCrypto ? value => `${toFixedText(value, 0)} USD` : toLotText;
-    const width = 600;
+    const { width, left, right, axisX, axisAnchor } = KLINE_ASSET_PLOT;
     const height = 360;
-    const left = 16;
-    const right = 536;
-    const priceAxisX = right + 8;
+    const priceAxisX = axisX;
     const top = 16;
     // 成交量區底部只留日期標籤與 10px 邊界，避免彈窗最下方留下過多空白。
     const priceBottom = 232;
@@ -22262,7 +22365,7 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
             class: 'daily-kline-grid-line', x1: left, x2: right, y1: volumeBottom, y2: volumeBottom
         }),
         svgElement('text', {
-            class: 'daily-kline-axis', x: priceAxisX, y: volumeTop + 4, 'text-anchor': 'start'
+            class: 'daily-kline-axis', x: priceAxisX, y: volumeTop + 4, 'text-anchor': axisAnchor
         }, isCrypto ? `${toFixedText(maxVolume / 100_000_000, 1)}億 USD` : formatVolume(maxVolume)));
 
     const labels = [bars[0], bars[Math.floor(bars.length / 2)], bars[bars.length - 1]];
@@ -22298,6 +22401,10 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         formatLower: formatVolume,
         dateLabel: bar => klineBarReferenceLabel(bar, period)
     }, referenceSummary);
+    crosshair?.register(svg, {
+        width, left, right, x,
+        spans: [[top, priceBottom], [volumeTop, volumeBottom]]
+    });
 
     return svg;
 }
@@ -22650,11 +22757,18 @@ function renderKLinePopover(ticker, name, anchor) {
             }
 
             const referenceControls = renderKLineReferenceControls(referenceOptions);
+            const volumeLabel = isCrypto ? '成交額' : '成交量';
+            const crosshair = createKLineCrosshair(bars, card, {
+                dateLabel: bar => klineBarReferenceLabel(bar, activePeriod),
+                volumeField: 'tradingVolume',
+                volumeLabel,
+                formatVolume: isCrypto ? value => `${toFixedText(value, 0)} USD` : toLotText
+            });
             card.append(
                 renderKLineLegend(bars, holdingCost, activePeriod),
                 referenceControls.element,
-                renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost, activePeriod),
-                renderKLineTechnicalIndicators(bars, activePeriod));
+                renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost, activePeriod, crosshair),
+                renderKLineTechnicalIndicators(bars, activePeriod, KLINE_ASSET_PLOT, crosshair));
         }
     }
 
@@ -22670,7 +22784,7 @@ function klineIndicatorDefaultsOpen() {
         && loginAccount?.openKLineIndicatorsByDefault === true;
 }
 
-function renderKLineTechnicalIndicators(bars, period) {
+function renderKLineTechnicalIndicators(bars, period, chartLayout, crosshair) {
     const account = loginTier === 'admin' ? loginAccount?.email ?? null : SITE_ACCESS;
     if (klineIndicatorVisibility?.account !== account) {
         const opened = klineIndicatorDefaultsOpen();
@@ -22705,15 +22819,20 @@ function renderKLineTechnicalIndicators(bars, period) {
         const fields = key === 'kd' ? ['kdK', 'kdD'] : ['macdDif', 'macdSignal', 'macdHistogram'];
         const latest = [...bars].reverse().find(bar => fields.some(field => !missing(bar[field])) && bar.isLive !== true);
         const values = document.createElement('span');
-        values.textContent = latest ? (key === 'kd'
-            ? `K ${formatKLineIndicator(latest.kdK)} · D ${formatKLineIndicator(latest.kdD)}`
-            : `DIF ${formatKLineIndicator(latest.macdDif)} · 訊號 ${formatKLineIndicator(latest.macdSignal)} · 柱 ${formatKLineIndicator(latest.macdHistogram)}`)
-            : '資料不足';
+        const formatSelectedValues = bar => !bar ? '資料不足' : key === 'kd'
+            ? `K ${formatKLineIndicator(bar.kdK)} · D ${formatKLineIndicator(bar.kdD)}`
+            : `DIF ${formatKLineIndicator(bar.macdDif)} · 訊號 ${formatKLineIndicator(bar.macdSignal)} · 柱 ${formatKLineIndicator(bar.macdHistogram)}`;
+        values.textContent = latest ? formatSelectedValues(latest) : '資料不足';
+        crosshair?.subscribe(index => {
+            values.textContent = index === null
+                ? (latest ? formatSelectedValues(latest) : '資料不足')
+                : formatSelectedValues(bars[index]);
+        });
         heading.append(panelTitle, values);
 
         const plot = document.createElement('div');
         plot.className = 'kline-indicator-plot';
-        if (latest) plot.append(renderKLineIndicatorSvg(bars, key));
+        if (latest) plot.append(renderKLineIndicatorSvg(bars, key, chartLayout, crosshair));
         else plot.textContent = '尚無足夠的完整 K 棒計算指標';
         panel.append(heading, plot);
         if (period !== 'day' && bars.at(-1)?.isLive !== true
@@ -22753,10 +22872,14 @@ function formatKLineIndicator(value) {
     return missing(value) ? '—' : Number(value).toFixed(2);
 }
 
-function renderKLineIndicatorSvg(bars, key) {
-    const left = 62, right = 666, top = 10, bottom = 92;
+function renderKLineIndicatorSvg(bars, key, chartLayout, crosshair) {
+    const width = 680, left = chartLayout.left / chartLayout.width * width;
+    const right = chartLayout.right / chartLayout.width * width;
+    const axisX = chartLayout.axisX / chartLayout.width * width;
+    const { axisAnchor } = chartLayout;
+    const top = 10, bottom = 92;
     const svg = svgElement('svg', {
-        class: 'kline-indicator-svg', viewBox: '0 0 680 110', role: 'img',
+        class: 'kline-indicator-svg', viewBox: `0 0 ${width} 110`, role: 'img',
         'aria-label': key === 'kd' ? 'KD 9、3、3 曲線' : 'MACD 12、26、9 曲線與柱狀圖'
     });
     const fields = key === 'kd' ? ['kdK', 'kdD'] : ['macdDif', 'macdSignal', 'macdHistogram'];
@@ -22769,7 +22892,7 @@ function renderKLineIndicatorSvg(bars, key) {
     const x = index => left + (right - left) * (index + 0.5) / Math.max(1, bars.length);
     for (const tick of key === 'kd' ? [20, 50, 80] : [-limit, 0, limit]) {
         svg.append(svgElement('line', { x1: left, x2: right, y1: y(tick), y2: y(tick), class: 'kline-indicator-grid' }));
-        svg.append(svgElement('text', { x: 674, y: y(tick) + 3, 'text-anchor': 'end', class: 'kline-indicator-axis' },
+        svg.append(svgElement('text', { x: axisX, y: y(tick) + 3, 'text-anchor': axisAnchor, class: 'kline-indicator-axis' },
             key === 'kd' ? String(tick) : formatKLineIndicator(tick)));
     }
     if (key === 'macd') bars.forEach((bar, index) => {
@@ -22798,6 +22921,7 @@ function renderKLineIndicatorSvg(bars, key) {
         });
         flush();
     }
+    crosshair?.register(svg, { width, left, right, x, spans: [[top, bottom]] });
     return svg;
 }
 

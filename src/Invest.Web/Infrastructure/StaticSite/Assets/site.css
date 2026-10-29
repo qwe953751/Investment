@@ -4893,24 +4893,20 @@ button.market-structure-weight-cell {
     border-bottom: none;
 }
 
-/* 鎖定的個股與最近跳轉目標沿用相同標記。 */
-.ranking-table tbody tr.locked,
-.ranking-table tbody tr.jump-target-mark {
+/* 鎖定的個股。左側色條讓它在滿滿的數字裡一眼就能找到。 */
+.ranking-table tbody tr.locked {
     background: var(--accent-bg);
 }
 
-.ranking-table tbody tr.locked:hover,
-.ranking-table tbody tr.jump-target-mark:hover {
+.ranking-table tbody tr.locked:hover {
     background: var(--accent-bg);
 }
 
-.ranking-table tbody tr.locked td,
-.ranking-table tbody tr.jump-target-mark td {
+.ranking-table tbody tr.locked td {
     border-bottom-color: #bfdbfe;
 }
 
-.ranking-table tbody tr.locked td:first-child,
-.ranking-table tbody tr.jump-target-mark td:first-child {
+.ranking-table tbody tr.locked td:first-child {
     box-shadow: inset 3px 0 0 #2563eb;
 }
 
@@ -4920,9 +4916,8 @@ button.market-structure-weight-cell {
     transition: background 1.5s ease;
 }
 
-/* 持續標記優先於短暫閃示，跳轉列始終維持鎖定底色。 */
-.ranking-table tbody tr.jump-target-mark td {
-    background: var(--accent-bg);
+.ranking-table tbody tr.jump-highlight td.stock-name {
+    background: #fef3c7;
 }
 
 .rank {
@@ -5029,6 +5024,7 @@ td.stock-name.stock-name-change-down {
 }
 
 .daily-kline-card {
+    position: relative;
     padding: 12px 14px 5px;
     background: var(--surface);
 }
@@ -5212,6 +5208,30 @@ td.stock-name.stock-name-change-down {
     height: auto;
 }
 
+.daily-kline-crosshair {
+    stroke: #475467;
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    opacity: 0.75;
+    vector-effect: non-scaling-stroke;
+}
+
+.daily-kline-hover-tooltip {
+    position: absolute;
+    z-index: 3;
+    max-width: 260px;
+    padding: 7px 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    background: var(--surface);
+    box-shadow: 0 2px 8px rgb(15 23 42 / 16%);
+    color: var(--text);
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-line;
+    pointer-events: none;
+}
+
 .kline-indicators {
     margin-top: 8px;
     padding-top: 8px;
@@ -5279,8 +5299,10 @@ td.stock-name.stock-name-change-down {
 
 .kline-indicator-plot {
     display: grid;
+    width: calc(100% + 18px);
     min-height: 76px;
     margin-top: 5px;
+    margin-left: -9px;
     place-items: center;
     border-top: 1px solid var(--border);
     font-size: 11px;

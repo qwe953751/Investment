@@ -555,7 +555,7 @@ public sealed class StaticKLineAssetTests
 
         // 圖表吃 selectedKLinePeriodBars 的結果；沒有週／月資料的舊格式檔案才顯示說明。
         Assert.Contains("selectedKLinePeriodBars(ticker, activePeriod)", script, StringComparison.Ordinal);
-        Assert.Contains("renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost, activePeriod)", script, StringComparison.Ordinal);
+        Assert.Contains("renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost, activePeriod, crosshair)", script, StringComparison.Ordinal);
         Assert.Contains("資料尚未發布，請重新整理頁面後再試。", script, StringComparison.Ordinal);
 
         // 日 K 與週 K／月 K 一樣是 60 根的量級；不是三個月（週 K 只有 14 根、月 K 只有 4 根）。
