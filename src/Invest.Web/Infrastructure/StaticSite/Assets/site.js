@@ -3091,7 +3091,12 @@ function renderAccessBadge() {
 const FRANK_ADMIN_EMAIL = 'admin@investment.local';
 const ACCESS_TIER_ACCOUNTS = [
     { email: FRANK_ADMIN_EMAIL, tier: 'admin', defaultAssetOwnerName: 'Frank' },
-    { email: 'fortune@investment.local', tier: 'admin', defaultAssetOwnerName: '財神' },
+    {
+        email: 'fortune@investment.local',
+        tier: 'admin',
+        defaultAssetOwnerName: '財神',
+        openKLineIndicatorsByDefault: true
+    },
     { email: 'monitor@investment.local', tier: 'monitor' },
     { email: 'holdings@investment.local', tier: 'holdings', defaultAssetOwnerName: 'Frank' }
 ];
@@ -22662,7 +22667,7 @@ function renderKLinePopover(ticker, name, anchor) {
 function klineIndicatorDefaultsOpen() {
     return SITE_ACCESS === 'admin'
         && loginTier === 'admin'
-        && loginAccount?.email === FRANK_ADMIN_EMAIL;
+        && loginAccount?.openKLineIndicatorsByDefault === true;
 }
 
 function renderKLineTechnicalIndicators(bars, period) {
