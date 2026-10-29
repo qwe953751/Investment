@@ -62,7 +62,9 @@ function jumpHarness(view, row = null, extra = {}) {
     const c = {
         state: { view, date: '2026-10-08', ...extra },
         document: { querySelector: () => row }, CSS: { escape: x => x }, pendingTableRows: null,
-        window: { setTimeout: callback => callback() },
+        RANKING_JUMP_HIGHLIGHT_MS: 1500, rankingJumpHighlight: null, clearRankingJumpHighlight() {},
+        rankingSelectionKey: () => JSON.stringify(c.state),
+        window: { setTimeout: callback => { c.timeout = callback; return 1; } },
         update(changes) { c.changes = changes; Object.assign(c.state, changes); }
     };
     vm.createContext(c);
@@ -83,7 +85,8 @@ function topicRankHarness({ intraday = false, row = null } = {}) {
         document: { querySelector: () => row }, CSS: { escape: value => value }, pendingTableRows: null,
         rankingSelectionKey: () => JSON.stringify(c.state),
         flushPendingTableRows() {},
-        window: { setTimeout: callback => callback() },
+        RANKING_JUMP_HIGHLIGHT_MS: 1500, rankingJumpHighlight: null, clearRankingJumpHighlight() {},
+        window: { setTimeout: callback => { c.timeout = callback; return 1; } },
         update(changes) { c.changes = changes; Object.assign(c.state, changes); return true; }
     };
     vm.createContext(c);
@@ -94,12 +97,93 @@ function topicRankHarness({ intraday = false, row = null } = {}) {
     return c;
 }
 
-test('第100名仍在表格直接定位、加亮並還原，不更換頁籤', () => {
+function rankingJumpRenderHarness({ lockedTickers = [], rowTicker = '3081' } = {}) {
+    const timers = [];
+    const nodes = new Map();
+    let now = 1000;
+    const makeNode = tagName => {
+        const classes = new Set();
+        const children = [];
+        const node = {
+            tagName, dataset: {}, children, style: {
+                setProperty(name, value) { this[name] = value; },
+                removeProperty(name) { delete this[name]; }
+            },
+            classList: {
+                add(value) { classes.add(value); },
+                remove(value) { classes.delete(value); },
+                contains(value) { return classes.has(value); },
+                toggle(value) { if (classes.has(value)) classes.delete(value); else classes.add(value); }
+            },
+            append(...items) {
+                children.push(...items.flatMap(item => item.tagName === 'fragment' ? item.children : [item]));
+            },
+            replaceChildren(...items) { children.splice(0, children.length, ...items); },
+            scrollIntoView() {}, setAttribute() {}, addEventListener() {}
+        };
+        Object.defineProperty(node, 'className', {
+            get() { return [...classes].join(' '); },
+            set(value) { classes.clear(); for (const item of String(value).split(/\s+/).filter(Boolean)) classes.add(item); }
+        });
+        return node;
+    };
+    const tableBody = makeNode('tbody');
+    const el = id => {
+        if (!nodes.has(id)) nodes.set(id, id === 'table-body' ? tableBody : makeNode(id));
+        return nodes.get(id);
+    };
+    const c = {
+        state: { view: 'daily', date: '2026-10-14', period: 5, mode: 'heat', market: 'all', threshold: 0 },
+        version: 'test', locked: lockedTickers, pendingTableRows: null, current: null,
+        TABLE_FIRST_SCREEN_ROWS: 10, customSearchJumpPending: false,
+        document: {
+            createElement: tagName => makeNode(tagName),
+            createDocumentFragment() {
+                const fragment = makeNode('fragment');
+                fragment.append = (...items) => fragment.children.push(...items);
+                return fragment;
+            },
+            querySelector(selector) {
+                const ticker = selector.match(/data-ticker="([^"]+)"/)?.[1];
+                return tableBody.children.find(row => row.dataset.ticker === ticker) ?? null;
+            }
+        },
+        CSS: { escape: value => value },
+        Date: { now: () => now },
+        window: { setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; } },
+        el, rankingCanRender: () => true, columns: () => [{ key: 'name', title: '名稱', sortable: false }],
+        tableHeaderHint: () => '', rankingColumnHint: () => '',
+        appendRankingCell(tr) { const td = makeNode('td'); td.className = 'stock-name'; tr.append(td); },
+        rowsForCurrentPage: () => [{ ticker: rowTicker }],
+        rankingSelectionKey: () => JSON.stringify(c.state),
+        flushPendingTableRows() {}, renderPagination() {}, refreshKLinePopover() {},
+        refreshRevenuePopover() {}, jumpToCustomSearchResult() {}, finishTopicRankingJump() {}
+    };
+    vm.createContext(c);
+        const duration = Number(source.match(/const RANKING_JUMP_HIGHLIGHT_MS = (\d+);/)?.[1]);
+        assert.equal(duration, 1500);
+        vm.runInContext(`const RANKING_JUMP_HIGHLIGHT_MS = ${duration}; let rankingJumpHighlight = null;`, c);
+    vm.runInContext([
+        'rankingJumpHighlightForCurrentSelection', 'clearRankingJumpHighlight', 'renderTable', 'jumpToRankedRow'
+    ].map(fn).join('\n'), c);
+    return {
+        c, timers, tableBody,
+        get now() { return now; },
+        set now(value) { now = value; },
+        currentRow() { return tableBody.children.find(row => row.dataset.ticker === rowTicker); }
+    };
+}
+
+test('第100名仍在表格直接定位並加亮，不更換頁籤', () => {
     const calls = [];
-    const row = { scrollIntoView: options => calls.push(options.block), classList: { add: x => calls.push(x), remove: x => calls.push(x) } };
+    const row = {
+        style: { setProperty() {} },
+        scrollIntoView: options => calls.push(options.block),
+        classList: { add: x => calls.push(`add:${x}`), remove: x => calls.push(`remove:${x}`) }
+    };
     const c = jumpHarness('daily', row);
     c.jumpToRankedRow('2330');
-    assert.deepEqual(calls, ['center', 'jump-highlight', 'jump-highlight']);
+    assert.deepEqual(calls, ['center', 'remove:jump-highlight', 'add:jump-highlight']);
     assert.equal(c.changes, undefined);
 });
 for (const view of ['daily', 'intraday']) {
@@ -132,7 +216,11 @@ test('ETF鎖定跳轉保留ETF頁及來源時段', () => {
 
 test('族群日線前100名切到相同期間的全市場成交熱度排行並定位', () => {
     const calls = [];
-    const row = { scrollIntoView: options => calls.push(options.block), classList: { add: value => calls.push(value), remove: value => calls.push(value) } };
+    const row = {
+        style: { setProperty() {} },
+        scrollIntoView: options => calls.push(options.block),
+        classList: { add: value => calls.push(`add:${value}`), remove: value => calls.push(`remove:${value}`) }
+    };
     const c = topicRankHarness({ row });
     c.jumpToTopicMemberRank({ ticker: '2330', rank: 13 });
 
@@ -145,13 +233,72 @@ test('族群日線前100名切到相同期間的全市場成交熱度排行並�
     assert.equal(c.state.threshold, 0);
 
     c.finishTopicRankingJump();
-    assert.deepEqual(calls, ['center', 'jump-highlight', 'jump-highlight']);
+    assert.deepEqual(calls, ['center', 'remove:jump-highlight', 'add:jump-highlight']);
 });
 
-test('排行榜鎖定列維持淺藍；跳轉沿用短暫黃色閃示', () => {
+test('族群跳轉閃黃在表格重繪後保留至原期限，逾期清除新列標記但保留鎖定藍底', () => {
+    const h = rankingJumpRenderHarness({ lockedTickers: ['3081'] });
+    h.c.renderTable();
+    const firstRow = h.currentRow();
+
+    h.c.jumpToRankedRow('3081');
+    assert.equal(firstRow.classList.contains('jump-highlight'), true);
+    h.now = 1300;
+    h.c.renderTable();
+    const rebuiltRow = h.currentRow();
+
+    assert.notEqual(rebuiltRow, firstRow);
+    assert.equal(rebuiltRow.classList.contains('jump-highlight'), true);
+    assert.equal(rebuiltRow.classList.contains('locked'), true);
+    assert.equal(rebuiltRow.style['--ranking-jump-delay'], '-300ms');
+
+    h.now = 2500;
+    h.timers[0].callback();
+    assert.equal(rebuiltRow.classList.contains('jump-highlight'), false);
+    assert.equal(rebuiltRow.classList.contains('locked'), true);
+});
+
+test('連續跳到同一標的會重設閃示期限，舊計時器不會提早清除新閃示', () => {
+    const h = rankingJumpRenderHarness();
+    h.c.renderTable();
+    h.c.jumpToRankedRow('3081');
+    const firstTimer = h.timers[0];
+
+    h.now = 1400;
+    h.c.jumpToRankedRow('3081');
+    const secondTimer = h.timers[1];
+    const row = h.currentRow();
+
+    h.now = 2500;
+    firstTimer.callback();
+    assert.equal(row.classList.contains('jump-highlight'), true);
+    assert.equal(secondTimer.delay, 1500);
+
+    h.now = 2900;
+    secondTimer.callback();
+    assert.equal(row.classList.contains('jump-highlight'), false);
+});
+
+test('離開排行後的舊計時器不會清除新頁籤同代號的搜尋閃示', () => {
+    const h = rankingJumpRenderHarness();
+    h.c.renderTable();
+    h.c.jumpToRankedRow('3081');
+    const timer = h.timers[0];
+
+    h.c.state.view = 'custom';
+    h.c.renderTable();
+    const customRow = h.currentRow();
+    customRow.classList.add('jump-highlight');
+    h.now = 2500;
+    timer.callback();
+
+    assert.equal(customRow.classList.contains('jump-highlight'), true);
+});
+
+test('排行榜鎖定列維持淺藍；跳轉以同一動畫短暫亮黃並還原', () => {
+    assert.match(styleSource, /@keyframes ranking-jump-flash\s*\{\s*0%,\s*65%\s*\{\s*background-color:\s*#fef3c7;\s*\}\s*100%\s*\{\s*background-color:\s*transparent;/);
+    assert.match(styleSource, /\.ranking-table tbody tr\.jump-highlight td\s*\{[^}]*animation:\s*ranking-jump-flash 1\.5s ease-out var\(--ranking-jump-delay, 0ms\) both;/s);
     assert.match(styleSource, /\.ranking-table tbody tr\.locked\s*\{\s*background:\s*var\(--accent-bg\);/);
-    assert.match(styleSource, /\.ranking-table tbody tr\.jump-highlight td\s*\{\s*background:\s*#fef3c7;\s*transition:\s*background 1\.5s ease;/);
-    assert.match(styleSource, /\.ranking-table tbody tr\.jump-highlight td\.stock-name\s*\{\s*background:\s*#fef3c7;/);
     assert.doesNotMatch(styleSource, /\.ranking-table tbody tr\.jump-target-mark/);
 });
 

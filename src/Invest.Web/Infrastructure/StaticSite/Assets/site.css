@@ -4910,14 +4910,14 @@ button.market-structure-weight-cell {
     box-shadow: inset 3px 0 0 #2563eb;
 }
 
-/* 從鎖定名單點過來時短暫亮一下，讓人找得到跳到哪一列。 */
-.ranking-table tbody tr.jump-highlight td {
-    background: #fef3c7;
-    transition: background 1.5s ease;
+/* 排行跳轉先亮黃，再淡出；透明時露出各儲存格原本底色（鎖定列仍是淺藍）。 */
+@keyframes ranking-jump-flash {
+    0%, 65% { background-color: #fef3c7; }
+    100% { background-color: transparent; }
 }
 
-.ranking-table tbody tr.jump-highlight td.stock-name {
-    background: #fef3c7;
+.ranking-table tbody tr.jump-highlight td {
+    animation: ranking-jump-flash 1.5s ease-out var(--ranking-jump-delay, 0ms) both;
 }
 
 .rank {

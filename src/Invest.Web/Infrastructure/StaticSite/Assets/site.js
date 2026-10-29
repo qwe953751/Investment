@@ -20298,6 +20298,37 @@ function toLockedRankText(ticker) {
 }
 
 /// 已顯示的標的直接定位；榜外或被篩掉的標的改到自訂搜尋，保留來源時段與日期。
+const RANKING_JUMP_HIGHLIGHT_MS = 1500;
+let rankingJumpHighlight = null;
+
+function rankingJumpHighlightForCurrentSelection() {
+    const highlight = rankingJumpHighlight;
+    return highlight !== null
+        && highlight.expiresAt > Date.now()
+        && highlight.view === state.view
+        && highlight.selectionKey === rankingSelectionKey()
+        ? highlight : null;
+}
+
+function clearRankingJumpHighlight() {
+    const highlight = rankingJumpHighlight;
+    rankingJumpHighlight = null;
+
+    if (highlight === null) {
+        return;
+    }
+
+    const clearRow = row => {
+        row?.classList.remove('jump-highlight');
+        row?.style.removeProperty('--ranking-jump-delay');
+    };
+    clearRow(highlight.row);
+
+    if (highlight.view === state.view && highlight.selectionKey === rankingSelectionKey()) {
+        clearRow(document.querySelector(`#table-body tr[data-ticker="${CSS.escape(highlight.ticker)}"]`));
+    }
+}
+
 function jumpToRankedRow(ticker, forceCustomSearch = false) {
     flushPendingTableRows();
     const row = forceCustomSearch
@@ -20305,6 +20336,7 @@ function jumpToRankedRow(ticker, forceCustomSearch = false) {
         : document.querySelector(`#table-body tr[data-ticker="${CSS.escape(ticker)}"]`);
 
     if (!row) {
+        clearRankingJumpHighlight();
         const session = state.view === 'intraday' || isCustomIntradayView() || isEtfIntradayView()
             || isIntradayTopicDataView() ? 'intraday' : 'daily';
         update({
@@ -20324,9 +20356,27 @@ function jumpToRankedRow(ticker, forceCustomSearch = false) {
         return;
     }
 
+    clearRankingJumpHighlight();
+    const startedAt = Date.now();
+    const highlight = {
+        ticker,
+        view: state.view,
+        selectionKey: rankingSelectionKey(),
+        row,
+        startedAt,
+        expiresAt: startedAt + RANKING_JUMP_HIGHLIGHT_MS
+    };
+    rankingJumpHighlight = highlight;
     row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.style.setProperty('--ranking-jump-delay', '0ms');
+    row.classList.remove('jump-highlight');
+    void row.offsetWidth;
     row.classList.add('jump-highlight');
-    window.setTimeout(() => row.classList.remove('jump-highlight'), 1500);
+    window.setTimeout(() => {
+        if (rankingJumpHighlight === highlight) {
+            clearRankingJumpHighlight();
+        }
+    }, RANKING_JUMP_HIGHLIGHT_MS);
 }
 
 let pendingTopicRankingJump = null;
@@ -24134,6 +24184,7 @@ function renderTable() {
     pendingTableRows = null;
 
     const lockedTickers = new Set(locked);
+    const jumpHighlight = rankingJumpHighlightForCurrentSelection();
     const tableColumns = columns();
     const build = row => {
         const fragment = document.createDocumentFragment();
@@ -24142,6 +24193,11 @@ function renderTable() {
 
         if (lockedTickers.has(row.ticker)) {
             tr.className = 'locked';
+        }
+
+        if (jumpHighlight?.ticker === row.ticker) {
+            tr.style.setProperty('--ranking-jump-delay', `${jumpHighlight.startedAt - Date.now()}ms`);
+            tr.classList.add('jump-highlight');
         }
 
         for (const column of tableColumns) {
