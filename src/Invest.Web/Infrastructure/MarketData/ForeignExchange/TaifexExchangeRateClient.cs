@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Invest.Web.Infrastructure.MarketData.ForeignExchange;
 
@@ -12,6 +13,35 @@ public sealed class TaifexExchangeRateClient(HttpClient httpClient, ILogger<Taif
 {
     public const string Source = "TAIFEX DailyForeignExchangeRates";
     internal const string Endpoint = "https://openapi.taifex.com.tw/v1/DailyForeignExchangeRates";
+    internal const string HistoricalEndpoint = "https://www.taifex.com.tw/cht/3/dailyFXRate";
+
+    public async Task<UsdTwdExchangeRate> GetHistoricalUsdTwdAsync(DateOnly date,
+        CancellationToken cancellationToken = default)
+    {
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string> {
+            ["queryStartDate"] = date.AddDays(-7).ToString("yyyy/MM/dd", CultureInfo.InvariantCulture),
+            ["queryEndDate"] = date.ToString("yyyy/MM/dd", CultureInfo.InvariantCulture) });
+        using var response = await httpClient.PostAsync(HistoricalEndpoint, content, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return ParseHistorical(await response.Content.ReadAsStringAsync(cancellationToken), date);
+    }
+
+    internal static UsdTwdExchangeRate ParseHistorical(string html, DateOnly date)
+    {
+        UsdTwdExchangeRate? latest = null;
+        foreach (Match row in Regex.Matches(html, @"<tr\b[^>]*>(.*?)</tr>", RegexOptions.Singleline | RegexOptions.IgnoreCase))
+        {
+            var cells = Regex.Matches(row.Groups[1].Value, @"<t[dh]\b[^>]*>(.*?)</t[dh]>", RegexOptions.Singleline | RegexOptions.IgnoreCase)
+                .Select(cell => System.Net.WebUtility.HtmlDecode(Regex.Replace(cell.Groups[1].Value, "<[^>]+>", "")).Trim()).ToArray();
+            if (cells.Length < 2 || !DateOnly.TryParseExact(cells[0], "yyyy/MM/dd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var day) || day > date || day < date.AddDays(-7)
+                || !decimal.TryParse(cells[1], NumberStyles.Number, CultureInfo.InvariantCulture, out var rate) || rate <= 0)
+                continue;
+            if (latest is null || day > latest.RateDate)
+                latest = new(day, rate, "TAIFEX dailyFXRate historical");
+        }
+        return latest ?? throw new TaifexExchangeRateUnavailableException("期交所歷史頁沒有指定日以前七日內的有效 USD/TWD 匯率，不保存任何值。");
+    }
 
     /// <summary>
     /// 跟月營收、重大訊息同一套：傳輸層抖動與「回的不是 JSON」先重試，重試完還是不行才放棄。

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
+import { execFileSync } from 'node:child_process';
 
 const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const siteScript = fs.readFileSync(
@@ -279,7 +280,7 @@ test('新增年度的入金成本為出入金紀錄衍生欄位，不接受手�
     assert.doesNotMatch(addForm, /assetAmountField\(fields, '入金成本'/);
 });
 
-test('年化報酬使用今年試算淨值相對去年總資產的報酬率', () => {
+test('年度報酬只顯示 C# 模組結果，缺少完整計算時不以舊公式回退', () => {
     const context = {};
     vm.createContext(context);
     vm.runInContext([
@@ -288,16 +289,12 @@ test('年化報酬使用今年試算淨值相對去年總資產的報酬率', ()
         functionSource('assetAnnualPreviewReturn')
     ].join('\n\n'), context);
 
-    const rows = [
-        { totalAssets: 1_758_696, cost: 400_000 },
-        { totalAssets: 688_116, cost: 500_000 }
-    ];
-    const expected = Math.round(((1_758_696 - 400_000) - 688_116) / 688_116 * 10_000) / 100;
-
-    assert.equal(context.assetAnnualPreviewReturn(rows, 0), expected);
-
-    const returnSource = functionSource('assetAnnualPreviewReturn');
-    assert.match(returnSource, /currentTotalAssets - currentCost - previousTotalAssets/);
+    const rows = [{totalAssets:1_758_696,cost:400_000,assetPerformanceResult:{gain:123,percent:12.3}},
+        {totalAssets:688_116,cost:500_000}];
+    assert.equal(context.assetAnnualPreviewReturn(rows,0),12.3);
+    assert.equal(context.assetAnnualPreviewNetAsset(rows[0]),123);
+    assert.equal(context.assetAnnualPreviewReturn(rows,1),null);
+    assert.equal(context.assetAnnualPreviewNetAsset(rows[1]),null);
 });
 
 test('美股年度輸入使用 USD，寫入年度表前換算成 TWD', () => {
@@ -319,7 +316,8 @@ test('美股年度輸入使用 USD，寫入年度表前換算成 TWD', () => {
     const editValue = functionSource('makeAssetAnnualPreviewTotalValue');
     assert.match(addForm, /總資產（\$\{currency\}）/);
     assert.match(addForm, /assetNativeToTwd\(totalAssetsNative, view\.market\)/);
-    assert.match(addForm, /assetNativeToTwd\(costNative, view\.market\)/);
+    assert.match(addForm, /assetAnnualPreviewFundingCostFor\(view, year\)/);
+    assert.doesNotMatch(addForm, /assetNativeToTwd\(costNative, view\.market\)/);
     assert.match(addForm, /Math\.round\(totalAssetsTwd\), Math\.round\(costTwd\)/);
     assert.match(editValue, /assetTwdToNative\(row\.totalAssets, view\.market\)/);
 });
@@ -327,6 +325,9 @@ test('美股年度輸入使用 USD，寫入年度表前換算成 TWD', () => {
 test('Dashboard 帳戶表以資產總值減入金成本顯示總獲利', () => {
     const context = { assetLatestUsdTwdRate: null };
     vm.createContext(context);
+    const dotnet=process.platform==='win32'?path.join(process.env.LOCALAPPDATA,'Microsoft','dotnet','dotnet.exe'):'dotnet';
+    vm.runInContext(execFileSync(dotnet,[path.join(repositoryRoot,'src/Invest.Web/bin/Release/net10.0/Invest.Web.dll'),'asset-formulas'],
+        {encoding:'utf8',windowsHide:true}),context);
     vm.runInContext([
         functionSource('assetNumber'),
         functionSource('assetNativeToTwd'),
@@ -336,7 +337,8 @@ test('Dashboard 帳戶表以資產總值減入金成本顯示總獲利', () => {
     const profit = context.assetTotalProfitFor({
         market: '台股',
         totalValue: 1_758_696,
-        fundingCost: 900_000
+        fundingCost: 900_000,
+        twdTotalValue:1_758_696,twdFundingCost:900_000
     });
 
     assert.equal(profit.native, 858_696);
@@ -347,7 +349,9 @@ test('Dashboard 帳戶表以資產總值減入金成本顯示總獲利', () => {
 
     assert.match(profitSource, /totalValue/);
     assert.match(profitSource, /fundingCost/);
-    assert.match(profitSource, /assetNativeToTwd/);
+    assert.match(profitSource, /AssetPerformance\.difference/);
+    assert.equal(context.assetTotalProfitFor({market:'美股',totalValue:1200,fundingCost:1000,twdTotalValue:39600,twdFundingCost:30000}).twd,9600);
+    assert.equal(context.assetTotalProfitFor({totalValue:1200,fundingCost:1000,twdTotalValue:39600,twdFundingCost:null}).twd,null);
     assert.match(table, /assetTotalProfitFor/);
     assert.match(table, /總獲利/);
     assert.doesNotMatch(table, /累計已實現/);

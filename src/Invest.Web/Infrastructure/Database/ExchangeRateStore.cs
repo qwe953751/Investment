@@ -6,9 +6,15 @@ namespace Invest.Web.Infrastructure.Database;
 /// <summary>保存每日 USD/TWD 參考匯率；同一天重跑會更新，不會重複新增。</summary>
 public sealed class ExchangeRateStore
 {
-    public async Task SaveAsync(
+    public Task SaveAsync(
         UsdTwdExchangeRate rate,
         CancellationToken cancellationToken = default)
+        => SaveAsync(rate, true, cancellationToken);
+
+    public Task SaveMissingAsync(UsdTwdExchangeRate rate, CancellationToken cancellationToken = default)
+        => SaveAsync(rate, false, cancellationToken);
+
+    private async Task SaveAsync(UsdTwdExchangeRate rate, bool overwrite, CancellationToken cancellationToken)
     {
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand(
@@ -20,12 +26,14 @@ public sealed class ExchangeRateStore
                 rate = excluded.rate,
                 source = excluded.source,
                 updated_at = now()
+            where @overwrite
             """,
             connection);
 
         command.Parameters.AddWithValue("rateDate", rate.RateDate);
         command.Parameters.AddWithValue("rate", rate.Rate);
         command.Parameters.AddWithValue("source", rate.Source);
+        command.Parameters.AddWithValue("overwrite", overwrite);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

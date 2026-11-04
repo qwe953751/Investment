@@ -109,6 +109,7 @@ function unrealizedText() {
         functionSource('assetNumber'),
         functionSource('assetCurrency'),
         functionSource('assetSignedCurrency'),
+        functionSource('assetTrendPercentText'),
         functionSource('assetUnrealizedPercent'),
         functionSource('assetUnrealizedText')
     ].join('\n\n'), context);
@@ -407,8 +408,8 @@ test('持倉漲跌幅與未實現損益依原規格分開顯示', () => {
     assert.equal(holdingPriceChangeText()(-2.3), '-2.30 %');
 
     const format = unrealizedText();
-    assert.equal(format(-1455, 200280), 'NT$1,455（0.7%）');
-    assert.equal(format(6305, 477240), 'NT$6,305（1.3%）');
+    assert.equal(format(-1455, 200280), 'NT$1,455（−0.7%）');
+    assert.equal(format(6305, 477240), 'NT$6,305（+1.3%）');
 
     const signClass = unrealizedSignClass();
     assert.equal(signClass(-1455), 'negative');

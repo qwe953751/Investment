@@ -9,6 +9,21 @@ namespace Invest.Web.Tests;
 
 public sealed class TaifexExchangeRateClientTests
 {
+    [Fact]
+    public void 歷史查詢只採指定日以前的官方美元欄並拒絕缺值()
+    {
+        const string html = "<table><tr><th>日期</th><th>美元</th></tr>"
+            + "<tr><td>2025/05/02</td><td>31.064</td><td>4.288043</td></tr>"
+            + "<tr><td>2025/05/05</td><td>30.145</td><td>4.184156</td></tr>"
+            + "<tr><td>2025/05/06</td><td>30.28</td></tr></table>";
+        var rate = TaifexExchangeRateClient.ParseHistorical(html, new(2025, 5, 5));
+        Assert.Equal(new DateOnly(2025, 5, 5), rate.RateDate);
+        Assert.Equal(30.145m, rate.Rate);
+        Assert.Equal(31.064m, TaifexExchangeRateClient.ParseHistorical(html, new(2025, 5, 4)).Rate);
+        Assert.Throws<TaifexExchangeRateUnavailableException>(() =>
+            TaifexExchangeRateClient.ParseHistorical(html, new(2025, 4, 30)));
+    }
+
     /// <summary>正式端點走 Cloudflare 快取，正常的 JSON 也標成 application/octet-stream。</summary>
     internal const string ValidJson =
         """

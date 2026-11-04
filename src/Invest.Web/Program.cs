@@ -70,12 +70,17 @@ using System.Text.Json.Serialization;
 // 這種位置引數不符合 CommandLineConfigurationProvider 的格式，會讓它丟例外，
 // 所以不能原封不動傳給 CreateBuilder。
 var command = args is [var first, ..] ? first.ToLowerInvariant() : null;
+if (command == "asset-formulas")
+{
+    Console.Write(AssetPerformanceFormulas.BrowserModule());
+    return;
+}
 var isConsoleCommand =
     command == "backfill-periods" ||
     command is "backfill" or "backfill-bars" or "backfill-index-weights" or "backfill-etfs" or "backfill-emerging" or "backfill-tdr" or "backfill-reference" or "close-coverage" or "verify-kline-cache" or "backfill-us" or "backfill-overview" or "crypto-overview" or "market-overview-intraday" or "market-turnover" or "backfill-turnover" or "verify-us-freshness" or "export" or "intraday" or "backfill-intraday-heat" or "backfill-intraday-topic"
         or "market-structure-intraday-audit" or "market-structure-audit" or "repair-market-indices" or "rebuild-market-structure" or "rebuild-intraday-ranking" or "sync" or "sync-fx" or "verify" or "status" or "curve" or "revenue" or "material-events" or "alert" or "alert-clear" or "ocr-poc" or "ocr-worker" or "market-day" or "export-market-calendar" or "import-asset-operation-sheet" or "etf-dividends";
 
-string[] hostArgs = isConsoleCommand ? [] : args;
+string[] hostArgs = isConsoleCommand || command == "asset-preview" ? [] : args;
 
 var builder = WebApplication.CreateBuilder(hostArgs);
 
@@ -222,6 +227,12 @@ builder.Services.AddSingleton<OcrRecognitionValidator>();
 builder.Services.AddTransient<OcrWorkerRunner>();
 
 var app = builder.Build();
+
+if (command == "asset-preview")
+{
+    await Invest.Web.Features.Assets.Preview.AssetPerformancePreview.RunAsync(app);
+    return;
+}
 
 if (command is "market-structure-intraday-audit")
 {
@@ -544,7 +555,7 @@ if (command is "sync")
 
 if (command is "sync-fx")
 {
-    await RunExchangeRateSyncAsync(app.Services);
+    await RunExchangeRateSyncAsync(app.Services, args);
     return;
 }
 
@@ -2305,7 +2316,7 @@ static async Task RunSyncAsync(IServiceProvider services, string[] args)
         + $"清除逾期 {report.PrunedRows:N0} 列。");
 }
 
-static async Task RunExchangeRateSyncAsync(IServiceProvider services)
+static async Task RunExchangeRateSyncAsync(IServiceProvider services, string[] args)
 {
     using var scope = services.CreateScope();
     var migrations = scope.ServiceProvider.GetRequiredService<SchemaMigrations>();
@@ -2318,6 +2329,16 @@ static async Task RunExchangeRateSyncAsync(IServiceProvider services)
 
     var client = scope.ServiceProvider.GetRequiredService<TaifexExchangeRateClient>();
     var store = scope.ServiceProvider.GetRequiredService<ExchangeRateStore>();
+    if (args.Length > 1)
+    {
+        if (args.Length != 3 || args[1] != "--date" || !DateOnly.TryParseExact(args[2], "yyyy-MM-dd",
+            System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var date))
+            throw new ArgumentException("歷史匯率用法：sync-fx --date yyyy-MM-dd");
+        var historical = await client.GetHistoricalUsdTwdAsync(date);
+        await store.SaveMissingAsync(historical);
+        Console.WriteLine($"已補齊期交所歷史 USD/TWD：{historical.RateDate:yyyy-MM-dd}，{historical.Rate}（既有日期不覆寫）。");
+        return;
+    }
     Environment.ExitCode = await UsdTwdExchangeRateSync.RunAsync(
         client, store.SaveAsync, store.LoadLastSavedAtAsync, DateTimeOffset.UtcNow, Console.Out, Console.Error);
 }

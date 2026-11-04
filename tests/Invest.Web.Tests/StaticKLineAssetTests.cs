@@ -1345,7 +1345,7 @@ public sealed class StaticKLineAssetTests
         Assert.DoesNotContain("create policy \"public write\"", migration, StringComparison.Ordinal);
         Assert.Contains("cashFlows === null ? null : cashFlows.map", script, StringComparison.Ordinal);
         Assert.Contains("assetCashFlowAvailable = data.cashFlows !== null", script, StringComparison.Ordinal);
-        Assert.Contains("入金成本 = 入金合計 − 出金合計", script, StringComparison.Ordinal);
+        Assert.Contains("入金成本＝入金－出金", script, StringComparison.Ordinal);
         Assert.Contains("入金成本（出入金淨額", script, StringComparison.Ordinal);
         Assert.Contains("出入金明細尚未啟用", script, StringComparison.Ordinal);
         Assert.Contains("alter column amount type numeric", unboundedAmountMigration, StringComparison.Ordinal);
@@ -1420,7 +1420,7 @@ public sealed class StaticKLineAssetTests
             StringComparison.Ordinal);
         Assert.DoesNotContain("button.title = key === 'priceChange'", script, StringComparison.Ordinal);
         Assert.Contains("assetCurrency(Math.abs(amount), currency)", script, StringComparison.Ordinal);
-        Assert.Contains("`${amountText}（${Math.abs(percent)}%）`", script, StringComparison.Ordinal);
+        Assert.Contains("`${amountText}（${assetTrendPercentText(percent)}）`", script, StringComparison.Ordinal);
     }
 
     [Fact]

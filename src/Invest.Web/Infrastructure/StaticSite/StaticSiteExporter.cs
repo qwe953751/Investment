@@ -1160,6 +1160,7 @@ public sealed class StaticSiteExporter(
             }
 
             var fileName = resourceName[prefix.Length..];
+            if (fileName == "asset-performance-ui.js") continue;
             var path = Path.Combine(outputDirectory, fileName);
 
             await using var source = assembly.GetManifestResourceStream(resourceName)!;
@@ -1175,6 +1176,16 @@ public sealed class StaticSiteExporter(
                         .Replace("\"site.js\"", $"\"site.js?v={version}\"")
                         .Replace("\"hint.js\"", $"\"hint.js?v={version}\""),
                     cancellationToken);
+            }
+            else if (fileName == "site.js")
+            {
+                using var reader = new StreamReader(source);
+                await using var uiSource = assembly.GetManifestResourceStream(prefix + "asset-performance-ui.js")!;
+                using var uiReader = new StreamReader(uiSource);
+                await File.WriteAllTextAsync(path,
+                    Invest.Web.Features.Assets.Services.AssetPerformanceFormulas.BrowserModule()
+                    + await reader.ReadToEndAsync(cancellationToken) + "\n"
+                    + await uiReader.ReadToEndAsync(cancellationToken), cancellationToken);
             }
             else
             {

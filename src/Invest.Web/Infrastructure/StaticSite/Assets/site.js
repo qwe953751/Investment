@@ -9184,6 +9184,8 @@ let assetHoldingSortKey = 'ticker';
 let assetHoldingSortDirection = 'asc';
 const assetTrendPeriodByKey = new Map();
 const assetTrendCrosshairByKey = new Map();
+let assetTrendMode = 'assets';
+let assetCashFlowAdjusted = true;
 
 function assetNumber(value) {
     if (value === null || value === undefined || value === '') {
@@ -9265,7 +9267,7 @@ function assetCurrency(value, currency = 'TWD') {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
         }).format(amount)}`
-        : `NT$${new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(amount)}`;
+        : `NT$${new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(Math.abs(amount))}`;
 }
 
 function assetSignedCurrency(value, currency = 'TWD') {
@@ -9273,6 +9275,7 @@ function assetSignedCurrency(value, currency = 'TWD') {
 
     return amount === null
         ? '—'
+        : currency === 'TWD' ? assetCurrency(amount, currency)
         : `${amount >= 0 ? '+' : '−'}${assetCurrency(Math.abs(amount), currency)}`;
 }
 
@@ -9392,11 +9395,12 @@ function assetTotalProfitFor(view) {
     const fundingCost = assetNumber(view.fundingCost);
     const native = totalValue === null || fundingCost === null
         ? null
-        : totalValue - fundingCost;
+        : AssetPerformance.difference(totalValue, fundingCost);
 
     return {
         native,
-        twd: native === null ? null : assetNativeToTwd(native, view.market)
+        twd: view.twdTotalValue == null || view.twdFundingCost == null ? null
+            : AssetPerformance.difference(view.twdTotalValue, view.twdFundingCost)
     };
 }
 
@@ -9411,16 +9415,12 @@ function assetUnrealizedPercent(unrealized, cost) {
         : Math.round(amount / base * 1000) / 10;
 }
 
-// 未實現損益改成「金額(%數)」：不寫 +/− 符號，色塊（呼叫端另外套 assetSignClass）
-// 就足以表達正負，所以金額跟百分比都取絕對值——Intl.NumberFormat 本身會幫負數
-// 加上「-」，這裡要比照 assetSignedCurrency 的做法自己擋掉。算不出百分比時只顯示
-// 金額，不留一個空括號。
+// 台幣金額不顯示正負號；百分比與既有顏色保留方向，美元仍使用帶方向的原幣格式。
 function assetUnrealizedText(unrealized, cost, currency = 'TWD') {
-    const amount = assetNumber(unrealized);
     const percent = assetUnrealizedPercent(unrealized, cost);
-    const amountText = amount === null ? assetCurrency(unrealized, currency) : assetCurrency(Math.abs(amount), currency);
+    const amountText = assetSignedCurrency(unrealized, currency);
 
-    return percent === null ? amountText : `${amountText}（${Math.abs(percent)}%）`;
+    return percent === null ? amountText : `${amountText}（${assetTrendPercentText(percent)}）`;
 }
 
 function assetUnrealizedForMarket(unrealized, cost, market) {
@@ -9441,24 +9441,14 @@ function assetUnrealizedDualCurrency(twdUnrealized, twdCost, usdUnrealized, mark
     twd.textContent = assetUnrealizedText(twdUnrealized, twdCost);
     const usd = document.createElement('span');
     usd.className = 'asset-dual-currency-secondary';
-    const usdAmount = assetNumber(usdUnrealized);
-    usd.textContent = `（${assetCurrency(usdAmount === null ? usdUnrealized : Math.abs(usdAmount), 'USD')}）`;
+    usd.textContent = `（${assetSignedCurrency(usdUnrealized, 'USD')}）`;
     value.append(twd, usd);
     return value;
 }
 
-// 卡片未實現損益下面那行小字：原本是同一個金額再顯示一次，改成只顯示百分比，
-// 不然主要數字已經有「金額(%數)」了，這行還講同一個金額像是排版錯誤。完全沒有
-// cost 基準、算不出百分比時，退回顯示金額本身，比留白更有資訊量。
+// 主要數字已包含百分比，卡片下方不再重複顯示。
 function assetUnrealizedDelta(unrealized, cost, currency = 'TWD') {
-    const amount = assetNumber(unrealized);
-    const percent = assetUnrealizedPercent(unrealized, cost);
-    const delta = document.createElement('span');
-    delta.className = `asset-preview-delta ${assetSignClass(unrealized)}`.trim();
-    delta.textContent = percent !== null
-        ? `${Math.abs(percent)}%`
-        : amount === null ? assetCurrency(unrealized, currency) : assetCurrency(Math.abs(amount), currency);
-    return delta;
+    return document.createTextNode('');
 }
 
 function assetQuantityText(value) {
@@ -9538,7 +9528,7 @@ async function loadAssets() {
             '&order=sort_order.asc,ticker.asc'),
         fetchAllRows(
             ASSET_CASH_FLOWS_TABLE,
-            'id,account_id,flow_date,direction,amount,note,created_at,updated_at',
+            'id,account_id,flow_date,direction,amount,note,created_at,updated_at,currency,fx_rate,fx_date,fx_source,amount_twd',
             '&order=flow_date.desc,created_at.desc').catch(() => null),
         fetchAllRows(
             ASSET_VALUE_SNAPSHOTS_TABLE,
@@ -9595,6 +9585,11 @@ async function loadAssets() {
                 ? 'withdrawal'
                 : row.direction === 'deposit' ? 'deposit' : '',
             amount: assetNumber(row.amount),
+            currency: String(row.currency ?? ''),
+            fxRate: assetNumber(row.fx_rate),
+            fxDate: row.fx_date == null ? null : String(row.fx_date),
+            fxSource: String(row.fx_source ?? ''),
+            amountTwd: assetNumber(row.amount_twd),
             note: typeof row.note === 'string' ? row.note : '',
             createdAt: String(row.created_at ?? ''),
             updatedAt: String(row.updated_at ?? '')
@@ -10777,14 +10772,13 @@ function assetAnnualPreviewRowsFor(view) {
                 && Number.isInteger(year)
                 && year >= 2000
                 && year < currentYear
-                && totalAssets !== null
-                && cost !== null) {
+                && totalAssets !== null) {
                 const existing = storedByYear.get(year);
 
                 if (existing !== undefined) {
                     if (isOwner) {
                         existing.totalAssets += Math.round(totalAssets);
-                        existing.cost += Math.round(cost);
+                        existing.cost = existing.cost === null || cost === null ? null : existing.cost + Math.round(cost);
                     }
                     return;
                 }
@@ -10795,7 +10789,7 @@ function assetAnnualPreviewRowsFor(view) {
                     period: '全年',
                     status: '歷史快照',
                     totalAssets: Math.round(totalAssets),
-                    cost: Math.round(cost),
+                    cost: cost === null ? null : Math.round(cost),
                     updatedAt: isOwner ? '' : row.updatedAt,
                     sample: false,
                     auto: false
@@ -10840,28 +10834,11 @@ function assetAnnualPreviewOwnerView(owner, accountViews) {
 }
 
 function assetAnnualPreviewNetAsset(row) {
-    const totalAssets = assetNumber(row.totalAssets);
-    const cost = assetNumber(row.cost);
-
-    return totalAssets === null || cost === null ? null : totalAssets - cost;
+    return row.assetPerformanceResult?.gain ?? null;
 }
 
 function assetAnnualPreviewReturn(rows, index) {
-    if (!Array.isArray(rows) || index < 0 || index >= rows.length - 1) {
-        return null;
-    }
-
-    const currentTotalAssets = assetNumber(rows[index].totalAssets);
-    const currentCost = assetNumber(rows[index].cost);
-    const previousTotalAssets = assetNumber(rows[index + 1].totalAssets);
-
-    return currentTotalAssets === null
-        || currentCost === null
-        || previousTotalAssets === null
-        || previousTotalAssets <= 0
-        ? null
-        : Math.round((currentTotalAssets - currentCost - previousTotalAssets)
-            / previousTotalAssets * 10_000) / 100;
+    return rows[index]?.assetPerformanceResult?.percent ?? null;
 }
 
 function assetAnnualPreviewTrendClass(value) {
@@ -10977,7 +10954,7 @@ function makeAssetAnnualPreviewAddForm(view, rows) {
     const updateCost = () => {
         const year = assetNumber(yearInput.value);
         const costNative = year === null ? null : assetAnnualPreviewFundingCostNativeFor(view, year);
-        const costTwd = costNative === null ? null : assetNativeToTwd(costNative, view.market);
+        const costTwd = year === null ? null : assetAnnualPreviewFundingCostFor(view, year);
         costInput.value = costNative === null ? '—' : assetCurrency(costNative, currency);
         costInput.setAttribute('aria-invalid', String(costTwd === null));
     };
@@ -11006,7 +10983,7 @@ function makeAssetAnnualPreviewAddForm(view, rows) {
             ? null
             : assetNativeToTwd(totalAssetsNative, view.market);
         const costNative = year === null ? null : assetAnnualPreviewFundingCostNativeFor(view, year);
-        const costTwd = costNative === null ? null : assetNativeToTwd(costNative, view.market);
+        const costTwd = year === null ? null : assetAnnualPreviewFundingCostFor(view, year);
         const invalid = year === null
             || !Number.isInteger(year)
             || year < 2000
@@ -11613,6 +11590,36 @@ function assetTrendTooltipText(row) {
 // owner 層級（Dashboard 總覽）與 account 層級（帳戶明細）的資產變化圖是同一份畫圖
 // 邏輯，只有「資料從哪張表來、沒資料時的提示文字」不同，所以畫圖核心抽成這個共用
 // 函式，兩層各自只負責準備 rows 與提示文字，避免兩份幾乎一樣的 SVG 程式碼各自漂移。
+function makeAssetTrendToolbar() {
+    const toolbar = document.createElement('div');
+    toolbar.className = 'asset-section-heading asset-section-actions asset-annual-preview-heading';
+    toolbar.setAttribute('role', 'group');
+    toolbar.setAttribute('aria-label', '圖表操作');
+    const modes = document.createElement('div');
+    modes.className = 'asset-section-actions';
+    modes.setAttribute('role', 'group');
+    modes.setAttribute('aria-label', '圖表呈現方式');
+    for (const [mode, label] of [['assets', '資產變化'], ['profit', '當年損益變化']]) {
+        const button = assetButton(label,
+            `asset-value-trend-period${assetTrendMode === mode ? ' is-selected' : ''}`,
+            () => { assetTrendMode = mode; renderAssetsDashboard(); });
+        button.setAttribute('aria-pressed', String(assetTrendMode === mode));
+        modes.append(button);
+    }
+    const settings = document.createElement('div');
+    settings.className = 'asset-section-actions';
+    settings.setAttribute('role', 'group');
+    settings.setAttribute('aria-label', '圖表設定');
+    const funding = assetButton(`考慮出入金：${assetCashFlowAdjusted ? '開' : '關'}`,
+        `asset-secondary-button asset-value-trend-crosshair${assetCashFlowAdjusted ? ' is-enabled' : ''}`,
+        () => { assetCashFlowAdjusted = !assetCashFlowAdjusted; renderAssetsDashboard(); });
+    funding.setAttribute('aria-pressed', String(assetCashFlowAdjusted));
+    funding.title = '開：扣除對應期間的淨入金；關：包含出入金。實際資產卡保留目前餘額。';
+    settings.append(funding);
+    toolbar.append(modes, settings);
+    return { toolbar, settings };
+}
+
 function makeAssetValueTrendCard(rows, options) {
     const card = document.createElement('section');
     card.className = 'asset-value-trend-card';
@@ -11622,7 +11629,7 @@ function makeAssetValueTrendCard(rows, options) {
     const heading = document.createElement('div');
     heading.className = 'asset-value-trend-heading';
     const title = document.createElement('h2');
-    title.textContent = '資產變化';
+    title.textContent = `${assetTrendMode === 'profit' ? '當年損益變化' : '資產變化'}${assetCashFlowAdjusted ? '（扣除出入金）' : ''}`;
     const detail = document.createElement('span');
     // 尚未啟用時 rows 仍有「今天」這個即時算出的點（見 assetValueTrendRows），
     // 但歷史表根本讀不到，不該顯示交易／紀錄日數，否則會跟下面的停用提示互相矛盾。
@@ -11630,7 +11637,11 @@ function makeAssetValueTrendCard(rows, options) {
         ? '尚無完整資料'
         : `${visibleRows[0].date.replaceAll('-', '/')} ～ ${visibleRows.at(-1).date.replaceAll('-', '/')} · ${visibleRows.length} 個交易／紀錄日`;
     heading.append(title);
-    card.append(heading);
+    const { toolbar, settings } = makeAssetTrendToolbar();
+    const header = document.createElement('div');
+    header.className = 'asset-dashboard-content';
+    header.append(toolbar, heading);
+    card.append(header);
 
     if (!options.available) {
         heading.append(detail);
@@ -11684,7 +11695,7 @@ function makeAssetValueTrendCard(rows, options) {
             renderAssetsDashboard();
         });
     crosshairToggle.setAttribute('aria-pressed', String(crosshairEnabled));
-    heading.append(crosshairToggle);
+    settings.append(crosshairToggle);
 
     const width = 960;
     const height = 260;
@@ -11796,11 +11807,11 @@ function makeAssetValueTrendCard(rows, options) {
         const selectedIndex = Math.max(0, Math.min(visibleRows.length - 1, index));
         const row = visibleRows[selectedIndex];
         const previous = selectedIndex > 0 ? visibleRows[selectedIndex - 1] : null;
-        const previousChange = assetTrendChangeMeta(row.value, previous?.value);
-        const currentChange = assetTrendChangeMeta(options.currentValue, row.value);
+        const previousChange = row.assetPerformancePrevious ?? assetTrendChangeMeta(row.value, previous?.value);
+        const currentChange = row.assetPerformanceCurrent ?? assetTrendChangeMeta(options.currentValue, row.value);
 
         selectedDate.value.textContent = row.date.replaceAll('-', '/');
-        selectedTotal.value.textContent = assetCurrency(row.value);
+        selectedTotal.value.textContent = assetCurrency(row.assetPerformanceDisplayedValue ?? row.value);
         chartTitle.textContent = assetTrendTooltipText(row);
         updateChange(selectedChange.item, selectedChange.value, selectedAmount, previousChange);
         updateChange(selectedCurrentChange.item, selectedCurrentChange.value, selectedCurrentAmount, currentChange);
@@ -14053,14 +14064,14 @@ function makeAssetCashFlowSection(view) {
     heading.textContent = '出入金紀錄';
     const note = document.createElement('p');
     note.className = 'asset-local-only-note';
-    note.textContent = '入金成本 = 入金合計 − 出金合計。每筆套用後會寫入資料庫並自動重算；'
-        + '帳戶資料的現金餘額仍代表目前券商現金。';
+    note.textContent = '入金成本＝入金－出金。美股金流依交易日前最近歷史參考匯率估算台幣並固定保存，'
+        + '非券商實際換匯價；缺歷史匯率保留缺值。帳戶現金仍代表目前券商現金。';
     panel.append(heading, note);
 
     if (!assetCashFlowAvailable) {
         const warning = document.createElement('p');
         warning.className = 'asset-data-warning';
-        warning.textContent = '出入金明細尚未啟用，請先由管理者套用 db/030_asset_cash_flows.sql。';
+        warning.textContent = '出入金明細尚未啟用或固定匯率欄位尚未就緒，請由管理者核對 db/030 與 db/075 migration。';
         panel.append(warning);
     }
 
@@ -14084,9 +14095,13 @@ function makeAssetCashFlowSection(view) {
         const cells = [
             { text: flow.flowDate || '—' },
             { text: flow.direction === 'deposit' ? '入金' : flow.direction === 'withdrawal' ? '出金' : '—' },
-            { text: assetSignedCurrencyForMarket(signedAmount, view.market), className: assetSignClass(signedAmount) },
+            { text: assetSignedCurrency(signedAmount, flow.currency || (view.market === '美股' ? 'USD' : 'TWD')), className: assetSignClass(signedAmount) },
             { text: flow.note || '—' },
-            { text: assetTimeText(flow.updatedAt || flow.createdAt) }
+            { text: assetTimeText(flow.updatedAt || flow.createdAt) },
+            { text: flow.currency || '—' },
+            { text: flow.fxRate == null ? '—' : new Intl.NumberFormat('zh-TW', {maximumFractionDigits:6}).format(flow.fxRate) },
+            { text: flow.fxDate || '—' },
+            { text: assetCurrency(flow.amountTwd) }
         ];
 
         for (const cell of cells) {
@@ -14116,12 +14131,12 @@ function makeAssetCashFlowSection(view) {
     }
 
     if (flows.length === 0) {
-        body.append(assetEmptyRow(6, assetCashFlowAvailable
+        body.append(assetEmptyRow(10, assetCashFlowAvailable
             ? '尚無出入金紀錄；可用下方表單新增第一筆。'
             : '出入金明細尚未啟用。'));
     }
 
-    table.append(assetTableHead(['日期', '類型', '金額', '備註', '紀錄時間', '']), body);
+    table.append(assetTableHead(['日期', '類型', '金額', '備註', '紀錄時間', '幣別', '採用匯率', '匯率日期', '估算台幣金額', '']), body);
     panel.append(table);
 
     const form = document.createElement('form');
@@ -14270,7 +14285,13 @@ function makeAssetCashFlowEditRow(view, flow) {
     });
     actionCell.append(saveButton, cancelButton);
 
-    row.append(dateCell, directionCell, amountCell, noteCell, timeCell, actionCell);
+    row.append(dateCell, directionCell, amountCell, noteCell, timeCell);
+    for (const text of [flow.currency || '—', flow.fxRate == null ? '—' : String(flow.fxRate), flow.fxDate || '—', assetCurrency(flow.amountTwd)]) {
+        const cell = document.createElement('td');
+        cell.textContent = text;
+        row.append(cell);
+    }
+    row.append(actionCell);
     return row;
 }
 
