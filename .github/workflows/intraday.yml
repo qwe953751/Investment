@@ -417,6 +417,7 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           # 只在 runner 上用於上傳公開盤中快照；不可放入 manifest、網站 JS 或 log。
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
+          INTRADAY_ALERT_DIAGNOSTIC: ${{ runner.temp }}/intraday-alert.txt
         run: dotnet run -c Release --project src/Invest.Web -- intraday --loop
 
       # 興櫃尾段：13:35 上市櫃收盤後到 15:05 興櫃收盤前，只更新興櫃（見 SESSION_TAIL_CLOSE）。
@@ -427,6 +428,7 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SUPABASE_STORAGE_SECRET_KEY: ${{ secrets.SUPABASE_STORAGE_SECRET_KEY }}
+          INTRADAY_ALERT_DIAGNOSTIC: ${{ runner.temp }}/intraday-alert.txt
         run: dotnet run -c Release --project src/Invest.Web -- intraday --tail
 
       # 網站上那個鈴鐺。休市會正常結束、不會走到這裡的 else，
@@ -436,12 +438,23 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          INTRADAY_ALERT_DIAGNOSTIC: ${{ runner.temp }}/intraday-alert.txt
+          COLLECT_OUTCOME: ${{ steps.collect.outcome }}
+          TAIL_OUTCOME: ${{ steps.tail.outcome }}
         run: |
           if [ '${{ job.status }}' = 'success' ]; then
               dotnet run -c Release --project src/Invest.Web -- alert-clear "盤中報價收集"
           else
+              if [ -s "$INTRADAY_ALERT_DIAGNOSTIC" ]; then
+                  message="$(cat "$INTRADAY_ALERT_DIAGNOSTIC")"
+              else
+                  step="前置步驟或收集流程"
+                  if [ "$COLLECT_OUTCOME" = failure ]; then step="收集盤中報價"; fi
+                  if [ "$TAIL_OUTCOME" = failure ]; then step="收集興櫃尾段"; fi
+                  message="$step 未正常完成，未取得詳細診斷，請查看執行紀錄。"
+              fi
               dotnet run -c Release --project src/Invest.Web -- alert "盤中報價收集" error \
-                  "盤中收集這一場沒有正常收工，盤中頁的數字可能停在中途。" "$RUN_URL"
+                  "$message" "$RUN_URL"
           fi
 
       # ── 確定休市就留在這一棒 ───────────────────────────────────────

@@ -1021,6 +1021,22 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
     var failedRounds = 0;
     var rejectedRounds = 0;
     var cdnPublishFailures = 0;
+    var diagnosticPath = Environment.GetEnvironmentVariable("INTRADAY_ALERT_DIAGNOSTIC");
+    string? pendingCdnDiagnostic = null;
+
+    void SaveCdnDiagnostic(string message)
+    {
+        if (string.IsNullOrEmpty(diagnosticPath)) return;
+        try
+        {
+            File.WriteAllText(diagnosticPath, message);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"無法保存盤中發布診斷（{error.GetType().Name}）。");
+        }
+    }
+
     var failureCircuitBreaker = new IntradayFailureCircuitBreaker();
 
     // 成交金額的逐輪累加狀態。必須活過整個迴圈，不能每輪重建，
@@ -1619,6 +1635,13 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                                     cts.Token);
                                 if (rawPublish.Published)
                                 {
+                                    if (pendingCdnDiagnostic is not null)
+                                    {
+                                        var recovered = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei);
+                                        SaveCdnDiagnostic(pendingCdnDiagnostic
+                                            + $"\n資料恢復：{recovered:yyyy-MM-dd HH:mm:ss}（台北），輪次 {publishedRunId} 成功發布。");
+                                        pendingCdnDiagnostic = null;
+                                    }
                                     marketStructureWorker.Signal(new PublishedIntradaySnapshot(
                                         publishedRunId,
                                         snapshot.TradeDate,
@@ -1632,6 +1655,22 @@ static async Task RunIntradayAsync(IServiceProvider services, string[] args)
                                 // 原始資料已在前一個 transaction 寫好，CDN 暫時失敗不能讓下一輪報價
                                 // 也跟著停掉；但收工時必須讓 workflow 轉紅並留下警報，不能悄悄用舊快照。
                                 cdnPublishFailures++;
+                                var failedAt = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, taipei);
+                                var uploadError = exception as IntradaySnapshotUploadException;
+                                var stage = uploadError?.Path switch
+                                {
+                                    "latest.json" => "更新 latest.json",
+                                    not null => "上傳盤中原始快照",
+                                    _ => "發布盤中快照"
+                                };
+                                var reason = uploadError?.Reason ?? exception.GetType().Name;
+                                pendingCdnDiagnostic = $"異常時間：{failedAt:yyyy-MM-dd HH:mm:ss}（台北）"
+                                    + $"\n失敗階段：{stage}\n失敗證據：{reason}"
+                                    + $"\n資料影響：輪次 {publishedRunId} 已入庫，CDN 發布未完成。"
+                                    + $"\n本次累計 CDN 發布失敗：{cdnPublishFailures} 輪。";
+                                if (uploadError?.RayId is { } rayId)
+                                    pendingCdnDiagnostic += $"\nCloudflare Ray ID：{rayId}";
+                                SaveCdnDiagnostic(pendingCdnDiagnostic);
                                 Console.WriteLine(
                                     $"{localTime:HH:mm:ss} CDN 快照發佈失敗（第 {cdnPublishFailures} 次）：{exception.Message}");
                             }

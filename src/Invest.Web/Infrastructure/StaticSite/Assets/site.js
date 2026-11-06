@@ -1179,26 +1179,38 @@ async function decodeStaticJson(response) {
 // 行動網路或 GitHub Pages 短暫沒有回應時，不能讓整個網站永遠等在 fetch。
 // 沒有 AbortController 的舊瀏覽器仍會拿到正常的 fetch 結果，只是失去逾時中止能力。
 // timeout 要包住 decode（預設 response.json()）：大型快照可能已拿到 header，卻卡在 body 解析或解壓。
-async function fetchJsonAttempt(url, options = {}, timeoutMs = 8_000, decode = response => response.json()) {
+async function fetchJsonAttempt(url, options = {}, timeoutMs = 8_000, decode = response => response.json(), trace = null) {
     const controller = typeof AbortController === 'function'
         ? new AbortController()
         : null;
     const requestOptions = controller === null
         ? options
         : { ...options, signal: controller.signal };
-    const request = fetch(url, requestOptions);
     let timeoutId = null;
-    const timeout = new Promise((_, reject) => {
-        timeoutId = setTimeout(() => {
-            const error = new Error(`請求逾時（${timeoutMs}ms）`);
-            error.name = 'TimeoutError';
-            reject(error);
-            controller?.abort();
-        }, timeoutMs);
-    });
-
     try {
+        const request = fetch(url, requestOptions);
+        const timeout = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+                const error = new Error(`請求逾時（${timeoutMs}ms）`);
+                error.name = 'TimeoutError';
+                reject(error);
+                controller?.abort();
+            }, timeoutMs);
+        });
         const response = await Promise.race([request, timeout]);
+
+        if (trace !== null) {
+            trace.stage = '已收到 HTTP 回應';
+            trace.status = response.status || null;
+            const mime = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+            trace.contentType = mime === 'text/html' || mime === 'application/json'
+                ? mime : mime ? '其他' : '未提供';
+            trace.redirected = response.redirected;
+            const requestId = response.headers.get('x-github-request-id');
+            if (requestId && requestId.length <= 64 && /^(?:[a-f0-9]+:){2,5}[a-f0-9]+$/i.test(requestId)) {
+                trace.requestId = requestId;
+            }
+        }
 
         if (!response.ok) {
             const error = new Error(`HTTP ${response.status}`);
@@ -1206,7 +1218,20 @@ async function fetchJsonAttempt(url, options = {}, timeoutMs = 8_000, decode = r
             throw error;
         }
 
-        return await Promise.race([decode(response), timeout]);
+        if (trace !== null) trace.stage = '讀取回應內容';
+        const data = await Promise.race([decode(response), timeout]);
+        if (trace !== null) trace.result = '讀取成功';
+        return data;
+    } catch (error) {
+        if (trace !== null) {
+            if (error?.name === 'TimeoutError') trace.result = '逾時';
+            else if (error?.name === 'AbortError') trace.result = '請求中止';
+            else if (Number.isInteger(error?.status)) trace.result = 'HTTP 錯誤';
+            else if (trace.status === null) trace.result = '未取得可讀的 HTTP 回應';
+            else if (error?.name === 'SyntaxError') trace.result = 'JSON 解析失敗';
+            else trace.result = '回應內容讀取失敗';
+        }
+        throw error;
     } finally {
         if (timeoutId !== null) {
             clearTimeout(timeoutId);
@@ -1223,8 +1248,12 @@ async function fetchJsonWithRetry(url, options = {}, policy = {}) {
         : [300, 1_000];
 
     for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+        const trace = policy.attempts
+            ? { startedAt: new Date().toISOString(), stage: '等待 HTTP 回應', status: null }
+            : null;
+        const startedAt = trace === null ? 0 : performance.now();
         try {
-            return await fetchJsonAttempt(url, options, timeoutMs, policy.decode);
+            return await fetchJsonAttempt(url, options, timeoutMs, policy.decode, trace);
         } catch (error) {
             const status = Number(error?.status);
             const retryable = !Number.isInteger(status)
@@ -1236,8 +1265,13 @@ async function fetchJsonWithRetry(url, options = {}, policy = {}) {
                 throw error;
             }
 
-            await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+        } finally {
+            if (trace !== null) {
+                trace.elapsedMs = Math.round(performance.now() - startedAt);
+                policy.attempts.push(trace);
+            }
         }
+        await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
     }
 
     throw new Error('JSON 資料讀取失敗。');
@@ -1324,7 +1358,7 @@ function exceptionRecordFromAlert(alert) {
         : '已恢復';
     const logContent = [
         '網站異常紀錄',
-        `發生時間：${toTaipeiText(alert.raised_at)}`,
+        `告警時間：${toTaipeiText(alert.raised_at)}`,
         `流程：${alert.source}`,
         `狀態：${status}`,
         `簡述：${alert.message}`,
@@ -26049,6 +26083,79 @@ function reportLoadFailure(error) {
     });
 }
 
+const STARTUP_DIAGNOSTIC_KEY = 'invest.startup-diagnostics.v1';
+const STARTUP_DIAGNOSTIC_LIMIT = 5;
+
+function readStartupDiagnostics() {
+    try {
+        const records = JSON.parse(localStorage.getItem(STARTUP_DIAGNOSTIC_KEY));
+        return Array.isArray(records)
+            ? records.filter(record => typeof record === 'string' && record.length <= 3_000)
+                .slice(0, STARTUP_DIAGNOSTIC_LIMIT)
+            : [];
+    } catch {
+        return [];
+    }
+}
+
+function makeStartupDiagnosticButton(label, logContent, className) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.textContent = label;
+    button.addEventListener('click', () => downloadAlertLog({
+        logFileName: 'site-startup-diagnostic.txt',
+        logContent
+    }));
+    return button;
+}
+
+function formatStartupDiagnostic(diagnostic, error) {
+    const errorName = ['Error', 'TypeError', 'SyntaxError', 'ReferenceError', 'RangeError',
+        'SecurityError', 'AbortError', 'TimeoutError'].includes(error?.name) ? error.name : '其他例外';
+    // 只取本站程式的行列，不匯出例外文字、完整堆疊、網址參數或回應原文。
+    const frame = typeof error?.stack === 'string'
+        ? error.stack.match(/\/site\.js(?:\?[^\s)]*)?:(\d+):(\d+)/)
+        : null;
+    const lines = [
+        '網站啟動診斷',
+        `時間（UTC）：${new Date().toISOString()}`,
+        `網站：${window.location.hostname}`,
+        `失敗階段：${diagnostic.stage}`,
+        `程式發布版本：${diagnostic.scriptVersion ?? '未知'}`,
+        `manifest 版本：${diagnostic.manifestVersion ?? '未取得'}`,
+        `錯誤類型：${errorName}`
+    ];
+    if (frame) lines.push(`程式位置：site.js:${frame[1]}:${frame[2]}`);
+    for (const [index, attempt] of diagnostic.attempts.entries()) {
+        const evidence = [
+            attempt.startedAt, attempt.stage, attempt.result, `${attempt.elapsedMs} ms`,
+            attempt.status === null ? '' : `HTTP ${attempt.status}`,
+            attempt.contentType ? `內容類型 ${attempt.contentType}` : '',
+            attempt.redirected ? '有重新導向' : '',
+            attempt.requestId ? `GitHub 請求 ID ${attempt.requestId}` : ''
+        ].filter(Boolean);
+        lines.push(`manifest.json 第 ${index + 1} 次：${evidence.join('｜')}`);
+    }
+    if (diagnostic.attempts.some(attempt => attempt.status === null)) {
+        lines.push('補充取證：在故障電腦按 F12 → Network，重整後記下 manifest.json 的 Status 或 net::ERR_*，可用時間對照 IT 日誌。');
+    }
+    return lines.join('\r\n');
+}
+
+function reportStartupFailure(diagnostic, error) {
+    const logContent = formatStartupDiagnostic(diagnostic, error);
+    try {
+        localStorage.setItem(STARTUP_DIAGNOSTIC_KEY,
+            JSON.stringify([logContent, ...readStartupDiagnostics()].slice(0, STARTUP_DIAGNOSTIC_LIMIT)));
+    } catch {
+        // 公司瀏覽器可能禁止儲存。仍讓使用者在當前錯誤畫面下載。
+    }
+    console.error('網站資料載入失敗', logContent);
+    showNotice(staticJsonLoadErrorMessage('網站資料', error), true, () => window.location.reload());
+    el('notice').append(makeStartupDiagnosticButton('匯出 log（啟動診斷）', logContent, 'toggle-button load-retry'));
+}
+
 /// 舊的 index.html / site.js 可能還躺在瀏覽器快取裡（GitHub Pages 給十分鐘）。
 /// 版本號對不上就換一個帶查詢字串的網址重載，一次把 HTML 與 JS 都換成新的。
 async function reloadIfStale(isCurrent = () => true) {
@@ -37476,6 +37583,8 @@ function initMarketSwitch() {
 }
 
 async function start() {
+    // 在第一個 await 前套用佈景，避免先顯示預設顏色。
+    wireThemeSwitcher();
     if (!ASSET_EXCEL_VIEW) {
         initMarketSwitch();
     }
@@ -37484,7 +37593,14 @@ async function start() {
     // 所以這支檔案自己不進快取。
     for (const name of ['online', 'focus', 'pageshow']) window.addEventListener(name, resumeIntradayComparisonRetry);
     document.addEventListener('visibilitychange', resumeIntradayComparisonRetry);
-    const manifest = await fetchJsonWithRetry('manifest.json', { cache: 'no-store' });
+    startupDiagnostic.stage = '讀取 manifest.json';
+    const manifest = await fetchJsonWithRetry('manifest.json', { cache: 'no-store' }, {
+        attempts: startupDiagnostic.attempts
+    });
+    startupDiagnostic.manifestVersion = diagnosticVersion(manifest?.version);
+    startupDiagnostic.stage = '檢查 manifest.json 格式';
+    if (!Array.isArray(manifest?.dates)) throw new TypeError('manifest 缺少交易日清單');
+    startupDiagnostic.stage = '初始化網站';
     siteManifest = manifest;
 
     const refreshEtfDividendsWhenActive = () => {
@@ -37773,7 +37889,22 @@ function wireThemeSwitcher() {
     }
 }
 
-// 越早呼叫越好：這是整支腳本第一個非同步斷點（start() 內的 await）之前
-// 最後一個同步呼叫，避免瀏覽器先畫出預設外觀、下一輪才跳成使用者選的深色。
-wireThemeSwitcher();
-void start().catch(reportLoadFailure);
+function diagnosticVersion(value) {
+    return typeof value === 'string' && /^\d{1,12}$/.test(value) ? value : null;
+}
+
+const startupScript = document.currentScript;
+const startupDiagnostic = {
+    stage: '讀取 manifest.json 前的初始化',
+    scriptVersion: startupScript ? diagnosticVersion(new URL(startupScript.src).searchParams.get('v')) : null,
+    manifestVersion: null,
+    attempts: []
+};
+
+void start().then(() => {
+    const records = readStartupDiagnostics();
+    if (records.length > 0) {
+        el('refresh-status')?.after(makeStartupDiagnosticButton(
+            '下載近期啟動診斷', records.join('\r\n\r\n'), 'refresh-button'));
+    }
+}, error => reportStartupFailure(startupDiagnostic, error));

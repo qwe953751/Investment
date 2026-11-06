@@ -752,16 +752,25 @@ public sealed class IntradaySnapshotPublisher(
             throw new InvalidOperationException($"無法設定 Cache-Control header（值：{cacheControlValue}）。");
         }
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-
-        if (response.IsSuccessStatusCode)
+        try
         {
-            return;
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var rayId = response.Headers.TryGetValues("cf-ray", out var values) ? values.FirstOrDefault() : null;
+                if (rayId is null || !Regex.IsMatch(rayId, @"\A[0-9a-fA-F]{8,32}(?:-[A-Z]{3})?\z"))
+                    rayId = null;
+                throw new IntradaySnapshotUploadException(path, $"HTTP {(int)response.StatusCode}", rayId);
+            }
         }
-
-        var detail = await response.Content.ReadAsStringAsync(cancellationToken);
-        throw new InvalidOperationException(
-            $"盤中 CDN 上傳 {path} 失敗（HTTP {(int)response.StatusCode}）：{detail[..Math.Min(detail.Length, 300)]}");
+        catch (HttpRequestException exception)
+        {
+            throw new IntradaySnapshotUploadException(path, exception.HttpRequestError.ToString(), null);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new IntradaySnapshotUploadException(path, "請求逾時", null);
+        }
     }
 
     private async Task PruneExpiredSnapshotsAsync(
@@ -1259,6 +1268,15 @@ public sealed class IntradaySnapshotPublisher(
         string ContentHash,
         string RulesVersion,
         string BasisHash);
+}
+
+internal sealed class IntradaySnapshotUploadException(string path, string reason, string? rayId)
+    : InvalidOperationException($"盤中 CDN 上傳 {path} 失敗（{reason}）"
+        + (rayId is null ? "" : $"，Cloudflare Ray ID：{rayId}"))
+{
+    public string Path { get; } = path;
+    public string Reason { get; } = reason;
+    public string? RayId { get; } = rayId;
 }
 
 public sealed record IntradaySnapshotPublishResult(bool Published, string? File)

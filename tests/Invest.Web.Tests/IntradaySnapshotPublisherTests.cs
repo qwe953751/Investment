@@ -230,6 +230,52 @@ public sealed class IntradaySnapshotPublisherTests
         }
     }
 
+    [Theory]
+    [InlineData(false, "1234567890abcdef-TPE", true)]
+    [InlineData(true, "untrusted-header-value", false)]
+    public async Task 上傳失敗可區分快照與指標並只留下安全的回應證據(
+        bool failLatest, string rayId, bool keepsRayId)
+    {
+        var variable = IntradaySnapshotPublisher.StorageSecretVariable;
+        var previous = Environment.GetEnvironmentVariable(variable);
+        Environment.SetEnvironmentVariable(variable, "test-secret");
+        try
+        {
+            var publisher = CreatePublisher(new CapturingHandler([], request =>
+            {
+                var isLatest = request.RequestUri!.AbsolutePath.EndsWith("/latest.json", StringComparison.Ordinal);
+                if (isLatest != failLatest)
+                    return new HttpResponseMessage(HttpStatusCode.OK);
+
+                var response = new HttpResponseMessage((HttpStatusCode)520)
+                {
+                    Content = new StringContent("untrusted-response-body")
+                };
+                response.Headers.TryAddWithoutValidation("cf-ray", rayId);
+                return response;
+            }));
+            var capturedAt = new DateTimeOffset(2026, 11, 5, 2, 19, 0, TimeSpan.Zero);
+            var snapshot = new IntradaySnapshot
+            {
+                TradeDate = new DateOnly(2026, 11, 5),
+                Quotes = [],
+                MarketIndices = []
+            };
+
+            var error = await Assert.ThrowsAnyAsync<InvalidOperationException>(
+                () => publisher.PublishRawAsync(6672, snapshot, capturedAt));
+
+            Assert.Contains(failLatest ? "latest.json" : "intraday-20261105-1019-run6672.json", error.Message);
+            Assert.Contains("HTTP 520", error.Message);
+            Assert.DoesNotContain("untrusted-response-body", error.Message);
+            Assert.Equal(keepsRayId, error.Message.Contains(rayId, StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, previous);
+        }
+    }
+
     [Fact]
     public async Task 第一次發布族群時Storage以400回NoSuchKey仍可建立topic快取()
     {

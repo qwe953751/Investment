@@ -68,6 +68,113 @@ function retryPolicyHarness() {
     };
 }
 
+function startupDiagnosticHarness(fetch, { storage = new Map(), failInitialization = false } = {}) {
+    const startupDiagnostic = { stage: '啟動', scriptVersion: '1793955989', attempts: [] };
+    const notice = { append(button) { this.button = button; } };
+    const noop = () => {};
+    const downloads = [];
+    const context = vm.createContext({
+        fetch, AbortController, performance, clearTimeout,
+        setTimeout(callback, delay) {
+            // 只快轉重試間隔，保留真正的請求逾時計時器。
+            if (delay === 300 || delay === 1_000) return setTimeout(callback, 0);
+            return setTimeout(callback, delay);
+        },
+        startupDiagnostic, ASSET_EXCEL_VIEW: false, wireThemeSwitcher: noop, initMarketSwitch: noop,
+        resumeIntradayComparisonRetry: noop,
+        configureIntradayRefresh() {
+            if (failInitialization) {
+                const error = new ReferenceError('private-init-detail');
+                error.stack = 'ReferenceError: private-init-detail\n    at start (https://example.test/site.js?key=private-key:80:9)';
+                throw error;
+            }
+        },
+        window: { location: { hostname: 'example.test' }, addEventListener: noop },
+        document: {
+            addEventListener: noop,
+            createElement: () => ({ addEventListener(_event, callback) { this.click = callback; } })
+        },
+        localStorage: {
+            getItem: key => storage.get(key) ?? null,
+            setItem: (key, value) => storage.set(key, value)
+        },
+        el: () => notice, showNotice: noop, console: { error: noop },
+        downloadAlertLog: record => downloads.push(record)
+    });
+    const functions = [
+        'start', 'diagnosticVersion', 'fetchJsonAttempt', 'fetchJsonWithRetry', 'staticJsonLoadErrorMessage',
+        'reportStartupFailure', 'formatStartupDiagnostic', 'readStartupDiagnostics', 'makeStartupDiagnosticButton'
+    ];
+    const constants = siteScript.match(/^const STARTUP_DIAGNOSTIC_.+$/gm);
+    vm.runInContext([...constants, ...functions.map(functionSource)].join('\n'), context);
+    return {
+        context, notice, downloads, startupDiagnostic, storage,
+        async failStartup() {
+            await context.start().then(() => assert.fail('啟動應失敗'), error => {
+                context.reportStartupFailure(startupDiagnostic, error);
+            });
+            notice.button.click();
+            return downloads[0].logContent;
+        }
+    };
+}
+
+test('啟動診斷區分沒收到回應與 HTTP 200 HTML，保留重試、請求 ID 及可下載的本機紀錄', async () => {
+    let calls = 0;
+    const harness = startupDiagnosticHarness(async url => {
+        assert.equal(url, 'manifest.json');
+        if (++calls === 1) throw new TypeError('private-transport-detail');
+        return new Response('<html>private-response-body</html>', {
+            headers: { 'content-type': 'text/html; charset=utf-8', 'x-github-request-id': '1A2B:1234:AABB:5566' }
+        });
+    });
+    const log = await harness.failStartup();
+    assert.match(log, /失敗階段：讀取 manifest\.json/);
+    assert.match(log, /程式發布版本：1793955989/);
+    assert.match(log, /第 1 次：[^\n]+未取得可讀的 HTTP 回應/);
+    assert.match(log, /第 3 次：[^\n]+JSON 解析失敗[^\n]+HTTP 200[^\n]+text\/html[^\n]+1A2B:1234:AABB:5566/);
+    assert.match(log, /net::ERR_\*/);
+    assert.doesNotMatch(log, /private-/);
+    const reloaded = startupDiagnosticHarness(harness.context.fetch, { storage: harness.storage });
+    assert.equal(reloaded.context.readStartupDiagnostics()[0], log);
+});
+
+test('HTTP 403 會保留狀態與失敗階段，且不重試', async () => {
+    const harness = startupDiagnosticHarness(async () => new Response('', { status: 403 }));
+    const log = await harness.failStartup();
+    assert.match(log, /已收到 HTTP 回應｜HTTP 錯誤[^\n]+HTTP 403/);
+    assert.equal(harness.startupDiagnostic.attempts.length, 1);
+});
+
+test('啟動診斷能分辨等回應和讀取內容時的逾時', async () => {
+    for (const [fetch, stage, status] of [
+        [() => new Promise(() => {}), '等待 HTTP 回應', null],
+        [async () => ({ ok: true, status: 200, headers: new Headers(), json: () => new Promise(() => {}) }),
+            '讀取回應內容', 200]
+    ]) {
+        const harness = startupDiagnosticHarness(fetch);
+        const attempts = [];
+        await assert.rejects(harness.context.fetchJsonWithRetry('manifest.json', {}, {
+            timeoutMs: 10, retryDelays: [], attempts
+        }), { name: 'TimeoutError' });
+        assert.equal(attempts[0].stage, stage);
+        assert.equal(attempts[0].status, status);
+        assert.equal(attempts[0].result, '逾時');
+    }
+});
+
+test('manifest 成功後的初始化例外可定位到程式行列，瀏覽器禁止儲存仍能下載', async () => {
+    const blockedStorage = { get() { throw new Error('blocked'); }, set() { throw new Error('blocked'); } };
+    const harness = startupDiagnosticHarness(async () => Response.json({ dates: [], version: '1793955990' }),
+        { storage: blockedStorage, failInitialization: true });
+    const log = await harness.failStartup();
+    assert.match(log, /失敗階段：初始化網站/);
+    assert.match(log, /manifest 版本：1793955990/);
+    assert.match(log, /錯誤類型：ReferenceError/);
+    assert.match(log, /程式位置：site\.js:80:9/);
+    assert.doesNotMatch(log, /private-/);
+});
+
 test('JSON 載入器會把每種資料的逾時與重試政策傳給單次請求', async () => {
     const harness = retryPolicyHarness();
 
