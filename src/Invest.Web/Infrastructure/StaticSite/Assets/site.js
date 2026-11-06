@@ -21785,7 +21785,8 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummar
         lowerValue: bar => bar.tradingValue,
         lowerReferenceKey: 'turnover',
         lowerLabel: turnoverLabel,
-        formatLower: value => `${toBillionText(value)} 億`
+        formatLower: value => `${toBillionText(value)} 億`,
+        dateLabel: bar => klineBarReferenceLabel(bar, period)
     }, referenceSummary);
     crosshair?.register(svg, {
         width, left, right, x,

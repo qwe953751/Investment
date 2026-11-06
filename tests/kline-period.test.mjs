@@ -402,3 +402,10 @@ test('所有市場與台股指數共用可操作的日週月切換列', () => {
     assert.ok(siteScript.includes('card.append(renderKLineTimeframe(() => renderKLinePopover(ticker, name, anchor)))'));
     assert.ok(!siteScript.includes("const activePeriod = isTaiwan ? expandedKLinePeriod : 'day'"));
 });
+
+
+test('指數週月查價線與橫軸都使用目前週期的日期格式', () => {
+    const render = functionSource('renderIndexKLineSvg');
+    assert.ok(render.includes('klineBarAxisLabel(bar, period)'));
+    assert.ok(render.includes('dateLabel: bar => klineBarReferenceLabel(bar, period)'));
+});
