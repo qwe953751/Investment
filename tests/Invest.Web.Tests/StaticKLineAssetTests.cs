@@ -2122,7 +2122,7 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("payload?.market === 'US'", script, StringComparison.Ordinal);
         Assert.Contains("payload?.adjustmentMethod === 'raw-us-daily'", script, StringComparison.Ordinal);
         Assert.Contains("payload?.adjustmentMethod === 'forward-official-reference-tw-etf-daily'", script, StringComparison.Ordinal);
-        Assert.Contains("美股日 K", script, StringComparison.Ordinal);
+        Assert.Contains("const activePeriod = expandedKLinePeriod;", script, StringComparison.Ordinal);
         Assert.Contains("await usDailyQuotes.LoadAllAsync(cancellationToken)", exporter, StringComparison.Ordinal);
         Assert.Contains("quote.Market == Market.Us", exporter, StringComparison.Ordinal);
         Assert.Contains("\"raw-us-daily\"", exporter, StringComparison.Ordinal);

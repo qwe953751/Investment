@@ -351,3 +351,54 @@ test('日期標籤：日 K 是 MM/DD，週 K 帶年，月 K 到月；查價線�
     assert.equal(kline.klineBarReferenceLabel({ date: '2026-10-19', endDate: '2026-10-19' }, 'week'), '10/19');
     assert.equal(kline.klineBarReferenceLabel(month, 'month'), '2026/10');
 });
+
+
+test('海外市場物件格式保留 C# 完整週月歷史，當期不讀未來日線', () => {
+    for (const market of ['US', 'JP', 'KR', 'CRYPTO']) {
+        const payload = { market, bars: fixture.expected.daily,
+            weeks: fixture.expected.weekly, months: fixture.expected.monthly };
+        assert.equal(kline.decodeKLinePayload(payload), payload);
+        const end = '2026-04-08';
+        const bars = kline.buildKLinePeriodBars(payload.weeks,
+            payload.bars.filter(bar => bar.date <= end), 'week', end);
+        assert.equal(bars.at(-1).endDate, end);
+        assert.ok(bars.at(-1).high < 95.625);
+    }
+});
+
+test('指數當期週月成交金額逐日加總，不把每日數字當週期量', () => {
+    const daily = [
+        { date: '2026-06-01', open: 10, high: 12, low: 9, close: 11, tradingValue: 100 },
+        { date: '2026-06-02', open: 11, high: 30, low: 5, close: 12, tradingValue: 200 }
+    ];
+    for (const period of ['week', 'month']) {
+        const bar = kline.buildKLinePeriodBars([], daily, period, '2026-06-02').at(-1);
+        assert.equal(bar.tradingValue, 300);
+        assert.equal(bar.high, 30);
+        assert.equal(bar.low, 5);
+    }
+});
+
+test('所有市場與台股指數共用可操作的日週月切換列', () => {
+    const elements = [];
+    const document = { createElement: tag => {
+        const element = { tag, children: [], attributes: {}, events: {},
+            append(...items) { this.children.push(...items); },
+            setAttribute(key, value) { this.attributes[key] = value; },
+            addEventListener(key, callback) { this.events[key] = callback; } };
+        elements.push(element);
+        return element;
+    } };
+    const context = { document, calls: 0 };
+    vm.createContext(context);
+    vm.runInContext(`let expandedKLinePeriod = 'day'; ${functionSource('renderKLineTimeframe')}
+        renderKLineTimeframe(() => calls++);`, context);
+    const buttons = elements.filter(el => el.tag === 'button');
+    assert.deepEqual(buttons.map(button => button.textContent), ['日 K', '週 K', '月 K']);
+    buttons[1].events.click();
+    buttons[2].events.click();
+    assert.equal(context.calls, 2);
+    assert.ok(siteScript.includes('card.append(renderKLineTimeframe(() => renderIndexKLinePopover(market, anchor)))'));
+    assert.ok(siteScript.includes('card.append(renderKLineTimeframe(() => renderKLinePopover(ticker, name, anchor)))'));
+    assert.ok(!siteScript.includes("const activePeriod = isTaiwan ? expandedKLinePeriod : 'day'"));
+});

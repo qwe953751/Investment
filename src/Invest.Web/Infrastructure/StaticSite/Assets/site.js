@@ -21580,6 +21580,14 @@ function selectedIndexKLineBars(market) {
         .filter(bar => bar.date >= startDate && bar.date <= endDate);
 }
 
+function selectedIndexKLinePeriodBars(market, period) {
+    const data = indexKLineData.get(market);
+    const periods = period === 'month' ? data?.months : data?.weeks;
+    if (!Array.isArray(periods)) return null;
+    const daily = selectedIndexKLineBars(market);
+    return buildKLinePeriodBars(periods, daily, period, klineEndDate());
+}
+
 function indexKLinePriceRange(bars) {
     const prices = bars.flatMap(bar => [
         bar.low,
@@ -21626,7 +21634,7 @@ function renderIndexKLineLegend(bars) {
     return legend;
 }
 
-function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummary, crosshair) {
+function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummary, crosshair, period = 'day') {
     const { width, left, right, axisX, axisAnchor } = KLINE_INDEX_PLOT;
     const height = 440;
     const top = 22;
@@ -21646,7 +21654,7 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummar
         class: 'daily-kline-svg index-kline-svg',
         viewBox: `0 0 ${width} ${height}`,
         role: 'img',
-        'aria-label': `${label}三個月指數日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與${turnoverLabel}`
+        'aria-label': `${label}${period === 'day' ? '日' : period === 'week' ? '週' : '月'} K 圖，包含 MA5、MA10、MA20、MA60、MA240 與${turnoverLabel}`
     });
     const priceClipId = `index-kline-price-clip-${market}`;
     const priceClip = svgElement('clipPath', { id: priceClipId });
@@ -21758,7 +21766,7 @@ function renderIndexKLineSvg(market, label, turnoverLabel, bars, referenceSummar
     labels.forEach(([bar, index]) => {
         svg.append(svgElement('text', {
             class: 'daily-kline-date', x: x(index), y: 420, 'text-anchor': 'middle'
-        }, bar.date.slice(5).replace('-', '/')));
+        }, klineBarAxisLabel(bar, period)));
     });
 
     attachKLineInteractions(svg, bars, {
@@ -21793,7 +21801,10 @@ function renderIndexKLinePopover(market, anchor) {
     popover.replaceChildren();
 
     const data = indexKLineData.get(market);
-    const bars = data ? selectedIndexKLineBars(market) : [];
+    const activePeriod = expandedKLinePeriod;
+    const timeframeLabel = activePeriod === 'week' ? '週 K' : activePeriod === 'month' ? '月 K' : '日 K';
+    const periodBars = data && activePeriod !== 'day' ? selectedIndexKLinePeriodBars(market, activePeriod) : null;
+    const bars = !data ? [] : activePeriod === 'day' ? selectedIndexKLineBars(market) : (periodBars ?? []);
     const card = document.createElement('div');
     card.className = 'daily-kline-card index-kline-card';
     const header = document.createElement('div');
@@ -21808,8 +21819,8 @@ function renderIndexKLinePopover(market, anchor) {
     const period = document.createElement('span');
     period.className = 'daily-kline-period';
     period.textContent = endDate
-        ? `日 K・${actualStartDate.replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
-        : '日 K';
+        ? `${timeframeLabel}・${actualStartDate.replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
+        : timeframeLabel;
     title.append(strong, period);
 
     const close = document.createElement('button');
@@ -21819,6 +21830,7 @@ function renderIndexKLinePopover(market, anchor) {
     close.addEventListener('click', closeKLine);
     header.append(title, close);
     card.append(header);
+    card.append(renderKLineTimeframe(() => renderIndexKLinePopover(market, anchor)));
 
     if (INDEX_KLINE_LOCAL_PREVIEW || data?.template === true) {
         const localNote = document.createElement('p');
@@ -21839,6 +21851,11 @@ function renderIndexKLinePopover(market, anchor) {
         message.className = 'daily-kline-empty';
         message.textContent = '指數 K 線載入中…';
         card.append(message);
+    } else if (activePeriod !== 'day' && periodBars === null) {
+        const message = document.createElement('p');
+        message.className = 'daily-kline-empty';
+        message.textContent = `${timeframeLabel} 資料尚未發布，請重新整理頁面後再試。`;
+        card.append(message);
     } else if (bars.length === 0) {
         const message = document.createElement('p');
         message.className = 'daily-kline-empty';
@@ -21852,12 +21869,18 @@ function renderIndexKLinePopover(market, anchor) {
             card.append(note);
         }
 
+        if (activePeriod !== 'day' && bars.length < KLINE_PERIOD_BARS) {
+            const note = document.createElement('p');
+            note.className = 'daily-kline-coverage';
+            note.textContent = `${timeframeLabel} 共 ${bars.length} 根，尚不足 ${KLINE_PERIOD_BARS} 根；圖表只顯示可用區間。`;
+            card.append(note);
+        }
         const referenceControls = renderKLineReferenceControls([
                 { key: 'price', label: 'K棒' },
                 { key: 'turnover', label: '成交金額' }
             ]);
         const crosshair = createKLineCrosshair(bars, card, {
-            dateLabel: bar => klineBarReferenceLabel(bar, 'day'),
+            dateLabel: bar => klineBarReferenceLabel(bar, activePeriod),
             volumeField: 'tradingValue',
             volumeLabel: data.turnoverLabel,
             formatVolume: value => `${toBillionText(value)} 億`
@@ -21865,8 +21888,8 @@ function renderIndexKLinePopover(market, anchor) {
         card.append(
             renderIndexKLineLegend(bars),
             referenceControls.element,
-            renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars, referenceControls.status, crosshair),
-            renderKLineTechnicalIndicators(bars, 'day', KLINE_INDEX_PLOT, crosshair));
+            renderIndexKLineSvg(market, data.label, data.turnoverLabel, bars, referenceControls.status, crosshair, activePeriod),
+            renderKLineTechnicalIndicators(bars, activePeriod, KLINE_INDEX_PLOT, crosshair));
     }
 
     popover.append(card);
@@ -22123,6 +22146,8 @@ function buildKLinePeriodBars(periodBars, dailyBars, period, endDate, factor = 1
             tradingVolume: volumes.length > 0
                 ? volumes.reduce((sum, value) => sum + Number(value), 0)
                 : null,
+            tradingValue: inPeriod.every(bar => !missing(bar.tradingValue))
+                ? inPeriod.reduce((sum, bar) => sum + Number(bar.tradingValue), 0) : null,
             isLive: lastDaily.isLive === true
         };
 
@@ -22582,6 +22607,7 @@ function klineTrendClass(bar) {
 
 function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null, period = 'day', crosshair = null) {
     const isCrypto = klineData.get(ticker)?.market === 'CRYPTO';
+    const priceLabel = isCrypto ? 'UTC ' : ['US', 'JP', 'KR'].includes(klineData.get(ticker)?.market) ? '' : '還原權息';
     const volumeLabel = isCrypto ? '成交額' : '成交量';
     const formatVolume = isCrypto ? value => `${toFixedText(value, 0)} USD` : toLotText;
     const { width, left, right, axisX, axisAnchor } = KLINE_ASSET_PLOT;
@@ -22617,8 +22643,8 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         viewBox: `0 0 ${width} ${height}`,
         role: 'img',
         'aria-label': (period === 'day'
-            ? `${ticker} ${name} 三個月${isCrypto ? '完整 UTC' : '還原權息'}日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與${volumeLabel}`
-            : `${ticker} ${name} 還原權息${period === 'week' ? '週' : '月'} K 圖，最近 ${bars.length} 根，包含 MA5、MA10、MA20、MA60、MA240 與${volumeLabel}`)
+            ? `${ticker} ${name} 三個月${priceLabel}日 K 圖，包含 MA5、MA10、MA20、MA60、MA240 與${volumeLabel}`
+            : `${ticker} ${name} ${priceLabel}${period === 'week' ? '週' : '月'} K 圖，最近 ${bars.length} 根，包含 MA5、MA10、MA20、MA60、MA240 與${volumeLabel}`)
             + (holdingCost === null ? '' : '，並標示持倉成本均價')
     });
 
@@ -22922,6 +22948,40 @@ function klineSuspensionOf(ticker) {
     return currentSuspensionOf(ticker, klineEndDate() || null);
 }
 
+function renderKLineTimeframe(onChange) {
+    const timeframe = document.createElement('div');
+    timeframe.className = 'daily-kline-timeframe-row';
+
+    const timeframeLabelElement = document.createElement('span');
+    timeframeLabelElement.className = 'daily-kline-timeframe-label';
+    timeframeLabelElement.textContent = '週期';
+
+    const timeframeOptions = document.createElement('div');
+    timeframeOptions.className = 'daily-kline-timeframe-options';
+    timeframeOptions.setAttribute('role', 'group');
+    timeframeOptions.setAttribute('aria-label', 'K 線週期');
+
+    for (const [value, label] of [['day', '日 K'], ['week', '週 K'], ['month', '月 K']]) {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'daily-kline-timeframe';
+        option.textContent = label;
+        option.setAttribute('aria-pressed', String(expandedKLinePeriod === value));
+        option.addEventListener('click', () => {
+            if (expandedKLinePeriod === value) {
+                return;
+            }
+
+            expandedKLinePeriod = value;
+            onChange();
+        });
+        timeframeOptions.append(option);
+    }
+
+    timeframe.append(timeframeLabelElement, timeframeOptions);
+    return timeframe;
+}
+
 function renderKLinePopover(ticker, name, anchor) {
     const popover = el('kline-popover');
     popover.setAttribute('aria-labelledby', 'kline-title');
@@ -22973,7 +23033,7 @@ function renderKLinePopover(ticker, name, anchor) {
     period.className = 'daily-kline-period';
     const endDate = klineEndDate();
     const requestedStartDate = endDate ? klineStartDate(endDate) : '';
-    const activePeriod = isTaiwan ? expandedKLinePeriod : 'day';
+    const activePeriod = expandedKLinePeriod;
     // 週／月 K：檔案沒有這份資料（舊格式）時 periodBars 是 null，下面改顯示說明而不是畫空圖。
     const periodBars = klineData.has(ticker) && activePeriod !== 'day'
         ? selectedKLinePeriodBars(ticker, activePeriod)
@@ -22988,8 +23048,8 @@ function renderKLinePopover(ticker, name, anchor) {
     const periodLabel = isEtf ? `ETF 還原權息${timeframeLabel}`
         : isTdr ? `TDR 還原權息${timeframeLabel}`
         : isEmerging ? `興櫃還原權息${timeframeLabel}（日均價）`
-        : isCrypto ? '加密完整 UTC 日 K'
-        : isUs ? '美股日 K'
+        : isCrypto ? `加密 UTC ${timeframeLabel}`
+        : !isTaiwan ? `${expandedKLineMarket || klineData.get(ticker)?.market || ''}${timeframeLabel}`
         : `還原權息${timeframeLabel}`;
     period.textContent = endDate
         ? `${periodLabel}・${actualStartDate.replaceAll('-', '/')} ~ ${endDate.replaceAll('-', '/')}`
@@ -23025,39 +23085,7 @@ function renderKLinePopover(ticker, name, anchor) {
         card.append(topicRow);
     }
 
-    if (isTaiwan) {
-        const timeframe = document.createElement('div');
-        timeframe.className = 'daily-kline-timeframe-row';
-
-        const timeframeLabelElement = document.createElement('span');
-        timeframeLabelElement.className = 'daily-kline-timeframe-label';
-        timeframeLabelElement.textContent = '週期';
-
-        const timeframeOptions = document.createElement('div');
-        timeframeOptions.className = 'daily-kline-timeframe-options';
-        timeframeOptions.setAttribute('role', 'group');
-        timeframeOptions.setAttribute('aria-label', '還原權息 K 線週期');
-
-        for (const [value, label] of [['day', '日 K'], ['week', '週 K'], ['month', '月 K']]) {
-            const option = document.createElement('button');
-            option.type = 'button';
-            option.className = 'daily-kline-timeframe';
-            option.textContent = label;
-            option.setAttribute('aria-pressed', String(expandedKLinePeriod === value));
-            option.addEventListener('click', () => {
-                if (expandedKLinePeriod === value) {
-                    return;
-                }
-
-                expandedKLinePeriod = value;
-                renderKLinePopover(ticker, name, anchor);
-            });
-            timeframeOptions.append(option);
-        }
-
-        timeframe.append(timeframeLabelElement, timeframeOptions);
-        card.append(timeframe);
-    }
+    card.append(renderKLineTimeframe(() => renderKLinePopover(ticker, name, anchor)));
 
     if (klineError) {
         const message = document.createElement('p');

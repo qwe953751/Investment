@@ -627,7 +627,8 @@ public sealed class StaticSiteExporter(
                 HighPrice = quote.HighPrice,
                 LowPrice = quote.LowPrice,
                 ClosePrice = quote.ClosePrice,
-                TradingValue = quote.TradingValue
+                TradingValue = quote.TradingValue,
+                TradingVolume = quote.TradingVolume
             }))
             .ToArray();
 
@@ -682,7 +683,7 @@ public sealed class StaticSiteExporter(
 
             await WriteJsonAsync(
                 Path.Combine(directory, ticker + ".json"),
-                WithIndicators(export),
+                WithPeriods(WithIndicators(export), trading, ticker, endDate),
                 cancellationToken);
             count++;
         }
@@ -773,7 +774,7 @@ public sealed class StaticSiteExporter(
                         RoundKLine(point.Ma240),
                         RoundKLine(point.TradingVolume)))]);
 
-                await WriteJsonAsync(Path.Combine(directory, symbol + ".json"), WithIndicators(export), cancellationToken);
+                await WriteJsonAsync(Path.Combine(directory, symbol + ".json"), WithPeriods(WithIndicators(export), trading, symbol, endDate), cancellationToken);
                 count++;
             }
 
@@ -836,7 +837,8 @@ public sealed class StaticSiteExporter(
                 ? adjustmentElement.GetString()
                 : null;
 
-            return market != expectedMarket || adjustmentMethod != expectedAdjustment;
+            return market != expectedMarket || adjustmentMethod != expectedAdjustment
+                || !root.TryGetProperty("weeks", out _) || !root.TryGetProperty("months", out _);
         }
         catch (JsonException)
         {
@@ -2140,7 +2142,7 @@ public sealed class StaticSiteExporter(
 
             await WriteJsonAsync(
                 Path.Combine(directory, ticker + ".json"),
-                WithIndicators(export),
+                WithPeriods(WithIndicators(export), trading, ticker, endDate),
                 cancellationToken);
             count++;
         }
@@ -2178,6 +2180,25 @@ public sealed class StaticSiteExporter(
                 startDate,
                 endDate);
 
+            var allPoints = MarketIndexKLineCalculator.Calculate(dataSet.MarketIndices,
+                dataSet.DailyTrading, stockMarkets, definition.Market, DateOnly.MinValue, endDate);
+            var amounts = allPoints.ToDictionary(p => p.TradingDate, p => p.TradingValue);
+            var periodRows = dataSet.MarketIndices.Select(day =>
+            {
+                var quote = day.Quotes.FirstOrDefault(q => q.Market == definition.Market);
+                return new DailyStockTrading
+                {
+                    Ticker = definition.Key, TradingDate = day.TradingDate,
+                    OpenPrice = quote?.OpenPrice, HighPrice = quote?.HighPrice,
+                    LowPrice = quote?.LowPrice, ClosePrice = quote?.Value,
+                    TradingValue = 0m, TradingVolume = amounts.GetValueOrDefault(day.TradingDate)
+                };
+            }).ToArray();
+            var weeks = RawPeriodKLineProjection.Build(periodRows, definition.Key, KLinePeriod.Week, endDate)
+                .Select(bar => bar with { TradingValue = bar.TradingVolume, TradingVolume = null }).ToArray();
+            var months = RawPeriodKLineProjection.Build(periodRows, definition.Key, KLinePeriod.Month, endDate)
+                .Select(bar => bar with { TradingValue = bar.TradingVolume, TradingVolume = null }).ToArray();
+
             return WithIndicators(new MarketIndexKLineExport(
                 definition.Key,
                 definition.Label,
@@ -2194,7 +2215,7 @@ public sealed class StaticSiteExporter(
                     RoundKLine(point.Ma20),
                     RoundKLine(point.Ma60),
                     RoundKLine(point.Ma240),
-                    RoundKLine(point.TradingValue)))]));
+                    RoundKLine(point.TradingValue)))]) with { Weeks = weeks, Months = months });
         }).ToArray();
 
         await WriteJsonAsync(
@@ -2209,6 +2230,13 @@ public sealed class StaticSiteExporter(
 
     private static decimal? RoundKLine(decimal? value)
         => value is { } number ? RoundKLine(number) : null;
+
+    private static KLineExport WithPeriods(KLineExport export,
+        IEnumerable<DailyStockTrading> rows, string ticker, DateOnly through) => export with
+    {
+        Weeks = RawPeriodKLineProjection.Build(rows, ticker, KLinePeriod.Week, through),
+        Months = RawPeriodKLineProjection.Build(rows, ticker, KLinePeriod.Month, through)
+    };
 
     private static KLineExport WithIndicators(KLineExport export)
     {
@@ -2507,7 +2535,11 @@ public sealed class StaticSiteExporter(
         string AdjustmentMethod,
         string AdjustmentThrough,
         int AdjustmentEventCount,
-        IReadOnlyList<KLineBarExport> Bars);
+        IReadOnlyList<KLineBarExport> Bars)
+    {
+        public IReadOnlyList<RawPeriodKLineBar> Weeks { get; init; } = [];
+        public IReadOnlyList<RawPeriodKLineBar> Months { get; init; } = [];
+    }
 
     /// <summary>
     /// 台股 K 線檔（<see cref="KLineSchemaVersion"/> 版）。<see cref="Daily"/> 的每一列依
@@ -2634,7 +2666,11 @@ public sealed class StaticSiteExporter(
         string Market,
         string Label,
         string TurnoverLabel,
-        IReadOnlyList<MarketIndexKLineBarExport> Bars);
+        IReadOnlyList<MarketIndexKLineBarExport> Bars)
+    {
+        public IReadOnlyList<RawPeriodKLineBar> Weeks { get; init; } = [];
+        public IReadOnlyList<RawPeriodKLineBar> Months { get; init; } = [];
+    }
 
     private sealed record MarketIndexKLineBarExport(
         string Date,

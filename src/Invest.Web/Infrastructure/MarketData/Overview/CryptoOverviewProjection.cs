@@ -64,6 +64,8 @@ public static class CryptoOverviewProjection
                 {
                     market = "CRYPTO", adjustmentMethod = "raw-market-overview-daily",
                     adjustmentThrough = asOf.ToString("yyyy-MM-dd"), adjustmentEventCount = 0,
+                    weeks = RawPeriodKLineProjection.Build(rows, symbol.Symbol, KLinePeriod.Week, asOf),
+                    months = RawPeriodKLineProjection.Build(rows, symbol.Symbol, KLinePeriod.Month, asOf),
                     bars = points.Select(p => new { date = p.TradingDate.ToString("yyyy-MM-dd"),
                         p.Open, p.High, p.Low, p.Close, p.PreviousClose, p.Ma5, p.Ma10, p.Ma20, p.Ma60, p.Ma240, p.TradingVolume })
                 }, CryptoOverviewJson.Options);

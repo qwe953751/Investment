@@ -39,7 +39,14 @@ public sealed class CryptoOverviewTests
         Assert.NotEqual(first.Snapshot.Live[0].Daily, next.Snapshot.Live[0].Daily);
         Assert.Equal("2026-10-22", first.Snapshot.Daily!.AsOf);
         Assert.Equal(9, first.Assets.Count);
-        var bars = first.Assets.Values.First().GetProperty("bars");
+        var asset = first.Assets.Values.First();
+        var weeks = asset.GetProperty("weeks");
+        var months = asset.GetProperty("months");
+        Assert.True(weeks.GetArrayLength() > 50);
+        Assert.True(months.GetArrayLength() > 10);
+        Assert.NotEqual(JsonValueKind.Null, weeks[weeks.GetArrayLength() - 1].GetProperty("kdK").ValueKind);
+        Assert.Equal("2026-10-22", months[months.GetArrayLength() - 1].GetProperty("endDate").GetString());
+        var bars = asset.GetProperty("bars");
         Assert.NotEqual(JsonValueKind.Null, bars[0].GetProperty("ma240").ValueKind);
         Assert.True(bars[0].GetProperty("tradingVolume").GetDecimal() > 0m);
         Assert.True(JsonSerializer.SerializeToUtf8Bytes(first.Snapshot, CryptoOverviewJson.Options).Length < 10_000);
