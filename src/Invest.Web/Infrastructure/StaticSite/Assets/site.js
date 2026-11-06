@@ -47,6 +47,9 @@ const ETF_LOCAL_PREVIEW_ROWS = [
 // 本機專用：不連資料庫也能檢查筆記的永久編號與版面。只影響筆記頁，資產頁一律讀寫資料庫。
 const NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'review-20260826-notes-v1';
+// 本機專用：用示意通知檢查異常記錄子頁籤與匯出／刪除互動，不讀寫正式資料庫。
+const EXCEPTION_NOTES_LOCAL_PREVIEW = LOCAL_HOSTNAMES.includes(window.location.hostname)
+    && PREVIEW_QUERY === 'exception-notes-v1';
 // 本機專用 Podcast UI 樣版入口：只影響本機預覽，來源草稿存於瀏覽器 localStorage。
 const PODCAST_NOTES_LOCAL_PREVIEW = ['localhost', '127.0.0.1'].includes(window.location.hostname)
     && PREVIEW_QUERY === 'podcast-notes-v1';
@@ -1270,9 +1273,89 @@ const ALERT_HISTORY = 20;
 // 但也不能只在開頁時讀一次：發佈失敗的時候使用者正盯著沒更新的畫面。
 const ALERT_REFRESH_MS = 5 * 60_000;
 
+// 本機預覽用專案 Actions 清單展示既有連結樣式；正式通知仍使用資料列中的單次執行網址。
+const EXCEPTION_PREVIEW_RUN_URL = 'https://github.com/qwe953751/Investment/actions';
+const EXCEPTION_PREVIEW_ALERTS = [
+    {
+        raised_at: '2026-11-05T13:36:00+08:00',
+        source: '盤中報價收集',
+        severity: 'error',
+        message: '盤中收集這一場沒有正常收工，盤中頁的數字可能停在中途。',
+        detail: EXCEPTION_PREVIEW_RUN_URL,
+        resolved_at: '2026-11-05T13:52:00+08:00'
+    },
+    {
+        raised_at: '2026-11-05T10:24:00+08:00',
+        source: '盤中族群熱度',
+        severity: 'error',
+        message: 'run 6672 處理失敗，保留上一份族群快取。',
+        detail: '原始 CDN latest 尚未上線族群 run 6672，暫不發布 topic 指標。',
+        resolved_at: '2026-11-05T10:47:00+08:00'
+    },
+    {
+        raised_at: '2026-11-04T18:37:00+08:00',
+        source: '每日排行快照',
+        severity: 'error',
+        message: '這一輪有步驟失敗，網站上的排行可能還停在前一個交易日。',
+        detail: EXCEPTION_PREVIEW_RUN_URL,
+        resolved_at: '2026-11-04T19:05:00+08:00'
+    },
+    {
+        raised_at: '2026-11-03T14:54:00+08:00',
+        source: '盤中族群熱度',
+        severity: 'error',
+        message: 'run 6517 處理失敗，保留上一份族群快取。',
+        detail: '盤中 CDN 上傳 intraday-topic-20261103-1453-run6517.json 失敗 (HTTP 520)：error code: 520。',
+        resolved_at: '2026-11-03T15:02:00+08:00'
+    }
+];
+
+function exceptionRecordKey(alert) {
+    return `${alert.raised_at}|${alert.source}|${alert.message}`;
+}
+
+function exceptionRecordFromAlert(alert) {
+    const timestamp = String(alert.raised_at).replace(/\D/g, '').slice(0, 12);
+    const runUrl = typeof alert.detail === 'string' && alert.detail.startsWith('https://github.com/')
+        ? alert.detail
+        : '';
+    const status = alert.resolved_at === null
+        ? (alert.severity === 'error' ? '未恢復' : '注意')
+        : '已恢復';
+    const logContent = [
+        '網站異常紀錄',
+        `發生時間：${toTaipeiText(alert.raised_at)}`,
+        `流程：${alert.source}`,
+        `狀態：${status}`,
+        `簡述：${alert.message}`,
+        runUrl ? `執行紀錄：${runUrl}` : alert.detail ? `詳細資訊：${alert.detail}` : ''
+    ].filter(Boolean).join('\r\n');
+
+    return {
+        key: exceptionRecordKey(alert),
+        raisedAt: alert.raised_at,
+        source: alert.source,
+        severity: alert.severity,
+        message: alert.message,
+        detail: runUrl ? '' : alert.detail,
+        resolvedAt: alert.resolved_at,
+        savedAt: new Date().toISOString(),
+        logFileName: `site-error-${timestamp || Date.now()}.txt`,
+        logContent
+    };
+}
+
+let exceptionRecords = EXCEPTION_NOTES_LOCAL_PREVIEW
+    ? EXCEPTION_PREVIEW_ALERTS.slice(1, 3).map(exceptionRecordFromAlert)
+    : [];
+
 let lastAlertsLoadedAt = 0;
 
 async function loadAlerts() {
+    if (EXCEPTION_NOTES_LOCAL_PREVIEW) {
+        return EXCEPTION_PREVIEW_ALERTS.map(alert => ({ ...alert }));
+    }
+
     if (supabase === null || PODCAST_NOTES_LOCAL_PREVIEW) {
         return [];
     }
@@ -1349,7 +1432,152 @@ function renderAlertPanel(alerts) {
             item.append(detail);
         }
 
+        const actions = document.createElement('div');
+        actions.className = 'alert-actions';
+
+        const exportButton = document.createElement('button');
+        exportButton.type = 'button';
+        exportButton.className = 'alert-action-button';
+        exportButton.textContent = '匯出 log';
+        exportButton.setAttribute('aria-label', `匯出 ${alert.source} 異常 log`);
+        const recordKey = exceptionRecordKey(alert);
+        const alreadyRecorded = exceptionRecords.some(record => record.key === recordKey);
+        exportButton.disabled = alreadyRecorded;
+        exportButton.dataset.exceptionKey = recordKey;
+
+        const recordedStatus = document.createElement('span');
+        recordedStatus.className = 'alert-recorded-status';
+        recordedStatus.setAttribute('role', 'status');
+        recordedStatus.textContent = '已記錄';
+        recordedStatus.hidden = !alreadyRecorded;
+
+        exportButton.addEventListener('click', () => {
+            if (exceptionRecords.some(record => record.key === recordKey)) {
+                return;
+            }
+
+            exceptionRecords.unshift(exceptionRecordFromAlert(alert));
+            exportButton.disabled = true;
+            recordedStatus.hidden = false;
+            renderExceptionRecords();
+        });
+
+        actions.append(exportButton, recordedStatus);
+        item.append(actions);
+
         panel.append(item);
+    }
+}
+
+function downloadAlertLog(record) {
+    const blob = new Blob(['\uFEFF', record.logContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = record.logFileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+function renderExceptionRecords() {
+    const list = el('exception-record-list');
+    if (!list) {
+        return;
+    }
+
+    el('exception-record-count').textContent = `共 ${exceptionRecords.length} 筆`;
+    el('exception-notes-status').textContent = EXCEPTION_NOTES_LOCAL_PREVIEW
+        ? '預覽使用通知中的既有異常內容；按通知「匯出 log」新增一筆，操作只在本機預覽生效。'
+        : '紀錄只暫存在此頁，重整後會清空；log 由通知欄位整理，原始執行 log 與跨裝置保存待串接。';
+    list.replaceChildren();
+
+    if (exceptionRecords.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'exception-record-empty';
+        empty.textContent = '目前沒有異常紀錄。請在上方「通知」按「匯出 log」新增。';
+        list.append(empty);
+        return;
+    }
+
+    for (const record of exceptionRecords) {
+        const card = document.createElement('article');
+        card.className = 'exception-record-card';
+
+        const head = document.createElement('div');
+        head.className = 'exception-record-head';
+
+        const when = document.createElement('time');
+        when.dateTime = record.raisedAt;
+        when.textContent = toTaipeiText(record.raisedAt);
+
+        const source = document.createElement('span');
+        source.className = 'exception-record-source';
+        source.textContent = record.source;
+
+        const state = document.createElement('span');
+        state.className = record.resolvedAt === null
+            ? 'exception-record-state is-open'
+            : 'exception-record-state';
+        state.textContent = record.resolvedAt === null
+            ? (record.severity === 'error' ? '未恢復' : '注意')
+            : '已恢復';
+
+        head.append(when, source, state);
+
+        const message = document.createElement('p');
+        message.className = 'exception-record-title';
+        message.textContent = record.message;
+        card.append(head, message);
+
+        if (record.detail) {
+            const detail = document.createElement('p');
+            detail.className = 'exception-record-detail';
+            detail.textContent = record.detail;
+            card.append(detail);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'exception-record-actions';
+
+        const exportButton = document.createElement('button');
+        exportButton.type = 'button';
+        exportButton.className = 'notes-secondary-button';
+        exportButton.textContent = '匯出 log';
+        exportButton.setAttribute('aria-label', `匯出 ${record.source} 異常 log`);
+        exportButton.addEventListener('click', () => downloadAlertLog(record));
+
+        const fileName = document.createElement('span');
+        fileName.className = 'exception-record-file';
+        fileName.textContent = record.logFileName;
+
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'notes-danger-button';
+        deleteButton.textContent = '刪除';
+        deleteButton.setAttribute('aria-label', `刪除 ${record.source} 異常紀錄`);
+        deleteButton.addEventListener('click', () => {
+            if (!window.confirm('確定刪除這筆異常紀錄？')) {
+                return;
+            }
+
+            exceptionRecords = exceptionRecords.filter(item => item.key !== record.key);
+            for (const button of document.querySelectorAll('[data-exception-key]')) {
+                if (button.dataset.exceptionKey === record.key) {
+                    button.disabled = false;
+                    const status = button.parentElement?.querySelector('.alert-recorded-status');
+                    if (status) {
+                        status.hidden = true;
+                    }
+                }
+            }
+            renderExceptionRecords();
+        });
+
+        actions.append(fileName, exportButton, deleteButton);
+        card.append(actions);
+        list.append(card);
     }
 }
 
@@ -5287,6 +5515,14 @@ async function refreshNotes() {
         return;
     }
 
+    if (podcastPreviewTabKey() === 'exceptions') {
+        notes = [];
+        notesLoadError = null;
+        notesLoaded = true;
+        lastNotesLoadedAt = Date.now();
+        return;
+    }
+
     lastNotesLoadedAt = Date.now();
 
     if (isPodcastNotesStaticView()) {
@@ -6557,6 +6793,7 @@ function renderNotes() {
     const podcastSubtabs = el('podcast-notes-subtabs');
     const legacyLayout = el('legacy-notes-layout');
     const privateLayout = el('private-notes-layout');
+    const exceptionLayout = el('exception-notes-layout');
 
     if (!canAccessPrivateNotes()) {
         clearPrivateNotesState();
@@ -6567,6 +6804,27 @@ function renderNotes() {
     if (podcastSubtabs) {
         podcastSubtabs.hidden = false;
         podcastSubtabs.replaceChildren(podcastPreviewMakeSubtabs(podcastTab));
+    }
+
+    if (podcastTab === 'exceptions') {
+        if (legacyLayout) {
+            legacyLayout.hidden = true;
+        }
+        if (privateLayout) {
+            privateLayout.hidden = true;
+        }
+        if (podcastPreview) {
+            podcastPreview.hidden = true;
+        }
+        if (exceptionLayout) {
+            exceptionLayout.hidden = false;
+        }
+        renderExceptionRecords();
+        return;
+    }
+
+    if (exceptionLayout) {
+        exceptionLayout.hidden = true;
     }
 
     if (isPodcastNotesStaticView() && podcastTab === 'gooaye') {
@@ -7460,6 +7718,9 @@ function podcastPreviewVariantKey() {
 
 function podcastPreviewTabKey() {
     const tab = new URLSearchParams(window.location.search).get('notesTab');
+    if (tab === 'exceptions') {
+        return 'exceptions';
+    }
     if (tab === 'private') {
         return canAccessPrivateNotes() ? 'private' : 'my';
     }
@@ -7570,6 +7831,7 @@ function podcastPreviewMakeSubtabs(active) {
 
     const items = [
         { key: 'my', label: '網站維護' },
+        { key: 'exceptions', label: '異常紀錄' },
         { key: 'gooaye', label: '股癌' }
     ];
     if (canAccessPrivateNotes()) {
@@ -32754,6 +33016,13 @@ function renderSnapshotNote() {
     }
 
     if (state.view === 'notes') {
+        if (podcastPreviewTabKey() === 'exceptions') {
+            el('snapshot-note').textContent = EXCEPTION_NOTES_LOCAL_PREVIEW
+                ? '使用附件通知內容預覽；按「匯出 log」新增紀錄，不連正式資料庫。'
+                : '紀錄只暫存在此頁，重整後會清空；log 由通知欄位整理，原始執行 log 與跨裝置保存待串接。';
+            return;
+        }
+
         el('snapshot-note').textContent = podcastPreviewTabKey() === 'private' && canAccessPrivateNotes()
             ? '私人筆記只由 Frank 的最高權限登入存取，資料由 Supabase RLS 保護。'
             : isPodcastNotesStaticView() && podcastPreviewTabKey() === 'gooaye'
