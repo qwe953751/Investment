@@ -115,14 +115,16 @@ public sealed record IntradayRankingDocument(int SchemaVersion, string RankingRu
     DateOnly TradeDate, DateTimeOffset CapturedAt, DateOnly? HistoryThrough,
     DateOnly? BaselineStart, DateOnly? BaselineEnd, decimal MarketTotal, decimal CurrentLiquidityFloor,
     bool HasAccelerationData, IReadOnlyList<IntradayRankingCurrentRow> Rows,
-    IReadOnlyDictionary<int, IntradayRankingComparison> Comparisons, string HistoryVersion);
+    IReadOnlyDictionary<int, IntradayRankingComparison> Comparisons, string HistoryVersion,
+    IntradayRankingBaselineReference? Baseline = null);
 
 public sealed record IntradayRankingCurrentRow(string Ticker, decimal Value, decimal Share,
     decimal? VolumeRatio, int AccelerationSortOrder, bool Eligible = true);
 
 public sealed record IntradayRankingComparison(bool HasSufficientData, bool HasAccelerationData,
     DateOnly? PreviousPeriodStart, DateOnly? PreviousPeriodEnd, DateOnly? BaselineStart, DateOnly? BaselineEnd,
-    IReadOnlyList<IntradayRankingComparisonRow> Rows);
+    IReadOnlyList<IntradayRankingComparisonRow>? Rows,
+    IReadOnlyList<decimal?>? ShareChanges = null);
 
 public sealed record IntradayRankingComparisonRow(string Ticker, decimal PreviousValue, decimal PreviousShare,
     decimal? ShareChange, decimal? PreviousVolumeRatio, int PreviousAccelerationSortOrder);

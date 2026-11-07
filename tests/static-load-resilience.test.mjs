@@ -270,6 +270,8 @@ function intradayCdnHarness() {
         intradaySummary: null,
         intradayCdnUrl: file => `https://cdn.example/${file}`,
         validateIntradayCdnSnapshot() {},
+        // 基準檔另有測試（intraday-ranking-baseline.test.mjs）；這裡只看指標與快照的逾時。
+        expandIntradayRankingBaseline: async document => document,
         fetchJsonAttempt: async (url, _options, timeoutMs) => {
             calls.push({ url: String(url), timeoutMs });
 

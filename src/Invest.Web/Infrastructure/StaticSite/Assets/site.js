@@ -3118,6 +3118,67 @@ function normalizeIntradayRanking(document) {
     return { ...ranking, comparisons };
 }
 
+// Intraday ranking baseline.
+// 比較資料裡整天不變的欄位放在內容定址的基準檔（C# 的 IntradayRankingBaseline），每輪檔只留 shareChange。
+// 這裡只依位置把兩份接回舊格式，不做任何計算；接不回來就當作這一輪沒有比較資料，由既有重試接手。
+let intradayRankingBaselineCache = null;
+
+async function loadIntradayRankingBaseline(reference) {
+    if (intradayRankingBaselineCache && intradayRankingBaselineCache.file === reference?.file) {
+        return intradayRankingBaselineCache.document;
+    }
+    if (!/^intraday-ranking-baseline-\d{8}-[a-f0-9]{12}\.json$/.test(reference?.file ?? '')
+        || !/^[a-f0-9]{64}$/.test(reference?.sha256 ?? '')) return null;
+    const response = await fetch(intradayCdnUrl(reference.file), { cache: 'force-cache', signal: AbortSignal.timeout(15000) });
+    if (!response.ok) return null;
+    const bytes = await response.arrayBuffer();
+    const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+        .map(value => value.toString(16).padStart(2, '0')).join('');
+    if (hash !== reference.sha256) return null;
+    const baseline = JSON.parse(new TextDecoder().decode(bytes));
+    intradayRankingBaselineCache = { file: reference.file, document: baseline };
+    return baseline;
+}
+
+function mergeIntradayRankingBaseline(ranking, baseline) {
+    if (baseline?.schemaVersion !== 1 || baseline.rankingRulesVersion !== ranking.rankingRulesVersion
+        || baseline.tradeDate !== ranking.tradeDate || !Array.isArray(baseline.tickers)
+        || !ranking.comparisons || typeof ranking.comparisons !== 'object') return null;
+    const size = baseline.tickers.length;
+    const sameLength = values => Array.isArray(values) && values.length === size;
+    const comparisons = {};
+    for (const [period, { shareChanges, ...comparison }] of Object.entries(ranking.comparisons)) {
+        const base = baseline.comparisons?.[period];
+        if (!sameLength(shareChanges) || !sameLength(base?.previousValues) || !sameLength(base.previousShares)
+            || !sameLength(base.previousVolumeRatios) || !sameLength(base.previousAccelerationSortOrders)) return null;
+        comparisons[period] = {
+            ...comparison,
+            rows: baseline.tickers.map((ticker, index) => ({
+                ticker,
+                previousValue: base.previousValues[index],
+                previousShare: base.previousShares[index],
+                shareChange: shareChanges[index],
+                previousVolumeRatio: base.previousVolumeRatios[index],
+                previousAccelerationSortOrder: base.previousAccelerationSortOrders[index]
+            }))
+        };
+    }
+    const { baseline: _reference, ...rest } = ranking;
+    return { ...rest, schemaVersion: 1, comparisons };
+}
+
+async function expandIntradayRankingBaseline(document) {
+    const ranking = document?.ranking;
+    if (ranking?.schemaVersion !== 2) return document;
+    try {
+        const baseline = await loadIntradayRankingBaseline(ranking.baseline);
+        return { ...document, ranking: baseline ? mergeIntradayRankingBaseline(ranking, baseline) : null };
+    } catch {
+        return { ...document, ranking: null };
+    }
+}
+// End intraday ranking baseline.
+
 let intradayRawSourceHash = null;
 let intradayRankingLoading = null;
 
@@ -26559,7 +26620,7 @@ async function fetchIntradayCdnSnapshot() {
         { cache: 'force-cache' },
         15_000);
     validateIntradayCdnSnapshot(pointer, document);
-    return { ...document, sourceSha256: pointer.sha256 };
+    return { ...await expandIntradayRankingBaseline(document), sourceSha256: pointer.sha256 };
 }
 
 async function fetchIntradayTopicCdnSnapshot() {

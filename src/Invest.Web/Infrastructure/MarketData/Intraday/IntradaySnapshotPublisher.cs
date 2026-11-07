@@ -37,6 +37,12 @@ public sealed class IntradaySnapshotPublisher(
     public const string BucketConfigurationKey = "IntradayCdn:Bucket";
     public const string RetainedSnapshotCountConfigurationKey = "IntradayCdn:RetainedSnapshotCount";
 
+    /// <summary>
+    /// 是否把排行比較拆成當日基準檔（見 <see cref="IntradayRankingBaseline"/>）。預設關閉：
+    /// 舊版網站讀不懂新格式，必須等能讀兩種格式的網站上線後才打開，關掉就立刻回到完整格式。
+    /// </summary>
+    public const string SplitRankingBaselineConfigurationKey = "IntradayCdn:SplitRankingBaseline";
+
     private const string DefaultBucket = "intraday-snapshots";
     private const int DefaultRetainedSnapshotCount = 30;
 
@@ -50,6 +56,9 @@ public sealed class IntradaySnapshotPublisher(
         "^intraday-\\d{8}-\\d{4}-run\\d+\\.json$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly Regex RankingSnapshotFileName = new("^intraday-ranking-\\d{8}-run\\d+-[a-f0-9]{12}\\.json$", RegexOptions.Compiled);
+    private static readonly Regex RankingBaselineFileName = new(
+        "^intraday-ranking-baseline-\\d{8}-[a-f0-9]{12}\\.json$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly Regex TopicSnapshotFileName = new(
         "^intraday-topic-\\d{8}-\\d{4}-run\\d+\\.json$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -63,6 +72,7 @@ public sealed class IntradaySnapshotPublisher(
     };
 
     private bool configurationWarningLogged;
+    private string? publishedRankingBaselineFile;
 
     /// <summary>
     /// 只有收集器所在的伺服端可判斷是否能發佈。這個祕密值絕不寫入 manifest 或輸出檔。
@@ -162,6 +172,66 @@ public sealed class IntradaySnapshotPublisher(
     }
 
     /// <summary>
+    /// 開啟拆分時先確保基準檔已上傳（內容沒變就不重傳），再把這一輪換成只含變動的格式。
+    /// 基準檔一定比指向它的快照先到位。拆分或上傳失敗就維持完整格式：網站兩種都讀得懂，行情不能因此斷掉。
+    /// </summary>
+    private async Task<IntradaySnapshot> WithSplitRankingAsync(
+        PublisherSettings settings,
+        IntradaySnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (snapshot.Ranking is not { } ranking
+            || !bool.TryParse(configuration[SplitRankingBaselineConfigurationKey], out var enabled)
+            || !enabled)
+        {
+            return snapshot;
+        }
+
+        try
+        {
+            var (round, baseline) = IntradayRankingBaseline.Split(ranking);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(baseline, JsonOptions);
+            var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            var file = $"intraday-ranking-baseline-{baseline.TradeDate:yyyyMMdd}-{hash[..12]}.json";
+
+            if (publishedRankingBaselineFile != file)
+            {
+                await UploadAsync(settings, file, bytes, cacheSeconds: 31_536_000, immutable: true, cancellationToken);
+                publishedRankingBaselineFile = file;
+                await TryPruneRankingBaselinesAsync(settings, file, cancellationToken);
+            }
+
+            return snapshot with { Ranking = round with { Baseline = new IntradayRankingBaselineReference(file, hash) } };
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(exception, "盤中排行基準檔未上傳，這一輪維持完整格式。");
+            return snapshot;
+        }
+    }
+
+    private async Task TryPruneRankingBaselinesAsync(
+        PublisherSettings settings,
+        string currentFile,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await PruneExpiredSnapshotsAsync(
+                settings,
+                currentFile,
+                settings.RetainedSnapshotCount,
+                RankingBaselineFileName,
+                "盤中排行基準檔清理",
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(exception, "盤中排行基準檔清理失敗，下次換基準檔時重試。");
+        }
+    }
+
+    /// <summary>
     /// 發布原始盤中快照。這條路徑不等待族群計算，讓 Collector 維持兩分鐘節奏；
     /// 族群結果由 <see cref="PublishTopicAsync"/> 以同一個 run id 另行追上。
     /// </summary>
@@ -186,7 +256,10 @@ public sealed class IntradaySnapshotPublisher(
             return IntradaySnapshotPublishResult.NotConfigured;
         }
 
-        var snapshotBytes = SerializeSnapshot(runId, snapshot, capturedAt);
+        var snapshotBytes = SerializeSnapshot(
+            runId,
+            await WithSplitRankingAsync(settings, snapshot, cancellationToken),
+            capturedAt);
         var taipei = TimeZoneInfo.FindSystemTimeZoneById("Asia/Taipei");
         var localCapturedAt = TimeZoneInfo.ConvertTime(capturedAt, taipei);
         var fileName = $"intraday-{localCapturedAt:yyyyMMdd-HHmm}-run{runId}.json";
