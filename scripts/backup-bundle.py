@@ -33,9 +33,16 @@ PROTECTED = (
     'asset_operation_sync_operations', 'asset_operation_sync_state', 'ocr_evaluations',
     'ocr_jobs', 'ocr_user_routing', 'ocr_workers',
 )
+# material_events 不在 pg_dump 裡，但有自己的每日檔案（見 export_material_events），不是不備份。
+MATERIAL_EVENTS = 'material_events'
 OMITTED = ('daily_quotes', 'intraday_quotes', 'intraday_runs', 'intraday_topic_heat',
-           'monthly_revenue', 'device_sessions')
+           'monthly_revenue', 'revenue_history', 'revenue_latest', MATERIAL_EVENTS, 'device_sessions')
 PRIVATE = ('private_notes', 'admin_bgm')
+MATERIAL_DIR = 'material-events'
+MATERIAL_COLUMNS = ('ticker', 'announced_on', 'announced_time', 'subject', 'clause', 'occurred_on',
+                    'detail', 'updated_at')
+# 往回多抓一天：寫入中的交易 updated_at 早於快照、提交卻晚於快照時，下一份還抓得到。重複的列還原時會合併。
+MATERIAL_OVERLAP = timedelta(days=1)
 
 
 def run(args, *, env=None, data=None):
@@ -85,10 +92,11 @@ class Snapshot:
         self.label = variable
         self.query_number = 0
         self.env = db_env(variable)
+        self.env['PGCLIENTENCODING'] = 'UTF8'
         self.proc = subprocess.Popen([tool('psql'), '-XqAt', '-v', 'ON_ERROR_STOP=1',
                                       '-v', 'VERBOSITY=sqlstate'], env=self.env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, text=True)
+                                     stderr=subprocess.PIPE, encoding='utf-8')
         imported = ''
         if snapshot is not None:
             if not re.fullmatch('[0-9A-Fa-f-]+', snapshot):
@@ -181,6 +189,88 @@ def audit_rls(source, tables):
     """))
     if unsafe:
         raise RuntimeError('unverified SELECT/RLS coverage: ' + ', '.join(unsafe))
+
+
+def read_material_index(directory):
+    """每日檔案的清單。清單不見、壞掉或對不上檔案都回空的：下一份會重新存一份完整的，備份自己接回來。"""
+    path = directory / MATERIAL_DIR / 'index.json'
+    try:
+        entries = json.loads(path.read_text())['files']
+        for entry in entries:
+            data = (directory / MATERIAL_DIR / entry['file']).read_bytes()
+            if digest(data) != entry['sha256'] or len(data) != entry['bytes']:
+                raise ValueError('digest mismatch')
+        return entries
+    except FileNotFoundError:
+        return []
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        print('Material events index is unusable, starting a new full copy: ' + type(error).__name__)
+        return []
+
+
+def export_material_events(source, directory, today, certificate):
+    """把上一份之後有變動的 material_events 存成今天的檔案，回傳 (寫入清單, 給 manifest 的摘要)。
+
+    第一次（或清單壞掉時）存整張表。同一天重跑時換掉當天那份，起點仍是前一天那份，不會漏列。"""
+    entries = [entry for entry in read_material_index(directory) if entry['date'] != today]
+    since = datetime.fromisoformat(entries[-1]['through']) - MATERIAL_OVERLAP if entries else None
+    through = source.query("select to_json(now())#>>'{}';")
+    condition = f"where updated_at >= '{since.isoformat()}'::timestamptz" if since else ''
+    rows = json.loads(source.query(
+        "select coalesce(to_json(array_agg(r)), '[]'::json) from (select " + ', '.join(MATERIAL_COLUMNS) +
+        f' from public.{MATERIAL_EVENTS} {condition} order by announced_on, ticker, subject) r;'))
+    encrypted = run([tool('openssl'), 'cms', '-encrypt', '-aes-256-gcm', '-binary', '-outform', 'DER', certificate],
+                    data=gzip.compress(json.dumps(rows, ensure_ascii=False).encode()))
+    name = today + '.json.gz.cms'
+    entry = dict(date=today, file=name, sha256=digest(encrypted), bytes=len(encrypted), rows=len(rows),
+                 since=since.isoformat() if since else None, through=through)
+    entries.append(entry)
+    index = (json.dumps(dict(schemaVersion=1, files=entries), ensure_ascii=False, indent=2) + '\n').encode()
+    return {name: encrypted, 'index.json': index}, dict(file=name, sha256=entry['sha256'], chainFiles=len(entries))
+
+
+def verify_material_chain(directory, material):
+    """這份備份當時的每日檔案都還在、內容沒被改過，回傳到這份備份為止的清單。"""
+    index = json.loads((directory / MATERIAL_DIR / 'index.json').read_text())['files']
+    position = next((i for i, entry in enumerate(index) if entry['file'] == material['file']), None)
+    if position is None or index[position]['sha256'] != material['sha256'] or position + 1 != material['chainFiles']:
+        raise ValueError('material events chain does not match this backup')
+    chain = index[:position + 1]
+    for entry in chain:
+        data = (directory / MATERIAL_DIR / entry['file']).read_bytes()
+        if digest(data) != entry['sha256'] or len(data) != entry['bytes']:
+            raise ValueError('material events file digest/size mismatch')
+    return chain
+
+
+def load_material_rows(directory, material):
+    """解密每日檔案、依日期合併。同一則公告後面的版本才是最新的，鍵和資料表主鍵相同。"""
+    key = os.environ.get('BACKUP_DECRYPT_KEY_FILE')
+    if not key or not Path(key).is_file():
+        raise ValueError('BACKUP_DECRYPT_KEY_FILE is required')
+    merged = {}
+    for entry in verify_material_chain(directory, material):
+        decrypted = run([tool('openssl'), 'cms', '-decrypt', '-binary', '-inform', 'DER', '-inkey', key],
+                        data=(directory / MATERIAL_DIR / entry['file']).read_bytes())
+        for row in json.loads(gzip.decompress(decrypted)):
+            merged[(row['ticker'], row['announced_on'], row['subject'])] = row
+    return list(merged.values())
+
+
+def copy_value(value):
+    if value is None:
+        return r'\N'
+    for raw, escaped in (('\\', '\\\\'), ('\b', r'\b'), ('\f', r'\f'), ('\n', r'\n'),
+                         ('\r', r'\r'), ('\t', r'\t'), ('\v', r'\v')):
+        value = value.replace(raw, escaped)
+    return value
+
+
+def material_copy_sql(rows):
+    lines = [f"COPY public.{MATERIAL_EVENTS} ({', '.join(MATERIAL_COLUMNS)}) FROM stdin;"]
+    lines.extend('\t'.join(copy_value(row[column]) for column in MATERIAL_COLUMNS) for row in rows)
+    lines.append(r'\.')
+    return '\n'.join(lines) + '\n'
 
 
 def prune(directory):
@@ -279,10 +369,11 @@ def create(directory):
             and not exists(select 1 from pg_depend d where d.classid='pg_class'::regclass
               and d.objid=c.oid and d.deptype='e');"""))
         public_tables = sorted(set(tables) - set(OMITTED + PRIVATE + PROTECTED))
-        audit_rls(public, public_tables)
+        audit_rls(public, public_tables + [MATERIAL_EVENTS])
         audit_rls(protected, PROTECTED)
         public_counts = read_counts(public, public_tables)
         protected_counts = read_counts(protected, PROTECTED)
+        material_count = read_counts(public, [MATERIAL_EVENTS])[MATERIAL_EVENTS]
         # INVEST_BACKUP_DATE：內部匯出器用同一個日期命名，不自己再問一次 date（跨午夜會寫成隔天的檔名）。
         env = dict(os.environ, PG_DUMP=tool('pg_dump'), PSQL=tool('psql'),
                    PG_DUMP_SNAPSHOT=public.snapshot, TZ='Asia/Taipei', INVEST_BACKUP_INTERNAL='1',
@@ -312,6 +403,8 @@ def create(directory):
                 if row[index] != r'\N':
                     identities.add(str(uuid.UUID(row[index])))
         # 函式定義也可能夾帶憑證：連原有原生 SQL 一起加密，不能只加密九張表。
+        material_files, material = export_material_events(public, directory, today, certificate)
+        material['rows'] = material_count
         payload = dict(schemaVersion=2, date=today, publicSql=public_sql, sql=protected_sql,
                        publicRows=public_counts, protectedRows=protected_counts,
                        authUserIds=sorted(identities))
@@ -321,9 +414,15 @@ def create(directory):
         manifest = dict(schemaVersion=2, date=today, createdAt=datetime.now(timezone.utc).isoformat(),
                         publicRows=public_counts, protectedRows=protected_counts,
                         files={n:dict(sha256=digest(b), bytes=len(b)) for n,b in files.items()},
+                        materialEvents=material,
                         omitted=list(OMITTED + PRIVATE), encryption='CMS AES-256-GCM')
         # 先完成所有匯出與檢查；manifest 最後替換，半套產物永遠不算成功。
         files[today + '.backup.json'] = (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode()
+        (directory / MATERIAL_DIR).mkdir(exist_ok=True)
+        for name, data in material_files.items():
+            staged = work / ('material-' + name)
+            staged.write_bytes(data)
+            os.replace(staged, directory / MATERIAL_DIR / name)
         for name, data in files.items():
             staged = work / name
             staged.write_bytes(data)
@@ -354,6 +453,8 @@ def validate(path, max_age=None, decrypt=False):
         content[name] = data
     if set(manifest['protectedRows']) != set(PROTECTED):
         raise ValueError('protected table coverage mismatch')
+    if manifest.get('materialEvents'):
+        verify_material_chain(path.parent, manifest['materialEvents'])
     public_sql = None
     payload = None
     if decrypt:
@@ -372,7 +473,8 @@ def validate(path, max_age=None, decrypt=False):
         for table in PRIVATE:
             if re.search(r'public\.' + table + r'\b', public_sql):
                 raise ValueError('private table leaked into native dump')
-        if set(table_counts(public_sql)[0]) & set(OMITTED + PROTECTED):
+        # 依這份備份當時的排除清單判斷：舊備份合法地含有 material_events，不能因為後來改了清單就驗不過。
+        if set(table_counts(public_sql)[0]) & (set(manifest.get('omitted', OMITTED + PRIVATE)) | set(PROTECTED)):
             raise ValueError('excluded/protected rows leaked into native dump')
         check_counts(payload['sql'], manifest['protectedRows'])
     return manifest, public_sql, payload
@@ -392,13 +494,22 @@ def assemble_restore(public_sql, protected_sql):
 def prepare_test(path, output):
     manifest, public_sql, payload = validate(path, 96, True)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
-    (output / 'restore.sql').write_text(assemble_restore(public_sql, payload['sql']))
+    data_sql = payload['sql']
+    expected = manifest['publicRows'] | manifest['protectedRows']
+    material = manifest.get('materialEvents')
+    if material:
+        rows = load_material_rows(path.parent, material)
+        if len(rows) != material['rows']:
+            raise ValueError('material events chain does not cover the source table')
+        data_sql += '\n' + material_copy_sql(rows)
+        expected = expected | {MATERIAL_EVENTS: material['rows']}
+    (output / 'restore.sql').write_text(assemble_restore(public_sql, data_sql))
     # 僅供拋棄式測試：不備份 Auth 密碼／token，不假裝這些 UUID 能恢復正式登入。
     ids = [str(uuid.UUID(value)) for value in payload['authUserIds']]
     (output / 'auth-identities.sql').write_text('\n'.join(
         "insert into auth.users(id) values ('" + value + "');" for value in ids))
     checks = []
-    for table, count in (manifest['publicRows'] | manifest['protectedRows']).items():
+    for table, count in expected.items():
         if not re.fullmatch('[a-z_0-9]+', table) or type(count) is not int or count < 0:
             raise ValueError('invalid row-count manifest')
         checks.append(f"if (select count(*) from public.{table}) <> {count} then raise exception 'row count mismatch: {table}'; end if;")

@@ -124,6 +124,17 @@ jobs:
           # 還原測試就是敗在它有資料、intraday_runs 沒有，外鍵當場擋下。
           check "intraday_topic_heat 是空的" "select count(*) from intraday_topic_heat;" "0"
           check "裝置 IP 不還原" "select count(*) from device_sessions;" "0"
+          # 兩張都是從月營收算出來的結果，月營收回補之後會重算，備份不含內容。
+          check "revenue_latest 是空的" "select count(*) from revenue_latest;" "0"
+          check "revenue_history 是空的" "select count(*) from revenue_history;" "0"
+          # 重大訊息從每日檔案逐份補回，verify.sql 已逐列數比對來源；這裡再擋「補回一個空殼」。
+          material_events=$(docker exec restoretest psql -U postgres -d restored -tAc \
+              "select count(*) from material_events;")
+          if [ "$material_events" -lt 1000 ]; then
+              echo "✗ material_events 只有 $material_events 列，每日檔案沒有補回。" >&2
+              exit 1
+          fi
+          echo "✓ material_events：$material_events 列"
           check "私人筆記不在備份內" "select to_regclass('public.private_notes') is null;" "t"
           check "BGM 不在備份內" "select to_regclass('public.admin_bgm') is null;" "t"
 

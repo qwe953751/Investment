@@ -875,6 +875,9 @@ jobs:
               file="snapshots/$BACKUP_DATE.$suffix"
               test "$(git rev-parse "HEAD:$file")" = "$(git rev-parse "origin/data:$file")"
           done
+          # 重大訊息的每日檔案也要真的進遠端：沒被 commit（例如被忽略）或和遠端不同都算沒保存。
+          test -z "$(git status --porcelain --ignored snapshots/material-events)"
+          git diff --quiet HEAD origin/data -- snapshots/material-events
           python3 ../scripts/backup-bundle.py validate "snapshots/$BACKUP_DATE.backup.json" --max-age-hours 24
       # 只在「這一輪親自確認遠端有有效備份」時解除：保存並核對成功，或本週期的現有備份剛通過驗證。
       # 純發布不會進這個 job；備份失敗、被跳過的步驟都不解除，前一輪的真正失敗不會被蓋掉。

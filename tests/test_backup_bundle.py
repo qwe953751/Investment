@@ -327,12 +327,22 @@ class BackupCycleTests(unittest.TestCase):
 class FakeSnapshot:
     """取代 psql 常駐連線：依 SQL 內容回固定答案，只用來驗證 create() 的流程與日期。"""
     PUBLIC_COUNTS = {'securities': 1}
+    MATERIAL_ROWS = [dict(ticker='2330', announced_on='2026-10-26', announced_time='13:05:00',
+                          subject='主旨', clause=None, occurred_on=None, detail='全文', updated_at='2026-10-26T10:00:00+00:00')]
+    MATERIAL_QUERIES = []
 
     def __init__(self, variable, snapshot=None):
         self.snapshot = 'snapshot-1'
         self.env = {}
 
     def query(self, sql):
+        if 'to_json(now())' in sql:
+            return '2026-10-26T10:30:00+00:00'
+        if 'array_agg(r)' in sql:
+            self.MATERIAL_QUERIES.append(sql)
+            return json.dumps(self.MATERIAL_ROWS)
+        if 'json_object_agg' in sql and 'public.material_events' in sql:
+            return json.dumps({'material_events': len(self.MATERIAL_ROWS)})
         if 'json_object_agg' in sql:
             return json.dumps(self.PUBLIC_COUNTS if 'public.securities' in sql
                               else {t: int(t == 'ocr_jobs') for t in bundle.PROTECTED})
@@ -366,7 +376,7 @@ class BackupCreateDateTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
 
-    def run_create(self, instants):
+    def run_create(self, instants, existing=None):
         """用假時鐘、假 psql／pg_dump 跑完整的 create()；回傳 (目錄, GITHUB_OUTPUT 內容, 內部匯出器看到的環境)。"""
         class Clock(datetime):
             queue = list(instants)
@@ -377,7 +387,7 @@ class BackupCreateDateTests(unittest.TestCase):
                 return value.astimezone(tz) if tz else value
 
         root = self.folder / 'repo'
-        (root / 'scripts').mkdir(parents=True)
+        (root / 'scripts').mkdir(parents=True, exist_ok=True)
         (root / 'scripts/backup-recipient.pem').write_bytes(self.cert.read_bytes())
         output = self.folder / 'github-output'
         output.write_text('')
@@ -404,16 +414,19 @@ class BackupCreateDateTests(unittest.TestCase):
                          patch.dict(os.environ, {'GITHUB_OUTPUT': str(output), 'BACKUP_DECRYPT_KEY_FILE': str(self.key),
                                                  'SUPABASE_PROTECTED_BACKUP_DB_URL': 'postgresql://u:p@localhost/db'})):
                 stack.enter_context(each)
-            target = self.folder / 'out'
+            target = existing or self.folder / 'out'
             bundle.create(target)
         return target, output.read_text(), seen
+
+    def run_create_in(self, target, instants):
+        return self.run_create(instants, existing=target)
 
     def test_backup_that_crosses_midnight_keeps_the_date_it_started_with(self):
         # 23:59:58 開始、00:00:31 才寫清單：日期是開始那一刻的 2026-10-26，建立時間是隔天凌晨。
         target, output, seen = self.run_create([taipei(10, 26, 23, 59, 58), taipei(10, 27, 0, 0, 31)])
         self.assertEqual(seen, {'date': '2026-10-26', 'internal': '1'})
         self.assertEqual(sorted(p.name for p in target.iterdir()),
-                         ['2026-10-26.backup.cms', '2026-10-26.backup.json'])
+                         ['2026-10-26.backup.cms', '2026-10-26.backup.json', 'material-events'])
         self.assertEqual(output, 'date=2026-10-26\n')
         with patch.dict(os.environ, {'BACKUP_DECRYPT_KEY_FILE': str(self.key)}):
             manifest, _, payload = bundle.validate(target / '2026-10-26.backup.json', None, True)
@@ -425,6 +438,126 @@ class BackupCreateDateTests(unittest.TestCase):
         self.assertEqual(seen['date'], '2026-10-26')
         self.assertEqual(output, 'date=2026-10-26\n')
         self.assertEqual(bundle.current_backup(target, taipei(10, 26, 21)), ('2026-10-26', None))
+
+    def material_rows_after_restore(self, target, date):
+        with patch.dict(os.environ, {'BACKUP_DECRYPT_KEY_FILE': str(self.key)}):
+            manifest, _, _ = bundle.validate(target / (date + '.backup.json'), None, True)
+            return manifest, bundle.load_material_rows(target, manifest['materialEvents'])
+
+    def test_first_material_backup_is_the_whole_table_and_restores(self):
+        FakeSnapshot.MATERIAL_QUERIES.clear()
+        target, _, _ = self.run_create([taipei(10, 26, 18, 31)])
+        self.assertNotIn('where updated_at', FakeSnapshot.MATERIAL_QUERIES[-1])
+        manifest, rows = self.material_rows_after_restore(target, '2026-10-26')
+        self.assertEqual(manifest['materialEvents']['rows'], 1)
+        self.assertEqual(rows, FakeSnapshot.MATERIAL_ROWS)
+        self.assertNotIn('material_events', manifest['publicRows'])
+
+    def test_next_day_only_exports_rows_changed_since_the_previous_file(self):
+        FakeSnapshot.MATERIAL_QUERIES.clear()
+        target, _, _ = self.run_create([taipei(10, 26, 18, 31)])
+        # 第二天：同一則公告補上條款、再多一則新公告。第一份的 through 減一天就是起點。
+        updated = dict(FakeSnapshot.MATERIAL_ROWS[0], clause='第20款', updated_at='2026-10-27T10:00:00+00:00')
+        added = dict(updated, ticker='1101', subject='另一則')
+        with patch.object(FakeSnapshot, 'MATERIAL_ROWS', [updated, added]):
+            self.run_create_in(target, [taipei(10, 27, 18, 31)])
+        self.assertIn("where updated_at >= '2026-10-25T10:30:00+00:00'", FakeSnapshot.MATERIAL_QUERIES[-1])
+        manifest, rows = self.material_rows_after_restore(target, '2026-10-27')
+        self.assertEqual(manifest['materialEvents']['chainFiles'], 2)
+        self.assertCountEqual(rows, [updated, added])
+
+    def test_older_backup_still_validates_after_the_chain_grows(self):
+        target, _, _ = self.run_create([taipei(10, 26, 18, 31)])
+        added = dict(FakeSnapshot.MATERIAL_ROWS[0], ticker='1101')
+        with patch.object(FakeSnapshot, 'MATERIAL_ROWS', [added]):
+            self.run_create_in(target, [taipei(10, 27, 18, 31)])
+        _, rows = self.material_rows_after_restore(target, '2026-10-26')
+        self.assertEqual(rows, FakeSnapshot.MATERIAL_ROWS)
+
+    def test_rerun_on_the_same_day_keeps_the_previous_starting_point(self):
+        FakeSnapshot.MATERIAL_QUERIES.clear()
+        target, _, _ = self.run_create([taipei(10, 26, 18, 31)])
+        added = dict(FakeSnapshot.MATERIAL_ROWS[0], ticker='1101')
+        with patch.object(FakeSnapshot, 'MATERIAL_ROWS', [added]):
+            self.run_create_in(target, [taipei(10, 27, 18, 31)])
+            self.run_create_in(target, [taipei(10, 27, 20, 0)])
+        index = json.loads((target / 'material-events/index.json').read_text())['files']
+        self.assertEqual([entry['date'] for entry in index], ['2026-10-26', '2026-10-27'])
+        self.assertEqual(index[1]['since'], '2026-10-25T10:30:00+00:00')
+
+    def test_tampered_or_missing_daily_file_fails_validation(self):
+        target, _, _ = self.run_create([taipei(10, 26, 18, 31)])
+        daily = target / 'material-events/2026-10-26.json.gz.cms'
+        daily.write_bytes(daily.read_bytes() + b'x')
+        with self.assertRaises(ValueError):
+            bundle.validate(target / '2026-10-26.backup.json')
+        daily.unlink()
+        with self.assertRaises(OSError):
+            bundle.validate(target / '2026-10-26.backup.json')
+
+    def test_broken_chain_starts_over_with_a_full_copy(self):
+        FakeSnapshot.MATERIAL_QUERIES.clear()
+        target, _, _ = self.run_create([taipei(10, 26, 18, 31)])
+        (target / 'material-events/2026-10-26.json.gz.cms').write_bytes(b'broken')
+        self.run_create_in(target, [taipei(10, 27, 18, 31)])
+        self.assertNotIn('where updated_at', FakeSnapshot.MATERIAL_QUERIES[-1])
+        index = json.loads((target / 'material-events/index.json').read_text())['files']
+        self.assertEqual([entry['date'] for entry in index], ['2026-10-27'])
+
+    def test_prepare_test_restores_material_rows_and_checks_the_count(self):
+        tricky = dict(FakeSnapshot.MATERIAL_ROWS[0], detail='第一行\n第二行\t\\結尾', clause=None)
+        with patch.object(FakeSnapshot, 'MATERIAL_ROWS', [tricky]):
+            target, _, _ = self.run_create([taipei(10, 26, 18, 31)])
+        output = self.folder / 'restore'
+        fresh = datetime(2026, 10, 26, 11, 0, tzinfo=timezone.utc)
+
+        class Now(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fresh
+
+        with patch.object(bundle, 'datetime', Now), patch.dict(os.environ, {'BACKUP_DECRYPT_KEY_FILE': str(self.key)}):
+            bundle.prepare_test(target / '2026-10-26.backup.json', output)
+        restore = (output / 'restore.sql').read_text()
+        self.assertIn('COPY public.material_events (ticker, announced_on', restore)
+        self.assertIn('第一行\\n第二行\\t\\\\結尾\t2026-10-26T10:00:00+00:00\n\\.\n', restore)
+        self.assertIn('\t\\N\t', restore)
+        self.assertIn('public.material_events) <> 1', (output / 'verify.sql').read_text())
+
+    def test_chain_that_misses_rows_is_not_a_valid_restore(self):
+        target, _, _ = self.run_create([taipei(10, 26, 18, 31)])
+        manifest_path = target / '2026-10-26.backup.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['materialEvents']['rows'] = 2
+        manifest_path.write_text(json.dumps(manifest))
+        fresh = datetime(2026, 10, 26, 11, 0, tzinfo=timezone.utc)
+
+        class Now(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fresh
+
+        with patch.object(bundle, 'datetime', Now), patch.dict(os.environ, {'BACKUP_DECRYPT_KEY_FILE': str(self.key)}):
+            with self.assertRaisesRegex(ValueError, 'does not cover'):
+                bundle.prepare_test(manifest_path, self.folder / 'restore')
+
+    def test_derived_and_material_tables_are_listed_in_both_exclusion_lists(self):
+        script = (Path(__file__).resolve().parents[1] / 'scripts/backup-supabase.sh').read_text()
+        listed = script.split('excluded_tables=(')[1].split(')')[0]
+        for table in ('revenue_history', 'revenue_latest', 'material_events'):
+            self.assertIn(table, bundle.OMITTED)
+            self.assertIn('    ' + table + '\n', listed)
+
+    def test_old_backup_that_contains_material_rows_still_validates(self):
+        # 上線前的備份合法地含有 material_events；它們的 manifest 沒有把它列在 omitted。
+        target, _, _ = self.run_create([taipei(10, 26, 18, 31)])
+        manifest_path = target / '2026-10-26.backup.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['omitted'] = ['daily_quotes']
+        del manifest['materialEvents']
+        manifest_path.write_text(json.dumps(manifest))
+        with patch.dict(os.environ, {'BACKUP_DECRYPT_KEY_FILE': str(self.key)}):
+            bundle.validate(manifest_path, None, True)
 
 
 if __name__ == '__main__':

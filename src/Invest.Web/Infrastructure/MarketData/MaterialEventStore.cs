@@ -17,6 +17,9 @@ public sealed class MaterialEventStore(ILogger<MaterialEventStore> logger)
     /// 觀測站回補的舊資料沒有條款也沒有說明，直接覆蓋的話，哪天回補掃過一個
     /// 已經抓過的日子，就會把當初 OpenAPI 拿到的條款與說明全部洗成空的。
     /// 有值的那一邊贏，跟誰後寫無關。
+    ///
+    /// 內容真的變了才動 updated_at：每日備份只存 updated_at 有變動的列，而排程每天都會把最近幾天
+    /// 重抓一次，每次都更新的話備份就會把同一批沒變的公告一直重存。
     /// </summary>
     public async Task<int> SaveAsync(
         IReadOnlyCollection<MaterialEvent> source,
@@ -55,6 +58,16 @@ public sealed class MaterialEventStore(ILogger<MaterialEventStore> logger)
                 occurred_on    = coalesce(excluded.occurred_on, material_events.occurred_on),
                 detail         = coalesce(excluded.detail, material_events.detail),
                 updated_at     = now()
+            where (
+                coalesce(excluded.announced_time, material_events.announced_time),
+                coalesce(excluded.clause, material_events.clause),
+                coalesce(excluded.occurred_on, material_events.occurred_on),
+                coalesce(excluded.detail, material_events.detail))
+            is distinct from (
+                material_events.announced_time,
+                material_events.clause,
+                material_events.occurred_on,
+                material_events.detail)
             """,
             connection);
 

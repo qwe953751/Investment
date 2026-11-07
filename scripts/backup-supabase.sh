@@ -10,6 +10,13 @@
 # 拿舊資料蓋掉正確資料——這是正確性問題，不是省空間。
 # 結構仍然會備份，還原後 sync（行情）或 revenue --backfill（營收）就能補滿。
 #
+# revenue_latest、revenue_history 也不備份內容：兩張都是 C# 從 monthly_revenue 算出來的結果，
+# 原始表既然靠回補重建，它們跟著重算就有了（revenue_history 每次備份約 5.5 MB）。
+#
+# material_events 的內容不在這份 dump 裡，但**仍然每天備份**：條款與說明全文只有當天的 OpenAPI 給，
+# 掉了就真的掉了。整張表每次約 12 MB 而且只會變大，所以由 backup-bundle.py 每天只存有變動的列
+# （snapshots/material-events/），還原時逐份補回。
+#
 # 另有兩類也刻意不備份，原因不是正確性而是隱私——這份備份會 commit 進公開 repo 的
 # data 分支，進了 git 歷史就刪不掉（2026-10-23 使用者決定）：
 #   device_sessions 的**內容**：各裝置的 IP 與瀏覽器資訊。裝置在線狀態還原後會自己
@@ -66,6 +73,9 @@ excluded_tables=(
     intraday_runs
     intraday_topic_heat
     monthly_revenue
+    revenue_history
+    revenue_latest
+    material_events
     device_sessions
     # 由 backup-bundle.py 透過專用唯讀角色匯出、加密；公開 SQL 只保留結構。
     access_share_links
