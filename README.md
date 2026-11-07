@@ -822,10 +822,12 @@ python3 scripts/backup-bundle.py validate data/snapshots/YYYY-MM-DD.backup.json 
 它沒有 BYPASSRLS／DDL／寫入權；不放寬一般寫入帳號。兩個角色使用相同 MVCC snapshot，逐表比對來源與 COPY 列數。
 所有 SQL 一起以 CMS AES-256-GCM 加密，公開加密憑證可以進 Git，解密私鑰只存受限位置與 GitHub Secret。
 GFS 保留最近 5 份、每週 4 份、每月 6 份，密文與清單一同輪替。
+`material_events` 不在這份 SQL 裡，改由 `snapshots/material-events/` 每天存有變動的列（同樣加密、不輪替），還原時逐份補回。
 
 | 不備份項目 | 範圍與還原原則 |
 |---|---|
 | 盤後／盤中行情、月營收原表 | 只備份結構；權威仍在 imports／交易所／觀測站，不用舊備份覆蓋行情 |
+| revenue_latest、revenue_history | 只備份結構；都由月營收原表算出，回補後重算 |
 | device_sessions | 只備份結構；不保存 IP 或瀏覽器資料 |
 | private_notes、admin_bgm | 整張排除，維持使用者不備份決定；正式還原不碰既有內容 |
 | 所有 Storage 檔案 | 私人／公開筆記圖片、BGM、OCR 等物件都不在 SQL 備份內 |

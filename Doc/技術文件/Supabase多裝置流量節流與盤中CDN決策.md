@@ -171,8 +171,10 @@ Supabase 自 2025 年 8 月起把 egress 拆成**兩個各自獨立的額度**�
 
 | 額度 | 內容 | 我們的用量 |
 |---|---|---|
-| Uncached egress | Database REST、Auth、未命中快取的回源 | `latest.json` 每輪數百 bytes，可忽略 |
-| Cached egress | Storage 的 CDN 命中 | **完整快照，這裡才是新的瓶頸** |
+| Uncached egress（Dashboard 叫 Egress） | Database REST、**Shared Pooler（Actions 用 `SUPABASE_DB_URL` 讀資料庫）**、Auth、Edge Functions、未命中快取的 Storage | 2026-11 實測是主要瓶頸，見 [TODO #14](../TODO.md#todo-14) |
+| Cached egress | Storage 的 CDN 命中 | 完整快照；2026-11 實測八成是 Actions 自己下載 |
+
+（2026-08 寫這張表時沒有列 Shared Pooler，以為 uncached 可以忽略，所以當時的容量推估偏低。）
 
 快取命中**不是免費的**，只是比較便宜。所以「CDN 命中率高」不等於「流量歸零」。
 
