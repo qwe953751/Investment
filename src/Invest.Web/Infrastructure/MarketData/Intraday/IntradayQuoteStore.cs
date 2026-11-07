@@ -24,6 +24,8 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
     // 族群熱度每兩分鐘要用一次全市場約 2,700 列，直接用這份就不必再讀回來（2026-11 Egress 最大宗）。
     private StoredIntradaySnapshot? lastSavedRun;
 
+    private readonly KnownSecurityIds knownSecurities = new();
+
     /// <summary>
     /// 全市場累計成交金額只能往上走，這是這份資料最硬的一條性質：
     /// 09:06 的數字不可能比 09:04 小。
@@ -108,32 +110,51 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        var securityIds = await SecurityCatalog.UpsertAsync(
-            connection,
-            [.. snapshot.Quotes.Select(quote => (quote.Market, quote.Ticker, quote.Name))],
-            cancellationToken);
+        long runId;
+        int written;
 
-        var runId = await InsertRunAsync(
-            connection,
-            snapshot,
-            capturedAt,
-            source,
-            hasIndexKlineColumns,
-            cancellationToken);
-        var written = await InsertQuotesAsync(connection, runId, snapshot.Quotes, securityIds, cancellationToken);
-
-        if (recordCurve)
+        try
         {
-            await InsertCurveAsync(
-                connection,
-                snapshot.TradeDate,
-                capturedAt,
-                total,
-                commonQuotes.Length,
-                cancellationToken);
-        }
+            // 每輪重查全市場代號約 0.07 MB；只有新股票或改名才需要碰 securities。
+            IReadOnlyList<(Market Market, string Ticker, string Name)> securities =
+                [.. snapshot.Quotes.Select(quote => (quote.Market, quote.Ticker, quote.Name))];
+            var changed = knownSecurities.FindChanged(securities);
+            var freshIds = changed.Count == 0
+                ? []
+                : await SecurityCatalog.UpsertAsync(connection, changed, cancellationToken);
+            var securityIds = knownSecurities.Resolve(securities, freshIds);
 
-        await transaction.CommitAsync(cancellationToken);
+            runId = await InsertRunAsync(
+                connection,
+                snapshot,
+                capturedAt,
+                source,
+                hasIndexKlineColumns,
+                cancellationToken);
+            written = await InsertQuotesAsync(connection, runId, snapshot.Quotes, securityIds, cancellationToken);
+
+            if (recordCurve)
+            {
+                await InsertCurveAsync(
+                    connection,
+                    snapshot.TradeDate,
+                    capturedAt,
+                    total,
+                    commonQuotes.Length,
+                    cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+
+            // 交易確定成功才記住：交易回滾時，新股票的 id 根本不存在。
+            knownSecurities.Remember(changed, freshIds);
+        }
+        catch
+        {
+            // 失敗原因可能就是 id 過期（例如外鍵錯誤），下一輪重新查一次全市場。
+            knownSecurities.Clear();
+            throw;
+        }
 
         // 交易確定成功才記住，交易失敗時不會留下資料庫沒有的一輪。
         Volatile.Write(ref lastSavedRun, AsStored(runId, capturedAt, snapshot));
@@ -836,6 +857,81 @@ public sealed record IntradaySaveResult
 /// <summary>
 /// 資料庫裡最新一輪的原始盤中快照與其 run id。
 /// </summary>
+/// <summary>
+/// 這個程序已確認存在 securities 的代號與 id。代號、名稱、市場都沒變的列不必再寫入或查詢；
+/// 新股票與改名照舊走 <see cref="SecurityCatalog.UpsertAsync"/>。只活在單一程序內，
+/// 每次接力重新啟動的第一輪仍會完整寫入一次，所以其他流程改到的名稱會在下一棒同步回來。
+/// </summary>
+internal sealed class KnownSecurityIds
+{
+    private readonly Lock gate = new();
+    private readonly Dictionary<string, (Market Market, string Name, int Id)> known = new(StringComparer.Ordinal);
+
+    public IReadOnlyList<(Market Market, string Ticker, string Name)> FindChanged(
+        IReadOnlyList<(Market Market, string Ticker, string Name)> securities)
+    {
+        lock (gate)
+        {
+            return
+            [
+                .. securities.Where(security =>
+                    !known.TryGetValue(security.Ticker, out var existing)
+                    || existing.Market != security.Market
+                    || !string.Equals(existing.Name, security.Name, StringComparison.Ordinal))
+            ];
+        }
+    }
+
+    /// <summary>這一輪全部代號的 id：剛查到的優先。兩邊都沒有的代號不會出現，寫入時會略過，和原本查不到 id 時相同。</summary>
+    public Dictionary<string, int> Resolve(
+        IReadOnlyList<(Market Market, string Ticker, string Name)> securities,
+        IReadOnlyDictionary<string, int> fresh)
+    {
+        lock (gate)
+        {
+            var ids = new Dictionary<string, int>(securities.Count, StringComparer.Ordinal);
+
+            foreach (var security in securities)
+            {
+                if (fresh.TryGetValue(security.Ticker, out var id))
+                {
+                    ids[security.Ticker] = id;
+                }
+                else if (known.TryGetValue(security.Ticker, out var existing))
+                {
+                    ids[security.Ticker] = existing.Id;
+                }
+            }
+
+            return ids;
+        }
+    }
+
+    public void Remember(
+        IReadOnlyList<(Market Market, string Ticker, string Name)> changed,
+        IReadOnlyDictionary<string, int> fresh)
+    {
+        lock (gate)
+        {
+            foreach (var security in changed)
+            {
+                if (fresh.TryGetValue(security.Ticker, out var id))
+                {
+                    known[security.Ticker] = (security.Market, security.Name, id);
+                }
+            }
+        }
+    }
+
+    public void Clear()
+    {
+        lock (gate)
+        {
+            known.Clear();
+        }
+    }
+}
+
 public sealed record StoredIntradaySnapshot(
     long RunId,
     DateTimeOffset CapturedAt,
