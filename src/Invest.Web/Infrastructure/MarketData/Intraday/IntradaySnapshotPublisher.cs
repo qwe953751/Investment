@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -30,6 +31,12 @@ public sealed class IntradaySnapshotPublisher(
 
     private const string DefaultBucket = "intraday-snapshots";
     private const int DefaultRetainedSnapshotCount = 30;
+
+    /// <summary>
+    /// 每種檔案最多這麼久抓一次清單。清單每次約 48 KB、原本每輪抓 3 次，一期吃掉約 0.4 GB Egress；
+    /// 清理只是不讓 Storage 長大，晚幾輪清頂多多留約 10 份舊檔，不影響任何讀取。
+    /// </summary>
+    internal static readonly TimeSpan PruneInterval = TimeSpan.FromMinutes(20);
     private const int SchemaVersion = 1;
     private static readonly Regex SnapshotFileName = new(
         "^intraday-\\d{8}-\\d{4}-run\\d+\\.json$",
@@ -41,6 +48,7 @@ public sealed class IntradaySnapshotPublisher(
     private static readonly Regex MarketStructureSnapshotFileName = new(
         "^intraday-structure-\\d{8}-\\d{4}-run\\d+-[a-f0-9]{8}-[a-f0-9]{8}\\.json$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> lastPrunedAt = new(StringComparer.Ordinal);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
@@ -781,6 +789,14 @@ public sealed class IntradaySnapshotPublisher(
         string operation,
         CancellationToken cancellationToken)
     {
+        var now = DateTimeOffset.UtcNow;
+
+        // 同一種檔案第一次一定清（程式剛啟動時補上一段沒清到的），之後才節流。
+        if (lastPrunedAt.TryGetValue(operation, out var lastPruned) && now - lastPruned < PruneInterval)
+        {
+            return;
+        }
+
         // Storage API 的 list/remove 都是 bucket-scoped。沒有直接刪 storage.objects，避免留下
         // 實體物件 orphan；每次最多刪 1,000 個，遠高於此處的保留視窗。
         var endpoint = $"{settings.SupabaseUrl}/storage/v1/object/list/{Uri.EscapeDataString(settings.Bucket)}";
@@ -810,6 +826,7 @@ public sealed class IntradaySnapshotPublisher(
 
         if (expired.Count == 0)
         {
+            lastPrunedAt[operation] = now;
             return;
         }
 
@@ -818,6 +835,9 @@ public sealed class IntradaySnapshotPublisher(
         deleteRequest.Content = JsonContent.Create(new { prefixes = expired });
         using var deleteResponse = await httpClient.SendAsync(deleteRequest, cancellationToken);
         await EnsureSuccessAsync(deleteResponse, operation, cancellationToken);
+
+        // 清理成功才記時間；失敗時下一輪照樣重試。
+        lastPrunedAt[operation] = now;
 
         logger.LogInformation("已清理 {DeletedCount} 份過期盤中 CDN 快照，保留最近 {RetainedCount} 份。", expired.Count, retainedSnapshotCount);
     }
