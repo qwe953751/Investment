@@ -13,6 +13,40 @@ namespace Invest.Web.Infrastructure.MarketData;
 public sealed class RevenueStore(ILogger<RevenueStore> logger)
 {
     /// <summary>
+    /// 哪些公司的原始營收比彈窗摘要新。靠資料庫的時間比對，不靠這次寫入記在記憶體的結果：
+    /// 寫完原始資料、摘要還沒寫就中斷的話，下一次仍然查得出來，不會永遠漏算。
+    /// </summary>
+    internal const string RefreshStateCommandText =
+        """
+        select
+            (select max(month) from revenue_latest),
+            (select max(updated_at) from revenue_history),
+            array(
+                select m.ticker
+                from monthly_revenue m
+                left join (
+                    select ticker, min(updated_at) as refreshed_at
+                    from revenue_history
+                    group by ticker) h on h.ticker = m.ticker
+                group by m.ticker, h.refreshed_at
+                having h.refreshed_at is null or max(m.updated_at) > h.refreshed_at
+                order by m.ticker)
+        """;
+
+    /// <summary>
+    /// 只有數字真的變了才動 updated_at：比對「哪些公司要重算」靠的就是它。
+    /// 整批重抓到一樣的內容時不會有任何一列被改到。
+    /// </summary>
+    internal const string SaveMonthlyCommandText =
+        """
+        insert into monthly_revenue (ticker, month, revenue)
+        select * from unnest(@tickers::text[], @months::date[], @revenues::bigint[])
+        on conflict (ticker, month) do update
+            set revenue = excluded.revenue, updated_at = now()
+            where monthly_revenue.revenue is distinct from excluded.revenue
+        """;
+
+    /// <summary>
     /// 寫入逐月營收。同一檔同一個月已經有資料就覆蓋——公司會更正已經公告過的營收，
     /// 更正後的數字才是對的，這裡不保留舊值。
     /// </summary>
@@ -27,14 +61,7 @@ public sealed class RevenueStore(ILogger<RevenueStore> logger)
 
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
 
-        await using var command = new NpgsqlCommand(
-            """
-            insert into monthly_revenue (ticker, month, revenue)
-            select * from unnest(@tickers::text[], @months::date[], @revenues::bigint[])
-            on conflict (ticker, month) do update
-                set revenue = excluded.revenue, updated_at = now()
-            """,
-            connection);
+        await using var command = new NpgsqlCommand(SaveMonthlyCommandText, connection);
 
         command.Parameters.AddWithValue("tickers", rows.Select(row => row.Ticker).ToArray());
         command.Parameters.Add(new NpgsqlParameter("months", NpgsqlDbType.Array | NpgsqlDbType.Date)
@@ -46,18 +73,46 @@ public sealed class RevenueStore(ILogger<RevenueStore> logger)
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    /// <summary>目前摘要的狀態，用來決定這次要全部重算、只算幾家，還是整步略過。</summary>
+    public async Task<RevenueRefreshState> LoadRefreshStateAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(RefreshStateCommandText, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        await reader.ReadAsync(cancellationToken);
+
+        return new RevenueRefreshState(
+            reader.IsDBNull(0) ? null : reader.GetFieldValue<DateOnly>(0),
+            reader.IsDBNull(1) ? null : reader.GetFieldValue<DateTimeOffset>(1),
+            reader.GetFieldValue<string[]>(2));
+    }
+
     /// <summary>
     /// 每一檔的完整營收歷史。「創幾個月新高」要一路往回翻，所以整份讀進來，
-    /// 兩千檔乘上幾十個月也才十萬列出頭。
+    /// 兩千檔乘上幾十個月也才十萬列出頭。整張表一次約 6 MB，只在全部重算時才讀。
     /// </summary>
-    public async Task<IReadOnlyDictionary<string, IReadOnlyDictionary<DateOnly, long>>> LoadHistoryAsync(
+    public Task<IReadOnlyDictionary<string, IReadOnlyDictionary<DateOnly, long>>> LoadHistoryAsync(
         CancellationToken cancellationToken = default)
+        => LoadHistoryAsync(null, cancellationToken);
+
+    /// <summary>只讀指定公司的完整歷史：一家公司的摘要只看它自己，不必讀其他家。</summary>
+    public async Task<IReadOnlyDictionary<string, IReadOnlyDictionary<DateOnly, long>>> LoadHistoryAsync(
+        IReadOnlyCollection<string>? tickers,
+        CancellationToken cancellationToken)
     {
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
 
         await using var command = new NpgsqlCommand(
-            "select ticker, month, revenue from monthly_revenue",
+            tickers is null
+                ? "select ticker, month, revenue from monthly_revenue"
+                : "select ticker, month, revenue from monthly_revenue where ticker = any(@tickers)",
             connection);
+
+        if (tickers is not null)
+        {
+            command.Parameters.AddWithValue("tickers", tickers.ToArray());
+        }
 
         var history = new Dictionary<string, Dictionary<DateOnly, long>>(StringComparer.Ordinal);
 
@@ -105,12 +160,14 @@ public sealed class RevenueStore(ILogger<RevenueStore> logger)
     }
 
     /// <summary>
-    /// 整批重寫最新格與 20 個月歷史。兩張表在同一筆 transaction 內替換，
+    /// 重寫最新格與 20 個月歷史。兩張表在同一筆 transaction 內替換，
     /// 不會出現表格已是新公告、彈窗還是舊公告的半套狀態。
+    /// <paramref name="onlyTickers"/> 是 null 就整批替換，否則只替換這些公司，其餘列不動。
     /// </summary>
     public async Task SaveSummariesAsync(
         IReadOnlyCollection<(string Ticker, RevenueSummary Summary)> latestRows,
         IReadOnlyCollection<(string Ticker, RevenueSummary Summary)> historyRows,
+        IReadOnlyCollection<string>? onlyTickers = null,
         CancellationToken cancellationToken = default)
     {
         // 下面是「先清空再整批寫回」，所以要先擋掉「清空之後什麼都寫不回去」。
@@ -134,9 +191,17 @@ public sealed class RevenueStore(ILogger<RevenueStore> logger)
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
         await using (var clear = new NpgsqlCommand(
-            "delete from revenue_latest; delete from revenue_history;",
+            onlyTickers is null
+                ? "delete from revenue_latest; delete from revenue_history;"
+                : "delete from revenue_latest where ticker = any(@onlyTickers);"
+                    + " delete from revenue_history where ticker = any(@onlyTickers);",
             connection))
         {
+            if (onlyTickers is not null)
+            {
+                clear.Parameters.AddWithValue("onlyTickers", onlyTickers.ToArray());
+            }
+
             await clear.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -234,3 +299,13 @@ public sealed class RevenueStore(ILogger<RevenueStore> logger)
             historyRows.Count);
     }
 }
+
+/// <summary>
+/// <paramref name="LatestMonth"/> 是最新格目前的月份，沒有任何一列時為 null；
+/// <paramref name="LastHistoryWrite"/> 是彈窗摘要最後一次寫入的時間；
+/// <paramref name="DirtyTickers"/> 是原始營收比摘要新的公司。
+/// </summary>
+public sealed record RevenueRefreshState(
+    DateOnly? LatestMonth,
+    DateTimeOffset? LastHistoryWrite,
+    IReadOnlyList<string> DirtyTickers);

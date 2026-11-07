@@ -3570,33 +3570,42 @@ static async Task RunRevenueAsync(IServiceProvider services, string[] args)
             }
         }
 
-        var history = await store.LoadHistoryAsync(cts.Token);
+        // 整張原始表一次約 6 MB，排程一個月跑幾十次，而多數時候根本沒有新資料。
+        // 手動回補與 --full（例如計算規則改了）一律全部重算。
+        var refresh = await store.LoadRefreshStateAsync(cts.Token);
+        var fullRefresh = args.Contains("--full")
+            || backfillMonths > 0
+            || emergingBackfillMonths > 0
+            || RevenueSummaryCalculator.NeedsFullRefresh(eligible, refresh.LatestMonth, refresh.LastHistoryWrite);
 
-        // 就是上個月，沒公告的那幾檔本來就該是空的。
-        // 公告期內這裡的數字會從幾十檔一路長到一千九百多檔，那是正常的進度，
-        // 不是「資料不完整」——真正要擔心的是它卡在 0 不動，那代表上游沒抓到。
-        var summaries = history
-            .Select(entry => (Ticker: entry.Key, Summary: RevenueSummaryCalculator.Summarize(eligible, entry.Value)))
-            .Where(item => item.Summary is not null)
-            .Select(item => (item.Ticker, Summary: item.Summary!))
-            .ToArray();
+        if (!fullRefresh && refresh.DirtyTickers.Count == 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"完成。上個月是 {eligible:yyyy-MM}，營收沒有變動，不重算。");
+            return;
+        }
 
-        var historySummaries = history
-            .SelectMany(entry => RevenueSummaryCalculator.SummarizeRecent(entry.Value, 20)
-                .Select(summary => (Ticker: entry.Key, Summary: summary)))
-            .ToArray();
+        var history = fullRefresh
+            ? await store.LoadHistoryAsync(cts.Token)
+            : await store.LoadHistoryAsync(refresh.DirtyTickers, cts.Token);
+        var (summaries, historySummaries) = RevenueSummaryCalculator.SummarizeAll(eligible, history);
 
-        await store.SaveSummariesAsync(summaries, historySummaries, cts.Token);
+        await store.SaveSummariesAsync(
+            summaries,
+            historySummaries,
+            fullRefresh ? null : refresh.DirtyTickers,
+            cts.Token);
 
         var highs = summaries.Count(item => item.Summary.HighStreak is not null);
 
         Console.WriteLine();
         Console.WriteLine(
-            $"完成。上個月是 {eligible:yyyy-MM}，{summaries.Length} 檔有營收"
-            + $"（歷史共 {history.Count} 檔、彈窗摘要 {historySummaries.Length:N0} 列），"
+            $"完成（{(fullRefresh ? "全部重算" : $"只重算有變動的 {refresh.DirtyTickers.Count} 家")}）。"
+            + $"上個月是 {eligible:yyyy-MM}，{summaries.Length} 檔有營收"
+            + $"（這次算了 {history.Count} 檔、彈窗摘要 {historySummaries.Length:N0} 列），"
             + $"其中 {highs} 檔創高。");
 
-        if (summaries.Length == 0)
+        if (fullRefresh && summaries.Length == 0)
         {
             Console.WriteLine($"{eligible:yyyy-MM} 目前一檔都還沒公告，網頁上的營收欄會全部顯示 —。");
         }

@@ -29,6 +29,11 @@ on:
       backfill-emerging-months:
         description: 只補興櫃歷史營收幾個月（0 表示不補）
         default: '0'
+      # 平常只重算有變動的公司；計算規則改了、或懷疑摘要跟原始資料對不起來時才打開。
+      full-recalculate:
+        description: 全部公司重算一次（會讀整張月營收表，約 6 MB）
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -48,6 +53,7 @@ jobs:
       TZ: Asia/Taipei
       BACKFILL_MONTHS: ${{ inputs.backfill-months || '0' }}
       BACKFILL_EMERGING_MONTHS: ${{ inputs.backfill-emerging-months || '0' }}
+      FULL_RECALCULATE: ${{ inputs.full-recalculate || 'false' }}
 
     steps:
       - name: 取出原始碼
@@ -67,6 +73,9 @@ jobs:
           extra=()
           if [ "$BACKFILL_EMERGING_MONTHS" -gt 0 ]; then
               extra+=(--backfill-emerging "$BACKFILL_EMERGING_MONTHS")
+          fi
+          if [ "$FULL_RECALCULATE" = "true" ]; then
+              extra+=(--full)
           fi
 
           if [ "$BACKFILL_MONTHS" -gt 0 ]; then

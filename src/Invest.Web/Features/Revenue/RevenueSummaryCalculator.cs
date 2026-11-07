@@ -39,6 +39,46 @@ public static class RevenueSummaryCalculator
     public static DateOnly EligibleMonth(DateOnly today) => new DateOnly(today.Year, today.Month, 1).AddMonths(-1);
 
     /// <summary>
+    /// 需不需要整張表重算。最新格只存「上個月」，所以換月之後舊月份的列全都要換掉；
+    /// 其餘時候一家公司的摘要只看它自己，只算有變動的公司就夠了。
+    ///
+    /// 月初還沒有人公告時，全部重算完最新格是空的，這時要靠彈窗摘要的寫入時間分辨
+    /// 「這個月已經算過了」，否則公告前每一輪都會白讀一次整張表。
+    /// </summary>
+    public static bool NeedsFullRefresh(DateOnly eligible, DateOnly? latestMonth, DateTimeOffset? lastHistoryWrite)
+    {
+        if (latestMonth == eligible)
+        {
+            return false;
+        }
+
+        var rollover = new DateTimeOffset(eligible.AddMonths(1).ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8));
+
+        return latestMonth is not null || lastHistoryWrite is null || lastHistoryWrite < rollover;
+    }
+
+    /// <summary>把指定公司的歷史算成最新格與 20 個月摘要，全部重算與只算幾家都走這裡。</summary>
+    public static (
+        (string Ticker, RevenueSummary Summary)[] Latest,
+        (string Ticker, RevenueSummary Summary)[] History) SummarizeAll(
+        DateOnly eligible,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<DateOnly, long>> history)
+        => (
+            // 就是上個月，沒公告的那幾檔本來就該是空的。
+            // 公告期內這裡的數字會從幾十檔一路長到一千九百多檔，那是正常的進度，
+            // 不是「資料不完整」——真正要擔心的是它卡在 0 不動，那代表上游沒抓到。
+            [
+                .. history
+                    .Select(entry => (Ticker: entry.Key, Summary: Summarize(eligible, entry.Value)))
+                    .Where(item => item.Summary is not null)
+                    .Select(item => (item.Ticker, Summary: item.Summary!))
+            ],
+            [
+                .. history.SelectMany(entry => SummarizeRecent(entry.Value, 20)
+                    .Select(summary => (Ticker: entry.Key, Summary: summary)))
+            ]);
+
+    /// <summary>
     /// 算出某一檔在指定月份的營收摘要。<paramref name="history"/> 是這一檔所有月份的單月營收。
     /// 指定的那個月不在歷史裡（還沒公告）就回 null，呼叫端顯示 —。
     /// </summary>
