@@ -20,6 +20,10 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 {
     private bool indexKlineSchemaWarningLogged;
 
+    // 這個程序最後存進資料庫的一輪，已換算成「從資料庫讀回來會長的樣子」。
+    // 族群熱度每兩分鐘要用一次全市場約 2,700 列，直接用這份就不必再讀回來（2026-11 Egress 最大宗）。
+    private StoredIntradaySnapshot? lastSavedRun;
+
     /// <summary>
     /// 全市場累計成交金額只能往上走，這是這份資料最硬的一條性質：
     /// 09:06 的數字不可能比 09:04 小。
@@ -131,6 +135,9 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
 
         await transaction.CommitAsync(cancellationToken);
 
+        // 交易確定成功才記住，交易失敗時不會留下資料庫沒有的一輪。
+        Volatile.Write(ref lastSavedRun, AsStored(runId, capturedAt, snapshot));
+
         logger.LogInformation("寫入 {Count} 檔盤中報價（run {RunId}）。", written, runId);
 
         return new IntradaySaveResult
@@ -201,23 +208,97 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
             """,
             cancellationToken);
 
+    internal const string NewestRunMissingTopicHeatCommandText =
+        """
+        select id
+        from intraday_runs
+        where not exists (
+            select 1
+            from intraday_topic_heat heat
+            where heat.run_id = intraday_runs.id)
+        order by trade_date desc, captured_at desc, id desc
+        limit 1
+        """;
+
     /// <summary>
     /// 讀取最新一輪尚未產生族群熱度的原始快照。
     /// 背景 consumer 有 backlog 時先追最新輪，讓公開 topic-latest 儘快接近 raw；
     /// 舊輪次仍留在 durable 待辦，稍後再補算。
+    ///
+    /// 待辦仍由資料庫決定，但先只查輪次編號：正好是這個程序剛存的那一輪，就不必再把
+    /// 全市場讀回來；程序重啟、另一個 Collector 存的輪次或漏掉的舊輪次才走資料庫。
     /// </summary>
-    public Task<StoredIntradaySnapshot?> LoadNewestSnapshotMissingTopicHeatAsync(
+    public async Task<StoredIntradaySnapshot?> LoadNewestSnapshotMissingTopicHeatAsync(
         CancellationToken cancellationToken = default)
-        => LoadSnapshotAsync(
-            """
-            where not exists (
-                select 1
-                from intraday_topic_heat heat
-                where heat.run_id = intraday_runs.id)
-            order by trade_date desc, captured_at desc, id desc
-            limit 1
-            """,
-            cancellationToken);
+    {
+        long? runId;
+
+        await using (var connection = await SupabaseConnection.OpenAsync(cancellationToken))
+        await using (var command = new NpgsqlCommand(NewestRunMissingTopicHeatCommandText, connection))
+        {
+            runId = await command.ExecuteScalarAsync(cancellationToken) as long?;
+        }
+
+        if (runId is not { } pendingRunId)
+        {
+            return null;
+        }
+
+        return RecallSavedRun(pendingRunId)
+            ?? await LoadSnapshotAsync($"where id = {pendingRunId}", cancellationToken);
+    }
+
+    /// <summary>只有編號完全相同才回傳記住的一輪，其餘一律交回資料庫。</summary>
+    internal StoredIntradaySnapshot? RecallSavedRun(long runId)
+        => Volatile.Read(ref lastSavedRun) is { } saved && saved.RunId == runId ? saved : null;
+
+    internal void RememberSavedRun(StoredIntradaySnapshot saved)
+        => Volatile.Write(ref lastSavedRun, saved);
+
+    /// <summary>
+    /// 把剛寫入的一輪換算成 <see cref="LoadSnapshotAsync"/> 會讀回來的內容，兩條路算出的族群熱度才會相同：
+    /// 價格與漲跌幅是 numeric 兩位小數（資料庫四捨五入，小數位數固定兩位）、成交額取整數、
+    /// 興櫃在 securities 存成 TPEX、種類依代號與名稱重判、時間是 UTC 微秒、其餘診斷欄位不保存。
+    /// </summary>
+    internal static StoredIntradaySnapshot AsStored(
+        long runId,
+        DateTimeOffset capturedAt,
+        IntradaySnapshot snapshot)
+        => new(
+            runId,
+            new DateTimeOffset(capturedAt.UtcTicks - (capturedAt.UtcTicks % 10), TimeSpan.Zero),
+            new IntradaySnapshot
+            {
+                TradeDate = snapshot.TradeDate,
+                MarketIndices = snapshot.MarketIndices,
+                Quotes = [.. snapshot.Quotes.Select(quote => new IntradayQuote
+                {
+                    Ticker = quote.Ticker,
+                    Name = quote.Name,
+                    Market = quote.Market == Market.Emerging ? Market.Tpex : quote.Market,
+                    Kind = StoredKind(quote.Ticker, quote.Name),
+                    Price = AsStoredNumeric(quote.Price),
+                    EstimatedTradingValue = (long)quote.EstimatedTradingValue,
+                    ChangePercent = AsStoredNumeric(quote.ChangePercent),
+                    OpenPrice = AsStoredNumeric(quote.OpenPrice),
+                    HighPrice = AsStoredNumeric(quote.HighPrice),
+                    LowPrice = AsStoredNumeric(quote.LowPrice),
+                    PriceSource = IntradayPriceSource.None,
+                    TradingVolume = 0m
+                })]
+            });
+
+    // 加 0.00m 是把小數位數補滿兩位：資料庫讀回來的 12.30 不是 12.3，輸出成 JSON 時看得出差別。
+    private static decimal? AsStoredNumeric(decimal? value)
+        => value is { } number ? Math.Round(number, 2, MidpointRounding.AwayFromZero) + 0.00m : null;
+
+    // 資料庫沒有種類欄位：0 開頭是 ETF，其餘依名稱把 TDR（-DR）分出來。
+    // 興櫃在這裡會讀回 TPEX（securities.market 有 check constraint，見 SecurityCatalog），
+    // 種類仍是一般股票，族群熱度只需要代號，不受影響。
+    private static StockKind StoredKind(string ticker, string name)
+        => QuoteFieldParser.IsTaiwanEtfTicker(ticker)
+            ? StockKind.Etf
+            : TaiwanSecurityRules.Reclassify(StockKind.CommonStock, ticker, name);
 
     private async Task<StoredIntradaySnapshot?> LoadSnapshotAsync(
         string runSelection,
@@ -279,12 +360,7 @@ public sealed class IntradayQuoteStore(ILogger<IntradayQuoteStore> logger)
                 Ticker = ticker,
                 Name = reader.GetString(7),
                 Market = ParseMarket(reader.GetString(8)),
-                // 資料庫沒有種類欄位：0 開頭是 ETF，其餘依名稱把 TDR（-DR）分出來。
-                // 興櫃在這裡會讀回 TPEX（securities.market 有 check constraint，見 SecurityCatalog），
-                // 種類仍是一般股票，族群熱度只需要代號，不受影響。
-                Kind = QuoteFieldParser.IsTaiwanEtfTicker(ticker)
-                    ? StockKind.Etf
-                    : TaiwanSecurityRules.Reclassify(StockKind.CommonStock, ticker, reader.GetString(7)),
+                Kind = StoredKind(ticker, reader.GetString(7)),
                 Price = ReadNullableDecimal(reader, 9),
                 EstimatedTradingValue = reader.GetFieldValue<long>(10),
                 ChangePercent = ReadNullableDecimal(reader, 11),
