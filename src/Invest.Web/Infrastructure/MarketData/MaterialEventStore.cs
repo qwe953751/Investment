@@ -94,7 +94,20 @@ public sealed class MaterialEventStore(ILogger<MaterialEventStore> logger)
     }
 
     /// <summary>
+    /// 匯出靜態站用的查詢。分類與掛族群只看日期、代號與主旨；說明全文（detail）佔這份查詢 83%、
+    /// 每次約 6 MB，每次發布都會跑，所以不讀。全文仍保存在資料表與備份，沒有被丟掉。
+    /// </summary>
+    internal const string LoadSinceCommandText =
+        """
+        select ticker, announced_on, announced_time, subject, clause, occurred_on
+        from material_events
+        where announced_on >= @since
+        order by announced_on desc, announced_time desc nulls last, ticker
+        """;
+
+    /// <summary>
     /// 指定日期之後的全部公告，新的排前面。匯出靜態站時整批讀出來分類、掛族群。
+    /// 回傳的 <see cref="MaterialEvent.Detail"/> 一律是 null，見 <see cref="LoadSinceCommandText"/>。
     /// </summary>
     public async Task<IReadOnlyList<MaterialEvent>> LoadSinceAsync(
         DateOnly since,
@@ -102,14 +115,7 @@ public sealed class MaterialEventStore(ILogger<MaterialEventStore> logger)
     {
         await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
 
-        await using var command = new NpgsqlCommand(
-            """
-            select ticker, announced_on, announced_time, subject, clause, occurred_on, detail
-            from material_events
-            where announced_on >= @since
-            order by announced_on desc, announced_time desc nulls last, ticker
-            """,
-            connection);
+        await using var command = new NpgsqlCommand(LoadSinceCommandText, connection);
 
         command.Parameters.Add(new NpgsqlParameter("since", NpgsqlDbType.Date) { Value = since });
 
@@ -126,7 +132,7 @@ public sealed class MaterialEventStore(ILogger<MaterialEventStore> logger)
                 reader.GetString(3),
                 reader.IsDBNull(4) ? null : reader.GetString(4),
                 reader.IsDBNull(5) ? null : reader.GetFieldValue<DateOnly>(5),
-                reader.IsDBNull(6) ? null : reader.GetString(6)));
+                null));
         }
 
         return result;
