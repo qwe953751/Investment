@@ -597,7 +597,9 @@ jobs:
                       state=cdn-broken
                       detail="latest.json 讀得到但解不出 file 欄位，指標格式可能壞了。"
                   else
-                      snapshot_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+                      # 只問檔案在不在（HEAD）：實測在回 200、不在回 400，都是 0 B。
+                      # 整份下載一次 3 MB，本期 227 次吃掉約 0.65 GB，而這裡只看狀態碼。
+                      snapshot_code=$(curl -s -I -o /dev/null -w '%{http_code}' --max-time 30 \
                           "${CDN_LATEST_URL%/latest.json}/$file")
 
                       if [ "$snapshot_code" != "200" ]; then
