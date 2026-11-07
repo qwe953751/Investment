@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -26,6 +27,13 @@ public sealed class IntradaySnapshotPublisher(
     ILogger<IntradaySnapshotPublisher> logger)
 {
     public const string StorageSecretVariable = "SUPABASE_STORAGE_SECRET_KEY";
+
+    /// <summary>
+    /// HttpClient 預設不送 Accept-Encoding，CDN 就回未壓縮的 3 MB 原檔；瀏覽器拿到的只有約 0.52 MB。
+    /// 解壓在讀取前完成，SHA-256 核對看到的仍是上傳時的原始位元組。
+    /// </summary>
+    internal static HttpMessageHandler CreatePrimaryHandler()
+        => new SocketsHttpHandler { AutomaticDecompression = DecompressionMethods.All };
     public const string BucketConfigurationKey = "IntradayCdn:Bucket";
     public const string RetainedSnapshotCountConfigurationKey = "IntradayCdn:RetainedSnapshotCount";
 

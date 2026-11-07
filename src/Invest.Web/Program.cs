@@ -135,7 +135,8 @@ builder.Services.AddHttpClient<StockUniverseClient>(ConfigureQuoteClient);
 // 重用中的連線反而比每輪重新建立可靠。
 builder.Services.AddHttpClient<MisIntradayClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<EmergingIntradayClient>(ConfigureQuoteClient);
-builder.Services.AddHttpClient<IntradaySnapshotPublisher>();
+builder.Services.AddHttpClient<IntradaySnapshotPublisher>()
+    .ConfigurePrimaryHttpMessageHandler(IntradaySnapshotPublisher.CreatePrimaryHandler);
 builder.Services.AddHttpClient<MarketOverviewIntradaySnapshotPublisher>();
 builder.Services.AddHttpClient<CryptoOverviewPublisher>();
 builder.Services.AddHttpClient<CryptoOverviewClient>(ConfigureQuoteClient);
