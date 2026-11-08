@@ -656,8 +656,15 @@ jobs:
           scripts/publish-gh-pages.sh publish/site
 
       # 新網址：frank-invest 這個 org 底下沒有帳號原名，訪客看不到 qwe953751。
-      # FRANK_INVEST_PAT 是個人 PAT（跟本機 gh CLI 用同一組），因為這個 repo
-      # 屬於另一個 org，GITHUB_TOKEN 天生跨不過去。
+      # 這個 repo 屬於另一個 org，GITHUB_TOKEN 天生跨不過去，所以用
+      # FRANK_INVEST_DEPLOY_KEY：只登記在 frank-invest/frank-invest.github.io 的可寫 deploy key，
+      # 外洩時只影響這一個網站 repo（舊的 FRANK_INVEST_PAT 是本機 gh 的個人 token，
+      # 能寫帳號下所有 repo）。
+      # 過渡期（2026-11-08 起，TODO #36）：deploy key 這次推送失敗就自動改用 FRANK_INVEST_PAT
+      # 再推一次，網站照常更新，log 會留 ::warning::。排程確認都走 deploy key 後，
+      # 移除退回並刪掉 FRANK_INVEST_PAT。
+      # GitHub 的 SSH 主機金鑰寫死（來源 https://api.github.com/meta 的 ssh_keys），不用
+      # ssh-keyscan 現抓，避免連線當下被假冒主機騙過。GitHub 換主機金鑰時這裡要跟著更新。
       # GH_PAGES_PUBLISH_ROOT=1：內容直接發到網域根目錄
       # https://frank-invest.github.io/——單一網址，訪客模式為預設，監控者／
       # 最高權限一律要登入才能拿到（筆記 #37 收尾：不再有 admin888/、viewer/
@@ -665,9 +672,30 @@ jobs:
       - name: 發佈到 frank-invest.github.io（單一網址，訪客為預設）
         if: ${{ !cancelled() && steps.export_site.outcome == 'success' && steps.verify_topics.outcome == 'success' && steps.unit_tests.outcome == 'success' && steps.node_tests.outcome == 'success' && (inputs.publish-only != true || steps.verify_kline.outcome == 'success') && (inputs.publish-only == true || (steps.save_quotes.outcome == 'success' && steps.verify_manifest.outcome == 'success')) }}
         env:
-          GH_PAGES_REMOTE: https://x-access-token:${{ secrets.FRANK_INVEST_PAT }}@github.com/frank-invest/frank-invest.github.io.git
+          FRANK_INVEST_DEPLOY_KEY: ${{ secrets.FRANK_INVEST_DEPLOY_KEY }}
+          FRANK_INVEST_PAT: ${{ secrets.FRANK_INVEST_PAT }}
           GH_PAGES_PUBLISH_ROOT: '1'
-        run: scripts/publish-gh-pages.sh publish/site
+        run: |
+          ssh_dir=$(mktemp -d "$RUNNER_TEMP/frank-invest-ssh.XXXXXX")
+          trap 'rm -rf "$ssh_dir"' EXIT
+          (umask 077; printf '%s\n' "$FRANK_INVEST_DEPLOY_KEY" > "$ssh_dir/key")
+          printf '%s\n' \
+              'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' \
+              'github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=' \
+              'github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=' \
+              > "$ssh_dir/known_hosts"
+
+          if [ -n "$FRANK_INVEST_DEPLOY_KEY" ] &&
+              GIT_SSH_COMMAND="ssh -F /dev/null -i '$ssh_dir/key' -o IdentitiesOnly=yes -o UserKnownHostsFile='$ssh_dir/known_hosts' -o StrictHostKeyChecking=yes" \
+              GH_PAGES_REMOTE=git@github.com:frank-invest/frank-invest.github.io.git \
+              scripts/publish-gh-pages.sh publish/site; then
+              echo "已用 deploy key（FRANK_INVEST_DEPLOY_KEY）發布到 frank-invest.github.io"
+              exit 0
+          fi
+
+          echo "::warning::用 deploy key 發布到 frank-invest.github.io 失敗（原因見上方 log），過渡期改用 FRANK_INVEST_PAT 再推一次。請檢查 FRANK_INVEST_DEPLOY_KEY secret 與 frank-invest 的 deploy key 設定（TODO #36）。"
+          GH_PAGES_REMOTE="https://x-access-token:${FRANK_INVEST_PAT}@github.com/frank-invest/frank-invest.github.io.git" \
+              scripts/publish-gh-pages.sh publish/site
 
       # 心跳的用途是回答「到底有沒有跑」，所以前面炸掉了也要記，用 always()。
       # publish-only 不碰 Supabase 與 data 狀態，不能在這裡要求尚未套用的 migration。

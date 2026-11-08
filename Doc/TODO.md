@@ -1,4 +1,4 @@
-# 待辦事項（35 件）
+# 待辦事項（36 件）
 
 這份檔案是討論的存放處，不是進度表。每次要談某件事之前先讀這裡，
 就不用把前幾次的結論重講一遍。
@@ -47,6 +47,7 @@
 | 33 | [颱風休市與跨午夜 run：盤中鏈空轉、鬧鐘被前一晚的 run 騙到](#todo-33) | 🟡 跨午夜與「今天已完成」判斷已在正式環境驗收（2026-10-26～11-06）；颱風假留棒要等下一次臨時休市 |
 | 34 | [發布門檻：測試失敗不再發布；Node 測試進 CI](#todo-34) | 🟡 2026-10-25 已上線；待觀察 Node 測試在正式 runner 的穩定性，另有一個待你決定的順序問題 |
 | 35 | [異常紀錄跨裝置保存與原始 log 串接](#todo-35) | 🟡 UI 已發布；資料待後續串接 |
+| 36 | [frank-invest 發布改用 deploy key，移除個人 PAT](#todo-36) | 🟡 deploy key 已登記並在本機驗證寫入；過渡期失敗自動退回 PAT，待排程驗收後移除 PAT |
 
 狀態只有三種：🔵 進行中、🟡 等資料或等時間、⚪ 未開始。
 
@@ -817,11 +818,10 @@ bucket 已上線且有健康度監控，`site_alerts` 近期沒有 CDN 相關警
   無論發到哪個 repo 都不會洩漏。
 - `daily-snapshot.yml` 加了一步「發佈到 frank-invest.github.io」，跟原本發布到
   `qwe953751.github.io/Investment/` 那步並列，每天兩邊都會自動更新，不用手動同步。
-  推送用的 `FRANK_INVEST_PAT`（存在 `qwe953751/Investment` repo secret）是我本機
-  `gh` CLI 那組個人 token，因為新 repo 在別的 org 底下，CI 內建的
-  `GITHUB_TOKEN` 天生跨不過去。**這組 token 如果你之後在本機重新登入 `gh` 導致
-  舊 token 失效，這一步會開始紅燈**，到時候要重新 `gh secret set FRANK_INVEST_PAT
-  --body "$(gh auth token)" --repo qwe953751/Investment` 補一次。
+  新 repo 在別的 org 底下，CI 內建的 `GITHUB_TOKEN` 天生跨不過去。2026-11-08 起推送改用
+  `FRANK_INVEST_DEPLOY_KEY`（只登記在 `frank-invest/frank-invest.github.io` 的可寫 deploy key），
+  原本的 `FRANK_INVEST_PAT`（本機 `gh` CLI 那組個人 token）只剩過渡期退回用，
+  驗收後移除，詳見 [TODO #36](#todo-36)。
 - 已實測確認沒有洩漏：組織的公開 People 頁面（GitHub 預設把成員身分設成
   private，目前是空的）、repo 首頁、commits 頁面、org 的 repo 列表頁，直接
   curl 抓 HTML 找不到 `qwe953751` 字樣；`gh-pages` 分支最新 commit 作者是
@@ -2802,3 +2802,27 @@ downloading→回報 ai_recognition（成功，證明新階段合法）→模擬
 2026-11-06 正式網站 UI 已發布（程式 commit `aa0adb576`，純發布 [run 42192189126](https://github.com/qwe953751/Investment/actions/runs/42192189126)）。通知的「匯出 log」將通知時間、流程、狀態、簡述與可用詳細資訊整理成文字檔內容，並在筆記「異常紀錄」建立卡片，支援下載及刪除；通知既有「看執行紀錄」仍保留原連結。
 
 目前紀錄只放在頁面記憶體，重新整理即清空；刪除只影響目前頁面。產生的 `.txt` 是由通知欄位整理，不代表 GitHub Actions 原始 log，也還沒有上傳附件或資料庫寫入。後續由使用者串接正式資料來源與跨裝置保存；只用 `localStorage` 雖然能在同一瀏覽器保留，仍無法滿足不同電腦都可存取，因此本次未加本機持久化。
+
+<a id="todo-36"></a>
+## 🟡 36. frank-invest 發布改用 deploy key，移除個人 PAT
+
+[↑ 回到 TODO 列表](#快速跳轉)
+
+**起因**（2026-11-08）：`daily-snapshot.yml` 推送到 `frank-invest/frank-invest.github.io` 用的 `FRANK_INVEST_PAT` 是本機 `gh` CLI 的個人 token（scope 含 `repo`、`workflow`），能改帳號下所有 repo。workflow 每天跑多輪、用到不少外部套件，只要其中一個被入侵拿到這組 token，影響範圍是整個帳號，不只投資網站。
+
+**已完成**（使用者 2026-11-08 核准，條件：排程、手動發布與其他操作都不能影響正在運作的網站）：
+- `frank-invest` org 的 Member privileges → Deploy keys 改為 Enabled（GitHub 新 org 預設禁止；使用者手動開啟）。
+- 在 `frank-invest/frank-invest.github.io` 登記可寫 deploy key「Investment daily-snapshot CI (2026-11-08)」（ed25519），私鑰存成 `qwe953751/Investment` 的 secret `FRANK_INVEST_DEPLOY_KEY`，本機副本已刪除。
+- 本機用跟 CI 相同的寫法驗證：寫死的主機金鑰指紋與 GitHub 公布值一致、`git ls-remote` 讀得到 `gh-pages`、`git push --dry-run` 被接受（遠端分支沒有任何變動）；另用一把沒登記的金鑰做反向測試被拒，證明不是靠本機其他金鑰通過。私鑰結尾有沒有換行都能用。
+- 發布步驟改成先用 deploy key 走 SSH 推；**失敗或 secret 沒設定時，自動改用 `FRANK_INVEST_PAT` 再推一次並留 `::warning::`**，網站照常更新；兩條都失敗才紅燈（跟改版前一樣）。GitHub SSH 主機金鑰寫死在步驟裡，不用 `ssh-keyscan` 現抓。
+- `tests/frank-invest-publish-step.test.mjs` 從 workflow 原文抽出這一步實際執行：成功只推一次且不碰 PAT、失敗退回、沒設定直接退回、兩條都失敗要紅燈、私鑰一定清掉、寫死的主機金鑰指紋與 GitHub 公布值一致。故意改壞 workflow（拿掉成功後的 `exit 0`、先用 PAT、改一個字的主機金鑰）三種都會被抓到。
+
+**不受影響的**：步驟名稱與發布門檻條件沒變（`scripts/daily-snapshot-done.mjs` 靠步驟名稱判斷今天是否已完成）；舊網址那步仍用 `GITHUB_TOKEN`；本機手動發布（`GH_PAGES_REMOTE=https://x-access-token:$(gh auth token)@...`）與本機 `gh api` 讀取用的是本機登入，跟 CI secret 無關。
+
+**驗收**（待）：
+1. 下一次排程（2026-11-09 週一起）或任何一次 `publish-only=true` 的 log：「發佈到 frank-invest.github.io（單一網址，訪客為預設）」要印出「已用 deploy key（FRANK_INVEST_DEPLOY_KEY）發布到 frank-invest.github.io」，而且**沒有** `::warning::用 deploy key 發布…失敗`。
+2. 照 AGENTS.md〈發布後固定驗證〉確認 `gh-pages` 與公開網址的 `manifest.json` 同版。
+3. 連續幾次都走 deploy key 後：移除 workflow 裡的 PAT 退回與 `FRANK_INVEST_PAT` env、同步改測試，再 `gh secret delete FRANK_INVEST_PAT --repo qwe953751/Investment`。
+   刪除後，用其他舊分支 `--ref` 手動觸發的 daily-snapshot 會因為那些分支的 workflow 還寫著 PAT 而發布失敗；照 AGENTS.md 用 `--ref main` 就沒問題。
+
+**GitHub 更換 SSH 主機金鑰時**：過渡期 deploy key 那條會連線失敗、退回 PAT；移除退回後就會紅燈。到時候照 https://api.github.com/meta 的 `ssh_keys` 更新步驟裡寫死的三行，並更新測試裡的指紋。

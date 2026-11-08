@@ -219,9 +219,10 @@ gh api 'repos/frank-invest/frank-invest.github.io/git/trees/gh-pages?recursive=1
 `gh-pages` API 已有新版本但公開 URL 暫時仍是舊版時，先視為 CDN 快取延遲，等待後重試；以 `gh-pages` 的 `manifest.json` 版本與公開 URL 最終同版為完成條件。不要用舊的本機 `publish/site` 直接覆蓋網站；export 路徑錯誤或本機快取過期時，指令仍可能成功但發布錯快照。
 
 `frank-invest/frank-invest.github.io` 這個 repo 屬於另一個 GitHub 組織，`gh api` 讀取需要
-`FRANK_INVEST_PAT` 對應的那組帳號權限（本機 `gh auth status` 顯示已登入的帳號要有這個
+frank-invest org 擁有者帳號的權限（本機 `gh auth status` 顯示已登入的帳號要有這個
 repo 的讀取權，否則 `gh api repos/frank-invest/...` 會 404 而不是權限錯誤，容易誤判成
-「repo 不存在」）。
+「repo 不存在」）。CI 推送用的是只登記在這個 repo 的 deploy key `FRANK_INVEST_DEPLOY_KEY`
+（2026-11-08 起；過渡期失敗才退回個人 token `FRANK_INVEST_PAT`，見 `Doc/TODO.md` #36）。
 
 #### 5. 失敗時的固定判斷順序
 
