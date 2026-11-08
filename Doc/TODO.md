@@ -1201,7 +1201,7 @@ run 一直算 `in_progress`，排隊中的下一棒從 08:30 一路 pending 到 
 舊推估「0.6～1.5 GB／月」漏了 **Shared Pooler**：`SUPABASE_DB_URL` 走 Supavisor，Actions 讀資料庫的流量全算在 Egress，
 舊額度表沒有這一項。另外 10/17 把排行比較塞進每輪快照（`38cf5980d`），快照從 0.9 MB 變 3.1 MB。
 
-位元組來源：Storage 三項是新 log 端點（`analytics/endpoints/logs`，一次查一天）實測；資料庫沒有位元組 log，
+位元組來源：Storage 三項是新 log 端點（`analytics/endpoints/logs`，一次查一天）實測（**這一輪約 180 次查詢吃掉 180 GB 的 Log Query 額度，見下面「Log Query 額度」**）；資料庫沒有位元組 log，
 是 `pg_stat_statements` 的列數 × 每列大小，再校正到 Dashboard 總量，**看順序就好**。
 「省」是每開盤日；現況 Egress 約 230 MB、Cached Egress 約 115 MB，修完約 35 MB、15 MB（整期約 0.8 GB、0.4 GB）。
 
@@ -1280,7 +1280,26 @@ Dashboard 的每日圖把成因拆得很清楚，**是兩件事，不是一件**
 - **Smart CDN 已經自動壓縮**（實測 9.3 倍）。不需要也不可以自己先 gzip 再上傳：
   storage-api 會丟掉 `content-encoding`，自己壓會讓瀏覽器收到亂碼。
 - **Management API 的用量端點查不到位元組數**（`/usage`、`/billing/usage`、`usage.api-egress`
-  全部 404）。Dashboard 看得到總量；Storage 的逐路徑位元組可用 `analytics/endpoints/logs` 一天一天查（2026-11 實測）。
+  全部 404）。Dashboard 看得到總量；Storage 的逐路徑位元組可以用 `analytics/endpoints/logs` 查，
+  但**每查一次約吃 1 GB 的 Log Query 額度，不可以逐日迴圈查**，見下面「Log Query 額度」。
+
+### Log Query 額度：查 log 本身也有額度（2026-11-08）
+
+Dashboard 的 **Log Query** 是「讀 log 時掃描的資料量」，不是網站流量。Studio 畫面、Management API、CLI 讀 log 都算。
+Free 方案每期 100 GB（＝ log 寫入額度 1 GB 的 100 倍），不另外收費。
+2026-09-25 起試行，**目前不限制**，寬限到 2027 年初，正式執行前官方會公告時程。
+正式執行後超額的下個月：log 查詢每分鐘只能 10 次、只保留 1 小時；再超一次就完全不能查 log。網站、資料庫與 Egress 不受影響。
+
+**2026-11-06 事件**：查上面的 Egress 歸因時，用 `analytics/endpoints/logs` 一天一天迴圈查了約 180 次，
+用量從不到 14 GB 變成 **180.69 / 100 GB**。Dashboard 每日圖幾乎全部落在 11/06，其他日子是 0，沒有任何程式或排程在背景查 log。
+每次只查一天，平均還是約 1 GB；官方說縮短時間範圍會少掃，但這個端點實際沒有省到（原因未驗證）。
+本期不受影響，11/15 新週期歸零。
+
+**之後的規則**：
+
+- 先用不吃這個額度的來源：Dashboard 用量圖、`extensions.pg_stat_statements`（資料庫查詢次數與列數）、GitHub Actions 的 log。
+- 真的要查 log：先講好次數，**每期最多 20 次**；不准逐日迴圈，一次查完；時間與來源條件寫在查詢裡。
+- 在 Dashboard 看 Logs 或 Reports 頁面也算這個額度，時間範圍選最短（1 小時或 1 天）。
 
 ### 已經做的
 

@@ -176,6 +176,10 @@ Supabase 自 2025 年 8 月起把 egress 拆成**兩個各自獨立的額度**�
 
 （2026-08 寫這張表時沒有列 Shared Pooler，以為 uncached 可以忽略，所以當時的容量推估偏低。）
 
+另有兩個 log 額度：**Log Ingestion**（log 寫入量，Free 1 GB）與 **Log Query**（讀 log 時掃描的量，Free 100 GB）。
+Log Query 不是流量，但用 Management API 逐日查 log 會很快用完（2026-11-06 約 180 次查詢吃掉 180 GB），
+規則見 [TODO #14](../TODO.md#todo-14)「Log Query 額度」。
+
 快取命中**不是免費的**，只是比較便宜。所以「CDN 命中率高」不等於「流量歸零」。
 
 實測過的事實（2026-08-29）：
