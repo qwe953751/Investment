@@ -40,6 +40,26 @@ public sealed class MopsRevenueFilingClientTests
     }
 
     [Fact]
+    public async Task TimeoutSplitsTheRangeWithoutDroppingEitherDay()
+    {
+        var requests = 0;
+        var client = new MopsRevenueFilingClient(new HttpClient(new Handler(request =>
+        {
+            requests++;
+            var q = HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            if (q["SDATE"] != q["EDATE"]) throw new TaskCanceledException("upstream timeout");
+            var day = q["SDATE"]!.EndsWith("01", StringComparison.Ordinal) ? "01" : "02";
+            return Success([Row((q["TYPEK"] == "sii" ? "62" : "54") + day,
+                q["TYPEK"] == "sii" ? "上市" : "上櫃", "115/11/" + day)]);
+        })));
+        var rows = await client.LoadAsync(new(2026, 11, 1), new(2026, 11, 2));
+        Assert.Equal(6, requests);
+        Assert.Equal(4, rows.Count);
+        Assert.Equal(2, rows.Count(row => row.AnnouncedOn == new DateOnly(2026, 11, 1)));
+        Assert.Equal(2, rows.Count(row => row.AnnouncedOn == new DateOnly(2026, 11, 2)));
+    }
+
+    [Fact]
     public async Task RejectsSingleDayTruncation()
     {
         var client = new MopsRevenueFilingClient(new HttpClient(new Handler(_ =>

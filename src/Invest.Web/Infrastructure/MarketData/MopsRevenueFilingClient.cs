@@ -19,7 +19,9 @@ public sealed partial class MopsRevenueFilingClient(HttpClient httpClient)
         if (through < since) throw new ArgumentOutOfRangeException(nameof(through));
         var result = new List<MonthlyRevenueAnnouncement>();
         foreach (var market in new[] { "sii", "otc" })
-            await LoadRangeAsync(market, since, through, result, cancellationToken);
+            for (var start = since; start <= through; start = start.AddDays(7))
+                await LoadRangeAsync(market, start,
+                    start.AddDays(6) < through ? start.AddDays(6) : through, result, cancellationToken);
         if (through.DayNumber - since.DayNumber >= 31 && result.Count == 0)
             throw new InvalidDataException("MOPS F22 unexpectedly returned no historical filings.");
         return result.GroupBy(row => (row.Ticker, row.Month))
@@ -42,9 +44,21 @@ public sealed partial class MopsRevenueFilingClient(HttpClient httpClient)
         // 官方端點支援 GET，日期與市場條件完整保留在請求 URL。
         var url = Endpoint + "?" + await content.ReadAsStringAsync(cancellationToken);
         await Task.Delay(600, cancellationToken);
-        using var response = await httpClient.GetAsync(url, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        var json = (await response.Content.ReadAsStringAsync(cancellationToken)).TrimStart('\uFEFF', '\r', '\n', '\t', ' ');
+        string json;
+        try
+        {
+            using var response = await httpClient.GetAsync(url, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            json = (await response.Content.ReadAsStringAsync(cancellationToken)).TrimStart('\uFEFF', '\r', '\n', '\t', ' ');
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && since < through)
+        {
+            // CI 至台灣官方站的大回應可能逾時；縮小日期範圍，不能跳過這一批。
+            var middle = since.AddDays((through.DayNumber - since.DayNumber) / 2);
+            await LoadRangeAsync(market, since, middle, result, cancellationToken);
+            await LoadRangeAsync(market, middle.AddDays(1), through, result, cancellationToken);
+            return;
+        }
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
         if (root.GetProperty("status").GetString() != "success")
