@@ -155,6 +155,7 @@ builder.Services.AddHttpClient<TwseIssuedSharesClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TpexMarketCapClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<RevenueClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<MaterialEventClient>(ConfigureQuoteClient);
+builder.Services.AddHttpClient<MopsRevenueFilingClient>(ConfigureQuoteClient);
 builder.Services.AddHttpClient<TaifexExchangeRateClient>(ConfigureQuoteClient);
 
 // 美股主要資料源：Yahoo Finance 公開 chart API，UsMarketDataDownloader 實際呼叫這支。

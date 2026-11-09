@@ -59,7 +59,8 @@ public sealed class StaticSiteExporter(
     IConfiguration configuration,
     EtfDividendProjectionService etfDividendProjection,
     CryptoOverviewPublisher? cryptoOverviewPublisher = null,
-    PeriodHistoryStore? periodHistoryStore = null)
+    PeriodHistoryStore? periodHistoryStore = null,
+    MopsRevenueFilingClient? revenueFilings = null)
 {
     /// <summary>
     /// 催化事件頁最多列幾則。六十天的重大訊息篩掉例行公告之後還有一千多則，
@@ -1113,6 +1114,22 @@ public sealed class StaticSiteExporter(
                 warning = "官方公告資料目前無法取得。";
                 logger.LogWarning("讀取 MOPS 月營收公告日期失敗；K 線不會顯示推估日期。");
             }
+        }
+
+        if (since is { } filingStart && revenueFilings is not null)
+        {
+            // 官方 F22 是例行營收申報日期；失敗或截斷時中止 export，保留上一個正式版本。
+            // 先查完整上個月，讓月中起點以前的首次申報參與去重；不能把後來更正當首次公告。
+            var revenueStart = new DateOnly(filingStart.Year, filingStart.Month, 1).AddMonths(-1);
+            var filings = await revenueFilings.LoadAsync(revenueStart,
+                DateOnly.FromDateTime(DateTime.UtcNow.AddHours(8)), cancellationToken);
+            var filingKeys = filings.Select(item => (item.Ticker, item.Month)).ToHashSet();
+            var visibleFilings = filings.Where(item => item.Month >= revenueStart && item.AnnouncedOn >= filingStart).ToArray();
+            announcements = visibleFilings.Concat(announcements.Where(old =>
+                    !filingKeys.Contains((old.Ticker, old.Month))))
+                .OrderBy(item => item.AnnouncedOn).ThenBy(item => item.Ticker, StringComparer.Ordinal).ToArray();
+            available = true;
+            warning = "上市櫃使用官方 F22 申報紀錄；興櫃僅有已取得的官方重大訊息，歷史日期尚未全量涵蓋。";
         }
 
         await WriteJsonAsync(
