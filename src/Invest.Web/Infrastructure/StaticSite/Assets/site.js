@@ -10,6 +10,8 @@ const TOP_COUNT = 100;
 const CUSTOM_PAGE_SIZE = 100;
 const KLINE_DIRECTORY = 'data/kline';
 const REVENUE_HISTORY_TABLE = 'revenue_history';
+const REVENUE_ANNOUNCEMENTS_FILE = 'data/revenue-announcements.json';
+const REVENUE_KLINE_PREVIEW_SITE = 'https://frank-invest.github.io/';
 const INTRADAY_TOPIC_PERIOD = 'intraday';
 const INTRADAY_TOPIC_HEAT_VIEW = 'intraday_topic_heat_latest';
 const INTRADAY_TOPIC_CDN_LATEST = 'topic-latest.json';
@@ -19,6 +21,9 @@ const INTRADAY_TOPIC_CDN_LATEST = 'topic-latest.json';
 const INTRADAY_TOPIC_TABS = new Set(['heat', 'tree']);
 const PREVIEW_QUERY = new URLSearchParams(window.location.search).get('preview');
 const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1'];
+// 本機專用：直接讀正式網站既有行情、營收歷史與 MOPS 日期檔；正式網址不會進入此分支。
+const REVENUE_KLINE_LOCAL_PREVIEW = LOCAL_HOSTNAMES.includes(window.location.hostname)
+    && PREVIEW_QUERY === 'revenue-kline-v1';
 const MARKET_NAV_DEFAULT_VARIANT = 'u1';
 // 本機專用：讓指數 K 線的排版在沒有新快照／尚未套用盤中 migration 時也能檢查。
 // 這個開關只接受 localhost，正式網址不會進入假資料分支。
@@ -3247,6 +3252,10 @@ let indexKLineAnchor = null;
 let klineReferenceLines = { price: true, volume: true, turnover: true, cost: true };
 const revenueHistoryData = new Map();
 const revenueHistoryPromises = new Map();
+let revenueAnnouncementDataset = null;
+let revenueAnnouncementPromise = null;
+let revenueAnnouncementStatus = 'idle';
+let klineRevenueYoYVisible = false;
 
 // 讀失敗的代號。**不能是單一個旗標**：使用者點開 A、還沒失敗就改點 B 的話，
 // A 的 catch 會晚一步把旗標打開，B 的彈窗就會掛著 A 的錯誤訊息。
@@ -21397,7 +21406,11 @@ async function loadKLineData(ticker) {
 
     if (!klinePromises.has(ticker)) {
         klinePromises.set(ticker, (async () => {
-            const response = await fetch(`${KLINE_DIRECTORY}/${encodeURIComponent(ticker)}.json?v=${version}`);
+            const klinePath = `${KLINE_DIRECTORY}/${encodeURIComponent(ticker)}.json?v=${version}`;
+            const klineUrl = REVENUE_KLINE_LOCAL_PREVIEW
+                ? new URL(klinePath, REVENUE_KLINE_PREVIEW_SITE).toString()
+                : klinePath;
+            const response = await fetch(klineUrl);
 
             if (!response.ok) {
                 throw new Error(String(response.status));
@@ -22667,6 +22680,49 @@ function klineTrendClass(bar) {
             : 'daily-kline-flat';
 }
 
+function isRevenueKLineTicker(ticker) {
+    const adjustmentMethod = klineData.get(ticker)?.adjustmentMethod;
+    return adjustmentMethod === 'forward-rights-dividends'
+        || adjustmentMethod === 'forward-official-reference-tw-emerging-daily';
+}
+
+function revenueAnnouncementBarIndex(event, bars, period) {
+    if (!Array.isArray(bars) || bars.length === 0) return -1;
+    if (period !== 'day') {
+        const announcedPeriod = klinePeriodStart(event.announcedOn, period);
+        const containingPeriod = bars.findIndex(bar =>
+            klinePeriodStart(bar.date, period) === announcedPeriod
+            && (bar.endDate ?? bar.date) >= event.announcedOn);
+        if (containingPeriod >= 0) return containingPeriod;
+    } else {
+        const exact = bars.findIndex(bar => bar.date === event.announcedOn);
+        if (exact >= 0) return exact;
+    }
+
+    // MOPS 以日為單位發布；週末或休市日沒有落在已交易 K 棒區間時，標到下一根。
+    return bars.findIndex(bar => bar.date > event.announcedOn);
+}
+
+function revenueAnnouncementMarkersForBars(ticker, bars, period) {
+    if (revenueAnnouncementDataset?.available !== true) return [];
+    const startDate = period === 'day'
+        ? bars[0]?.date ?? ''
+        : bars[0] === undefined ? '' : klinePeriodStart(bars[0].date, period);
+    const endDate = bars.at(-1)?.endDate || bars.at(-1)?.date || '';
+    const historyByMonth = new Map((revenueHistoryData.get(ticker) ?? []).map(row => [row.month, row]));
+
+    return revenueAnnouncementDataset.events
+        .filter(event => event.ticker === ticker
+            && event.announcedOn >= startDate
+            && event.announcedOn <= endDate)
+        .map(event => ({
+            ...event,
+            index: revenueAnnouncementBarIndex(event, bars, period),
+            yoy: historyByMonth.get(event.month)?.yoy ?? null
+        }))
+        .filter(event => event.index >= 0);
+}
+
 function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null, period = 'day', crosshair = null) {
     const isCrypto = klineData.get(ticker)?.market === 'CRYPTO';
     const priceLabel = isCrypto ? 'UTC ' : ['US', 'JP', 'KR'].includes(klineData.get(ticker)?.market) ? '' : '還原權息';
@@ -22769,6 +22825,57 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
         }
     }
 
+    if (klineRevenueYoYVisible && isRevenueKLineTicker(ticker)) {
+        const markers = revenueAnnouncementMarkersForBars(ticker, bars, period);
+        const markerWidth = 142;
+        const markerHeight = 20;
+        const placedLabels = [];
+
+        markers.forEach((marker, markerIndex) => {
+            const bar = bars[marker.index];
+            const markerX = x(marker.index);
+            const closeY = y(bar.close);
+            const preferredY = markerIndex % 2 === 0
+                ? Math.max(top + 4, closeY - markerHeight - 24)
+                : Math.min(priceBottom - markerHeight - 4, closeY + 18);
+            const markerLeft = Math.max(left, Math.min(markerX - markerWidth / 2, right - markerWidth));
+            const maxMarkerY = priceBottom - markerHeight - 4;
+            const clampMarkerY = value => Math.max(top + 4, Math.min(value, maxMarkerY));
+            const candidateYs = [preferredY];
+            for (let row = 0; row < 8; row++) {
+                candidateYs.push(clampMarkerY(top + 4 + row * (markerHeight + 6)));
+            }
+            const markerY = candidateYs.find(candidateY => !placedLabels.some(placed =>
+                markerLeft < placed.left + markerWidth + 6
+                && markerLeft + markerWidth + 6 > placed.left
+                && candidateY < placed.top + markerHeight + 4
+                && candidateY + markerHeight + 4 > placed.top)) ?? preferredY;
+            placedLabels.push({ left: markerLeft, top: markerY });
+            const connectorY = markerY < closeY ? markerY + markerHeight : markerY;
+            const monthDay = marker.announcedOn.slice(5).replace('-', '/').replace(/^0/, '').replace('/0', '/');
+            const yoyText = marker.yoy === null || !Number.isFinite(Number(marker.yoy))
+                ? '—'
+                : `${toFixedText(Number(marker.yoy) * 100, 1)}%`;
+            const group = svgElement('g', { class: 'daily-kline-revenue-marker' });
+
+            group.append(
+                svgElement('line', { x1: markerX, x2: markerX, y1: closeY, y2: connectorY }),
+                svgElement('rect', {
+                    x: markerLeft,
+                    y: markerY,
+                    width: markerWidth,
+                    height: markerHeight,
+                    rx: 10
+                }),
+                svgElement('text', {
+                    x: markerLeft + markerWidth / 2,
+                    y: markerY + 14,
+                    'text-anchor': 'middle'
+                }, `${monthDay} 營收 YoY ${yoyText}`));
+            svg.append(group);
+        });
+    }
+
     const holdingCostY = holdingCost === null
         ? null
         : y(holdingCost.averageCost);
@@ -22862,6 +22969,37 @@ function renderKLineSvg(ticker, name, bars, referenceSummary, holdingCost = null
     });
 
     return svg;
+}
+
+function renderKLineRevenueControls(ticker, name, anchor) {
+    const toolbar = document.createElement('div');
+    toolbar.className = 'daily-kline-timeframe-revenue';
+    toolbar.setAttribute('role', 'group');
+    toolbar.setAttribute('aria-label', '營收公告標記');
+
+    const label = document.createElement('strong');
+    label.textContent = '營收 YoY';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'daily-kline-revenue-toggle';
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-checked', String(klineRevenueYoYVisible));
+    toggle.setAttribute('aria-label', '顯示營收 YoY 公告標記');
+    toggle.dataset.hint = '日期取自公開資訊觀測站公司的正式發言日；YoY 沿用 C# 計算的月營收摘要。';
+    toggle.title = revenueAnnouncementStatus === 'unavailable'
+        ? '官方公告日期暫不可用，未使用推估日期。'
+        : '日期取自 MOPS 官方發言日；YoY 沿用既有 C# 月營收計算。';
+    toggle.disabled = revenueAnnouncementStatus !== 'ready';
+    toggle.append(document.createElement('span'));
+    toggle.firstElementChild.className = 'daily-kline-revenue-toggle-thumb';
+    toggle.addEventListener('click', () => {
+        klineRevenueYoYVisible = !klineRevenueYoYVisible;
+        renderKLinePopover(ticker, name, anchor);
+    });
+
+    toolbar.append(label, toggle);
+    return toolbar;
 }
 
 function renderKLineLegend(bars, holdingCost = null, period = 'day') {
@@ -22986,7 +23124,21 @@ function positionPopover(popoverId, anchor) {
     popover.style.top = `${Math.round(top)}px`;
 }
 
-const positionKLinePopover = anchor => positionPopover('kline-popover', anchor);
+const positionKLinePopover = anchor => {
+    if (REVENUE_KLINE_LOCAL_PREVIEW) {
+        const popover = el('kline-popover');
+        popover.style.position = 'relative';
+        popover.style.left = 'auto';
+        popover.style.top = 'auto';
+        popover.style.maxHeight = 'none';
+        popover.style.overflow = 'visible';
+        popover.style.margin = '12px auto';
+        el('kline-backdrop').hidden = true;
+        return;
+    }
+
+    positionPopover('kline-popover', anchor);
+};
 const positionRevenuePopover = anchor => positionPopover('revenue-popover', anchor);
 
 // K 線彈窗標題要不要掛「停」：資產頁持倉看持倉報價自己的狀態（已依資料日期選好盤中或盤後），
@@ -23010,7 +23162,7 @@ function klineSuspensionOf(ticker) {
     return currentSuspensionOf(ticker, klineEndDate() || null);
 }
 
-function renderKLineTimeframe(onChange) {
+function renderKLineTimeframe(onChange, trailingControl = null) {
     const timeframe = document.createElement('div');
     timeframe.className = 'daily-kline-timeframe-row';
 
@@ -23041,6 +23193,7 @@ function renderKLineTimeframe(onChange) {
     }
 
     timeframe.append(timeframeLabelElement, timeframeOptions);
+    if (trailingControl !== null) timeframe.append(trailingControl);
     return timeframe;
 }
 
@@ -23147,7 +23300,10 @@ function renderKLinePopover(ticker, name, anchor) {
         card.append(topicRow);
     }
 
-    card.append(renderKLineTimeframe(() => renderKLinePopover(ticker, name, anchor)));
+    const revenueControl = isRevenueKLineTicker(ticker)
+        ? renderKLineRevenueControls(ticker, name, anchor)
+        : null;
+    card.append(renderKLineTimeframe(() => renderKLinePopover(ticker, name, anchor), revenueControl));
 
     if (klineError) {
         const message = document.createElement('p');
@@ -23226,6 +23382,7 @@ function renderKLinePopover(ticker, name, anchor) {
                 referenceControls.element,
                 renderKLineSvg(ticker, name, bars, referenceControls.status, holdingCost, activePeriod, crosshair),
                 renderKLineTechnicalIndicators(bars, activePeriod, KLINE_ASSET_PLOT, crosshair));
+
         }
     }
 
@@ -23472,6 +23629,7 @@ async function toggleKLine(ticker, name, anchor, options = {}) {
     expandedKLineMarket = options.market ?? '';
     expandedKLineIsEtf = options.etf === true;
     expandedKLinePeriod = 'day';
+    klineRevenueYoYVisible = REVENUE_KLINE_LOCAL_PREVIEW;
     klineUseLatestDate = options.latest === true;
     klineOverrideEndDate = options.endDate ?? null;
     klineAnchor = anchor;
@@ -23483,6 +23641,12 @@ async function toggleKLine(ticker, name, anchor, options = {}) {
         await loadKLineData(ticker);
     } catch {
         klineError = '讀不到日 K 資料';
+    }
+
+    if (isRevenueKLineTicker(ticker)) {
+        const revenueLoads = [loadRevenueAnnouncementData()];
+        revenueLoads.push(loadRevenueHistoryData(ticker));
+        await Promise.allSettled(revenueLoads);
     }
 
     // 族群列表選「盤中」時，K 線的尾端也接最新 MIS 當日棒；抓不到時保留已驗證的
@@ -23582,6 +23746,45 @@ function buildLocalRevenuePreview(ticker) {
             yoy: ratio / ratios[index - 12] - 1
         };
     });
+}
+
+async function loadRevenueAnnouncementData() {
+    if (revenueAnnouncementDataset !== null) return revenueAnnouncementDataset;
+    if (revenueAnnouncementPromise !== null) return revenueAnnouncementPromise;
+
+    revenueAnnouncementStatus = 'loading';
+    revenueAnnouncementPromise = (async () => {
+        const announcementPath = `${REVENUE_ANNOUNCEMENTS_FILE}?v=${version}`;
+        const announcementUrl = REVENUE_KLINE_LOCAL_PREVIEW
+            ? new URL(announcementPath, REVENUE_KLINE_PREVIEW_SITE).toString()
+            : announcementPath;
+        const response = await fetch(announcementUrl, { cache: 'force-cache' });
+        if (!response.ok) throw new Error(String(response.status));
+
+        const payload = await response.json();
+        if (payload?.schemaVersion !== 1 || !Array.isArray(payload.events)) {
+            throw new TypeError('Invalid MOPS revenue announcement data');
+        }
+
+        revenueAnnouncementDataset = {
+            source: payload.source,
+            available: payload.available === true,
+            events: payload.events.filter(event => typeof event.ticker === 'string'
+                && /^\d{4}-\d{2}$/.test(event.month)
+                && /^\d{4}-\d{2}-\d{2}$/.test(event.announcedOn))
+        };
+        revenueAnnouncementStatus = revenueAnnouncementDataset.available ? 'ready' : 'unavailable';
+        return revenueAnnouncementDataset;
+    })();
+
+    try {
+        return await revenueAnnouncementPromise;
+    } catch (error) {
+        revenueAnnouncementStatus = 'unavailable';
+        throw error;
+    } finally {
+        revenueAnnouncementPromise = null;
+    }
 }
 
 async function loadRevenueHistoryData(ticker) {
@@ -37672,9 +37875,78 @@ function initMarketSwitch() {
     render();
 }
 
+async function startRevenueKLineLocalPreview() {
+    document.body.classList.add('revenue-kline-preview-active');
+    applyTheme('dark');
+    state.view = 'daily';
+
+    const shell = document.createElement('main');
+    shell.className = 'revenue-kline-preview-shell';
+    const heading = document.createElement('h1');
+    heading.textContent = '6213 聯茂｜營收日期版面預覽';
+    const note = document.createElement('p');
+    note.className = 'revenue-kline-preview-note';
+    note.textContent = '正在讀取正式網站的 K 線、MOPS 公告日期與月營收資料…';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'revenue-kline-preview-open';
+    open.textContent = '重新開啟 K 線';
+    open.disabled = true;
+    open.addEventListener('click', () => void toggleKLine('6213', '聯茂', open, { market: '台股' }));
+    shell.append(heading, note, open);
+    document.body.prepend(shell);
+
+    configureKLinePopover();
+
+    try {
+        const response = await fetch(new URL('manifest.json', REVENUE_KLINE_PREVIEW_SITE), { cache: 'no-store' });
+        if (!response.ok) throw new Error(`manifest HTTP ${response.status}`);
+
+        const manifest = await response.json();
+        if (!Array.isArray(manifest?.dates) || !Number.isFinite(Number(manifest.version))) {
+            throw new TypeError('正式網站 manifest 格式不完整');
+        }
+
+        siteManifest = manifest;
+        version = String(manifest.version);
+        dates = manifest.dates;
+        latestTradingDate = manifest.latestTradingDate ?? dates.at(-1) ?? '';
+        state.date = dates.at(-1) ?? '';
+        supabase = manifest.supabase ?? null;
+        nameByTicker.set('6213', '聯茂');
+        klineRevenueYoYVisible = true;
+
+        const [klineResult, announcementResult, revenueResult] = await Promise.allSettled([
+            loadKLineData('6213'),
+            loadRevenueAnnouncementData(),
+            loadRevenueHistoryData('6213')
+        ]);
+        if (klineResult.status === 'rejected') throw klineResult.reason;
+
+        const latestText = String(latestTradingDate).replaceAll('-', '/');
+        note.textContent = `資料取自正式網站：K 線截至 ${latestText}；公告日為 MOPS 官方發言日，YoY 讀取既有月營收資料。`;
+        if (announcementResult.status === 'rejected' || revenueAnnouncementStatus === 'unavailable') {
+            note.textContent += ' 官方公告日期檔目前不可用。';
+        }
+        if (revenueResult.status === 'rejected') {
+            note.textContent += ' 月營收歷史目前不可用。';
+        }
+
+        open.disabled = false;
+        await toggleKLine('6213', '聯茂', open, { market: '台股' });
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : '未知錯誤';
+        note.textContent = `無法讀取正式網站資料（${detail}）。請確認網路後重新整理。`;
+    }
+}
+
 async function start() {
     // 在第一個 await 前套用佈景，避免先顯示預設顏色。
     wireThemeSwitcher();
+    if (REVENUE_KLINE_LOCAL_PREVIEW) {
+        await startRevenueKLineLocalPreview();
+        return;
+    }
     if (!ASSET_EXCEL_VIEW) {
         initMarketSwitch();
     }

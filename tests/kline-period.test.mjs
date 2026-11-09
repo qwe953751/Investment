@@ -399,7 +399,7 @@ test('所有市場與台股指數共用可操作的日週月切換列', () => {
     buttons[2].events.click();
     assert.equal(context.calls, 2);
     assert.ok(siteScript.includes('card.append(renderKLineTimeframe(() => renderIndexKLinePopover(market, anchor)))'));
-    assert.ok(siteScript.includes('card.append(renderKLineTimeframe(() => renderKLinePopover(ticker, name, anchor)))'));
+    assert.ok(siteScript.includes('card.append(renderKLineTimeframe(() => renderKLinePopover(ticker, name, anchor), revenueControl))'));
     assert.ok(!siteScript.includes("const activePeriod = isTaiwan ? expandedKLinePeriod : 'day'"));
 });
 

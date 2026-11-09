@@ -10,6 +10,44 @@ namespace Invest.Web.Infrastructure.MarketData;
 /// </summary>
 public sealed class MaterialEventStore(ILogger<MaterialEventStore> logger)
 {
+    internal const string LoadRevenueAnnouncementsSinceCommandText =
+        """
+        select ticker, announced_on, announced_time, subject
+        from material_events
+        where announced_on >= @since and subject ilike '%營收%'
+        order by announced_on, announced_time nulls last, ticker
+        """;
+
+    /// <summary>
+    /// 讀取官方重大訊息中可能是月營收申報的公告。只取代號、發言時間與主旨，
+    /// 不讀公告全文，也不向瀏覽器開放 material_events 的資料庫權限。
+    /// </summary>
+    public async Task<IReadOnlyList<MaterialEvent>> LoadRevenueAnnouncementsSinceAsync(
+        DateOnly since,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SupabaseConnection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(LoadRevenueAnnouncementsSinceCommandText, connection);
+        command.Parameters.Add(new NpgsqlParameter("since", NpgsqlDbType.Date) { Value = since });
+
+        var result = new List<MaterialEvent>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new MaterialEvent(
+                reader.GetString(0),
+                reader.GetFieldValue<DateOnly>(1),
+                reader.IsDBNull(2) ? null : reader.GetFieldValue<TimeOnly>(2),
+                reader.GetString(3),
+                null,
+                null,
+                null));
+        }
+
+        return result;
+    }
+
     /// <summary>
     /// 整批寫入。同一家、同一天、同一則主旨就是同一件事，重覆寫不會多出一列。
     ///

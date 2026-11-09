@@ -398,6 +398,12 @@ public sealed class StaticSiteExporter(
 
         await WriteMarketOverviewAsync(dataDirectory, cancellationToken);
 
+        var revenueAnnouncementReport = await WriteRevenueAnnouncementsAsync(
+            dataDirectory,
+            selectableDates.Count > 0 ? selectableDates[0].AddMonths(-3) : null,
+            cancellationToken);
+        progress?.Report(revenueAnnouncementReport);
+
         var topicReport = await WriteTopicsAsync(
             dataDirectory,
             latestRankings,
@@ -1078,6 +1084,55 @@ public sealed class StaticSiteExporter(
             + $"{mapping.ConceptTopicCount} 個樹外概念、{mapping.LinkCount} 筆股票對應");
 
         return "族群分類：" + string.Join("；", report);
+    }
+
+    private async Task<string> WriteRevenueAnnouncementsAsync(
+        string dataDirectory,
+        DateOnly? since,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<MonthlyRevenueAnnouncement> announcements = [];
+        var available = since is not null;
+        string? warning = null;
+
+        if (since is { } start)
+        {
+            try
+            {
+                var raw = await materialEvents.LoadRevenueAnnouncementsSinceAsync(start, cancellationToken);
+                announcements = MopsMonthlyRevenueAnnouncementParser.Parse(raw);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // 官方公告日期是選用圖層；來源不可用時輸出明確 unavailable，不回退到抓取時間。
+                available = false;
+                warning = "官方公告資料目前無法取得。";
+                logger.LogWarning("讀取 MOPS 月營收公告日期失敗；K 線不會顯示推估日期。");
+            }
+        }
+
+        await WriteJsonAsync(
+            Path.Combine(dataDirectory, "revenue-announcements.json"),
+            new RevenueAnnouncementsExport(
+                1,
+                "MOPS",
+                since?.ToString("yyyy-MM-dd"),
+                available,
+                warning,
+                [.. announcements.Select(item => new RevenueAnnouncementExport(
+                    item.Ticker,
+                    item.Month.ToString("yyyy-MM"),
+                    item.AnnouncedOn.ToString("yyyy-MM-dd"),
+                    item.AnnouncedTime?.ToString("HH:mm:ss")))]),
+            cancellationToken);
+
+        return available
+            ? $"已輸出 {announcements.Count} 筆 MOPS 月營收公告日期。"
+            : "MOPS 月營收公告日期不可用；K 線不會使用推估日期。";
     }
 
     private static TopicExport ToExport(Topic topic) => new(
@@ -2840,6 +2895,20 @@ public sealed class StaticSiteExporter(
         IReadOnlyList<TopicProvisionalExport> ProvisionalMembers,
         IReadOnlyList<TopicEventExport> Events,
         IReadOnlyList<TopicPeriodExport> Periods);
+
+    private sealed record RevenueAnnouncementsExport(
+        int SchemaVersion,
+        string Source,
+        string? From,
+        bool Available,
+        string? Warning,
+        IReadOnlyList<RevenueAnnouncementExport> Events);
+
+    private sealed record RevenueAnnouncementExport(
+        string Ticker,
+        string Month,
+        string AnnouncedOn,
+        string? AnnouncedTime);
 
     /// <summary>
     /// 一筆照產業別暫掛的成員。名字在這裡重複寫一次而不是查 StockNames：

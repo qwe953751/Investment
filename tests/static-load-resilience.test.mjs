@@ -80,7 +80,8 @@ function startupDiagnosticHarness(fetch, { storage = new Map(), failInitializati
             if (delay === 300 || delay === 1_000) return setTimeout(callback, 0);
             return setTimeout(callback, delay);
         },
-        startupDiagnostic, ASSET_EXCEL_VIEW: false, wireThemeSwitcher: noop, initMarketSwitch: noop,
+        startupDiagnostic, ASSET_EXCEL_VIEW: false, REVENUE_KLINE_LOCAL_PREVIEW: false,
+        wireThemeSwitcher: noop, initMarketSwitch: noop,
         resumeIntradayComparisonRetry: noop,
         configureIntradayRefresh() {
             if (failInitialization) {
