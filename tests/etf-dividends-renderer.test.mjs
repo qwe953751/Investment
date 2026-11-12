@@ -74,6 +74,7 @@ async function createRenderer(payload, error = '', extra = {}) {
             createTextNode: text => String(text)
         },
         state: { view: 'etf', etfExpandedPayoutTicker: '', etfPayoutHistoryYear: null, sortKey: 'payout', sortDescending: true },
+        priceSortValue: row => row.priceChange,
         etfDividendPayload: payload,
         etfDividendPayloadError: error,
         etfDividendPayloadLoading: null,
