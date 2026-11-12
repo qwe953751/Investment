@@ -151,15 +151,19 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 漲跌幅同格顯示日與週且排序仍使用日漲跌()
+    public void 漲跌幅同格顯示日週年並依可用期間排序()
     {
         var script = ReadAsset("site.js");
 
         Assert.Contains("toPriceChangeCell", script, StringComparison.Ordinal);
         Assert.Contains("label: '日'", script, StringComparison.Ordinal);
+        Assert.Contains("label: '週'", script, StringComparison.Ordinal);
+        Assert.Contains("label: '年'", script, StringComparison.Ordinal);
         Assert.Contains("flags.weeklyFromListing ? '掛' : '週'", script, StringComparison.Ordinal);
-        Assert.Contains("value: row => row.priceChange", script, StringComparison.Ordinal);
+        Assert.Contains("value: priceSortValue", script, StringComparison.Ordinal);
+        Assert.Contains("availablePriceSortPeriods(current?.rows ?? [])", script, StringComparison.Ordinal);
         Assert.Contains("row.weeklyPriceChange", script, StringComparison.Ordinal);
+        Assert.Contains("row.yearToDatePriceChange", script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1225,7 +1229,7 @@ public sealed class StaticKLineAssetTests
         var end = script.IndexOf("const columns =", start, StringComparison.Ordinal);
         var customColumns = script[start..end];
         Assert.Contains("title: '漲跌幅'", customColumns, StringComparison.Ordinal);
-        Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange)", customColumns, StringComparison.Ordinal);
+        Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange", customColumns, StringComparison.Ordinal);
     }
 
     // 資產管理頁只在最高權限登入後出現；持倉檢視者只能看到 Frank 的唯讀模板，

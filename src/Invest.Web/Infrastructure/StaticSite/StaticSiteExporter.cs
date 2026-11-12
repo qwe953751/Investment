@@ -1453,6 +1453,9 @@ public sealed class StaticSiteExporter(
         RoundSignificant(row.MarketShareChange),
         Round(row.DailyPriceChangeRate),
         Round(row.WeeklyPriceChangeRate),
+        Round(row.YearToDatePriceChangeRate),
+        row.WeeklyFromListing ? true : null,
+        row.YearToDateFromListing ? true : null,
         row.WeeklyBaselineClosePrice,
         row.ClosePrice, row.AccelerationSortOrder, row.PreviousAccelerationSortOrder, row.CloseDate, row.CarriedClose);
 
@@ -2850,6 +2853,9 @@ public sealed class StaticSiteExporter(
         decimal ShareChange,
         decimal? PriceChange,
         decimal? WeeklyPriceChange,
+        decimal? YearToDatePriceChange,
+        bool? WeeklyFromListing,
+        bool? YearToDateFromListing,
         decimal? WeeklyBaselineClose,
         decimal? Close, int AccelerationSortOrder, int PreviousAccelerationSortOrder,
         DateOnly? CloseDate, bool CarriedClose);
