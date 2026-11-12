@@ -151,7 +151,7 @@ public sealed class StaticKLineAssetTests
     }
 
     [Fact]
-    public void 漲跌幅同格顯示日週年並依可用期間排序()
+    public void 漲跌幅依原欄位週期排序且不顯示掛牌簡寫()
     {
         var script = ReadAsset("site.js");
 
@@ -159,7 +159,8 @@ public sealed class StaticKLineAssetTests
         Assert.Contains("label: '日'", script, StringComparison.Ordinal);
         Assert.Contains("label: '週'", script, StringComparison.Ordinal);
         Assert.Contains("label: '年'", script, StringComparison.Ordinal);
-        Assert.Contains("flags.weeklyFromListing ? '掛' : '週'", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("label: flags.weeklyFromListing", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("label: flags.yearFromListing", script, StringComparison.Ordinal);
         Assert.Contains("value: priceSortValue", script, StringComparison.Ordinal);
         Assert.Contains("availablePriceSortPeriods(current?.rows ?? [])", script, StringComparison.Ordinal);
         Assert.Contains("row.weeklyPriceChange", script, StringComparison.Ordinal);
@@ -1226,10 +1227,11 @@ public sealed class StaticKLineAssetTests
         Assert.DoesNotContain("營收月份", script, StringComparison.Ordinal);
 
         var start = script.IndexOf("const CUSTOM_COLUMNS", StringComparison.Ordinal);
-        var end = script.IndexOf("const columns =", start, StringComparison.Ordinal);
+        var end = script.IndexOf("const ETF_COLUMNS", start, StringComparison.Ordinal);
         var customColumns = script[start..end];
         Assert.Contains("title: '漲跌幅'", customColumns, StringComparison.Ordinal);
-        Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange", customColumns, StringComparison.Ordinal);
+        Assert.Contains("toPriceChangeCell(row.priceChange, row.weeklyPriceChange)", customColumns, StringComparison.Ordinal);
+        Assert.DoesNotContain("row.yearToDatePriceChange", customColumns, StringComparison.Ordinal);
     }
 
     // 資產管理頁只在最高權限登入後出現；持倉檢視者只能看到 Frank 的唯讀模板，

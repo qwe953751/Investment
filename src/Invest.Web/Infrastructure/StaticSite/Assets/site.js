@@ -2262,7 +2262,7 @@ function toRevenueGrowthCell(ticker, fallback = null) {
 }
 
 // 週與年的起算點通常是上週、去年最後一個收盤；今年（本週）才掛牌的標的沒有那個收盤，
-// 起算點改用官方掛牌參考價，標籤改成「掛」並註明，避免把掛牌以來的漲幅誤讀成整年或整週。
+// 起算點改用官方掛牌參考價，沿用週／年標籤並在提示中說明實際基準。
 const LISTING_BASELINE_HINT = '今年才掛牌，沒有去年底的收盤；從官方掛牌參考價起算（掛牌以來）。';
 const LISTING_WEEK_BASELINE_HINT = '本週才掛牌，沒有上週的收盤；從官方掛牌參考價起算（掛牌以來）。';
 
@@ -2274,7 +2274,7 @@ function toPriceChangeCell(daily, weekly, year, flags = {}) {
             cls: 'metric-line metric-primary ' + toTrendClass(daily)
         },
         {
-            label: flags.weeklyFromListing ? '掛' : '週',
+            label: '週',
             hint: flags.weeklyFromListing ? LISTING_WEEK_BASELINE_HINT : undefined,
             text: toSignedPercentText(weekly),
             cls: 'metric-line metric-secondary ' + toTrendClass(weekly)
@@ -2283,7 +2283,7 @@ function toPriceChangeCell(daily, weekly, year, flags = {}) {
 
     if (year !== undefined) {
         lines.push({
-            label: flags.yearFromListing ? '掛' : '年',
+            label: '年',
             hint: flags.yearFromListing ? LISTING_BASELINE_HINT : undefined,
             text: toSignedPercentText(year),
             cls: 'metric-line metric-tertiary ' + toTrendClass(year)
@@ -2372,19 +2372,27 @@ const VOLUME_RATIO_HINT = '量比＝（本期成交值＋k）÷（本期之前20
     + '區間使用日均額，單日使用當日額；盤中使用同輪累計額，不是全日預估額。'
     + '個股缺基準時按 0 收縮，只有全市場基準不足才留空。';
 
-const PRICE_SORT_PERIODS = [
+const STOCK_PRICE_SORT_PERIODS = [
     { key: 'day', label: '日', property: 'priceChange' },
-    { key: 'week', label: '週', property: 'weeklyPriceChange' },
+    { key: 'week', label: '週', property: 'weeklyPriceChange' }
+];
+const ETF_PRICE_SORT_PERIODS = [
+    ...STOCK_PRICE_SORT_PERIODS,
     { key: 'year', label: '年', property: 'yearToDatePriceChange' }
 ];
 
+function priceSortPeriodsForView(view) {
+    return view === 'etf' ? ETF_PRICE_SORT_PERIODS : STOCK_PRICE_SORT_PERIODS;
+}
+
 function priceSortValue(row) {
-    const period = PRICE_SORT_PERIODS.find(item => item.key === state.priceSortPeriod) ?? PRICE_SORT_PERIODS[0];
+    const periods = priceSortPeriodsForView(state.view);
+    const period = periods.find(item => item.key === state.priceSortPeriod) ?? periods[0];
     return row?.[period.property] ?? null;
 }
 
-function availablePriceSortPeriods(rows, periods = PRICE_SORT_PERIODS) {
-    return periods.filter(period => rows.some(row => !missing(row?.[period.property])));
+function availablePriceSortPeriods(rows) {
+    return priceSortPeriodsForView(state.view).filter(period => rows.some(row => !missing(row?.[period.property])));
 }
 
 const COLUMNS = [
@@ -2397,7 +2405,7 @@ const COLUMNS = [
     { key: 'rate', title: '較前期增減', hint: '（本期平均 − 前期平均）÷ 前期平均。前期是緊鄰的同長度區間；前期為 0 時無法計算，顯示 — 並排在最後。', value: row => row.rate, cell: row => ({ text: toSignedPercentText(row.rate), cls: 'numeric ' + toTrendClass(row.rate) }) },
     { key: 'share', title: '市場成交比', hint: '個股期間成交值 ÷ 全市場期間成交值。分母固定是上市＋上櫃＋興櫃全體普通股（不含 ETF 與 TDR），不隨市場篩選改變，切換市場時比例才能互相比較。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '本期市場成交比 − 前期市場成交比，單位是百分點。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
-    { key: 'price', title: '漲跌幅', hint: '依資料可用期間選擇日／週／年排序；點擊「漲跌幅」標題可切換方向。', value: priceSortValue, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange, { weeklyFromListing: row.weeklyFromListing, yearFromListing: row.yearToDateFromListing }) },
+    { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。可依欄名下方所選週期排序。', value: priceSortValue, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'close', title: '收盤價', hint: '觀察日的收盤價；當日缺價時沿用此前最後有效價，日漲跌留空。興櫃顯示日均價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) }
@@ -2427,7 +2435,7 @@ function rankingColumnHint(column) {
             close: isEtfIntradayView()
                 ? 'ETF 最新一輪盤中現價；尚未取得有效價格時顯示 —。'
                 : '所選交易日 ETF 的收盤價；尚未取得有效行情時顯示 —。',
-            price: '依資料可用期間選擇日／週／年排序；今年才掛牌的標的從官方掛牌參考價起算。',
+            price: '分層顯示日／週／年漲跌幅，可依欄名下方所選週期排序；若缺週或年基準且有官方掛牌參考價，起算方式見數值提示。',
             tradingValue: isEtfIntradayView()
                 ? '自開盤起累計成交值；盤中使用現價 × 累計成交量估算。'
                 : '所選交易日 ETF 的一般交易成交值。'
@@ -2453,7 +2461,7 @@ const INTRADAY_COLUMNS = [
     { key: 'value', title: '成交值（億）', hint: '自開盤起累計的成交金額，用現價 × 累計成交量推算。證交所的盤中介面只給累計量，沒有累計金額。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) },
     { key: 'share', title: '市場成交比', hint: '個股今日累計成交額 ÷ 全市場今日累計成交額。分子與分母取自同一輪，時段進度會互相約掉，所以這個數字開盤沒多久就能看，也不受早盤量大的影響。', value: row => row.share, cell: row => ({ text: toPercentText(row.share), cls: 'numeric' }) },
     { key: 'shareChange', title: '成交比變化', hint: '今日盤中的市場成交比 − 過去觀察期間的市場成交比，單位是百分點。正值代表今天這一檔吸走的資金比過去那段期間更多。過去期間沒有這一檔就顯示 —。', value: row => row.shareChange, cell: row => ({ text: toSignedPercentText(row.shareChange, 2), cls: 'numeric ' + toTrendClass(row.shareChange) }) },
-    { key: 'price', title: '漲跌幅', hint: '依資料可用期間選擇日／週／年排序；點擊「漲跌幅」標題可切換方向。', value: priceSortValue, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange, { weeklyFromListing: row.weeklyFromListing, yearFromListing: row.yearToDateFromListing }) },
+    { key: 'price', title: '漲跌幅', hint: '上層「日」是現價相對昨日收盤價；下層「週」是現價相對本週開始前最後有效收盤價。可依欄名下方所選週期排序。', value: priceSortValue, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'close', title: '現價', hint: '最新一筆成交價。尚未成交時顯示 —。興櫃沒有成交價序列，顯示的是目前累計的日均價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) },
@@ -2466,7 +2474,7 @@ const CUSTOM_COLUMNS = [
     { key: 'ticker', title: '代號', hint: '預設依股票代號遞增排列；右側「市／櫃／興」標記代表上市、上櫃或興櫃，「DR」代表 TDR（臺灣存託憑證），再右側的「停」代表停止交易（價格是停牌前最後收盤），「處／全」代表目前交易限制。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔標的最近三個月還原權息日 K 彈窗。名稱底色表示日漲跌；代號右側的「停」是停止交易，「處」與「全」是目前的交易限制。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true }) },
     { key: 'close', title: '收盤價', hint: '所選交易日的收盤價。興櫃沒有收盤價，顯示的是當日日均價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
-    { key: 'price', title: '漲跌幅', hint: '依資料可用期間選擇日／週／年排序；點擊「漲跌幅」標題可切換方向。', value: priceSortValue, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange, { weeklyFromListing: row.weeklyFromListing, yearFromListing: row.yearToDateFromListing }) },
+    { key: 'price', title: '漲跌幅', hint: '上層「日」是所選交易日相對前一個有效收盤價；下層「週」是相對本週開始前最後有效收盤價。可依欄名下方所選週期排序。', value: priceSortValue, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange) },
     { key: 'revenue', title: '營收增減', hint: REVENUE_CHANGE_HINT, value: row => revenueOf(row.ticker)?.yoy ?? null, cell: row => toRevenueGrowthCell(row.ticker) },
     { key: 'revenueHigh', title: '創高月數', hint: HIGH_MONTHS_HINT, value: row => revenueOf(row.ticker)?.highMonths ?? null, cell: row => toHighMonthsCell(row.ticker) },
     { key: 'value', title: '成交值（億）', hint: '所選單一交易日的一般交易成交值；零股、盤後定價與鉅額交易已逐檔扣除。', value: row => row.value, cell: row => ({ text: toBillionText(row.value), cls: 'numeric' }) }
@@ -2478,7 +2486,7 @@ const ETF_COLUMNS = [
     { key: 'ticker', title: '代號', hint: 'ETF 代號；右側「市／櫃」代表上市或上櫃。', ascending: true, text: row => row.ticker, cell: toTickerCell },
     { key: 'name', title: '名稱', hint: '點擊名稱開啟這檔 ETF 最近三個月的日 K。名稱底色表示日漲跌。', sortable: false, text: row => row.name, cell: row => ({ text: row.name, cls: 'stock-name ' + stockNameChangeClass(row.priceChange), kline: true, klineOptions: { market: '台股', etf: true } }) },
     { key: 'close', title: '收盤價', hint: 'ETF 名冊中最近一個有效交易日的收盤價。', value: row => row.close, cell: row => ({ text: toCloseText(row.close), cls: 'numeric' }) },
-    { key: 'price', title: '漲跌幅', hint: '依資料可用期間選擇日／週／年排序；今年才掛牌的標籤是「掛」，從官方掛牌參考價起算。', value: priceSortValue, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange, { weeklyFromListing: row.weeklyFromListing, yearFromListing: row.yearToDateFromListing }) },
+    { key: 'price', title: '漲跌幅', hint: '分層顯示日／週／年漲跌幅，全部已還原權息（除息、分割不會被當成下跌）；若缺週或年基準且有官方掛牌參考價，起算方式見數值提示。可依欄名下方所選週期排序。', value: priceSortValue, cell: row => toPriceChangeCell(row.priceChange, row.weeklyPriceChange, row.yearToDatePriceChange, { weeklyFromListing: row.weeklyFromListing, yearFromListing: row.yearToDateFromListing }) },
     { key: 'tradingValue', title: '成交值（億）', hint: '所選交易日或盤中最新一輪的 ETF 成交值；盤中還沒有報價的標的顯示 —。', value: row => row.tradingValue, cell: row => ({ text: missing(row.tradingValue) ? '—' : toBillionText(row.tradingValue), cls: 'numeric' }) },
     { key: 'payout', title: '配息資訊', hint: '外層顯示最近一筆發放日與金額皆已公告的紀錄；點擊展開或收合年度紀錄，排序依外層每單位金額。', value: etfDividendPayoutSortValue, cell: () => ({ cls: 'etf-payout-cell', payout: true }) }
 ];
@@ -2783,7 +2791,7 @@ function restoreViewPreferences(view, changes) {
         ? preference.sortKey
         : defaults.sortKey;
     const sortDescending = preference.sortDescending === true;
-    const priceSortPeriod = PRICE_SORT_PERIODS.some(period => period.key === preference.priceSortPeriod)
+    const priceSortPeriod = priceSortPeriodsForView(view).some(period => period.key === preference.priceSortPeriod)
         ? preference.priceSortPeriod
         : defaults.priceSortPeriod;
 
@@ -2847,7 +2855,7 @@ function restoreStoredViewPreferences(preferences) {
             ? stored.sortKey
             : defaults.sortKey;
         preference.sortDescending = stored.sortDescending === true;
-        preference.priceSortPeriod = PRICE_SORT_PERIODS.some(period => period.key === stored.priceSortPeriod)
+        preference.priceSortPeriod = priceSortPeriodsForView(view).some(period => period.key === stored.priceSortPeriod)
             ? stored.priceSortPeriod
             : defaults.priceSortPeriod;
     }
@@ -24805,7 +24813,7 @@ function renderTable() {
         }
 
         cell.className = (state.sortKey === column.key ? 'sortable sorted' : 'sortable') + key;
-        if (column.key === 'price') {
+        if (column.key === 'price' && pricePeriods.length > 1) {
             cell.classList.add('price-sort-header');
             const title = document.createElement('span');
             title.className = 'price-sort-title';
@@ -24813,32 +24821,30 @@ function renderTable() {
                 + (state.sortKey === column.key ? (state.sortDescending ? ' ▼' : ' ▲') : '');
             cell.append(title);
 
-            if (pricePeriods.length > 1) {
-                const controls = document.createElement('span');
-                controls.className = 'price-sort-periods';
-                controls.setAttribute('role', 'group');
-                controls.setAttribute('aria-label', '漲跌幅排序期間');
+            const controls = document.createElement('span');
+            controls.className = 'price-sort-periods';
+            controls.setAttribute('role', 'group');
+            controls.setAttribute('aria-label', '漲跌幅排序期間');
 
-                for (const period of pricePeriods) {
-                    const button = document.createElement('button');
-                    button.type = 'button';
-                    button.className = 'price-sort-period';
-                    button.textContent = period.label;
-                    button.setAttribute('aria-pressed', String(state.priceSortPeriod === period.key));
-                    button.setAttribute('aria-label', `依${period.label}漲跌幅排序`);
-                    button.addEventListener('click', event => {
-                        event.stopPropagation();
-                        const alreadySortingByPrice = state.sortKey === 'price';
-                        state.priceSortPeriod = period.key;
-                        state.sortKey = 'price';
-                        if (!alreadySortingByPrice) state.sortDescending = true;
-                        saveTableSort();
-                    });
-                    controls.append(button);
-                }
-
-                cell.append(controls);
+            for (const period of pricePeriods) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'price-sort-period';
+                button.textContent = period.label;
+                button.setAttribute('aria-pressed', String(state.priceSortPeriod === period.key));
+                button.setAttribute('aria-label', `依${period.label}漲跌幅排序`);
+                button.addEventListener('click', event => {
+                    event.stopPropagation();
+                    const alreadySortingByPrice = state.sortKey === 'price';
+                    state.priceSortPeriod = period.key;
+                    state.sortKey = 'price';
+                    if (!alreadySortingByPrice) state.sortDescending = true;
+                    saveTableSort();
+                });
+                controls.append(button);
             }
+
+            cell.append(controls);
         } else {
             cell.textContent = rankingColumnTitle(column)
                 + (state.sortKey === column.key ? (state.sortDescending ? ' ▼' : ' ▲') : '');
@@ -34923,12 +34929,6 @@ function mspBuildIndices(group, market, proto) {
     return section;
 }
 
-const MSP_TURNOVER_PRICE_SORT_PERIODS = [
-    { key: 'day', label: '日', property: 'change' },
-    { key: 'year', label: '年', property: 'yearChange' }
-];
-let mspTurnoverPriceSortPeriod = 'day';
-
 function mspFormatTurnover(market, value) {
     const config = MSP_TURNOVER_CONFIG[market];
     const amount = Number(value);
@@ -34978,7 +34978,7 @@ function mspBuildTurnoverLeaders(group, market) {
         ? (group.turnoverDelayed === true ? ' · 顯示最近可用盤中排行，資料日可能落後' : ' · 盤中快照約延遲 20 分鐘')
         : (group.turnoverFallback === true ? ' · 無新盤中排行，以下為盤後資料' : turnoverLagNote);
     detail.textContent =
-        `取${marketLabel}成交金額前 20 · 顯示原幣${config?.unitLabel ?? ''} · 成交金額為估計值（股價×成交量）${delayNote}`;
+        `依${marketLabel}成交金額排序 · 顯示原幣${config?.unitLabel ?? ''} · 成交金額為估計值（股價×成交量）${delayNote}`;
     copy.append(eyebrow, title, detail);
 
     const asOf = document.createElement('span');
@@ -35002,54 +35002,6 @@ function mspBuildTurnoverLeaders(group, market) {
             .sort((left, right) => left.rank - right.rank || right.turnover - left.turnover)
             .slice(0, 20)
         : [];
-
-    const pricePeriods = availablePriceSortPeriods(rows, MSP_TURNOVER_PRICE_SORT_PERIODS);
-    if (pricePeriods.length > 0 && !pricePeriods.some(period => period.key === mspTurnoverPriceSortPeriod)) {
-        mspTurnoverPriceSortPeriod = pricePeriods[0].key;
-    }
-
-    if (pricePeriods.length > 0) {
-        const pricePeriod = pricePeriods.find(period => period.key === mspTurnoverPriceSortPeriod)
-            ?? pricePeriods[0];
-        rows.sort((left, right) => {
-            const leftValue = left[pricePeriod.property];
-            const rightValue = right[pricePeriod.property];
-            if (missing(leftValue) || missing(rightValue)) {
-                if (missing(leftValue) && missing(rightValue)) return left.rank - right.rank;
-                return missing(leftValue) ? 1 : -1;
-            }
-            return rightValue - leftValue || left.rank - right.rank;
-        });
-    }
-
-    if (pricePeriods.length > 1) {
-        const sortControl = document.createElement('div');
-        sortControl.className = 'msp-turnover-price-sort';
-        const sortLabel = document.createElement('span');
-        sortLabel.className = 'msp-turnover-price-sort-label';
-        sortLabel.textContent = '漲跌幅';
-        const controls = document.createElement('span');
-        controls.className = 'price-sort-periods';
-        controls.setAttribute('role', 'group');
-        controls.setAttribute('aria-label', '海外市場漲跌幅排序期間');
-
-        for (const period of pricePeriods) {
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'price-sort-period';
-            button.textContent = period.label;
-            button.setAttribute('aria-pressed', String(mspTurnoverPriceSortPeriod === period.key));
-            button.setAttribute('aria-label', `依${period.label}漲跌幅排序`);
-            button.addEventListener('click', () => {
-                mspTurnoverPriceSortPeriod = period.key;
-                marketSwitchRender?.();
-            });
-            controls.append(button);
-        }
-
-        sortControl.append(sortLabel, controls);
-        copy.append(sortControl);
-    }
 
     if (rows.length === 0) {
         const empty = document.createElement('p');
@@ -36033,9 +35985,6 @@ body[data-msp-nav-variant="e"] .msp-page-header-status .snapshot-note {
     letter-spacing: .06em;
 }
 .msp-turnover-leaders .msp-section-title { margin-bottom: 3px; font-size: 17px; }
-.msp-turnover-price-sort { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-top: 7px; }
-.msp-turnover-price-sort-label { color: var(--text-muted); font-size: 11px; line-height: 1.2; }
-.msp-turnover-price-sort .price-sort-periods { justify-content: flex-start; margin-top: 0; }
 .msp-turnover-leaders-detail,
 .msp-turnover-leaders-asof,
 .msp-turnover-leaders-empty {

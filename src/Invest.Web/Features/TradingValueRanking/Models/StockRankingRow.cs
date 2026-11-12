@@ -108,15 +108,6 @@ public sealed class StockRankingRow
     /// </summary>
     public decimal? WeeklyPriceChangeRate { get; init; }
 
-    /// <summary>所選交易日收盤價相對去年最後有效收盤價的年初至今漲跌幅。</summary>
-    public decimal? YearToDatePriceChangeRate { get; init; }
-
-    /// <summary>所選週沒有上週基準、改以官方掛牌參考價起算。</summary>
-    public bool WeeklyFromListing { get; init; }
-
-    /// <summary>今年沒有去年底基準、改以官方掛牌參考價起算。</summary>
-    public bool YearToDateFromListing { get; init; }
-
     /// <summary>
     /// 當週漲跌幅的基準收盤價。盤中頁用它把最新現價換算成當週漲跌幅。
     /// </summary>

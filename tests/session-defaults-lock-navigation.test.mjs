@@ -12,6 +12,32 @@ function fn(name) {
     const end = source.indexOf('\n}', start) + 2;
     return source.slice(start, end);
 }
+
+test('price sorting is limited to the original periods and ETF labels stay week/year', () => {
+    const state = { view: 'daily', priceSortPeriod: 'year' };
+    const context = vm.createContext({
+        state, missing: value => value == null, toSignedPercentText: String, toTrendClass: () => ''
+    });
+    const periods = source.slice(source.indexOf('const STOCK_PRICE_SORT_PERIODS'), source.indexOf('const COLUMNS ='));
+    const listingHints = source.slice(source.indexOf('const LISTING_BASELINE_HINT'), source.indexOf('function toPriceChangeCell'));
+    vm.runInContext(`${periods}\n${listingHints}\n${fn('toPriceChangeCell')}`, context);
+
+    const row = { priceChange: 0, weeklyPriceChange: -0.04, yearToDatePriceChange: 0.15 };
+    for (const view of ['daily', 'intraday', 'custom']) {
+        state.view = view;
+        assert.deepEqual(Array.from(context.availablePriceSortPeriods([row]), period => period.key), ['day', 'week']);
+        assert.equal(context.priceSortValue(row), 0);
+    }
+    state.view = 'etf';
+    assert.deepEqual(Array.from(context.availablePriceSortPeriods([row]), period => period.key), ['day', 'week', 'year']);
+    assert.deepEqual(Array.from(context.availablePriceSortPeriods([{ priceChange: 0 }]), period => period.key), ['day']);
+    assert.equal(context.priceSortValue(row), 0.15);
+    const cell = context.toPriceChangeCell(0, -0.04, 0.15, { weeklyFromListing: true, yearFromListing: true });
+    assert.deepEqual(Array.from(cell.lines, line => line.label), ['日', '週', '年']);
+    assert.equal(cell.lines[2].text, '0.15');
+    assert.match(cell.lines[2].hint, /官方掛牌參考價/);
+});
+
 function defaultsHarness({ daily = '2026-10-13', intraday = '2026-10-14', available = true, stored = null } = {}) {
     const c = {
         state: { view: 'intraday', customSource: 'daily', etfSession: 'daily', topicPeriod: 'intraday' },
