@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 2,
+  "date": "2026-11-12",
+  "createdAt": "2026-11-12T10:43:28.603358+00:00",
+  "publicRows": {
+    "asset_account_value_snapshots": 293,
+    "asset_accounts": 5,
+    "asset_annual_snapshots": 3,
+    "asset_cash_flows": 8,
+    "asset_holdings": 41,
+    "asset_operation_rows": 22,
+    "asset_operation_settings": 1,
+    "asset_owners": 2,
+    "asset_value_snapshots": 126,
+    "exchange_rates": 50,
+    "heartbeat": 92,
+    "intraday_curve": 6346,
+    "market_flags": 34,
+    "notes": 72,
+    "podcast_sources": 6,
+    "schema_migrations": 77,
+    "securities": 2789,
+    "site_alerts": 102,
+    "topic_edits": 6,
+    "topic_source": 2,
+    "us_watchlist": 24
+  },
+  "protectedRows": {
+    "access_share_links": 8,
+    "asset_operation_group_columns": 48,
+    "asset_operation_snapshots": 81,
+    "asset_operation_sync_operations": 50,
+    "asset_operation_sync_state": 1,
+    "ocr_evaluations": 37,
+    "ocr_jobs": 324,
+    "ocr_user_routing": 2,
+    "ocr_workers": 2
+  },
+  "files": {
+    "2026-11-12.backup.cms": {
+      "sha256": "0ce913cfbb132fab214d64bbe26294eab4ed659af51c6a5d12c7d52a4e22e50b",
+      "bytes": 471327
+    }
+  },
+  "materialEvents": {
+    "file": "2026-11-12.json.gz.cms",
+    "sha256": "bcf44de9cdeec667bd3a2d81b88b5eb8cdc1996afc0625fac8be0be90f7e7525",
+    "chainFiles": 5,
+    "rows": 14550
+  },
+  "omitted": [
+    "daily_quotes",
+    "intraday_quotes",
+    "intraday_runs",
+    "intraday_topic_heat",
+    "monthly_revenue",
+    "revenue_history",
+    "revenue_latest",
+    "material_events",
+    "device_sessions",
+    "private_notes",
+    "admin_bgm"
+  ],
+  "encryption": "CMS AES-256-GCM"
+}
