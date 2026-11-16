@@ -1,26 +1,26 @@
 {
   "schemaVersion": 2,
-  "date": "2026-11-09",
-  "createdAt": "2026-11-09T10:47:25.539773+00:00",
+  "date": "2026-11-16",
+  "createdAt": "2026-11-16T13:15:29.634922+00:00",
   "publicRows": {
-    "asset_account_value_snapshots": 278,
+    "asset_account_value_snapshots": 308,
     "asset_accounts": 5,
     "asset_annual_snapshots": 3,
-    "asset_cash_flows": 8,
+    "asset_cash_flows": 9,
     "asset_holdings": 43,
-    "asset_operation_rows": 24,
+    "asset_operation_rows": 22,
     "asset_operation_settings": 1,
     "asset_owners": 2,
-    "asset_value_snapshots": 120,
-    "exchange_rates": 47,
-    "heartbeat": 87,
-    "intraday_curve": 6120,
-    "market_flags": 36,
+    "asset_value_snapshots": 132,
+    "exchange_rates": 52,
+    "heartbeat": 96,
+    "intraday_curve": 6476,
+    "market_flags": 32,
     "notes": 72,
     "podcast_sources": 6,
     "schema_migrations": 77,
-    "securities": 2784,
-    "site_alerts": 94,
+    "securities": 2793,
+    "site_alerts": 110,
     "topic_edits": 6,
     "topic_source": 2,
     "us_watchlist": 24
@@ -28,25 +28,25 @@
   "protectedRows": {
     "access_share_links": 8,
     "asset_operation_group_columns": 48,
-    "asset_operation_snapshots": 79,
-    "asset_operation_sync_operations": 47,
+    "asset_operation_snapshots": 81,
+    "asset_operation_sync_operations": 54,
     "asset_operation_sync_state": 1,
-    "ocr_evaluations": 37,
-    "ocr_jobs": 321,
+    "ocr_evaluations": 39,
+    "ocr_jobs": 328,
     "ocr_user_routing": 2,
     "ocr_workers": 2
   },
   "files": {
-    "2026-11-09.backup.cms": {
-      "sha256": "68f0bc13c2d1298f81da3cd8fe10b7e6a8eb742148b41776fbea23581a0eac2b",
-      "bytes": 463979
+    "2026-11-16.backup.cms": {
+      "sha256": "83a4cebf123e3586ba26ad416abb516660659e131e2fd4e36dd1ea946c6bb6d7",
+      "bytes": 476655
     }
   },
   "materialEvents": {
-    "file": "2026-11-09.json.gz.cms",
-    "sha256": "c626baf322b41aae25c55aecc3c491333b0c6630d1383fac119ccfd0fe412e3b",
-    "chainFiles": 2,
-    "rows": 12025
+    "file": "2026-11-16.json.gz.cms",
+    "sha256": "a12f516241807e5a54e3b144ae7c0bf09cc89c310adf40f5ab5da456bce2b69f",
+    "chainFiles": 7,
+    "rows": 15341
   },
   "omitted": [
     "daily_quotes",
