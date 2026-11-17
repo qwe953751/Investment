@@ -28,11 +28,13 @@ TAIPEI = ZoneInfo('Asia/Taipei')
 # 必須等於 CollectionSchedule.DailyRefresh（C#）與 scripts/daily-snapshot-done.mjs 的 DAILY_REFRESH_HOUR；
 # tests/Invest.Web.Tests/DailySnapshotWorkflowTests.cs 的契約測試會盯著。
 CYCLE_HOUR = 18
-PROTECTED = (
+LEGACY_PROTECTED = (
     'access_share_links', 'asset_operation_group_columns', 'asset_operation_snapshots',
     'asset_operation_sync_operations', 'asset_operation_sync_state', 'ocr_evaluations',
     'ocr_jobs', 'ocr_user_routing', 'ocr_workers',
 )
+PERFORMANCE_VALUATIONS = 'asset_performance_valuations'
+PROTECTED = (*LEGACY_PROTECTED, PERFORMANCE_VALUATIONS)
 # material_events 不在 pg_dump 裡，但有自己的每日檔案（見 export_material_events），不是不備份。
 MATERIAL_EVENTS = 'material_events'
 OMITTED = ('daily_quotes', 'intraday_quotes', 'intraday_runs', 'intraday_topic_heat',
@@ -370,9 +372,10 @@ def create(directory):
               and d.objid=c.oid and d.deptype='e');"""))
         public_tables = sorted(set(tables) - set(OMITTED + PRIVATE + PROTECTED))
         audit_rls(public, public_tables + [MATERIAL_EVENTS])
-        audit_rls(protected, PROTECTED)
+        protected_tables = PROTECTED if PERFORMANCE_VALUATIONS in tables else LEGACY_PROTECTED
+        audit_rls(protected, protected_tables)
         public_counts = read_counts(public, public_tables)
-        protected_counts = read_counts(protected, PROTECTED)
+        protected_counts = read_counts(protected, protected_tables)
         material_count = read_counts(public, [MATERIAL_EVENTS])[MATERIAL_EVENTS]
         # INVEST_BACKUP_DATE：內部匯出器用同一個日期命名，不自己再問一次 date（跨午夜會寫成隔天的檔名）。
         env = dict(os.environ, PG_DUMP=tool('pg_dump'), PSQL=tool('psql'),
@@ -384,7 +387,7 @@ def create(directory):
         check_counts(public_sql, public_counts)
         protected_sql = run([tool('pg_dump'), '--data-only', '--no-owner', '--no-privileges',
                              '--enable-row-security', '--snapshot=' + protected.snapshot,
-                             *['--table=public.' + t for t in PROTECTED]], env=protected.env).decode()
+                             *['--table=public.' + t for t in protected_tables]], env=protected.env).decode()
         check_counts(protected_sql, protected_counts)
         refs = json.loads(protected.query("""select json_agg(json_build_object('table',c.conrelid::regclass::text,
             'column',a.attname)) from pg_constraint c join pg_attribute a
@@ -396,7 +399,7 @@ def create(directory):
         identities = set()
         for ref in refs or []:
             table = ref['table'].removeprefix('public.')
-            if table not in PROTECTED:
+            if table not in protected_tables:
                 continue
             index = columns[table].index(ref['column'])
             for row in values[table]:
@@ -451,7 +454,7 @@ def validate(path, max_age=None, decrypt=False):
         if digest(data) != info['sha256'] or len(data) != info['bytes']:
             raise ValueError('backup file digest/size mismatch')
         content[name] = data
-    if set(manifest['protectedRows']) != set(PROTECTED):
+    if set(manifest['protectedRows']) not in (set(LEGACY_PROTECTED), set(PROTECTED)):
         raise ValueError('protected table coverage mismatch')
     if manifest.get('materialEvents'):
         verify_material_chain(path.parent, manifest['materialEvents'])

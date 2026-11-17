@@ -1808,6 +1808,18 @@ body {
     margin-top: 4px;
 }
 
+.asset-performance-events {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1rem;
+    max-height: 7rem;
+    overflow: auto;
+    margin: 0.5rem 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.875rem;
+}
+
 .asset-value-trend-footer {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);

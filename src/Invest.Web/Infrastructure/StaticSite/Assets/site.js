@@ -1083,7 +1083,8 @@ const AUTHENTICATED_FETCH_TABLES = new Set([
     'asset_operation_settings',
     'asset_operation_group_columns',
     'asset_operation_sync_state',
-    'asset_operation_snapshots'
+    'asset_operation_snapshots',
+    'asset_performance_valuations'
 ]);
 
 async function fetchAuthenticatedAllRows(
@@ -9585,7 +9586,8 @@ let assetHoldingSortDirection = 'asc';
 const assetTrendPeriodByKey = new Map();
 const assetTrendCrosshairByKey = new Map();
 let assetTrendMode = 'assets';
-let assetCashFlowAdjusted = true;
+let assetShowCashFlowMarkers = true;
+let assetPerformanceValuationRows = null;
 
 function assetNumber(value) {
     if (value === null || value === undefined || value === '') {
@@ -9912,7 +9914,7 @@ function assetTrendRowsForPeriod(rows, period = ASSET_DEFAULT_TREND_PERIOD) {
 }
 
 async function loadAssets() {
-    const [owners, accounts, holdings, cashFlows, valueSnapshots, accountValueSnapshots, annualSnapshots, exchangeRates, usQuotes]
+    const [owners, accounts, holdings, cashFlows, valueSnapshots, accountValueSnapshots, annualSnapshots, exchangeRates, usQuotes, performanceValuations]
         = await Promise.all([
         fetchAllRows(
             ASSET_OWNERS_TABLE,
@@ -9943,10 +9945,14 @@ async function loadAssets() {
             'id,owner_id,account_id,snapshot_year,total_assets_twd,cost_twd,updated_at',
             '&order=snapshot_year.desc').catch(() => null),
         fetchAssetLatestUsdTwdRate().catch(() => undefined),
-        fetchAssetLatestUsQuotes().catch(() => undefined)
+        fetchAssetLatestUsQuotes().catch(() => undefined),
+        loginTier === 'admin' ? fetchAuthenticatedAllRows(
+            'asset_performance_valuations', 'account_id,valuation_date,net_value_twd',
+            '&order=valuation_date.asc,account_id.asc').catch(() => null) : null
     ]);
 
     return {
+        performanceValuations,
         owners: owners.map(row => ({
             id: String(row.id),
             name: typeof row.name === 'string' ? row.name : '',
@@ -10441,6 +10447,7 @@ async function refreshAssets({ persistSnapshots = true } = {}) {
         assetHoldingRows = data.holdings;
         assetCashFlowRows = data.cashFlows ?? [];
         assetCashFlowAvailable = data.cashFlows !== null;
+        assetPerformanceValuationRows = data.performanceValuations;
         assetValueSnapshotRows = data.valueSnapshots ?? [];
         assetValueSnapshotsAvailable = data.valueSnapshots !== null;
         assetAccountValueSnapshotRows = data.accountValueSnapshots ?? [];
@@ -10957,7 +10964,7 @@ function assetRemove(table, query) {
 
 // 一律「先寫資料庫，成功再重讀重畫」。樂觀更新在多裝置下會讓畫面顯示一個資料庫
 // 其實沒吃下去的數字，資產頁不值得冒這個險。
-async function runAssetAction(pendingText, action, doneText) {
+async function runAssetAction(pendingText, action, doneText, persistSnapshots = true) {
     if (assetsBusy) {
         return false;
     }
@@ -10972,7 +10979,7 @@ async function runAssetAction(pendingText, action, doneText) {
         await action();
         await refreshAssets({ persistSnapshots: false });
 
-        if (assetsLoadError === null) {
+        if (persistSnapshots && assetsLoadError === null) {
             try {
                 await persistAssetValueSnapshots(true);
             } catch {
@@ -11999,7 +12006,7 @@ function makeAssetTrendToolbar() {
     modes.className = 'asset-section-actions';
     modes.setAttribute('role', 'group');
     modes.setAttribute('aria-label', '圖表呈現方式');
-    for (const [mode, label] of [['assets', '資產變化'], ['profit', '當年損益變化']]) {
+    for (const [mode, label] of [['assets', '資產變化'], ['adjusted', '調整後資產'], ['profit', '當年損益變化']]) {
         const button = assetButton(label,
             `asset-value-trend-period${assetTrendMode === mode ? ' is-selected' : ''}`,
             () => { assetTrendMode = mode; renderAssetsDashboard(); });
@@ -12010,11 +12017,11 @@ function makeAssetTrendToolbar() {
     settings.className = 'asset-section-actions';
     settings.setAttribute('role', 'group');
     settings.setAttribute('aria-label', '圖表設定');
-    const funding = assetButton(`考慮出入金：${assetCashFlowAdjusted ? '開' : '關'}`,
-        `asset-secondary-button asset-value-trend-crosshair${assetCashFlowAdjusted ? ' is-enabled' : ''}`,
-        () => { assetCashFlowAdjusted = !assetCashFlowAdjusted; renderAssetsDashboard(); });
-    funding.setAttribute('aria-pressed', String(assetCashFlowAdjusted));
-    funding.title = '開：扣除對應期間的淨入金；關：包含出入金。實際資產卡保留目前餘額。';
+    const funding = assetButton(`顯示出入金：${assetShowCashFlowMarkers ? '開' : '關'}`,
+        `asset-secondary-button asset-value-trend-crosshair${assetShowCashFlowMarkers ? ' is-enabled' : ''}`,
+        () => { assetShowCashFlowMarkers = !assetShowCashFlowMarkers; renderAssetsDashboard(); });
+    funding.setAttribute('aria-pressed', String(assetShowCashFlowMarkers));
+    funding.title = '顯示圖表期間內的出入金紀錄';
     settings.append(funding);
     toolbar.append(modes, settings);
     return { toolbar, settings };
@@ -12029,7 +12036,7 @@ function makeAssetValueTrendCard(rows, options) {
     const heading = document.createElement('div');
     heading.className = 'asset-value-trend-heading';
     const title = document.createElement('h2');
-    title.textContent = `${assetTrendMode === 'profit' ? '當年損益變化' : '資產變化'}${assetCashFlowAdjusted ? '（扣除出入金）' : ''}`;
+    title.textContent = { assets: '資產變化', adjusted: '調整後資產', profit: '當年損益變化' }[assetTrendMode];
     const detail = document.createElement('span');
     // 尚未啟用時 rows 仍有「今天」這個即時算出的點（見 assetValueTrendRows），
     // 但歷史表根本讀不到，不該顯示交易／紀錄日數，否則會跟下面的停用提示互相矛盾。
@@ -12043,12 +12050,34 @@ function makeAssetValueTrendCard(rows, options) {
     header.append(toolbar, heading);
     card.append(header);
 
+    const addPeriodFooter = () => {
+        const periods = document.createElement('div');
+        periods.className = 'asset-value-trend-periods';
+        periods.setAttribute('role', 'group');
+        periods.setAttribute('aria-label', '資產變化期間');
+        for (const period of ASSET_TREND_PERIODS) {
+            const button = assetButton(period.label,
+                `asset-value-trend-period${period.key === selectedPeriod ? ' is-selected' : ''}`,
+                () => {
+                    assetTrendPeriodByKey.set(periodKey, period.key);
+                    renderAssetsDashboard();
+                });
+            button.setAttribute('aria-pressed', String(period.key === selectedPeriod));
+            periods.append(button);
+        }
+        const footer = document.createElement('div');
+        footer.className = 'asset-value-trend-footer';
+        detail.className = 'asset-value-trend-range';
+        footer.append(periods, detail);
+        card.append(footer);
+    };
+
     if (!options.available) {
-        heading.append(detail);
         const warning = document.createElement('p');
         warning.className = 'asset-data-warning';
         warning.textContent = options.unavailableHint;
         card.append(warning);
+        addPeriodFooter();
         return card;
     }
 
@@ -12163,9 +12192,17 @@ function makeAssetValueTrendCard(rows, options) {
             r: index === visibleRows.length - 1 ? 5 : 3
         });
         point.setAttribute('tabindex', '0');
-        point.setAttribute('aria-label', assetTrendTooltipText(row));
+        const funding = options.fundingByDate?.get(row.date);
+        point.setAttribute('aria-label', [assetTrendTooltipText(row), ...(funding ?? [])].join(' · '));
         pointElements.push(point);
         svg.append(point);
+        if (funding) {
+            const marker = svgElement('text', {
+                x: x(index), y: y(row.value) - 9, 'text-anchor': 'middle',
+                fill: 'currentColor', 'font-size': '9', 'pointer-events': 'none', 'aria-hidden': 'true'
+            }, '◆');
+            svg.append(marker);
+        }
     });
 
     const verticalCrosshair = svgElement('line', {
@@ -12261,30 +12298,7 @@ function makeAssetValueTrendCard(rows, options) {
     }
 
     card.append(svg);
-    const periods = document.createElement('div');
-    periods.className = 'asset-value-trend-periods';
-    periods.setAttribute('role', 'group');
-    periods.setAttribute('aria-label', '資產變化期間');
-
-    for (const period of ASSET_TREND_PERIODS) {
-        const button = assetButton(
-            period.label,
-            `asset-value-trend-period${period.key === selectedPeriod ? ' is-selected' : ''}`,
-            () => {
-                assetTrendPeriodByKey.set(periodKey, period.key);
-                renderAssetsDashboard();
-            });
-        button.setAttribute('aria-pressed', String(period.key === selectedPeriod));
-        periods.append(button);
-    }
-
-    const footer = document.createElement('div');
-    footer.className = 'asset-value-trend-footer';
-    const range = document.createElement('span');
-    range.className = 'asset-value-trend-range';
-    range.textContent = `${visibleRows[0].date.replaceAll('-', '/')} ～ ${visibleRows.at(-1).date.replaceAll('-', '/')} · ${visibleRows.length} 個交易／紀錄日`;
-    footer.append(periods, range);
-    card.append(footer);
+    addPeriodFooter();
     return card;
 }
 
@@ -14541,7 +14555,7 @@ function makeAssetCashFlowSection(view) {
 
     const form = document.createElement('form');
     form.className = 'asset-editor-form asset-cash-flow-form';
-    const dateInput = assetField(form, 'date', '日期', TAIPEI_DATE.format(new Date()), { required: true });
+    const dateInput = assetField(form, 'date', '實際入帳日', TAIPEI_DATE.format(new Date()), { required: true });
     const directionLabel = document.createElement('label');
     directionLabel.textContent = '類型';
     const directionSelect = document.createElement('select');
@@ -14618,6 +14632,7 @@ function makeAssetCashFlowEditRow(view, flow) {
     const dateInput = document.createElement('input');
     dateInput.type = 'date';
     dateInput.required = true;
+    dateInput.setAttribute('aria-label', '實際入帳日');
     dateInput.value = flow.flowDate || '';
     dateCell.append(dateInput);
 

@@ -83,6 +83,7 @@ excluded_tables=(
     asset_operation_snapshots
     asset_operation_sync_operations
     asset_operation_sync_state
+    asset_performance_valuations
     ocr_evaluations
     ocr_jobs
     ocr_user_routing
