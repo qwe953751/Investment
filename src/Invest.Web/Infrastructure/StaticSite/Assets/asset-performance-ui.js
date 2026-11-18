@@ -14,10 +14,10 @@ function assetPerformanceFlow(flow, view) {
     };
 }
 
-function assetPerformanceCompute(views, windows) {
+function assetPerformanceCompute(views, windows, adjusted = true) {
     return AssetPerformance.calculate({
         windows,
-        adjusted: true,
+        adjusted,
         available: assetCashFlowAvailable,
         flows: views.flatMap(view => view.cashFlows.map(flow => assetPerformanceFlow(flow, view)))
     });
@@ -59,80 +59,68 @@ function assetPerformanceAnnualWindow(valuations, row) {
     return assetPerformanceWindow(valuations.find(point => point.date === start) ?? { date: start, value: null }, row);
 }
 
-function assetPerformanceFundingMarkers(accounts, period, end, today, profit) {
-    const markers = new Map();
-    if (!assetShowCashFlowMarkers) return markers;
-    const start = assetTrendPeriodStartDate(end, period);
-    for (const account of accounts) {
-        for (const flow of assetCashFlowsOf(account.id)) {
-            if ((start && flow.flowDate < start) || flow.flowDate > today
-                || (profit && flow.flowDate.slice(0, 4) !== today.slice(0, 4))) continue;
-            const label = flow.direction === 'withdrawal' ? '出金' : '入金';
-            const currency = flow.currency || (account.market === '美股' ? 'USD' : 'TWD');
-            const entries = markers.get(flow.flowDate) ?? [];
-            entries.push(label + ' ' + assetCurrency(flow.amount, currency)
-                + (accounts.length > 1 ? ' · ' + account.name : ''));
-            markers.set(flow.flowDate, entries);
-        }
-    }
-    return markers;
+function assetPerformanceLegacyYearEnd(views, year) {
+    const complete = views.length && views.every(view => assetAnnualSnapshotRows.some(row =>
+        row.accountId === view.id && !row.ownerId && Number(row.snapshotYear) === year));
+    if (!complete) return null;
+    const scope = views.length === 1 ? views[0] : assetAnnualPreviewOwnerView({ id: views[0].ownerId }, views);
+    return assetPerformanceFormalAnnualRows(scope).find(row => row.year === year)?.totalAssets ?? null;
 }
 
 const assetPerformanceFormalTrend = makeAssetValueTrendCard;
 makeAssetValueTrendCard = function (rows, options) {
     const period = assetTrendPeriodByKey.get(options.periodKey) ?? ASSET_DEFAULT_TREND_PERIOD;
-    const today = TAIPEI_DATE.format(new Date());
+    const year = TAIPEI_DATE.format(new Date()).slice(0, 4);
     const profit = assetTrendMode === 'profit';
+    const inMode = points => profit ? points.filter(row => row.date.startsWith(year)) : points;
     const accounts = assetPerformanceScope(options);
-    const valuations = assetTrendMode === 'assets' ? [] : assetPerformanceValuations(accounts);
-    const end = (assetTrendMode === 'assets' ? rows : valuations).at(-1)?.date ?? today;
-    const markers = assetPerformanceFundingMarkers(accounts, period, end, today, profit);
-    const trendOptions = { ...options, fundingByDate: markers };
-    let card;
-
-    if (assetTrendMode === 'assets') {
-        card = assetPerformanceFormalTrend(rows, trendOptions);
-    } else {
-        const visible = assetTrendRowsForPeriod(
-            profit ? valuations.filter(row => row.date.slice(0, 4) === today.slice(0, 4)) : valuations, period);
-        const windows = visible.flatMap((row, index) => [
-            profit ? assetPerformanceAnnualWindow(valuations, row) : assetPerformanceWindow(visible[0], row),
-            assetPerformanceWindow(visible[index - 1] ?? row, row),
-            assetPerformanceWindow(row, visible.at(-1))
-        ]);
-        const results = assetPerformanceCompute(accounts.map(assetAccountView), windows);
-        const invalid = results.find(result => result.gain === null);
-        if (visible.length < (profit ? 1 : 2) || invalid) {
-            card = assetPerformanceFormalTrend([], {
-                ...trendOptions, available: false,
-                unavailableHint: assetPerformanceValuationRows === null ? '日末淨值暫時無法讀取。'
-                    : profit && windows.some(window => window.initial === null) ? '請先儲存去年 12/31 日末淨值。'
-                    : invalid?.reason ?? (profit ? '請先儲存當年的日末淨值。' : '請先儲存至少兩日的帳戶日末淨值。')
-            });
-        } else {
-            card = assetPerformanceFormalTrend(visible.map((row, index) => ({
-                ...row, actualValue: row.value,
-                value: profit ? results[index * 3].gain : results[index * 3].assetValue,
-                assetPerformanceAnnualBase: profit ? windows[index * 3].initial : null,
-                assetPerformanceAnnualFlow: profit ? results[index * 3].netFlow : null,
-                assetPerformancePrevious: assetPerformanceMeta(index ? results[index * 3 + 1] : null),
-                assetPerformanceCurrent: assetPerformanceMeta(results[index * 3 + 2])
-            })), { ...trendOptions, available: true });
-            const total = card.querySelector('.asset-value-trend-selection-item:nth-child(2) span');
-            if (total) total.textContent = profit ? '當年損益' : '調整後資產';
-        }
+    const valuations = assetCashFlowAdjusted ? assetPerformanceValuations(accounts) : [];
+    const verified = assetTrendRowsForPeriod(inMode(valuations), period);
+    const yearStart = (Number(year) - 1) + '-12-31';
+    const verifiedStart = valuations.find(row => row.date === yearStart);
+    const useVerified = profit ? verified.length > 0 && verifiedStart !== undefined : verified.length > 1;
+    const visible = useVerified ? verified : assetTrendRowsForPeriod(inMode(rows), period);
+    const trendOptions = useVerified ? { ...options, available: true } : options;
+    if (!trendOptions.available || visible.length === 0) {
+        return assetPerformanceFormalTrend(profit ? [] : rows, profit
+            ? { ...trendOptions, available: false, unavailableHint: year + ' 年尚無可用的資產日快照。' }
+            : trendOptions);
     }
-
-    if (markers.size) {
-        const list = document.createElement('ul');
-        list.className = 'asset-performance-events';
-        list.setAttribute('aria-label', '期間出入金');
-        for (const [date, entries] of [...markers].sort(([left], [right]) => left.localeCompare(right))) {
-            const item = document.createElement('li');
-            item.textContent = date.replaceAll('-', '/') + ' · ' + entries.join(' · ');
-            list.append(item);
-        }
-        card.append(list);
+    const views = accounts.map(assetAccountView);
+    const annualStart = profit ? (useVerified ? verifiedStart : null) ?? {
+        date: yearStart, value: assetPerformanceLegacyYearEnd(views, Number(year) - 1)
+    } : null;
+    const windows = visible.flatMap((row, index) => [
+        assetPerformanceWindow(annualStart ?? visible[0], row),
+        assetPerformanceWindow(visible[index - 1] ?? row, row),
+        assetPerformanceWindow(row, visible.at(-1))
+    ]);
+    const results = assetPerformanceCompute(views, windows, assetCashFlowAdjusted);
+    const invalid = results.find(result => result.gain === null);
+    let card;
+    if (invalid) {
+        card = assetPerformanceFormalTrend([], { ...trendOptions, available: false,
+            unavailableHint: profit && annualStart.value === null
+                ? '缺少 ' + (Number(year) - 1) + ' 年底完整總資產，無法計算當年損益。' : invalid.reason });
+        const footer = assetPerformanceFormalTrend(rows, trendOptions).querySelector('.asset-value-trend-footer');
+        if (footer) card.append(footer);
+    } else {
+        card = assetPerformanceFormalTrend(visible.map((row, index) => ({
+            ...row, actualValue: row.value,
+            value: profit ? results[index * 3].gain : results[index * 3].assetValue,
+            assetPerformanceAnnualBase: profit ? windows[index * 3].initial : null,
+            assetPerformanceAnnualFlow: profit ? results[index * 3].netFlow : null,
+            assetPerformancePrevious: assetPerformanceMeta(index ? results[index * 3 + 1] : null),
+            assetPerformanceCurrent: assetPerformanceMeta(results[index * 3 + 2])
+        })), trendOptions);
+    }
+    const total = card.querySelector('.asset-value-trend-selection-item:nth-child(2) span');
+    if (total) total.textContent = profit ? '當年損益' : assetCashFlowAdjusted ? '調整後資產' : '總資產';
+    const footer = card.querySelector('.asset-value-trend-footer');
+    if (footer) {
+        footer.title = useVerified ? '按已確認日末淨值與同期出入金調整。'
+            : assetCashFlowAdjusted ? '按舊資產快照與出入金試算，舊點未確認完整日末淨值。'
+            : profit ? '當年損益＝當日資產－去年年底總資產。' : '總資產取已保存快照與今日即時估值。';
     }
     return card;
 };
@@ -140,12 +128,12 @@ makeAssetValueTrendCard = function (rows, options) {
 const assetPerformanceFormalTooltip = assetTrendTooltipText;
 assetTrendTooltipText = row => {
     if (row.actualValue === undefined) return assetPerformanceFormalTooltip(row);
-    const base = row.date.replaceAll('-', '/') + ' · 日末淨值 ' + assetCurrency(row.actualValue);
+    const base = row.date.replaceAll('-', '/') + ' · 實際總資產 ' + assetCurrency(row.actualValue);
     return assetTrendMode === 'profit'
-        ? base + ' · 去年底淨值 ' + assetCurrency(row.assetPerformanceAnnualBase)
+        ? base + ' · 去年底總資產 ' + assetCurrency(row.assetPerformanceAnnualBase)
             + ' · 當年損益 ' + assetSignedCurrency(row.value)
             + ' · 今年截至該日淨入金 ' + assetSignedCurrency(row.assetPerformanceAnnualFlow)
-        : base + ' · 調整後資產 ' + assetCurrency(row.value);
+        : base + (assetCashFlowAdjusted ? ' · 調整後資產 ' + assetCurrency(row.value) : '');
 };
 
 const assetPerformanceFormalAnnualRows = assetAnnualPreviewRowsFor;

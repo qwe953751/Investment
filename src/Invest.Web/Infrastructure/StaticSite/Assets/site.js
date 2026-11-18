@@ -9586,7 +9586,7 @@ let assetHoldingSortDirection = 'asc';
 const assetTrendPeriodByKey = new Map();
 const assetTrendCrosshairByKey = new Map();
 let assetTrendMode = 'assets';
-let assetShowCashFlowMarkers = true;
+let assetCashFlowAdjusted = true;
 let assetPerformanceValuationRows = null;
 
 function assetNumber(value) {
@@ -12006,7 +12006,7 @@ function makeAssetTrendToolbar() {
     modes.className = 'asset-section-actions';
     modes.setAttribute('role', 'group');
     modes.setAttribute('aria-label', '圖表呈現方式');
-    for (const [mode, label] of [['assets', '資產變化'], ['adjusted', '調整後資產'], ['profit', '當年損益變化']]) {
+    for (const [mode, label] of [['assets', '資產變化'], ['profit', '當年損益變化']]) {
         const button = assetButton(label,
             `asset-value-trend-period${assetTrendMode === mode ? ' is-selected' : ''}`,
             () => { assetTrendMode = mode; renderAssetsDashboard(); });
@@ -12017,11 +12017,11 @@ function makeAssetTrendToolbar() {
     settings.className = 'asset-section-actions';
     settings.setAttribute('role', 'group');
     settings.setAttribute('aria-label', '圖表設定');
-    const funding = assetButton(`顯示出入金：${assetShowCashFlowMarkers ? '開' : '關'}`,
-        `asset-secondary-button asset-value-trend-crosshair${assetShowCashFlowMarkers ? ' is-enabled' : ''}`,
-        () => { assetShowCashFlowMarkers = !assetShowCashFlowMarkers; renderAssetsDashboard(); });
-    funding.setAttribute('aria-pressed', String(assetShowCashFlowMarkers));
-    funding.title = '顯示圖表期間內的出入金紀錄';
+    const funding = assetButton(`考慮出入金：${assetCashFlowAdjusted ? '開' : '關'}`,
+        `asset-secondary-button asset-value-trend-crosshair${assetCashFlowAdjusted ? ' is-enabled' : ''}`,
+        () => { assetCashFlowAdjusted = !assetCashFlowAdjusted; renderAssetsDashboard(); });
+    funding.setAttribute('aria-pressed', String(assetCashFlowAdjusted));
+    funding.title = '開：扣除對應期間的淨入金；關：包含出入金。實際資產卡保留目前餘額。';
     settings.append(funding);
     toolbar.append(modes, settings);
     return { toolbar, settings };
@@ -12036,7 +12036,7 @@ function makeAssetValueTrendCard(rows, options) {
     const heading = document.createElement('div');
     heading.className = 'asset-value-trend-heading';
     const title = document.createElement('h2');
-    title.textContent = { assets: '資產變化', adjusted: '調整後資產', profit: '當年損益變化' }[assetTrendMode];
+    title.textContent = `${assetTrendMode === 'profit' ? '當年損益變化' : '資產變化'}${assetCashFlowAdjusted ? '（扣除出入金）' : ''}`;
     const detail = document.createElement('span');
     // 尚未啟用時 rows 仍有「今天」這個即時算出的點（見 assetValueTrendRows），
     // 但歷史表根本讀不到，不該顯示交易／紀錄日數，否則會跟下面的停用提示互相矛盾。
@@ -12050,34 +12050,12 @@ function makeAssetValueTrendCard(rows, options) {
     header.append(toolbar, heading);
     card.append(header);
 
-    const addPeriodFooter = () => {
-        const periods = document.createElement('div');
-        periods.className = 'asset-value-trend-periods';
-        periods.setAttribute('role', 'group');
-        periods.setAttribute('aria-label', '資產變化期間');
-        for (const period of ASSET_TREND_PERIODS) {
-            const button = assetButton(period.label,
-                `asset-value-trend-period${period.key === selectedPeriod ? ' is-selected' : ''}`,
-                () => {
-                    assetTrendPeriodByKey.set(periodKey, period.key);
-                    renderAssetsDashboard();
-                });
-            button.setAttribute('aria-pressed', String(period.key === selectedPeriod));
-            periods.append(button);
-        }
-        const footer = document.createElement('div');
-        footer.className = 'asset-value-trend-footer';
-        detail.className = 'asset-value-trend-range';
-        footer.append(periods, detail);
-        card.append(footer);
-    };
-
     if (!options.available) {
+        heading.append(detail);
         const warning = document.createElement('p');
         warning.className = 'asset-data-warning';
         warning.textContent = options.unavailableHint;
         card.append(warning);
-        addPeriodFooter();
         return card;
     }
 
@@ -12192,17 +12170,9 @@ function makeAssetValueTrendCard(rows, options) {
             r: index === visibleRows.length - 1 ? 5 : 3
         });
         point.setAttribute('tabindex', '0');
-        const funding = options.fundingByDate?.get(row.date);
-        point.setAttribute('aria-label', [assetTrendTooltipText(row), ...(funding ?? [])].join(' · '));
+        point.setAttribute('aria-label', assetTrendTooltipText(row));
         pointElements.push(point);
         svg.append(point);
-        if (funding) {
-            const marker = svgElement('text', {
-                x: x(index), y: y(row.value) - 9, 'text-anchor': 'middle',
-                fill: 'currentColor', 'font-size': '9', 'pointer-events': 'none', 'aria-hidden': 'true'
-            }, '◆');
-            svg.append(marker);
-        }
     });
 
     const verticalCrosshair = svgElement('line', {
@@ -12298,7 +12268,30 @@ function makeAssetValueTrendCard(rows, options) {
     }
 
     card.append(svg);
-    addPeriodFooter();
+    const periods = document.createElement('div');
+    periods.className = 'asset-value-trend-periods';
+    periods.setAttribute('role', 'group');
+    periods.setAttribute('aria-label', '資產變化期間');
+
+    for (const period of ASSET_TREND_PERIODS) {
+        const button = assetButton(
+            period.label,
+            `asset-value-trend-period${period.key === selectedPeriod ? ' is-selected' : ''}`,
+            () => {
+                assetTrendPeriodByKey.set(periodKey, period.key);
+                renderAssetsDashboard();
+            });
+        button.setAttribute('aria-pressed', String(period.key === selectedPeriod));
+        periods.append(button);
+    }
+
+    const footer = document.createElement('div');
+    footer.className = 'asset-value-trend-footer';
+    const range = document.createElement('span');
+    range.className = 'asset-value-trend-range';
+    range.textContent = `${visibleRows[0].date.replaceAll('-', '/')} ～ ${visibleRows.at(-1).date.replaceAll('-', '/')} · ${visibleRows.length} 個交易／紀錄日`;
+    footer.append(periods, range);
+    card.append(footer);
     return card;
 }
 
