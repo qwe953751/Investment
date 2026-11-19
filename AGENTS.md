@@ -243,6 +243,7 @@ repo 的讀取權，否則 `gh api repos/frank-invest/...` 會 404 而不是權�
    若失敗的是「擋下盤中啟動的完整流程」，代表在 15:00 前用 `publish-only=false` 啟動了完整流程，這是守衛按預期擋下，不是故障——不要重跑同一組參數。
 4. 若是 `心跳與狀態` 因 `db/013_intraday_topic_heat.sql` 未套用而失敗，確認 workflow 已包含 `publish-only != true` 的跳過條件，再用目前 `main` 重新觸發 publish-only；publish-only 不會偷偷套 migration。
 5. `db/013_intraday_topic_heat.sql` 必須在明確授權後，以獨立的資料庫 migration 流程套用；不可為了讓網站發布成功把 DDL 混進一般發布流程，也不可用假資料補結果。
+6. 若 `輸出靜態網站` 因 `mopsov.twse.com.tw:443` 的 F22 營收公告查詢失敗，純發布使用目前 main 的 `publish-only=true`。workflow 會下載正式站 manifest 及既有 `data/revenue-announcements.json`，記錄來源版本與 SHA-256，設定 `REVENUE_ANNOUNCEMENTS_CACHE_FILE` 後交由 exporter 驗證並原樣沿用，避免重查整段官方歷史。快取格式、日期涵蓋或下載失敗仍中止。完整行情流程維持官方查詢。成功後核對 Actions headSha、公開／分支 manifest 同版，並比對公告檔沿用前後 SHA-256。
 
 ## 驗證與除錯
 

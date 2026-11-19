@@ -1092,6 +1092,16 @@ public sealed class StaticSiteExporter(
         DateOnly? since,
         CancellationToken cancellationToken)
     {
+        var cachePath = Environment.GetEnvironmentVariable("REVENUE_ANNOUNCEMENTS_CACHE_FILE");
+        if (!string.IsNullOrWhiteSpace(cachePath) && since is { } cacheStart)
+        {
+            var json = await File.ReadAllTextAsync(cachePath, cancellationToken);
+            var count = ValidateRevenueAnnouncementCache(json, cacheStart);
+            await File.WriteAllTextAsync(Path.Combine(dataDirectory, "revenue-announcements.json"),
+                json, cancellationToken);
+            return $"沿用已發布的 {count} 筆 MOPS 月營收公告日期。";
+        }
+
         IReadOnlyList<MonthlyRevenueAnnouncement> announcements = [];
         var available = since is not null;
         string? warning = null;
@@ -1150,6 +1160,32 @@ public sealed class StaticSiteExporter(
         return available
             ? $"已輸出 {announcements.Count} 筆 MOPS 月營收公告日期。"
             : "MOPS 月營收公告日期不可用；K 線不會使用推估日期。";
+    }
+
+    internal static int ValidateRevenueAnnouncementCache(string json, DateOnly since)
+    {
+        var cache = JsonSerializer.Deserialize<RevenueAnnouncementsExport>(json, JsonOptions);
+        if (cache is null || cache.SchemaVersion != 1 || cache.Source != "MOPS" || !cache.Available
+            || !DateOnly.TryParseExact(cache.From, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var from) || from > since || cache.Events is not { Count: > 0 })
+            throw new InvalidDataException("已發布的 MOPS 公告快取格式或涵蓋範圍不足。");
+
+        var keys = new HashSet<(string, string)>();
+        foreach (var row in cache.Events)
+        {
+            if (row is null || string.IsNullOrWhiteSpace(row.Ticker)
+                || row.Ticker.Length is < 4 or > 6 || !row.Ticker.All(char.IsAsciiDigit)
+                || !DateOnly.TryParseExact(row.Month + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var month)
+                || !DateOnly.TryParseExact(row.AnnouncedOn, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var date)
+                || date < from || date < month
+                || (row.AnnouncedTime is not null && !TimeOnly.TryParseExact(row.AnnouncedTime, "HH:mm:ss",
+                    CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                || !keys.Add((row.Ticker, row.Month)))
+                throw new InvalidDataException("已發布的 MOPS 公告快取含無效或重複資料。");
+        }
+        return cache.Events.Count;
     }
 
     private static TopicExport ToExport(Topic topic) => new(
