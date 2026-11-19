@@ -151,10 +151,18 @@ assetAnnualPreviewRowsFor = function (view) {
     rows.sort((left, right) => right.year - left.year);
     const windows = rows.map(row => {
         const end = row.auto && last?.date.startsWith(String(row.year)) ? last.date : row.year + '-12-31';
-        const point = valuations.find(valuation => valuation.date === end) ?? { date: end, value: null };
-        return assetPerformanceAnnualWindow(valuations, point);
+        const point = valuations.find(valuation => valuation.date === end);
+        const confirmed = point ? assetPerformanceAnnualWindow(valuations, point) : null;
+        if (assetCashFlowAdjusted && confirmed?.initial != null) return confirmed;
+        return {
+            start: (row.year - 1) + '-12-31',
+            end: row.auto ? TAIPEI_DATE.format(new Date()) : row.year + '-12-31',
+            initial: assetPerformanceLegacyYearEnd(views, row.year - 1),
+            final: row.auto ? views.every(account => !account.incomplete) ? row.totalAssets : null
+                : assetPerformanceLegacyYearEnd(views, row.year)
+        };
     });
-    const results = assetPerformanceCompute(views, windows);
+    const results = assetPerformanceCompute(views, windows, assetCashFlowAdjusted);
     return rows.map((row, index) => ({
         ...row,
         cost: assetPerformanceFundingFor(view, row.year)?.twdNet ?? null,
@@ -166,8 +174,9 @@ assetAnnualPreviewRowsFor = function (view) {
 const assetPerformanceFormalAnnualMetric = makeAssetAnnualPreviewMetric;
 makeAssetAnnualPreviewMetric = function (rows) {
     const card = assetPerformanceFormalAnnualMetric(rows);
-    card.querySelector('.asset-preview-metric-label').textContent = '今年報酬（估算）';
-    card.title = rows[0]?.assetPerformanceResult?.reason ?? '已確認至 ' + rows[0]?.performanceDate + ' · Modified Dietz 估算';
+    card.querySelector('.asset-preview-metric-label').textContent = assetCashFlowAdjusted ? '今年報酬（估算）' : '今年資產增減率';
+    card.title = rows[0]?.assetPerformanceResult?.reason ?? '計算截至 ' + rows[0]?.performanceDate
+        + (assetCashFlowAdjusted ? ' · Modified Dietz 估算' : ' · 資產增減率');
     return card;
 };
 
@@ -176,7 +185,7 @@ makeAssetAnnualPreviewSection = function (view, rows) {
     const section = assetPerformanceFormalAnnualSection(view, rows);
     section.querySelector('h2').textContent = '每年總資產與損益';
     section.querySelectorAll('.asset-annual-preview-value > span').forEach(label => {
-        if (label.textContent === '試算淨值') label.textContent = '年度投資損益';
+        if (label.textContent === '試算淨值') label.textContent = assetCashFlowAdjusted ? '年度投資損益' : '年度資產增減';
     });
     section.querySelectorAll('.asset-annual-preview-row').forEach((element, index) => {
         const row = rows[index];
@@ -191,17 +200,22 @@ assetAnnualPreviewMonthRowsFor = function (view, year) {
     const views = assetPerformanceViews(view);
     const valuations = assetPerformanceValuations(views);
     const checkpoints = new Map(valuations.map(row => [row.date.slice(0, 7), row]));
+    const previousDecember = assetPerformanceFormalMonths(view, Number(year) - 1).months.at(-1);
     const windows = data.months.map(month => {
         const previousKey = month.month === 1 ? (Number(year) - 1) + '-12'
             : year + '-' + String(month.month - 1).padStart(2, '0');
         const key = year + '-' + String(month.month).padStart(2, '0');
+        const first = checkpoints.get(previousKey);
+        const last = checkpoints.get(key);
+        if (assetCashFlowAdjusted && first && last) return assetPerformanceWindow(first, last);
+        const previous = month.month === 1 ? previousDecember : data.months[month.month - 2];
         return assetPerformanceWindow(
-            checkpoints.get(previousKey) ?? { date: previousKey + '-01', value: null },
-            checkpoints.get(key) ?? { date: key + '-01', value: null });
+            { date: previous?.date || previousKey + '-01', value: previous?.value ?? null },
+            { date: month.date || key + '-01', value: month.value });
     });
-    const results = assetPerformanceCompute(views, windows);
+    const results = assetPerformanceCompute(views, windows, assetCashFlowAdjusted);
     return {
-        available: assetPerformanceValuationRows !== null,
+        available: data.available || valuations.length > 0,
         months: data.months.map((month, index) => ({
             ...month,
             date: windows[index].final === null ? '' : windows[index].end,
@@ -215,7 +229,8 @@ assetAnnualPreviewMonthRowsFor = function (view, year) {
 const assetPerformanceFormalMonthChart = makeAssetAnnualPreviewMonthChart;
 makeAssetAnnualPreviewMonthChart = function (view, row) {
     const chart = assetPerformanceFormalMonthChart(view, row);
-    chart.querySelector('.asset-annual-preview-month-heading strong').textContent = '每月報酬（估算，%）';
+    chart.querySelector('.asset-annual-preview-month-heading strong').textContent =
+        assetCashFlowAdjusted ? '每月報酬（估算，%）' : '每月 MOM（%）';
     const empty = chart.querySelector('.asset-annual-preview-month-empty');
     if (empty) empty.textContent = '日末淨值暫時無法讀取。';
     return chart;

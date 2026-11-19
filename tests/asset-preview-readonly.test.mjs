@@ -34,6 +34,7 @@ test('舊版出入金開關切換兩種曲線口徑，補登仍按入帳日計�
     const valuation = (date, value) => ({ account_id: 'a', valuation_date: date, net_value_twd: value });
     const context = {
         assetPerformanceValuationRows: [], assetTrendMode: 'assets', assetCashFlowAdjusted: true,
+        assetAnnualSnapshotRows: [{ accountId: 'a', ownerId: '', snapshotYear: 2025 }],
         assetTrendPeriodByKey: new Map(), ASSET_DEFAULT_TREND_PERIOD: '3M',
         assetCashFlowAvailable: true, TAIPEI_DATE: { format: () => '2026-11-17' },
         assetTrendRowsForPeriod: rows => rows,
@@ -41,9 +42,14 @@ test('舊版出入金開關切換兩種曲線口徑，補登仍按入帳日計�
         assetFindAccount: () => account, assetAccountView: view => view,
         renderAssetsDashboard() {}, assetTrendTooltipText() {},
         makeAssetValueTrendCard: (rows, options) => ({ rows, options, querySelector: () => null, append() {} }),
-        assetAnnualPreviewRowsFor: () => [{ year: 2026, auto: true }],
+        assetAnnualPreviewRowsFor: () => [{ year: 2026, auto: true, totalAssets: 1000 },
+            { year: 2025, totalAssets: 1000 }],
         makeAssetAnnualPreviewMetric() {}, makeAssetAnnualPreviewSection() {},
-        assetAnnualPreviewMonthRowsFor: () => ({ months: [{ month: 10 }, { month: 11 }] }),
+        assetAnnualPreviewMonthRowsFor: (_view, year) => ({ available: true, months: year === 2026
+            ? Array.from({ length: 11 }, (_, index) => ({ month: index + 1,
+                date: index === 9 ? '2026-10-31' : index === 10 ? '2026-11-17' : '',
+                value: index === 9 ? 1000 : index === 10 ? 900 : null }))
+            : [] }),
         makeAssetAnnualPreviewMonthChart() {}, makeAssetCashFlowSection() {}
     };
     vm.runInNewContext(formulas + '\n' + source, context);
@@ -56,6 +62,13 @@ test('舊版出入金開關切換兩種曲線口徑，補登仍按入帳日計�
         createdAt: '2026-11-16T00:00:00Z'
     });
     assert.equal(render().rows.at(-1).value, 1100);
+    assert.equal(context.assetAnnualPreviewRowsFor(account)[0].assetPerformanceResult.gain, 100);
+    assert.equal(context.assetAnnualPreviewMonthRowsFor(account, 2026).months.at(-1).mom, 0);
+    context.assetPerformanceValuationRows = null;
+    assert.equal(context.assetAnnualPreviewRowsFor(account)[0].assetPerformanceResult.gain, 100);
+    assert.equal(context.assetAnnualPreviewMonthRowsFor(account, 2026).months.at(-1).mom, 0);
+    context.assetPerformanceValuationRows = [valuation('2025-12-31', 5000)];
+    assert.equal(context.assetAnnualPreviewRowsFor(account)[0].assetPerformanceResult.gain, 100);
     context.assetPerformanceValuationRows = [
         valuation('2025-12-31', 1000), valuation('2026-10-31', 1000), valuation('2026-11-11', 1000),
         valuation('2026-11-13', 900)
@@ -68,7 +81,7 @@ test('舊版出入金開關切換兩種曲線口徑，補登仍按入帳日計�
     assert.equal(render().rows.at(-1).date, '2026-11-12');
     assert.equal(render().rows.at(-1).value, 1000);
     assert.equal(context.assetAnnualPreviewRowsFor(account)[0].assetPerformanceResult.gain, 0);
-    assert.equal(context.assetAnnualPreviewMonthRowsFor(account, 2026).months.at(-1).mom, 0);
+    assert.equal(context.assetAnnualPreviewMonthRowsFor(account, 2026).months.at(-1).mom, -10);
     context.assetCashFlowAdjusted = true;
     context.assetTrendMode = 'profit';
     assert.equal(render().rows.at(-1).value, 0);
